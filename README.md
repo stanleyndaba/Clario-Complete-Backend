@@ -1,205 +1,190 @@
-# FBA Claims Pipeline
+# Opside Backend - FBA Refund Prediction System
 
-An integrated pipeline for **Claim Detection**, **Evidence Validation**, and **Auto-Claims Generation** that enables automated Amazon FBA reimbursement processing.
+A comprehensive backend system for Amazon FBA refund prediction, evidence collection, and automated dispute submission.
 
-## 🏗️ Architecture
+## 🚀 Features
 
-The pipeline consists of three main components:
+### Core Engines
+- **FBA Refund Predictor**: Machine learning models for predicting refund eligibility
+- **Evidence Matching Engine**: Automated evidence collection and validation
+- **Document Parser Pipeline**: OCR and document processing capabilities
+- **Zero Effort Evidence**: Automated evidence generation system
+- **Cost Documentation Module**: Comprehensive cost tracking and documentation
 
-1. **Claim Detector Delivery (CDD)** - Ingests claims from the ML-based Claim Detector
-2. **Evidence Validator (EV)** - Validates claims using rules + ML (from MCDE)
-3. **Auto-Claims Generator (ACG)** - Builds and submits claim packets to Amazon
+### Integrations
+- **Amazon SP-API Integration**: Complete Amazon Seller Partner API integration
+- **Stripe Payments**: Payment processing and payout management
+- **Gmail Integration**: Email-based evidence collection
+- **Supabase Database**: Scalable database backend
 
-```
-Claim Detector → CDD → EV → ACG → Amazon SP-API
-     ↓           ↓     ↓     ↓        ↓
-  ML Model   Database  Rules  Packet  Filing
-```
-
-## 🚀 Quick Start
-
-### 1. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Run the Application
-
-```bash
-uvicorn src.app:app --reload --host 0.0.0.0 --port 8000
-```
-
-### 3. Test the Pipeline
-
-```bash
-# Test health endpoint
-curl http://localhost:8000/health
-
-# Submit a claim detection
-curl -X POST http://localhost:8000/claims/detect \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: test-123" \
-  -d @sample_claim.json
-
-# Check claim status
-curl http://localhost:8000/claims/CLM-000123
-```
+### Advanced Features
+- **Feature Flags & Canary Deployment**: Safe feature rollouts
+- **Analytics & Monitoring**: Comprehensive system monitoring
+- **Security & Encryption**: End-to-end data protection
+- **WebSocket Support**: Real-time updates and notifications
 
 ## 📁 Project Structure
 
 ```
-src/
-├── common/           # Shared utilities
-│   ├── schemas.py   # Pydantic models
-│   ├── config.py    # Configuration
-│   ├── db.py        # Database operations
-│   └── logging.py   # Structured logging
-├── cdd/             # Claim Detector Delivery
-│   ├── router.py    # FastAPI endpoints
-│   ├── service.py   # Business logic
-│   └── worker.py    # Background processing
-├── acg/             # Auto-Claims Generator
-│   ├── router.py    # Filing endpoints
-│   ├── builder.py   # Packet construction
-│   ├── filer.py     # Filing logic
-│   └── sp_api_adapter.py  # Amazon integration
-├── migrations/      # Database schema
-│   └── 001_init.sql
-└── app.py          # Main FastAPI app
+├── src/                          # Main Python backend
+│   ├── api/                      # API endpoints
+│   ├── evidence/                 # Evidence collection & matching
+│   ├── ml_detector/             # Machine learning models
+│   ├── integrations/            # External service integrations
+│   └── security/                # Security & encryption
+├── FBA Refund Predictor/        # ML prediction models
+├── Integrations-backend/        # Node.js integration services
+├── stripe-payments/             # Payment processing service
+├── evidence-engine/             # Evidence processing engine
+└── Claim Detector Model/        # Claim detection algorithms
 ```
 
-## 🔌 API Endpoints
+## 🛠️ Technology Stack
 
-### Claim Detection
-- `POST /claims/detect` - Submit a new claim detection
-- `GET /claims/{id}` - Get claim status and history
-- `POST /claims/{id}/file` - Force file a claim
-- `POST /claims/{id}/cancel` - Cancel a claim
+- **Backend**: Python (FastAPI), Node.js (Express/TypeScript)
+- **Database**: PostgreSQL, Supabase
+- **ML/AI**: scikit-learn, transformers, joblib
+- **Integrations**: Amazon SP-API, Stripe, Gmail API
+- **Deployment**: Docker, Fly.io, Render
+- **Monitoring**: Prometheus, Grafana
 
-### Health & Info
-- `GET /health` - Service health check
-- `GET /` - Service information and endpoints
+## 🚀 Quick Start
 
-## 📊 Data Flow
+### Prerequisites
+- Python 3.9+
+- Node.js 18+
+- PostgreSQL
+- Docker (optional)
 
-### 1. Claim Detection
-```json
-POST /claims/detect
-{
-  "claim_id": "CLM-000123",
-  "claim_type": "lost_inventory",
-  "confidence": 0.88,
-  "amount_estimate": 142.50,
-  "quantity_affected": 5,
-  "metadata": {...}
-}
-```
+### Installation
 
-### 2. Automatic Validation
-- CDD receives claim → stores in database
-- Worker processes validation → calls Evidence Validator
-- EV applies rules + ML → determines if auto-file ready
-- If ready → enqueues for filing
+1. **Clone the repository**
+   ```bash
+   git clone <your-github-repo-url>
+   cd opside-backend
+   ```
 
-### 3. Auto-Filing
-- ACG builds claim packet from validated data
-- Submits via SP-API adapter (mock in dev)
-- Updates claim status based on Amazon response
-- Logs full audit trail
+2. **Set up environment variables**
+   ```bash
+   cp env.template .env
+   # Edit .env with your configuration
+   ```
 
-## 🗄️ Database Schema
+3. **Install Python dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-- **claims** - Claim metadata and status
-- **validations** - Evidence validation results
-- **filings** - Amazon submission history
-- **idempotency_keys** - Duplicate request prevention
+4. **Install Node.js dependencies**
+   ```bash
+   cd Integrations-backend
+   npm install
+   cd ../stripe-payments
+   npm install
+   ```
 
-## 🧪 Testing
+5. **Run database migrations**
+   ```bash
+   python scripts/migrate_to_postgresql.py
+   ```
 
-Run the comprehensive test suite:
+6. **Start the services**
+   ```bash
+   # Start main API
+   python src/app.py
+   
+   # Start integrations backend
+   cd Integrations-backend
+   npm start
+   
+   # Start payment service
+   cd ../stripe-payments
+   npm start
+   ```
 
+## 📊 API Documentation
+
+### Main API Endpoints
+- `GET /health` - Health check
+- `POST /api/evidence/match` - Evidence matching
+- `POST /api/detections/predict` - Refund prediction
+- `POST /api/integrations/amazon/sync` - Amazon data sync
+
+### Integration Endpoints
+- `POST /api/amazon/oauth` - Amazon OAuth setup
+- `POST /api/stripe/webhook` - Stripe webhook handler
+- `GET /api/sync/status` - Sync status monitoring
+
+## 🔧 Configuration
+
+### Environment Variables
+See `ENVIRONMENT_VARIABLES_GUIDE.md` for complete configuration details.
+
+Key variables:
+- `DATABASE_URL` - PostgreSQL connection string
+- `AMAZON_CLIENT_ID` - Amazon SP-API credentials
+- `STRIPE_SECRET_KEY` - Stripe API key
+- `SUPABASE_URL` - Supabase project URL
+
+## 🚀 Deployment
+
+### Using Render (Recommended)
+1. Connect your GitHub repository to Render
+2. Use the provided `render.yaml` configuration
+3. Set environment variables in Render dashboard
+
+### Using Fly.io
+1. Install Fly CLI: `curl -L https://fly.io/install.sh | sh`
+2. Run deployment script: `./deploy.ps1`
+
+### Using Docker
 ```bash
-pytest tests/test_integration_acg.py -v
+docker-compose up -d
 ```
-
-Tests cover:
-- ✅ End-to-end claim flow
-- ✅ Idempotency protection
-- ✅ Error handling
-- ✅ Database persistence
-- ✅ API validation
-
-## ⚙️ Configuration
-
-Environment variables (`.env`):
-
-```bash
-DB_URL=sqlite:///./claims.db          # Database connection
-AUTO_FILE_THRESHOLD=0.75             # Confidence threshold for auto-filing
-ENV=dev                              # Environment (dev/prod)
-```
-
-## 🔒 Production Features
-
-- **Idempotency** - Prevents duplicate processing
-- **Structured Logging** - JSON logs with correlation IDs
-- **Error Handling** - Graceful failure with status updates
-- **Audit Trail** - Complete history of all operations
-- **Background Processing** - Async validation and filing
-
-## 🔄 Background Workers
-
-Currently using pseudo-enqueueing for development. Production should use:
-
-- **RQ + Redis** - Python job queue
-- **Arq** - Async job queue
-- **APScheduler** - Scheduled tasks
-
-## 🚧 Development Notes
-
-### Mock Components
-- **SP-API Adapter** - Simulates 90% success, 10% failure
-- **Evidence Validator** - Uses mock validation (integrate with MCDE EV)
-- **Background Jobs** - Run synchronously (replace with proper queues)
-
-### Integration Points
-- **MCDE Evidence Validator** - Replace mock validation
-- **Real SP-API** - Replace mock adapter with Amazon credentials
-- **Background Queues** - Implement proper job processing
 
 ## 📈 Monitoring
 
-- **Health Endpoints** - Service status
-- **Structured Logs** - JSON format with correlation
-- **Database Metrics** - Claim processing statistics
-- **API Metrics** - Request/response monitoring
+- **Health Checks**: Built-in health monitoring
+- **Analytics**: Comprehensive usage analytics
+- **Alerts**: Automated alerting system
+- **Logs**: Centralized logging with structured output
 
-## 🔮 Next Steps
+## 🔒 Security
 
-1. **Integrate MCDE EV** - Replace mock validation
-2. **Real SP-API** - Amazon production credentials
-3. **Background Queues** - RQ/Arq implementation
-4. **Metrics Dashboard** - Processing statistics
-5. **Retry Policies** - Exponential backoff for failures
-6. **Rate Limiting** - Amazon API compliance
+- **Data Encryption**: End-to-end encryption for sensitive data
+- **Access Control**: Role-based access control
+- **Audit Logging**: Comprehensive audit trails
+- **API Security**: Rate limiting and authentication
+
+## 📝 Documentation
+
+- [Deployment Guide](DEPLOYMENT_GUIDE.md)
+- [Environment Variables](ENVIRONMENT_VARIABLES_GUIDE.md)
+- [API Contracts](API_CONTRACTS.md)
+- [Security Implementation](SECURITY_IMPLEMENTATION_COMPLETE.md)
 
 ## 🤝 Contributing
 
-1. Follow the existing code structure
-2. Add tests for new functionality
-3. Update documentation
-4. Use structured logging
-5. Maintain idempotency
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests
+5. Submit a pull request
 
 ## 📄 License
 
-Internal use for OpSide FBA operations.
+This project is proprietary software. All rights reserved.
 
+## 🆘 Support
 
+For support and questions:
+- Create an issue in this repository
+- Check the documentation in the `/docs` folder
+- Review the implementation guides
 
+---
 
-
-
-
-
+**Note**: This repository uses Git LFS for large files. Make sure to install Git LFS before cloning:
+```bash
+git lfs install
+```
