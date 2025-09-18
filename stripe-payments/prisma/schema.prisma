@@ -1,0 +1,178 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model StripeAccount {
+  id                Int      @id @default(autoincrement())
+  userId            Int      @unique
+  stripeAccountId   String   @unique
+  status            String   // active, inactive, pending, restricted
+  chargesEnabled    Boolean  @default(false)
+  payoutsEnabled    Boolean  @default(false)
+  detailsSubmitted  Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  transactions      StripeTransaction[]
+
+  @@index([userId])
+  @@index([stripeAccountId])
+}
+
+model StripeTransaction {
+  id                      Int      @id @default(autoincrement())
+  userId                  Int
+  claimId                 Int?     // optional FK to refund claim (if exists)
+  amountRecoveredCents    Int      // cents
+  platformFeeCents        Int      // 20% fee in cents
+  sellerPayoutCents       Int      // 80% in cents
+  currency                String   @default("usd")
+  stripePaymentIntentId   String?  @unique
+  stripeChargeId          String?
+  stripeTransferId        String?
+  stripeInvoiceId         String?
+  stripeCustomerId        String?
+  stripePaymentMethodId   String?
+  status                  String   // pending, charged, failed, refunded, transferred, cancelled
+  idempotencyKey          String?  @unique
+  metadata                Json?    // Additional metadata
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  // Relations
+  stripeAccount           StripeAccount? @relation(fields: [userId], references: [userId])
+  webhookEvents           StripeWebhookEvent[]
+  auditTrail              TransactionAudit[]
+
+  @@index([userId])
+  @@index([claimId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// Maps a local user to a Stripe Customer
+model StripeCustomer {
+  id               Int      @id @default(autoincrement())
+  userId           Int      @unique
+  stripeCustomerId String   @unique
+  email            String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relations
+  invoices         StripeInvoice[]
+  subscriptions    StripeSubscription[]
+
+  @@index([stripeCustomerId])
+}
+
+/// Stores Stripe Subscription records
+model StripeSubscription {
+  id                   Int      @id @default(autoincrement())
+  userId               Int
+  stripeSubscriptionId String   @unique
+  stripeCustomerId     String
+  priceId              String
+  status               String   // active, trialing, canceled, past_due, unpaid, incomplete, incomplete_expired, paused
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean  @default(false)
+  canceledAt           DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  // Relations
+  customer             StripeCustomer @relation(fields: [stripeCustomerId], references: [stripeCustomerId])
+
+  @@index([userId])
+  @@index([stripeCustomerId])
+}
+
+/// Stores Stripe Invoice records for auditing
+model StripeInvoice {
+  id                Int      @id @default(autoincrement())
+  userId            Int
+  stripeInvoiceId   String   @unique
+  stripeCustomerId  String
+  status            String   // draft, open, paid, uncollectible, void
+  currency          String   @default("usd")
+  amountDueCents    Int      @default(0)
+  amountPaidCents   Int      @default(0)
+  hostedInvoiceUrl  String?
+  invoicePdf        String?
+  paymentIntentId   String?
+  chargeId          String?
+  issuedAt          DateTime?
+  periodStart       DateTime?
+  periodEnd         DateTime?
+  metadata          Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  customer          StripeCustomer @relation(fields: [stripeCustomerId], references: [stripeCustomerId])
+
+  @@index([userId])
+  @@index([stripeCustomerId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model StripeWebhookEvent {
+  id            Int      @id @default(autoincrement())
+  eventId       String   @unique
+  eventType     String   // payment_intent.succeeded, charge.refunded, etc.
+  payload       Json
+  receivedAt    DateTime @default(now())
+  processed     Boolean  @default(false)
+  processedAt   DateTime?
+  transactionId Int?     // FK to StripeTransaction if related
+
+  // Relations
+  transaction   StripeTransaction? @relation(fields: [transactionId], references: [id])
+
+  @@index([eventId])
+  @@index([eventType])
+  @@index([processed])
+  @@index([receivedAt])
+}
+
+model IdempotencyKey {
+  id        String   @id
+  userId    Int
+  endpoint  String   // The endpoint this key is for
+  response  Json?    // Cached response
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([id])
+  @@index([userId, endpoint])
+  @@index([expiresAt])
+}
+
+// Audit trail for reconciliation
+model TransactionAudit {
+  id              Int      @id @default(autoincrement())
+  transactionId   Int
+  action          String   // charge_created, payment_succeeded, transfer_created, etc.
+  status          String   // success, failed, pending
+  stripeEventId   String?
+  metadata        Json?
+  createdAt       DateTime @default(now())
+
+  // Relations
+  transaction     StripeTransaction @relation(fields: [transactionId], references: [id])
+
+  @@index([transactionId])
+  @@index([action])
+  @@index([createdAt])
+} 

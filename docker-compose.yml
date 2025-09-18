@@ -1,0 +1,166 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-opside_fba}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-opside_fba}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  cost-docs-api:
+    build: ./FBA Refund Predictor/cost-documentation-module
+    env_file:
+      - ./.env
+    environment:
+      - PORT=${COST_DOC_PORT}
+      - DATABASE_URL=${COST_DOC_DATABASE_URL}
+      - JWT_SECRET=${COST_DOC_JWT_SECRET}
+      - REDIS_URL=${COST_DOC_REDIS_URL}
+      - MCDE_API_BASE_URL=http://mcde:8000
+    ports:
+      - "${COST_DOC_PORT}:${COST_DOC_PORT}"
+    depends_on:
+      - postgres
+      - redis
+
+  mcde:
+    build: ./FBA Refund Predictor/mcde
+    env_file:
+      - ./.env
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      - REDIS_URL=${REDIS_URL}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+
+  refund-engine:
+    build: ./FBA Refund Predictor/refund-engine
+    env_file:
+      - ./.env
+    environment:
+      - PORT=${REFUND_ENGINE_PORT}
+      - JWT_SECRET=${REFUND_ENGINE_JWT_SECRET}
+      - ALLOWED_ORIGINS=${REFUND_ENGINE_ALLOWED_ORIGINS}
+      - RATE_LIMIT_WINDOW_MS=${REFUND_ENGINE_RATE_LIMIT_WINDOW_MS}
+      - RATE_LIMIT_MAX_REQUESTS=${REFUND_ENGINE_RATE_LIMIT_MAX_REQUESTS}
+      - ML_API_BASE_URL=${REFUND_ENGINE_ML_API_BASE_URL}
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      - REDIS_URL=${REDIS_URL}
+    ports:
+      - "${REFUND_ENGINE_PORT}:${REFUND_ENGINE_PORT}"
+    depends_on:
+      - postgres
+      - redis
+
+  integrations-backend:
+    build: ./Integrations-backend
+    env_file:
+      - ./.env
+    environment:
+      - PORT=${INTEGRATIONS_PORT}
+      - SUPABASE_URL=${INTEGRATIONS_SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${INTEGRATIONS_SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${INTEGRATIONS_SUPABASE_SERVICE_ROLE_KEY}
+      - JWT_SECRET=${INTEGRATIONS_JWT_SECRET}
+      - RATE_LIMIT_WINDOW_MS=${INTEGRATIONS_RATE_LIMIT_WINDOW_MS}
+      - RATE_LIMIT_MAX_REQUESTS=${INTEGRATIONS_RATE_LIMIT_MAX_REQUESTS}
+      - REDIS_URL=${INTEGRATIONS_REDIS_URL}
+    ports:
+      - "${INTEGRATIONS_PORT}:${INTEGRATIONS_PORT}"
+    depends_on:
+      - redis
+      - postgres
+
+  stripe-payments:
+    build: ./stripe-payments
+    env_file:
+      - ./.env
+    environment:
+      - PORT=${PAYMENTS_PORT}
+      - DATABASE_URL=${PAYMENTS_DATABASE_URL}
+      - REDIS_URL=${PAYMENTS_REDIS_URL}
+      - STRIPE_SECRET_KEY=${PAYMENTS_STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${PAYMENTS_STRIPE_WEBHOOK_SECRET}
+      - STRIPE_CLIENT_ID=${PAYMENTS_STRIPE_CLIENT_ID}
+      - STRIPE_PLATFORM_ACCOUNT_ID=${PAYMENTS_STRIPE_PLATFORM_ACCOUNT_ID}
+      - STRIPE_API_VERSION=${PAYMENTS_STRIPE_API_VERSION}
+      - STRIPE_PRICE_ID=${PAYMENTS_STRIPE_PRICE_ID}
+      - STRIPE_LIVE_MODE=${PAYMENTS_STRIPE_LIVE_MODE}
+      - JWT_SECRET=${PAYMENTS_JWT_SECRET}
+    ports:
+      - "${PAYMENTS_PORT}:${PAYMENTS_PORT}"
+    depends_on:
+      - postgres
+      - redis
+
+  main-api:
+    build: .
+    env_file:
+      - ./.env
+    environment:
+      - DB_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-password}@postgres:5432/${DB_NAME:-opside_fba}
+      - DB_TYPE=postgresql
+      - ENV=${ENV:-production}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      - AMAZON_CLIENT_ID=${AMAZON_CLIENT_ID}
+      - AMAZON_CLIENT_SECRET=${AMAZON_CLIENT_SECRET}
+      - AMAZON_REDIRECT_URI=${AMAZON_REDIRECT_URI}
+      - JWT_SECRET=${JWT_SECRET}
+      - CRYPTO_SECRET=${CRYPTO_SECRET}
+      - INTEGRATIONS_URL=http://integrations-backend:${INTEGRATIONS_PORT:-3001}
+      - STRIPE_SERVICE_URL=http://stripe-payments:${PAYMENTS_PORT:-4000}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      integrations-backend:
+        condition: service_started
+      stripe-payments:
+        condition: service_started
+    volumes:
+      - ./src:/app/src
+      - ./models:/app/models
+    command: ["python", "-m", "uvicorn", "src.app:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./FBA Refund Predictor/nginx/nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - main-api
+      - refund-engine
+      - cost-docs-api
+      - mcde
+      - stripe-payments
+      - integrations-backend
+
+volumes:
+  postgres_data:
+
+
+

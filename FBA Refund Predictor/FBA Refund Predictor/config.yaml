@@ -1,0 +1,19 @@
+# Central configuration for FBA Refund Success Predictor
+
+data:
+  raw_data_path: data/raw/data.csv
+  processed_data_path: data/processed/processed.csv
+
+model:
+  model_path: models/refund_success_model.pkl
+  random_state: 42
+  test_size: 0.2
+
+api:
+  host: 0.0.0.0
+  port: 8000
+  log_level: info
+
+logging:
+  log_file: logs/app.log
+  log_level: INFO 

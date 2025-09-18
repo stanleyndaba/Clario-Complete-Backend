@@ -1,0 +1,130 @@
+# MCDE Configuration - Manufacturing Cost Document Engine
+
+# Application settings
+app:
+  name: "MCDE"
+  version: "1.0.0"
+  environment: "production"
+  debug: false
+
+# API settings
+api:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  timeout: 300
+  max_upload_size: "50MB"
+
+# Document processing
+document:
+  supported_formats: ["pdf", "jpg", "jpeg", "png", "tiff"]
+  max_file_size: 52428800  # 50MB
+  ocr_confidence_threshold: 0.8
+  image_preprocessing:
+    resize_width: 1920
+    resize_height: 1080
+    dpi: 300
+
+# OCR settings
+ocr:
+  engine: "tesseract"
+  language: "eng"
+  config: "--oem 3 --psm 6"
+  timeout: 60
+
+# ML model settings
+models:
+  cost_estimator:
+    model_path: "models/cost_model.pkl"
+    version: "1.0.0"
+    features: ["material_cost", "labor_cost", "overhead_cost", "quantity"]
+  
+  validation_model:
+    model_path: "models/validation_model.pkl"
+    version: "1.0.0"
+    confidence_threshold: 0.85
+
+# Database settings
+database:
+  url: "${MCDE_DATABASE_URL}"
+  pool_size: 10
+  max_overflow: 20
+  echo: false
+
+# Redis settings
+redis:
+  url: "${REDIS_URL}"
+  db: 0
+  password: null
+
+# Storage settings
+storage:
+  type: "s3"  # or "local"
+  bucket: "mcde-documents"
+  region: "us-east-1"
+  local_path: "data/processed"
+
+# Refund Engine integration
+refund_engine:
+  base_url: "http://refund-engine:8000"
+  timeout: 30
+  retry_attempts: 3
+  api_key: "${REFUND_ENGINE_API_KEY}"
+
+# Amazon API integration
+amazon_api:
+  base_url: "https://sellingpartnerapi-na.amazon.com"
+  region: "us-east-1"
+  marketplace_id: "ATVPDKIKX0DER"
+  credentials:
+    access_key: "${AWS_ACCESS_KEY_ID}"
+    secret_key: "${AWS_SECRET_ACCESS_KEY}"
+    role_arn: "${AWS_ROLE_ARN}"
+
+# Compliance settings
+compliance:
+  amazon_requirements:
+    - "document_authenticity"
+    - "cost_validation"
+    - "manufacturing_verification"
+  validation_rules:
+    min_cost_threshold: 0.01
+    max_cost_threshold: 10000.00
+    required_fields: ["invoice_number", "date", "supplier", "total_amount"]
+
+# Logging settings
+logging:
+  level: "INFO"
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
+  file: "logs/mcde.log"
+  max_size: "100MB"
+  retention: "30 days"
+
+# Monitoring settings
+monitoring:
+  metrics_port: 9090
+  health_check_interval: 30
+  performance_thresholds:
+    document_processing_time: 60  # seconds
+    ocr_accuracy: 0.85
+    cost_prediction_accuracy: 0.90
+
+# Security settings
+security:
+  encryption_key: "${ENCRYPTION_KEY}"
+  jwt_secret: "${JWT_SECRET}"
+  cors_origins: "${MCDE_CORS_ORIGINS}"
+  rate_limit: 100  # requests per minute
+
+# Feature store (shared with Refund Engine)
+feature_store:
+  type: "redis"
+  prefix: "mcde_features"
+  ttl: 86400  # 24 hours
+
+# Audit trail settings
+audit:
+  enabled: true
+  log_level: "INFO"
+  retention_days: 90
+  sensitive_fields: ["credit_card", "ssn", "bank_account"] 

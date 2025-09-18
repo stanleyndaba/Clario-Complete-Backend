@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  # Stripe Payments Microservice
+  stripe-payments:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=development
+      - PORT=4000
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/opside
+      - REDIS_URL=redis://redis:6379
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - STRIPE_CLIENT_ID=${STRIPE_CLIENT_ID}
+      - STRIPE_PLATFORM_ACCOUNT_ID=${STRIPE_PLATFORM_ACCOUNT_ID}
+      - JWT_SECRET=${JWT_SECRET}
+      - LOG_LEVEL=info
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      # Mount shared code if it exists
+      - ../shared:/app/shared:ro
+      # Mount logs directory
+      - ./logs:/app/logs
+    networks:
+      - opside-network
+    restart: unless-stopped
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=opside
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Mount shared database if it exists
+      - ../shared/db:/docker-entrypoint-initdb.d:ro
+    networks:
+      - opside-network
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - opside-network
+    restart: unless-stopped
+
+  # Stripe CLI for webhook forwarding (development only)
+  stripe-cli:
+    image: stripe/stripe-cli:latest
+    environment:
+      - STRIPE_API_KEY=${STRIPE_SECRET_KEY}
+    command: listen --forward-to stripe-payments:4000/webhooks/stripe
+    depends_on:
+      - stripe-payments
+    networks:
+      - opside-network
+    profiles:
+      - dev
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  opside-network:
+    driver: bridge 

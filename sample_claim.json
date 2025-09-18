@@ -1,0 +1,32 @@
+{
+  "claim_id": "CLM-000123",
+  "claim_type": "lost_inventory",
+  "confidence": 0.88,
+  "amount_estimate": 142.50,
+  "quantity_affected": 5,
+  "features": {
+    "age_days": 47,
+    "units": 5,
+    "warehouse_shortage_score": 0.83
+  },
+  "text_excerpt": "Transfer to FC JFK8 shows -5 adjustment without reimbursement",
+  "metadata": {
+    "marketplace_id": "ATVPDKIKX0DER",
+    "seller_id": "A1ABCDEF12345",
+    "order_id": null,
+    "sku": "WTR-BTL-32OZ",
+    "fnsku": "X001ABCDEF",
+    "asin": "B08XYZ1234",
+    "shipment_id": "FBA15ABCD",
+    "fulfillment_center": "JFK8",
+    "detected_at": "2025-01-03T10:00:00Z"
+  }
+}
+
+
+
+
+
+
+
+

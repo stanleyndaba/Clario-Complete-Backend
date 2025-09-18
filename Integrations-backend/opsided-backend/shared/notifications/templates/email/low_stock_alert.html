@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Low Stock Alert - {{productName}}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            background-color: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .alert {
+            background-color: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .product-info {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .button {
+            display: inline-block;
+            background-color: #007bff;
+            color: white;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 4px;
+            margin-top: 15px;
+        }
+        .footer {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            font-size: 12px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚨 Low Stock Alert</h1>
+        <p>Hello {{userName}},</p>
+        <p>We've detected that one of your products is running low on stock.</p>
+    </div>
+
+    <div class="alert">
+        <h2>⚠️ Action Required</h2>
+        <p>Your product <strong>{{productName}}</strong> (SKU: {{sku}}) is running low on stock.</p>
+    </div>
+
+    <div class="product-info">
+        <h3>Product Details</h3>
+        <ul>
+            <li><strong>Product Name:</strong> {{productName}}</li>
+            <li><strong>SKU:</strong> {{sku}}</li>
+            <li><strong>Current Stock:</strong> {{currentStock}} units</li>
+            <li><strong>Minimum Stock Level:</strong> {{minimumStock}} units</li>
+            <li><strong>Last Updated:</strong> {{lastUpdated}}</li>
+        </ul>
+    </div>
+
+    <div>
+        <p>To avoid stockouts and maintain your sales momentum, please:</p>
+        <ol>
+            <li>Check your current inventory levels</li>
+            <li>Place a restock order if needed</li>
+            <li>Update your minimum stock thresholds if necessary</li>
+        </ol>
+    </div>
+
+    <a href="{{dashboardUrl}}" class="button">View Dashboard</a>
+
+    <div class="footer">
+        <p>This is an automated notification from Opside Integrations Hub.</p>
+        <p>If you have any questions, please contact our support team.</p>
+        <p>You can manage your notification preferences in your <a href="{{preferencesUrl}}">account settings</a>.</p>
+    </div>
+</body>
+</html> 

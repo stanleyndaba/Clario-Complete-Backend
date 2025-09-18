@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: opsided-postgres
+    environment:
+      POSTGRES_DB: opsided_db
+      POSTGRES_USER: opsided_user
+      POSTGRES_PASSWORD: opsided_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - opsided-network
+
+  integration-backend:
+    build:
+      context: ./integration-backend
+      dockerfile: Dockerfile
+    container_name: opsided-integration-backend
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=opsided_db
+      - DB_USER=opsided_user
+      - DB_PASSWORD=opsided_password
+    volumes:
+      - ./shared:/app/shared
+      - ./integration-backend:/app
+      - /app/node_modules
+    depends_on:
+      - postgres
+    networks:
+      - opsided-network
+    command: npm run dev
+
+  smart-inventory-sync:
+    build:
+      context: ./smart-inventory-sync
+      dockerfile: Dockerfile
+    container_name: opsided-smart-inventory-sync
+    ports:
+      - "3002:3002"
+    environment:
+      - NODE_ENV=development
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=opsided_db
+      - DB_USER=opsided_user
+      - DB_PASSWORD=opsided_password
+    volumes:
+      - ./shared:/app/shared
+      - ./smart-inventory-sync:/app
+      - /app/node_modules
+    depends_on:
+      - postgres
+    networks:
+      - opsided-network
+    command: npm run dev
+
+volumes:
+  postgres_data:
+
+networks:
+  opsided-network:
+    driver: bridge 

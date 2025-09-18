@@ -1,0 +1,211 @@
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import { createServer } from 'http';
+import config from './config/env';
+import logger from './utils/logger';
+import { errorHandler, notFoundHandler } from './utils/errorHandler';
+import websocketService from './services/websocketService';
+
+// Import routes
+import amazonRoutes from './routes/amazonRoutes';
+import gmailRoutes from './routes/gmailRoutes';
+import stripeRoutes from './routes/stripeRoutes';
+import syncRoutes from './routes/syncRoutes';
+import integrationRoutes from './routes/integrationRoutes';
+import sseRoutes from './routes/sseRoutes';
+import enhancedDetectionRoutes from './routes/enhancedDetectionRoutes';
+import enhancedSyncRoutes from './routes/enhancedSyncRoutes';
+import authRoutes from './routes/authRoutes';
+import syncAliasRoutes from './routes/syncAliasRoutes';
+import detectionRoutes from './routes/detectionRoutes';
+import disputeRoutes from './routes/disputeRoutes';
+import autoclaimRoutes from './routes/autoclaimRoutes';
+import internalEventsRoutes from './routes/internalEventsRoutes';
+import stripeWebhookRoutes from './routes/stripeWebhookRoutes';
+import { disputeSubmissionWorker } from './jobs/disputeSubmissionWorker';
+
+// Import background jobs
+import amazonSyncJob from './jobs/amazonSyncJob';
+import stripeSyncJob from './jobs/stripeSyncJob';
+import OrchestrationJobManager from './jobs/orchestrationJob';
+import detectionService from './services/detectionService';
+import enhancedDetectionService from './services/enhancedDetectionService';
+
+const app = express();
+const server = createServer(app);
+
+// Security middleware
+app.use(helmet());
+
+// CORS configuration
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  credentials: true
+}));
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: config.RATE_LIMIT_WINDOW_MS,
+  max: config.RATE_LIMIT_MAX_REQUESTS,
+  message: {
+    success: false,
+    message: 'Too many requests from this IP, please try again later.'
+  }
+});
+app.use(limiter);
+
+// Logging middleware
+app.use(morgan('combined', {
+  stream: {
+    write: (message: string) => {
+      logger.info(message.trim());
+    }
+  }
+}));
+
+// Body parsing middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Integrations Backend is running',
+    timestamp: new Date().toISOString(),
+    environment: config.NODE_ENV
+  });
+});
+
+// API routes
+app.use('/api/amazon', amazonRoutes);
+app.use('/api/gmail', gmailRoutes);
+app.use('/api/stripe', stripeRoutes);
+app.use('/api/sync', syncRoutes);
+app.use('/api/v1/integrations', integrationRoutes);
+app.use('/api/sse', sseRoutes);
+app.use('/api/enhanced-detection', enhancedDetectionRoutes);
+app.use('/api/enhanced-sync', enhancedSyncRoutes);
+// v1 unified routes exposed under gateway base path
+app.use('/api/v1/integrations/auth', authRoutes);
+app.use('/api/v1/integrations/sync', syncAliasRoutes);
+app.use('/api/v1/integrations/detections', detectionRoutes);
+app.use('/api/v1/integrations/disputes', disputeRoutes);
+app.use('/api/v1/integrations/autoclaim', autoclaimRoutes);
+app.use('/api/internal/events', internalEventsRoutes);
+app.use('/api/v1/integrations/stripe', stripeWebhookRoutes);
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Opside Integrations Hub Backend',
+    version: '1.0.0',
+    endpoints: {
+      health: '/health',
+      amazon: '/api/amazon',
+      gmail: '/api/gmail',
+      stripe: '/api/stripe',
+      sync: '/api/sync',
+      enhancedDetection: '/api/enhanced-detection',
+      enhancedSync: '/api/enhanced-sync'
+    }
+  });
+});
+
+// 404 handler
+app.use(notFoundHandler);
+
+// Error handling middleware (must be last)
+app.use(errorHandler);
+
+// Start background jobs
+const startBackgroundJobs = () => {
+  try {
+    amazonSyncJob.startScheduledSync();
+    stripeSyncJob.startScheduledSync();
+    OrchestrationJobManager.initialize();
+    
+    // Start legacy detection job processor
+    setInterval(async () => {
+      try {
+        await detectionService.processDetectionJobs();
+      } catch (error) {
+        logger.error('Error processing legacy detection jobs', { error });
+      }
+    }, 5000); // Process every 5 seconds
+    
+    // Start enhanced detection job processor
+    setInterval(async () => {
+      try {
+        await enhancedDetectionService.processDetectionJobs();
+      } catch (error) {
+        logger.error('Error processing enhanced detection jobs', { error });
+      }
+    }, 5000); // Process every 5 seconds
+    
+    logger.info('Background jobs started successfully');
+  } catch (error) {
+    logger.error('Error starting background jobs', { error });
+  }
+};
+
+// Start server
+const startServer = () => {
+  const port = config.PORT;
+  
+  // Initialize WebSocket service
+  websocketService.initialize(server);
+  
+  server.listen(port, () => {
+    logger.info(`Server started on port ${port}`, {
+      port,
+      environment: config.NODE_ENV,
+      timestamp: new Date().toISOString()
+    });
+    
+    // Start background jobs after server is running
+    startBackgroundJobs();
+    disputeSubmissionWorker.start();
+  });
+};
+
+// Graceful shutdown
+const gracefulShutdown = (signal: string) => {
+  logger.info(`Received ${signal}, shutting down gracefully`);
+  
+  // Stop background jobs
+  try {
+    amazonSyncJob.stopScheduledSync();
+    stripeSyncJob.stopScheduledSync();
+    OrchestrationJobManager.cleanup();
+    logger.info('Background jobs stopped');
+  } catch (error) {
+    logger.error('Error stopping background jobs', { error });
+  }
+  
+  process.exit(0);
+};
+
+// Handle shutdown signals
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception', { error });
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection', { reason, promise });
+  process.exit(1);
+});
+
+// Start the server
+startServer();
+
+export default app; 

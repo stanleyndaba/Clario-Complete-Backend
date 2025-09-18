@@ -1,0 +1,18 @@
+# Track large binary files with Git LFS
+*.dll.node filter=lfs diff=lfs merge=lfs -text
+*.exe filter=lfs diff=lfs merge=lfs -text
+libquery-engine filter=lfs diff=lfs merge=lfs -text
+schema-engine filter=lfs diff=lfs merge=lfs -text
+query_engine-* filter=lfs diff=lfs merge=lfs -text
+schema-engine-* filter=lfs diff=lfs merge=lfs -text
+aws-sdk-react-native.js filter=lfs diff=lfs merge=lfs -text
+
+# Track machine learning models
+*.joblib filter=lfs diff=lfs merge=lfs -text
+*.pkl filter=lfs diff=lfs merge=lfs -text
+*.h5 filter=lfs diff=lfs merge=lfs -text
+*.hdf5 filter=lfs diff=lfs merge=lfs -text
+
+# Track large data files
+*.csv filter=lfs diff=lfs merge=lfs -text
+claims.db filter=lfs diff=lfs merge=lfs -text

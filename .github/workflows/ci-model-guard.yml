@@ -1,0 +1,24 @@
+name: CI - Model Guard
+
+on:
+  pull_request:
+    branches: [ main, master ]
+  push:
+    branches: [ main, master ]
+
+jobs:
+  model-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify single production model artifact
+        run: |
+          set -e
+          COUNT=$(find models/production/current -type f ! -name '.gitkeep' | wc -l)
+          echo "Found $COUNT production artifacts"
+          if [ "$COUNT" -ne 1 ]; then
+            echo "Expected exactly 1 artifact in models/production/current, found $COUNT"
+            exit 1
+          fi
+
+

@@ -1,0 +1,142 @@
+name: Deploy to Fly.io
+
+on:
+  push:
+    branches: [ main, production ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        # Install main-api dependencies
+        pip install -r requirements.txt
+        
+        # Install integrations-backend dependencies
+        cd Integrations-backend
+        npm ci
+        
+        # Install stripe-payments dependencies
+        cd ../stripe-payments
+        npm ci
+        
+        # Install cost-documentation-module dependencies
+        cd "../FBA Refund Predictor/cost-documentation-module"
+        npm ci
+        
+        # Install refund-engine dependencies
+        cd ../refund-engine
+        npm ci
+    
+    - name: Run tests
+      run: |
+        # Run main-api tests
+        python -m pytest tests/ -v
+        
+        # Run integrations-backend tests
+        cd Integrations-backend
+        npm test
+        
+        # Run stripe-payments tests
+        cd ../stripe-payments
+        npm test
+        
+        # Run cost-documentation-module tests
+        cd "../FBA Refund Predictor/cost-documentation-module"
+        npm test
+        
+        # Run refund-engine tests
+        cd ../refund-engine
+        npm test
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Fly.io CLI
+      uses: superfly/flyctl-actions/setup-flyctl@master
+    
+    - name: Deploy main-api
+      run: fly deploy -a opside-main-api -c fly-main-api.toml
+      env:
+        FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    
+    - name: Deploy integrations-backend
+      run: |
+        cd Integrations-backend
+        fly deploy -a opside-integrations-backend
+      env:
+        FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    
+    - name: Deploy stripe-payments
+      run: |
+        cd stripe-payments
+        fly deploy -a opside-stripe-payments
+      env:
+        FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    
+    - name: Deploy cost-documentation-module
+      run: |
+        cd "FBA Refund Predictor/cost-documentation-module"
+        fly deploy -a opside-cost-docs
+      env:
+        FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    
+    - name: Deploy refund-engine
+      run: |
+        cd "FBA Refund Predictor/refund-engine"
+        fly deploy -a opside-refund-engine
+      env:
+        FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    
+    - name: Deploy mcde
+      run: |
+        cd "FBA Refund Predictor/mcde"
+        fly deploy -a opside-mcde
+      env:
+        FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    
+    - name: Health Check
+      run: |
+        # Wait for services to start
+        sleep 60
+        
+        # Check main-api
+        curl -f https://opside-main-api.fly.dev/health || exit 1
+        
+        # Check integrations-backend
+        curl -f https://opside-integrations-backend.fly.dev/health || exit 1
+        
+        # Check stripe-payments
+        curl -f https://opside-stripe-payments.fly.dev/health || exit 1
+        
+        # Check cost-docs
+        curl -f https://opside-cost-docs.fly.dev/health || exit 1
+        
+        # Check refund-engine
+        curl -f https://opside-refund-engine.fly.dev/health || exit 1
+        
+        # Check mcde
+        curl -f https://opside-mcde.fly.dev/health || exit 1
+

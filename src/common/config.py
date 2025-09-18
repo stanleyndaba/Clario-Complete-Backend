@@ -1,0 +1,87 @@
+import os
+from pydantic import BaseModel
+from urllib.parse import urlparse
+from dotenv import load_dotenv
+
+# Load .env file
+load_dotenv()
+
+class Settings(BaseModel):
+    # Database configuration
+    DB_URL: str = os.getenv("DB_URL", "postgresql://postgres:password@localhost:5432/opside_fba")
+    DB_TYPE: str = os.getenv("DB_TYPE", "postgresql")  # postgresql or sqlite
+    AUTO_FILE_THRESHOLD: float = float(os.getenv("AUTO_FILE_THRESHOLD", "0.75"))
+    ENV: str = os.getenv("ENV", "dev")
+    
+    # Frontend configuration
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    
+    # Amazon OAuth configuration
+    AMAZON_CLIENT_ID: str = os.getenv("AMAZON_CLIENT_ID", "")
+    AMAZON_CLIENT_SECRET: str = os.getenv("AMAZON_CLIENT_SECRET", "")
+    AMAZON_REDIRECT_URI: str = os.getenv("AMAZON_REDIRECT_URI", "http://localhost:8000/api/auth/amazon/callback")
+    
+    # Evidence Sources OAuth configuration
+    GMAIL_CLIENT_ID: str = os.getenv("GMAIL_CLIENT_ID", "")
+    GMAIL_CLIENT_SECRET: str = os.getenv("GMAIL_CLIENT_SECRET", "")
+    GMAIL_REDIRECT_URI: str = os.getenv("GMAIL_REDIRECT_URI", "http://localhost:8000/api/auth/callback/gmail")
+    
+    OUTLOOK_CLIENT_ID: str = os.getenv("OUTLOOK_CLIENT_ID", "")
+    OUTLOOK_CLIENT_SECRET: str = os.getenv("OUTLOOK_CLIENT_SECRET", "")
+    OUTLOOK_REDIRECT_URI: str = os.getenv("OUTLOOK_REDIRECT_URI", "http://localhost:8000/api/auth/callback/outlook")
+    
+    GDRIVE_CLIENT_ID: str = os.getenv("GDRIVE_CLIENT_ID", "")
+    GDRIVE_CLIENT_SECRET: str = os.getenv("GDRIVE_CLIENT_SECRET", "")
+    GDRIVE_REDIRECT_URI: str = os.getenv("GDRIVE_REDIRECT_URI", "http://localhost:8000/api/auth/callback/gdrive")
+    
+    DROPBOX_CLIENT_ID: str = os.getenv("DROPBOX_CLIENT_ID", "")
+    DROPBOX_CLIENT_SECRET: str = os.getenv("DROPBOX_CLIENT_SECRET", "")
+    DROPBOX_REDIRECT_URI: str = os.getenv("DROPBOX_REDIRECT_URI", "http://localhost:8000/api/auth/callback/dropbox")
+    
+    # Evidence Matching Engine settings
+    EVIDENCE_CONFIDENCE_AUTO: float = float(os.getenv("EVIDENCE_CONFIDENCE_AUTO", "0.85"))
+    EVIDENCE_CONFIDENCE_PROMPT: float = float(os.getenv("EVIDENCE_CONFIDENCE_PROMPT", "0.5"))
+    FEATURE_FLAG_EV_AUTO_SUBMIT: bool = os.getenv("FEATURE_FLAG_EV_AUTO_SUBMIT", "True").lower() == "true"
+    FEATURE_FLAG_EV_SMART_PROMPTS: bool = os.getenv("FEATURE_FLAG_EV_SMART_PROMPTS", "True").lower() == "true"
+    
+    # Security configuration
+    JWT_SECRET: str = os.getenv("JWT_SECRET", "your-secret-key-change-in-production")
+    JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
+    JWT_EXPIRES_IN_MINUTES: int = int(os.getenv("JWT_EXPIRES_IN_MINUTES", "10080"))  # 7 days
+    CRYPTO_SECRET: str = os.getenv("CRYPTO_SECRET", "insecure-dev-key-change")
+    
+    # Service URLs
+    INTEGRATIONS_URL: str = os.getenv("INTEGRATIONS_URL", "http://localhost:3001")
+    INTEGRATIONS_API_KEY: str = os.getenv("INTEGRATIONS_API_KEY", "")
+    STRIPE_SERVICE_URL: str = os.getenv("STRIPE_SERVICE_URL", "http://localhost:4000")
+    STRIPE_INTERNAL_API_KEY: str = os.getenv("STRIPE_INTERNAL_API_KEY", "")
+    COST_DOC_SERVICE_URL: str = os.getenv("COST_DOC_SERVICE_URL", "http://localhost:3003")
+    REFUND_ENGINE_URL: str = os.getenv("REFUND_ENGINE_URL", "http://localhost:3002")
+    MCDE_URL: str = os.getenv("MCDE_URL", "http://localhost:8000")
+    
+    @property
+    def is_postgresql(self) -> bool:
+        """Check if using PostgreSQL database"""
+        return self.DB_TYPE.lower() == "postgresql" or self.DB_URL.startswith("postgresql://")
+    
+    @property
+    def is_sqlite(self) -> bool:
+        """Check if using SQLite database"""
+        return self.DB_TYPE.lower() == "sqlite" or self.DB_URL.endswith(".db")
+    
+    def get_database_config(self) -> dict:
+        """Get database configuration based on type"""
+        if self.is_postgresql:
+            parsed = urlparse(self.DB_URL)
+            return {
+                "host": parsed.hostname or "localhost",
+                "port": parsed.port or 5432,
+                "database": parsed.path.lstrip("/") or "opside_fba",
+                "user": parsed.username or "postgres",
+                "password": parsed.password or "password"
+            }
+        else:
+            return {"database": self.DB_URL}
+
+settings = Settings()
+
