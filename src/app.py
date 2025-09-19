@@ -37,19 +37,19 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Opside FBA Claims Pipeline Orchestrator...")
     
-        # Start service health monitoring
-        health_task = asyncio.create_task(service_directory.start_health_monitoring())
+    # Start service health monitoring
+    health_task = asyncio.create_task(service_directory.start_health_monitoring())
 
-        # Start analytics integration
-        await analytics_integration.start()
+    # Start analytics integration
+    await analytics_integration.start()
 
-        # Start feature integration
-        await feature_integration.start()
+    # Start feature integration
+    await feature_integration.start()
 
-        # Initial health check
-        await service_directory.check_all_services()
+    # Initial health check
+    await service_directory.check_all_services()
 
-        logger.info("Orchestrator started successfully")
+    logger.info("Orchestrator started successfully")
     
     yield
     
