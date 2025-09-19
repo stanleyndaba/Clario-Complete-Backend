@@ -18,7 +18,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY src/ ./src/
-COPY models/ ./models/
+
+# Create models directory (models will be downloaded/trained at runtime)
+RUN mkdir -p ./models
 
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash app && chown -R app:app /app
