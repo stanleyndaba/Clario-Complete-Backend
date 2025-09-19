@@ -71,20 +71,20 @@ A comprehensive backend system for Amazon FBA refund prediction, evidence collec
    ```
 
 3. **Install Python dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+pip install -r requirements.txt
+```
 
 4. **Install Node.js dependencies**
-   ```bash
+```bash
    cd Integrations-backend
    npm install
    cd ../stripe-payments
    npm install
-   ```
+```
 
 5. **Run database migrations**
-   ```bash
+```bash
    python scripts/migrate_to_postgresql.py
    ```
 
