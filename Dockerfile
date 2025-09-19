@@ -10,11 +10,14 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Create non-root user first
+RUN useradd --create-home --shell /bin/bash app
+
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies as non-root user
+RUN pip install --no-cache-dir --user -r requirements.txt
 
 # Copy application code
 COPY src/ ./src/
@@ -22,8 +25,8 @@ COPY src/ ./src/
 # Create models directory (models will be downloaded/trained at runtime)
 RUN mkdir -p ./models
 
-# Create non-root user
-RUN useradd --create-home --shell /bin/bash app && chown -R app:app /app
+# Change ownership to app user
+RUN chown -R app:app /app
 USER app
 
 # Expose port
