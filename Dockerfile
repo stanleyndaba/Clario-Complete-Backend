@@ -16,8 +16,8 @@ RUN useradd --create-home --shell /bin/bash app
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies as non-root user
-RUN pip install --no-cache-dir --user -r requirements.txt
+# Install Python dependencies globally (before switching to non-root user)
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY src/ ./src/
