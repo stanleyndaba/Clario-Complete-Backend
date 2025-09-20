@@ -68,7 +68,7 @@ class ProofPacketWorker:
     def __init__(self):
         self.db = DatabaseManager()
         self.s3_manager = S3Manager()
-        self.bucket_name = settings.S3_BUCKET_NAME
+        self.bucket_name = settings.S3_BUCKET_NAME or ""
         self.proof_packets_prefix = "proof-packets"
         
     async def generate_proof_packet(

@@ -55,6 +55,10 @@ class Settings(BaseModel):
     CRYPTO_SECRET: str = os.getenv("CRYPTO_SECRET", "insecure-dev-key-change")
     # SQLite fallback path (writable in containers)
     SQLITE_DB_PATH: str = os.getenv("SQLITE_DB_PATH", "/tmp/opside.db")
+    # Optional S3 configuration
+    S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "")
+    S3_REGION: str = os.getenv("S3_REGION", "")
+    S3_ENDPOINT_URL: str = os.getenv("S3_ENDPOINT_URL", "")
     
     # Service URLs
     INTEGRATIONS_URL: str = os.getenv("INTEGRATIONS_URL", "http://localhost:3001")
