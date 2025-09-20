@@ -9,6 +9,7 @@ import json
 import logging
 from src.api.auth_middleware import get_optional_user
 from src.services.service_directory import service_directory
+from src.common.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,14 @@ async def websocket_status(websocket: WebSocket):
     - Detection results
     - Recovery status updates
     """
+    # Enforce Origin allowlist for WebSocket handshake
+    origin = websocket.headers.get("origin")
+    allowed_origins = set(settings.get_allowed_origins())
+    if origin and allowed_origins and origin not in allowed_origins:
+        # Reject connection from disallowed origins
+        await websocket.close(code=1008)
+        return
+
     await manager.connect(websocket)
     
     try:
@@ -119,6 +128,13 @@ async def websocket_user_status(websocket: WebSocket, user_id: str):
     - Document processing status
     - Billing notifications
     """
+    # Enforce Origin allowlist for WebSocket handshake
+    origin = websocket.headers.get("origin")
+    allowed_origins = set(settings.get_allowed_origins())
+    if origin and allowed_origins and origin not in allowed_origins:
+        await websocket.close(code=1008)
+        return
+
     await manager.connect(websocket)
     
     try:

@@ -15,6 +15,8 @@ class Settings(BaseModel):
     
     # Frontend configuration
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    # Comma-separated list of allowed origins for CORS and WebSockets
+    ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", "")
     
     # Amazon OAuth configuration
     AMAZON_CLIENT_ID: str = os.getenv("AMAZON_CLIENT_ID", "")
@@ -82,6 +84,23 @@ class Settings(BaseModel):
             }
         else:
             return {"database": self.DB_URL}
+
+    def get_allowed_origins(self) -> list:
+        """Build the list of allowed origins for CORS and WebSockets."""
+        origins: list[str] = []
+        # Prefer explicit list if provided
+        if self.ALLOWED_ORIGINS:
+            origins = [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
+        elif self.FRONTEND_URL:
+            origins = [self.FRONTEND_URL]
+
+        # In non-production, also allow common local dev ports
+        if self.ENV.lower() != "production":
+            for local_origin in ["http://localhost:3000", "http://localhost:5173"]:
+                if local_origin not in origins:
+                    origins.append(local_origin)
+
+        return origins
 
 settings = Settings()
 

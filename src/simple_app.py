@@ -18,10 +18,12 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Enable CORS
+from src.common.config import settings
+
+# Enable CORS using env-configured origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for now
+    allow_origins=settings.get_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

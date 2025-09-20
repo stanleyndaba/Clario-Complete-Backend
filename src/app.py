@@ -28,6 +28,7 @@ from src.api.feature_flags import router as feature_flags_router
 from src.analytics.analytics_integration import analytics_integration
 from src.features.feature_integration import feature_integration
 from src.services.service_directory import service_directory
+from src.common.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +69,10 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for frontend integration
+# Enable CORS for frontend integration using env-configured origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "https://app.clario.ai"],
+    allow_origins=settings.get_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

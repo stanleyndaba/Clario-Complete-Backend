@@ -10,8 +10,7 @@ services:
     plan: free
     buildCommand: |
       pip install -r requirements.txt
-      python -m uvicorn src.main:app --host 0.0.0.0 --port $PORT
-    startCommand: python -m uvicorn src.main:app --host 0.0.0.0 --port $PORT
+    startCommand: python -m uvicorn src.app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: ENV
@@ -38,7 +37,9 @@ services:
       - key: STRIPE_SERVICE_URL
         value: https://opside-stripe-payments.onrender.com
       - key: FRONTEND_URL
-        value: https://your-frontend-domain.com
+        value: https://opside-complete-frontend.onrender.com
+      - key: ALLOWED_ORIGINS
+        value: https://opside-complete-frontend.onrender.com
 
   # Integrations Backend (Node.js/Express) - Amazon SP-API
   - type: web
