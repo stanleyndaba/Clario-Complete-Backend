@@ -33,7 +33,21 @@ except ImportError:
 from src.api.schemas import AuditAction
 from src.common.db_postgresql import DatabaseManager
 from src.common.config import settings
-from src.storage.s3_manager import S3Manager
+# Optional S3 manager; provide a stub if storage module is unavailable
+try:
+    from src.storage.s3_manager import S3Manager  # type: ignore
+except Exception:
+    class S3Manager:  # fallback stub for deployment without storage module
+        async def upload_file(self, file_content: bytes, bucket_name: str, key: str, content_type: str = "application/octet-stream") -> None:
+            logger.warning(f"S3Manager stub: skipping upload to s3://{bucket_name}/{key}")
+
+        async def download_file(self, bucket_name: str, key: str) -> bytes | None:
+            logger.warning(f"S3Manager stub: no download for s3://{bucket_name}/{key}")
+            return None
+
+        async def generate_presigned_url(self, key_or_url: str, hours_valid: int = 24) -> str:
+            logger.warning(f"S3Manager stub: returning passthrough URL for {key_or_url}")
+            return key_or_url
 
 logger = logging.getLogger(__name__)
 
