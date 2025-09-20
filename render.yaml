@@ -40,6 +40,8 @@ services:
         value: https://opside-complete-frontend.onrender.com
       - key: ALLOWED_ORIGINS
         value: https://opside-complete-frontend.onrender.com
+      - key: SQLITE_DB_PATH
+        value: /tmp/opside.db
 
   # Integrations Backend (Node.js/Express) - Amazon SP-API
   - type: web

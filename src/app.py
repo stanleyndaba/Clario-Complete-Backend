@@ -38,17 +38,30 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Opside FBA Claims Pipeline Orchestrator...")
     
-    # Start service health monitoring
-    health_task = asyncio.create_task(service_directory.start_health_monitoring())
+    # Start service health monitoring (guard against missing services during cold start)
+    health_task = None
+    try:
+        health_task = asyncio.create_task(service_directory.start_health_monitoring())
+    except Exception as e:
+        logger.warning(f"Health monitoring not started: {e}")
 
-    # Start analytics integration
-    await analytics_integration.start()
+    # Start analytics integration (do not crash app if it fails)
+    try:
+        await analytics_integration.start()
+    except Exception as e:
+        logger.warning(f"Analytics integration not started: {e}")
 
-    # Start feature integration
-    await feature_integration.start()
+    # Start feature integration (do not crash app if it fails)
+    try:
+        await feature_integration.start()
+    except Exception as e:
+        logger.warning(f"Feature integration not started: {e}")
 
-    # Initial health check
-    await service_directory.check_all_services()
+    # Initial health check (best-effort)
+    try:
+        await service_directory.check_all_services()
+    except Exception as e:
+        logger.warning(f"Initial service check failed: {e}")
 
     logger.info("Orchestrator started successfully")
     
@@ -56,10 +69,20 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down orchestrator...")
-    health_task.cancel()
-    await analytics_integration.stop()
-    await feature_integration.stop()
-    await service_directory.close()
+    if health_task:
+        health_task.cancel()
+    try:
+        await analytics_integration.stop()
+    except Exception:
+        pass
+    try:
+        await feature_integration.stop()
+    except Exception:
+        pass
+    try:
+        await service_directory.close()
+    except Exception:
+        pass
     logger.info("Orchestrator shutdown complete")
 
 app = FastAPI(

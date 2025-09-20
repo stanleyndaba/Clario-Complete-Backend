@@ -8,7 +8,9 @@ load_dotenv()
 
 class Settings(BaseModel):
     # Database configuration
-    DB_URL: str = os.getenv("DB_URL", "postgresql://postgres:password@localhost:5432/opside_fba")
+    # Prefer DB_URL; fall back to DATABASE_URL (Render) or a safe default
+    DB_URL: str = os.getenv("DB_URL") or os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/opside_fba")
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
     DB_TYPE: str = os.getenv("DB_TYPE", "postgresql")  # postgresql or sqlite
     AUTO_FILE_THRESHOLD: float = float(os.getenv("AUTO_FILE_THRESHOLD", "0.75"))
     ENV: str = os.getenv("ENV", "dev")
@@ -51,6 +53,8 @@ class Settings(BaseModel):
     JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
     JWT_EXPIRES_IN_MINUTES: int = int(os.getenv("JWT_EXPIRES_IN_MINUTES", "10080"))  # 7 days
     CRYPTO_SECRET: str = os.getenv("CRYPTO_SECRET", "insecure-dev-key-change")
+    # SQLite fallback path (writable in containers)
+    SQLITE_DB_PATH: str = os.getenv("SQLITE_DB_PATH", "/tmp/opside.db")
     
     # Service URLs
     INTEGRATIONS_URL: str = os.getenv("INTEGRATIONS_URL", "http://localhost:3001")
@@ -64,7 +68,11 @@ class Settings(BaseModel):
     @property
     def is_postgresql(self) -> bool:
         """Check if using PostgreSQL database"""
-        return self.DB_TYPE.lower() == "postgresql" or self.DB_URL.startswith("postgresql://")
+        if self.DB_TYPE.lower() == "postgresql":
+            return True
+        if self.DB_TYPE.lower() == "sqlite":
+            return False
+        return self.DB_URL.startswith("postgresql://") or self.DB_URL.startswith("postgres://")
     
     @property
     def is_sqlite(self) -> bool:
@@ -74,7 +82,9 @@ class Settings(BaseModel):
     def get_database_config(self) -> dict:
         """Get database configuration based on type"""
         if self.is_postgresql:
-            parsed = urlparse(self.DB_URL)
+            # Use DB_URL or DATABASE_URL
+            db_url = self.DB_URL or self.DATABASE_URL
+            parsed = urlparse(db_url)
             return {
                 "host": parsed.hostname or "localhost",
                 "port": parsed.port or 5432,
@@ -83,7 +93,7 @@ class Settings(BaseModel):
                 "password": parsed.password or "password"
             }
         else:
-            return {"database": self.DB_URL}
+            return {"database": self.SQLITE_DB_PATH}
 
     def get_allowed_origins(self) -> list:
         """Build the list of allowed origins for CORS and WebSockets."""
