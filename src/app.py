@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio
 import logging
+import os
 
 from src.cdd.router import router as detect_router
 from src.acg.router import router as filing_router
@@ -68,11 +69,27 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for frontend integration
+# Enable CORS for frontend integration (env-driven, supports multiple origins)
+from src.common.config import settings
+
+origins_raw = (
+    os.getenv("CORS_ALLOW_ORIGINS")
+    or os.getenv("FRONTEND_URLS")
+    or settings.FRONTEND_URL
+)
+
+allow_origins = (
+    [o.strip() for o in origins_raw.split(",") if o.strip()]
+    if origins_raw
+    else ["http://localhost:3000", "http://localhost:5173"]
+)
+
+use_wildcard = any(o == "*" for o in allow_origins)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "https://app.clario.ai"],
-    allow_credentials=True,
+    allow_origins=["*"] if use_wildcard else allow_origins,
+    allow_credentials=False if use_wildcard else True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -40,10 +40,15 @@ const server = createServer(app);
 // Security middleware
 app.use(helmet());
 
-// CORS configuration
+// CORS configuration (env-driven, supports comma-separated origins)
+const corsOriginsEnv = process.env.CORS_ALLOW_ORIGINS || process.env.FRONTEND_URL || '';
+const corsOrigins = corsOriginsEnv
+  ? corsOriginsEnv.split(',').map((o: string) => o.trim()).filter(Boolean)
+  : ['http://localhost:3000'];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true
+  origin: corsOrigins.includes('*') ? true : corsOrigins,
+  credentials: !corsOrigins.includes('*')
 }));
 
 // Rate limiting
