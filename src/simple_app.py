@@ -20,14 +20,12 @@ app = FastAPI(
 )
 
 # Enable CORS (explicit origin, no wildcard)
-frontend = os.getenv("FRONTEND_URL") or "https://opside-complete-frontend.onrender.com"
-regex = os.getenv("ALLOWED_ORIGIN_REGEX")
-origins = [frontend]
+origins = ["https://opside-complete-frontend.onrender.com"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=regex,
+    # No regex during verification to avoid misconfig
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
