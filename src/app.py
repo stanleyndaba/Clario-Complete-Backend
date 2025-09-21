@@ -102,13 +102,19 @@ app = FastAPI(
 )
 
 # Enable CORS for frontend integration using env-configured origins
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.get_allowed_origins(),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+cors_kwargs = {
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+}
+origins = settings.get_allowed_origins()
+origin_regex = getattr(settings, 'ALLOWED_ORIGIN_REGEX', '')
+if origin_regex:
+    cors_kwargs["allow_origin_regex"] = origin_regex
+else:
+    cors_kwargs["allow_origins"] = origins
+
+app.add_middleware(CORSMiddleware, **cors_kwargs)
 
 # Include routers
 app.include_router(detect_router)

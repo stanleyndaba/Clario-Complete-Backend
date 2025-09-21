@@ -19,6 +19,7 @@ class Settings(BaseModel):
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
     # Comma-separated list of allowed origins for CORS and WebSockets
     ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", "")
+    ALLOWED_ORIGIN_REGEX: str = os.getenv("ALLOWED_ORIGIN_REGEX", "")
     
     # Amazon OAuth configuration
     AMAZON_CLIENT_ID: str = os.getenv("AMAZON_CLIENT_ID", "")
