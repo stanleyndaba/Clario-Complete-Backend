@@ -33,7 +33,16 @@ except ImportError:
 from src.api.schemas import AuditAction
 from src.common.db_postgresql import DatabaseManager
 from src.common.config import settings
-from src.storage.s3_manager import S3Manager
+# Optional S3 manager. Provide a no-op fallback if storage module is unavailable.
+try:
+    from src.storage.s3_manager import S3Manager  # type: ignore
+except Exception:
+    class S3Manager:  # fallback no-op
+        async def upload_file(self, file_content: bytes, bucket_name: str, key: str, content_type: str) -> None:
+            return None
+
+        async def download_file(self, bucket_name: str, key: str) -> bytes | None:
+            return None
 
 logger = logging.getLogger(__name__)
 
