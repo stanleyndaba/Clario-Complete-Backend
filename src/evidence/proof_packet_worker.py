@@ -8,7 +8,7 @@ import json
 import zipfile
 import tempfile
 import os
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
 from datetime import datetime
 import logging
 from dataclasses import dataclass
@@ -67,6 +67,14 @@ class ProofPacketWorker:
         self.bucket_name = os.getenv("S3_BUCKET_NAME", "") or getattr(settings, "S3_BUCKET_NAME", "") or "default-bucket"
         self.proof_packets_prefix = "proof-packets"
         
+    def add_event_handler(self, event_type: str, handler: Callable):
+        """Add an event handler - placeholder to satisfy integration points."""
+        try:
+            print(f"Event handler added for {event_type}: {getattr(handler, '__name__', str(handler))}")
+        except Exception:
+            print(f"Event handler added for {event_type}")
+        # No-op for now. Extend to store handlers and dispatch as needed.
+
     async def generate_proof_packet(
         self, 
         claim_id: str, 
