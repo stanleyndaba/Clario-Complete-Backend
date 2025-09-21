@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 from src.common.schemas import ClaimDetection, ValidationResult, FilingResult, ClaimPacket
 from src.common.config import settings
+from contextlib import AbstractContextManager
 from cryptography.fernet import Fernet
 
 # Database connection imports
@@ -45,6 +46,32 @@ def _get_fernet() -> Fernet:
         return Fernet(Fernet.generate_key())
 
 _fernet = _get_fernet()
+
+# ---------------- SQLite compatibility wrappers (context managers) ---------------- #
+class SQLiteCursorWrapper(AbstractContextManager):
+    def __init__(self, cursor):
+        self._cursor = cursor
+    def __enter__(self):
+        return self._cursor
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            self._cursor.close()
+        except Exception:
+            pass
+        return False
+
+class SQLiteConnectionWrapper(AbstractContextManager):
+    def __init__(self, conn):
+        self._conn = conn
+    def cursor(self):
+        return SQLiteCursorWrapper(self._conn.cursor())
+    def __getattr__(self, item):
+        return getattr(self._conn, item)
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        return self._conn.__exit__(exc_type, exc, tb)
 
 class DatabaseManager:
     def __init__(self, db_url: str = None, eager_init: bool = False):
@@ -186,7 +213,7 @@ class DatabaseManager:
         import os
         db_path = self.db_url if self.db_url.endswith('.db') else settings.SQLITE_DB_PATH
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        return sqlite3.connect(db_path)
+        return SQLiteConnectionWrapper(sqlite3.connect(db_path))
     
     def _return_connection(self, conn):
         """Return connection to pool (PostgreSQL only)"""
