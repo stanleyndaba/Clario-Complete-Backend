@@ -71,6 +71,12 @@ class Settings(BaseModel):
     S3_ACCESS_KEY: str = os.getenv("S3_ACCESS_KEY", "")
     S3_SECRET_KEY: str = os.getenv("S3_SECRET_KEY", "")
     S3_REGION: str = os.getenv("S3_REGION", "us-east-1")
+
+    # Amazon SP-API configuration
+    AMAZON_SPAPI_BASE_URL: str = os.getenv("AMAZON_SPAPI_BASE_URL", "https://sellingpartnerapi-na.amazon.com")
+    AMAZON_SPAPI_CLIENT_ID: str = os.getenv("AMAZON_SPAPI_CLIENT_ID", "")
+    AMAZON_SPAPI_CLIENT_SECRET: str = os.getenv("AMAZON_SPAPI_CLIENT_SECRET", "")
+    AMAZON_SPAPI_REFRESH_TOKEN: str = os.getenv("AMAZON_SPAPI_REFRESH_TOKEN", "")
     
     @property
     def is_postgresql(self) -> bool:
