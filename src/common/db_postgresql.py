@@ -99,7 +99,11 @@ class DatabaseManager:
     def _init_sqlite(self):
         """Initialize SQLite database (fallback)"""
         try:
-            with sqlite3.connect(self.db_url) as conn:
+            import os
+            # Use configured SQLite path and ensure directory exists
+            db_path = settings.SQLITE_DB_PATH
+            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+            with sqlite3.connect(db_path) as conn:
                 with open('src/migrations/001_init.sql', 'r') as f:
                     sql_content = f.read()
                     sql_content = sql_content.replace('CREATE TABLE ', 'CREATE TABLE IF NOT EXISTS ')
@@ -133,6 +137,8 @@ class DatabaseManager:
                     );
                 """)
                 conn.commit()
+            # Update internal state to use SQLite path
+            self.db_url = db_path
             print("✅ SQLite database initialized")
         except Exception as e:
             print(f"SQLite initialization failed: {e}")

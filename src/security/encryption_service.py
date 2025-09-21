@@ -27,7 +27,16 @@ class EncryptionService:
     
     def __init__(self):
         self.db = DatabaseManager()
-        self.master_key = self._get_or_create_master_key()
+        # Use env master key if available; else avoid DB writes on init
+        try:
+            self.master_key = self._get_or_create_master_key()
+        except Exception:
+            # Fallback: derive ephemeral master key from CRYPTO_SECRET to avoid startup failure
+            logger.warning("Using ephemeral master key (no DB). Set ENCRYPTION_MASTER_KEY or configure DB.")
+            secret = settings.CRYPTO_SECRET.encode('utf-8')
+            pad = (32 - len(secret) % 32) % 32
+            raw = (secret + b'0' * pad)[:32]
+            self.master_key = base64.urlsafe_b64encode(raw)
         self.key_rotation_days = 90  # Rotate keys every 90 days
         self.encryption_algorithm = "AES-256-GCM"
         
