@@ -73,10 +73,13 @@ app = FastAPI(
 from src.common.config import settings
 
 origins_raw = (
-    os.getenv("CORS_ALLOW_ORIGINS")
-    or os.getenv("FRONTEND_URLS")
+    settings.CORS_ALLOW_ORIGINS
+    or settings.FRONTEND_URLS
+    or settings.ALLOWED_ORIGINS
     or settings.FRONTEND_URL
 )
+
+allow_origin_regex = settings.ALLOWED_ORIGIN_REGEX
 
 allow_origins = (
     [o.strip() for o in origins_raw.split(",") if o.strip()]
@@ -89,6 +92,7 @@ use_wildcard = any(o == "*" for o in allow_origins)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if use_wildcard else allow_origins,
+    allow_origin_regex=allow_origin_regex if not use_wildcard else None,
     allow_credentials=False if use_wildcard else True,
     allow_methods=["*"],
     allow_headers=["*"],
