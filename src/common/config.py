@@ -75,6 +75,8 @@ class Settings(BaseModel):
     MCDE_URL: str = os.getenv("MCDE_URL", "http://localhost:8000")
     # Amazon SP-API base URL (fallback to integrations URL if not provided)
     AMAZON_SPAPI_BASE_URL: str = os.getenv("AMAZON_SPAPI_BASE_URL") or os.getenv("INTEGRATIONS_URL", "http://localhost:3001")
+    # Optional services to ignore in health calculation (comma-separated keys matching service_directory names)
+    OPTIONAL_SERVICES: str = os.getenv("OPTIONAL_SERVICES", "integrations,stripe,cost-docs,refund-engine")
     
     @property
     def is_postgresql(self) -> bool:
@@ -122,6 +124,10 @@ class Settings(BaseModel):
                     origins.append(local_origin)
 
         return origins
+
+    def get_optional_services(self) -> set:
+        """Return a set of optional service keys for health checks."""
+        return {s.strip() for s in (self.OPTIONAL_SERVICES or "").split(',') if s.strip()}
 
 settings = Settings()
 

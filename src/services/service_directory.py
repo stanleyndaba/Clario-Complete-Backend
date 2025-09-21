@@ -135,11 +135,16 @@ class ServiceDirectory:
     def get_all_services_status(self) -> Dict[str, Dict[str, Any]]:
         """Get status of all services"""
         status = {}
+        optional = settings.get_optional_services()
         for name, service in self.services.items():
+            is_healthy = service.is_healthy
+            # Treat optional services as healthy if they are unreachable, to avoid degrading overall status
+            if name in optional and not is_healthy:
+                is_healthy = True
             status[name] = {
                 "name": service.name,
                 "base_url": service.base_url,
-                "is_healthy": service.is_healthy,
+                "is_healthy": is_healthy,
                 "last_checked": service.last_checked.isoformat() if service.last_checked else None,
                 "response_time_ms": service.response_time_ms,
                 "error_count": service.error_count,

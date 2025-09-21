@@ -38,6 +38,12 @@ services:
         value: https://opside-integrations-backend.onrender.com
       - key: STRIPE_SERVICE_URL
         value: https://opside-stripe-payments.onrender.com
+      - key: COST_DOC_SERVICE_URL
+        value: https://opside-cost-docs.onrender.com
+      - key: REFUND_ENGINE_URL
+        value: https://opside-refund-engine.onrender.com
+      - key: OPTIONAL_SERVICES
+        value: integrations,stripe,cost-docs,refund-engine
       - key: FRONTEND_URL
         value: https://opside-complete-frontend.onrender.com
       - key: ALLOWED_ORIGINS
