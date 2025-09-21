@@ -5,6 +5,7 @@ Handles JWT token validation and user extraction for all API endpoints
 
 import jwt
 from fastapi import HTTPException, Depends, status
+from fastapi import WebSocket
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional
 import logging
@@ -132,6 +133,24 @@ def create_jwt_token(user_data: dict) -> str:
         settings.JWT_SECRET,
         algorithm=settings.JWT_ALGORITHM
     )
+
+async def get_current_user_websocket(websocket: WebSocket, token: str | None = None) -> dict:
+    """
+    Placeholder WebSocket authentication. If a token is provided, try to decode it; otherwise return a default user.
+    """
+    try:
+        auth_header = websocket.headers.get("authorization") if hasattr(websocket, "headers") else None
+        bearer = None
+        if auth_header and auth_header.lower().startswith("bearer "):
+            bearer = auth_header.split(" ", 1)[1]
+        use_token = token or bearer
+        if use_token:
+            payload = verify_jwt_token(use_token)
+            user_id = payload.get("user_id") or "anonymous"
+            return {"user_id": user_id}
+    except Exception:
+        pass
+    return {"user_id": "anonymous"}
 
 def validate_user_permissions(user: dict, required_permissions: list = None) -> bool:
     """
