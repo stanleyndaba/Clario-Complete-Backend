@@ -35,6 +35,13 @@ class StatusEnum(str, Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
 
+class SubmissionStatus(str, Enum):
+    PENDING = "pending"
+    UNDER_REVIEW = "under_review"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    COMPLETED = "completed"
+
 # ============================================================================
 # AUTH SCHEMAS
 # ============================================================================
@@ -201,7 +208,7 @@ class DisputeSubmission(BaseModel):
     id: Optional[str] = None
     title: str
     description: str
-    status: str = "pending"
+    status: SubmissionStatus = SubmissionStatus.PENDING
     created_at: datetime = Field(default_factory=datetime.now)
     
     class Config:
