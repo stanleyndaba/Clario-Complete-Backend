@@ -4,11 +4,13 @@ Handles real-time status streaming and notifications
 """
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+import re
 from typing import List, Dict, Any
 import json
 import logging
 from src.api.auth_middleware import get_optional_user
 from src.services.service_directory import service_directory
+from src.common.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,20 @@ class ConnectionManager:
 # Global connection manager
 manager = ConnectionManager()
 
+def _origin_allowed(origin: str, allowed_list: list[str]) -> bool:
+    try:
+        origin = (origin or "").rstrip('/')
+        regex = getattr(settings, 'ALLOWED_ORIGIN_REGEX', '')
+        if regex:
+            try:
+                return re.match(regex, origin) is not None
+            except Exception:
+                pass
+        normalized = [o.rstrip('/') for o in allowed_list]
+        return origin in normalized
+    except Exception:
+        return False
+
 @router.websocket("/ws/status")
 async def websocket_status(websocket: WebSocket):
     """
@@ -68,6 +84,14 @@ async def websocket_status(websocket: WebSocket):
     - Detection results
     - Recovery status updates
     """
+    # Enforce Origin allowlist for WebSocket handshake
+    origin = websocket.headers.get("origin")
+    allowed_origins = settings.get_allowed_origins()
+    if origin and allowed_origins and not _origin_allowed(origin, allowed_origins):
+        # Reject connection from disallowed origins
+        await websocket.close(code=1008)
+        return
+
     await manager.connect(websocket)
     
     try:
@@ -119,6 +143,13 @@ async def websocket_user_status(websocket: WebSocket, user_id: str):
     - Document processing status
     - Billing notifications
     """
+    # Enforce Origin allowlist for WebSocket handshake
+    origin = websocket.headers.get("origin")
+    allowed_origins = settings.get_allowed_origins()
+    if origin and allowed_origins and not _origin_allowed(origin, allowed_origins):
+        await websocket.close(code=1008)
+        return
+
     await manager.connect(websocket)
     
     try:

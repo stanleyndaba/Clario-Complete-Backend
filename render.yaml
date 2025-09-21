@@ -10,8 +10,7 @@ services:
     plan: free
     buildCommand: |
       pip install -r requirements.txt
-      python -m uvicorn src.main:app --host 0.0.0.0 --port $PORT
-    startCommand: python -m uvicorn src.main:app --host 0.0.0.0 --port $PORT
+    startCommand: python -m uvicorn src.app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: ENV
@@ -35,10 +34,24 @@ services:
         value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh...
       - key: INTEGRATIONS_URL
         value: https://opside-integrations-backend.onrender.com
+      - key: AMAZON_SPAPI_BASE_URL
+        value: https://opside-integrations-backend.onrender.com
       - key: STRIPE_SERVICE_URL
         value: https://opside-stripe-payments.onrender.com
+      - key: COST_DOC_SERVICE_URL
+        value: https://opside-cost-docs.onrender.com
+      - key: REFUND_ENGINE_URL
+        value: https://opside-refund-engine.onrender.com
+      - key: OPTIONAL_SERVICES
+        value: integrations,stripe,cost-docs,refund-engine
       - key: FRONTEND_URL
-        value: https://your-frontend-domain.com
+        value: https://opside-complete-frontend.onrender.com
+      - key: ALLOWED_ORIGINS
+        value: https://opside-complete-frontend.onrender.com
+      - key: ALLOWED_ORIGIN_REGEX
+        value: ^https:\/\/.*opside-complete-frontend\.onrender\.com$
+      - key: SQLITE_DB_PATH
+        value: /tmp/opside.db
 
   # Integrations Backend (Node.js/Express) - Amazon SP-API
   - type: web
@@ -81,6 +94,12 @@ services:
         value: your-amazon-client-id
       - key: AMAZON_CLIENT_SECRET
         value: your-amazon-client-secret
+      - key: AMAZON_SPAPI_CLIENT_ID
+        value: your-amazon-client-id
+      - key: AMAZON_SPAPI_CLIENT_SECRET
+        value: your-amazon-client-secret
+      - key: AMAZON_SPAPI_REFRESH_TOKEN
+        value: your-amazon-refresh-token
       - key: AMAZON_REDIRECT_URI
         value: https://opside-integrations-backend.onrender.com/api/amazon/callback
       - key: FRONTEND_URL

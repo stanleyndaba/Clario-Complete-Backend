@@ -1,4 +1,5 @@
 import sqlite3
+import os
 import json
 from typing import Dict, Any, Optional, List
 from datetime import datetime
@@ -7,13 +8,19 @@ from src.common.config import settings
 import json
 
 class DatabaseManager:
-    def __init__(self, db_url: str = None):
-        self.db_url = db_url or settings.DB_URL
-        self._init_db()
+    def __init__(self, db_url: str = None, eager_init: bool = False):
+        # Prefer a writable sqlite path in containers
+        self.db_url = db_url or settings.DB_URL or settings.SQLITE_DB_PATH
+        self._initialized = False
+        if eager_init:
+            self._init_db()
     
     def _init_db(self):
         """Initialize database with tables if they don't exist"""
-        with sqlite3.connect(self.db_url) as conn:
+        # Ensure directory exists for SQLite file
+        db_path = self.db_url if self.db_url.endswith('.db') else settings.SQLITE_DB_PATH
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        with sqlite3.connect(db_path) as conn:
             with open('src/migrations/001_init.sql', 'r') as f:
                 # Use IF NOT EXISTS for table and index creation
                 sql_content = f.read()
@@ -51,28 +58,13 @@ class DatabaseManager:
                 """
             )
             # Attempt to add Stripe columns if migrating existing DB
-            try:
-                conn.execute("ALTER TABLE users ADD COLUMN stripe_customer_id TEXT")
-            except Exception:
-                pass
-            try:
-                conn.execute("ALTER TABLE users ADD COLUMN stripe_account_id TEXT")
-            except Exception:
-                pass
-            try:
-                conn.execute("ALTER TABLE users ADD COLUMN last_sync_attempt_at DATETIME")
-            except Exception:
-                pass
-            try:
-                conn.execute("ALTER TABLE users ADD COLUMN last_sync_completed_at DATETIME")
-            except Exception:
-                pass
-            try:
-                conn.execute("ALTER TABLE users ADD COLUMN last_sync_job_id TEXT")
-            except Exception:
-                pass
+            # Columns created above with IF NOT EXISTS table creation
+            self.db_url = db_path
+            self._initialized = True
     
     def _get_connection(self):
+        if not self._initialized:
+            self._init_db()
         return sqlite3.connect(self.db_url)
     
     def upsert_claim(self, claim: ClaimDetection):
@@ -370,6 +362,6 @@ class DatabaseManager:
             'filings': filings
         }
 
-# Global database instance
-db = DatabaseManager()
+# Global database instance (lazy init)
+db = DatabaseManager(eager_init=False)
 

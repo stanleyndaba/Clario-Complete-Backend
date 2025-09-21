@@ -8,18 +8,27 @@ load_dotenv()
 
 class Settings(BaseModel):
     # Database configuration
-    DB_URL: str = os.getenv("DB_URL", "postgresql://postgres:password@localhost:5432/opside_fba")
+    # Prefer DB_URL; fall back to DATABASE_URL (Render) or a safe default
+    DB_URL: str = os.getenv("DB_URL") or os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/opside_fba")
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
     DB_TYPE: str = os.getenv("DB_TYPE", "postgresql")  # postgresql or sqlite
     AUTO_FILE_THRESHOLD: float = float(os.getenv("AUTO_FILE_THRESHOLD", "0.75"))
     ENV: str = os.getenv("ENV", "dev")
     
     # Frontend configuration
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    # Comma-separated list of allowed origins for CORS and WebSockets
+    ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", "")
+    ALLOWED_ORIGIN_REGEX: str = os.getenv("ALLOWED_ORIGIN_REGEX", "")
     
     # Amazon OAuth configuration
     AMAZON_CLIENT_ID: str = os.getenv("AMAZON_CLIENT_ID", "")
     AMAZON_CLIENT_SECRET: str = os.getenv("AMAZON_CLIENT_SECRET", "")
     AMAZON_REDIRECT_URI: str = os.getenv("AMAZON_REDIRECT_URI", "http://localhost:8000/api/auth/amazon/callback")
+    # Amazon SP-API explicit fields (fallback to generic Amazon OAuth if not set)
+    AMAZON_SPAPI_CLIENT_ID: str = os.getenv("AMAZON_SPAPI_CLIENT_ID") or os.getenv("AMAZON_CLIENT_ID", "")
+    AMAZON_SPAPI_CLIENT_SECRET: str = os.getenv("AMAZON_SPAPI_CLIENT_SECRET") or os.getenv("AMAZON_CLIENT_SECRET", "")
+    AMAZON_SPAPI_REFRESH_TOKEN: str = os.getenv("AMAZON_SPAPI_REFRESH_TOKEN", "")
     
     # Evidence Sources OAuth configuration
     GMAIL_CLIENT_ID: str = os.getenv("GMAIL_CLIENT_ID", "")
@@ -49,6 +58,12 @@ class Settings(BaseModel):
     JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
     JWT_EXPIRES_IN_MINUTES: int = int(os.getenv("JWT_EXPIRES_IN_MINUTES", "10080"))  # 7 days
     CRYPTO_SECRET: str = os.getenv("CRYPTO_SECRET", "insecure-dev-key-change")
+    # SQLite fallback path (writable in containers)
+    SQLITE_DB_PATH: str = os.getenv("SQLITE_DB_PATH", "/tmp/opside.db")
+    # Optional S3 configuration
+    S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "")
+    S3_REGION: str = os.getenv("S3_REGION", "")
+    S3_ENDPOINT_URL: str = os.getenv("S3_ENDPOINT_URL", "")
     
     # Service URLs
     INTEGRATIONS_URL: str = os.getenv("INTEGRATIONS_URL", "http://localhost:3001")
@@ -58,11 +73,19 @@ class Settings(BaseModel):
     COST_DOC_SERVICE_URL: str = os.getenv("COST_DOC_SERVICE_URL", "http://localhost:3003")
     REFUND_ENGINE_URL: str = os.getenv("REFUND_ENGINE_URL", "http://localhost:3002")
     MCDE_URL: str = os.getenv("MCDE_URL", "http://localhost:8000")
+    # Amazon SP-API base URL (fallback to integrations URL if not provided)
+    AMAZON_SPAPI_BASE_URL: str = os.getenv("AMAZON_SPAPI_BASE_URL") or os.getenv("INTEGRATIONS_URL", "http://localhost:3001")
+    # Optional services to ignore in health calculation (comma-separated keys matching service_directory names)
+    OPTIONAL_SERVICES: str = os.getenv("OPTIONAL_SERVICES", "integrations,stripe,cost-docs,refund-engine")
     
     @property
     def is_postgresql(self) -> bool:
         """Check if using PostgreSQL database"""
-        return self.DB_TYPE.lower() == "postgresql" or self.DB_URL.startswith("postgresql://")
+        if self.DB_TYPE.lower() == "postgresql":
+            return True
+        if self.DB_TYPE.lower() == "sqlite":
+            return False
+        return self.DB_URL.startswith("postgresql://") or self.DB_URL.startswith("postgres://")
     
     @property
     def is_sqlite(self) -> bool:
@@ -72,7 +95,9 @@ class Settings(BaseModel):
     def get_database_config(self) -> dict:
         """Get database configuration based on type"""
         if self.is_postgresql:
-            parsed = urlparse(self.DB_URL)
+            # Use DB_URL or DATABASE_URL
+            db_url = self.DB_URL or self.DATABASE_URL
+            parsed = urlparse(db_url)
             return {
                 "host": parsed.hostname or "localhost",
                 "port": parsed.port or 5432,
@@ -81,7 +106,28 @@ class Settings(BaseModel):
                 "password": parsed.password or "password"
             }
         else:
-            return {"database": self.DB_URL}
+            return {"database": self.SQLITE_DB_PATH}
+
+    def get_allowed_origins(self) -> list:
+        """Build the list of allowed origins for CORS and WebSockets."""
+        origins: list[str] = []
+        # Prefer explicit list if provided
+        if self.ALLOWED_ORIGINS:
+            origins = [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
+        elif self.FRONTEND_URL:
+            origins = [self.FRONTEND_URL]
+
+        # In non-production, also allow common local dev ports
+        if self.ENV.lower() != "production":
+            for local_origin in ["http://localhost:3000", "http://localhost:5173"]:
+                if local_origin not in origins:
+                    origins.append(local_origin)
+
+        return origins
+
+    def get_optional_services(self) -> set:
+        """Return a set of optional service keys for health checks."""
+        return {s.strip() for s in (self.OPTIONAL_SERVICES or "").split(',') if s.strip()}
 
 settings = Settings()
 

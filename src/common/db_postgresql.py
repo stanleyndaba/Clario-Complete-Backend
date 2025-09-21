@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 from src.common.schemas import ClaimDetection, ValidationResult, FilingResult, ClaimPacket
 from src.common.config import settings
+from contextlib import AbstractContextManager
 from cryptography.fernet import Fernet
 
 # Database connection imports
@@ -46,12 +47,40 @@ def _get_fernet() -> Fernet:
 
 _fernet = _get_fernet()
 
+# ---------------- SQLite compatibility wrappers (context managers) ---------------- #
+class SQLiteCursorWrapper(AbstractContextManager):
+    def __init__(self, cursor):
+        self._cursor = cursor
+    def __enter__(self):
+        return self._cursor
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            self._cursor.close()
+        except Exception:
+            pass
+        return False
+
+class SQLiteConnectionWrapper(AbstractContextManager):
+    def __init__(self, conn):
+        self._conn = conn
+    def cursor(self):
+        return SQLiteCursorWrapper(self._conn.cursor())
+    def __getattr__(self, item):
+        return getattr(self._conn, item)
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        return self._conn.__exit__(exc_type, exc, tb)
+
 class DatabaseManager:
-    def __init__(self, db_url: str = None):
-        self.db_url = db_url or settings.DB_URL
+    def __init__(self, db_url: str = None, eager_init: bool = False):
+        self.db_url = db_url or settings.DB_URL or settings.DATABASE_URL
         self.is_postgresql = settings.is_postgresql
         self.connection_pool = None
-        self._init_db()
+        # Lazy init by default to avoid failing at import time during deployment
+        if eager_init:
+            self._init_db()
     
     def _init_db(self):
         """Initialize database with appropriate connection method"""
@@ -97,7 +126,11 @@ class DatabaseManager:
     def _init_sqlite(self):
         """Initialize SQLite database (fallback)"""
         try:
-            with sqlite3.connect(self.db_url) as conn:
+            import os
+            # Use configured SQLite path and ensure directory exists
+            db_path = settings.SQLITE_DB_PATH
+            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+            with sqlite3.connect(db_path) as conn:
                 with open('src/migrations/001_init.sql', 'r') as f:
                     sql_content = f.read()
                     sql_content = sql_content.replace('CREATE TABLE ', 'CREATE TABLE IF NOT EXISTS ')
@@ -131,6 +164,8 @@ class DatabaseManager:
                     );
                 """)
                 conn.commit()
+            # Update internal state to use SQLite path
+            self.db_url = db_path
             print("✅ SQLite database initialized")
         except Exception as e:
             print(f"SQLite initialization failed: {e}")
@@ -169,10 +204,16 @@ class DatabaseManager:
     
     def _get_connection(self):
         """Get database connection"""
+        # Initialize if not yet initialized
+        if self.connection_pool is None and self.is_postgresql:
+            self._init_db()
         if self.is_postgresql and self.connection_pool:
             return self.connection_pool.getconn()
-        else:
-            return sqlite3.connect(self.db_url)
+        # Ensure SQLite path is valid
+        import os
+        db_path = self.db_url if self.db_url.endswith('.db') else settings.SQLITE_DB_PATH
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        return SQLiteConnectionWrapper(sqlite3.connect(db_path))
     
     def _return_connection(self, conn):
         """Return connection to pool (PostgreSQL only)"""
@@ -439,5 +480,5 @@ class DatabaseManager:
         if self.connection_pool:
             self.connection_pool.closeall()
 
-# Global database instance
-db = DatabaseManager()
+# Global database instance (lazy init)
+db = DatabaseManager(eager_init=False)
