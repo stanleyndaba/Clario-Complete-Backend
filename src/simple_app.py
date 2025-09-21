@@ -6,6 +6,7 @@ This version has minimal dependencies to ensure deployment works
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -18,10 +19,15 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Enable CORS
+# Enable CORS (explicit origin, no wildcard)
+frontend = os.getenv("FRONTEND_URL") or "https://opside-complete-frontend.onrender.com"
+regex = os.getenv("ALLOWED_ORIGIN_REGEX")
+origins = [frontend]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for now
+    allow_origins=origins,
+    allow_origin_regex=regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -43,6 +49,13 @@ async def health():
         "status": "healthy",
         "message": "API is running successfully",
         "timestamp": "2025-01-19T03:46:00Z"
+    }
+
+@app.get("/cors/debug")
+async def cors_debug():
+    return {
+        "allow_origins": origins,
+        "allow_origin_regex": regex,
     }
 
 @app.get("/api/status")
