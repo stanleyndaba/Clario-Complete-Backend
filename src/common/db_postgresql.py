@@ -118,6 +118,13 @@ class DatabaseManager:
                 except Exception:
                     db_path = os.path.join(tempfile.gettempdir(), 'claims.db')
 
+            # Ensure directory exists and is writable
+            db_dir = os.path.dirname(db_path) or "."
+            try:
+                os.makedirs(db_dir, exist_ok=True)
+            except Exception:
+                pass
+
             with sqlite3.connect(db_path) as conn:
                 with open('src/migrations/001_init.sql', 'r') as f:
                     sql_content = f.read()

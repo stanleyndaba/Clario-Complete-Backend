@@ -27,6 +27,13 @@ class DatabaseManager:
         else:
             self.db_url = raw_url
         try:
+            # Ensure directory exists and writable for SQLite
+            db_dir = os.path.dirname(self.db_url) if self.db_url else None
+            if db_dir:
+                try:
+                    os.makedirs(db_dir, exist_ok=True)
+                except Exception:
+                    pass
             self._init_db()
         except Exception as e:
             print(f"SQLite init failed: {e}")

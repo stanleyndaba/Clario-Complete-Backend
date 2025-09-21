@@ -201,20 +201,24 @@ class EncryptionService:
                     # Invalid base64 provided; warn and continue to fallback paths
                     logger.warning("Invalid base64 in ENCRYPTION_MASTER_KEY. Generating/using stored key instead.")
             
-            # Try to get from database
-            with self.db._get_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("""
-                        SELECT key_value FROM encryption_keys 
-                        WHERE key_type = 'master' AND status = 'active'
-                        ORDER BY created_at DESC LIMIT 1
-                    """)
-                    result = cursor.fetchone()
-                    if result:
-                        try:
-                            return base64.b64decode(result[0])
-                        except (binascii.Error, ValueError):
-                            logger.warning("Stored master key is invalid base64. Generating a new master key.")
+            # Try to get from database; if DB isn't ready, fall back to temp key
+            try:
+                with self.db._get_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("""
+                            SELECT key_value FROM encryption_keys 
+                            WHERE key_type = 'master' AND status = 'active'
+                            ORDER BY created_at DESC LIMIT 1
+                        """)
+                        result = cursor.fetchone()
+                        if result:
+                            try:
+                                return base64.b64decode(result[0])
+                            except (binascii.Error, ValueError):
+                                logger.warning("Stored master key is invalid base64. Generating a new master key.")
+            except Exception as e:
+                logger.warning(f"Database not ready for encryption keys ({e}); using temporary generated key.")
+                return Fernet.generate_key()
             
             # Generate and store new master key
             master_key = Fernet.generate_key()
