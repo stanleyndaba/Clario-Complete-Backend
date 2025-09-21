@@ -7,6 +7,7 @@ import asyncio
 import json
 import uuid
 from typing import Dict, Any, Optional, List
+import os
 from datetime import datetime, timedelta
 import logging
 import httpx
@@ -59,10 +60,11 @@ class AmazonSPAPIService:
     
     def __init__(self):
         self.db = DatabaseManager()
-        self.base_url = settings.AMAZON_SPAPI_BASE_URL
-        self.client_id = settings.AMAZON_SPAPI_CLIENT_ID
-        self.client_secret = settings.AMAZON_SPAPI_CLIENT_SECRET
-        self.refresh_token = settings.AMAZON_SPAPI_REFRESH_TOKEN
+        # Robust settings load with environment fallbacks to avoid attribute errors
+        self.base_url = getattr(settings, "AMAZON_SPAPI_BASE_URL", os.getenv("AMAZON_SPAPI_BASE_URL", "https://sellingpartnerapi-na.amazon.com"))
+        self.client_id = getattr(settings, "AMAZON_SPAPI_CLIENT_ID", os.getenv("AMAZON_SPAPI_CLIENT_ID", ""))
+        self.client_secret = getattr(settings, "AMAZON_SPAPI_CLIENT_SECRET", os.getenv("AMAZON_SPAPI_CLIENT_SECRET", ""))
+        self.refresh_token = getattr(settings, "AMAZON_SPAPI_REFRESH_TOKEN", os.getenv("AMAZON_SPAPI_REFRESH_TOKEN", ""))
         self.access_token = None
         self.token_expires_at = None
         self.rate_limiter = RateLimiter()
