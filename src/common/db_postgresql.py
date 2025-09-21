@@ -97,7 +97,12 @@ class DatabaseManager:
     def _init_sqlite(self):
         """Initialize SQLite database (fallback)"""
         try:
-            with sqlite3.connect(self.db_url) as conn:
+            # If DB_URL looks like a postgres URL or is empty, use a safe writable SQLite file path
+            db_path = self.db_url or ""
+            if db_path.startswith("postgres://") or db_path.startswith("postgresql://") or not db_path or db_path == ":memory:":
+                db_path = "/tmp/claims.db"
+
+            with sqlite3.connect(db_path) as conn:
                 with open('src/migrations/001_init.sql', 'r') as f:
                     sql_content = f.read()
                     sql_content = sql_content.replace('CREATE TABLE ', 'CREATE TABLE IF NOT EXISTS ')
@@ -131,7 +136,7 @@ class DatabaseManager:
                     );
                 """)
                 conn.commit()
-            print("✅ SQLite database initialized")
+            print(f"✅ SQLite database initialized at {db_path}")
         except Exception as e:
             print(f"SQLite initialization failed: {e}")
             raise

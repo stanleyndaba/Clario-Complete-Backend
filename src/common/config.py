@@ -8,7 +8,8 @@ load_dotenv()
 
 class Settings(BaseModel):
     # Database configuration
-    DB_URL: str = os.getenv("DB_URL", "postgresql://postgres:password@localhost:5432/opside_fba")
+    # Prefer DATABASE_URL if present (Render/Heroku style), fallback to DB_URL
+    DB_URL: str = os.getenv("DB_URL") or os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/opside_fba")
     DB_TYPE: str = os.getenv("DB_TYPE", "postgresql")  # postgresql or sqlite
     AUTO_FILE_THRESHOLD: float = float(os.getenv("AUTO_FILE_THRESHOLD", "0.75"))
     ENV: str = os.getenv("ENV", "dev")
@@ -68,7 +69,8 @@ class Settings(BaseModel):
     @property
     def is_postgresql(self) -> bool:
         """Check if using PostgreSQL database"""
-        return self.DB_TYPE.lower() == "postgresql" or self.DB_URL.startswith("postgresql://")
+        url = (self.DB_URL or "").lower()
+        return self.DB_TYPE.lower() == "postgresql" or url.startswith("postgresql://") or url.startswith("postgres://")
     
     @property
     def is_sqlite(self) -> bool:
