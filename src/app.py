@@ -72,6 +72,7 @@ app = FastAPI(
 # Enable CORS for frontend integration (env-driven, supports multiple origins)
 from src.common.config import settings
 
+# Build explicit origin list, never use '*'
 origins_raw = (
     settings.CORS_ALLOW_ORIGINS
     or settings.FRONTEND_URLS
@@ -79,21 +80,33 @@ origins_raw = (
     or settings.FRONTEND_URL
 )
 
+computed_origins = []
+if origins_raw:
+    computed_origins = [o.strip() for o in origins_raw.split(",") if o.strip() and o.strip() != "*"]
+
+# Safe defaults include the known frontend domain and local dev ports
+default_origins = [
+    settings.FRONTEND_URL or "",
+    "https://opside-complete-frontend.onrender.com",
+    "http://localhost:3000",
+    "http://localhost:5173",
+]
+
+# Merge, dedupe, and drop empties
+allow_origins = []
+seen = set()
+for o in (computed_origins or default_origins):
+    if o and o not in seen:
+        seen.add(o)
+        allow_origins.append(o)
+
 allow_origin_regex = settings.ALLOWED_ORIGIN_REGEX
-
-allow_origins = (
-    [o.strip() for o in origins_raw.split(",") if o.strip()]
-    if origins_raw
-    else ["http://localhost:3000", "http://localhost:5173"]
-)
-
-use_wildcard = any(o == "*" for o in allow_origins)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if use_wildcard else allow_origins,
-    allow_origin_regex=allow_origin_regex if not use_wildcard else None,
-    allow_credentials=False if use_wildcard else True,
+    allow_origins=allow_origins,
+    allow_origin_regex=allow_origin_regex,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
