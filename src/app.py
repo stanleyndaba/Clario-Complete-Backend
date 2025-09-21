@@ -54,17 +54,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Health monitoring not started: {e}")
 
-    # Start analytics integration (do not crash app if it fails)
-    try:
-        await analytics_integration.start()
-    except Exception as e:
-        logger.warning(f"Analytics integration not started: {e}")
+    # Start analytics integration only when using PostgreSQL
+    if settings.is_postgresql:
+        try:
+            await analytics_integration.start()
+        except Exception as e:
+            logger.warning(f"Analytics integration not started: {e}")
+    else:
+        logger.info("Skipping analytics integration (SQLite mode)")
 
-    # Start feature integration (do not crash app if it fails)
-    try:
-        await feature_integration.start()
-    except Exception as e:
-        logger.warning(f"Feature integration not started: {e}")
+    # Start feature integration only when using PostgreSQL
+    if settings.is_postgresql:
+        try:
+            await feature_integration.start()
+        except Exception as e:
+            logger.warning(f"Feature integration not started: {e}")
+    else:
+        logger.info("Skipping feature integration (SQLite mode)")
 
     # Initial health check (best-effort)
     try:
