@@ -182,6 +182,14 @@ async def services_status():
     """Get status of all microservices"""
     return service_directory.get_all_services_status()
 
+@app.get("/cors/debug")
+def cors_debug():
+    """Expose current CORS configuration for debugging deployments"""
+    return {
+        "allow_origins": allow_origins,
+        "allow_origin_regex": allow_origin_regex,
+    }
+
 
 
 
