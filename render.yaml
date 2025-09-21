@@ -86,6 +86,12 @@ services:
         value: your-amazon-client-id
       - key: AMAZON_CLIENT_SECRET
         value: your-amazon-client-secret
+      - key: AMAZON_SPAPI_CLIENT_ID
+        value: your-amazon-client-id
+      - key: AMAZON_SPAPI_CLIENT_SECRET
+        value: your-amazon-client-secret
+      - key: AMAZON_SPAPI_REFRESH_TOKEN
+        value: your-amazon-refresh-token
       - key: AMAZON_REDIRECT_URI
         value: https://opside-integrations-backend.onrender.com/api/amazon/callback
       - key: FRONTEND_URL

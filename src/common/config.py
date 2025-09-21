@@ -24,6 +24,10 @@ class Settings(BaseModel):
     AMAZON_CLIENT_ID: str = os.getenv("AMAZON_CLIENT_ID", "")
     AMAZON_CLIENT_SECRET: str = os.getenv("AMAZON_CLIENT_SECRET", "")
     AMAZON_REDIRECT_URI: str = os.getenv("AMAZON_REDIRECT_URI", "http://localhost:8000/api/auth/amazon/callback")
+    # Amazon SP-API explicit fields (fallback to generic Amazon OAuth if not set)
+    AMAZON_SPAPI_CLIENT_ID: str = os.getenv("AMAZON_SPAPI_CLIENT_ID") or os.getenv("AMAZON_CLIENT_ID", "")
+    AMAZON_SPAPI_CLIENT_SECRET: str = os.getenv("AMAZON_SPAPI_CLIENT_SECRET") or os.getenv("AMAZON_CLIENT_SECRET", "")
+    AMAZON_SPAPI_REFRESH_TOKEN: str = os.getenv("AMAZON_SPAPI_REFRESH_TOKEN", "")
     
     # Evidence Sources OAuth configuration
     GMAIL_CLIENT_ID: str = os.getenv("GMAIL_CLIENT_ID", "")
