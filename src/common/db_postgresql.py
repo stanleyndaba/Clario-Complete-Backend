@@ -9,6 +9,8 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 from src.common.schemas import ClaimDetection, ValidationResult, FilingResult, ClaimPacket
 from src.common.config import settings
+import os
+import tempfile
 from cryptography.fernet import Fernet
 
 # Database connection imports
@@ -51,12 +53,17 @@ class DatabaseManager:
         self.db_url = db_url or settings.DB_URL
         self.is_postgresql = settings.is_postgresql
         self.connection_pool = None
-        try:
-            self._init_db()
-        except Exception as e:
-            print(f"Database initialization failed: {e}")
-            print("Continuing without database...")
+        # Allow disabling DB entirely
+        if os.getenv("DISABLE_DB", "").lower() in ("true", "1", "yes"):
+            print("Database initialization disabled by DISABLE_DB env var")
             self.connection_pool = None
+        else:
+            try:
+                self._init_db()
+            except Exception as e:
+                print(f"Database initialization failed: {e}")
+                print("Continuing without database...")
+                self.connection_pool = None
     
     def _init_db(self):
         """Initialize database with appropriate connection method"""
@@ -105,7 +112,11 @@ class DatabaseManager:
             # If DB_URL looks like a postgres URL or is empty, use a safe writable SQLite file path
             db_path = self.db_url or ""
             if db_path.startswith("postgres://") or db_path.startswith("postgresql://") or not db_path or db_path == ":memory:":
-                db_path = "/tmp/claims.db"
+                try:
+                    cwd = os.getcwd()
+                    db_path = os.path.join(cwd, 'claims.db')
+                except Exception:
+                    db_path = os.path.join(tempfile.gettempdir(), 'claims.db')
 
             with sqlite3.connect(db_path) as conn:
                 with open('src/migrations/001_init.sql', 'r') as f:
@@ -451,7 +462,11 @@ class DatabaseManager:
 
 # Global database instance
 try:
-    db = DatabaseManager()
+    if os.getenv("DISABLE_DB", "").lower() in ("true", "1", "yes"):
+        print("Database manager disabled by DISABLE_DB env var")
+        db = None
+    else:
+        db = DatabaseManager()
 except Exception as e:
     print(f"Database manager disabled due to init error: {e}")
     db = None

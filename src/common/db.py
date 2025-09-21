@@ -4,14 +4,26 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 from src.common.schemas import ClaimDetection, ValidationResult, FilingResult, ClaimPacket
 from src.common.config import settings
+import os
+import tempfile
 import json
 
 class DatabaseManager:
     def __init__(self, db_url: str = None):
+        # Allow disabling DB entirely for CORS testing
+        if os.getenv("DISABLE_DB", "").lower() in ("true", "1", "yes"):
+            self.db_url = None
+            return
+
         # Use provided path or env; if it looks like a DSN (contains "://") or is empty, use a safe writable file
         raw_url = db_url or settings.DB_URL or ""
         if "://" in raw_url or not raw_url or raw_url == ":memory:":
-            self.db_url = "/tmp/claims.db"
+            # Prefer working directory, then system temp
+            try:
+                cwd = os.getcwd()
+                self.db_url = os.path.join(cwd, 'claims.db')
+            except Exception:
+                self.db_url = os.path.join(tempfile.gettempdir(), 'claims.db')
         else:
             self.db_url = raw_url
         try:
@@ -19,7 +31,7 @@ class DatabaseManager:
         except Exception as e:
             print(f"SQLite init failed: {e}")
             # Last resort: force /tmp path
-            self.db_url = "/tmp/claims.db"
+            self.db_url = os.path.join(tempfile.gettempdir(), 'claims.db')
             try:
                 self._init_db()
             except Exception as e2:
@@ -384,9 +396,13 @@ class DatabaseManager:
             'filings': filings
         }
 
-# Global database instance
+# Global database instance (optional)
+db = None
 try:
-    db = DatabaseManager()
+    if os.getenv("DISABLE_DB", "").lower() not in ("true", "1", "yes"):
+        db = DatabaseManager()
+    else:
+        print("DatabaseManager disabled by DISABLE_DB env var")
 except Exception as e:
     print(f"DatabaseManager disabled: {e}")
     db = None
