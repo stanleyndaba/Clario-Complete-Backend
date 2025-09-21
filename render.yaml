@@ -34,6 +34,8 @@ services:
         value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh...
       - key: INTEGRATIONS_URL
         value: https://opside-integrations-backend.onrender.com
+      - key: AMAZON_SPAPI_BASE_URL
+        value: https://opside-integrations-backend.onrender.com
       - key: STRIPE_SERVICE_URL
         value: https://opside-stripe-payments.onrender.com
       - key: FRONTEND_URL

@@ -68,6 +68,8 @@ class Settings(BaseModel):
     COST_DOC_SERVICE_URL: str = os.getenv("COST_DOC_SERVICE_URL", "http://localhost:3003")
     REFUND_ENGINE_URL: str = os.getenv("REFUND_ENGINE_URL", "http://localhost:3002")
     MCDE_URL: str = os.getenv("MCDE_URL", "http://localhost:8000")
+    # Amazon SP-API base URL (fallback to integrations URL if not provided)
+    AMAZON_SPAPI_BASE_URL: str = os.getenv("AMAZON_SPAPI_BASE_URL") or os.getenv("INTEGRATIONS_URL", "http://localhost:3001")
     
     @property
     def is_postgresql(self) -> bool:
