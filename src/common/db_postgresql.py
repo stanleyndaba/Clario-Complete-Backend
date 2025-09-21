@@ -51,7 +51,12 @@ class DatabaseManager:
         self.db_url = db_url or settings.DB_URL
         self.is_postgresql = settings.is_postgresql
         self.connection_pool = None
-        self._init_db()
+        try:
+            self._init_db()
+        except Exception as e:
+            print(f"Database initialization failed: {e}")
+            print("Continuing without database...")
+            self.connection_pool = None
     
     def _init_db(self):
         """Initialize database with appropriate connection method"""
@@ -445,4 +450,8 @@ class DatabaseManager:
             self.connection_pool.closeall()
 
 # Global database instance
-db = DatabaseManager()
+try:
+    db = DatabaseManager()
+except Exception as e:
+    print(f"Database manager disabled due to init error: {e}")
+    db = None
