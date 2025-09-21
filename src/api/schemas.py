@@ -196,6 +196,17 @@ class ClaimSubmissionResponse(BaseModel):
     message: str
     estimated_resolution: str
 
+class DisputeSubmission(BaseModel):
+    """Placeholder DisputeSubmission schema"""
+    id: Optional[str] = None
+    title: str
+    description: str
+    status: str = "pending"
+    created_at: datetime = Field(default_factory=datetime.now)
+    
+    class Config:
+        from_attributes = True
+
 # ============================================================================
 # EVIDENCE SCHEMAS
 # ============================================================================
