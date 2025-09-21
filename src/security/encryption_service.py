@@ -5,6 +5,7 @@ Phase 6: AES-256 encryption for all sensitive data with secure key management
 
 import os
 import base64
+import binascii
 import json
 import hashlib
 from typing import Dict, Any, Optional, Union
@@ -189,12 +190,16 @@ class EncryptionService:
             raise
     
     def _get_or_create_master_key(self) -> bytes:
-        """Get or create master encryption key"""
+        """Get or create master encryption key. Handles invalid base64 env values gracefully."""
         try:
             # Try to get from environment
-            master_key = os.getenv('ENCRYPTION_MASTER_KEY')
-            if master_key:
-                return base64.b64decode(master_key)
+            master_key_env = os.getenv('ENCRYPTION_MASTER_KEY')
+            if master_key_env:
+                try:
+                    return base64.b64decode(master_key_env)
+                except (binascii.Error, ValueError):
+                    # Invalid base64 provided; warn and continue to fallback paths
+                    logger.warning("Invalid base64 in ENCRYPTION_MASTER_KEY. Generating/using stored key instead.")
             
             # Try to get from database
             with self.db._get_connection() as conn:
@@ -204,15 +209,15 @@ class EncryptionService:
                         WHERE key_type = 'master' AND status = 'active'
                         ORDER BY created_at DESC LIMIT 1
                     """)
-                    
                     result = cursor.fetchone()
                     if result:
-                        return base64.b64decode(result[0])
+                        try:
+                            return base64.b64decode(result[0])
+                        except (binascii.Error, ValueError):
+                            logger.warning("Stored master key is invalid base64. Generating a new master key.")
             
-            # Generate new master key
+            # Generate and store new master key
             master_key = Fernet.generate_key()
-            
-            # Store in database
             with self.db._get_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
@@ -223,9 +228,7 @@ class EncryptionService:
                         str(uuid.uuid4()), 'master', base64.b64encode(master_key).decode('utf-8'),
                         'active', datetime.utcnow(), datetime.utcnow() + timedelta(days=365)
                     ))
-            
             return master_key
-            
         except Exception as e:
             logger.error(f"Failed to get or create master key: {e}")
             raise
