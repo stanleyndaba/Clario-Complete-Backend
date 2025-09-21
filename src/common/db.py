@@ -8,8 +8,22 @@ import json
 
 class DatabaseManager:
     def __init__(self, db_url: str = None):
-        self.db_url = db_url or settings.DB_URL
-        self._init_db()
+        # Use provided path or env; if it looks like a DSN (contains "://") or is empty, use a safe writable file
+        raw_url = db_url or settings.DB_URL or ""
+        if "://" in raw_url or not raw_url or raw_url == ":memory:":
+            self.db_url = "/tmp/claims.db"
+        else:
+            self.db_url = raw_url
+        try:
+            self._init_db()
+        except Exception as e:
+            print(f"SQLite init failed: {e}")
+            # Last resort: force /tmp path
+            self.db_url = "/tmp/claims.db"
+            try:
+                self._init_db()
+            except Exception as e2:
+                print(f"SQLite init failed (forced /tmp): {e2}")
     
     def _init_db(self):
         """Initialize database with tables if they don't exist"""
@@ -371,5 +385,9 @@ class DatabaseManager:
         }
 
 # Global database instance
-db = DatabaseManager()
+try:
+    db = DatabaseManager()
+except Exception as e:
+    print(f"DatabaseManager disabled: {e}")
+    db = None
 
