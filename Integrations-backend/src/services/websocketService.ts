@@ -31,11 +31,17 @@ export class WebSocketService {
   private userRooms: Map<string, string> = new Map(); // userId -> roomId
 
   initialize(server: HTTPServer): void {
+    const wsCorsEnv = process.env.CORS_ALLOW_ORIGINS || process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || '';
+    const wsOrigins = wsCorsEnv
+      ? wsCorsEnv.split(',').map((o: string) => o.trim()).filter(Boolean)
+      : ['http://localhost:3000'];
+    const wsRegex = process.env.ALLOWED_ORIGIN_REGEX;
+
     this.io = new SocketIOServer(server, {
       cors: {
-        origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+        origin: wsOrigins.includes('*') ? true : (wsRegex ? new RegExp(wsRegex) : wsOrigins),
         methods: ['GET', 'POST'],
-        credentials: true
+        credentials: !wsOrigins.includes('*')
       }
     });
 

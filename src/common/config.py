@@ -13,8 +13,12 @@ class Settings(BaseModel):
     AUTO_FILE_THRESHOLD: float = float(os.getenv("AUTO_FILE_THRESHOLD", "0.75"))
     ENV: str = os.getenv("ENV", "dev")
     
-    # Frontend configuration
+    # Frontend configuration / CORS
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    FRONTEND_URLS: str | None = os.getenv("FRONTEND_URLS")
+    CORS_ALLOW_ORIGINS: str | None = os.getenv("CORS_ALLOW_ORIGINS")
+    ALLOWED_ORIGINS: str | None = os.getenv("ALLOWED_ORIGINS")
+    ALLOWED_ORIGIN_REGEX: str | None = os.getenv("ALLOWED_ORIGIN_REGEX")
     
     # Amazon OAuth configuration
     AMAZON_CLIENT_ID: str = os.getenv("AMAZON_CLIENT_ID", "")
@@ -48,6 +52,8 @@ class Settings(BaseModel):
     JWT_SECRET: str = os.getenv("JWT_SECRET", "your-secret-key-change-in-production")
     JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
     JWT_EXPIRES_IN_MINUTES: int = int(os.getenv("JWT_EXPIRES_IN_MINUTES", "10080"))  # 7 days
+    # Prefer ENCRYPTION_MASTER_KEY if provided (fallback to CRYPTO_SECRET)
+    ENCRYPTION_MASTER_KEY: str | None = os.getenv("ENCRYPTION_MASTER_KEY")
     CRYPTO_SECRET: str = os.getenv("CRYPTO_SECRET", "insecure-dev-key-change")
     
     # Service URLs
@@ -84,4 +90,8 @@ class Settings(BaseModel):
             return {"database": self.DB_URL}
 
 settings = Settings()
+
+# Normalize encryption secret preference
+if settings.ENCRYPTION_MASTER_KEY:
+    settings.CRYPTO_SECRET = settings.ENCRYPTION_MASTER_KEY
 

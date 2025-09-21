@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio
 import logging
+import os
 
 from src.cdd.router import router as detect_router
 from src.acg.router import router as filing_router
@@ -68,10 +69,62 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for frontend integration
+# Enable CORS for frontend integration (env-driven, supports multiple origins)
+from src.common.config import settings
+
+# Build explicit origin list, never use '*'
+origins_raw = (
+    settings.CORS_ALLOW_ORIGINS
+    or settings.FRONTEND_URLS
+    or settings.ALLOWED_ORIGINS
+    or settings.FRONTEND_URL
+)
+
+computed_origins = []
+if origins_raw:
+    computed_origins = [o.strip() for o in origins_raw.split(",") if o.strip() and o.strip() != "*"]
+
+# Safe defaults include the known frontend domain and local dev ports
+default_origins = [
+    settings.FRONTEND_URL or "",
+    "https://opside-complete-frontend.onrender.com",
+    "http://localhost:3000",
+    "http://localhost:5173",
+]
+
+# Merge, dedupe, and drop empties
+allow_origins = []
+seen = set()
+for o in (computed_origins or default_origins):
+    if o and o not in seen:
+        seen.add(o)
+        allow_origins.append(o)
+
+# Debug diagnostics and temporary hardcoded CORS for verification
+print("DEBUG: Environment variables:")
+print("FRONTEND_URL:", repr(os.getenv("FRONTEND_URL")))
+print("CORS_ALLOW_ORIGINS:", repr(os.getenv("CORS_ALLOW_ORIGINS")))
+print("ALLOWED_ORIGINS:", repr(os.getenv("ALLOWED_ORIGINS")))
+print("ALLOWED_ORIGIN_REGEX:", repr(os.getenv("ALLOWED_ORIGIN_REGEX")))
+
+print("DEBUG: origins_raw:", repr(origins_raw))
+print("DEBUG: computed_origins:", computed_origins)
+print("DEBUG: default_origins:", default_origins)
+print("DEBUG: Final allow_origins before override:", allow_origins)
+
+# TEMPORARY hardcode (requested) to validate CORS on Render
+allow_origin_regex = settings.ALLOWED_ORIGIN_REGEX
+print("DEBUG: allow_origin_regex before override:", repr(allow_origin_regex))
+
+allow_origins = ["https://opside-complete-frontend.onrender.com"]
+allow_origin_regex = r"^https://opside-complete-frontend\.onrender\.com$"
+print("DEBUG: Using hardcoded allow_origins:", allow_origins)
+print("DEBUG: Using hardcoded allow_origin_regex:", allow_origin_regex)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "https://app.clario.ai"],
+    allow_origins=allow_origins,
+    allow_origin_regex=allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -147,6 +200,14 @@ def root():
 async def services_status():
     """Get status of all microservices"""
     return service_directory.get_all_services_status()
+
+@app.get("/cors/debug")
+def cors_debug():
+    """Expose current CORS configuration for debugging deployments"""
+    return {
+        "allow_origins": allow_origins,
+        "allow_origin_regex": allow_origin_regex,
+    }
 
 
 

@@ -197,13 +197,16 @@ class EventSystem:
                 self.remove_sse_connection(user_id, queue)
                 raise
         
+        # Build CORS-safe headers (no wildcard when credentials are used)
+        from src.common.config import settings
+        origin = settings.FRONTEND_URL
         return StreamingResponse(
             event_generator(),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
-                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Origin": origin,
                 "Access-Control-Allow-Headers": "Cache-Control"
             }
         )
