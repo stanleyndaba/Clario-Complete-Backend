@@ -66,6 +66,12 @@ class Settings(BaseModel):
     REFUND_ENGINE_URL: str = os.getenv("REFUND_ENGINE_URL", "http://localhost:3002")
     MCDE_URL: str = os.getenv("MCDE_URL", "http://localhost:8000")
     
+    # S3 / Object Storage configuration
+    S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "")
+    S3_ACCESS_KEY: str = os.getenv("S3_ACCESS_KEY", "")
+    S3_SECRET_KEY: str = os.getenv("S3_SECRET_KEY", "")
+    S3_REGION: str = os.getenv("S3_REGION", "us-east-1")
+    
     @property
     def is_postgresql(self) -> bool:
         """Check if using PostgreSQL database"""
