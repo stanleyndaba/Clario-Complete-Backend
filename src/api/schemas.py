@@ -531,6 +531,29 @@ class EvidenceMatchingResult(BaseModel):
     action_taken: str
     created_at: str
 
+# ============================================================================
+# DISPUTE SUBMISSION SCHEMAS (compatibility)
+# ============================================================================
+
+class SubmissionStatus(str, Enum):
+    """Submission status values"""
+    PENDING = "pending"
+    SUBMITTED = "submitted"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    FAILED = "failed"
+
+class DisputeSubmission(BaseModel):
+    """Minimal dispute submission schema for imports and responses"""
+    id: str
+    submission_id: Optional[str] = None
+    amazon_case_id: Optional[str] = None
+    status: str
+    message: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+
 class AutoSubmitRequest(BaseModel):
     """Request to auto-submit evidence"""
     dispute_id: str
