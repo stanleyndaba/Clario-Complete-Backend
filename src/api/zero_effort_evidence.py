@@ -35,6 +35,7 @@ enhanced_smart_prompts_service.add_event_handler(
     lambda event_type, data: event_system.emit_event(event_type, data, data.get('user_id'))
 )
 proof_packet_worker.add_event_handler(
+    "proof_packet_processed",
     lambda event_type, data: event_system.emit_event(event_type, data, data.get('user_id'))
 )
 
