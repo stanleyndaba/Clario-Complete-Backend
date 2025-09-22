@@ -20,6 +20,10 @@ const config = {
   REDIS_URL: process.env.REDIS_URL,
   JWT_SECRET: process.env.JWT_SECRET || 'demo-secret-change-me',
 
+  // Logging
+  LOG_LEVEL: process.env.LOG_LEVEL || 'info',
+  LOG_FILE: process.env.LOG_FILE || 'logs/app.log',
+
   // CORS
   FRONTEND_URL: process.env.FRONTEND_URL,
   CORS_ALLOW_ORIGINS: process.env.CORS_ALLOW_ORIGINS,

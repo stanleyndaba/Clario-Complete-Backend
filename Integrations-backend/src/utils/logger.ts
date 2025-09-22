@@ -20,12 +20,16 @@ const logger = winston.createLogger({
         winston.format.simple()
       )
     }),
-    // File transport
-    new winston.transports.File({
-      filename: path.join(process.cwd(), config.LOG_FILE),
-      maxsize: 5242880, // 5MB
-      maxFiles: 5,
-    }),
+    // File transport (guarded)
+    ...(config.LOG_FILE ? [
+      new winston.transports.File({
+        filename: path.isAbsolute(config.LOG_FILE)
+          ? config.LOG_FILE
+          : path.join(process.cwd(), config.LOG_FILE),
+        maxsize: 5242880, // 5MB
+        maxFiles: 5,
+      })
+    ] : []),
     // Error file transport
     new winston.transports.File({
       filename: path.join(process.cwd(), 'logs/error.log'),
@@ -36,11 +40,15 @@ const logger = winston.createLogger({
   ]
 });
 
-// Create logs directory if it doesn't exist
+// Create logs directory if it doesn't exist (best-effort)
 import fs from 'fs';
-const logsDir = path.join(process.cwd(), 'logs');
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir, { recursive: true });
+try {
+  const logsDir = path.join(process.cwd(), 'logs');
+  if (!fs.existsSync(logsDir)) {
+    fs.mkdirSync(logsDir, { recursive: true });
+  }
+} catch (e) {
+  // Ignore logging directory errors in demo mode
 }
 
 export default logger; 
