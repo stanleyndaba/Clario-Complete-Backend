@@ -1,6 +1,7 @@
 import os
 from pydantic import BaseModel
 from urllib.parse import urlparse
+from urllib.parse import parse_qsl
 from dotenv import load_dotenv
 
 # Load .env file
@@ -92,14 +93,8 @@ class Settings(BaseModel):
     def get_database_config(self) -> dict:
         """Get database configuration based on type"""
         if self.is_postgresql:
-            parsed = urlparse(self.DB_URL)
-            return {
-                "host": parsed.hostname or "localhost",
-                "port": parsed.port or 5432,
-                "database": parsed.path.lstrip("/") or "opside_fba",
-                "user": parsed.username or "postgres",
-                "password": parsed.password or "password"
-            }
+            # Return DSN so options like sslmode are preserved end-to-end
+            return {"dsn": self.DB_URL}
         else:
             return {"database": self.DB_URL}
 

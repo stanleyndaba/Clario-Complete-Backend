@@ -198,6 +198,7 @@ class DatabaseManager:
                                 "INSERT INTO schema_migrations (filename) VALUES (%s) ON CONFLICT (filename) DO NOTHING",
                                 (os.path.basename(f),)
                             )
+                        conn.commit()
                         return
 
                 for filepath in sql_files:
@@ -216,6 +217,7 @@ class DatabaseManager:
                         # Best-effort tolerance for idempotent statements in already-initialized DBs
                         conn.rollback()
                         raise
+                conn.commit()
     
     @contextmanager
     def _connection(self):
