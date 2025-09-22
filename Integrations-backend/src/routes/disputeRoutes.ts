@@ -1,3 +1,4 @@
+// Middleware standardized: using authenticateToken with guard for demo stability
 import { Router } from 'express';
 import { authenticateToken, AuthenticatedRequest } from '../middleware/authMiddleware';
 import enhancedDetectionService from '../services/enhancedDetectionService';
