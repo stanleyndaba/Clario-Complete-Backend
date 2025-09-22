@@ -99,7 +99,7 @@ class ImageParser:
                 processing_time_ms=self._get_processing_time_ms(start_time)
             )
     
-    def _load_image(self, file_path: str, file_content: bytes = None) -> Optional[Image.Image]:
+    def _load_image(self, file_path: str, file_content: bytes = None) -> Optional[Any]:
         """Load image from file or bytes"""
         try:
             if file_content:

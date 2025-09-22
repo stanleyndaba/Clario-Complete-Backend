@@ -375,7 +375,7 @@ class PDFParser:
         
         return min(confidence, 1.0)
     
-    def _pdf_to_images(self, file_path: str, file_content: bytes = None) -> List[Image.Image]:
+    def _pdf_to_images(self, file_path: str, file_content: bytes = None) -> List[Any]:
         """Convert PDF pages to images for OCR"""
         # This is a placeholder - in production you would use pdf2image or similar
         # For now, return empty list
