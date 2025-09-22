@@ -4,7 +4,7 @@
 // Core services
 export { default as notificationService, NotificationService } from './services/notification_service';
 export { default as EmailService } from './services/delivery/email_service';
-export { default as WebSocketService } from './services/delivery/websocket_service';
+// export { default as WebSocketService } from './services/delivery/websocket_service'; // disabled for demo
 export { default as NotificationWorker } from './workers/notification_worker';
 
 // Models
