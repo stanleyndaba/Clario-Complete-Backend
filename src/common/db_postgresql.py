@@ -60,6 +60,9 @@ class DatabaseManager:
             print("Database initialization disabled by DISABLE_DB env var")
             self.connection_pool = None
         else:
+            # Enforce PostgreSQL in production to avoid accidental SQLite fallback
+            if settings.ENV.lower() == "production" and not self.is_postgresql:
+                raise RuntimeError("PostgreSQL is required in production. Set DATABASE_URL.")
             try:
                 self._init_db()
             except Exception as e:
@@ -94,6 +97,9 @@ class DatabaseManager:
             print("✅ PostgreSQL connection established")
         except Exception as e:
             print(f"PostgreSQL initialization failed: {e}")
+            if settings.ENV.lower() == "production":
+                # Do not fall back in production
+                raise
             if SQLITE_AVAILABLE:
                 print("Falling back to SQLite...")
                 self.is_postgresql = False
