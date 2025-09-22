@@ -55,6 +55,7 @@ export class NotificationService {
   constructor() {
     this.emailService = new EmailService();
     this.websocketService = new NoopWebSocketService();
+    // Demo mode: disable BullMQ worker to avoid QueueScheduler runtime issues
     this.worker = new NoopNotificationWorker();
   }
 
