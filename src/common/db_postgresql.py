@@ -12,6 +12,8 @@ from src.common.config import settings
 import os
 import tempfile
 from cryptography.fernet import Fernet
+from contextlib import contextmanager
+from glob import glob
 
 # Database connection imports
 try:
@@ -83,19 +85,12 @@ class DatabaseManager:
                 maxconn=10,
                 **config
             )
-            # Test connection and run migrations
-            with self._get_connection() as conn:
+            # Test connection
+            with self._connection() as conn:
                 with conn.cursor() as cursor:
-                    # Check if tables exist, if not run migration
-                    cursor.execute("""
-                        SELECT EXISTS (
-                            SELECT FROM information_schema.tables 
-                            WHERE table_schema = 'public' 
-                            AND table_name = 'claims'
-                        );
-                    """)
-                    if not cursor.fetchone()[0]:
-                        self._run_postgresql_migration()
+                    cursor.execute("SELECT 1")
+            # Run migrations (idempotent)
+            self._run_postgresql_migration()
             print("✅ PostgreSQL connection established")
         except Exception as e:
             print(f"PostgreSQL initialization failed: {e}")
@@ -165,59 +160,96 @@ class DatabaseManager:
             raise
     
     def _run_postgresql_migration(self):
-        """Run PostgreSQL migration script"""
-        with self._get_connection() as conn:
+        """Run PostgreSQL migrations idempotently across all SQL files in src/migrations"""
+        migrations_path = 'src/migrations'
+        sql_files = sorted([p for p in glob(os.path.join(migrations_path, '*.sql'))])
+        if not sql_files:
+            return
+
+        with self._connection() as conn:
             with conn.cursor() as cursor:
-                # Run initial migration
-                with open('src/migrations/002_postgresql_init.sql', 'r') as f:
-                    migration_sql = f.read()
-                    cursor.execute(migration_sql)
-                
-                # Run evidence validator migration
-                with open('src/migrations/003_evidence_validator.sql', 'r') as f:
-                    migration_sql = f.read()
-                    cursor.execute(migration_sql)
-                
-                # Run document parser migration
-                with open('src/migrations/004_document_parser.sql', 'r') as f:
-                    migration_sql = f.read()
-                    cursor.execute(migration_sql)
-                
-                # Run evidence matching migration
-                with open('src/migrations/005_evidence_matching.sql', 'r') as f:
-                    migration_sql = f.read()
-                    cursor.execute(migration_sql)
-                
-                # Run zero-effort evidence migration
-                with open('src/migrations/006_zero_effort_evidence.sql', 'r') as f:
-                    migration_sql = f.read()
-                    cursor.execute(migration_sql)
-                
-                conn.commit()
+                # Track applied migrations
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS schema_migrations (
+                        filename TEXT PRIMARY KEY,
+                        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+
+                cursor.execute("SELECT filename FROM schema_migrations")
+                applied = {row[0] for row in cursor.fetchall()}
+
+                # If database already initialized (e.g., via docker initdb), bootstrap tracking
+                if not applied:
+                    cursor.execute(
+                        """
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.tables 
+                            WHERE table_schema = 'public' AND table_name = 'claims'
+                        )
+                        """
+                    )
+                    claims_exists = cursor.fetchone()[0]
+                    if claims_exists:
+                        for f in sql_files:
+                            cursor.execute(
+                                "INSERT INTO schema_migrations (filename) VALUES (%s) ON CONFLICT (filename) DO NOTHING",
+                                (os.path.basename(f),)
+                            )
+                        return
+
+                for filepath in sql_files:
+                    name = os.path.basename(filepath)
+                    if name in applied:
+                        continue
+                    with open(filepath, 'r') as f:
+                        sql_text = f.read()
+                    try:
+                        cursor.execute(sql_text)
+                        cursor.execute(
+                            "INSERT INTO schema_migrations (filename) VALUES (%s)",
+                            (name,)
+                        )
+                    except Exception as e:
+                        # Best-effort tolerance for idempotent statements in already-initialized DBs
+                        conn.rollback()
+                        raise
     
-    def _get_connection(self):
-        """Get database connection"""
+    @contextmanager
+    def _connection(self):
+        """Context manager that yields a connection and safely returns/closes it."""
         if self.is_postgresql and self.connection_pool:
-            return self.connection_pool.getconn()
+            conn = self.connection_pool.getconn()
+            try:
+                yield conn
+            finally:
+                try:
+                    self.connection_pool.putconn(conn)
+                except Exception:
+                    pass
         else:
-            return sqlite3.connect(self.db_url)
-    
-    def _return_connection(self, conn):
-        """Return connection to pool (PostgreSQL only)"""
-        if self.is_postgresql and self.connection_pool:
-            self.connection_pool.putconn(conn)
+            conn = sqlite3.connect(self.db_url)
+            try:
+                yield conn
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
     
     def _execute_query(self, query: str, params: tuple = (), fetch: bool = False, fetch_one: bool = False):
         """Execute query with proper connection handling"""
         if self.is_postgresql:
-            with self._get_connection() as conn:
+            with self._connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                     cursor.execute(query, params)
                     if fetch:
                         return cursor.fetchall() if not fetch_one else cursor.fetchone()
                     conn.commit()
         else:
-            with self._get_connection() as conn:
+            with self._connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(query, params)
                 if fetch:

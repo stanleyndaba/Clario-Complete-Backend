@@ -9,7 +9,7 @@ load_dotenv()
 class Settings(BaseModel):
     # Database configuration
     # Prefer DATABASE_URL if present (Render/Heroku style), fallback to DB_URL
-    DB_URL: str = os.getenv("DB_URL") or os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/opside_fba")
+    DB_URL: str = os.getenv("DATABASE_URL") or os.getenv("DB_URL", "postgresql://postgres:password@localhost:5432/opside_fba")
     DB_TYPE: str = os.getenv("DB_TYPE", "postgresql")  # postgresql or sqlite
     AUTO_FILE_THRESHOLD: float = float(os.getenv("AUTO_FILE_THRESHOLD", "0.75"))
     ENV: str = os.getenv("ENV", "dev")
