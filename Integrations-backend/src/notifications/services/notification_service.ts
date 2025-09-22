@@ -16,7 +16,12 @@ class NoopWebSocketService {
     return;
   }
 }
-import { NotificationWorker } from '../workers/notification_worker';
+// Disable BullMQ worker for demo stability (avoid QueueScheduler import issues)
+class NoopNotificationWorker {
+  async initialize(): Promise<void> { return; }
+  async queueNotification(_id: string, _options?: any): Promise<void> { return; }
+  async shutdown(): Promise<void> { return; }
+}
 
 const logger = getLogger('NotificationService');
 
@@ -45,12 +50,12 @@ export interface NotificationStats {
 export class NotificationService {
   private emailService: EmailService;
   private websocketService: NoopWebSocketService;
-  private worker: NotificationWorker;
+  private worker: NoopNotificationWorker;
 
   constructor() {
     this.emailService = new EmailService();
     this.websocketService = new NoopWebSocketService();
-    this.worker = new NotificationWorker();
+    this.worker = new NoopNotificationWorker();
   }
 
   /**
