@@ -9,7 +9,13 @@ import Notification, {
   NotificationChannel
 } from '../models/notification';
 import { EmailService } from './delivery/email_service';
-import { WebSocketService } from './delivery/websocket_service';
+// Temporary stub to avoid importing the broken WebSocket service during demo
+class NoopWebSocketService {
+  async sendNotification(_userId: string, _notification: any): Promise<void> {
+    // no-op for demo
+    return;
+  }
+}
 import { NotificationWorker } from '../workers/notification_worker';
 
 const logger = getLogger('NotificationService');
@@ -38,12 +44,12 @@ export interface NotificationStats {
 
 export class NotificationService {
   private emailService: EmailService;
-  private websocketService: WebSocketService;
+  private websocketService: NoopWebSocketService;
   private worker: NotificationWorker;
 
   constructor() {
     this.emailService = new EmailService();
-    this.websocketService = new WebSocketService();
+    this.websocketService = new NoopWebSocketService();
     this.worker = new NotificationWorker();
   }
 
