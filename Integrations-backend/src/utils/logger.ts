@@ -62,3 +62,12 @@ try {
 }
 
 export default logger; 
+
+// Named helper to get a contextual child logger for modules expecting getLogger
+export const getLogger = (context?: string) => {
+  try {
+    return context ? logger.child({ context }) : logger;
+  } catch {
+    return logger;
+  }
+};
