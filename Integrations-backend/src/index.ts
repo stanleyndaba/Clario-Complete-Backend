@@ -7,7 +7,8 @@ import { createServer } from 'http';
 import config from './config/env';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './utils/errorHandler';
-import websocketService from './services/websocketService';
+// Temporarily disable WebSocket service for demo stability
+// import websocketService from './services/websocketService';
 
 // Import routes
 import amazonRoutes from './routes/amazonRoutes';
@@ -167,8 +168,14 @@ const startBackgroundJobs = () => {
 const startServer = () => {
   const port = config.PORT;
   
-  // Initialize WebSocket service
-  websocketService.initialize(server);
+  // Initialize WebSocket service (skipped for demo)
+  try {
+    // const { websocketService } = await import('./services/websocketService');
+    // websocketService.initialize(server);
+    logger.info('WebSocket service temporarily disabled for demo');
+  } catch (e) {
+    logger.warn('WebSocket service skipped for demo', { error: (e as any)?.message });
+  }
   
   server.listen(port, () => {
     logger.info(`Server started on port ${port}`, {
