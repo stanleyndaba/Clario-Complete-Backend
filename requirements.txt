@@ -10,6 +10,7 @@ cryptography==42.0.5
 psycopg2-binary==2.9.9
 sqlalchemy==2.0.23
 alembic==1.13.1
+psutil==5.9.8
 
 # Document parsing dependencies
 PyPDF2==3.0.1
