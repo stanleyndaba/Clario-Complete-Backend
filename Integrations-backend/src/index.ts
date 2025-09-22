@@ -3,7 +3,6 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
-import { createServer } from 'http';
 import config from './config/env';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './utils/errorHandler';
@@ -36,7 +35,6 @@ import detectionService from './services/detectionService';
 import enhancedDetectionService from './services/enhancedDetectionService';
 
 const app = express();
-const server = createServer(app);
 
 // Security middleware
 app.use(helmet());
@@ -177,7 +175,7 @@ const startServer = () => {
     logger.warn('WebSocket service skipped for demo', { error: (e as any)?.message });
   }
   
-  server.listen(port, '0.0.0.0', () => {
+  app.listen(port, '0.0.0.0', () => {
     logger.info(`Server started on port ${port}`, {
       port,
       environment: config.NODE_ENV,
