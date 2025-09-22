@@ -1,6 +1,18 @@
 import winston from 'winston';
 import path from 'path';
 import config from '../config/env';
+// Resolve log file path safely to avoid undefined causing path.join errors
+const resolvedLogFile = (() => {
+  try {
+    const candidate = (config as any)?.LOG_FILE as string | undefined;
+    if (!candidate || typeof candidate !== 'string' || candidate.trim().length === 0) {
+      return null;
+    }
+    return path.isAbsolute(candidate) ? candidate : path.join(process.cwd(), candidate);
+  } catch {
+    return null;
+  }
+})();
 
 const logFormat = winston.format.combine(
   winston.format.timestamp(),
@@ -21,11 +33,9 @@ const logger = winston.createLogger({
       )
     }),
     // File transport (guarded)
-    ...(config.LOG_FILE ? [
+    ...(resolvedLogFile ? [
       new winston.transports.File({
-        filename: path.isAbsolute(config.LOG_FILE)
-          ? config.LOG_FILE
-          : path.join(process.cwd(), config.LOG_FILE),
+        filename: resolvedLogFile,
         maxsize: 5242880, // 5MB
         maxFiles: 5,
       })
