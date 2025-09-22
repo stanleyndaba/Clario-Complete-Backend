@@ -2,10 +2,18 @@
  * Centralizes environment variables with sane defaults for demo.
  */
 
+import crypto from 'crypto';
+
 const toInt = (value: string | undefined, fallback: number): number => {
   const parsed = parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
+
+// Derive a stable 32-byte hex encryption key if not provided, from JWT_SECRET
+const DERIVED_ENCRYPTION_KEY = crypto
+  .createHash('sha256')
+  .update(process.env.JWT_SECRET || 'demo-secret-change-me')
+  .digest('hex');
 
 const config = {
   NODE_ENV: process.env.NODE_ENV || 'production',
@@ -19,6 +27,7 @@ const config = {
   DATABASE_URL: process.env.DATABASE_URL || '',
   REDIS_URL: process.env.REDIS_URL,
   JWT_SECRET: process.env.JWT_SECRET || 'demo-secret-change-me',
+  ENCRYPTION_KEY: process.env.ENCRYPTION_KEY || DERIVED_ENCRYPTION_KEY,
 
   // Logging
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',

@@ -13,12 +13,16 @@ export class TokenManager {
   private encryptionKey: Buffer;
 
   constructor() {
-    this.encryptionKey = Buffer.from(config.ENCRYPTION_KEY, 'hex');
+    const keyHex = (config as any)?.ENCRYPTION_KEY as string | undefined;
+    if (!keyHex || keyHex.length < 64) {
+      logger.warn('ENCRYPTION_KEY missing or too short; using derived key from JWT_SECRET for demo');
+    }
+    this.encryptionKey = Buffer.from(keyHex || '', 'hex');
   }
 
   private encrypt(text: string): string {
     const iv = crypto.randomBytes(16);
-    const cipher = crypto.createCipher('aes-256-cbc', this.encryptionKey);
+    const cipher = crypto.createCipheriv('aes-256-cbc', this.encryptionKey, iv);
     let encrypted = cipher.update(text, 'utf8', 'hex');
     encrypted += cipher.final('hex');
     return iv.toString('hex') + ':' + encrypted;
@@ -28,7 +32,7 @@ export class TokenManager {
     const textParts = encryptedText.split(':');
     const iv = Buffer.from(textParts.shift()!, 'hex');
     const encrypted = textParts.join(':');
-    const decipher = crypto.createDecipher('aes-256-cbc', this.encryptionKey);
+    const decipher = crypto.createDecipheriv('aes-256-cbc', this.encryptionKey, iv);
     let decrypted = decipher.update(encrypted, 'hex', 'utf8');
     decrypted += decipher.final('utf8');
     return decrypted;
