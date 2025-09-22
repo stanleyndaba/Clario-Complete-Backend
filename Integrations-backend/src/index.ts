@@ -166,7 +166,7 @@ const startBackgroundJobs = () => {
 
 // Start server
 const startServer = () => {
-  const port = config.PORT;
+  const port = Number(process.env.PORT || config.PORT);
   
   // Initialize WebSocket service (skipped for demo)
   try {
@@ -177,7 +177,7 @@ const startServer = () => {
     logger.warn('WebSocket service skipped for demo', { error: (e as any)?.message });
   }
   
-  server.listen(port, () => {
+  server.listen(port, '0.0.0.0', () => {
     logger.info(`Server started on port ${port}`, {
       port,
       environment: config.NODE_ENV,
