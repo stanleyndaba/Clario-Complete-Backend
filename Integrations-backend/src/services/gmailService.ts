@@ -29,7 +29,7 @@ export interface GmailOAuthResponse {
 }
 
 export interface GmailListResponse {
-  messages: Array<{ id: string; threadId: string };
+  messages: Array<{ id: string; threadId: string }>;
   nextPageToken?: string;
   resultSizeEstimate: number;
 }
