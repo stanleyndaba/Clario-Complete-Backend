@@ -5,8 +5,8 @@
 
 import { Request, Response } from 'express';
 import { claimRiskScoringService, ClaimRiskFeatures } from '../../services/claimRiskScoringService';
-import { CertaintyRepo } from './certaintyRepo';
-import { TransactionJournalService } from './transactionJournalService';
+import { CertaintyRepo } from '../services/certaintyRepo';
+import { TransactionJournalService } from '../services/transactionJournalService';
 
 export class ClaimRiskController {
   /**
