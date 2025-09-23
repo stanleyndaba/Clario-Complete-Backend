@@ -33,6 +33,15 @@ class RefundEngineSettings(BaseSettings):
     class Config:
         env_prefix = 'refund_engine_'
 
+class SecuritySettings(BaseSettings):
+    cors_origins: List[str] = Field(default=['*'])
+    secret_key: str = Field(default=os.getenv('SECRET_KEY', 'dev-secret-key'))
+    algorithm: str = Field(default='HS256')
+    access_token_expire_minutes: int = Field(default=30)
+    
+    class Config:
+        env_prefix = 'security_'
+
 class ApiSettings(BaseSettings):
     host: str = Field(default='0.0.0.0')
     port: int = Field(default=10000)
@@ -44,6 +53,7 @@ class Settings(BaseSettings):
     database: DatabaseSettings = DatabaseSettings()
     document: DocumentSettings = DocumentSettings()
     refund_engine: RefundEngineSettings = RefundEngineSettings()
+    security: SecuritySettings = SecuritySettings()
     api: ApiSettings = ApiSettings()
     debug: bool = Field(default=False)
 
