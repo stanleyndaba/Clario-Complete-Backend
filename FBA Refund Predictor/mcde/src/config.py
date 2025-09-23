@@ -16,6 +16,10 @@ class DocumentSettings(BaseSettings):
     dpi: int = Field(default=300)
     resize_width: int = Field(default=1600)
     resize_height: int = Field(default=1200)
+    ocr_confidence_threshold: float = Field(default=0.7)
+    ocr_timeout: int = Field(default=30)
+    ocr_config: str = Field(default="--oem 3 --psm 6")
+    ocr_language: str = Field(default="eng")
     
     class Config:
         env_prefix = 'document_'
