@@ -1,8 +1,9 @@
 import { spawn } from 'child_process';
 import * as path from 'path';
-import { logger } from '../utils/logger';
-import { TransactionJournalService } from './transactionJournalService';
-import { CertaintyRepo } from './certaintyRepo';
+// Fallback to console if logger util is not present
+const logger = console;
+import { TransactionJournalService } from '../api/services/transactionJournalService';
+import { CertaintyRepo } from '../api/services/certaintyRepo';
 
 export interface ClaimData {
   claimId: string;

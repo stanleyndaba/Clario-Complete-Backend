@@ -108,7 +108,7 @@ export interface RefundCase {
   product_category: string;
   days_since_purchase: number;
   claim_description?: string;
-  status: 'pending' | 'approved' | 'rejected' | 'processing';
+  status: 'pending' | 'approved' | 'rejected' | 'processing' | 'paid';
   created_at: Date;
   updated_at: Date;
   ml_prediction?: number;
