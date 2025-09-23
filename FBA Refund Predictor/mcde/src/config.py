@@ -6,7 +6,8 @@ import os
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import yaml
-from pydantic import BaseSettings, Field, validator
+from pydantic_settings import BaseSettings
+from pydantic import Field, validator
 
 
 class DatabaseSettings(BaseSettings):
