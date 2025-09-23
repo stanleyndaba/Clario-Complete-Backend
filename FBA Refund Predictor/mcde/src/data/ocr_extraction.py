@@ -29,8 +29,8 @@ class OCRExtractionService:
     
     def __init__(self):
         self.confidence_threshold = settings.document.ocr_confidence_threshold
-        self.tesseract_config = settings.document.get("ocr_config", "--oem 3 --psm 6")
-        self.language = settings.document.get("ocr_language", "eng")
+        self.tesseract_config = settings.document.ocr_config
+        self.language = settings.document.ocr_language
     
     async def extract_text_from_image(
         self,
