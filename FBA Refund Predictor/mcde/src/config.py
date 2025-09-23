@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field, validator
-from typing import Optional
+from typing import Optional, List
 import os
 
 class DatabaseSettings(BaseSettings):
@@ -8,6 +8,17 @@ class DatabaseSettings(BaseSettings):
     
     class Config:
         env_prefix = 'database_'
+
+class DocumentSettings(BaseSettings):
+    supported_formats: List[str] = Field(default=['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.tif'])
+    max_file_size: int = Field(default=50_000_000)  # 50MB
+    upload_dir: str = Field(default='./uploads')
+    dpi: int = Field(default=300)
+    resize_width: int = Field(default=1600)
+    resize_height: int = Field(default=1200)
+    
+    class Config:
+        env_prefix = 'document_'
 
 class ApiSettings(BaseSettings):
     host: str = Field(default='0.0.0.0')
@@ -18,6 +29,7 @@ class ApiSettings(BaseSettings):
 
 class Settings(BaseSettings):
     database: DatabaseSettings = DatabaseSettings()
+    document: DocumentSettings = DocumentSettings()
     api: ApiSettings = ApiSettings()
     debug: bool = Field(default=False)
 
