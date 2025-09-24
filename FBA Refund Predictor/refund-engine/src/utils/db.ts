@@ -46,7 +46,7 @@ export class Database {
     try {
       // Set RLS context if userId is provided
       if (userId) {
-        await client.query('SET LOCAL app.current_user_id = $1', [userId]);
+        await client.query('SET LOCAL public.current_user_id = $1', [userId]);
       }
       
       const result = await client.query(text, params);
@@ -64,7 +64,7 @@ export class Database {
       
       // Set RLS context if userId is provided
       if (userId) {
-        await client.query('SET LOCAL app.current_user_id = $1', [userId]);
+        await client.query('SET LOCAL public.current_user_id = $1', [userId]);
       }
       
       const result = await callback(client);
@@ -134,10 +134,10 @@ export async function initializeDatabase(): Promise<void> {
     CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
     
     -- Create custom type for user context
-    CREATE OR REPLACE FUNCTION app.set_user_id(user_id TEXT)
+    CREATE OR REPLACE FUNCTION public.set_user_id(user_id TEXT)
     RETURNS VOID AS $$
     BEGIN
-      PERFORM set_config('app.current_user_id', user_id, false);
+      PERFORM set_config('public.current_user_id', user_id, false);
     END;
     $$ LANGUAGE plpgsql;
     
@@ -178,12 +178,12 @@ export async function initializeDatabase(): Promise<void> {
     -- Create RLS policies for refund_engine_cases
     DROP POLICY IF EXISTS cases_user_policy ON refund_engine_cases;
     CREATE POLICY cases_user_policy ON refund_engine_cases
-      FOR ALL USING (user_id::text = current_setting('app.current_user_id', true));
+      FOR ALL USING (user_id::text = current_setting('public.current_user_id', true));
     
     -- Create RLS policies for refund_engine_ledger
     DROP POLICY IF EXISTS ledger_user_policy ON refund_engine_ledger;
     CREATE POLICY ledger_user_policy ON refund_engine_ledger
-      FOR ALL USING (user_id::text = current_setting('app.current_user_id', true));
+      FOR ALL USING (user_id::text = current_setting('public.current_user_id', true));
     
     -- Create indexes
     CREATE INDEX IF NOT EXISTS idx_cases_user_id ON refund_engine_cases(user_id);
