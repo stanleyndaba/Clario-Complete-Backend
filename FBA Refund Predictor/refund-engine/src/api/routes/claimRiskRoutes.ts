@@ -5,7 +5,7 @@
 
 import { Router } from 'express';
 import { ClaimRiskController } from '../controllers/claimRiskController';
-import { authenticateToken } from '../middleware/auth';
+import { authenticateToken } from '../../middleware/authMiddleware';
 
 const router = Router();
 
