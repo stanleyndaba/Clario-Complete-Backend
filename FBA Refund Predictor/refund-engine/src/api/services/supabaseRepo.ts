@@ -1,4 +1,4 @@
-import fetch from 'node-fetch';
+// Using global fetch available in Node 18+
 
 const SUPABASE_URL = process.env['SUPABASE_URL'] as string;
 const SUPABASE_SERVICE_ROLE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'] as string;

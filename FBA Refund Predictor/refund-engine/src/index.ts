@@ -58,6 +58,25 @@ app.get('/health', async (req, res) => {
   }
 });
 
+// Backwards-compatible alias for services expecting /api/health
+app.get('/api/health', async (req, res) => {
+  try {
+    const dbConnected = await db.testConnection();
+    res.status(200).json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      database: dbConnected ? 'connected' : 'disconnected',
+      version: '1.0.0'
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'unhealthy',
+      timestamp: new Date().toISOString(),
+      error: 'Health check failed'
+    });
+  }
+});
+
 // API routes
 app.use('/api/v1/claims', claimsRoutes);
 app.use('/api/v1/ledger', ledgerRoutes);
