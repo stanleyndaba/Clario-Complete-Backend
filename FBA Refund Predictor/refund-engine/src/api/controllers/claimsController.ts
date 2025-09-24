@@ -205,9 +205,9 @@ export class ClaimsController {
 
       // If status transitioned to paid, emit billing webhook to stripe-payments and create billing audit
       try {
-        const prevStatus = prev?.status;
-        const newStatus = updatedClaim?.status;
-        if (newStatus && newStatus === 'paid' && prevStatus !== newStatus) {
+        const prevStatus = prev?.status as any;
+        const newStatus = updatedClaim?.status as any;
+        if (newStatus && String(newStatus) === 'paid' && prevStatus !== newStatus) {
           const stripeUrl = process.env.STRIPE_PAYMENTS_URL;
           if (stripeUrl) {
             const idempotencyKey = `claim-${id}-status-${newStatus}`;
