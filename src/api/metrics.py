@@ -23,6 +23,7 @@ MATCH_CONFIDENCE = Histogram('evidence_match_confidence', 'Distribution of match
 TIME_TO_EVIDENCE = Histogram('evidence_time_to_evidence_seconds', 'Time from ingestion job start to document availability')
 QUEUE_LAG = Gauge('evidence_queue_lag_jobs', 'Queued ingestion jobs awaiting processing')
 PROVIDER_ERRORS = Counter('evidence_provider_errors_total', 'Provider API error responses', ['provider','status'])
+DLQ_TOTAL = Counter('evidence_dlq_total', 'Number of jobs moved to DLQ')
 
 @router.get("/api/metrics/recoveries", response_model=RecoveryMetrics)
 async def get_recovery_metrics(

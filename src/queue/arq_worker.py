@@ -43,6 +43,11 @@ async def ingest_source(ctx, source_id: str, user_id: str) -> str:
                     """,
                     (job_id, source_id, user_id, "max attempts exceeded", {})
                 )
+        try:
+            from src.api.metrics import DLQ_TOTAL
+            DLQ_TOTAL.inc()
+        except Exception:
+            pass
     except Exception as e:
         logger.error(f"Failed to write to DLQ for job {job_id}: {e}")
     return job_id
