@@ -356,25 +356,17 @@ class EvidenceMatchingEngine:
         with self.db._get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT id, parsed_metadata, parser_confidence, extracted_data
-                    FROM evidence_documents 
-                    WHERE user_id = %s 
-                    AND (
-                        (parser_status = 'completed' AND parsed_metadata IS NOT NULL)
-                        OR extracted_data IS NOT NULL
-                    )
-                    ORDER BY created_at DESC
+                    SELECT id, parsed_metadata_unified, parser_confidence
+                    FROM evidence_documents_unified
+                    WHERE user_id = %s
+                    ORDER BY id DESC
                 """, (user_id,))
                 
                 evidence_docs = []
                 for row in cursor.fetchall():
-                    parsed = json.loads(row[1]) if row[1] else None
-                    extracted = json.loads(row[3]) if row[3] else None
-                    if not parsed and extracted:
-                        parsed = self._map_extracted_to_parsed(extracted)
                     evidence_docs.append({
                         'id': str(row[0]),
-                        'parsed_metadata': parsed or {},
+                        'parsed_metadata': json.loads(row[1]) if row[1] else {},
                         'parser_confidence': row[2] if row[2] is not None else 0.5
                     })
                 
