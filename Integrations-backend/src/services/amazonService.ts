@@ -6,6 +6,7 @@ import { createError } from '../utils/errorHandler';
 import { createStateValidator } from '../utils/stateValidator';
 import { encryptToken, decryptToken } from '../utils/tokenCrypto';
 import { getRedisClient } from '../utils/redisClient';
+import { withRetry } from '../utils/retry';
 
 export interface AmazonClaim {
   id: string;
@@ -77,13 +78,13 @@ export class AmazonService {
 
   async handleOAuthCallback(code: string, userId: string): Promise<void> {
     try {
-      const tokenResponse = await axios.post(this.authUrl, {
+      const tokenResponse = await withRetry(() => axios.post(this.authUrl, {
         grant_type: 'authorization_code',
         code,
         client_id: config.AMAZON_CLIENT_ID,
         client_secret: config.AMAZON_CLIENT_SECRET,
         redirect_uri: config.AMAZON_REDIRECT_URI
-      });
+      }), { retries: 3, minDelayMs: 300, maxDelayMs: 2500 });
 
       const tokenData: AmazonOAuthResponse = tokenResponse.data;
       const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000);
@@ -119,12 +120,12 @@ export class AmazonService {
       // Decrypt tokens before using
       const decryptedRefreshToken = decryptToken(tokenData.refreshToken);
 
-      const response = await axios.post(this.authUrl, {
+      const response = await withRetry(() => axios.post(this.authUrl, {
         grant_type: 'refresh_token',
         refresh_token: decryptedRefreshToken,
         client_id: config.AMAZON_CLIENT_ID,
         client_secret: config.AMAZON_CLIENT_SECRET
-      });
+      }), { retries: 3, minDelayMs: 300, maxDelayMs: 2500 });
 
       const newTokenData: AmazonOAuthResponse = response.data;
       const expiresAt = new Date(Date.now() + newTokenData.expires_in * 1000);

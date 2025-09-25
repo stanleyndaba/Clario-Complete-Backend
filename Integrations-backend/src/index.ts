@@ -34,6 +34,7 @@ import stripeSyncJob from './jobs/stripeSyncJob';
 import OrchestrationJobManager from './jobs/orchestrationJob';
 import detectionService from './services/detectionService';
 import enhancedDetectionService from './services/enhancedDetectionService';
+import tokenRefreshJob from './jobs/tokenRefreshJob';
 
 const app = express();
 const server = createServer(app);
@@ -139,6 +140,7 @@ const startBackgroundJobs = () => {
     amazonSyncJob.startScheduledSync();
     stripeSyncJob.startScheduledSync();
     OrchestrationJobManager.initialize();
+    tokenRefreshJob.start();
     
     // Start legacy detection job processor
     setInterval(async () => {
