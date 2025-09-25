@@ -706,6 +706,12 @@ class EvidenceIngestionService:
         """Telemetry scaffold for ingestion metrics."""
         try:
             logger.info(f"ingestion.metrics provider={provider} count={count}")
+            try:
+                # Prometheus (best-effort; safe if not initialized)
+                from src.api.metrics import DOCS_DISCOVERED
+                DOCS_DISCOVERED.labels(provider=provider).inc(count)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -814,10 +820,28 @@ class EvidenceIngestionService:
             return dt.date()
         except Exception:
             return None
+
+    def _compute_evidence_hash(self, filename: Optional[str], size_bytes: Optional[int], created_at: Optional[datetime]) -> Optional[str]:
+        """Compute a stable hash for deduplication using filename+size+day-bucket."""
+        try:
+            import hashlib
+            name = (filename or "").strip().lower()
+            size = str(size_bytes or 0)
+            day = (created_at or datetime.utcnow()).strftime("%Y-%m-%d")
+            payload = f"{name}|{size}|{day}".encode("utf-8")
+            return hashlib.sha256(payload).hexdigest()[:32]
+        except Exception:
+            return None
     
     async def _store_document(self, source_id: str, user_id: str, provider: str, doc_data: Dict[str, Any]):
         """Store document metadata in database"""
         doc_id = str(uuid.uuid4())
+        # Compute dedupe hash (filename + size + created date bucket)
+        evidence_hash = self._compute_evidence_hash(
+            doc_data.get("filename"),
+            doc_data.get("size_bytes"),
+            doc_data.get("created_at")
+        )
         
         with self.db._get_connection() as conn:
             with conn.cursor() as cursor:
@@ -826,8 +850,8 @@ class EvidenceIngestionService:
                     (id, source_id, user_id, provider, external_id, filename, size_bytes,
                      content_type, created_at, modified_at, sender, subject, message_id,
                      folder_path, metadata, processing_status, extracted_data,
-                     doc_kind, order_id, shipment_id, amount, currency, sku, asin, evidence_date)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     doc_kind, order_id, shipment_id, amount, currency, sku, asin, evidence_date, evidence_hash)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (source_id, external_id) DO NOTHING
                 """, (
                     doc_id, source_id, user_id, provider, doc_data["external_id"],
@@ -843,7 +867,8 @@ class EvidenceIngestionService:
                     None,
                     None,
                     None,
-                    self._parse_date_from_header((doc_data.get("extracted_data") or {}).get("email_date_header"))
+                    self._parse_date_from_header((doc_data.get("extracted_data") or {}).get("email_date_header")),
+                    evidence_hash
                 ))
     
     def _extract_account_email(self, provider: str, user_info: Dict[str, Any]) -> str:

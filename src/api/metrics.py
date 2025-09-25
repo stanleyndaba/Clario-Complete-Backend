@@ -11,10 +11,16 @@ from src.api.schemas import RecoveryMetrics, DashboardMetrics, DashboardOverview
 from src.services.refund_engine_client import refund_engine_client
 from src.services.stripe_client import stripe_client
 from src.common.db_postgresql import DatabaseManager
+from prometheus_client import Counter, Histogram
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 dbm = DatabaseManager()
+
+# Prometheus metrics (process-level)
+DOCS_DISCOVERED = Counter('evidence_docs_discovered_total', 'Number of evidence documents discovered', ['provider'])
+MATCH_CONFIDENCE = Histogram('evidence_match_confidence', 'Distribution of match confidence scores')
+TIME_TO_EVIDENCE = Histogram('evidence_time_to_evidence_seconds', 'Time from ingestion job start to document availability')
 
 @router.get("/api/metrics/recoveries", response_model=RecoveryMetrics)
 async def get_recovery_metrics(

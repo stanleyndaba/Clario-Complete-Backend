@@ -292,6 +292,14 @@ class EvidenceMatchingEngine:
         else:
             return "no_action"
 
+    def _map_extracted_to_parsed(self, extracted: Dict[str, Any]) -> Dict[str, Any]:
+        """Map lightweight extracted_data into parsed_metadata format expected by rules."""
+        parsed: Dict[str, Any] = {}
+        order_ids = extracted.get('order_ids') or []
+        if order_ids:
+            parsed['invoice_number'] = order_ids[0]
+        return parsed
+
     def _emit_match_metric(self, match: MatchResult) -> None:
         """Emit a structured log line for match telemetry."""
         try:
@@ -344,24 +352,30 @@ class EvidenceMatchingEngine:
                 return disputes
     
     async def _get_parsed_evidence_documents(self, user_id: str) -> List[Dict[str, Any]]:
-        """Get evidence documents with parsed metadata"""
+        """Get evidence documents with parsed or extracted metadata"""
         with self.db._get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT id, parsed_metadata, parser_confidence
+                    SELECT id, parsed_metadata, parser_confidence, extracted_data
                     FROM evidence_documents 
                     WHERE user_id = %s 
-                    AND parser_status = 'completed'
-                    AND parsed_metadata IS NOT NULL
+                    AND (
+                        (parser_status = 'completed' AND parsed_metadata IS NOT NULL)
+                        OR extracted_data IS NOT NULL
+                    )
                     ORDER BY created_at DESC
                 """, (user_id,))
                 
                 evidence_docs = []
                 for row in cursor.fetchall():
+                    parsed = json.loads(row[1]) if row[1] else None
+                    extracted = json.loads(row[3]) if row[3] else None
+                    if not parsed and extracted:
+                        parsed = self._map_extracted_to_parsed(extracted)
                     evidence_docs.append({
                         'id': str(row[0]),
-                        'parsed_metadata': json.loads(row[1]) if row[1] else {},
-                        'parser_confidence': row[2]
+                        'parsed_metadata': parsed or {},
+                        'parser_confidence': row[2] if row[2] is not None else 0.5
                     })
                 
                 return evidence_docs
