@@ -3,8 +3,8 @@ import logger from '../utils/logger';
 import amazonService from '../services/amazonService';
 import { notificationService } from '../notifications/services/notification_service';
 import tokenManager from '../utils/tokenManager';
-import { supabase } from '../database/supabaseClient';
-import financialEventsService from '../services/financialEventsService';
+// import { supabase } from '../database/supabaseClient';
+import financialEventsService, { FinancialEvent } from '../services/financialEventsService';
 import detectionService from '../services/detectionService';
 
 export class AmazonSyncJob {
@@ -23,15 +23,15 @@ export class AmazonSyncJob {
         return syncId;
       }
 
-      // Sync claims
+      // Sync claims via reimbursements report
       const claims = await amazonService.fetchClaims(userId);
       await this.saveClaimsToDatabase(userId, claims);
 
-      // Sync inventory
+      // Sync inventory via real SP-API summaries
       const inventory = await amazonService.fetchInventory(userId);
       await this.saveInventoryToDatabase(userId, inventory);
 
-      // Sync fees and financial events
+      // Sync fees via fee preview report
       const fees = await amazonService.fetchFees(userId);
       await this.saveFeesToDatabase(userId, fees);
       
@@ -68,7 +68,7 @@ export class AmazonSyncJob {
       logger.info('Saving Amazon claims to database', { userId, count: claims.length });
       
       // Mock database save
-      for (const claim of claims) {
+      for (const _ of claims) {
         // Simulate database operation
         await new Promise(resolve => setTimeout(resolve, 10));
       }
@@ -87,7 +87,7 @@ export class AmazonSyncJob {
       logger.info('Saving Amazon inventory to database', { userId, count: inventory.length });
       
       // Mock database save
-      for (const item of inventory) {
+      for (const _ of inventory) {
         // Simulate database operation
         await new Promise(resolve => setTimeout(resolve, 10));
       }
@@ -106,7 +106,7 @@ export class AmazonSyncJob {
       logger.info('Saving Amazon fees to database', { userId, count: fees.length });
       
       // Mock database save
-      for (const fee of fees) {
+      for (const _ of fees) {
         // Simulate database operation
         await new Promise(resolve => setTimeout(resolve, 10));
       }
@@ -125,9 +125,9 @@ export class AmazonSyncJob {
     try {
       logger.info('Ingesting financial events', { userId, fees_count: fees.length });
 
-      const financialEvents = fees.map(fee => ({
+      const financialEvents: FinancialEvent[] = fees.map((fee: any) => ({
         seller_id: userId,
-        event_type: 'fee' as const,
+        event_type: 'fee',
         amount: fee.amount || 0,
         currency: fee.currency || 'USD',
         raw_payload: fee,
