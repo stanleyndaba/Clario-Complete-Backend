@@ -7,7 +7,6 @@ import { initializeDatabase, db } from './utils/db';
 import claimsRoutes from './api/routes/claimsRoutes';
 import ledgerRoutes from './api/routes/ledgerRoutes';
 import discrepancyRoutes from './api/routes/discrepancyRoutes';
-import authRoutes from './api/routes/authRoutes';
 import { AmazonSubmissionWorker } from './workers/amazonSubmissionWorker';
 import amazonSubmissionRoutes from './api/routes/amazonSubmissionRoutes';
 
@@ -83,7 +82,6 @@ app.get('/api/health', async (req, res) => {
 app.use('/api/v1/claims', claimsRoutes);
 app.use('/api/v1/ledger', ledgerRoutes);
 app.use('/api/v1/discrepancies', discrepancyRoutes);
-app.use('/api/v1/auth', authRoutes);
 if (process.env.ENABLE_AMAZON_METRICS === 'true') {
   app.use('/api/v1/amazon-submissions', amazonSubmissionRoutes);
 }
