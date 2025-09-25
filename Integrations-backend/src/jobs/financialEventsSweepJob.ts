@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import logger from '../utils/logger';
 import amazonService from '../services/amazonService';
 import { FinancialEvent, financialEventsService } from '../services/financialEventsService';
+import telemetryService from '../services/telemetryService';
 import tokenManager from '../utils/tokenManager';
 
 export class FinancialEventsSweepJob {
@@ -93,6 +94,15 @@ export class FinancialEventsSweepJob {
     if (events.length === 0) return;
     await financialEventsService.ingestEvents(events);
     for (const e of events) await financialEventsService.archiveToS3(e);
+    try {
+      await telemetryService.record({
+        userId,
+        streamType: kind === 'fee' ? 'fees' : (kind as any),
+        marketplaceId: process.env.AMAZON_MARKETPLACE_ID || 'NA',
+        lastSuccess: new Date(),
+        recordsIngested: events.length
+      });
+    } catch {}
     logger.info('Financial events ingested (sweep)', { userId, kind, count: events.length });
   }
 

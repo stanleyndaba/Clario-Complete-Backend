@@ -292,13 +292,13 @@ export class AmazonService {
     if (dataEndTime) body.dataEndTime = dataEndTime;
 
     const base = this.getRegionBaseUrl();
-    const resp = await axios.post(`${base}${this.reportsBase}/reports`, body, {
+    const resp = await withRetry(() => axios.post(`${base}${this.reportsBase}/reports`, body, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'x-amz-access-token': accessToken,
         'Content-Type': 'application/json'
       }
-    });
+    }), { retries: 5, minDelayMs: 1000, maxDelayMs: 30000 });
     return resp.data?.payload?.reportId || resp.data?.reportId;
   }
 
@@ -307,15 +307,15 @@ export class AmazonService {
     const base = this.getRegionBaseUrl();
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      const statusResp = await axios.get(`${base}${this.reportsBase}/reports/${reportId}`, {
+      const statusResp = await withRetry(() => axios.get(`${base}${this.reportsBase}/reports/${reportId}`, {
         headers: { Authorization: `Bearer ${accessToken}`, 'x-amz-access-token': accessToken }
-      });
+      }), { retries: 5, minDelayMs: 1000, maxDelayMs: 15000 });
       const payload = statusResp.data?.payload || statusResp.data;
       if (payload?.reportDocumentId) {
         const docId = payload.reportDocumentId;
-        const docResp = await axios.get(`${base}${this.reportsBase}/documents/${docId}`, {
+        const docResp = await withRetry(() => axios.get(`${base}${this.reportsBase}/documents/${docId}`, {
           headers: { Authorization: `Bearer ${accessToken}`, 'x-amz-access-token': accessToken }
-        });
+        }), { retries: 5, minDelayMs: 1000, maxDelayMs: 15000 });
         const doc = docResp.data?.payload || docResp.data;
         return { url: doc?.url, compressionAlgorithm: doc?.compressionAlgorithm };
       }
@@ -325,7 +325,7 @@ export class AmazonService {
   }
 
   private async downloadAndParseDocument(doc: { url: string; compressionAlgorithm?: string }): Promise<any[]> {
-    const resp = await axios.get(doc.url || '', { responseType: 'arraybuffer' });
+    const resp = await withRetry(() => axios.get(doc.url || '', { responseType: 'arraybuffer' }), { retries: 5, minDelayMs: 1000, maxDelayMs: 30000 });
     let buffer: Buffer = Buffer.from(resp.data);
     if ((doc.compressionAlgorithm || '').toUpperCase() === 'GZIP' || resp.headers?.['content-encoding'] === 'gzip') {
       buffer = zlib.gunzipSync(buffer);
@@ -398,10 +398,10 @@ export class AmazonService {
       granularityType: 'Marketplace',
       granularityId: marketplaceId || process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER'
     };
-    const resp = await axios.get(`${base}/fba/inventory/v1/summaries`, {
+    const resp = await withRetry(() => axios.get(`${base}/fba/inventory/v1/summaries`, {
       headers: { Authorization: `Bearer ${accessToken}`, 'x-amz-access-token': accessToken },
       params
-    });
+    }), { retries: 5, minDelayMs: 1000, maxDelayMs: 15000 });
     const summaries = resp.data?.payload?.inventorySummaries || [];
     const items: AmazonInventory[] = summaries.map((s: any, idx: number) => ({
       id: s?.asin || s?.sellerSku || `inv-${idx}`,

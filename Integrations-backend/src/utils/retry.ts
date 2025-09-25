@@ -16,8 +16,8 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
     jitter = true,
     shouldRetry = (error: any) => {
       const status = error?.response?.status;
-      // Retry on network errors and 5xx
-      return status === undefined || (status >= 500 && status < 600);
+      // Retry on network errors, 429, and 5xx
+      return status === undefined || status === 429 || (status >= 500 && status < 600);
     }
   } = opts;
 
@@ -33,7 +33,15 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
       if (attempt > retries || !shouldRetry(error, attempt)) {
         throw error;
       }
-      const sleepMs = jitter ? Math.min(maxDelayMs, Math.random() * delay) : Math.min(maxDelayMs, delay);
+      const status = (error as any)?.response?.status;
+      const retryAfterHeader = (error as any)?.response?.headers?.['retry-after'];
+      let sleepMs: number;
+      if (status === 429 && retryAfterHeader) {
+        const retryAfterSec = parseInt(String(retryAfterHeader), 10);
+        sleepMs = Math.min(maxDelayMs * 10, (isNaN(retryAfterSec) ? delay : retryAfterSec * 1000));
+      } else {
+        sleepMs = jitter ? Math.min(maxDelayMs, Math.random() * delay) : Math.min(maxDelayMs, delay);
+      }
       await new Promise(res => setTimeout(res, sleepMs));
       delay = Math.min(maxDelayMs, delay * factor);
     }

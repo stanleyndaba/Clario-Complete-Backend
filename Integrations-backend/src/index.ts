@@ -25,6 +25,7 @@ import disputeRoutes from './routes/disputeRoutes';
 import autoclaimRoutes from './routes/autoclaimRoutes';
 import internalEventsRoutes from './routes/internalEventsRoutes';
 import stripeWebhookRoutes from './routes/stripeWebhookRoutes';
+import healthRoutes from './routes/healthRoutes';
 import { disputeSubmissionWorker } from './jobs/disputeSubmissionWorker';
 
 // Import background jobs
@@ -109,6 +110,7 @@ app.use('/api/v1/integrations/disputes', disputeRoutes);
 app.use('/api/v1/integrations/autoclaim', autoclaimRoutes);
 app.use('/api/internal/events', internalEventsRoutes);
 app.use('/api/v1/integrations/stripe', stripeWebhookRoutes);
+app.use('/health', healthRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {

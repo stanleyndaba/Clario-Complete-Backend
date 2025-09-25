@@ -6,6 +6,7 @@ import tokenManager from '../utils/tokenManager';
 // import { supabase } from '../database/supabaseClient';
 import financialEventsService, { FinancialEvent } from '../services/financialEventsService';
 import detectionService from '../services/detectionService';
+import telemetryService from '../services/telemetryService';
 
 export class AmazonSyncJob {
   private isRunning = false;
@@ -30,6 +31,13 @@ export class AmazonSyncJob {
       // Sync inventory via real SP-API summaries
       const inventory = await amazonService.fetchInventory(userId);
       await this.saveInventoryToDatabase(userId, inventory);
+      await telemetryService.record({
+        userId,
+        streamType: 'inventory',
+        marketplaceId: process.env.AMAZON_MARKETPLACE_ID || 'NA',
+        lastSuccess: new Date(),
+        recordsIngested: inventory.length
+      });
 
       // Sync fees via fee preview report
       const fees = await amazonService.fetchFees(userId);
@@ -42,6 +50,7 @@ export class AmazonSyncJob {
       try {
         const reimbursements = await amazonService.getRealFbaReimbursements(userId);
         await this.ingestReimbursementEvents(userId, reimbursements);
+        await telemetryService.record({ userId, streamType: 'reimbursements', marketplaceId: process.env.AMAZON_MARKETPLACE_ID || 'NA', lastSuccess: new Date(), recordsIngested: reimbursements.length });
       } catch (e) {
         logger.warn('Reimbursement ingestion failed (non-fatal)', { userId, error: (e as any)?.message });
       }
@@ -50,6 +59,7 @@ export class AmazonSyncJob {
       try {
         const shipments = await amazonService.getRealShipmentData(userId);
         await this.ingestShipmentEvents(userId, shipments);
+        await telemetryService.record({ userId, streamType: 'shipments', marketplaceId: process.env.AMAZON_MARKETPLACE_ID || 'NA', lastSuccess: new Date(), recordsIngested: shipments.length });
       } catch (e) {
         logger.warn('Shipment ingestion failed (non-fatal)', { userId, error: (e as any)?.message });
       }
@@ -58,6 +68,7 @@ export class AmazonSyncJob {
       try {
         const returns = await amazonService.getRealReturnsData(userId);
         await this.ingestReturnEvents(userId, returns);
+        await telemetryService.record({ userId, streamType: 'returns', marketplaceId: process.env.AMAZON_MARKETPLACE_ID || 'NA', lastSuccess: new Date(), recordsIngested: returns.length });
       } catch (e) {
         logger.warn('Returns ingestion failed (non-fatal)', { userId, error: (e as any)?.message });
       }
@@ -66,6 +77,7 @@ export class AmazonSyncJob {
       try {
         const removals = await amazonService.getRealRemovalData(userId);
         await this.ingestRemovalEvents(userId, removals);
+        await telemetryService.record({ userId, streamType: 'removals', marketplaceId: process.env.AMAZON_MARKETPLACE_ID || 'NA', lastSuccess: new Date(), recordsIngested: removals.length });
       } catch (e) {
         logger.warn('Removals ingestion failed (non-fatal)', { userId, error: (e as any)?.message });
       }
