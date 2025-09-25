@@ -11,6 +11,7 @@ import re
 from datetime import datetime, timedelta
 import logging
 from src.common.db_postgresql import DatabaseManager
+from src.common.config import settings
 from src.evidence.oauth_connectors import get_connector
 from src.api.schemas import EvidenceDocument, EvidenceIngestionJob, EvidenceSource
 
@@ -283,7 +284,7 @@ class EvidenceIngestionService:
                 with conn.cursor() as cursor:
                     cursor.execute("""
                         SELECT ej.id, ej.source_id, ej.user_id, es.provider, es.account_email,
-                               es.encrypted_access_token, es.metadata
+                               es.encrypted_access_token, es.encrypted_refresh_token, es.last_sync_at, es.metadata
                         FROM evidence_ingestion_jobs ej
                         JOIN evidence_sources es ON ej.source_id = es.id
                         WHERE ej.id = %s
@@ -293,13 +294,14 @@ class EvidenceIngestionService:
                     if not result:
                         return
                     
-                    job_id, source_id, user_id, provider, account_email, encrypted_access_token, metadata = result
+                    job_id, source_id, user_id, provider, account_email, encrypted_access_token, encrypted_refresh_token, last_sync_at, metadata = result
                     
                     # Decrypt access token
                     access_token = self._decrypt_token(encrypted_access_token)
+                    refresh_token = self._decrypt_token(encrypted_refresh_token) if encrypted_refresh_token else None
                     
                     # Fetch documents based on provider
-                    documents = await self._fetch_documents(provider, access_token, source_id)
+                    documents = await self._fetch_documents(provider, access_token, source_id, refresh_token=refresh_token, last_sync_at=last_sync_at)
                     
                     # Store documents
                     for doc in documents:
@@ -318,6 +320,13 @@ class EvidenceIngestionService:
                             documents_found = %s, documents_processed = %s, progress = 100
                         WHERE id = %s
                     """, (len(documents), len(documents), job_id))
+
+                    # Bump last_sync_at on source
+                    cursor.execute("""
+                        UPDATE evidence_sources
+                        SET last_sync_at = NOW(), updated_at = NOW()
+                        WHERE id = %s
+                    """, (source_id,))
                     
         except Exception as e:
             logger.error(f"Failed to process ingestion job {job_id}: {e}")
@@ -331,14 +340,16 @@ class EvidenceIngestionService:
                         WHERE id = %s
                     """, (json.dumps([str(e)]), job_id))
     
-    async def _fetch_documents(self, provider: str, access_token: str, source_id: str) -> List[Dict[str, Any]]:
+    async def _fetch_documents(self, provider: str, access_token: str, source_id: str, refresh_token: Optional[str] = None, last_sync_at: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """Fetch documents from external source (metadata only)"""
         if provider == "gmail":
-            return await self._fetch_gmail_documents(access_token, source_id)
+            return await self._fetch_gmail_documents(access_token, source_id, refresh_token=refresh_token, last_sync_at=last_sync_at)
+        if provider == "outlook":
+            return await self._fetch_outlook_documents(access_token, source_id, refresh_token=refresh_token, last_sync_at=last_sync_at)
         if provider == "gdrive":
-            return await self._fetch_gdrive_documents(access_token, source_id)
+            return await self._fetch_gdrive_documents(access_token, source_id, refresh_token=refresh_token, last_sync_at=last_sync_at)
         if provider == "dropbox":
-            return await self._fetch_dropbox_documents(access_token, source_id)
+            return await self._fetch_dropbox_documents(access_token, source_id, refresh_token=refresh_token, last_sync_at=last_sync_at)
         
         # Default: placeholder mock for unsupported providers (to be implemented)
         return [
@@ -358,100 +369,173 @@ class EvidenceIngestionService:
             }
         ]
 
-    async def _fetch_gmail_documents(self, access_token: str, source_id: str, max_results: int = 50) -> List[Dict[str, Any]]:
-        """Fetch Gmail messages matching Amazon evidence patterns (metadata-first)."""
+    async def _fetch_gmail_documents(self, access_token: str, source_id: str, max_results: int = 100, refresh_token: Optional[str] = None, last_sync_at: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """Fetch Gmail messages matching Amazon evidence patterns (metadata-first) with pagination and token refresh."""
         base_url = "https://gmail.googleapis.com/gmail/v1/users/me"
         headers = {"Authorization": f"Bearer {access_token}"}
 
         # Amazon-focused search query, metadata-first
+        days = 365
+        if last_sync_at:
+            try:
+                days = max(1, (datetime.utcnow() - last_sync_at).days)
+            except Exception:
+                days = 365
         query = (
             "(from:amazon.com OR from:payments.amazon.com OR subject:(invoice OR receipt OR order OR shipment OR shipping)) "
-            "has:attachment newer_than:2y"
+            f"has:attachment newer_than:{days}d"
         )
 
-       documents: List[Dict[str, Any]] = []
+        documents: List[Dict[str, Any]] = []
+        next_page: Optional[str] = None
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                # 1) List matching message IDs
-                list_resp = await client.get(
-                    f"{base_url}/messages",
-                    params={"q": query, "maxResults": max_results},
-                    headers=headers
-                )
-                if list_resp.status_code == 401:
-                    logger.warning("Gmail access token unauthorized during list; refresh flow not implemented in this method")
-                    return []
-                list_resp.raise_for_status()
-                message_refs = list_resp.json().get("messages", [])
+                pages_fetched = 0
+                while True:
+                    params = {"q": query, "maxResults": max_results}
+                    if next_page:
+                        params["pageToken"] = next_page
+                    list_resp = await self._http_get(client, f"{base_url}/messages", headers, params, provider="gmail", refresh_token=refresh_token)
+                    if not list_resp:
+                        break
+                    message_refs = list_resp.get("messages", [])
+                    next_page = list_resp.get("nextPageToken")
 
-                # 2) For each ID, fetch metadata and limited payload for attachment filenames
-                for ref in message_refs:
-                    msg_id = ref.get("id")
-                    if not msg_id:
-                        continue
-                    msg_resp = await client.get(
-                        f"{base_url}/messages/{msg_id}",
-                        params={
-                            "format": "full",
-                            # Limit fields to headers and filenames to keep payload small
-                            "fields": "id,threadId,internalDate,labelIds,sizeEstimate,payload/headers,payload/parts/filename,payload/parts/mimeType"
-                        },
-                        headers=headers
-                    )
-                    if msg_resp.status_code == 401:
-                        logger.warning("Gmail access token unauthorized during message fetch; skipping message")
-                        continue
-                    if msg_resp.status_code >= 400:
-                        logger.warning(f"Gmail message fetch failed: {msg_resp.status_code}")
-                        continue
-                    msg = msg_resp.json()
+                    # 2) For each ID, fetch metadata and limited payload for attachment filenames
+                    for ref in message_refs:
+                        msg_id = ref.get("id")
+                        if not msg_id:
+                            continue
+                        msg_json = await self._http_get(
+                            client,
+                            f"{base_url}/messages/{msg_id}",
+                            headers,
+                            params={
+                                "format": "full",
+                                "fields": "id,threadId,internalDate,labelIds,sizeEstimate,payload/headers,payload/parts/filename,payload/parts/mimeType,snippet"
+                            },
+                            provider="gmail",
+                            refresh_token=refresh_token
+                        )
+                        if not msg_json:
+                            continue
 
-                    # Extract headers
-                    headers_list = (msg.get("payload", {}) or {}).get("headers", [])
-                    header_map = {h.get("name", "").lower(): h.get("value", "") for h in headers_list}
-                    subject = header_map.get("subject", "")
-                    sender = header_map.get("from", "")
-                    date_hdr = header_map.get("date", "")
+                        # Extract headers
+                        headers_list = (msg_json.get("payload", {}) or {}).get("headers", [])
+                        header_map = {h.get("name", "").lower(): h.get("value", "") for h in headers_list}
+                        subject = header_map.get("subject", "")
+                        sender = header_map.get("from", "")
+                        date_hdr = header_map.get("date", "")
+                        message_id_hdr = header_map.get("message-id", "")
+                        references_hdr = header_map.get("references", "")
 
-                    # Attachment filenames (metadata-only)
-                    parts = (msg.get("payload", {}) or {}).get("parts", []) or []
-                    attachment_filenames: List[str] = []
-                    for p in parts:
-                        filename = p.get("filename")
-                        if filename:
-                            attachment_filenames.append(filename)
+                        # Attachment filenames (metadata-only)
+                        parts = (msg_json.get("payload", {}) or {}).get("parts", []) or []
+                        attachment_filenames: List[str] = []
+                        for p in parts:
+                            filename = p.get("filename")
+                            if filename:
+                                attachment_filenames.append(filename)
 
-                    # Extract key identifiers from subject and limited headers
-                    extracted = self._extract_identifiers_from_gmail(subject, sender, date_hdr)
+                        # Extract key identifiers from subject and limited headers
+                        extracted = self._extract_identifiers_from_gmail(subject, sender, date_hdr)
+                        # Add body snippet if present
+                        if msg_json.get("snippet"):
+                            extracted["body_snippet"] = msg_json.get("snippet")
 
-                    # Classify doc kind as email
-                    doc_kind = "email"
+                        # Classify doc kind as email
+                        doc_kind = "email"
 
-                    # Build document row (email as metadata record)
-                    documents.append({
-                        "external_id": msg.get("id"),
-                        "filename": subject or f"gmail_message_{msg.get('id')}",
-                        "size_bytes": msg.get("sizeEstimate", 0) or 0,
-                        "content_type": "message/rfc822",
-                        "created_at": datetime.utcfromtimestamp(int((msg.get("internalDate") or 0)) / 1000) if msg.get("internalDate") else datetime.utcnow(),
-                        "modified_at": datetime.utcnow(),
-                        "sender": sender,
-                        "subject": subject,
-                        "message_id": msg.get("id"),
-                        "folder_path": None,
-                        "metadata": {
-                            "provider": "gmail",
-                            "threadId": msg.get("threadId"),
-                            "labelIds": msg.get("labelIds", []),
-                            "attachment_filenames": attachment_filenames
-                        },
-                        "extracted_data": extracted,
-                        "doc_kind": doc_kind
-                    })
+                        # Build document row (email as metadata record)
+                        documents.append({
+                            "external_id": msg_json.get("id"),
+                            "filename": subject or f"gmail_message_{msg_json.get('id')}",
+                            "size_bytes": msg_json.get("sizeEstimate", 0) or 0,
+                            "content_type": "message/rfc822",
+                            "created_at": datetime.utcfromtimestamp(int((msg_json.get("internalDate") or 0)) / 1000) if msg_json.get("internalDate") else datetime.utcnow(),
+                            "modified_at": datetime.utcnow(),
+                            "sender": sender,
+                            "subject": subject,
+                            "message_id": message_id_hdr or msg_json.get("id"),
+                            "folder_path": None,
+                            "metadata": {
+                                "provider": "gmail",
+                                "threadId": msg_json.get("threadId"),
+                                "labelIds": msg_json.get("labelIds", []),
+                                "attachment_filenames": attachment_filenames,
+                                "references": references_hdr
+                            },
+                            "extracted_data": extracted,
+                            "doc_kind": doc_kind
+                        })
+
+                    pages_fetched += 1
+                    if not next_page or pages_fetched >= 5:
+                        break
 
         except Exception as e:
             logger.error(f"Failed to fetch Gmail documents: {e}")
 
+        return documents
+
+    async def _fetch_outlook_documents(self, access_token: str, source_id: str, refresh_token: Optional[str] = None, last_sync_at: Optional[datetime] = None, page_size: int = 50) -> List[Dict[str, Any]]:
+        """Fetch Outlook (Microsoft Graph) messages for Amazon patterns (metadata-first)."""
+        base_url = "https://graph.microsoft.com/v1.0/me/messages"
+        headers = {"Authorization": f"Bearer {access_token}"}
+        # Filter by subject contains and from domain if possible; Graph supports $search with advancedQueryParameters
+        # Use receivedDateTime ge last_sync_at for incremental
+        received_filter = None
+        if last_sync_at:
+            received_filter = last_sync_at.strftime('%Y-%m-%dT%H:%M:%SZ')
+        params = {
+            "$top": page_size,
+            "$select": "id,subject,from,receivedDateTime,hasAttachments,internetMessageId,bodyPreview",
+            "$orderby": "receivedDateTime DESC"
+        }
+        if received_filter:
+            params["$filter"] = f"receivedDateTime ge {received_filter}"
+
+        documents: List[Dict[str, Any]] = []
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                next_link: Optional[str] = None
+                pages = 0
+                while True:
+                    url = next_link or base_url
+                    resp_json = await self._http_get(client, url, headers, params if not next_link else None, provider="outlook", refresh_token=refresh_token)
+                    if not resp_json:
+                        break
+                    items = resp_json.get("value", [])
+                    for it in items:
+                        subject = it.get("subject") or ""
+                        sender = ((it.get("from") or {}).get("emailAddress") or {}).get("address", "")
+                        date_hdr = it.get("receivedDateTime") or ""
+                        extracted = self._extract_identifiers_from_gmail(subject, sender, date_hdr)
+                        documents.append({
+                            "external_id": it.get("id"),
+                            "filename": subject or f"outlook_message_{it.get('id')}",
+                            "size_bytes": 0,
+                            "content_type": "message/rfc822",
+                            "created_at": datetime.fromisoformat((it.get("receivedDateTime") or datetime.utcnow().isoformat()).replace("Z", "+00:00")),
+                            "modified_at": datetime.utcnow(),
+                            "sender": sender,
+                            "subject": subject,
+                            "message_id": it.get("internetMessageId"),
+                            "folder_path": None,
+                            "metadata": {
+                                "provider": "outlook",
+                                "hasAttachments": it.get("hasAttachments", False)
+                            },
+                            "extracted_data": extracted,
+                            "doc_kind": "email"
+                        })
+
+                    next_link = resp_json.get("@odata.nextLink")
+                    pages += 1
+                    if not next_link or pages >= 5:
+                        break
+        except Exception as e:
+            logger.error(f"Failed to fetch Outlook documents: {e}")
         return documents
 
     def _extract_identifiers_from_gmail(self, subject: str, sender: str, date_hdr: str) -> Dict[str, Any]:
@@ -472,7 +556,7 @@ class EvidenceIngestionService:
             "email_date_header": date_hdr or None
         }
 
-    async def _fetch_gdrive_documents(self, access_token: str, source_id: str, page_size: int = 50) -> List[Dict[str, Any]]:
+    async def _fetch_gdrive_documents(self, access_token: str, source_id: str, page_size: int = 100, refresh_token: Optional[str] = None, last_sync_at: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """Fetch Google Drive files by filename patterns (metadata-first)."""
         headers = {"Authorization": f"Bearer {access_token}"}
         base_url = "https://www.googleapis.com/drive/v3/files"
@@ -486,21 +570,27 @@ class EvidenceIngestionService:
             "name contains 'shipment'",
             "name contains 'packing'"
         ])
+        q = f"({q}) and trashed = false"
         params = {
             "q": q,
             "pageSize": page_size,
-            "fields": "files(id,name,mimeType,modifiedTime,createdTime,size,webViewLink)"
+            "spaces": "drive",
+            "fields": "nextPageToken, files(id,name,mimeType,modifiedTime,createdTime,size,webViewLink,description,properties)"
         }
         documents: List[Dict[str, Any]] = []
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(base_url, params=params, headers=headers)
-                if resp.status_code == 401:
-                    logger.warning("GDrive token unauthorized; skipping fetch")
-                    return []
-                resp.raise_for_status()
-                files = resp.json().get("files", [])
-                for f in files:
+                next_page: Optional[str] = None
+                pages = 0
+                while True:
+                    p = dict(params)
+                    if next_page:
+                        p["pageToken"] = next_page
+                    resp_json = await self._http_get(client, base_url, headers, p, provider="gdrive", refresh_token=refresh_token)
+                    if not resp_json:
+                        break
+                    files = resp_json.get("files", [])
+                    for f in files:
                     name = f.get("name", "")
                     extracted = self._extract_identifiers_from_filename(name)
                     doc_kind = self._classify_doc_kind_from_filename(name)
@@ -509,51 +599,52 @@ class EvidenceIngestionService:
                         "filename": name,
                         "size_bytes": int(f.get("size") or 0),
                         "content_type": f.get("mimeType") or "application/octet-stream",
-                        "created_at": datetime.fromisoformat(f.get("createdTime", datetime.utcnow().isoformat().replace("Z", "")) if f.get("createdTime") else datetime.utcnow().isoformat()),
-                        "modified_at": datetime.fromisoformat(f.get("modifiedTime", datetime.utcnow().isoformat().replace("Z", "")) if f.get("modifiedTime") else datetime.utcnow().isoformat()),
+                            "created_at": datetime.fromisoformat((f.get("createdTime") or datetime.utcnow().isoformat()).replace("Z", "+00:00")),
+                            "modified_at": datetime.fromisoformat((f.get("modifiedTime") or datetime.utcnow().isoformat()).replace("Z", "+00:00")),
                         "sender": None,
                         "subject": None,
                         "message_id": None,
                         "folder_path": None,
                         "metadata": {
                             "provider": "gdrive",
-                            "webViewLink": f.get("webViewLink")
+                                "webViewLink": f.get("webViewLink"),
+                                "description": f.get("description"),
+                                "properties": f.get("properties")
                         },
                         "extracted_data": extracted,
                         "doc_kind": doc_kind
-                    })
+                        })
+                    next_page = resp_json.get("nextPageToken")
+                    pages += 1
+                    if not next_page or pages >= 5:
+                        break
         except Exception as e:
             logger.error(f"Failed to fetch GDrive documents: {e}")
         return documents
 
-    async def _fetch_dropbox_documents(self, access_token: str, source_id: str, max_results: int = 50) -> List[Dict[str, Any]]:
-        """Fetch Dropbox files by filename patterns (metadata-first)."""
+    async def _fetch_dropbox_documents(self, access_token: str, source_id: str, refresh_token: Optional[str] = None, last_sync_at: Optional[datetime] = None, max_results: int = 500) -> List[Dict[str, Any]]:
+        """Fetch Dropbox files by traversing folders (metadata-first)."""
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-        search_url = "https://api.dropboxapi.com/2/files/search_v2"
-        queries = ["Amazon", "amazon.com", "invoice", "receipt", "shipment", "packing"]
+        list_url = "https://api.dropboxapi.com/2/files/list_folder"
+        continue_url = "https://api.dropboxapi.com/2/files/list_folder/continue"
+        keywords = ["amazon", "invoice", "receipt", "shipment", "packing"]
         documents: List[Dict[str, Any]] = []
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                for q in queries:
-                    body = {
-                        "query": q,
-                        "options": {
-                            "filename_only": True,
-                            "max_results": max_results
-                        }
-                    }
-                    resp = await client.post(search_url, headers=headers, json=body)
-                    if resp.status_code == 401:
-                        logger.warning("Dropbox token unauthorized; skipping fetch")
-                        return []
-                    if resp.status_code >= 400:
-                        logger.warning(f"Dropbox search failed {resp.status_code}: {resp.text}")
-                        continue
-                    matches = resp.json().get("matches", [])
-                    for m in matches:
-                        md = ((m.get("metadata") or {}).get("metadata") or {})
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                body = {"path": "", "recursive": True, "include_media_info": False, "limit": max_results}
+                resp = await self._http_post(client, list_url, headers, json=body, provider="dropbox", refresh_token=refresh_token)
+                if not resp:
+                    return []
+                entries = resp.get("entries", [])
+                cursor = resp.get("cursor")
+                while True:
+                    for md in entries:
+                        if md.get(".tag") != "file":
+                            continue
+                        name = md.get("name") or ""
+                        if not any(k in name.lower() for k in keywords):
+                            continue
                         path_md = md.get("path_display") or md.get("path_lower") or ""
-                        name = md.get("name") or path_md.split("/")[-1]
                         extracted = self._extract_identifiers_from_filename(name)
                         doc_kind = self._classify_doc_kind_from_filename(name)
                         server_modified = md.get("server_modified")
@@ -562,7 +653,7 @@ class EvidenceIngestionService:
                             "external_id": md.get("id") or path_md,
                             "filename": name,
                             "size_bytes": int(md.get("size") or 0),
-                            "content_type": md.get(".tag") or "application/octet-stream",
+                            "content_type": "application/octet-stream",
                             "created_at": datetime.fromisoformat((client_modified or server_modified).replace("Z", "+00:00")) if (client_modified or server_modified) else datetime.utcnow(),
                             "modified_at": datetime.fromisoformat((server_modified or client_modified).replace("Z", "+00:00")) if (server_modified or client_modified) else datetime.utcnow(),
                             "sender": None,
@@ -575,6 +666,13 @@ class EvidenceIngestionService:
                             "extracted_data": extracted,
                             "doc_kind": doc_kind
                         })
+                    if not cursor:
+                        break
+                    cont = await self._http_post(client, continue_url, headers, json={"cursor": cursor}, provider="dropbox", refresh_token=refresh_token)
+                    if not cont:
+                        break
+                    entries = cont.get("entries", [])
+                    cursor = cont.get("cursor")
         except Exception as e:
             logger.error(f"Failed to fetch Dropbox documents: {e}")
         return documents
@@ -610,6 +708,83 @@ class EvidenceIngestionService:
             logger.info(f"ingestion.metrics provider={provider} count={count}")
         except Exception:
             pass
+
+    async def _http_get(self, client: httpx.AsyncClient, url: str, headers: dict, params: Optional[dict], provider: str, refresh_token: Optional[str] = None, max_retries: int = 3) -> Optional[dict]:
+        """HTTP GET with basic retry/backoff and token refresh on 401."""
+        attempt = 0
+        backoff = 0.5
+        while attempt < max_retries:
+            resp = await client.get(url, params=params, headers=headers)
+            if resp.status_code == 401 and refresh_token:
+                # Try token refresh once
+                refreshed = await self._refresh_access_token(provider, refresh_token)
+                if refreshed:
+                    headers["Authorization"] = f"Bearer {refreshed}"
+                    attempt += 1
+                    continue
+                return None
+            if resp.status_code in (429, 500, 502, 503, 504):
+                await asyncio.sleep(backoff)
+                backoff *= 2
+                attempt += 1
+                continue
+            if resp.status_code >= 400:
+                logger.warning(f"GET {url} failed: {resp.status_code}")
+                return None
+            try:
+                return resp.json()
+            except Exception:
+                return None
+        return None
+
+    async def _http_post(self, client: httpx.AsyncClient, url: str, headers: dict, json: Optional[dict], provider: str, refresh_token: Optional[str] = None, max_retries: int = 3) -> Optional[dict]:
+        """HTTP POST with basic retry/backoff and token refresh on 401."""
+        attempt = 0
+        backoff = 0.5
+        while attempt < max_retries:
+            resp = await client.post(url, json=json, headers=headers)
+            if resp.status_code == 401 and refresh_token:
+                refreshed = await self._refresh_access_token(provider, refresh_token)
+                if refreshed:
+                    headers["Authorization"] = f"Bearer {refreshed}"
+                    attempt += 1
+                    continue
+                return None
+            if resp.status_code in (429, 500, 502, 503, 504):
+                await asyncio.sleep(backoff)
+                backoff *= 2
+                attempt += 1
+                continue
+            if resp.status_code >= 400:
+                logger.warning(f"POST {url} failed: {resp.status_code}")
+                return None
+            try:
+                return resp.json()
+            except Exception:
+                return None
+        return None
+
+    async def _refresh_access_token(self, provider: str, refresh_token: str) -> Optional[str]:
+        """Refresh access token using provider connector and update DB for the source."""
+        try:
+            conn = self._get_connector_for_provider(provider)
+            token_data = await conn.refresh_access_token(refresh_token)
+            return token_data.get("access_token")
+        except Exception as e:
+            logger.warning(f"Token refresh failed for {provider}: {e}")
+            return None
+
+    def _get_connector_for_provider(self, provider: str):
+        from src.evidence.oauth_connectors import get_connector
+        if provider == "gmail":
+            return get_connector(provider, settings.GMAIL_CLIENT_ID, settings.GMAIL_CLIENT_SECRET, settings.GMAIL_REDIRECT_URI)
+        if provider == "outlook":
+            return get_connector(provider, settings.OUTLOOK_CLIENT_ID, settings.OUTLOOK_CLIENT_SECRET, settings.OUTLOOK_REDIRECT_URI)
+        if provider == "gdrive":
+            return get_connector(provider, settings.GDRIVE_CLIENT_ID, settings.GDRIVE_CLIENT_SECRET, settings.GDRIVE_REDIRECT_URI)
+        if provider == "dropbox":
+            return get_connector(provider, settings.DROPBOX_CLIENT_ID, settings.DROPBOX_CLIENT_SECRET, settings.DROPBOX_REDIRECT_URI)
+        raise ValueError(f"Unsupported provider for refresh: {provider}")
 
     def _first_or_none(self, values: Optional[List[str]]) -> Optional[str]:
         """Return first value from list or None."""
