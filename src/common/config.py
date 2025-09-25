@@ -61,6 +61,8 @@ class Settings(BaseModel):
     # Prefer ENCRYPTION_MASTER_KEY if provided (fallback to CRYPTO_SECRET)
     ENCRYPTION_MASTER_KEY: str | None = os.getenv("ENCRYPTION_MASTER_KEY")
     CRYPTO_SECRET: str = os.getenv("CRYPTO_SECRET", "insecure-dev-key-change")
+    KMS_ENDPOINT: str | None = os.getenv("KMS_ENDPOINT")
+    KMS_KEY_ID: str | None = os.getenv("KMS_KEY_ID")
     
     # Service URLs
     INTEGRATIONS_URL: str = os.getenv("INTEGRATIONS_URL", "http://localhost:3001")

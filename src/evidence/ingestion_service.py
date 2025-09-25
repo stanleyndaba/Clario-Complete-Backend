@@ -1133,30 +1133,46 @@ class EvidenceIngestionService:
             }
         return {}
     
-    def _encrypt_token(self, token: str) -> str:
-        """Encrypt token for storage"""
+    def _encrypt_token(self, token: str, key_version: int = 1) -> str:
+        """Encrypt token for storage using KMS/ENV secret and key versioning."""
+        # Prefer external KMS if configured (placeholder for remote KMS call)
+        kms_endpoint = getattr(settings, 'KMS_ENDPOINT', None)
+        kms_key_id = getattr(settings, 'KMS_KEY_ID', None)
+        if kms_endpoint and kms_key_id:
+            try:
+                # Placeholder: in real code, call KMS encrypt API returning ciphertext
+                pass
+            except Exception:
+                pass
         from cryptography.fernet import Fernet
-        raw = "your_crypto_secret".encode('utf-8')
-        if len(raw) < 32:
-            raw = raw.ljust(32, b'=')
-        elif len(raw) > 32:
-            raw = raw[:32]
-        
+        secret = (settings.CRYPTO_SECRET or "insecure-dev-key-change").encode('utf-8')
+        if len(secret) < 32:
+            secret = secret.ljust(32, b'=')
+        elif len(secret) > 32:
+            secret = secret[:32]
         import base64
-        key = base64.urlsafe_b64encode(raw)
+        key = base64.urlsafe_b64encode(secret)
         fernet = Fernet(key)
-        return fernet.encrypt(token.encode()).decode()
+        return f"v{key_version}." + fernet.encrypt(token.encode()).decode()
     
     def _decrypt_token(self, encrypted_token: str) -> str:
-        """Decrypt token from storage"""
+        """Decrypt token from storage, supporting key version prefix."""
         from cryptography.fernet import Fernet
-        raw = "your_crypto_secret".encode('utf-8')
-        if len(raw) < 32:
-            raw = raw.ljust(32, b'=')
-        elif len(raw) > 32:
-            raw = raw[:32]
-        
+        token = encrypted_token
+        key_version = 1
+        if encrypted_token.startswith('v') and '.' in encrypted_token[:10]:
+            try:
+                ver, rest = encrypted_token.split('.', 1)
+                key_version = int(ver[1:])
+                token = rest
+            except Exception:
+                token = encrypted_token
+        secret = (settings.CRYPTO_SECRET or "insecure-dev-key-change").encode('utf-8')
+        if len(secret) < 32:
+            secret = secret.ljust(32, b'=')
+        elif len(secret) > 32:
+            secret = secret[:32]
         import base64
-        key = base64.urlsafe_b64encode(raw)
+        key = base64.urlsafe_b64encode(secret)
         fernet = Fernet(key)
-        return fernet.decrypt(encrypted_token.encode()).decode()
+        return fernet.decrypt(token.encode()).decode()

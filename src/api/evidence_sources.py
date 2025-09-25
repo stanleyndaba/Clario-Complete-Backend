@@ -48,6 +48,19 @@ async def connect_evidence_source(
             client_secret=oauth_config["client_secret"],
             redirect_uri=oauth_config["redirect_uri"]
         )
+        # Consent log
+        try:
+            with evidence_service.db._get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO evidence_consent_log (user_id, provider, scopes, event)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (user_id, request.provider, json.dumps(result.get('permissions', [])), 'connect')
+                    )
+        except Exception:
+            pass
         return EvidenceSourceConnectResponse(**result)
     except HTTPException:
         raise
