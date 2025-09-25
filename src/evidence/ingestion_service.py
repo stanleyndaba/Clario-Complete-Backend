@@ -497,43 +497,62 @@ class EvidenceIngestionService:
         return documents
 
     async def _fetch_onedrive_documents(self, access_token: str, source_id: str, refresh_token: Optional[str] = None, last_sync_at: Optional[datetime] = None, page_size: int = 100) -> List[Dict[str, Any]]:
-        """Fetch OneDrive files by filename patterns (metadata-first)."""
+        """Fetch OneDrive files by filename patterns (metadata-first), with paging/filters parity to Drive."""
         headers = {"Authorization": f"Bearer {access_token}"}
-        base_url = "https://graph.microsoft.com/v1.0/me/drive/root/search(q='Amazon')"
-        params = {"top": page_size}
+        queries = ["Amazon", "invoice", "receipt", "shipment", "packing"]
         documents: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        allowed_ext = (".pdf", ".csv", ".xlsx")
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                url = base_url
-                pages = 0
-                while True:
-                    resp_json = await self._http_get(client, url, headers, params, provider="onedrive", refresh_token=refresh_token)
-                    if not resp_json:
-                        break
-                    items = resp_json.get("value", [])
-                    for it in items:
-                        name = it.get("name", "")
-                        extracted = self._extract_identifiers_from_filename(name)
-                        doc_kind = self._classify_doc_kind_from_filename(name)
-                        documents.append({
-                            "external_id": it.get("id"),
-                            "filename": name,
-                            "size_bytes": int(((it.get("size") or 0))),
-                            "content_type": (it.get("file") or {}).get("mimeType") or "application/octet-stream",
-                            "created_at": datetime.fromisoformat(((it.get("createdDateTime") or datetime.utcnow().isoformat()).replace("Z", "+00:00"))),
-                            "modified_at": datetime.fromisoformat(((it.get("lastModifiedDateTime") or datetime.utcnow().isoformat()).replace("Z", "+00:00"))),
-                            "sender": None,
-                            "subject": None,
-                            "message_id": None,
-                            "folder_path": (it.get("parentReference") or {}).get("path"),
-                            "metadata": {"provider": "onedrive"},
-                            "extracted_data": extracted,
-                            "doc_kind": doc_kind
-                        })
-                    url = resp_json.get("@odata.nextLink")
-                    pages += 1
-                    if not url or pages >= 5:
-                        break
+                for q in queries:
+                    url = f"https://graph.microsoft.com/v1.0/me/drive/root/search(q='{q}')?$top={page_size}&$select=id,name,size,file,parentReference,createdDateTime,lastModifiedDateTime&$orderby=lastModifiedDateTime desc"
+                    pages = 0
+                    while True:
+                        resp_json = await self._http_get(client, url, headers, None, provider="onedrive", refresh_token=refresh_token)
+                        if not resp_json:
+                            break
+                        items = resp_json.get("value", [])
+                        for it in items:
+                            item_id = it.get("id")
+                            if not item_id or item_id in seen_ids:
+                                continue
+                            seen_ids.add(item_id)
+                            name = it.get("name", "")
+                            # Filter by file extension (pdf/csv/xlsx)
+                            if not any(name.lower().endswith(ext) for ext in allowed_ext):
+                                continue
+                            # Filter by modified time if last_sync_at provided
+                            modified_iso = it.get("lastModifiedDateTime")
+                            if last_sync_at and modified_iso:
+                                try:
+                                    mod = datetime.fromisoformat(modified_iso.replace("Z", "+00:00"))
+                                    if mod < last_sync_at - timedelta(minutes=5):
+                                        continue
+                                except Exception:
+                                    pass
+                            extracted = self._extract_identifiers_from_filename(name)
+                            doc_kind = self._classify_doc_kind_from_filename(name)
+                            mime = (it.get("file") or {}).get("mimeType") or "application/octet-stream"
+                            documents.append({
+                                "external_id": item_id,
+                                "filename": name,
+                                "size_bytes": int((it.get("size") or 0)),
+                                "content_type": mime,
+                                "created_at": datetime.fromisoformat(((it.get("createdDateTime") or datetime.utcnow().isoformat()).replace("Z", "+00:00"))),
+                                "modified_at": datetime.fromisoformat(((modified_iso or datetime.utcnow().isoformat()).replace("Z", "+00:00"))),
+                                "sender": None,
+                                "subject": None,
+                                "message_id": None,
+                                "folder_path": (it.get("parentReference") or {}).get("path"),
+                                "metadata": {"provider": "onedrive"},
+                                "extracted_data": extracted,
+                                "doc_kind": doc_kind
+                            })
+                        url = resp_json.get("@odata.nextLink")
+                        pages += 1
+                        if not url or pages >= 5:
+                            break
         except Exception as e:
             logger.error(f"Failed to fetch OneDrive documents: {e}")
         return documents
