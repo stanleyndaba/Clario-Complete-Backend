@@ -9,7 +9,7 @@ export interface AutoClaimConfirmation {
   proofDocUrl?: string;
 }
 
-export const financialEventsService = {
+export const payoutConfirmationService = {
   async confirmPayout(disputeId: string, userId: string): Promise<AutoClaimConfirmation> {
     // Try SP-API Financial Events first; fallback to DB values
     try {
@@ -60,7 +60,7 @@ export const financialEventsService = {
   }
 };
 
-export default financialEventsService;
+export default payoutConfirmationService;
 import { supabase } from '../database/supabaseClient';
 import logger from '../utils/logger';
 
