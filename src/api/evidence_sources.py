@@ -3,7 +3,7 @@ Evidence Sources API endpoints
 Implements Phase 1 of Evidence Validator (EV) - Secure Ingestion Connectors
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Body
+from fastapi import APIRouter, HTTPException, Depends, Query, Body, Header
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import logging
@@ -247,13 +247,33 @@ async def search_evidence(
 
 @router.post("/api/v1/integrations/evidence/webhooks/gmail/watch")
 async def gmail_watch_webhook(
-    body: Dict[str, Any] = Body(...)
+    body: Dict[str, Any] = Body(...),
+    x_goog_channel_token: Optional[str] = Header(None),
+    x_goog_channel_id: Optional[str] = Header(None),
+    x_goog_resource_state: Optional[str] = Header(None)
 ):
     """Handle Gmail Pub/Sub push (configure upstream)."""
     try:
-        logger.info(f"gmail.watch webhook: {body}")
-        # TODO: verify signature, decode message, identify user/source by email
-        # For MVP: expect { "source_id": "...", "user_id": "..." }
+        logger.info(f"gmail.watch webhook: channel={x_goog_channel_id} state={x_goog_resource_state}")
+        # Verify channel token if set (map to channel record)
+        if x_goog_channel_id:
+            with evidence_service.db._get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT source_id, user_id, channel_token FROM evidence_webhook_channels
+                        WHERE provider = 'gmail' AND channel_id = %s
+                        """,
+                        (x_goog_channel_id,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        db_source_id, db_user_id, db_token = row
+                        if db_token and x_goog_channel_token and db_token != x_goog_channel_token:
+                            raise HTTPException(status_code=403, detail="Invalid channel token")
+                        job_id = await evidence_service._start_ingestion_job(str(db_source_id), str(db_user_id))  # noqa
+                        return {"ok": True, "job_id": job_id}
+        # Fallback: expect mapping in payload
         source_id = body.get("source_id")
         user_id = body.get("user_id")
         if source_id and user_id:
@@ -266,12 +286,34 @@ async def gmail_watch_webhook(
 
 @router.post("/api/v1/integrations/evidence/webhooks/gdrive/changes")
 async def gdrive_changes_webhook(
-    body: Dict[str, Any] = Body(...)
+    body: Dict[str, Any] = Body(...),
+    x_goog_channel_id: Optional[str] = Header(None),
+    x_goog_channel_token: Optional[str] = Header(None),
+    x_goog_resource_state: Optional[str] = Header(None),
+    x_goog_resource_id: Optional[str] = Header(None)
 ):
     """Handle Google Drive push notifications."""
     try:
-        logger.info(f"gdrive.changes webhook: {body}")
-        # Expect mapping payload to { source_id, user_id }
+        logger.info(f"gdrive.changes webhook: channel={x_goog_channel_id} state={x_goog_resource_state} resource={x_goog_resource_id}")
+        # Validate channel and map to source
+        if x_goog_channel_id:
+            with evidence_service.db._get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT source_id, user_id, channel_token FROM evidence_webhook_channels
+                        WHERE provider = 'gdrive' AND channel_id = %s
+                        """,
+                        (x_goog_channel_id,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        db_source_id, db_user_id, db_token = row
+                        if db_token and x_goog_channel_token and db_token != x_goog_channel_token:
+                            raise HTTPException(status_code=403, detail="Invalid channel token")
+                        job_id = await evidence_service._start_ingestion_job(str(db_source_id), str(db_user_id))  # noqa
+                        return {"ok": True, "job_id": job_id}
+        # Fallback: expect mapping in payload
         source_id = body.get("source_id")
         user_id = body.get("user_id")
         if source_id and user_id:
