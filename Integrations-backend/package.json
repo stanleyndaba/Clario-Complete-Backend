@@ -7,6 +7,8 @@
     "start": "ts-node src/index.ts",
     "dev": "nodemon --exec ts-node src/index.ts",
     "build": "tsc",
+    "smoke:spapi": "node -r ts-node/register/transpile-only scripts/spapi_smoke.ts",
+    "smoke:ws": "node -r ts-node/register/transpile-only scripts/ws_sse_smoke.ts",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
