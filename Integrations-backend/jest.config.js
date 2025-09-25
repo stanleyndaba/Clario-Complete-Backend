@@ -1,3 +1,14 @@
+/** @type {import('jest').Config} */
+module.exports = {
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  testMatch: ['**/src/tests/integration/**/*.test.ts'],
+  moduleFileExtensions: ['ts', 'js', 'json'],
+  setupFiles: ['dotenv/config'],
+  maxWorkers: 1,
+  testTimeout: 60000
+};
+
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',

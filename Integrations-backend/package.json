@@ -9,7 +9,7 @@
     "build": "tsc",
     "smoke:spapi": "node -r ts-node/register/transpile-only scripts/spapi_smoke.ts",
     "smoke:ws": "node -r ts-node/register/transpile-only scripts/ws_sse_smoke.ts",
-    "test": "jest",
+    "test": "jest --config jest.config.js",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "test:detection": "jest enhancedDetection.test.ts",
