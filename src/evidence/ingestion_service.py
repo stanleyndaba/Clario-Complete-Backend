@@ -269,10 +269,16 @@ class EvidenceIngestionService:
                     (id, source_id, user_id, status, started_at)
                     VALUES (%s, %s, %s, %s, %s)
                 """, (job_id, source_id, user_id, "pending", datetime.utcnow()))
-        
-        # TODO: Queue actual ingestion task
-        # For now, just mark as completed
-        await self._process_ingestion_job(job_id)
+        # Enqueue to ARQ worker
+        try:
+            from arq import create_pool
+            from arq.connections import RedisSettings
+            redis = await create_pool(RedisSettings.from_dsn(settings.REDIS_URL))
+            await redis.enqueue_job('ingest_source', source_id, user_id)
+        except Exception:
+            # Fallback: process inline if queue not available
+            await self._process_ingestion_job(job_id)
+            return job_id
         
         return job_id
     
