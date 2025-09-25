@@ -169,12 +169,29 @@ async def list_ingestion_jobs(
         user_id = user["user_id"]
         logger.info(f"Listing ingestion jobs for source {source_id} and user {user_id}")
         
-        # TODO: Implement ingestion job listing
-        # For now, return empty list
-        return {
-            "jobs": [],
-            "total": 0
-        }
+        # Implement ingestion job listing
+        with evidence_service.db._get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, status, started_at, completed_at, documents_found, documents_processed, progress
+                    FROM evidence_ingestion_jobs
+                    WHERE source_id = %s AND user_id = %s
+                    ORDER BY started_at DESC
+                    LIMIT 50
+                """, (source_id, user["user_id"]))
+                rows = cursor.fetchall() or []
+                jobs = []
+                for r in rows:
+                    jobs.append({
+                        "id": str(r[0]),
+                        "status": r[1],
+                        "started_at": r[2].isoformat() + "Z" if r[2] else None,
+                        "completed_at": r[3].isoformat() + "Z" if r[3] else None,
+                        "documents_found": r[4],
+                        "documents_processed": r[5],
+                        "progress": r[6]
+                    })
+        return {"jobs": jobs, "total": len(jobs)}
         
     except Exception as e:
         logger.error(f"Unexpected error in list_ingestion_jobs: {e}")
@@ -191,13 +208,9 @@ async def trigger_sync(
         user_id = user["user_id"]
         logger.info(f"Triggering sync for source {source_id} and user {user_id}")
         
-        # TODO: Implement manual sync trigger
-        # For now, return success
-        return {
-            "ok": True,
-            "message": "Sync triggered successfully",
-            "job_id": "sync_job_placeholder"
-        }
+        # Implement manual sync trigger
+        job_id = await evidence_service._start_ingestion_job(source_id, user["user_id"])  # noqa
+        return {"ok": True, "message": "Sync triggered", "job_id": job_id}
         
     except Exception as e:
         logger.error(f"Unexpected error in trigger_sync: {e}")

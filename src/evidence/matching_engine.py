@@ -129,6 +129,11 @@ class EvidenceMatchingEngine:
                         reasoning=rule_reasoning,
                         action_taken=self._determine_action(final_confidence)
                     )
+                    # Emit lightweight metric log for telemetry aggregation
+                    try:
+                        self._emit_match_metric(match)
+                    except Exception:
+                        pass
                     matches.append(match)
                     
             except Exception as e:
@@ -286,6 +291,24 @@ class EvidenceMatchingEngine:
             return "smart_prompt"
         else:
             return "no_action"
+
+    def _emit_match_metric(self, match: MatchResult) -> None:
+        """Emit a structured log line for match telemetry."""
+        try:
+            logger.info(
+                "evidence.matching.result",
+                extra={
+                    "dispute_id": match.dispute_id,
+                    "evidence_document_id": match.evidence_document_id,
+                    "final_confidence": round(match.final_confidence, 3),
+                    "match_type": match.match_type,
+                    "action_taken": match.action_taken,
+                    "matched_fields": match.matched_fields or []
+                }
+            )
+        except Exception:
+            # Avoid hard failures on logging
+            pass
     
     async def _get_unlinked_disputes(self, user_id: str) -> List[Dict[str, Any]]:
         """Get dispute cases that don't have evidence linked"""

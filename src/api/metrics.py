@@ -10,9 +10,11 @@ from src.api.auth_middleware import get_current_user
 from src.api.schemas import RecoveryMetrics, DashboardMetrics, DashboardOverview, DashboardActivity, QuickStats
 from src.services.refund_engine_client import refund_engine_client
 from src.services.stripe_client import stripe_client
+from src.common.db_postgresql import DatabaseManager
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+dbm = DatabaseManager()
 
 @router.get("/api/metrics/recoveries", response_model=RecoveryMetrics)
 async def get_recovery_metrics(
@@ -213,4 +215,51 @@ async def track_event(
         
     except Exception as e:
         logger.error(f"Unexpected error in track_event: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.get("/api/metrics/evidence")
+async def get_evidence_metrics(
+    user: dict = Depends(get_current_user)
+):
+    """Evidence ingestion and matching metrics snapshot"""
+    try:
+        user_id = user["user_id"]
+        with dbm._get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT 
+                        COUNT(*) FILTER (WHERE provider = 'gmail') AS gmail_docs,
+                        COUNT(*) FILTER (WHERE provider = 'gdrive') AS gdrive_docs,
+                        COUNT(*) FILTER (WHERE provider = 'dropbox') AS dropbox_docs,
+                        COUNT(*) AS total_docs
+                    FROM evidence_documents
+                    WHERE user_id = %s
+                """, (user_id,))
+                docs_row = cursor.fetchone() or (0,0,0,0)
+
+                cursor.execute("""
+                    SELECT 
+                        COUNT(*) FILTER (WHERE status = 'completed') AS jobs_completed,
+                        COUNT(*) FILTER (WHERE status = 'failed') AS jobs_failed,
+                        COUNT(*) AS jobs_total
+                    FROM evidence_ingestion_jobs
+                    WHERE user_id = %s
+                """, (user_id,))
+                jobs_row = cursor.fetchone() or (0,0,0)
+
+        return {
+            "documents": {
+                "gmail": docs_row[0],
+                "gdrive": docs_row[1],
+                "dropbox": docs_row[2],
+                "total": docs_row[3]
+            },
+            "jobs": {
+                "completed": jobs_row[0],
+                "failed": jobs_row[1],
+                "total": jobs_row[2]
+            }
+        }
+    except Exception as e:
+        logger.error(f"Unexpected error in get_evidence_metrics: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
