@@ -16,9 +16,35 @@ logger = logging.getLogger(__name__)
 
 async def ingest_source(ctx, source_id: str, user_id: str) -> str:
     service: EvidenceIngestionService = ctx['service']
-    # Start and run a single ingestion job for source
+    # Start and run a single ingestion job for source with retries
     job_id = await service._start_ingestion_job(source_id, user_id)  # noqa: internal, acceptable for worker
     logger.info(f"arq.ingest queued job_id={job_id} source_id={source_id} user_id={user_id}")
+    # Retry policy
+    max_attempts = 5
+    delay = 1.0
+    attempts = 0
+    while attempts < max_attempts:
+        try:
+            await service._process_ingestion_job(job_id)
+            return job_id
+        except Exception as e:
+            attempts += 1
+            logger.warning(f"ingest attempt {attempts} failed for job {job_id}: {e}")
+            await asyncio.sleep(delay)
+            delay *= 2
+    # DLQ write
+    try:
+        with service.db._get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO evidence_dlq (job_id, source_id, user_id, error, payload)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (job_id, source_id, user_id, "max attempts exceeded", {})
+                )
+    except Exception as e:
+        logger.error(f"Failed to write to DLQ for job {job_id}: {e}")
     return job_id
 
 
@@ -32,7 +58,7 @@ async def periodic_backfill(ctx) -> None:
                     """
                     SELECT id, user_id FROM evidence_sources
                     WHERE status = 'connected'
-                    AND (last_sync_at IS NULL OR last_sync_at < NOW() - INTERVAL '6 hours')
+                    AND (last_sync_at IS NULL OR last_sync_at < NOW() - COALESCE((metadata->>'backfill_interval_hours')::interval, '6 hours'::interval))
                     LIMIT 200
                     """
                 )

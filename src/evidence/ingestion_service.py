@@ -885,6 +885,12 @@ class EvidenceIngestionService:
                 attempt += 1
                 continue
             if resp.status_code >= 400:
+                # increment provider error metric
+                try:
+                    from src.api.metrics import PROVIDER_ERRORS
+                    PROVIDER_ERRORS.labels(provider=provider, status=str(resp.status_code)).inc()
+                except Exception:
+                    pass
                 logger.warning(f"GET {url} failed: {resp.status_code}")
                 return None
             try:
@@ -916,6 +922,11 @@ class EvidenceIngestionService:
                 attempt += 1
                 continue
             if resp.status_code >= 400:
+                try:
+                    from src.api.metrics import PROVIDER_ERRORS
+                    PROVIDER_ERRORS.labels(provider=provider, status=str(resp.status_code)).inc()
+                except Exception:
+                    pass
                 logger.warning(f"POST {url} failed: {resp.status_code}")
                 return None
             try:
