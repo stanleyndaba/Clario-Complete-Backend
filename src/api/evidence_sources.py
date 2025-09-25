@@ -17,6 +17,8 @@ from src.api.schemas import (
 )
 from src.evidence.ingestion_service import EvidenceIngestionService
 from src.common.config import settings
+import json
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -353,3 +355,103 @@ def _get_oauth_config(provider: str) -> Optional[Dict[str, str]]:
     if not config or not config["client_id"] or not config["client_secret"]:
         return None
     return config
+
+@router.post("/api/v1/integrations/evidence/sources/{source_id}/drive/watch")
+async def create_drive_watch(
+    source_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """Create a Google Drive changes.watch channel for a source."""
+    try:
+        user_id = user["user_id"]
+        # Get access token for source
+        with evidence_service.db._get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT encrypted_access_token FROM evidence_sources
+                    WHERE id = %s AND user_id = %s AND provider = 'gdrive'
+                    """,
+                    (source_id, user_id)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail="Drive source not found")
+                access_token = evidence_service._decrypt_token(row[0])
+        channel_id = str(uuid.uuid4())
+        channel_token = str(uuid.uuid4())
+        body = {
+            "id": channel_id,
+            "type": "web_hook",
+            "address": settings.DRIVE_WEBHOOK_URL,
+            "token": channel_token
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://www.googleapis.com/drive/v3/changes/watch",
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=body
+            )
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"Drive watch failed: {resp.text}")
+            data = resp.json()
+            resource_id = data.get("resourceId") or data.get("resource_id") or ""
+            expires = data.get("expiration")
+        # Persist channel
+        with evidence_service.db._get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO evidence_webhook_channels (provider, channel_id, resource_id, channel_token, source_id, user_id, expires_at)
+                    VALUES ('gdrive', %s, %s, %s, %s, %s, to_timestamp(%s/1000.0))
+                    """,
+                    (channel_id, resource_id, channel_token, source_id, user_id, expires)
+                )
+        return {"ok": True, "channel_id": channel_id, "resource_id": resource_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"create_drive_watch failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.post("/api/v1/integrations/evidence/sources/{source_id}/gmail/watch")
+async def create_gmail_watch(
+    source_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """Create a Gmail watch (requires Pub/Sub topic configured)."""
+    try:
+        user_id = user["user_id"]
+        # Get access token for source
+        with evidence_service.db._get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT encrypted_access_token FROM evidence_sources
+                    WHERE id = %s AND user_id = %s AND provider = 'gmail'
+                    """,
+                    (source_id, user_id)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail="Gmail source not found")
+                access_token = evidence_service._decrypt_token(row[0])
+        topic = settings.GMAIL_PUBSUB_TOPIC
+        if not topic:
+            raise HTTPException(status_code=400, detail="GMAIL_PUBSUB_TOPIC not configured")
+        payload = {"topicName": topic, "labelIds": ["INBOX"], "labelFilterAction": "include"}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://gmail.googleapis.com/gmail/v1/users/me/watch",
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=payload
+            )
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"Gmail watch failed: {resp.text}")
+            data = resp.json()
+        return {"ok": True, "data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"create_gmail_watch failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")

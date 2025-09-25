@@ -81,6 +81,10 @@ class Settings(BaseModel):
 
     # Queue / Worker
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    
+    # Webhook / Push configuration
+    DRIVE_WEBHOOK_URL: str = os.getenv("DRIVE_WEBHOOK_URL", "http://localhost:8000/api/v1/integrations/evidence/webhooks/gdrive/changes")
+    GMAIL_PUBSUB_TOPIC: str | None = os.getenv("GMAIL_PUBSUB_TOPIC")
 
     # Amazon SP-API configuration
     AMAZON_SPAPI_BASE_URL: str = os.getenv("AMAZON_SPAPI_BASE_URL", "https://sellingpartnerapi-na.amazon.com")
