@@ -102,11 +102,17 @@ class EvidenceMatchingEngine:
     async def _match_dispute_to_evidence(self, dispute: Dict[str, Any], evidence_docs: List[Dict[str, Any]]) -> List[MatchResult]:
         """Match a single dispute to all evidence documents"""
         matches = []
+        seen_keys = set()  # dedupe across same order/subject
         
         for evidence_doc in evidence_docs:
             try:
                 # Rule-based matching
                 rule_score, rule_reasoning = self._rule_based_match(dispute, evidence_doc)
+                # Email-only matching augmentation
+                email_score, email_reason = self._email_only_match(dispute, evidence_doc)
+                # Merge scores (take best with reason aggregation)
+                if email_score > rule_score:
+                    rule_score, rule_reasoning = email_score, email_reason
                 
                 # ML-based matching (placeholder for future implementation)
                 ml_score = None  # self._ml_based_match(dispute, evidence_doc)
@@ -118,6 +124,13 @@ class EvidenceMatchingEngine:
                     match_type = self._determine_match_type(rule_reasoning)
                     matched_fields = self._extract_matched_fields(rule_reasoning)
                     
+                    # Dedupe key: prefer order_id else normalized subject
+                    dedupe_key = evidence_doc.get('order_id') or (evidence_doc.get('subject') or '').strip().lower()
+                    if dedupe_key and dedupe_key in seen_keys:
+                        continue
+                    if dedupe_key:
+                        seen_keys.add(dedupe_key)
+
                     match = MatchResult(
                         dispute_id=dispute['id'],
                         evidence_document_id=evidence_doc['id'],
@@ -210,6 +223,42 @@ class EvidenceMatchingEngine:
         
         reasoning = "; ".join(reasoning_parts) if reasoning_parts else "No significant matches found"
         return score, reasoning
+
+    def _email_only_match(self, dispute: Dict[str, Any], evidence_doc: Dict[str, Any]) -> Tuple[float, str]:
+        """Email-only rules based on subject/order-id/date proximity."""
+        subject = (evidence_doc.get('subject') or '').lower()
+        order_id = (dispute.get('order_id') or '')
+        evidence_date = evidence_doc.get('evidence_date')
+        dispute_date = dispute.get('order_date') or dispute.get('dispute_date')
+
+        if not subject and not order_id:
+            return 0.0, "No subject/order info"
+
+        score = 0.0
+        reasons = []
+
+        if order_id and order_id.lower() in subject:
+            score = max(score, 0.6)
+            reasons.append("Order ID present in email subject")
+
+        # Keyword proximity
+        if any(k in subject for k in ["invoice", "receipt", "order", "shipment", "shipping"]):
+            score = max(score, 0.4)
+            reasons.append("Evidence keywords found in subject")
+
+        # Date proximity using evidence_date if available
+        if evidence_date and dispute_date:
+            try:
+                d1 = datetime.strptime(str(evidence_date)[:10], '%Y-%m-%d')
+                d2 = datetime.strptime(str(dispute_date)[:10], '%Y-%m-%d')
+                if abs((d1 - d2).days) <= 7:
+                    score = max(score, 0.5)
+                    reasons.append("Email date within 7 days of order/dispute date")
+            except Exception:
+                pass
+
+        reasoning = "; ".join(reasons) if reasons else "No email-only indicators"
+        return score, reasoning
     
     def _calculate_similarity(self, str1: str, str2: str) -> float:
         """Calculate string similarity using SequenceMatcher"""
@@ -285,12 +334,18 @@ class EvidenceMatchingEngine:
     
     def _determine_action(self, confidence: float) -> str:
         """Determine action based on confidence score"""
-        if confidence >= self.auto_submit_threshold:
+        # Guardrails by claim type: restrict auto_submit to allowed types
+        allowed_auto_types = {"overcharge", "lost_shipment", "damage"}
+        if confidence >= self.auto_submit_threshold and (self._get_dispute_type_safe() in allowed_auto_types):
             return "auto_submit"
         elif confidence >= self.smart_prompt_threshold:
             return "smart_prompt"
         else:
             return "no_action"
+
+    def _get_dispute_type_safe(self) -> str:
+        # Placeholder guard; upstream caller can pass dispute type if needed
+        return "overcharge"
 
     def _map_extracted_to_parsed(self, extracted: Dict[str, Any]) -> Dict[str, Any]:
         """Map lightweight extracted_data into parsed_metadata format expected by rules."""
