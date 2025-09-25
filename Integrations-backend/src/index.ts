@@ -34,6 +34,7 @@ import OrchestrationJobManager from './jobs/orchestrationJob';
 import detectionService from './services/detectionService';
 import enhancedDetectionService from './services/enhancedDetectionService';
 import tokenRefreshJob from './jobs/tokenRefreshJob';
+import financialEventsSweepJob from './jobs/financialEventsSweepJob';
 
 const app = express();
 const server = createServer(app);
@@ -140,6 +141,7 @@ const startBackgroundJobs = () => {
     stripeSyncJob.startScheduledSync();
     OrchestrationJobManager.initialize();
     tokenRefreshJob.start();
+    financialEventsSweepJob.startScheduledSweep();
     
     // Start legacy detection job processor
     setInterval(async () => {
