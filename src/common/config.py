@@ -36,6 +36,10 @@ class Settings(BaseModel):
     OUTLOOK_CLIENT_SECRET: str = os.getenv("OUTLOOK_CLIENT_SECRET", "")
     OUTLOOK_REDIRECT_URI: str = os.getenv("OUTLOOK_REDIRECT_URI", "http://localhost:8000/api/auth/callback/outlook")
     
+    ONEDRIVE_CLIENT_ID: str = os.getenv("ONEDRIVE_CLIENT_ID", "")
+    ONEDRIVE_CLIENT_SECRET: str = os.getenv("ONEDRIVE_CLIENT_SECRET", "")
+    ONEDRIVE_REDIRECT_URI: str = os.getenv("ONEDRIVE_REDIRECT_URI", "http://localhost:8000/api/auth/callback/onedrive")
+    
     GDRIVE_CLIENT_ID: str = os.getenv("GDRIVE_CLIENT_ID", "")
     GDRIVE_CLIENT_SECRET: str = os.getenv("GDRIVE_CLIENT_SECRET", "")
     GDRIVE_REDIRECT_URI: str = os.getenv("GDRIVE_REDIRECT_URI", "http://localhost:8000/api/auth/callback/gdrive")
@@ -57,6 +61,8 @@ class Settings(BaseModel):
     # Prefer ENCRYPTION_MASTER_KEY if provided (fallback to CRYPTO_SECRET)
     ENCRYPTION_MASTER_KEY: str | None = os.getenv("ENCRYPTION_MASTER_KEY")
     CRYPTO_SECRET: str = os.getenv("CRYPTO_SECRET", "insecure-dev-key-change")
+    KMS_ENDPOINT: str | None = os.getenv("KMS_ENDPOINT")
+    KMS_KEY_ID: str | None = os.getenv("KMS_KEY_ID")
     
     # Service URLs
     INTEGRATIONS_URL: str = os.getenv("INTEGRATIONS_URL", "http://localhost:3001")
@@ -72,6 +78,13 @@ class Settings(BaseModel):
     S3_ACCESS_KEY: str = os.getenv("S3_ACCESS_KEY", "")
     S3_SECRET_KEY: str = os.getenv("S3_SECRET_KEY", "")
     S3_REGION: str = os.getenv("S3_REGION", "us-east-1")
+
+    # Queue / Worker
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    
+    # Webhook / Push configuration
+    DRIVE_WEBHOOK_URL: str = os.getenv("DRIVE_WEBHOOK_URL", "http://localhost:8000/api/v1/integrations/evidence/webhooks/gdrive/changes")
+    GMAIL_PUBSUB_TOPIC: str | None = os.getenv("GMAIL_PUBSUB_TOPIC")
 
     # Amazon SP-API configuration
     AMAZON_SPAPI_BASE_URL: str = os.getenv("AMAZON_SPAPI_BASE_URL", "https://sellingpartnerapi-na.amazon.com")
