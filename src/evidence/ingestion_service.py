@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 import logging
 from src.common.db_postgresql import DatabaseManager
 from src.common.config import settings
+from src.common.kms_client import KMSClient
 from src.evidence.oauth_connectors import get_connector
 from src.api.schemas import EvidenceDocument, EvidenceIngestionJob, EvidenceSource
 
@@ -23,6 +24,7 @@ class EvidenceIngestionService:
     
     def __init__(self):
         self.db = DatabaseManager()
+        self.kms = KMSClient(getattr(settings, 'KMS_ENDPOINT', None), getattr(settings, 'KMS_KEY_ID', None))
     
     async def connect_evidence_source(
         self, 
@@ -48,10 +50,10 @@ class EvidenceIngestionService:
             account_email = self._extract_account_email(provider, user_info)
             
             # Encrypt tokens
-            encrypted_access_token = self._encrypt_token(token_response["access_token"])
+            encrypted_access_token = self._encrypt_token(token_response["access_token"], key_version=1, kms_key_id=self._get_kms_key_for_user(user_id))
             encrypted_refresh_token = None
             if "refresh_token" in token_response:
-                encrypted_refresh_token = self._encrypt_token(token_response["refresh_token"])
+                encrypted_refresh_token = self._encrypt_token(token_response["refresh_token"], key_version=1, kms_key_id=self._get_kms_key_for_user(user_id))
             
             # Calculate token expiration
             expires_at = None
@@ -65,8 +67,8 @@ class EvidenceIngestionService:
                     cursor.execute("""
                         INSERT INTO evidence_sources 
                         (id, user_id, provider, account_email, status, encrypted_access_token, 
-                         encrypted_refresh_token, token_expires_at, permissions, metadata)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         encrypted_refresh_token, token_expires_at, permissions, metadata, encryption_key_version, kms_key_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (user_id, provider, account_email) 
                         DO UPDATE SET
                             encrypted_access_token = EXCLUDED.encrypted_access_token,
@@ -85,7 +87,9 @@ class EvidenceIngestionService:
                         encrypted_refresh_token,
                         expires_at,
                         json.dumps(self._get_permissions(provider)),
-                        json.dumps(self._get_metadata(provider, user_info))
+                        json.dumps(self._get_metadata(provider, user_info)),
+                        1,
+                        self._get_kms_key_for_user(user_id)
                     ))
                     result = cursor.fetchone()
                     source_id = result[0]
@@ -1152,15 +1156,16 @@ class EvidenceIngestionService:
             }
         return {}
     
-    def _encrypt_token(self, token: str, key_version: int = 1) -> str:
+    def _encrypt_token(self, token: str, key_version: int = 1, kms_key_id: Optional[str] = None) -> str:
         """Encrypt token for storage using KMS/ENV secret and key versioning."""
         # Prefer external KMS if configured (placeholder for remote KMS call)
         kms_endpoint = getattr(settings, 'KMS_ENDPOINT', None)
-        kms_key_id = getattr(settings, 'KMS_KEY_ID', None)
-        if kms_endpoint and kms_key_id:
+        kms_default_key_id = getattr(settings, 'KMS_KEY_ID', None)
+        key_id = kms_key_id or kms_default_key_id
+        if kms_endpoint and key_id:
             try:
-                # Placeholder: in real code, call KMS encrypt API returning ciphertext
-                pass
+                ct = self.kms.encrypt(token.encode('utf-8'), key_id_override=key_id)
+                return f"k{key_version}." + ct.decode('utf-8')
             except Exception:
                 pass
         from cryptography.fernet import Fernet
@@ -1179,6 +1184,15 @@ class EvidenceIngestionService:
         from cryptography.fernet import Fernet
         token = encrypted_token
         key_version = 1
+        if encrypted_token.startswith('k') and '.' in encrypted_token[:10]:
+            # KMS ciphertext
+            try:
+                ver, rest = encrypted_token.split('.', 1)
+                key_version = int(ver[1:])
+                pt = self.kms.decrypt(rest.encode('utf-8'))
+                return pt.decode('utf-8')
+            except Exception:
+                token = encrypted_token
         if encrypted_token.startswith('v') and '.' in encrypted_token[:10]:
             try:
                 ver, rest = encrypted_token.split('.', 1)
@@ -1195,3 +1209,7 @@ class EvidenceIngestionService:
         key = base64.urlsafe_b64encode(secret)
         fernet = Fernet(key)
         return fernet.decrypt(token.encode()).decode()
+
+    def _get_kms_key_for_user(self, user_id: str) -> Optional[str]:
+        # Placeholder per-tenant key selection; map by user_id or organization
+        return getattr(settings, 'KMS_KEY_ID', None)
