@@ -1,0 +1,50 @@
+name: Phase 2 Integration
+
+on:
+  push:
+    branches: [ main, 'cursor/**', 'feature/**' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Integrations-backend
+    env:
+      ENABLE_WS: false
+      USER_ID: ${{ secrets.USER_ID }}
+      AMAZON_CLIENT_ID: ${{ secrets.AMAZON_CLIENT_ID }}
+      AMAZON_CLIENT_SECRET: ${{ secrets.AMAZON_CLIENT_SECRET }}
+      AMAZON_REDIRECT_URI: ${{ secrets.AMAZON_REDIRECT_URI }}
+      AMAZON_MARKETPLACE_ID: ${{ secrets.AMAZON_MARKETPLACE_ID }}
+      AMAZON_MARKETPLACE_IDS: ${{ secrets.AMAZON_MARKETPLACE_IDS }}
+      AMAZON_REGION: ${{ secrets.AMAZON_REGION }}
+      TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Seed Amazon token (optional)
+        if: ${{ secrets.REFRESH_TOKEN != '' }}
+        env:
+          REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          EXPIRES_IN: ${{ secrets.EXPIRES_IN }}
+        run: npm run seed:amazon-token
+
+      - name: Run integration tests
+        run: npm test
+
