@@ -4,6 +4,7 @@ Handles metadata-first ingestion from external evidence sources
 """
 
 import httpx
+import asyncio
 import json
 import uuid
 from typing import Dict, Any, List, Optional
@@ -598,13 +599,29 @@ class EvidenceIngestionService:
         shipment_ids = []
         shipment_ids += re.findall(r"\bTBA[0-9A-Z]+\b", text)
         shipment_ids += re.findall(r"\b1Z[0-9A-Z]{16}\b", text)
+        currency = self._detect_currency(text)
 
         return {
             "order_ids": list(set(order_ids)) or None,
             "shipment_ids": list(set(shipment_ids)) or None,
             "amounts": list(set(amounts)) or None,
+            "currency": currency,
             "email_date_header": date_hdr or None
         }
+
+    def _detect_currency(self, text: str) -> Optional[str]:
+        lower = (text or "").lower()
+        if " usd" in lower or "$" in text:
+            return "USD"
+        if " eur" in lower or "€" in text:
+            return "EUR"
+        if " gbp" in lower or "£" in text:
+            return "GBP"
+        if " cad" in lower:
+            return "CAD"
+        if " aud" in lower:
+            return "AUD"
+        return None
 
     async def _fetch_gdrive_documents(self, access_token: str, source_id: str, page_size: int = 100, refresh_token: Optional[str] = None, last_sync_at: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """Fetch Google Drive files by filename patterns (metadata-first)."""
@@ -641,28 +658,37 @@ class EvidenceIngestionService:
                         break
                     files = resp_json.get("files", [])
                     for f in files:
-                    name = f.get("name", "")
-                    extracted = self._extract_identifiers_from_filename(name)
-                    doc_kind = self._classify_doc_kind_from_filename(name)
-                    documents.append({
-                        "external_id": f.get("id"),
-                        "filename": name,
-                        "size_bytes": int(f.get("size") or 0),
-                        "content_type": f.get("mimeType") or "application/octet-stream",
+                        name = f.get("name", "")
+                        extracted = self._extract_identifiers_from_filename(name)
+                        doc_kind = self._classify_doc_kind_from_filename(name)
+                        mime = f.get("mimeType") or "application/octet-stream"
+                        # Optional first-page peek for PDFs when identifiers missing
+                        if mime == "application/pdf" and not (extracted.get("order_ids") or extracted.get("shipment_ids")):
+                            peeked = await self._peek_pdf_identifiers_drive(headers, f.get("id"))
+                            if peeked:
+                                # merge
+                                for k, v in peeked.items():
+                                    if v and not extracted.get(k):
+                                        extracted[k] = v
+                        documents.append({
+                            "external_id": f.get("id"),
+                            "filename": name,
+                            "size_bytes": int(f.get("size") or 0),
+                            "content_type": mime,
                             "created_at": datetime.fromisoformat((f.get("createdTime") or datetime.utcnow().isoformat()).replace("Z", "+00:00")),
                             "modified_at": datetime.fromisoformat((f.get("modifiedTime") or datetime.utcnow().isoformat()).replace("Z", "+00:00")),
-                        "sender": None,
-                        "subject": None,
-                        "message_id": None,
-                        "folder_path": None,
-                        "metadata": {
-                            "provider": "gdrive",
+                            "sender": None,
+                            "subject": None,
+                            "message_id": None,
+                            "folder_path": None,
+                            "metadata": {
+                                "provider": "gdrive",
                                 "webViewLink": f.get("webViewLink"),
                                 "description": f.get("description"),
                                 "properties": f.get("properties")
-                        },
-                        "extracted_data": extracted,
-                        "doc_kind": doc_kind
+                            },
+                            "extracted_data": extracted,
+                            "doc_kind": doc_kind
                         })
                     next_page = resp_json.get("nextPageToken")
                     pages += 1
@@ -699,6 +725,13 @@ class EvidenceIngestionService:
                         doc_kind = self._classify_doc_kind_from_filename(name)
                         server_modified = md.get("server_modified")
                         client_modified = md.get("client_modified")
+                        # Optional first-page peek for PDFs when identifiers missing
+                        if name.lower().endswith('.pdf') and not (extracted.get("order_ids") or extracted.get("shipment_ids")):
+                            peeked = await self._peek_pdf_identifiers_dropbox(headers, path_md)
+                            if peeked:
+                                for k, v in peeked.items():
+                                    if v and not extracted.get(k):
+                                        extracted[k] = v
                         documents.append({
                             "external_id": md.get("id") or path_md,
                             "filename": name,
@@ -726,6 +759,69 @@ class EvidenceIngestionService:
         except Exception as e:
             logger.error(f"Failed to fetch Dropbox documents: {e}")
         return documents
+
+    async def _peek_pdf_identifiers_drive(self, headers: Dict[str, str], file_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not file_id:
+            return None
+        url = f"https://www.googleapis.com/drive/v3/files/{file_id}"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url, headers=headers, params={"alt": "media"}, headers__=headers)
+                # httpx doesn't support headers__ param; fallback simple get without range due to tool constraints
+                # In practice, we would set Range: bytes=0-262143
+                if resp.status_code >= 400:
+                    return None
+                content = resp.content[:262144]
+                return self._extract_identifiers_from_pdf_bytes(content)
+        except Exception:
+            return None
+
+    async def _peek_pdf_identifiers_dropbox(self, headers: Dict[str, str], path: str) -> Optional[Dict[str, Any]]:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                dl_headers = {
+                    "Authorization": headers.get("Authorization", ""),
+                    "Dropbox-API-Arg": json.dumps({"path": path})
+                }
+                resp = await client.post("https://content.dropboxapi.com/2/files/download", headers=dl_headers)
+                if resp.status_code >= 400:
+                    return None
+                content = resp.content[:262144]
+                return self._extract_identifiers_from_pdf_bytes(content)
+        except Exception:
+            return None
+
+    async def _peek_pdf_identifiers_onedrive(self, headers: Dict[str, str], item_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not item_id:
+            return None
+        url = f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/content"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url, headers=headers)
+                if resp.status_code >= 400:
+                    return None
+                content = resp.content[:262144]
+                return self._extract_identifiers_from_pdf_bytes(content)
+        except Exception:
+            return None
+
+    def _extract_identifiers_from_pdf_bytes(self, content: bytes) -> Dict[str, Any]:
+        try:
+            text = content.decode('latin-1', errors='ignore')
+        except Exception:
+            text = ""
+        order_ids = re.findall(r"\b\d{3}-\d{7}-\d{7}\b", text)
+        shipment_ids = []
+        shipment_ids += re.findall(r"\bTBA[0-9A-Z]+\b", text)
+        shipment_ids += re.findall(r"\b1Z[0-9A-Z]{16}\b", text)
+        amounts = re.findall(r"(?:USD\s*|\$)\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?", text)
+        currency = self._detect_currency(text)
+        return {
+            "order_ids": list(set(order_ids)) or None,
+            "shipment_ids": list(set(shipment_ids)) or None,
+            "amounts": list(set(amounts)) or None,
+            "currency": currency
+        }
 
     def _extract_identifiers_from_filename(self, name: str) -> Dict[str, Any]:
         """Extract order/shipment IDs from filenames."""
