@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { authenticateToken, AuthenticatedRequest } from '../middleware/authMiddleware';
 import { supabase } from '../database/supabaseClient';
+import tokenManager from '../utils/tokenManager';
+import amazonService from '../services/amazonService';
 
 const router = Router();
 
@@ -11,6 +13,44 @@ router.use((req, res, next) => {
     return next();
   }
 });
+// Amazon OAuth (unified under auth)
+// GET /api/v1/integrations/auth/amazon -> returns authorization URL
+router.get('/amazon', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user?.id as string;
+    if (!userId) {
+      return res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } });
+    }
+    const url = await amazonService.initiateOAuth(userId);
+    return res.json({ success: true, authUrl: url });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: { code: 'OAUTH_INIT_FAILED', message: error?.message || 'Failed to initiate Amazon OAuth' } });
+  }
+});
+
+// GET /api/v1/integrations/auth/amazon/callback -> delegate to existing callback handler
+router.get('/amazon/callback', async (req, res) => {
+  const qs = new URLSearchParams({
+    ...(req.query.code ? { code: String(req.query.code) } : {}),
+    ...(req.query.state ? { state: String(req.query.state) } : {}),
+  }).toString();
+  return res.redirect(`/api/amazon/callback${qs ? `?${qs}` : ''}`);
+});
+
+// GET /api/v1/integrations/auth/amazon/status -> connection state
+router.get('/amazon/status', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user?.id as string;
+    if (!userId) {
+      return res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } });
+    }
+    const valid = await tokenManager.isTokenValid(userId, 'amazon');
+    return res.json({ success: true, connected: valid });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: { code: 'STATUS_FAILED', message: error?.message || 'Failed to get Amazon status' } });
+  }
+});
+
 
 // GET /api/v1/integrations/auth/me
 router.get('/me', async (req: AuthenticatedRequest, res) => {

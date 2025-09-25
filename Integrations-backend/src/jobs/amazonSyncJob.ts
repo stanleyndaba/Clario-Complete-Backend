@@ -3,9 +3,10 @@ import logger from '../utils/logger';
 import amazonService from '../services/amazonService';
 import { notificationService } from '../notifications/services/notification_service';
 import tokenManager from '../utils/tokenManager';
-import { supabase } from '../database/supabaseClient';
-import financialEventsService from '../services/financialEventsService';
+// import { supabase } from '../database/supabaseClient';
+import financialEventsService, { FinancialEvent } from '../services/financialEventsService';
 import detectionService from '../services/detectionService';
+import telemetryService from '../services/telemetryService';
 
 export class AmazonSyncJob {
   private isRunning = false;
@@ -23,20 +24,63 @@ export class AmazonSyncJob {
         return syncId;
       }
 
-      // Sync claims
+      // Sync claims via reimbursements report
       const claims = await amazonService.fetchClaims(userId);
       await this.saveClaimsToDatabase(userId, claims);
 
-      // Sync inventory
+      // Sync inventory via real SP-API summaries
       const inventory = await amazonService.fetchInventory(userId);
       await this.saveInventoryToDatabase(userId, inventory);
+      await telemetryService.record({
+        userId,
+        streamType: 'inventory',
+        marketplaceId: process.env.AMAZON_MARKETPLACE_ID || 'NA',
+        lastSuccess: new Date(),
+        recordsIngested: inventory.length
+      });
 
-      // Sync fees and financial events
+      // Sync fees via fee preview report
       const fees = await amazonService.fetchFees(userId);
       await this.saveFeesToDatabase(userId, fees);
       
-      // Ingest financial events
+      // Ingest financial events (fees)
       await this.ingestFinancialEvents(userId, fees);
+
+      // Ingest reimbursements as financial events
+      try {
+        const reimbursements = await amazonService.getRealFbaReimbursements(userId);
+        await this.ingestReimbursementEvents(userId, reimbursements);
+        await telemetryService.record({ userId, streamType: 'reimbursements', marketplaceId: process.env.AMAZON_MARKETPLACE_ID || 'NA', lastSuccess: new Date(), recordsIngested: reimbursements.length });
+      } catch (e) {
+        logger.warn('Reimbursement ingestion failed (non-fatal)', { userId, error: (e as any)?.message });
+      }
+
+      // Ingest shipments
+      try {
+        const shipments = await amazonService.getRealShipmentData(userId);
+        await this.ingestShipmentEvents(userId, shipments);
+        await telemetryService.record({ userId, streamType: 'shipments', marketplaceId: process.env.AMAZON_MARKETPLACE_ID || 'NA', lastSuccess: new Date(), recordsIngested: shipments.length });
+      } catch (e) {
+        logger.warn('Shipment ingestion failed (non-fatal)', { userId, error: (e as any)?.message });
+      }
+
+      // Ingest returns
+      try {
+        const returns = await amazonService.getRealReturnsData(userId);
+        await this.ingestReturnEvents(userId, returns);
+        await telemetryService.record({ userId, streamType: 'returns', marketplaceId: process.env.AMAZON_MARKETPLACE_ID || 'NA', lastSuccess: new Date(), recordsIngested: returns.length });
+      } catch (e) {
+        logger.warn('Returns ingestion failed (non-fatal)', { userId, error: (e as any)?.message });
+      }
+
+      // Ingest removals
+      try {
+        const removals = await amazonService.getRealRemovalData(userId);
+        await this.ingestRemovalEvents(userId, removals);
+        await telemetryService.record({ userId, streamType: 'removals', marketplaceId: process.env.AMAZON_MARKETPLACE_ID || 'NA', lastSuccess: new Date(), recordsIngested: removals.length });
+      } catch (e) {
+        logger.warn('Removals ingestion failed (non-fatal)', { userId, error: (e as any)?.message });
+      }
 
       // Trigger detection job
       await this.triggerDetectionJob(userId, syncId);
@@ -68,7 +112,7 @@ export class AmazonSyncJob {
       logger.info('Saving Amazon claims to database', { userId, count: claims.length });
       
       // Mock database save
-      for (const claim of claims) {
+      for (const _ of claims) {
         // Simulate database operation
         await new Promise(resolve => setTimeout(resolve, 10));
       }
@@ -87,7 +131,7 @@ export class AmazonSyncJob {
       logger.info('Saving Amazon inventory to database', { userId, count: inventory.length });
       
       // Mock database save
-      for (const item of inventory) {
+      for (const _ of inventory) {
         // Simulate database operation
         await new Promise(resolve => setTimeout(resolve, 10));
       }
@@ -106,7 +150,7 @@ export class AmazonSyncJob {
       logger.info('Saving Amazon fees to database', { userId, count: fees.length });
       
       // Mock database save
-      for (const fee of fees) {
+      for (const _ of fees) {
         // Simulate database operation
         await new Promise(resolve => setTimeout(resolve, 10));
       }
@@ -125,9 +169,9 @@ export class AmazonSyncJob {
     try {
       logger.info('Ingesting financial events', { userId, fees_count: fees.length });
 
-      const financialEvents = fees.map(fee => ({
+      const financialEvents: FinancialEvent[] = fees.map((fee: any) => ({
         seller_id: userId,
-        event_type: 'fee' as const,
+        event_type: 'fee',
         amount: fee.amount || 0,
         currency: fee.currency || 'USD',
         raw_payload: fee,
@@ -153,6 +197,107 @@ export class AmazonSyncJob {
     } catch (error) {
       logger.error('Error ingesting financial events', { error, userId });
       // Don't throw error as financial events ingestion is not critical for sync
+    }
+  }
+
+  /**
+   * Ingest reimbursement events
+   */
+  private async ingestReimbursementEvents(userId: string, rows: any[]): Promise<void> {
+    try {
+      logger.info('Ingesting reimbursement events', { userId, count: rows.length });
+
+      const events: FinancialEvent[] = rows.map((r: any) => ({
+        seller_id: userId,
+        event_type: 'reimbursement',
+        amount: Number(r.amount || r.total_amount || r.reimbursement_amount || 0),
+        currency: r.currency || 'USD',
+        raw_payload: r,
+        amazon_event_id: r.reimbursement_id || r.case_id,
+        amazon_order_id: r.amazon_order_id || r.order_id,
+        amazon_sku: r.sku || r.seller_sku,
+        event_date: r.posted_date ? new Date(r.posted_date) : new Date()
+      }));
+
+      if (events.length > 0) {
+        await financialEventsService.ingestEvents(events);
+        for (const event of events) {
+          await financialEventsService.archiveToS3(event);
+        }
+      }
+
+      logger.info('Reimbursement events ingested successfully', { userId, events: events.length });
+    } catch (error) {
+      logger.error('Error ingesting reimbursement events', { error, userId });
+    }
+  }
+
+  private async ingestShipmentEvents(userId: string, rows: any[]): Promise<void> {
+    try {
+      logger.info('Ingesting shipment events', { userId, count: rows.length });
+      const events: FinancialEvent[] = rows.map((r: any) => ({
+        seller_id: userId,
+        event_type: 'shipment',
+        amount: Number(r.amount || 0),
+        currency: r.currency || 'USD',
+        raw_payload: r,
+        amazon_event_id: r.shipment_id || r.event_id,
+        amazon_order_id: r.amazon_order_id || r.order_id,
+        amazon_sku: r.sku || r.seller_sku,
+        event_date: r.posted_date ? new Date(r.posted_date) : new Date()
+      }));
+      if (events.length > 0) {
+        await financialEventsService.ingestEvents(events);
+        for (const event of events) await financialEventsService.archiveToS3(event);
+      }
+    } catch (error) {
+      logger.error('Error ingesting shipment events', { error, userId });
+    }
+  }
+
+  private async ingestReturnEvents(userId: string, rows: any[]): Promise<void> {
+    try {
+      logger.info('Ingesting return events', { userId, count: rows.length });
+      const events: FinancialEvent[] = rows.map((r: any) => ({
+        seller_id: userId,
+        event_type: 'return',
+        amount: Number(r.amount || 0),
+        currency: r.currency || 'USD',
+        raw_payload: r,
+        amazon_event_id: r.return_id || r.event_id,
+        amazon_order_id: r.amazon_order_id || r.order_id,
+        amazon_sku: r.sku || r.seller_sku,
+        event_date: r.posted_date ? new Date(r.posted_date) : new Date()
+      }));
+      if (events.length > 0) {
+        await financialEventsService.ingestEvents(events);
+        for (const event of events) await financialEventsService.archiveToS3(event);
+      }
+    } catch (error) {
+      logger.error('Error ingesting return events', { error, userId });
+    }
+  }
+
+  private async ingestRemovalEvents(userId: string, rows: any[]): Promise<void> {
+    try {
+      logger.info('Ingesting removal events', { userId, count: rows.length });
+      const events: FinancialEvent[] = rows.map((r: any) => ({
+        seller_id: userId,
+        event_type: 'shipment',
+        amount: Number(r.amount || 0),
+        currency: r.currency || 'USD',
+        raw_payload: r,
+        amazon_event_id: r.removal_order_id || r.event_id,
+        amazon_order_id: r.amazon_order_id || r.order_id,
+        amazon_sku: r.sku || r.seller_sku,
+        event_date: r.posted_date ? new Date(r.posted_date) : new Date()
+      }));
+      if (events.length > 0) {
+        await financialEventsService.ingestEvents(events);
+        for (const event of events) await financialEventsService.archiveToS3(event);
+      }
+    } catch (error) {
+      logger.error('Error ingesting removal events', { error, userId });
     }
   }
 
@@ -225,13 +370,13 @@ export class AmazonSyncJob {
   }
 
   startScheduledSync(): void {
-    // Run every hour
-    cron.schedule('0 * * * *', async () => {
+    // Run every 4 hours
+    cron.schedule('0 */4 * * *', async () => {
       logger.info('Starting scheduled Amazon sync job');
       await this.syncAllUsers();
     });
 
-    logger.info('Amazon sync job scheduled to run every hour');
+    logger.info('Amazon sync job scheduled to run every 4 hours');
   }
 
   stopScheduledSync(): void {

@@ -8,7 +8,7 @@ import logger from './logger';
 export class TokenCrypto {
   private readonly algorithm = 'aes-256-gcm';
   private readonly keyLength = 32; // 256 bits
-  private readonly ivLength = 16; // 128 bits
+  private readonly ivLength = 12; // 96 bits recommended for GCM
   private readonly authTagLength = 16; // 128 bits
   private readonly secretKey: Buffer;
 
@@ -35,19 +35,18 @@ export class TokenCrypto {
       // Generate random IV
       const iv = crypto.randomBytes(this.ivLength);
       
-      // Create cipher
-      const cipher = crypto.createCipher(this.algorithm, this.secretKey);
+      // Create cipher with explicit IV (AES-256-GCM)
+      const cipher = crypto.createCipheriv(this.algorithm, this.secretKey, iv, { authTagLength: this.authTagLength });
       cipher.setAAD(Buffer.from('token-encryption', 'utf8'));
       
-      // Encrypt the token
-      let encrypted = cipher.update(rawToken, 'utf8', 'hex');
-      encrypted += cipher.final('hex');
+      // Encrypt the token (binary buffers, no hex conversion)
+      const ciphertext = Buffer.concat([cipher.update(rawToken, 'utf8'), cipher.final()]);
       
       // Get authentication tag
       const authTag = cipher.getAuthTag();
       
       // Combine IV + ciphertext + auth tag
-      const combined = Buffer.concat([iv, Buffer.from(encrypted, 'hex'), authTag]);
+      const combined = Buffer.concat([iv, ciphertext, authTag]);
       
       // Return base64 encoded
       const result = combined.toString('base64');
@@ -80,25 +79,25 @@ export class TokenCrypto {
       const combined = Buffer.from(cipherText, 'base64');
       
       // Extract components
-      // const iv = combined.subarray(0, this.ivLength);
+      const iv = combined.subarray(0, this.ivLength);
       const authTag = combined.subarray(combined.length - this.authTagLength);
-      const encrypted = combined.subarray(this.ivLength, combined.length - this.authTagLength);
+      const ciphertext = combined.subarray(this.ivLength, combined.length - this.authTagLength);
       
-      // Create decipher
-      const decipher = crypto.createDecipher(this.algorithm, this.secretKey);
+      // Create decipher with explicit IV
+      const decipher = crypto.createDecipheriv(this.algorithm, this.secretKey, iv, { authTagLength: this.authTagLength });
       decipher.setAAD(Buffer.from('token-encryption', 'utf8'));
       decipher.setAuthTag(authTag);
       
-      // Decrypt
-      let decrypted = decipher.update(encrypted, undefined, 'utf8');
-      decrypted += decipher.final('utf8');
+      // Decrypt (binary buffers)
+      const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      const plaintext = decrypted.toString('utf8');
       
       logger.info('Token decrypted successfully', {
         cipherTextLength: cipherText.length,
-        decryptedLength: decrypted.length
+        decryptedLength: plaintext.length
       });
       
-      return decrypted;
+      return plaintext;
     } catch (error) {
       logger.error('Token decryption failed', {
         error: error instanceof Error ? error.message : 'Unknown error',

@@ -7,8 +7,7 @@ import { createServer } from 'http';
 import config from './config/env';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './utils/errorHandler';
-// Temporarily disable WebSocket service for demo stability
-// import websocketService from './services/websocketService';
+// WebSocket initialized dynamically to avoid type issues in test/CI unless enabled
 
 // Import routes
 import amazonRoutes from './routes/amazonRoutes';
@@ -26,6 +25,7 @@ import disputeRoutes from './routes/disputeRoutes';
 import autoclaimRoutes from './routes/autoclaimRoutes';
 import internalEventsRoutes from './routes/internalEventsRoutes';
 import stripeWebhookRoutes from './routes/stripeWebhookRoutes';
+import healthRoutes from './routes/healthRoutes';
 import { disputeSubmissionWorker } from './jobs/disputeSubmissionWorker';
 
 // Import background jobs
@@ -34,6 +34,8 @@ import stripeSyncJob from './jobs/stripeSyncJob';
 import OrchestrationJobManager from './jobs/orchestrationJob';
 import detectionService from './services/detectionService';
 import enhancedDetectionService from './services/enhancedDetectionService';
+import tokenRefreshJob from './jobs/tokenRefreshJob';
+import financialEventsSweepJob from './jobs/financialEventsSweepJob';
 
 const app = express();
 const server = createServer(app);
@@ -108,6 +110,7 @@ app.use('/api/v1/integrations/disputes', disputeRoutes);
 app.use('/api/v1/integrations/autoclaim', autoclaimRoutes);
 app.use('/api/internal/events', internalEventsRoutes);
 app.use('/api/v1/integrations/stripe', stripeWebhookRoutes);
+app.use('/health', healthRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -139,6 +142,8 @@ const startBackgroundJobs = () => {
     amazonSyncJob.startScheduledSync();
     stripeSyncJob.startScheduledSync();
     OrchestrationJobManager.initialize();
+    tokenRefreshJob.start();
+    financialEventsSweepJob.startScheduledSweep();
     
     // Start legacy detection job processor
     setInterval(async () => {
@@ -168,13 +173,17 @@ const startBackgroundJobs = () => {
 const startServer = () => {
   const port = Number(process.env.PORT || config.PORT);
   
-  // Initialize WebSocket service (skipped for demo)
+  // Initialize WebSocket service (opt-in via ENABLE_WS)
   try {
-    // const { websocketService } = await import('./services/websocketService');
-    // websocketService.initialize(server);
-    logger.info('WebSocket service temporarily disabled for demo');
+    if (process.env.ENABLE_WS !== 'false') {
+      // dynamic import to prevent hard dependency during tests
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const wsModule = await import('./services/websocketService');
+      // @ts-ignore
+      wsModule.default?.initialize(server);
+    }
   } catch (e) {
-    logger.warn('WebSocket service skipped for demo', { error: (e as any)?.message });
+    logger.warn('WebSocket service initialization failed', { error: (e as any)?.message });
   }
   
   server.listen(port, '0.0.0.0', () => {
