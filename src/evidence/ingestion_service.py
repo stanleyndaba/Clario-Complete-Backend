@@ -7,6 +7,7 @@ import httpx
 import json
 import uuid
 from typing import Dict, Any, List, Optional
+import re
 from datetime import datetime, timedelta
 import logging
 from src.common.db_postgresql import DatabaseManager
@@ -326,23 +327,136 @@ class EvidenceIngestionService:
     
     async def _fetch_documents(self, provider: str, access_token: str, source_id: str) -> List[Dict[str, Any]]:
         """Fetch documents from external source (metadata only)"""
-        # This is a placeholder - in production, implement actual API calls
-        # For now, return mock data
+        if provider == "gmail":
+            return await self._fetch_gmail_documents(access_token, source_id)
+        
+        # Default: placeholder mock for unsupported providers (to be implemented)
         return [
             {
                 "external_id": f"doc_{provider}_1",
-                "filename": f"invoice_{provider}_1.pdf",
-                "size_bytes": 1024000,
-                "content_type": "application/pdf",
+                "filename": f"evidence_{provider}_1",
+                "size_bytes": 0,
+                "content_type": "application/octet-stream",
                 "created_at": datetime.utcnow() - timedelta(days=1),
                 "modified_at": datetime.utcnow() - timedelta(days=1),
-                "sender": f"sender@{provider}.com",
-                "subject": f"Invoice from {provider}",
-                "message_id": f"msg_{provider}_1",
-                "folder_path": "/invoices",
-                "metadata": {"provider": provider}
+                "sender": None,
+                "subject": None,
+                "message_id": None,
+                "folder_path": None,
+                "metadata": {"provider": provider},
+                "extracted_data": None
             }
         ]
+
+    async def _fetch_gmail_documents(self, access_token: str, source_id: str, max_results: int = 50) -> List[Dict[str, Any]]:
+        """Fetch Gmail messages matching Amazon evidence patterns (metadata-first)."""
+        base_url = "https://gmail.googleapis.com/gmail/v1/users/me"
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # Amazon-focused search query, metadata-first
+        query = (
+            "(from:amazon.com OR from:payments.amazon.com OR subject:(invoice OR receipt OR order OR shipment OR shipping)) "
+            "has:attachment newer_than:2y"
+        )
+
+       documents: List[Dict[str, Any]] = []
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                # 1) List matching message IDs
+                list_resp = await client.get(
+                    f"{base_url}/messages",
+                    params={"q": query, "maxResults": max_results},
+                    headers=headers
+                )
+                if list_resp.status_code == 401:
+                    logger.warning("Gmail access token unauthorized during list; refresh flow not implemented in this method")
+                    return []
+                list_resp.raise_for_status()
+                message_refs = list_resp.json().get("messages", [])
+
+                # 2) For each ID, fetch metadata and limited payload for attachment filenames
+                for ref in message_refs:
+                    msg_id = ref.get("id")
+                    if not msg_id:
+                        continue
+                    msg_resp = await client.get(
+                        f"{base_url}/messages/{msg_id}",
+                        params={
+                            "format": "full",
+                            # Limit fields to headers and filenames to keep payload small
+                            "fields": "id,threadId,internalDate,labelIds,sizeEstimate,payload/headers,payload/parts/filename,payload/parts/mimeType"
+                        },
+                        headers=headers
+                    )
+                    if msg_resp.status_code == 401:
+                        logger.warning("Gmail access token unauthorized during message fetch; skipping message")
+                        continue
+                    if msg_resp.status_code >= 400:
+                        logger.warning(f"Gmail message fetch failed: {msg_resp.status_code}")
+                        continue
+                    msg = msg_resp.json()
+
+                    # Extract headers
+                    headers_list = (msg.get("payload", {}) or {}).get("headers", [])
+                    header_map = {h.get("name", "").lower(): h.get("value", "") for h in headers_list}
+                    subject = header_map.get("subject", "")
+                    sender = header_map.get("from", "")
+                    date_hdr = header_map.get("date", "")
+
+                    # Attachment filenames (metadata-only)
+                    parts = (msg.get("payload", {}) or {}).get("parts", []) or []
+                    attachment_filenames: List[str] = []
+                    for p in parts:
+                        filename = p.get("filename")
+                        if filename:
+                            attachment_filenames.append(filename)
+
+                    # Extract key identifiers from subject and limited headers
+                    extracted = self._extract_identifiers_from_gmail(subject, sender, date_hdr)
+
+                    # Build document row (email as metadata record)
+                    documents.append({
+                        "external_id": msg.get("id"),
+                        "filename": subject or f"gmail_message_{msg.get('id')}",
+                        "size_bytes": msg.get("sizeEstimate", 0) or 0,
+                        "content_type": "message/rfc822",
+                        "created_at": datetime.utcfromtimestamp(int((msg.get("internalDate") or 0)) / 1000) if msg.get("internalDate") else datetime.utcnow(),
+                        "modified_at": datetime.utcnow(),
+                        "sender": sender,
+                        "subject": subject,
+                        "message_id": msg.get("id"),
+                        "folder_path": None,
+                        "metadata": {
+                            "provider": "gmail",
+                            "threadId": msg.get("threadId"),
+                            "labelIds": msg.get("labelIds", []),
+                            "attachment_filenames": attachment_filenames
+                        },
+                        "extracted_data": extracted
+                    })
+
+        except Exception as e:
+            logger.error(f"Failed to fetch Gmail documents: {e}")
+
+        return documents
+
+    def _extract_identifiers_from_gmail(self, subject: str, sender: str, date_hdr: str) -> Dict[str, Any]:
+        """Extract order/shipment IDs, amounts, dates from Gmail headers/subject."""
+        text = " ".join(filter(None, [subject, sender, date_hdr]))
+
+        # Patterns
+        order_ids = re.findall(r"\b\d{3}-\d{7}-\d{7}\b", text)
+        amounts = re.findall(r"(?:USD\s*|\$)\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?", text)
+        shipment_ids = []
+        shipment_ids += re.findall(r"\bTBA[0-9A-Z]+\b", text)
+        shipment_ids += re.findall(r"\b1Z[0-9A-Z]{16}\b", text)
+
+        return {
+            "order_ids": list(set(order_ids)) or None,
+            "shipment_ids": list(set(shipment_ids)) or None,
+            "amounts": list(set(amounts)) or None,
+            "email_date_header": date_hdr or None
+        }
     
     async def _store_document(self, source_id: str, user_id: str, provider: str, doc_data: Dict[str, Any]):
         """Store document metadata in database"""
@@ -354,15 +468,15 @@ class EvidenceIngestionService:
                     INSERT INTO evidence_documents 
                     (id, source_id, user_id, provider, external_id, filename, size_bytes,
                      content_type, created_at, modified_at, sender, subject, message_id,
-                     folder_path, metadata, processing_status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     folder_path, metadata, processing_status, extracted_data)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (source_id, external_id) DO NOTHING
                 """, (
                     doc_id, source_id, user_id, provider, doc_data["external_id"],
-                    doc_data["filename"], doc_data["size_bytes"], doc_data["content_type"],
+                    doc_data["filename"], doc_data.get("size_bytes", 0), doc_data["content_type"],
                     doc_data["created_at"], doc_data["modified_at"], doc_data.get("sender"),
                     doc_data.get("subject"), doc_data.get("message_id"), doc_data.get("folder_path"),
-                    json.dumps(doc_data.get("metadata", {})), "pending"
+                    json.dumps(doc_data.get("metadata", {})), "pending", json.dumps(doc_data.get("extracted_data")) if doc_data.get("extracted_data") is not None else None
                 ))
     
     def _extract_account_email(self, provider: str, user_info: Dict[str, Any]) -> str:
