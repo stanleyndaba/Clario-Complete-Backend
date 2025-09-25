@@ -291,7 +291,8 @@ class EvidenceIngestionService:
                 with conn.cursor() as cursor:
                     cursor.execute("""
                         SELECT ej.id, ej.source_id, ej.user_id, es.provider, es.account_email,
-                               es.encrypted_access_token, es.encrypted_refresh_token, es.last_sync_at, es.metadata
+                               es.encrypted_access_token, es.encrypted_refresh_token, es.last_sync_at, es.metadata,
+                               ej.started_at
                         FROM evidence_ingestion_jobs ej
                         JOIN evidence_sources es ON ej.source_id = es.id
                         WHERE ej.id = %s
@@ -301,7 +302,7 @@ class EvidenceIngestionService:
                     if not result:
                         return
                     
-                    job_id, source_id, user_id, provider, account_email, encrypted_access_token, encrypted_refresh_token, last_sync_at, metadata = result
+                    job_id, source_id, user_id, provider, account_email, encrypted_access_token, encrypted_refresh_token, last_sync_at, metadata, job_started_at = result
                     
                     # Decrypt access token
                     access_token = self._decrypt_token(encrypted_access_token)
@@ -317,6 +318,14 @@ class EvidenceIngestionService:
                     # Emit basic telemetry
                     try:
                         self._emit_ingestion_metrics(provider, len(documents))
+                        # Observe time_to_evidence for the job
+                        try:
+                            from src.api.metrics import TIME_TO_EVIDENCE
+                            if job_started_at:
+                                delta = (datetime.utcnow() - job_started_at).total_seconds()
+                                TIME_TO_EVIDENCE.observe(delta)
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                     
@@ -866,7 +875,17 @@ class EvidenceIngestionService:
         attempt = 0
         backoff = 0.5
         while attempt < max_retries:
-            resp = await client.get(url, params=params, headers=headers)
+            # OpenTelemetry span for provider call
+            try:
+                from opentelemetry import trace
+                tracer = trace.get_tracer(__name__)
+            except Exception:
+                tracer = None
+            if tracer:
+                with tracer.start_as_current_span(f"provider.get.{provider}"):
+                    resp = await client.get(url, params=params, headers=headers)
+            else:
+                resp = await client.get(url, params=params, headers=headers)
             if resp.status_code == 401 and refresh_token:
                 # Try token refresh once
                 refreshed = await self._refresh_access_token(provider, refresh_token)
@@ -904,7 +923,16 @@ class EvidenceIngestionService:
         attempt = 0
         backoff = 0.5
         while attempt < max_retries:
-            resp = await client.post(url, json=json, headers=headers)
+            try:
+                from opentelemetry import trace
+                tracer = trace.get_tracer(__name__)
+            except Exception:
+                tracer = None
+            if tracer:
+                with tracer.start_as_current_span(f"provider.post.{provider}"):
+                    resp = await client.post(url, json=json, headers=headers)
+            else:
+                resp = await client.post(url, json=json, headers=headers)
             if resp.status_code == 401 and refresh_token:
                 refreshed = await self._refresh_access_token(provider, refresh_token)
                 if refreshed:

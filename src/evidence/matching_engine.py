@@ -145,6 +145,12 @@ class EvidenceMatchingEngine:
                     # Emit lightweight metric log for telemetry aggregation
                     try:
                         self._emit_match_metric(match)
+                        # Prometheus histogram for match confidence
+                        try:
+                            from src.api.metrics import MATCH_CONFIDENCE
+                            MATCH_CONFIDENCE.observe(best_match.final_confidence if 'best_match' in locals() else match.final_confidence)
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                     matches.append(match)
