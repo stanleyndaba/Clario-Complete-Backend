@@ -239,7 +239,13 @@ async def gmail_watch_webhook(
     """Handle Gmail Pub/Sub push (configure upstream)."""
     try:
         logger.info(f"gmail.watch webhook: {body}")
-        # In a real impl, validate message, map user/source, enqueue ingest
+        # TODO: verify signature, decode message, identify user/source by email
+        # For MVP: expect { "source_id": "...", "user_id": "..." }
+        source_id = body.get("source_id")
+        user_id = body.get("user_id")
+        if source_id and user_id:
+            job_id = await evidence_service._start_ingestion_job(source_id, user_id)  # noqa
+            return {"ok": True, "job_id": job_id}
         return {"ok": True}
     except Exception as e:
         logger.error(f"gmail_watch_webhook failed: {e}")
@@ -252,7 +258,12 @@ async def gdrive_changes_webhook(
     """Handle Google Drive push notifications."""
     try:
         logger.info(f"gdrive.changes webhook: {body}")
-        # Validate channel, map to source, enqueue ingest
+        # Expect mapping payload to { source_id, user_id }
+        source_id = body.get("source_id")
+        user_id = body.get("user_id")
+        if source_id and user_id:
+            job_id = await evidence_service._start_ingestion_job(source_id, user_id)  # noqa
+            return {"ok": True, "job_id": job_id}
         return {"ok": True}
     except Exception as e:
         logger.error(f"gdrive_changes_webhook failed: {e}")

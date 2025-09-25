@@ -736,7 +736,11 @@ class EvidenceIngestionService:
                     continue
                 return None
             if resp.status_code in (429, 500, 502, 503, 504):
-                await asyncio.sleep(backoff)
+                retry_after = resp.headers.get('Retry-After')
+                if retry_after and retry_after.isdigit():
+                    await asyncio.sleep(int(retry_after))
+                else:
+                    await asyncio.sleep(backoff)
                 backoff *= 2
                 attempt += 1
                 continue
@@ -763,7 +767,11 @@ class EvidenceIngestionService:
                     continue
                 return None
             if resp.status_code in (429, 500, 502, 503, 504):
-                await asyncio.sleep(backoff)
+                retry_after = resp.headers.get('Retry-After')
+                if retry_after and retry_after.isdigit():
+                    await asyncio.sleep(int(retry_after))
+                else:
+                    await asyncio.sleep(backoff)
                 backoff *= 2
                 attempt += 1
                 continue
@@ -781,7 +789,26 @@ class EvidenceIngestionService:
         try:
             conn = self._get_connector_for_provider(provider)
             token_data = await conn.refresh_access_token(refresh_token)
-            return token_data.get("access_token")
+            access_token = token_data.get("access_token")
+            expires_in = token_data.get("expires_in")
+            if access_token and expires_in:
+                with self.db._get_connection() as conn_db:
+                    with conn_db.cursor() as cursor:
+                        cursor.execute(
+                            """
+                            UPDATE evidence_sources
+                            SET encrypted_access_token = %s,
+                                token_expires_at = NOW() + (%s || ' seconds')::interval,
+                                updated_at = NOW()
+                            WHERE provider = %s AND encrypted_refresh_token IS NOT NULL
+                            """,
+                            (
+                                self._encrypt_token(access_token),
+                                str(expires_in),
+                                provider,
+                            ),
+                        )
+            return access_token
         except Exception as e:
             logger.warning(f"Token refresh failed for {provider}: {e}")
             return None
