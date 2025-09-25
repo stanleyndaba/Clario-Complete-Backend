@@ -304,6 +304,12 @@ class EvidenceIngestionService:
                     # Store documents
                     for doc in documents:
                         await self._store_document(source_id, user_id, provider, doc)
+
+                    # Emit basic telemetry
+                    try:
+                        self._emit_ingestion_metrics(provider, len(documents))
+                    except Exception:
+                        pass
                     
                     # Update job status
                     cursor.execute("""
@@ -329,6 +335,10 @@ class EvidenceIngestionService:
         """Fetch documents from external source (metadata only)"""
         if provider == "gmail":
             return await self._fetch_gmail_documents(access_token, source_id)
+        if provider == "gdrive":
+            return await self._fetch_gdrive_documents(access_token, source_id)
+        if provider == "dropbox":
+            return await self._fetch_dropbox_documents(access_token, source_id)
         
         # Default: placeholder mock for unsupported providers (to be implemented)
         return [
@@ -461,6 +471,145 @@ class EvidenceIngestionService:
             "amounts": list(set(amounts)) or None,
             "email_date_header": date_hdr or None
         }
+
+    async def _fetch_gdrive_documents(self, access_token: str, source_id: str, page_size: int = 50) -> List[Dict[str, Any]]:
+        """Fetch Google Drive files by filename patterns (metadata-first)."""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        base_url = "https://www.googleapis.com/drive/v3/files"
+        # Query for likely Amazon-related docs by filename
+        # name contains 'Amazon' OR common receipt/invoice keywords; PDFs and CSVs prioritized
+        q = " or ".join([
+            "name contains 'Amazon'",
+            "name contains 'amazon.com'",
+            "name contains 'invoice'",
+            "name contains 'receipt'",
+            "name contains 'shipment'",
+            "name contains 'packing'"
+        ])
+        params = {
+            "q": q,
+            "pageSize": page_size,
+            "fields": "files(id,name,mimeType,modifiedTime,createdTime,size,webViewLink)"
+        }
+        documents: List[Dict[str, Any]] = []
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(base_url, params=params, headers=headers)
+                if resp.status_code == 401:
+                    logger.warning("GDrive token unauthorized; skipping fetch")
+                    return []
+                resp.raise_for_status()
+                files = resp.json().get("files", [])
+                for f in files:
+                    name = f.get("name", "")
+                    extracted = self._extract_identifiers_from_filename(name)
+                    doc_kind = self._classify_doc_kind_from_filename(name)
+                    documents.append({
+                        "external_id": f.get("id"),
+                        "filename": name,
+                        "size_bytes": int(f.get("size") or 0),
+                        "content_type": f.get("mimeType") or "application/octet-stream",
+                        "created_at": datetime.fromisoformat(f.get("createdTime", datetime.utcnow().isoformat().replace("Z", "")) if f.get("createdTime") else datetime.utcnow().isoformat()),
+                        "modified_at": datetime.fromisoformat(f.get("modifiedTime", datetime.utcnow().isoformat().replace("Z", "")) if f.get("modifiedTime") else datetime.utcnow().isoformat()),
+                        "sender": None,
+                        "subject": None,
+                        "message_id": None,
+                        "folder_path": None,
+                        "metadata": {
+                            "provider": "gdrive",
+                            "webViewLink": f.get("webViewLink")
+                        },
+                        "extracted_data": extracted,
+                        "doc_kind": doc_kind
+                    })
+        except Exception as e:
+            logger.error(f"Failed to fetch GDrive documents: {e}")
+        return documents
+
+    async def _fetch_dropbox_documents(self, access_token: str, source_id: str, max_results: int = 50) -> List[Dict[str, Any]]:
+        """Fetch Dropbox files by filename patterns (metadata-first)."""
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        search_url = "https://api.dropboxapi.com/2/files/search_v2"
+        queries = ["Amazon", "amazon.com", "invoice", "receipt", "shipment", "packing"]
+        documents: List[Dict[str, Any]] = []
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                for q in queries:
+                    body = {
+                        "query": q,
+                        "options": {
+                            "filename_only": True,
+                            "max_results": max_results
+                        }
+                    }
+                    resp = await client.post(search_url, headers=headers, json=body)
+                    if resp.status_code == 401:
+                        logger.warning("Dropbox token unauthorized; skipping fetch")
+                        return []
+                    if resp.status_code >= 400:
+                        logger.warning(f"Dropbox search failed {resp.status_code}: {resp.text}")
+                        continue
+                    matches = resp.json().get("matches", [])
+                    for m in matches:
+                        md = ((m.get("metadata") or {}).get("metadata") or {})
+                        path_md = md.get("path_display") or md.get("path_lower") or ""
+                        name = md.get("name") or path_md.split("/")[-1]
+                        extracted = self._extract_identifiers_from_filename(name)
+                        doc_kind = self._classify_doc_kind_from_filename(name)
+                        server_modified = md.get("server_modified")
+                        client_modified = md.get("client_modified")
+                        documents.append({
+                            "external_id": md.get("id") or path_md,
+                            "filename": name,
+                            "size_bytes": int(md.get("size") or 0),
+                            "content_type": md.get(".tag") or "application/octet-stream",
+                            "created_at": datetime.fromisoformat((client_modified or server_modified).replace("Z", "+00:00")) if (client_modified or server_modified) else datetime.utcnow(),
+                            "modified_at": datetime.fromisoformat((server_modified or client_modified).replace("Z", "+00:00")) if (server_modified or client_modified) else datetime.utcnow(),
+                            "sender": None,
+                            "subject": None,
+                            "message_id": None,
+                            "folder_path": path_md,
+                            "metadata": {
+                                "provider": "dropbox"
+                            },
+                            "extracted_data": extracted,
+                            "doc_kind": doc_kind
+                        })
+        except Exception as e:
+            logger.error(f"Failed to fetch Dropbox documents: {e}")
+        return documents
+
+    def _extract_identifiers_from_filename(self, name: str) -> Dict[str, Any]:
+        """Extract order/shipment IDs from filenames."""
+        text = name or ""
+        order_ids = re.findall(r"\b\d{3}-\d{7}-\d{7}\b", text)
+        shipment_ids = []
+        shipment_ids += re.findall(r"\bTBA[0-9A-Z]+\b", text)
+        shipment_ids += re.findall(r"\b1Z[0-9A-Z]{16}\b", text)
+        kind_hint = self._classify_doc_kind_from_filename(text)
+        return {
+            "order_ids": list(set(order_ids)) or None,
+            "shipment_ids": list(set(shipment_ids)) or None,
+            "kind_hint": kind_hint
+        }
+
+    def _classify_doc_kind_from_filename(self, name: str) -> str:
+        """Classify document kind from filename keywords."""
+        lower = (name or "").lower()
+        if any(k in lower for k in ["invoice", "inv-"]):
+            return "invoice"
+        if any(k in lower for k in ["receipt", "rcpt"]):
+            return "receipt"
+        if any(k in lower for k in ["shipment", "shipping", "packing", "bol", "bill of lading"]):
+            return "shipping"
+        return "other"
+
+    def _emit_ingestion_metrics(self, provider: str, count: int):
+        """Telemetry scaffold for ingestion metrics."""
+        try:
+            logger.info(f"ingestion.metrics provider={provider} count={count}")
+        except Exception:
+            pass
 
     def _first_or_none(self, values: Optional[List[str]]) -> Optional[str]:
         """Return first value from list or None."""
