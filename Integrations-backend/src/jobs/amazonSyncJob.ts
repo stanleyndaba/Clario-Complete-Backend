@@ -35,8 +35,16 @@ export class AmazonSyncJob {
       const fees = await amazonService.fetchFees(userId);
       await this.saveFeesToDatabase(userId, fees);
       
-      // Ingest financial events
+      // Ingest financial events (fees)
       await this.ingestFinancialEvents(userId, fees);
+
+      // Ingest reimbursements as financial events
+      try {
+        const reimbursements = await amazonService.getRealFbaReimbursements(userId);
+        await this.ingestReimbursementEvents(userId, reimbursements);
+      } catch (e) {
+        logger.warn('Reimbursement ingestion failed (non-fatal)', { userId, error: (e as any)?.message });
+      }
 
       // Trigger detection job
       await this.triggerDetectionJob(userId, syncId);
@@ -153,6 +161,38 @@ export class AmazonSyncJob {
     } catch (error) {
       logger.error('Error ingesting financial events', { error, userId });
       // Don't throw error as financial events ingestion is not critical for sync
+    }
+  }
+
+  /**
+   * Ingest reimbursement events
+   */
+  private async ingestReimbursementEvents(userId: string, rows: any[]): Promise<void> {
+    try {
+      logger.info('Ingesting reimbursement events', { userId, count: rows.length });
+
+      const events: FinancialEvent[] = rows.map((r: any) => ({
+        seller_id: userId,
+        event_type: 'reimbursement',
+        amount: Number(r.amount || r.total_amount || r.reimbursement_amount || 0),
+        currency: r.currency || 'USD',
+        raw_payload: r,
+        amazon_event_id: r.reimbursement_id || r.case_id,
+        amazon_order_id: r.amazon_order_id || r.order_id,
+        amazon_sku: r.sku || r.seller_sku,
+        event_date: r.posted_date ? new Date(r.posted_date) : new Date()
+      }));
+
+      if (events.length > 0) {
+        await financialEventsService.ingestEvents(events);
+        for (const event of events) {
+          await financialEventsService.archiveToS3(event);
+        }
+      }
+
+      logger.info('Reimbursement events ingested successfully', { userId, events: events.length });
+    } catch (error) {
+      logger.error('Error ingesting reimbursement events', { error, userId });
     }
   }
 
