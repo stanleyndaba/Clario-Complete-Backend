@@ -414,6 +414,9 @@ class EvidenceIngestionService:
                     # Extract key identifiers from subject and limited headers
                     extracted = self._extract_identifiers_from_gmail(subject, sender, date_hdr)
 
+                    # Classify doc kind as email
+                    doc_kind = "email"
+
                     # Build document row (email as metadata record)
                     documents.append({
                         "external_id": msg.get("id"),
@@ -432,7 +435,8 @@ class EvidenceIngestionService:
                             "labelIds": msg.get("labelIds", []),
                             "attachment_filenames": attachment_filenames
                         },
-                        "extracted_data": extracted
+                        "extracted_data": extracted,
+                        "doc_kind": doc_kind
                     })
 
         except Exception as e:
@@ -457,6 +461,35 @@ class EvidenceIngestionService:
             "amounts": list(set(amounts)) or None,
             "email_date_header": date_hdr or None
         }
+
+    def _first_or_none(self, values: Optional[List[str]]) -> Optional[str]:
+        """Return first value from list or None."""
+        if not values:
+            return None
+        return values[0]
+
+    def _parse_first_amount(self, amounts: Optional[List[str]]) -> Optional[float]:
+        """Parse first currency-like amount string into float."""
+        if not amounts:
+            return None
+        raw = amounts[0]
+        # Strip currency symbols and commas
+        cleaned = re.sub(r"[^0-9\.]", "", raw)
+        try:
+            return float(cleaned)
+        except Exception:
+            return None
+
+    def _parse_date_from_header(self, date_hdr: Optional[str]) -> Optional[datetime.date]:
+        """Best-effort parse RFC2822-like date header into date."""
+        if not date_hdr:
+            return None
+        try:
+            from email.utils import parsedate_to_datetime
+            dt = parsedate_to_datetime(str(date_hdr))
+            return dt.date()
+        except Exception:
+            return None
     
     async def _store_document(self, source_id: str, user_id: str, provider: str, doc_data: Dict[str, Any]):
         """Store document metadata in database"""
@@ -468,15 +501,25 @@ class EvidenceIngestionService:
                     INSERT INTO evidence_documents 
                     (id, source_id, user_id, provider, external_id, filename, size_bytes,
                      content_type, created_at, modified_at, sender, subject, message_id,
-                     folder_path, metadata, processing_status, extracted_data)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     folder_path, metadata, processing_status, extracted_data,
+                     doc_kind, order_id, shipment_id, amount, currency, sku, asin, evidence_date)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (source_id, external_id) DO NOTHING
                 """, (
                     doc_id, source_id, user_id, provider, doc_data["external_id"],
                     doc_data["filename"], doc_data.get("size_bytes", 0), doc_data["content_type"],
                     doc_data["created_at"], doc_data["modified_at"], doc_data.get("sender"),
                     doc_data.get("subject"), doc_data.get("message_id"), doc_data.get("folder_path"),
-                    json.dumps(doc_data.get("metadata", {})), "pending", json.dumps(doc_data.get("extracted_data")) if doc_data.get("extracted_data") is not None else None
+                    json.dumps(doc_data.get("metadata", {})), "pending", json.dumps(doc_data.get("extracted_data")) if doc_data.get("extracted_data") is not None else None,
+                    # classification and identifiers (best-effort from metadata)
+                    doc_data.get("doc_kind"),
+                    self._first_or_none((doc_data.get("extracted_data") or {}).get("order_ids")),
+                    self._first_or_none((doc_data.get("extracted_data") or {}).get("shipment_ids")),
+                    self._parse_first_amount((doc_data.get("extracted_data") or {}).get("amounts")),
+                    None,
+                    None,
+                    None,
+                    self._parse_date_from_header((doc_data.get("extracted_data") or {}).get("email_date_header"))
                 ))
     
     def _extract_account_email(self, provider: str, user_info: Dict[str, Any]) -> str:
