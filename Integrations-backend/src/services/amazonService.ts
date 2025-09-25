@@ -416,6 +416,24 @@ export class AmazonService {
     }));
     return items;
   }
+
+  async getRealReturnsData(userId: string, startDate?: string, endDate?: string): Promise<any[]> {
+    const marketplaceIds = (process.env.AMAZON_MARKETPLACE_IDS || process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER').toString().split(',').map(s => s.trim());
+    const reportId = await this.requestReport(userId, 'GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA', marketplaceIds, startDate, endDate);
+    const doc = await this.pollReportDocument(userId, reportId);
+    if (!doc) return [];
+    const rows = await this.downloadAndParseDocument(doc);
+    return rows;
+  }
+
+  async getRealRemovalData(userId: string, startDate?: string, endDate?: string): Promise<any[]> {
+    const marketplaceIds = (process.env.AMAZON_MARKETPLACE_IDS || process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER').toString().split(',').map(s => s.trim());
+    const reportId = await this.requestReport(userId, 'GET_FBA_FULFILLMENT_REMOVAL_ORDER_DETAIL_DATA', marketplaceIds, startDate, endDate);
+    const doc = await this.pollReportDocument(userId, reportId);
+    if (!doc) return [];
+    const rows = await this.downloadAndParseDocument(doc);
+    return rows;
+  }
 }
 
 export const amazonService = new AmazonService();

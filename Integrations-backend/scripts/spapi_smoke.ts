@@ -44,6 +44,14 @@ async function main() {
     const shipments = await amazonService.getRealShipmentData(userId);
     console.log('Shipments:', { count: shipments.length, sample: shipments[0] });
 
+    console.log('\n== Fetch Returns Data ==');
+    const returns = await amazonService.getRealReturnsData(userId);
+    console.log('Returns:', { count: returns.length, sample: returns[0] });
+
+    console.log('\n== Fetch Removal Data ==');
+    const removals = await amazonService.getRealRemovalData(userId);
+    console.log('Removals:', { count: removals.length, sample: removals[0] });
+
     console.log('\n== Fetch Inventory Summaries ==');
     const inventory = await amazonService.getRealInventoryData(userId);
     console.log('Inventory:', { count: inventory.length, sample: inventory[0] });

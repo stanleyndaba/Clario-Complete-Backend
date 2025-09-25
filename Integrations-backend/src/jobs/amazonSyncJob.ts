@@ -46,6 +46,30 @@ export class AmazonSyncJob {
         logger.warn('Reimbursement ingestion failed (non-fatal)', { userId, error: (e as any)?.message });
       }
 
+      // Ingest shipments
+      try {
+        const shipments = await amazonService.getRealShipmentData(userId);
+        await this.ingestShipmentEvents(userId, shipments);
+      } catch (e) {
+        logger.warn('Shipment ingestion failed (non-fatal)', { userId, error: (e as any)?.message });
+      }
+
+      // Ingest returns
+      try {
+        const returns = await amazonService.getRealReturnsData(userId);
+        await this.ingestReturnEvents(userId, returns);
+      } catch (e) {
+        logger.warn('Returns ingestion failed (non-fatal)', { userId, error: (e as any)?.message });
+      }
+
+      // Ingest removals
+      try {
+        const removals = await amazonService.getRealRemovalData(userId);
+        await this.ingestRemovalEvents(userId, removals);
+      } catch (e) {
+        logger.warn('Removals ingestion failed (non-fatal)', { userId, error: (e as any)?.message });
+      }
+
       // Trigger detection job
       await this.triggerDetectionJob(userId, syncId);
 
@@ -196,6 +220,75 @@ export class AmazonSyncJob {
     }
   }
 
+  private async ingestShipmentEvents(userId: string, rows: any[]): Promise<void> {
+    try {
+      logger.info('Ingesting shipment events', { userId, count: rows.length });
+      const events: FinancialEvent[] = rows.map((r: any) => ({
+        seller_id: userId,
+        event_type: 'shipment',
+        amount: Number(r.amount || 0),
+        currency: r.currency || 'USD',
+        raw_payload: r,
+        amazon_event_id: r.shipment_id || r.event_id,
+        amazon_order_id: r.amazon_order_id || r.order_id,
+        amazon_sku: r.sku || r.seller_sku,
+        event_date: r.posted_date ? new Date(r.posted_date) : new Date()
+      }));
+      if (events.length > 0) {
+        await financialEventsService.ingestEvents(events);
+        for (const event of events) await financialEventsService.archiveToS3(event);
+      }
+    } catch (error) {
+      logger.error('Error ingesting shipment events', { error, userId });
+    }
+  }
+
+  private async ingestReturnEvents(userId: string, rows: any[]): Promise<void> {
+    try {
+      logger.info('Ingesting return events', { userId, count: rows.length });
+      const events: FinancialEvent[] = rows.map((r: any) => ({
+        seller_id: userId,
+        event_type: 'return',
+        amount: Number(r.amount || 0),
+        currency: r.currency || 'USD',
+        raw_payload: r,
+        amazon_event_id: r.return_id || r.event_id,
+        amazon_order_id: r.amazon_order_id || r.order_id,
+        amazon_sku: r.sku || r.seller_sku,
+        event_date: r.posted_date ? new Date(r.posted_date) : new Date()
+      }));
+      if (events.length > 0) {
+        await financialEventsService.ingestEvents(events);
+        for (const event of events) await financialEventsService.archiveToS3(event);
+      }
+    } catch (error) {
+      logger.error('Error ingesting return events', { error, userId });
+    }
+  }
+
+  private async ingestRemovalEvents(userId: string, rows: any[]): Promise<void> {
+    try {
+      logger.info('Ingesting removal events', { userId, count: rows.length });
+      const events: FinancialEvent[] = rows.map((r: any) => ({
+        seller_id: userId,
+        event_type: 'shipment',
+        amount: Number(r.amount || 0),
+        currency: r.currency || 'USD',
+        raw_payload: r,
+        amazon_event_id: r.removal_order_id || r.event_id,
+        amazon_order_id: r.amazon_order_id || r.order_id,
+        amazon_sku: r.sku || r.seller_sku,
+        event_date: r.posted_date ? new Date(r.posted_date) : new Date()
+      }));
+      if (events.length > 0) {
+        await financialEventsService.ingestEvents(events);
+        for (const event of events) await financialEventsService.archiveToS3(event);
+      }
+    } catch (error) {
+      logger.error('Error ingesting removal events', { error, userId });
+    }
+  }
+
   /**
    * Trigger detection job after sync completion
    */
@@ -265,13 +358,13 @@ export class AmazonSyncJob {
   }
 
   startScheduledSync(): void {
-    // Run every hour
-    cron.schedule('0 * * * *', async () => {
+    // Run every 4 hours
+    cron.schedule('0 */4 * * *', async () => {
       logger.info('Starting scheduled Amazon sync job');
       await this.syncAllUsers();
     });
 
-    logger.info('Amazon sync job scheduled to run every hour');
+    logger.info('Amazon sync job scheduled to run every 4 hours');
   }
 
   stopScheduledSync(): void {
