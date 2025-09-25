@@ -352,13 +352,71 @@ class DropboxConnector(OAuthConnector):
         }
         return f"{self.OAUTH_BASE_URL}/authorize?{urlencode(params)}"
 
+class OneDriveConnector(OAuthConnector):
+    """OneDrive (Microsoft Graph) OAuth 2.0 connector"""
+    OAUTH_BASE_URL = "https://login.microsoftonline.com/common/oauth2/v2.0"
+    API_BASE_URL = "https://graph.microsoft.com"
+    SCOPES = [
+        "https://graph.microsoft.com/Files.Read",
+        "https://graph.microsoft.com/User.Read"
+    ]
+
+    async def exchange_code_for_tokens(self, code: str) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            data = {
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "code": code,
+                "grant_type": "authorization_code",
+                "redirect_uri": self.redirect_uri,
+                "scope": " ".join(self.SCOPES)
+            }
+            resp = await client.post(f"{self.OAUTH_BASE_URL}/token", data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
+            resp.raise_for_status()
+            return resp.json()
+
+    async def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            data = {
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+                "scope": " ".join(self.SCOPES)
+            }
+            resp = await client.post(f"{self.OAUTH_BASE_URL}/token", data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
+            resp.raise_for_status()
+            return resp.json()
+
+    async def revoke_token(self, token: str) -> bool:
+        # No standard revoke for v2.0; ignore
+        return True
+
+    async def get_user_info(self, access_token: str) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{self.API_BASE_URL}/v1.0/me", headers={"Authorization": f"Bearer {access_token}"})
+            resp.raise_for_status()
+            return resp.json()
+
+    def get_auth_url(self, state: str) -> str:
+        params = {
+            "client_id": self.client_id,
+            "redirect_uri": self.redirect_uri,
+            "scope": " ".join(self.SCOPES),
+            "response_type": "code",
+            "response_mode": "query",
+            "state": state
+        }
+        return f"{self.OAUTH_BASE_URL}/authorize?{urlencode(params)}"
+
 def get_connector(provider: str, client_id: str, client_secret: str, redirect_uri: str) -> OAuthConnector:
     """Factory function to get the appropriate OAuth connector"""
     connectors = {
         "gmail": GmailConnector,
         "outlook": OutlookConnector,
         "gdrive": GoogleDriveConnector,
-        "dropbox": DropboxConnector
+        "dropbox": DropboxConnector,
+        "onedrive": OneDriveConnector
     }
     
     if provider not in connectors:

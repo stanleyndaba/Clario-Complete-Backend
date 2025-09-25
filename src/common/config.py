@@ -36,6 +36,10 @@ class Settings(BaseModel):
     OUTLOOK_CLIENT_SECRET: str = os.getenv("OUTLOOK_CLIENT_SECRET", "")
     OUTLOOK_REDIRECT_URI: str = os.getenv("OUTLOOK_REDIRECT_URI", "http://localhost:8000/api/auth/callback/outlook")
     
+    ONEDRIVE_CLIENT_ID: str = os.getenv("ONEDRIVE_CLIENT_ID", "")
+    ONEDRIVE_CLIENT_SECRET: str = os.getenv("ONEDRIVE_CLIENT_SECRET", "")
+    ONEDRIVE_REDIRECT_URI: str = os.getenv("ONEDRIVE_REDIRECT_URI", "http://localhost:8000/api/auth/callback/onedrive")
+    
     GDRIVE_CLIENT_ID: str = os.getenv("GDRIVE_CLIENT_ID", "")
     GDRIVE_CLIENT_SECRET: str = os.getenv("GDRIVE_CLIENT_SECRET", "")
     GDRIVE_REDIRECT_URI: str = os.getenv("GDRIVE_REDIRECT_URI", "http://localhost:8000/api/auth/callback/gdrive")

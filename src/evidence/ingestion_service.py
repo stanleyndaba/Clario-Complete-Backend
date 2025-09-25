@@ -356,6 +356,8 @@ class EvidenceIngestionService:
             return await self._fetch_gdrive_documents(access_token, source_id, refresh_token=refresh_token, last_sync_at=last_sync_at)
         if provider == "dropbox":
             return await self._fetch_dropbox_documents(access_token, source_id, refresh_token=refresh_token, last_sync_at=last_sync_at)
+        if provider == "onedrive":
+            return await self._fetch_onedrive_documents(access_token, source_id, refresh_token=refresh_token, last_sync_at=last_sync_at)
         
         # Default: placeholder mock for unsupported providers (to be implemented)
         return [
@@ -482,6 +484,48 @@ class EvidenceIngestionService:
         except Exception as e:
             logger.error(f"Failed to fetch Gmail documents: {e}")
 
+        return documents
+
+    async def _fetch_onedrive_documents(self, access_token: str, source_id: str, refresh_token: Optional[str] = None, last_sync_at: Optional[datetime] = None, page_size: int = 100) -> List[Dict[str, Any]]:
+        """Fetch OneDrive files by filename patterns (metadata-first)."""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        base_url = "https://graph.microsoft.com/v1.0/me/drive/root/search(q='Amazon')"
+        params = {"top": page_size}
+        documents: List[Dict[str, Any]] = []
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                url = base_url
+                pages = 0
+                while True:
+                    resp_json = await self._http_get(client, url, headers, params, provider="onedrive", refresh_token=refresh_token)
+                    if not resp_json:
+                        break
+                    items = resp_json.get("value", [])
+                    for it in items:
+                        name = it.get("name", "")
+                        extracted = self._extract_identifiers_from_filename(name)
+                        doc_kind = self._classify_doc_kind_from_filename(name)
+                        documents.append({
+                            "external_id": it.get("id"),
+                            "filename": name,
+                            "size_bytes": int(((it.get("size") or 0))),
+                            "content_type": (it.get("file") or {}).get("mimeType") or "application/octet-stream",
+                            "created_at": datetime.fromisoformat(((it.get("createdDateTime") or datetime.utcnow().isoformat()).replace("Z", "+00:00"))),
+                            "modified_at": datetime.fromisoformat(((it.get("lastModifiedDateTime") or datetime.utcnow().isoformat()).replace("Z", "+00:00"))),
+                            "sender": None,
+                            "subject": None,
+                            "message_id": None,
+                            "folder_path": (it.get("parentReference") or {}).get("path"),
+                            "metadata": {"provider": "onedrive"},
+                            "extracted_data": extracted,
+                            "doc_kind": doc_kind
+                        })
+                    url = resp_json.get("@odata.nextLink")
+                    pages += 1
+                    if not url or pages >= 5:
+                        break
+        except Exception as e:
+            logger.error(f"Failed to fetch OneDrive documents: {e}")
         return documents
 
     async def _fetch_outlook_documents(self, access_token: str, source_id: str, refresh_token: Optional[str] = None, last_sync_at: Optional[datetime] = None, page_size: int = 50) -> List[Dict[str, Any]]:
