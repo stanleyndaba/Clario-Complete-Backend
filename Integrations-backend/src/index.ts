@@ -35,9 +35,13 @@ import stripeSyncJob from './jobs/stripeSyncJob';
 import OrchestrationJobManager from './jobs/orchestrationJob';
 import detectionService from './services/detectionService';
 import enhancedDetectionService from './services/enhancedDetectionService';
+import { validateEnvironment } from './utils/envCheck';
 
 const app = express();
 const server = createServer(app);
+
+// Validate env early
+try { validateEnvironment(); } catch (e: any) { logger.error('Environment validation failed', { error: e?.message }); throw e; }
 
 // Security middleware
 app.use(helmet());
