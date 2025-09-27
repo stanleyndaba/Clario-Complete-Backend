@@ -183,6 +183,30 @@ router.post('/exchange-session', async (req: any, res) => {
   }
 });
 
+// GET /api/v1/integrations/auth/debug
+router.get('/debug', async (req: any, res) => {
+  try {
+    const cookieName = (process.env['SESSION_COOKIE_NAME'] || 'session_token');
+    const session = getCookie(req, cookieName);
+    return res.json({
+      success: true,
+      envVarsSet: {
+        ORCHESTRATOR_JWT_SECRET: Boolean(process.env['ORCHESTRATOR_JWT_SECRET']),
+        JWT_SECRET: Boolean(process.env['JWT_SECRET']),
+        SUPABASE_URL: Boolean(process.env['SUPABASE_URL']),
+        SUPABASE_ANON_KEY: Boolean(process.env['SUPABASE_ANON_KEY'])
+      },
+      cookieReceived: {
+        name: cookieName,
+        exists: Boolean(session),
+        length: session ? session.length : 0
+      }
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
+  }
+});
+
 export default router;
 
 
