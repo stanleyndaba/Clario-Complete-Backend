@@ -1,6 +1,8 @@
 import { Router } from 'express';
-import { authenticateToken, AuthenticatedRequest } from '../middleware/authMiddleware';
+import { authenticateToken, AuthenticatedRequest, generateToken } from '../middleware/authMiddleware';
 import { supabase } from '../database/supabaseClient';
+import jwt from 'jsonwebtoken';
+import config from '../config/env';
 
 const router = Router();
 
@@ -12,8 +14,22 @@ router.use((req, res, next) => {
   }
 });
 
+// Helper to parse cookie header without external deps
+function getCookie(req: any, name: string): string | undefined {
+  try {
+    const cookieHeader: string | undefined = req.headers?.cookie;
+    if (!cookieHeader) return undefined;
+    const parts = cookieHeader.split(';');
+    for (const part of parts) {
+      const [k, ...rest] = part.trim().split('=');
+      if (k === name) return decodeURIComponent(rest.join('='));
+    }
+  } catch {}
+  return undefined;
+}
+
 // GET /api/v1/integrations/auth/me
-router.get('/me', async (req: AuthenticatedRequest, res) => {
+router.get('/me', async (req: AuthenticatedRequest, res: any) => {
   try {
     const userId = req.user?.id as string;
     if (!userId) {
@@ -35,8 +51,8 @@ router.get('/me', async (req: AuthenticatedRequest, res) => {
       .select('provider, status')
       .eq('user_id', userId);
 
-    const amazon_connected = !!integrations?.find(i => i.provider === 'amazon' && i.status === 'connected');
-    const stripe_connected = !!integrations?.find(i => i.provider === 'stripe' && i.status === 'connected');
+    const amazon_connected = !!integrations?.find((i: any) => i.provider === 'amazon' && i.status === 'connected');
+    const stripe_connected = !!integrations?.find((i: any) => i.provider === 'stripe' && i.status === 'connected');
 
     return res.json({
       success: true,
@@ -60,11 +76,11 @@ router.get('/me', async (req: AuthenticatedRequest, res) => {
 });
 
 // POST /api/v1/integrations/auth/post-login - initialize Stripe customer/subscription
-router.post('/post-login', async (req: AuthenticatedRequest, res) => {
+router.post('/post-login', async (req: AuthenticatedRequest, res: any) => {
   try {
     const userId = req.user?.id as string;
     const paymentsUrl = process.env['PAYMENTS_API_URL'];
-    const token = req.headers['authorization'] as string | undefined;
+    const token = (req as any).headers['authorization'] as string | undefined;
     if (!paymentsUrl) {
       return res.status(500).json({ success: false, error: { code: 'MISSING_CONFIG', message: 'PAYMENTS_API_URL not configured' } });
     }
@@ -121,6 +137,71 @@ router.post('/post-login', async (req: AuthenticatedRequest, res) => {
     } catch {}
 
     return res.json({ success: true, stripe: data, nextActions: { connectEvidence: evidenceSuggestion.connectSuggested } });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
+  }
+});
+
+// POST /api/v1/integrations/auth/exchange-session
+// Accepts a valid session cookie (e.g., 'session_token' issued by the orchestrator)
+// Returns a JWT compatible with this service: { id, email }
+router.post('/exchange-session', async (req: any, res) => {
+  try {
+    const cookieName = (process.env['SESSION_COOKIE_NAME'] || 'session_token');
+    const token = getCookie(req, cookieName);
+    if (!token) {
+      return res.status(401).json({ success: false, error: { code: 'NO_SESSION', message: 'Session cookie not found' } });
+    }
+
+    // Decode orchestrator session to extract user_id
+    let payload: any;
+    try {
+      const orchestratorSecret = process.env['ORCHESTRATOR_JWT_SECRET'] || config.JWT_SECRET;
+      payload = jwt.verify(token, orchestratorSecret);
+    } catch (e: any) {
+      return res.status(401).json({ success: false, error: { code: 'INVALID_SESSION', message: 'Invalid or expired session' } });
+    }
+
+    const userId: string | undefined = payload?.user_id || payload?.id;
+    if (!userId) {
+      return res.status(400).json({ success: false, error: { code: 'MISSING_USER', message: 'No user_id in session' } });
+    }
+
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, email')
+      .eq('id', userId)
+      .single();
+    if (error || !user) {
+      return res.status(404).json({ success: false, error: { code: 'USER_NOT_FOUND', message: 'User not found' } });
+    }
+
+    const accessToken = generateToken(user.id, user.email);
+    return res.json({ success: true, token: accessToken, user: { id: user.id, email: user.email } });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
+  }
+});
+
+// GET /api/v1/integrations/auth/debug
+router.get('/debug', async (req: any, res) => {
+  try {
+    const cookieName = (process.env['SESSION_COOKIE_NAME'] || 'session_token');
+    const session = getCookie(req, cookieName);
+    return res.json({
+      success: true,
+      envVarsSet: {
+        ORCHESTRATOR_JWT_SECRET: Boolean(process.env['ORCHESTRATOR_JWT_SECRET']),
+        JWT_SECRET: Boolean(process.env['JWT_SECRET']),
+        SUPABASE_URL: Boolean(process.env['SUPABASE_URL']),
+        SUPABASE_ANON_KEY: Boolean(process.env['SUPABASE_ANON_KEY'])
+      },
+      cookieReceived: {
+        name: cookieName,
+        exists: Boolean(session),
+        length: session ? session.length : 0
+      }
+    });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
   }
