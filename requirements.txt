@@ -1,11 +1,10 @@
---find-links https://wheel-index.linuxmusl.org/
 fastapi==0.104.1
 uvicorn==0.24.0
-pydantic==2.1.1
+pydantic==2.6.1
 pyjwt==2.8.0
 httpx==0.25.2
 python-multipart==0.0.6
-cryptography==41.0.8
+cryptography==42.0.5
 psycopg2-binary==2.9.8
 sqlalchemy==2.0.23
 alembic==1.13.1
