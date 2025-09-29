@@ -1,3 +1,6 @@
+# Compatibility patch for Python 3.13
+from .compatibility_patch import *
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -188,6 +191,7 @@ def cors_debug():
         "allow_origins": allow_origins,
         "allow_origin_regex": allow_origin_regex,
     }
+
 
 
 
