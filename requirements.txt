@@ -4,7 +4,7 @@ pydantic==2.4.2
 pyjwt==2.8.0
 httpx==0.25.2
 python-multipart==0.0.6
-cryptography==41.0.8
+cryptography==42.0.5
 psycopg2-binary==2.9.8
 sqlalchemy==2.0.23
 alembic==1.13.1
