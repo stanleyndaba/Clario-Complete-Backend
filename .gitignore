@@ -147,4 +147,4 @@ aws-sdk-react-native.js
 .dockerignore
 
 # Deployment files (keep templates)
-flyctl
+flyctlopside-complete-frontend/
