@@ -6,4 +6,4 @@ class ImageParser:
         self.ocr_available = OCR_AVAILABLE
     
     def extract_text(self, image_path: str) -> str:
-        return \"Image text extraction temporarily disabled. Pillow dependency removed for Python 3.13 compatibility.\"
+        return "Image text extraction temporarily disabled. Pillow dependency removed for Python 3.13 compatibility.\"
