@@ -260,4 +260,4 @@ process.on('unhandledRejection', (reason, promise) => {
 // Start the server
 startServer();
 
-export default app; 
+export default app; // Deployment fix - Redis disabled
