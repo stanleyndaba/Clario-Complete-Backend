@@ -216,7 +216,7 @@ const startServer = () => {
     
     // Start background jobs after server is running
     startBackgroundJobs();
-    disputeSubmissionWorker.start();
+    // disputeSubmissionWorker.start(); // Disabled - Redis not available
   });
 };
 
