@@ -110,6 +110,12 @@ app.get('/api/status', (req, res) => {
 });
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// Public metrics endpoint (no auth required)
+app.post('/api/metrics/track', (req, res) => {
+  // Accept metrics but don't require auth
+  console.log('Metrics received:', req.body);
+  res.status(204).send(); // No content
+});
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -261,3 +267,4 @@ process.on('unhandledRejection', (reason, promise) => {
 startServer();
 
 export default app; // Deployment fix - Redis disabled
+

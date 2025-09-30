@@ -16,16 +16,16 @@ const PUBLIC_ROUTES = [
   { method: 'GET', path: '/health' },
   { method: 'GET', path: '/api/status' },
   { method: 'GET', path: '/api/amazon/callback' },
-  { method: 'GET', path: '/api/amazon/auth' },
+  { method: 'GET', path: '/api/amazon/auth' }, // OAuth initiation should be public
   { method: 'POST', path: '/api/metrics/track' },
-  { method: 'OPTIONS', path: '*' },
+  { method: 'OPTIONS', path: '*' }, // Always allow preflight requests
 ];
 
 // Check if a route is public
 function isPublicRoute(req: Request): boolean {
   return PUBLIC_ROUTES.some(route => 
     route.method === req.method && 
-    (route.path === '*' || req.path === route.path || req.path.startsWith(route.path))
+    (route.path === '*' || req.path.startsWith(route.path))
   );
 }
 
