@@ -35,6 +35,17 @@ import OrchestrationJobManager from './jobs/orchestrationJob';
 import detectionService from './services/detectionService';
 import enhancedDetectionService from './services/enhancedDetectionService';
 
+// Add Redis error handler at the VERY BEGINNING
+process.on('unhandledRejection', (reason, promise) => {
+  // Don't crash for Redis connection errors
+  if (reason instanceof Error && reason.message.includes('ECONNREFUSED') && reason.message.includes('6379')) {
+    console.warn('Redis connection failed - continuing without Redis', reason.message);
+    return; // Don't crash the app
+  }
+  console.error('Unhandled Rejection', reason, promise);
+  process.exit(1);
+});
+
 const app = express();
 const server = createServer(app);
 
