@@ -62,7 +62,7 @@ async def logout():
     return {"message": "Logged out successfully"}
 
 # Simple email/password login for sandbox
-@router.post("/api/auth/login")
+@router.post("/auth/login")
 async def login(email: str, password: str):
     """Mock login for sandbox testing"""
     if email == "test@clario.com" and password == "test":
@@ -73,7 +73,7 @@ async def login(email: str, password: str):
         }
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
-@router.post("/api/auth/register")
+@router.post("/auth/register")
 async def register(email: str, password: str, name: str):
     """Mock registration for sandbox testing"""
     return {
