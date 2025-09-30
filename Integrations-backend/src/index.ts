@@ -91,6 +91,11 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Orchestrator health status endpoint (expected by external health checks)
+app.get('/api/status', (req, res) => {
+  res.json({ status: 'healthy', service: 'integrations-backend' });
+});
+
 // API routes
 app.use('/api/amazon', amazonRoutes);
 app.use('/api/gmail', gmailRoutes);
