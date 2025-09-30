@@ -237,6 +237,11 @@ process.on('uncaughtException', (error) => {
 });
 
 process.on('unhandledRejection', (reason, promise) => {
+  // Don't crash for Redis connection errors
+  if (reason instanceof Error && reason.message.includes('ECONNREFUSED') && reason.message.includes('6379')) {
+    logger.warn('Redis connection failed - continuing without Redis', { reason: reason.message });
+    return; // Don't crash the app
+  }
   logger.error('Unhandled Rejection', { reason, promise });
   process.exit(1);
 });
