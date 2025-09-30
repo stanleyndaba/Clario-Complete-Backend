@@ -4,6 +4,7 @@ Mock Amazon OAuth for sandbox testing
 
 from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from typing import Dict, Any
 import secrets
 import logging
@@ -11,6 +12,16 @@ from src.common.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Request models
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    name: str
 
 # Mock user database for sandbox
 MOCK_USERS = {
@@ -56,16 +67,10 @@ async def get_current_user_profile():
     """Get mock user profile for sandbox"""
     return MOCK_USERS["sandbox-user"]
 
-@router.post("/api/auth/logout")
-async def logout():
-    """Mock logout"""
-    return {"message": "Logged out successfully"}
-
-# Simple email/password login for sandbox
 @router.post("/auth/login")
-async def login(email: str, password: str):
+async def login(login_data: LoginRequest):
     """Mock login for sandbox testing"""
-    if email == "test@clario.com" and password == "test":
+    if login_data.email == "test@clario.com" and login_data.password == "test":
         return {
             "user": MOCK_USERS["sandbox-user"],
             "access_token": "mock_jwt_token_sandbox",
@@ -74,15 +79,20 @@ async def login(email: str, password: str):
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
 @router.post("/auth/register")
-async def register(email: str, password: str, name: str):
+async def register(register_data: RegisterRequest):
     """Mock registration for sandbox testing"""
     return {
         "user": {
             "user_id": f"user-{secrets.token_urlsafe(8)}",
-            "email": email,
-            "name": name,
+            "email": register_data.email,
+            "name": register_data.name,
             "amazon_seller_id": f"A1{secrets.token_urlsafe(8).upper()}"
         },
         "access_token": "mock_jwt_token_sandbox",
         "message": "Registration successful"
     }
+
+@router.post("/api/auth/logout")
+async def logout():
+    """Mock logout"""
+    return {"message": "Logged out successfully"}
