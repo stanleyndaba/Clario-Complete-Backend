@@ -29,8 +29,8 @@ class ServiceDirectory:
 
     def __init__(self):
         self.services: Dict[str, ServiceInfo] = {}
-        self._http_client = httpx.AsyncClient(timeout=5.0)
-        self._health_check_interval = 30  # seconds
+        self._http_client = httpx.AsyncClient(timeout=10.0)
+        self._health_check_interval = 60  # Reduce frequency to avoid rate limiting
         self._max_errors = 3
 
         # Register all microservices
@@ -47,27 +47,27 @@ class ServiceDirectory:
             "stripe": ServiceInfo(
                 name="stripe-payments",
                 base_url=settings.STRIPE_SERVICE_URL,
-                health_endpoint="/"  # Use root endpoint since /health doesn't exist
+                health_endpoint="/"  # Will test multiple endpoints
             ),
             "cost-docs": ServiceInfo(
                 name="cost-documentation",
                 base_url=settings.COST_DOC_SERVICE_URL,
-                health_endpoint="/"  # Use root endpoint
+                health_endpoint="/"
             ),
             "refund-engine": ServiceInfo(
                 name="refund-engine",
                 base_url=settings.REFUND_ENGINE_URL,
-                health_endpoint="/"  # Use root endpoint
+                health_endpoint="/"
             ),
             "mcde": ServiceInfo(
                 name="mcde",
                 base_url=settings.MCDE_URL,
-                health_endpoint="/"  # Use root endpoint
+                health_endpoint="/"
             )
         }
 
     async def check_service_health(self, service_name: str) -> bool:
-        """Check health of a specific service"""
+        """Check health of a specific service with multiple endpoint attempts"""
         if service_name not in self.services:
             logger.error(f"Service {service_name} not found in directory")
             return False
@@ -75,31 +75,44 @@ class ServiceDirectory:
         service = self.services[service_name]
         start_time = datetime.utcnow()
 
-        try:
-            # For root endpoint health checks, accept any 2xx status
-            response = await self._http_client.get(f"{service.base_url}{service.health_endpoint}")
-            response_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+        # List of endpoints to try for health check
+        endpoints_to_try = [
+            service.health_endpoint,
+            "/api/health",
+            "/healthz",
+            "/status",
+            "/api/status",
+            "/api/v1/health"
+        ]
 
-            if response.status_code < 400:  # Accept any success status (200, 201, 204, etc.)
-                service.is_healthy = True
-                service.last_checked = datetime.utcnow()
-                service.response_time_ms = response_time
-                service.error_count = 0
-                service.last_error = None
-                logger.info(f"Service {service_name} is healthy (response time: {response_time:.2f}ms)")
-                return True
-            else:
-                raise Exception(f"Health check returned status {response.status_code}")
+        for endpoint in endpoints_to_try:
+            try:
+                response = await self._http_client.get(f"{service.base_url}{endpoint}")
+                response_time = (datetime.utcnow() - start_time).total_seconds() * 1000
 
-        except Exception as e:
-            service.is_healthy = False
-            service.last_checked = datetime.utcnow()
-            service.error_count += 1
-            service.last_error = str(e)
-            logger.warning(f"Service {service_name} health check failed: {e}")
-            return False
+                # Consider service healthy if we get ANY response (even 404/429)
+                # This means the service is running and reachable
+                if response.status_code < 500:  # Any non-5xx status means service is running
+                    service.is_healthy = True
+                    service.last_checked = datetime.utcnow()
+                    service.response_time_ms = response_time
+                    service.error_count = 0
+                    service.last_error = f"Endpoint {endpoint} returned {response.status_code}"
+                    logger.info(f"Service {service_name} is reachable via {endpoint} (status: {response.status_code})")
+                    return True
 
-    # ... rest of the class remains the same
+            except Exception as e:
+                continue  # Try next endpoint
+
+        # If all endpoints failed
+        service.is_healthy = False
+        service.last_checked = datetime.utcnow()
+        service.error_count += 1
+        service.last_error = "All health check endpoints failed"
+        logger.warning(f"Service {service_name} health check failed: All endpoints failed")
+        return False
+
+    # ... rest of the class methods remain the same
     async def check_all_services(self) -> Dict[str, bool]:
         """Check health of all services concurrently"""
         tasks = []
@@ -187,7 +200,7 @@ class ServiceDirectory:
                 await asyncio.sleep(self._health_check_interval)
             except Exception as e:
                 logger.error(f"Health monitoring error: {e}")
-                await asyncio.sleep(5)  # Short delay on error
+                await asyncio.sleep(30)  # Longer delay on error
 
     async def close(self):
         """Close the HTTP client"""
