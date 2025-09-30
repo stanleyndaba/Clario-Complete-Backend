@@ -78,6 +78,25 @@ app.use(morgan('combined', {
 }));
 
 // Body parsing middleware
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Integrations Backend is running',
+    timestamp: new Date().toISOString(),
+    environment: config.NODE_ENV
+  });
+});
+
+// ADD THIS NEW ENDPOINT RIGHT HERE:
+// Status endpoint for Orchestrator health checks
+app.get('/api/status', (req, res) => {
+  res.json({ 
+    status: 'healthy', 
+    service: 'integrations-backend',
+    timestamp: new Date().toISOString()
+  });
+});
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
