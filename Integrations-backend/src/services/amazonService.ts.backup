@@ -52,18 +52,10 @@ export interface AmazonOAuthResponse {
 export class AmazonService {
   private baseUrl = 'https://sellingpartnerapi-na.amazon.com';
   private authUrl = 'https://api.amazon.com/auth/o2/token';
-  private sandboxMode = process.env.AMAZON_SANDBOX_MODE === 'true';
 
   async initiateOAuth(userId: string): Promise<string> {
     try {
-      // SANDBOX MODE: Return fake Amazon OAuth URL
-      if (this.sandboxMode) {
-        logger.info('Using SANDBOX mode for Amazon OAuth', { userId });
-        const fakeAuthUrl = \\/auth/amazon/sandbox?state=sandbox_\\;
-        return fakeAuthUrl;
-      }
-
-      // PRODUCTION MODE: Original implementation
+      // Generate secure OAuth state
       const redisClient = await getRedisClient();
       const stateValidator = createStateValidator(redisClient);
       const state = await stateValidator.generateState(userId);
@@ -85,38 +77,6 @@ export class AmazonService {
 
   async handleOAuthCallback(code: string, userId: string): Promise<void> {
     try {
-      // SANDBOX MODE: Simulate successful OAuth with mock data
-      if (this.sandboxMode) {
-        logger.info('Using SANDBOX mode for Amazon OAuth callback', { userId });
-        
-        // Generate fake tokens for sandbox
-        const fakeTokenData: AmazonOAuthResponse = {
-          access_token: 'sandbox_access_token_' + userId,
-          refresh_token: 'sandbox_refresh_token_' + userId,
-          expires_in: 3600,
-          token_type: 'bearer'
-        };
-
-        const expiresAt = new Date(Date.now() + fakeTokenData.expires_in * 1000);
-
-        // Encrypt tokens before saving
-        const encryptedAccessToken = encryptToken(fakeTokenData.access_token);
-        const encryptedRefreshToken = encryptToken(fakeTokenData.refresh_token);
-
-        await tokenManager.saveToken(userId, 'amazon', {
-          accessToken: encryptedAccessToken,
-          refreshToken: encryptedRefreshToken,
-          expiresAt
-        });
-
-        // Mark integration status active
-        await this.upsertIntegrationStatus(userId, 'active', { source: 'sandbox_oauth_callback' });
-
-        logger.info('Amazon SANDBOX OAuth completed successfully', { userId });
-        return;
-      }
-
-      // PRODUCTION MODE: Original implementation
       const tokenResponse = await axios.post(this.authUrl, {
         grant_type: 'authorization_code',
         code,
@@ -151,11 +111,6 @@ export class AmazonService {
 
   async refreshAccessToken(userId: string): Promise<string> {
     try {
-      // SANDBOX MODE: Return fake token
-      if (this.sandboxMode) {
-        return 'sandbox_access_token_' + userId;
-      }
-
       const tokenData = await tokenManager.getToken(userId, 'amazon');
       if (!tokenData) {
         throw createError('No Amazon token found', 401);
@@ -201,11 +156,6 @@ export class AmazonService {
 
   async getValidAccessToken(userId: string): Promise<string> {
     try {
-      // SANDBOX MODE: Return fake token
-      if (this.sandboxMode) {
-        return 'sandbox_access_token_' + userId;
-      }
-
       const tokenData = await tokenManager.getToken(userId, 'amazon');
       if (!tokenData) {
         throw createError('No Amazon token found', 401);
@@ -234,55 +184,11 @@ export class AmazonService {
   async fetchClaims(userId: string, startDate?: string, endDate?: string): Promise<AmazonClaim[]> {
     try {
       const accessToken = await this.getValidAccessToken(userId);
-
-      // SANDBOX MODE: Generate impressive mock claims for "Shock and Awe"
-      if (this.sandboxMode) {
-        logger.info('Using SANDBOX mode for Amazon claims', { userId });
-        
-        const mockClaims: AmazonClaim[] = [
-          {
-            id: 'claim-1',
-            claimId: 'AMZ-CLAIM-SANDBOX-001',
-            claimType: 'reimbursement',
-            claimStatus: 'approved',
-            claimAmount: 12450.75,
-            currency: 'USD',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            description: 'FBA inventory reimbursement - lost/damaged items'
-          },
-          {
-            id: 'claim-2',
-            claimId: 'AMZ-CLAIM-SANDBOX-002',
-            claimType: 'reimbursement',
-            claimStatus: 'pending',
-            claimAmount: 8750.25,
-            currency: 'USD',
-            createdAt: new Date(Date.now() - 86400000).toISOString(),
-            updatedAt: new Date().toISOString(),
-            description: 'Shipping charge corrections'
-          },
-          {
-            id: 'claim-3',
-            claimId: 'AMZ-CLAIM-SANDBOX-003',
-            claimType: 'reimbursement',
-            claimStatus: 'approved',
-            claimAmount: 3200.50,
-            currency: 'USD',
-            createdAt: new Date(Date.now() - 172800000).toISOString(),
-            updatedAt: new Date(Date.now() - 86400000).toISOString(),
-            description: 'Storage fee overcharges'
-          }
-        ];
-
-        logger.info('Amazon SANDBOX claims generated', { userId, count: mockClaims.length, totalAmount: mockClaims.reduce((sum, claim) => sum + claim.claimAmount, 0) });
-        return mockClaims;
-      }
-
+      
       // TODO: Implement actual Amazon SP-API call to fetch claims
       // This is a stub implementation
       logger.info('Fetching Amazon claims', { userId, startDate, endDate });
-
+      
       // Mock response for development
       const mockClaims: AmazonClaim[] = [
         {
@@ -316,40 +222,11 @@ export class AmazonService {
   async fetchInventory(userId: string, marketplaceId?: string): Promise<AmazonInventory[]> {
     try {
       const accessToken = await this.getValidAccessToken(userId);
-
-      // SANDBOX MODE: Generate mock inventory
-      if (this.sandboxMode) {
-        const mockInventory: AmazonInventory[] = [
-          {
-            id: 'inv-1',
-            sku: 'PRODUCT-SANDBOX-001',
-            asin: 'B08N5WRWNW',
-            title: 'Premium Wireless Headphones',
-            quantity: 50,
-            price: 129.99,
-            currency: 'USD',
-            condition: 'New',
-            lastUpdated: new Date().toISOString()
-          },
-          {
-            id: 'inv-2',
-            sku: 'PRODUCT-SANDBOX-002',
-            asin: 'B08N5WRWNY',
-            title: 'Smart Fitness Tracker',
-            quantity: 125,
-            price: 79.99,
-            currency: 'USD',
-            condition: 'New',
-            lastUpdated: new Date().toISOString()
-          }
-        ];
-        return mockInventory;
-      }
-
+      
       // TODO: Implement actual Amazon SP-API call to fetch inventory
       // This is a stub implementation
       logger.info('Fetching Amazon inventory', { userId, marketplaceId });
-
+      
       // Mock response for development
       const mockInventory: AmazonInventory[] = [
         {
@@ -383,11 +260,11 @@ export class AmazonService {
   async fetchFees(userId: string, startDate?: string, endDate?: string): Promise<AmazonFee[]> {
     try {
       const accessToken = await this.getValidAccessToken(userId);
-
+      
       // TODO: Implement actual Amazon SP-API call to fetch fees
       // This is a stub implementation
       logger.info('Fetching Amazon fees', { userId, startDate, endDate });
-
+      
       // Mock response for development
       const mockFees: AmazonFee[] = [
         {
@@ -436,41 +313,7 @@ export class AmazonService {
       throw createError('Failed to disconnect Amazon integration', 500);
     }
   }
-
-  // NEW METHOD: Get total potential recoveries for "Shock and Awe" reveal
-  async getTotalPotentialRecoveries(userId: string): Promise<{ totalAmount: number; currency: string; claimCount: number }> {
-    try {
-      // SANDBOX MODE: Generate impressive total for the "wow" moment
-      if (this.sandboxMode) {
-        const claims = await this.fetchClaims(userId);
-        const totalAmount = claims.reduce((sum, claim) => sum + claim.claimAmount, 0);
-        
-        return {
-          totalAmount,
-          currency: 'USD',
-          claimCount: claims.length
-        };
-      }
-
-      // PRODUCTION MODE: Calculate from actual claims
-      const claims = await this.fetchClaims(userId);
-      const totalAmount = claims.reduce((sum, claim) => sum + claim.claimAmount, 0);
-      
-      return {
-        totalAmount,
-        currency: 'USD',
-        claimCount: claims.length
-      };
-    } catch (error) {
-      logger.error('Error calculating total potential recoveries', { userId, error });
-      return {
-        totalAmount: 0,
-        currency: 'USD',
-        claimCount: 0
-      };
-    }
-  }
 }
 
 export const amazonService = new AmazonService();
-export default amazonService;
+export default amazonService; 
