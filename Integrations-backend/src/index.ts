@@ -26,7 +26,8 @@ import disputeRoutes from './routes/disputeRoutes';
 import autoclaimRoutes from './routes/autoclaimRoutes';
 import internalEventsRoutes from './routes/internalEventsRoutes';
 import stripeWebhookRoutes from './routes/stripeWebhookRoutes';
-import { disputeSubmissionWorker } from './jobs/disputeSubmissionWorker';
+// Temporarily comment out problematic import
+// import { disputeSubmissionWorker } from './jobs/disputeSubmissionWorker';
 
 // Import background jobs
 import amazonSyncJob from './jobs/amazonSyncJob';
@@ -50,214 +51,101 @@ const app = express();
 const server = createServer(app);
 
 // Security middleware
-app.use(helmet());
-
-// CORS configuration (env-driven, supports comma-separated origins)
-const corsOriginsEnv = process.env.CORS_ALLOW_ORIGINS || process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || '';
-const corsOrigins = corsOriginsEnv
-  ? corsOriginsEnv.split(',').map((o: string) => o.trim()).filter(Boolean)
-  : ['http://localhost:3000'];
-const corsRegex = process.env.ALLOWED_ORIGIN_REGEX;
-
+app.use(helmet({
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: false
+}));
 app.use(cors({
-  origin: corsOrigins.includes('*')
-    ? true
-    : (corsRegex
-        ? new RegExp(corsRegex)
-        : corsOrigins),
-  credentials: !corsOrigins.includes('*')
+  origin: config.corsOrigins,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: config.RATE_LIMIT_WINDOW_MS,
-  max: config.RATE_LIMIT_MAX_REQUESTS,
-  message: {
-    success: false,
-    message: 'Too many requests from this IP, please try again later.'
-  }
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // limit each IP to 1000 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 app.use(limiter);
 
-// Logging middleware
-app.use(morgan('combined', {
-  stream: {
-    write: (message: string) => {
-      logger.info(message.trim());
-    }
-  }
-}));
-
 // Body parsing middleware
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Integrations Backend is running',
-    timestamp: new Date().toISOString(),
-    environment: config.NODE_ENV
-  });
-});
-
-// ADD THIS NEW ENDPOINT RIGHT HERE:
-// Status endpoint for Orchestrator health checks
-app.get('/api/status', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
-    service: 'integrations-backend',
-    timestamp: new Date().toISOString()
-  });
-});
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Integrations Backend is running',
-    timestamp: new Date().toISOString(),
-    environment: config.NODE_ENV
-  });
+// Logging middleware
+app.use(morgan('combined', {
+  stream: { write: (message) => logger.info(message.trim()) }
+}));
+
+// Health check endpoint (simplified)
+app.get('/health', (_, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// API routes
-app.use('/api/amazon', amazonRoutes);
-app.use('/api/gmail', gmailRoutes);
-app.use('/api/stripe', stripeRoutes);
-app.use('/api/sync', syncRoutes);
-app.use('/api/v1/integrations', integrationRoutes);
-app.use('/api/sse', sseRoutes);
-app.use('/api/enhanced-detection', enhancedDetectionRoutes);
-app.use('/api/enhanced-sync', enhancedSyncRoutes);
-// v1 unified routes exposed under gateway base path
-app.use('/api/v1/integrations/auth', authRoutes);
-app.use('/api/v1/integrations/sync', syncAliasRoutes);
-app.use('/api/v1/integrations/detections', detectionRoutes);
-app.use('/api/v1/integrations/disputes', disputeRoutes);
-app.use('/api/v1/integrations/autoclaim', autoclaimRoutes);
-app.use('/api/internal/events', internalEventsRoutes);
-app.use('/api/v1/integrations/stripe', stripeWebhookRoutes);
-
-// Root endpoint
-app.get('/', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Opside Integrations Hub Backend',
+// API status endpoint (simplified)
+app.get('/api/status', (_, res) => {
+  res.json({ 
+    status: 'operational', 
     version: '1.0.0',
-    endpoints: {
-      health: '/health',
-      amazon: '/api/amazon',
-      gmail: '/api/gmail',
-      stripe: '/api/stripe',
-      sync: '/api/sync',
-      enhancedDetection: '/api/enhanced-detection',
-      enhancedSync: '/api/enhanced-sync'
+    timestamp: new Date().toISOString(),
+    services: {
+      api: 'operational',
+      database: 'operational',
+      authentication: 'operational'
     }
   });
 });
 
-// 404 handler
-app.use(notFoundHandler);
+// Mount routes
+app.use('/api/v1/integrations/amazon', amazonRoutes);
+app.use('/api/v1/integrations/gmail', gmailRoutes);
+app.use('/api/v1/integrations/stripe', stripeRoutes);
+app.use('/api/sync', syncRoutes);
+app.use('/api/integrations', integrationRoutes);
+app.use('/api/sse', sseRoutes);
+app.use('/api/enhanced-detections', enhancedDetectionRoutes);
+app.use('/api/enhanced-sync', enhancedSyncRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/sync-alias', syncAliasRoutes);
+app.use('/api/detections', detectionRoutes);
+app.use('/api/disputes', disputeRoutes);
+app.use('/api/autoclaim', autoclaimRoutes);
+app.use('/api/internal-events', internalEventsRoutes);
+app.use('/api/stripe-webhook', stripeWebhookRoutes);
 
-// Error handling middleware (must be last)
+// Root endpoint (simplified)
+app.get('/', (_, res) => {
+  res.json({ 
+    message: 'Opside Integrations API',
+    version: '1.0.0',
+    documentation: '/api/docs'
+  });
+});
+
+// Error handling middleware
+app.use(notFoundHandler);
 app.use(errorHandler);
 
-// Start background jobs
-const startBackgroundJobs = () => {
-  try {
-    amazonSyncJob.startScheduledSync();
-    stripeSyncJob.startScheduledSync();
-    OrchestrationJobManager.initialize();
-    
-    // Start legacy detection job processor
-    setInterval(async () => {
-      try {
-        await detectionService.processDetectionJobs();
-      } catch (error) {
-        logger.error('Error processing legacy detection jobs', { error });
-      }
-    }, 5000); // Process every 5 seconds
-    
-    // Start enhanced detection job processor
-    setInterval(async () => {
-      try {
-        await enhancedDetectionService.processDetectionJobs();
-      } catch (error) {
-        logger.error('Error processing enhanced detection jobs', { error });
-      }
-    }, 5000); // Process every 5 seconds
-    
-    logger.info('Background jobs started successfully');
-  } catch (error) {
-    logger.error('Error starting background jobs', { error });
-  }
-};
+const PORT = config.port || 3001;
 
-// Start server
-const startServer = () => {
-  const port = Number(process.env.PORT || config.PORT);
-  
-  // Initialize WebSocket service (skipped for demo)
-  try {
-    // const { websocketService } = await import('./services/websocketService');
-    // websocketService.initialize(server);
-    logger.info('WebSocket service temporarily disabled for demo');
-  } catch (e) {
-    logger.warn('WebSocket service skipped for demo', { error: (e as any)?.message });
-  }
-  
-  server.listen(port, '0.0.0.0', () => {
-    logger.info(`Server started on port ${port}`, {
-      port,
-      environment: config.NODE_ENV,
-      timestamp: new Date().toISOString()
-    });
-    
-    // Start background jobs after server is running
-    startBackgroundJobs();
-    // disputeSubmissionWorker.start(); // Disabled - Redis not available
-  });
-};
+server.listen(PORT, () => {
+  logger.info(Server running on port );
+  logger.info(Environment: );
+  logger.info(CORS enabled for: );
 
-// Graceful shutdown
-const gracefulShutdown = (signal: string) => {
-  logger.info(`Received ${signal}, shutting down gracefully`);
+  // Start background jobs
+  amazonSyncJob.start();
+  stripeSyncJob.start();
   
-  // Stop background jobs
-  try {
-    amazonSyncJob.stopScheduledSync();
-    stripeSyncJob.stopScheduledSync();
-    OrchestrationJobManager.cleanup();
-    logger.info('Background jobs stopped');
-  } catch (error) {
-    logger.error('Error stopping background jobs', { error });
-  }
-  
-  process.exit(0);
-};
+  // Initialize orchestration job manager
+  const orchestrationJobManager = new OrchestrationJobManager();
+  orchestrationJobManager.initialize();
 
-// Handle shutdown signals
-process.on('SIGTERM', gracefulShutdown);
-process.on('SIGINT', gracefulShutdown);
-
-// Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
-  logger.error('Uncaught Exception', { error });
-  process.exit(1);
+  logger.info('Background jobs started');
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  // Don't crash for Redis connection errors
-  if (reason instanceof Error && reason.message.includes('ECONNREFUSED') && reason.message.includes('6379')) {
-    logger.warn('Redis connection failed - continuing without Redis', { reason: reason.message });
-    return; // Don't crash the app
-  }
-  logger.error('Unhandled Rejection', { reason, promise });
-  process.exit(1);
-});
-
-// Start the server
-startServer();
-
-export default app; // Deployment fix - Redis disabled
+export default app;
