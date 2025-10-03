@@ -53,6 +53,12 @@ app.use(limiter);
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// Public metrics endpoint (no auth required)
+app.post('/api/metrics/track', (req, res) => {
+  // Accept metrics but don't require auth
+  console.log('Metrics received:', req.body);
+  res.status(204).send(); // No content
+});
 
 // Logging middleware
 app.use(morgan('combined', {
