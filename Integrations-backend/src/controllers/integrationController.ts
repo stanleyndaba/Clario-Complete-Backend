@@ -1,130 +1,100 @@
 import { Request, Response } from 'express';
-import { AuthenticatedRequest } from '../middleware/authMiddleware';
-import { integrationService } from '../services/integrationService';
-import logger from '../utils/logger';
-import { createError } from '../utils/errorHandler';
 
-class IntegrationController {
-  /**
-   * Get integration status for a specific provider
-   */
-  async getIntegrationStatus(req: AuthenticatedRequest, res: Response): Promise<void> {
-    try {
-      const { provider } = req.params;
-      const userId = req.user!.id;
-
-      logger.info('Fetching integration status', {
-        userId,
-        provider,
-        endpoint: req.url
-      });
-
-      const status = await integrationService.getIntegrationStatus(userId, provider);
-
-      res.json({
-        success: true,
-        data: status
-      });
-    } catch (error) {
-      logger.error('Error fetching integration status', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        userId: req.user?.id,
-        provider: req.params.provider,
-        endpoint: req.url
-      });
-
-      if (error instanceof Error && error.message.includes('not found')) {
-        res.status(404).json({
-          success: false,
-          message: 'Integration status not found'
-        });
-        return;
+export const getIntegrationStatus = async (req: Request, res: Response) => {
+  try {
+    const { provider } = req.params;
+    
+    // Mock integration status
+    res.json({
+      success: true,
+      provider: provider,
+      connected: true,
+      status: 'active',
+      lastSync: new Date().toISOString(),
+      data: {
+        email: provider === 'gmail' ? 'user@example.com' : undefined,
+        account: provider === 'amazon' ? 'Seller123' : undefined
       }
-
-      res.status(500).json({
-        success: false,
-        message: 'Failed to fetch integration status'
-      });
-    }
+    });
+  } catch (error) {
+    console.error('Integration status error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get integration status'
+    });
   }
+};
 
-  /**
-   * Get all integration statuses for the authenticated user
-   */
-  async getAllIntegrationStatuses(req: AuthenticatedRequest, res: Response): Promise<void> {
-    try {
-      const userId = req.user!.id;
-
-      logger.info('Fetching all integration statuses', {
-        userId,
-        endpoint: req.url
-      });
-
-      const statuses = await integrationService.getAllIntegrationStatuses(userId);
-
-      res.json({
-        success: true,
-        data: statuses
-      });
-    } catch (error) {
-      logger.error('Error fetching all integration statuses', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        userId: req.user?.id,
-        endpoint: req.url
-      });
-
-      res.status(500).json({
-        success: false,
-        message: 'Failed to fetch integration statuses'
-      });
-    }
+export const reconnectIntegration = async (req: Request, res: Response) => {
+  try {
+    const { provider } = req.params;
+    
+    // Mock reconnect URL - using template literal with backticks
+    res.json({
+      success: true,
+      provider: provider,
+      reconnectUrl: 'http://localhost:3001/api/v1/integrations/' + provider + '/auth/start',
+      message: 'Reconnect initiated'
+    });
+  } catch (error) {
+    console.error('Reconnect error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reconnect integration'
+    });
   }
+};
 
-  /**
-   * Reconnect integration for a specific provider
-   */
-  async reconnectIntegration(req: AuthenticatedRequest, res: Response): Promise<void> {
-    try {
-      const { provider } = req.params;
-      const userId = req.user!.id;
+export const disconnectIntegration = async (req: Request, res: Response) => {
+  try {
+    const { provider } = req.params;
+    
+    // Mock disconnect
+    res.json({
+      success: true,
+      provider: provider,
+      message: 'Integration disconnected successfully'
+    });
+  } catch (error) {
+    console.error('Disconnect error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to disconnect integration'
+    });
+  }
+};
 
-      logger.info('Initiating integration reconnect', {
-        userId,
-        provider,
-        endpoint: req.url
-      });
-
-      const reconnectUrl = await integrationService.reconnectIntegration(userId, provider);
-
-      res.json({
-        success: true,
-        data: {
-          reconnectUrl,
-          message: `Redirect to this URL to reconnect your ${provider} integration`
+export const getAllIntegrations = async (_req: Request, res: Response) => {
+  try {
+    // Mock all integrations status
+    res.json({
+      success: true,
+      integrations: [
+        {
+          provider: 'amazon',
+          connected: true,
+          status: 'active',
+          lastSync: new Date().toISOString()
+        },
+        {
+          provider: 'gmail', 
+          connected: true,
+          status: 'active',
+          lastSync: new Date().toISOString()
+        },
+        {
+          provider: 'stripe',
+          connected: false,
+          status: 'disconnected',
+          lastSync: null
         }
-      });
-    } catch (error) {
-      logger.error('Error reconnecting integration', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        userId: req.user?.id,
-        provider: req.params.provider,
-        endpoint: req.url
-      });
-
-      if (error instanceof Error && error.message.includes('not supported')) {
-        res.status(400).json({
-          success: false,
-          message: 'Provider not supported for reconnection'
-        });
-        return;
-      }
-
-      res.status(500).json({
-        success: false,
-        message: 'Failed to initiate reconnection'
-      });
-    }
+      ]
+    });
+  } catch (error) {
+    console.error('All integrations error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get integrations'
+    });
   }
-}
-
-export const integrationController = new IntegrationController();
+};

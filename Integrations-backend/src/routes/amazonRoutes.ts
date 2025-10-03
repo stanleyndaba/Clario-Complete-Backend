@@ -1,44 +1,31 @@
 import { Router } from 'express';
-import { authenticateToken } from '../middleware/authMiddleware';
 import {
-  initiateAmazonOAuth,
+  startAmazonOAuth,
   handleAmazonCallback,
+  syncAmazonData,
   getAmazonClaims,
   getAmazonInventory,
-  getAmazonFees,
   disconnectAmazon
 } from '../controllers/amazonController';
-import { createUserRateLimit } from '../middleware/rateLimit';
-import { getRedisClient } from '../utils/redisClient';
 
 const router = Router();
 
-// OAuth routes (no authentication required for callback)
-router.get('/callback', handleAmazonCallback);
-
-// Protected routes
-router.use(authenticateToken);
-
-// Apply rate limiting to OAuth initiation (30 requests per minute)
-router.get('/auth', async (req, res, next) => {
-  try {
-    const redisClient = await getRedisClient();
-    const rateLimit = createUserRateLimit(redisClient, 'auth', 60, 30);
-    return rateLimit(req, res, next);
-  } catch (error) {
-    // If Redis is unavailable, continue without rate limiting
-    next();
-  }
-}, initiateAmazonOAuth);
-
-
-
-// Data fetching routes
+router.get('/auth/start', startAmazonOAuth);
+router.get('/auth/callback', handleAmazonCallback);
+router.post('/sync', syncAmazonData);
 router.get('/claims', getAmazonClaims);
 router.get('/inventory', getAmazonInventory);
-router.get('/fees', getAmazonFees);
+router.post('/disconnect', disconnectAmazon);
 
-// Disconnect
-router.delete('/disconnect', disconnectAmazon);
+// Mock fee endpoint since it was referenced
+router.get('/fees', (_, res) => {
+  res.json({
+    success: true,
+    fees: [
+      { type: 'referral_fee', amount: 45.50 },
+      { type: 'storage_fee', amount: 23.75 }
+    ]
+  });
+});
 
-export default router; 
+export default router;

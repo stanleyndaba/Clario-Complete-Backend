@@ -1,68 +1,56 @@
 import { Request, Response, NextFunction } from 'express';
 import logger from './logger';
 
-export interface AppError extends Error {
+export interface CustomError extends Error {
   statusCode?: number;
+  status?: string;
   isOperational?: boolean;
 }
 
-export class CustomError extends Error implements AppError {
-  public statusCode: number;
-  public isOperational: boolean;
+// Add the missing asyncHandler
+export const asyncHandler = (fn: Function) => (req: Request, res: Response, next: NextFunction) => {
+  Promise.resolve(fn(req, res, next)).catch(next);
+};
 
-  constructor(message: string, statusCode: number = 500) {
-    super(message);
-    this.statusCode = statusCode;
-    this.isOperational = true;
+export const notFoundHandler = (_req: Request, _res: Response, next: NextFunction) => {
+  const error = new Error(`Not found - ${_req.originalUrl}`) as CustomError;
+  error.statusCode = 404;
+  error.status = 'fail';
+  next(error);
+};
 
-    Error.captureStackTrace(this, this.constructor);
+export const errorHandler = (err: CustomError, req: Request, res: Response, _next: NextFunction) => {
+  let error = { ...err };
+  error.message = err.message;
+  error.statusCode = err.statusCode || 500;
+  error.status = err.status || 'error';
+
+  logger.error('Error:', {
+    message: error.message,
+    statusCode: error.statusCode,
+    url: req.originalUrl
+  });
+
+  if (err.name === 'CastError') {
+    const message = 'Resource not found';
+    error = new Error(message) as CustomError;
+    error.statusCode = 404;
   }
-}
 
-export const createError = (message: string, statusCode: number = 500): CustomError => {
-  return new CustomError(message, statusCode);
-};
+  if ((err as any).code === 11000) {
+    const message = 'Duplicate field value entered';
+    error = new Error(message) as CustomError;
+    error.statusCode = 400;
+  }
 
-export const errorHandler = (
-  err: AppError,
-  req: Request,
-  res: Response,
-  next: NextFunction
-): void => {
-  const statusCode = err.statusCode || 500;
-  const message = err.message || 'Internal Server Error';
+  if (err.name === 'ValidationError') {
+    const message = Object.values((err as any).errors).map((val: any) => val.message);
+    error = new Error(message.join(', ')) as CustomError;
+    error.statusCode = 400;
+  }
 
-  // Log error
-  logger.error('Error occurred', {
-    error: err.message,
-    stack: err.stack,
-    url: req.url,
-    method: req.method,
-    ip: req.ip,
-    userAgent: req.get('User-Agent')
+  res.status(error.statusCode || 500).json({
+    status: error.status,
+    message: error.message || 'Internal Server Error'
   });
-
-  // Don't leak error details in production
-  const errorResponse = {
-    success: false,
-    message: statusCode === 500 && process.env.NODE_ENV === 'production' 
-      ? 'Internal Server Error' 
-      : message,
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
-  };
-
-  res.status(statusCode).json(errorResponse);
 };
-
-export const asyncHandler = (fn: Function) => {
-  return (req: Request, res: Response, next: NextFunction) => {
-    Promise.resolve(fn(req, res, next)).catch(next);
-  };
-};
-
-export const notFoundHandler = (req: Request, res: Response): void => {
-  res.status(404).json({
-    success: false,
-    message: `Route ${req.originalUrl} not found`
-  });
-}; 
