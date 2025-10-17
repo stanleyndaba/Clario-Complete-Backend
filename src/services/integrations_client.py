@@ -15,6 +15,7 @@ class IntegrationsClient:
     
     def __init__(self):
         self.service_name = "integrations"
+        self.notifications_base = "/api/notifications"
     
     async def test_amazon_oauth(self, user_id: str) -> Dict[str, Any]:
         """Test Amazon OAuth connection"""
@@ -115,6 +116,30 @@ class IntegrationsClient:
                 
         except Exception as e:
             logger.error(f"Get integrations failed: {e}")
+            return {"error": str(e)}
+
+    async def send_notification(self, user_id: str, type: str, title: str, message: str, channel: str = "both", payload: Optional[Dict[str, Any]] = None, priority: str = "normal") -> Dict[str, Any]:
+        """Send a notification via Integrations-backend (in-app + email)"""
+        try:
+            response = await service_directory.call_service(
+                self.service_name,
+                "POST",
+                f"{self.notifications_base}",
+                json={
+                    "userId": user_id,
+                    "type": type,
+                    "title": title,
+                    "message": message,
+                    "priority": priority,
+                    "channel": channel,
+                    "payload": payload or {}
+                }
+            )
+            if response and response.status_code in (200, 201):
+                return response.json()
+            return {"error": "Failed to send notification", "status_code": response.status_code if response else None}
+        except Exception as e:
+            logger.error(f"Send notification failed: {e}")
             return {"error": str(e)}
 
 # Global client instance

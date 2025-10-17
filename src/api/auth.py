@@ -255,62 +255,61 @@ async def amazon_callback(request: Request):
 
 
 @router.post("/api/auth/post-login/stripe")
-async def post_login_stripe(request: Request):
-    """After OAuth success, ensure Stripe customer exists.
-    If absent, create and redirect to onboarding; if present, return portal link.
-    Non-blocking: on error, redirect to dashboard.
+async def post_login_stripe(user: dict = Depends(get_current_user)):
+    """Return a Stripe redirect URL for post-login billing.
+    - If the user has a Stripe customer, return Billing Portal session URL
+    - Otherwise, create a customer and a Checkout Session (mode=setup) URL
     """
-    session_token = request.cookies.get("session_token")
-    if not session_token:
-        return Response(status_code=302, headers={"Location": f"{settings.FRONTEND_URL}/dashboard"})
-    try:
-        payload = jwt.decode(session_token, settings.JWT_SECRET, algorithms=["HS256"])
-        user_id = payload.get("user_id")
-        if not user_id:
-            return Response(status_code=302, headers={"Location": f"{settings.FRONTEND_URL}/dashboard"})
-    except Exception:
-        return Response(status_code=302, headers={"Location": f"{settings.FRONTEND_URL}/dashboard"})
+    # Config
+    frontend_base = settings.FRONTEND_URL
+    return_url = f"{frontend_base}/billing"
+    secret_key = getattr(settings, "STRIPE_SECRET_KEY", "") or os.getenv("STRIPE_SECRET_KEY", "")
 
-    user = db_module.db.get_user_by_id(user_id)
-    stripe_customer_id = user.get('stripe_customer_id') if user else None
+    if not secret_key:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+
+    # Lazy import to avoid dependency unless needed
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            if not stripe_customer_id:
-                # Create customer
-                resp = await client.post(
-                    f"{os.getenv('STRIPE_SERVICE_URL', 'http://localhost:4000')}/api/billing/create-customer",
-                    json={"userId": user_id},
-                    headers={"x-internal-api-key": os.getenv('STRIPE_INTERNAL_API_KEY', '')}
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    customer_id = data.get('customerId') or data.get('id')
-                    onboarding_url = data.get('onboardingUrl') or data.get('url')
-                    if customer_id:
-                        db_module.db.save_stripe_customer_id(user_id, customer_id)
-                    if onboarding_url:
-                        return Response(status_code=302, headers={"Location": onboarding_url})
-                # Fallback: continue to dashboard
-                return Response(status_code=302, headers={"Location": f"{settings.FRONTEND_URL}/dashboard"})
-            else:
-                # Get portal link
-                resp = await client.get(
-                    f"{os.getenv('STRIPE_SERVICE_URL', 'http://localhost:4000')}/api/billing/portal",
-                    params={"userId": user_id},
-                    headers={"x-internal-api-key": os.getenv('STRIPE_INTERNAL_API_KEY', '')}
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    portal_url = data.get('url')
-                    if portal_url:
-                        # Return JSON so frontend can show Manage Billing button
-                        return Response(
-                            content=json.dumps({"portalUrl": portal_url}),
-                            media_type="application/json"
-                        )
-                return Response(
-                    content=json.dumps({"portalUrl": None}),
-                    media_type="application/json"
-                )
-    except Exception:
-        return Response(status_code=302, headers={"Location": f"{settings.FRONTEND_URL}/dashboard"})
+        import stripe  # type: ignore
+    except Exception as e:  # pragma: no cover
+        raise HTTPException(status_code=500, detail="Stripe SDK missing. Install 'stripe' package.")
+
+    stripe.api_key = secret_key
+
+    user_id = user["user_id"]
+    user_email = user.get("email") or ""
+    user_name = user.get("name") or ""
+
+    # Fetch existing mapping
+    record = db_module.db.get_user_by_id(user_id)
+    stripe_customer_id = record.get("stripe_customer_id") if record else None
+
+    try:
+        if stripe_customer_id:
+            # Create Billing Portal session
+            portal = stripe.billing_portal.Session.create(
+                customer=stripe_customer_id,
+                return_url=return_url,
+            )
+            return {"redirect_url": portal.url}
+
+        # Create a Stripe Customer and persist mapping
+        customer = stripe.Customer.create(
+            email=user_email or None,
+            name=user_name or None,
+            metadata={"user_id": user_id},
+        )
+        db_module.db.save_stripe_customer_id(user_id, customer.id)
+
+        # Create Checkout Session to collect a payment method
+        checkout = stripe.checkout.Session.create(
+            mode="setup",
+            customer=customer.id,
+            success_url=f"{return_url}?setup=success",
+            cancel_url=f"{return_url}?setup=cancel",
+            payment_method_types=["card"],
+        )
+        return {"redirect_url": checkout.url}
+    except Exception as e:
+        # Non-blocking failure
+        raise HTTPException(status_code=502, detail=f"Stripe error: {str(e)}")

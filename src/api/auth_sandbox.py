@@ -9,6 +9,9 @@ from typing import Dict, Any
 import secrets
 import logging
 from src.common.config import settings
+from src.api.auth_middleware import get_current_user
+from src.common import db as db_module
+import os
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -96,3 +99,59 @@ async def register(register_data: RegisterRequest):
 async def logout():
     """Mock logout"""
     return {"message": "Logged out successfully"}
+
+
+@router.post("/api/auth/post-login/stripe")
+async def post_login_stripe(user: dict = Depends(get_current_user)):
+    """Return a Stripe redirect URL for post-login billing.
+    - If the user has a Stripe customer, return Billing Portal session URL
+    - Otherwise, create a customer and a Checkout Session (mode=setup) URL
+    """
+    frontend_base = settings.FRONTEND_URL
+    return_url = f"{frontend_base}/billing"
+    secret_key = os.getenv("STRIPE_SECRET_KEY", "")
+
+    if not secret_key:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+
+    try:
+        import stripe  # type: ignore
+    except Exception:
+        raise HTTPException(status_code=500, detail="Stripe SDK missing. Install 'stripe'.")
+
+    stripe.api_key = secret_key
+
+    user_id = user.get("user_id")
+    user_email = user.get("email") or ""
+    user_name = user.get("name") or ""
+
+    # Fetch existing mapping
+    record = db_module.db.get_user_by_id(user_id) if db_module.db else None
+    stripe_customer_id = record.get("stripe_customer_id") if record else None
+
+    try:
+        if stripe_customer_id:
+            portal = stripe.billing_portal.Session.create(
+                customer=stripe_customer_id,
+                return_url=return_url,
+            )
+            return {"redirect_url": portal.url}
+
+        customer = stripe.Customer.create(
+            email=user_email or None,
+            name=user_name or None,
+            metadata={"user_id": user_id},
+        )
+        if db_module.db:
+            db_module.db.save_stripe_customer_id(user_id, customer.id)
+
+        checkout = stripe.checkout.Session.create(
+            mode="setup",
+            customer=customer.id,
+            success_url=f"{return_url}?setup=success",
+            cancel_url=f"{return_url}?setup=cancel",
+            payment_method_types=["card"],
+        )
+        return {"redirect_url": checkout.url}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Stripe error: {str(e)}")
