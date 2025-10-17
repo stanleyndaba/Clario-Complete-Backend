@@ -81,6 +81,22 @@ class DatabaseManager:
                   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   UNIQUE(user_id, provider)
                 );
+
+                -- Audit events for claim timeline transparency
+                CREATE TABLE IF NOT EXISTS audit_events (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id TEXT NOT NULL,
+                  claim_id TEXT NOT NULL,
+                  action TEXT NOT NULL,
+                  title TEXT,
+                  message TEXT,
+                  document_ids TEXT,
+                  metadata TEXT,
+                  actor TEXT,
+                  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_audit_events_user_claim ON audit_events (user_id, claim_id, created_at);
                 """
             )
             # Attempt to add Stripe columns if migrating existing DB
@@ -402,6 +418,72 @@ class DatabaseManager:
             'validations': validations,
             'filings': filings
         }
+
+    # ---------------- Audit events (Notifications & Transparency) ---------------- #
+
+    def add_audit_event(
+        self,
+        user_id: str,
+        claim_id: str,
+        action: str,
+        title: Optional[str] = None,
+        message: Optional[str] = None,
+        document_ids: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        actor: Optional[str] = None,
+        created_at: Optional[str] = None,
+    ) -> None:
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO audit_events (
+                  user_id, claim_id, action, title, message, document_ids, metadata, actor, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    claim_id,
+                    action,
+                    title,
+                    message,
+                    json.dumps(document_ids or []),
+                    json.dumps(metadata or {}),
+                    actor,
+                    created_at or datetime.utcnow().isoformat(),
+                ),
+            )
+            conn.commit()
+
+    def get_audit_events_for_claim(self, user_id: str, claim_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, user_id, claim_id, action, title, message, document_ids, metadata, actor, created_at
+                FROM audit_events
+                WHERE user_id = ? AND claim_id = ?
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (user_id, claim_id, limit),
+            )
+            rows = cursor.fetchall()
+            results: List[Dict[str, Any]] = []
+            for row in rows:
+                results.append(
+                    {
+                        'id': row[0],
+                        'user_id': row[1],
+                        'claim_id': row[2],
+                        'action': row[3],
+                        'title': row[4],
+                        'message': row[5],
+                        'document_ids': json.loads(row[6]) if row[6] else [],
+                        'metadata': json.loads(row[7]) if row[7] else {},
+                        'actor': row[8],
+                        'created_at': row[9],
+                    }
+                )
+            return results
 
 # Global database instance (optional)
 db = None

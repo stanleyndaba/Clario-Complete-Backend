@@ -9,7 +9,11 @@ import logging
 from src.api.auth_middleware import get_current_user
 from src.api.schemas import Recovery, RecoveryListResponse, RecoveryStatusResponse, ClaimSubmissionResponse
 from src.services.refund_engine_client import refund_engine_client
+from src.websocket.websocket_manager import websocket_manager
+from src.common import db as db_module
+from src.services.integrations_client import integrations_client
 from src.services.cost_docs_client import cost_docs_client
+from src.services.integrations_client import integrations_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -99,7 +103,7 @@ async def get_recovery_status(
             raise HTTPException(status_code=502, detail=f"Refund engine error: {result['error']}")
         
         # Extract status information
-        return RecoveryStatusResponse(
+        status_response = RecoveryStatusResponse(
             id=id,
             status=result.get("status", "unknown"),
             last_updated=result.get("updated_at", datetime.utcnow().isoformat() + "Z"),
@@ -107,6 +111,28 @@ async def get_recovery_status(
             estimated_resolution=result.get("expected_payout_date"),
             timeline=result.get("timeline", [])
         )
+
+        # Enrich timeline with local audit events
+        try:
+            if db_module.db:
+                events = db_module.db.get_audit_events_for_claim(user["user_id"], id, limit=200)
+                # Map audit events to timeline items
+                extra_items = [
+                    {
+                        "status": e.get("action", "event"),
+                        "timestamp": e.get("created_at"),
+                        "description": e.get("title") or e.get("message") or "",
+                    }
+                    for e in events
+                ]
+                # Merge and sort by timestamp
+                merged = list(status_response.timeline) + extra_items
+                merged.sort(key=lambda x: x.get("timestamp", ""))
+                status_response.timeline = merged
+        except Exception:
+            logger.warning("Failed to merge audit events into timeline")
+
+        return status_response
         
     except HTTPException:
         raise
@@ -135,7 +161,8 @@ async def submit_claim(
             logger.error(f"Submit claim failed: {result['error']}")
             raise HTTPException(status_code=502, detail=f"Refund engine error: {result['error']}")
         
-        return ClaimSubmissionResponse(
+        # Build response
+        submission = ClaimSubmissionResponse(
             id=id,
             status="submitted",
             submitted_at=datetime.utcnow().isoformat() + "Z",
@@ -143,6 +170,49 @@ async def submit_claim(
             message="Claim submitted successfully to Amazon SP-API",
             estimated_resolution=(datetime.utcnow() + timedelta(days=7)).isoformat() + "Z"
         )
+
+        # Audit trail event
+        try:
+            if db_module.db:
+                db_module.db.add_audit_event(
+                    user_id=user_id,
+                    claim_id=id,
+                    action="claim_submitted",
+                    title="Claim filed",
+                    message=submission.message,
+                    document_ids=[],
+                    metadata={"amazon_case_id": submission.amazon_case_id},
+                    actor="system",
+                )
+        except Exception:
+            logger.warning("Failed to write audit event for claim submission")
+
+        # WebSocket broadcast
+        try:
+            await websocket_manager.broadcast_to_user(user_id, "claim_filed", {
+                "claim_id": id,
+                "amazon_case_id": submission.amazon_case_id,
+                "status": submission.status,
+                "estimated_resolution": submission.estimated_resolution,
+            })
+        except Exception:
+            logger.warning("Failed to broadcast claim_filed event")
+
+        # Email notification via Integrations-backend
+        try:
+            await integrations_client.send_notification(
+                user_id=user_id,
+                type="claim_detected",
+                title="Claim filed",
+                message=f"Your claim {id} was filed with Amazon.",
+                channel="both",
+                payload={"claim_id": id, "amazon_case_id": submission.amazon_case_id},
+                priority="normal",
+            )
+        except Exception:
+            logger.warning("Failed to send email notification for claim submission")
+
+        return submission
         
     except HTTPException:
         raise
