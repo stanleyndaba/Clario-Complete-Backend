@@ -66,6 +66,9 @@ class Settings(BaseModel):
     COST_DOC_SERVICE_URL: str = os.getenv("COST_DOC_SERVICE_URL", "http://localhost:3003")
     REFUND_ENGINE_URL: str = os.getenv("REFUND_ENGINE_URL", "http://localhost:3002")
     MCDE_URL: str = os.getenv("MCDE_URL", "http://localhost:8000")
+
+    # Stripe direct API access (optional when not using stripe-payments service)
+    STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
     
     # S3 / Object Storage configuration
     S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "")
