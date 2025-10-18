@@ -167,7 +167,7 @@ class AmazonSPAPIService:
     ) -> Dict[str, Any]:
         """Get user's dispute submissions"""
         try:
-            with self.db._get_connection() as conn:
+            with self.db._connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
                         SELECT id, submission_id, amazon_case_id, order_id, asin, sku,
@@ -349,7 +349,7 @@ class AmazonSPAPIService:
         """Log successful submission"""
         submission_id = str(uuid.uuid4())
         
-        with self.db._get_connection() as conn:
+        with self.db._connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
                     INSERT INTO dispute_submissions 
@@ -421,7 +421,7 @@ class AmazonSPAPIService:
         """Log submission failure"""
         submission_id = str(uuid.uuid4())
         
-        with self.db._get_connection() as conn:
+        with self.db._connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
                     INSERT INTO dispute_submissions 
@@ -445,7 +445,7 @@ class AmazonSPAPIService:
     ):
         """Log audit event"""
         try:
-            with self.db._get_connection() as conn:
+            with self.db._connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
                         SELECT log_audit_event(%s, %s, %s, %s, %s, %s, %s, %s)

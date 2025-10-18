@@ -10,9 +10,9 @@ from datetime import datetime
 import logging
 import httpx
 
-from src.api.schemas import AutoSubmitRequest, AutoSubmitResponse, DisputeEvidenceLink, LinkType
-from src.common.db_postgresql import DatabaseManager
-from src.common.config import settings
+from api.schemas import AutoSubmitRequest, AutoSubmitResponse, DisputeEvidenceLink, LinkType
+from common.db_postgresql import DatabaseManager
+from common.config import settings
 
 logger = logging.getLogger(__name__)
 

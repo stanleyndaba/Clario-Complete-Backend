@@ -1,0 +1,42 @@
+// REAL Gmail API implementation - replaces lines 189-224
+const response = await axios.get(\\/messages\, {
+  headers: { Authorization: \Bearer \\ },
+  params: { 
+    maxResults,
+    q: query,
+    includeSpamTrash: false
+  }
+});
+
+const messages = response.data.messages || [];
+const emails: GmailEmail[] = [];
+
+for (const message of messages.slice(0, maxResults)) {
+  const messageDetail = await axios.get(\\/messages/\\, {
+    headers: { Authorization: \Bearer \\ },
+    params: { format: 'full' }
+  });
+
+  const emailData = messageDetail.data;
+  const headers = emailData.payload.headers || [];
+  const subject = headers.find((h: any) => h.name === 'Subject')?.value || 'No Subject';
+  const from = headers.find((h: any) => h.name === 'From')?.value || 'Unknown Sender';
+  const to = headers.find((h: any) => h.name === 'To')?.value || '';
+  
+  emails.push({
+    id: emailData.id,
+    threadId: emailData.threadId,
+    subject,
+    from,
+    to: to.split(',').map((e: string) => e.trim()),
+    snippet: emailData.snippet,
+    body: this.extractBody(emailData.payload),
+    date: new Date(parseInt(emailData.internalDate)).toISOString(),
+    labels: emailData.labelIds || [],
+    isRead: !emailData.labelIds?.includes('UNREAD'),
+    hasAttachments: this.hasAttachments(emailData.payload)
+  });
+}
+
+logger.info('Gmail emails fetched successfully', { userId, count: emails.length });
+return emails;

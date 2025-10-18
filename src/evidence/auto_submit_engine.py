@@ -17,6 +17,7 @@ from src.integrations.amazon_spapi_service import (
 )
 from src.evidence.proof_packet_worker import proof_packet_worker
 from src.websocket.websocket_manager import websocket_manager
+from src.services.refund_engine_client import refund_engine_client
 from src.api.schemas import AuditAction
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,9 @@ class AutoSubmitEngine:
                     match["dispute_id"], 
                     user_id
                 )
+
+            # 🎯 STEP 6 → STEP 7: Start refund engine tracking
+            await self._start_refund_engine_tracking(match, user_id, submission_result)
             
             return {
                 "success": submission_result.success,
@@ -598,3 +602,4 @@ class AutoSubmitEngine:
 
 # Global instance
 auto_submit_engine = AutoSubmitEngine()
+

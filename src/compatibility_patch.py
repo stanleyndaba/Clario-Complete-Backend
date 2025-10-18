@@ -1,15 +1,23 @@
-import pydantic.typing
+"""
+Updated compatibility patch for Pydantic V2
+This fixes the broken imports from the old patch
+"""
+import pydantic
+from pydantic import v1 as pydantic_v1
 
-# Monkey patch to fix Python 3.13 compatibility
-original_evaluate_forwardref = pydantic.typing.evaluate_forwardref
+# For Pydantic V2 compatibility
+try:
+    # Try V2 imports first
+    from pydantic import TypeAdapter
+    evaluate_forwardref = None  # Not needed in V2
+except ImportError:
+    # Fallback to V1 behavior
+    evaluate_forwardref = pydantic_v1.typing.evaluate_forwardref
 
-def patched_evaluate_forwardref(type_, globalns=None, localns=None):
-    try:
-        return original_evaluate_forwardref(type_, globalns, localns)
-    except TypeError as e:
-        if 'recursive_guard' in str(e):
-            # Try the new signature for Python 3.13
-            return type_._evaluate(globalns, localns, recursive_guard=set())
-        raise
+# No-op the problematic function that breaks V2
+def patch_pydantic():
+    """Apply compatibility patches for Pydantic V2"""
+    pass
 
-pydantic.typing.evaluate_forwardref = patched_evaluate_forwardref
+# Apply patches automatically
+patch_pydantic()

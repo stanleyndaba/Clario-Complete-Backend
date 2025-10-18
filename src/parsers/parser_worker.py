@@ -13,6 +13,7 @@ import os
 import tempfile
 
 from src.common.db_postgresql import DatabaseManager
+from src.evidence.matching_worker import evidence_matching_worker
 from src.api.schemas import ParserStatus, ParserJob, ParsedInvoiceData
 
 # Import ParsingResult
@@ -181,6 +182,9 @@ class ParserWorker:
                 # Save parsing results
                 await self._save_parsing_results(job_id, document_id, result)
                 await self._mark_job_completed(job_id, result.confidence)
+
+            # 🎯 STEP 5 → STEP 6: Trigger evidence matching
+            await self._trigger_evidence_matching(document_id)
                 logger.info(f"Job {job_id} completed successfully with confidence {result.confidence}")
             else:
                 # Handle parsing failure
@@ -401,3 +405,4 @@ class ParserWorker:
 
 # Global parser worker instance
 parser_worker = ParserWorker()
+

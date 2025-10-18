@@ -9,7 +9,7 @@ from fastapi import WebSocket
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional
 import logging
-from src.common.config import settings
+from common.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -168,4 +168,5 @@ def validate_user_permissions(user: dict, required_permissions: list = None) -> 
         
     user_permissions = user.get("permissions", [])
     return all(perm in user_permissions for perm in required_permissions)
+
 
