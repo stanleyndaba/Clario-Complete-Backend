@@ -107,7 +107,11 @@ for o in (computed_origins or default_origins):
 frontend = os.getenv("FRONTEND_URL") or settings.FRONTEND_URL or "https://opside-complete-frontend.onrender.com"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[frontend],
+    allow_origins=[
+        "https://opside-complete-frontend-rmohne2xv-mvelo-ndabas-projects.vercel.app",
+        "http://localhost:8080",
+        "http://localhost:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

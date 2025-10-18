@@ -52,20 +52,14 @@ const server = createServer(app);
 // Security middleware
 app.use(helmet());
 
-// CORS configuration (env-driven, supports comma-separated origins)
-const corsOriginsEnv = process.env.CORS_ALLOW_ORIGINS || process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || '';
-const corsOrigins = corsOriginsEnv
-  ? corsOriginsEnv.split(',').map((o: string) => o.trim()).filter(Boolean)
-  : ['http://localhost:3000'];
-const corsRegex = process.env.ALLOWED_ORIGIN_REGEX;
-
+// CORS configuration (explicit origins)
 app.use(cors({
-  origin: corsOrigins.includes('*')
-    ? true
-    : (corsRegex
-        ? new RegExp(corsRegex)
-        : corsOrigins),
-  credentials: !corsOrigins.includes('*')
+  origin: [
+    "https://opside-complete-frontend-rmohne2xv-mvelo-ndabas-projects.vercel.app",
+    "http://localhost:8080",
+    "http://localhost:3000",
+  ],
+  credentials: true,
 }));
 
 // Rate limiting
