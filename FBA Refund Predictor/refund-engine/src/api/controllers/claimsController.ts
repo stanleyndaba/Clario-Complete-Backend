@@ -4,8 +4,35 @@ import { flagClaimFromInvoiceText, getProofBundleWithLinks } from '../services/e
 import { CertaintyEngine, ClaimPayload } from '../services/certaintyEngine';
 import { CertaintyRepo } from '../services/certaintyRepo';
 import { TransactionJournalService } from '../services/transactionJournalService';
+import axios from 'axios';
 
 export class ClaimsController {
+  private static async postInternalClaimEvent(
+    claimId: string,
+    userId: string,
+    action: 'filed' | 'in_progress' | 'approved' | 'denied',
+    title: string,
+    message: string,
+    metadata?: Record<string, any>
+  ): Promise<void> {
+    try {
+      const baseUrl = process.env.MAIN_API_URL;
+      const apiKey = process.env.INTERNAL_API_KEY;
+      if (!baseUrl || !apiKey) return;
+      await axios.post(
+        `${baseUrl}/api/internal/claims/${claimId}/events`,
+        {
+          action,
+          title,
+          message,
+          metadata: { user_id: userId, ...metadata },
+        },
+        { headers: { 'X-Internal-Api-Key': apiKey, 'Content-Type': 'application/json' } }
+      );
+    } catch (_) {
+      // non-fatal
+    }
+  }
   /**
    * Create a new claim
    * POST /api/v1/claims
@@ -44,6 +71,16 @@ export class ClaimsController {
         data: claim,
         message: 'Claim created successfully'
       });
+
+      // Emit Claim Filed event (fire-and-forget)
+      ClaimsController.postInternalClaimEvent(
+        claim.id,
+        req.user.id,
+        'filed',
+        'Claim Filed',
+        `Claim ${claim.case_number} filed for review`,
+        { status: claim.status, amount: claim.claim_amount }
+      );
     } catch (error) {
       if (error instanceof Error && error.message === 'Case number already exists') {
         res.status(409).json({
@@ -261,6 +298,44 @@ export class ClaimsController {
         }
       } catch (e) {
         console.error('Failed to notify stripe-payments for commission:', e);
+      }
+
+      // Emit internal status events for live feed
+      try {
+        const prevStatus = prev?.status;
+        const newStatus = updatedClaim?.status;
+        if (newStatus && prevStatus !== newStatus) {
+          if (newStatus === 'processing') {
+            await ClaimsController.postInternalClaimEvent(
+              id,
+              req.user.id,
+              'in_progress',
+              'Claim In Progress',
+              `Claim ${id} moved to processing`,
+              { prevStatus, newStatus }
+            );
+          } else if (newStatus === 'approved') {
+            await ClaimsController.postInternalClaimEvent(
+              id,
+              req.user.id,
+              'approved',
+              'Claim Approved',
+              `Claim ${id} approved`,
+              { prevStatus, newStatus }
+            );
+          } else if (newStatus === 'rejected' || newStatus === 'denied') {
+            await ClaimsController.postInternalClaimEvent(
+              id,
+              req.user.id,
+              'denied',
+              'Claim Denied',
+              `Claim ${id} denied`,
+              { prevStatus, newStatus }
+            );
+          }
+        }
+      } catch (_) {
+        // non-fatal
       }
     } catch (error) {
       console.error('Error updating claim:', error);
