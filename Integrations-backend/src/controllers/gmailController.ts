@@ -127,6 +127,36 @@ export const searchGmailEmails = async (req: Request, res: Response) => {
   }
 };
 
+
+export const getGmailStatus = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id; // From auth middleware
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required'
+      });
+    }
+
+    // Check if Gmail is connected using token manager
+    const tokenManager = require('../utils/tokenManager');
+    const isConnected = await tokenManager.isTokenValid(userId, 'gmail');
+    
+    res.json({
+      success: true,
+      connected: isConnected,
+      email: isConnected ? 'Connected to Gmail' : undefined
+    });
+  } catch (error) {
+    console.error('Gmail status error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get Gmail status'
+    });
+  }
+};
+
 export const disconnectGmail = async (_req: Request, res: Response) => {
   try {
     res.json({
@@ -141,3 +171,4 @@ export const disconnectGmail = async (_req: Request, res: Response) => {
     });
   }
 };
+

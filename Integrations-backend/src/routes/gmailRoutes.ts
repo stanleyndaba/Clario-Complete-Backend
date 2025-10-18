@@ -4,6 +4,7 @@ import {
   initiateGmailOAuth,
   handleGmailCallback,
   connectGmail,
+  getGmailStatus,
   getGmailEmails,
   searchGmailEmails,
   disconnectGmail
@@ -22,6 +23,7 @@ router.get('/auth', initiateGmailOAuth);
 
 // Connection
 router.post('/connect', connectGmail);
+router.get('/status', getGmailStatus);
 
 // Email operations
 router.get('/emails', getGmailEmails);
@@ -31,3 +33,4 @@ router.get('/search', searchGmailEmails);
 router.delete('/disconnect', disconnectGmail);
 
 export default router; 
+

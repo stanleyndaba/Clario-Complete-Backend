@@ -30,6 +30,24 @@ export interface ParsedDocument {
 }
 
 export const evidenceIngestionService = {
+  async triggerDocumentParsing(documentId: string, sellerId: string): Promise<void> {
+    try {
+      logger.info('Triggering Step 5 document parsing', { documentId, sellerId });
+      
+      // Call Python FastAPI parsing endpoint
+      const response = await fetch(`http://localhost:8000/api/evidence/parse/${documentId}`, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer system-token' }
+      });
+      
+      if (response.ok) {
+        const job = await response.json();
+        logger.info('Step 5 parsing job started', { documentId, jobId: job.job_id, sellerId });
+      }
+    } catch (error) {
+      logger.error('Failed to trigger Step 5 parsing', { documentId, sellerId, error });
+    }
+  },
   async registerSource(sellerId: string, provider: EvidenceSource['provider'], displayName?: string, metadata?: Record<string, any>): Promise<string> {
     const { data, error } = await supabase
       .from('evidence_sources')
@@ -62,6 +80,9 @@ export const evidenceIngestionService = {
     if (error) throw new Error(`Failed to ingest document: ${error.message}`);
     const documentId = data.id as string;
 
+    // 🎯 TRIGGER STEP 5 DOCUMENT PARSING
+    this.triggerDocumentParsing(documentId, sellerId);
+
     // Also persist normalized line items for performant queries
     try {
       const items = doc.items || [];
@@ -85,5 +106,9 @@ export const evidenceIngestionService = {
 };
 
 export default evidenceIngestionService;
+
+
+
+
 
 

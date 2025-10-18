@@ -8,9 +8,12 @@ class Ledgers {
     async storeReportData(userId, reportType, data, options) {
         try {
             logger.info(`Storing ${data.length} records for user ${userId}, report type: ${reportType}`);
+            // Begin transaction
             const trx = await connection_1.connection.transaction();
             try {
+                // Store the main report data
                 await this.insertReportData(trx, userId, reportType, data, options);
+                // Update sync status
                 await this.updateSyncStatus(trx, userId, reportType, {
                     status: 'completed',
                     recordsProcessed: data.length,
@@ -19,10 +22,12 @@ class Ledgers {
                     endDate: options.endDate,
                     lastUpdated: new Date().toISOString(),
                 });
+                // Commit transaction
                 await trx.commit();
                 logger.info(`Successfully stored ${data.length} records for user ${userId}, report type: ${reportType}`);
             }
             catch (error) {
+                // Rollback transaction on error
                 await trx.rollback();
                 throw error;
             }
@@ -34,6 +39,7 @@ class Ledgers {
     }
     async insertReportData(trx, userId, reportType, data, options) {
         try {
+            // Prepare batch insert data
             const insertData = data.map(record => ({
                 user_id: userId,
                 report_type: reportType,
@@ -54,6 +60,7 @@ class Ledgers {
                 created_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             }));
+            // Insert in batches to avoid memory issues
             const batchSize = 1000;
             for (let i = 0; i < insertData.length; i += batchSize) {
                 const batch = insertData.slice(i, i + batchSize);
@@ -137,6 +144,7 @@ class Ledgers {
                 .orderBy('record_date', 'desc')
                 .limit(limit)
                 .offset(offset);
+            // Transform database records to ReportData format
             const reportData = records.map(record => ({
                 id: record.record_id,
                 type: record.record_type,
@@ -216,9 +224,11 @@ class Ledgers {
     }
     async removeDuplicates(userId, reportType) {
         try {
+            // Get duplicate records
             const duplicates = await this.getDuplicateRecords(userId, reportType);
             let totalRemoved = 0;
             for (const duplicate of duplicates) {
+                // Keep the most recent record, delete the rest
                 const recordsToDelete = await (0, connection_1.connection)('case_file_ledger')
                     .where({
                     user_id: userId,
@@ -226,7 +236,7 @@ class Ledgers {
                     external_id: duplicate.external_id,
                 })
                     .orderBy('created_at', 'desc')
-                    .offset(1);
+                    .offset(1); // Skip the first (most recent) record
                 if (recordsToDelete.length > 0) {
                     const deletedCount = await (0, connection_1.connection)('case_file_ledger')
                         .whereIn('id', recordsToDelete.map(r => r.id))
@@ -244,6 +254,7 @@ class Ledgers {
     }
     async saveCaseFile(userId, claimId, data) {
         try {
+            // Idempotency: upsert by user_id + claim_id
             const now = new Date().toISOString();
             await (0, connection_1.connection)('refund_engine_cases')
                 .insert({
@@ -296,9 +307,11 @@ class Ledgers {
             throw error;
         }
     }
+    // Method to initialize database tables if they don't exist
     async initializeTables() {
         try {
             logger.info('Initializing ledger tables');
+            // Create case_file_ledger table
             await connection_1.connection.schema.createTableIfNotExists('case_file_ledger', (table) => {
                 table.increments('id').primary();
                 table.string('user_id').notNullable();
@@ -319,16 +332,18 @@ class Ledgers {
                 table.date('sync_end_date').notNullable();
                 table.timestamp('created_at').defaultTo(connection_1.connection.fn.now());
                 table.timestamp('updated_at').defaultTo(connection_1.connection.fn.now());
+                // Indexes for performance
                 table.index(['user_id', 'report_type']);
                 table.index(['user_id', 'record_date']);
                 table.index(['external_id']);
                 table.index(['sync_type']);
             });
+            // Create sync_status table
             await connection_1.connection.schema.createTableIfNotExists('sync_status', (table) => {
                 table.increments('id').primary();
                 table.string('user_id').notNullable();
                 table.string('report_type').notNullable();
-                table.string('status').notNullable();
+                table.string('status').notNullable(); // pending, in_progress, completed, failed
                 table.integer('records_processed').defaultTo(0);
                 table.integer('total_records').defaultTo(0);
                 table.date('start_date').notNullable();
@@ -336,6 +351,7 @@ class Ledgers {
                 table.text('error_message');
                 table.timestamp('created_at').defaultTo(connection_1.connection.fn.now());
                 table.timestamp('updated_at').defaultTo(connection_1.connection.fn.now());
+                // Indexes for performance
                 table.index(['user_id', 'report_type']);
                 table.index(['status']);
                 table.index(['updated_at']);
@@ -350,4 +366,3 @@ class Ledgers {
 }
 exports.ledgers = new Ledgers();
 exports.default = exports.ledgers;
-//# sourceMappingURL=ledgers.js.map

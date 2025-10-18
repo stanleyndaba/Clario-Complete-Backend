@@ -186,42 +186,52 @@ export class GmailService {
     try {
       const accessToken = await this.getValidAccessToken(userId);
       
-      // TODO: Implement actual Gmail API call to fetch emails
-      // This is a stub implementation
-      logger.info('Fetching Gmail emails', { userId, query, maxResults });
-      
-      // Mock response for development
-      const mockEmails: GmailEmail[] = [
-        {
-          id: 'email-1',
-          threadId: 'thread-1',
-          subject: 'Welcome to Opside Integrations',
-          from: 'noreply@opside.com',
-          to: ['user@example.com'],
-          snippet: 'Welcome to our platform...',
-          body: '<html><body>Welcome to Opside Integrations Hub...</body></html>',
-          date: new Date().toISOString(),
-          labels: ['INBOX', 'IMPORTANT'],
-          isRead: false,
-          hasAttachments: false
-        },
-        {
-          id: 'email-2',
-          threadId: 'thread-2',
-          subject: 'Amazon SP-API Integration Update',
-          from: 'amazon@marketplace.com',
-          to: ['user@example.com'],
-          snippet: 'Your SP-API integration has been updated...',
-          body: '<html><body>Your Amazon SP-API integration...</body></html>',
-          date: new Date(Date.now() - 86400000).toISOString(), // 1 day ago
-          labels: ['INBOX'],
-          isRead: true,
-          hasAttachments: true
+      // REAL Gmail API implementation for evidence ingestion
+      const response = await axios.get(`${this.baseUrl}/messages`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        params: { 
+          maxResults,
+          q: query,
+          includeSpamTrash: false
         }
-      ];
+      });
 
-      logger.info('Gmail emails fetched successfully', { userId, count: mockEmails.length });
-      return mockEmails;
+      const messages = response.data.messages || [];
+      const emails: GmailEmail[] = [];
+
+      for (const message of messages.slice(0, maxResults)) {
+        try {
+          const messageDetail = await axios.get(`${this.baseUrl}/messages/${message.id}`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            params: { format: 'metadata' }
+          });
+
+          const emailData = messageDetail.data;
+          const headers = emailData.payload.headers || [];
+          const subject = headers.find((h: any) => h.name === 'Subject')?.value || 'No Subject';
+          const from = headers.find((h: any) => h.name === 'From')?.value || 'Unknown Sender';
+          const toHeader = headers.find((h: any) => h.name === 'To')?.value || '';
+          
+          emails.push({
+            id: emailData.id,
+            threadId: emailData.threadId,
+            subject,
+            from,
+            to: toHeader.split(',').map((e: string) => e.trim()),
+            snippet: emailData.snippet,
+            body: emailData.snippet,
+            date: new Date(parseInt(emailData.internalDate)).toISOString(),
+            labels: emailData.labelIds || [],
+            isRead: !emailData.labelIds?.includes('UNREAD'),
+            hasAttachments: emailData.payload.parts?.some((part: any) => part.filename) || false
+          });
+        } catch (error) {
+          logger.warn('Failed to fetch email details', { messageId: message.id, error });
+        }
+      }
+
+      logger.info('Gmail emails fetched successfully', { userId, count: emails.length });
+      return emails;
     } catch (error) {
       logger.error('Error fetching Gmail emails', { error, userId });
       throw createError('Failed to fetch Gmail emails', 500);
@@ -279,3 +289,4 @@ export class GmailService {
 
 export const gmailService = new GmailService();
 export default gmailService; 
+

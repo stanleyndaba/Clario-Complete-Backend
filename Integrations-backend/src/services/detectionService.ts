@@ -115,11 +115,10 @@ export class DetectionService {
           // Update job status to completed
           await this.updateJobStatus(job.seller_id, job.sync_id, 'completed');
 
-          logger.info('Detection job completed successfully', {
-            seller_id: job.seller_id,
-            sync_id: job.sync_id,
-            results_count: results.length
-          });
+          
+
+      // 🎯 STEP 3 → STEP 6: Trigger evidence matching for new claims
+      await this.triggerEvidenceMatching(job.seller_id);
         } catch (error) {
           logger.error('Error processing detection job', { error, job });
           
@@ -369,6 +368,7 @@ export class DetectionService {
 
 export const detectionService = new DetectionService();
 export default detectionService;
+
 
 
 
