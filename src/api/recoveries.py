@@ -10,6 +10,9 @@ from src.api.auth_middleware import get_current_user
 from src.api.schemas import Recovery, RecoveryListResponse, RecoveryStatusResponse, ClaimSubmissionResponse
 from src.services.refund_engine_client import refund_engine_client
 from src.services.cost_docs_client import cost_docs_client
+from src.security.audit_service import audit_service, AuditAction, AuditSeverity
+from src.websocket.websocket_manager import websocket_manager
+from fastapi import APIRouter
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -99,7 +102,7 @@ async def get_recovery_status(
             raise HTTPException(status_code=502, detail=f"Refund engine error: {result['error']}")
         
         # Extract status information
-        return RecoveryStatusResponse(
+        response = RecoveryStatusResponse(
             id=id,
             status=result.get("status", "unknown"),
             last_updated=result.get("updated_at", datetime.utcnow().isoformat() + "Z"),
@@ -107,12 +110,23 @@ async def get_recovery_status(
             estimated_resolution=result.get("expected_payout_date"),
             timeline=result.get("timeline", [])
         )
+
+        # Also provide optional direct timeline alias endpoint consumers
+        return response
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Unexpected error in get_recovery_status: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.get("/api/recoveries/{id}/timeline", response_model=RecoveryStatusResponse)
+async def get_recovery_timeline(
+    id: str,
+    user: dict = Depends(get_current_user)
+):
+    """Optional alias to return unified timeline for direct consumption"""
+    return await get_recovery_status(id, user)
 
 @router.post("/api/claims/{id}/submit", response_model=ClaimSubmissionResponse)
 async def submit_claim(
@@ -135,7 +149,7 @@ async def submit_claim(
             logger.error(f"Submit claim failed: {result['error']}")
             raise HTTPException(status_code=502, detail=f"Refund engine error: {result['error']}")
         
-        return ClaimSubmissionResponse(
+        submission_response = ClaimSubmissionResponse(
             id=id,
             status="submitted",
             submitted_at=datetime.utcnow().isoformat() + "Z",
@@ -143,6 +157,34 @@ async def submit_claim(
             message="Claim submitted successfully to Amazon SP-API",
             estimated_resolution=(datetime.utcnow() + timedelta(days=7)).isoformat() + "Z"
         )
+
+        # Emit WebSocket event and write audit trail for Claim Filed
+        try:
+            await websocket_manager.broadcast_to_user(
+                user_id=user_id,
+                event="claim.filed",
+                data={
+                    "claim_id": id,
+                    "amazon_case_id": result.get("amazon_case_id"),
+                    "submitted_at": submission_response.submitted_at,
+                },
+            )
+        except Exception as _:
+            pass
+
+        try:
+            await audit_service.log_event(
+                action=AuditAction.DATA_EXPORT,
+                user_id=user_id,
+                resource_type="claim_submission",
+                resource_id=id,
+                severity=AuditSeverity.LOW,
+                security_context={"amazon_case_id": result.get("amazon_case_id")},
+            )
+        except Exception:
+            pass
+
+        return submission_response
         
     except HTTPException:
         raise
