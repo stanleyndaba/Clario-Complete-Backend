@@ -302,6 +302,16 @@ class DatabaseManager:
         )
         
         self._execute_query(query, params)
+
+    # ---------------------------------------------------------------------
+    # Compatibility shim for legacy callers expecting `_get_connection()`
+    # Several modules use: `with self.db._get_connection() as conn:`
+    # We expose a thin wrapper around the internal `_connection` context manager
+    # to preserve backward compatibility and prevent AttributeError crashes.
+    # ---------------------------------------------------------------------
+    def _get_connection(self):
+        """Return a context manager yielding a DB connection (compat)."""
+        return self._connection()
     
     def load_claim(self, claim_id: str) -> Optional[Dict[str, Any]]:
         """Load a claim from the database"""
