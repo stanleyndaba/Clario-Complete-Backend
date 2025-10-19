@@ -106,6 +106,28 @@ class WebSocketManager:
         # Send to all users
         for user_id in list(self.active_connections.keys()):
             await self.broadcast_to_user(user_id, event, data)
+
+    # Convenience domain emitters
+    async def emit_claim_in_progress(self, user_id: str, claim_id: str, **kwargs: Any):
+        await self.broadcast_to_user(user_id, "claim.in_progress", {"claim_id": claim_id, **kwargs})
+
+    async def emit_claim_approved(self, user_id: str, claim_id: str, **kwargs: Any):
+        await self.broadcast_to_user(user_id, "claim.approved", {"claim_id": claim_id, **kwargs})
+
+    async def emit_claim_denied(self, user_id: str, claim_id: str, **kwargs: Any):
+        await self.broadcast_to_user(user_id, "claim.denied", {"claim_id": claim_id, **kwargs})
+
+    async def emit_refund_approved(self, user_id: str, claim_id: Optional[str] = None, **kwargs: Any):
+        data: Dict[str, Any] = {**kwargs}
+        if claim_id:
+            data["claim_id"] = claim_id
+        await self.broadcast_to_user(user_id, "refund.approved", data)
+
+    async def emit_funds_deposited(self, user_id: str, claim_id: Optional[str] = None, **kwargs: Any):
+        data: Dict[str, Any] = {**kwargs}
+        if claim_id:
+            data["claim_id"] = claim_id
+        await self.broadcast_to_user(user_id, "funds.deposited", data)
     
     async def send_heartbeat(self, websocket: WebSocket):
         """Send heartbeat to keep connection alive"""

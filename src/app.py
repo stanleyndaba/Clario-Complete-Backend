@@ -107,11 +107,53 @@ for o in (computed_origins or default_origins):
 frontend = os.getenv("FRONTEND_URL") or settings.FRONTEND_URL or "https://opside-complete-frontend.onrender.com"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[frontend],
+    allow_origins=[
+        "https://opside-complete-frontend-3jeegig0z-mvelo-ndabas-projects.vercel.app",
+        "https://opside-complete-frontend-rmohne2xv-mvelo-ndabas-projects.vercel.app",
+        "http://localhost:8080",
+        "http://localhost:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Global JSON error handling to avoid HTML error pages
+from fastapi.responses import JSONResponse
+from fastapi import Request, HTTPException
+from fastapi.exceptions import RequestValidationError
+import traceback
+
+
+def _error_payload(message: str, code: int, request: Request):
+    return {
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+        },
+        "path": str(request.url.path),
+    }
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(status_code=exc.status_code, content=_error_payload(str(exc.detail), exc.status_code, request))
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(status_code=422, content={
+        "ok": False,
+        "error": {"code": 422, "message": "Validation error", "details": exc.errors()},
+        "path": str(request.url.path),
+    })
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error at {request.method} {request.url.path}: {exc}\n{traceback.format_exc()}")
+    return JSONResponse(status_code=500, content=_error_payload("Internal server error", 500, request))
 
 # Include routers
 app.include_router(detect_router)

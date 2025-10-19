@@ -3,7 +3,7 @@ Zero-Effort Evidence Loop API endpoints
 Complete API for smart prompts, auto-submit, and proof packets
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Depends, Query, WebSocket, WebSocketDisconnect, Header
 from fastapi.responses import StreamingResponse
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -21,6 +21,10 @@ from src.evidence.proof_packet_worker import proof_packet_worker
 from src.evidence.matching_engine import EvidenceMatchingEngine
 from src.evidence.matching_worker import evidence_matching_worker
 from src.events.event_system import event_system, EVENT_TYPES
+from src.common.config import settings
+from src.security.audit_service import audit_service, AuditAction, AuditSeverity
+from src.websocket.websocket_manager import WebSocketManager
+from src.services.service_directory import service_directory
 
 logger = logging.getLogger(__name__)
 
@@ -307,6 +311,92 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
 async def sse_endpoint(user_id: str):
     """Server-Sent Events endpoint for real-time events"""
     return await event_system.get_sse_endpoint(user_id)
+
+@router.post("/api/internal/claims/{id}/events")
+async def intake_claim_event(
+    id: str,
+    payload: Dict[str, Any],
+    x_internal_api_key: Optional[str] = Header(None, convert_underscores=False)
+):
+    """Internal event intake for claims. Secured by internal API key.
+
+    Body: { action, title, message, document_ids:[], metadata }
+    """
+    expected_key = settings.INTEGRATIONS_API_KEY or settings.STRIPE_INTERNAL_API_KEY
+    if not expected_key or x_internal_api_key != expected_key:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        user_id = str(payload.get("user_id") or payload.get("userId") or "")
+        action = payload.get("action") or "event"
+        title = payload.get("title") or action.replace("_", " ").title()
+        message = payload.get("message") or ""
+        document_ids = payload.get("document_ids") or []
+        metadata = payload.get("metadata") or {}
+
+        # Audit trail
+        try:
+            await audit_service.log_event(
+                action=AuditAction.SYSTEM_START,
+                user_id=user_id or None,
+                resource_type="claim_event",
+                resource_id=id,
+                severity=AuditSeverity.LOW,
+                security_context={
+                    "action": action,
+                    "title": title,
+                    "message": message,
+                    "document_ids": document_ids,
+                    **({"metadata": metadata} if metadata else {})
+                }
+            )
+        except Exception:
+            pass
+
+        # WebSocket broadcast
+        if user_id:
+            await WebSocketManager().broadcast_to_user(
+                user_id=user_id,
+                event=f"claim.{action}",
+                data={
+                    "claim_id": id,
+                    "title": title,
+                    "message": message,
+                    "document_ids": document_ids,
+                    "metadata": metadata,
+                }
+            )
+
+        # Email/in-app notification via Integrations
+        try:
+            if service_directory.get_service_url("integrations"):
+                await service_directory.call_service(
+                    "integrations",
+                    "POST",
+                    "/api/notifications",
+                    headers={
+                        "Content-Type": "application/json",
+                        # Expect downstream to validate JWT if provided in metadata
+                        "Authorization": f"Bearer {metadata.get('jwt', '')}"
+                    },
+                    json={
+                        "type": "system_alert",
+                        "title": title,
+                        "message": message,
+                        "channel": "both",
+                        "payload": {"claim_id": id, **metadata, "document_ids": document_ids},
+                        "immediate": True,
+                    },
+                )
+        except Exception:
+            pass
+
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to intake claim event: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process event")
 
 @router.post("/api/internal/evidence/matching/run")
 async def run_evidence_matching(

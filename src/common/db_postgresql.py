@@ -106,6 +106,17 @@ class DatabaseManager:
                 self._init_sqlite()
             else:
                 raise
+
+    # ------------------------------------------------------------------
+    # Legacy compatibility shim
+    # Some modules expect a `_get_connection()` method that returns a
+    # context manager usable as: `with self.db._get_connection() as conn:`
+    # We provide it here by delegating to the internal `_connection()`
+    # context manager to ensure backward compatibility.
+    # ------------------------------------------------------------------
+    def _get_connection(self):
+        """Return a DB connection context manager (legacy shim)."""
+        return self._connection()
     
     def _init_sqlite(self):
         """Initialize SQLite database (fallback)"""
@@ -302,6 +313,16 @@ class DatabaseManager:
         )
         
         self._execute_query(query, params)
+
+    # ---------------------------------------------------------------------
+    # Compatibility shim for legacy callers expecting `_get_connection()`
+    # Several modules use: `with self.db._get_connection() as conn:`
+    # We expose a thin wrapper around the internal `_connection` context manager
+    # to preserve backward compatibility and prevent AttributeError crashes.
+    # ---------------------------------------------------------------------
+    def _get_connection(self):
+        """Return a context manager yielding a DB connection (compat)."""
+        return self._connection()
     
     def load_claim(self, claim_id: str) -> Optional[Dict[str, Any]]:
         """Load a claim from the database"""

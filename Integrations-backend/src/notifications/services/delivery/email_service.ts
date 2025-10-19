@@ -1,6 +1,7 @@
 import { getLogger } from '../../../utils/logger';
 import Notification from '../../models/notification';
 import sgMail from '@sendgrid/mail';
+import { supabase } from '../../../database/supabaseClient';
 
 const logger = getLogger('EmailService');
 
@@ -297,16 +298,23 @@ If you have any questions, please contact our support team.
    */
   private async getUserEmail(userId: string): Promise<string | null> {
     try {
-      // TODO: Implement user email lookup
-      // This would typically query your user table or user service
-      // For now, return a mock email for testing
-      
-      // Example implementation:
-      // const user = await userService.findById(userId);
-      // return user?.email || null;
-      
-      logger.warn('User email lookup not implemented, using mock email', { userId });
-      return 'user@example.com'; // Mock email for testing
+      const { data: user, error } = await supabase
+        .from('users')
+        .select('email')
+        .eq('id', userId)
+        .single();
+
+      if (error) {
+        logger.error('Supabase user email lookup failed', { error, userId });
+        return null;
+      }
+
+      if (!user?.email) {
+        logger.warn('No email found for user', { userId });
+        return null;
+      }
+
+      return user.email as string;
     } catch (error) {
       logger.error('Error getting user email:', error);
       return null;

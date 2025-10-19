@@ -3,12 +3,12 @@ WebSocket Endpoints
 Phase 4: Real-time WebSocket connections for Evidence Validator
 """
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from typing import Optional, Dict, Any
 import logging
 import json
 
-from src.api.auth_middleware import get_current_user_websocket
+from src.api.auth_middleware import verify_jwt_token
 from src.websocket.websocket_manager import websocket_manager
 
 logger = logging.getLogger(__name__)
@@ -18,66 +18,99 @@ router = APIRouter()
 @router.websocket("/ws/evidence")
 async def websocket_endpoint(
     websocket: WebSocket,
-    user_id: str = Query(..., description="User ID for WebSocket connection"),
     client_info: Optional[str] = Query(None, description="Client information JSON")
 ):
-    """WebSocket endpoint for real-time Evidence Validator updates"""
-    
+    """WebSocket endpoint for real-time Evidence Validator updates
+
+    Requires Bearer JWT. The `user_id` is derived from the token.
+    """
     try:
+        # Enforce Bearer token on WebSocket handshake
+        auth_header = websocket.headers.get("authorization") if hasattr(websocket, "headers") else None
+        if not auth_header or not auth_header.lower().startswith("bearer "):
+            await websocket.close(code=1008)
+            return
+
+        token = auth_header.split(" ", 1)[1]
+        try:
+            payload = verify_jwt_token(token)
+            user_id = payload.get("user_id") or payload.get("id")
+            if not user_id:
+                await websocket.close(code=1008)
+                return
+        except Exception:
+            await websocket.close(code=1008)
+            return
+
         # Parse client info if provided
         parsed_client_info = None
         if client_info:
             try:
                 parsed_client_info = json.loads(client_info)
             except json.JSONDecodeError:
-                logger.warning(f"Invalid client_info JSON for user {user_id}")
-        
+                logger.warning("Invalid client_info JSON for WebSocket connection")
+
         # Handle WebSocket connection
         await websocket_manager.handle_websocket(
             websocket=websocket,
             user_id=user_id,
             client_info=parsed_client_info
         )
-        
+
     except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for user {user_id}")
+        # No user id available here reliably on disconnect
+        logger.info("WebSocket disconnected")
     except Exception as e:
-        logger.error(f"WebSocket error for user {user_id}: {e}")
+        logger.error(f"WebSocket error: {e}")
 
 @router.websocket("/ws/evidence/{claim_id}")
 async def websocket_claim_endpoint(
     websocket: WebSocket,
     claim_id: str,
-    user_id: str = Query(..., description="User ID for WebSocket connection"),
     client_info: Optional[str] = Query(None, description="Client information JSON")
 ):
-    """WebSocket endpoint for real-time updates for a specific claim"""
-    
+    """WebSocket endpoint for real-time updates for a specific claim
+
+    Requires Bearer JWT. The `user_id` is derived from the token.
+    """
     try:
+        # Enforce Bearer token on WebSocket handshake
+        auth_header = websocket.headers.get("authorization") if hasattr(websocket, "headers") else None
+        if not auth_header or not auth_header.lower().startswith("bearer "):
+            await websocket.close(code=1008)
+            return
+
+        token = auth_header.split(" ", 1)[1]
+        try:
+            payload = verify_jwt_token(token)
+            user_id = payload.get("user_id") or payload.get("id")
+            if not user_id:
+                await websocket.close(code=1008)
+                return
+        except Exception:
+            await websocket.close(code=1008)
+            return
+
         # Parse client info if provided
-        parsed_client_info = None
+        parsed_client_info = {}
         if client_info:
             try:
-                parsed_client_info = json.loads(client_info)
-            except json.JSONDecodeError:
-                logger.warning(f"Invalid client_info JSON for user {user_id}")
-        
-        # Add claim_id to client info
-        if parsed_client_info is None:
-            parsed_client_info = {}
+                parsed_client_info = json.loads(client_info) if isinstance(json.loads(client_info), dict) else {}
+            except Exception:
+                logger.warning("Invalid client_info JSON for claim WebSocket connection")
         parsed_client_info["claim_id"] = claim_id
-        
+
         # Handle WebSocket connection
         await websocket_manager.handle_websocket(
             websocket=websocket,
             user_id=user_id,
             client_info=parsed_client_info
         )
-        
+
     except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for user {user_id} on claim {claim_id}")
+        logger.info(f"WebSocket disconnected for claim {claim_id}")
     except Exception as e:
-        logger.error(f"WebSocket error for user {user_id} on claim {claim_id}: {e}")
+        logger.error(f"WebSocket error for claim {claim_id}: {e}")
 
 @router.get("/api/v1/websocket/status")
 async def get_websocket_status():
