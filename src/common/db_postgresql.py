@@ -106,6 +106,17 @@ class DatabaseManager:
                 self._init_sqlite()
             else:
                 raise
+
+    # ------------------------------------------------------------------
+    # Legacy compatibility shim
+    # Some modules expect a `_get_connection()` method that returns a
+    # context manager usable as: `with self.db._get_connection() as conn:`
+    # We provide it here by delegating to the internal `_connection()`
+    # context manager to ensure backward compatibility.
+    # ------------------------------------------------------------------
+    def _get_connection(self):
+        """Return a DB connection context manager (legacy shim)."""
+        return self._connection()
     
     def _init_sqlite(self):
         """Initialize SQLite database (fallback)"""
