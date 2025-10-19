@@ -3,6 +3,7 @@ import { initializeDatabase, db } from './utils/db';
 import { router as claimsRoutes } from './api/routes/claimsRoutes';
 import { router as ledgerRoutes } from './api/routes/ledgerRoutes';
 import { router as discrepancyRoutes } from './api/routes/discrepancyRoutes';
+import amazonSubmissionRoutes from './api/routes/amazonSubmissionRoutes';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,8 +15,9 @@ app.use(express.json());
 app.use('/api/v1/claims', claimsRoutes);
 app.use('/api/v1/ledger', ledgerRoutes);
 app.use('/api/v1/discrepancies', discrepancyRoutes);
+app.use('/api/v1/amazon-submission', amazonSubmissionRoutes);
 
-// Health endpoint
+// Health endpoint (defined directly in index.ts)
 app.get('/health', async (req, res) => {
   try {
     const dbConnected = await db.testConnection();
@@ -44,6 +46,7 @@ app.get('/', (req, res) => {
       claims: '/api/v1/claims',
       ledger: '/api/v1/ledger',
       discrepancies: '/api/v1/discrepancies',
+      'amazon-submission': '/api/v1/amazon-submission',
       health: '/health'
     }
   });
