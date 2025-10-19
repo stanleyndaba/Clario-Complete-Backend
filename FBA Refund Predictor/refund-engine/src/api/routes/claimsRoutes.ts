@@ -88,4 +88,4 @@ router.put('/:id', ClaimsController.updateClaim);
  */
 router.delete('/:id', ClaimsController.deleteClaim);
 
-export default router; 
+export { router }; 
