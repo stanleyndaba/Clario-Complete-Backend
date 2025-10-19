@@ -6,7 +6,7 @@ dotenv.config();
 // Database configuration
 const dbConfig = process.env.DATABASE_URL ? {
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: false
 } : {
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT || '5432'),
@@ -265,4 +265,5 @@ export async function initializeDatabase(): Promise<void> {
     throw error;
   }
 } 
+
 
