@@ -154,7 +154,7 @@ export class ClaimsService {
    */
   private async getMLPrediction(features: any): Promise<PredictionResult> {
     const maxRetries = this.config.retryAttempts;
-    let lastError: Error;
+    let lastError: Error | null = null;
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {

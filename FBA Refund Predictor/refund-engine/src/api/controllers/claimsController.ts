@@ -207,7 +207,7 @@ export class ClaimsController {
       try {
         const prevStatus = prev?.status;
         const newStatus = updatedClaim?.status;
-        if (newStatus && newStatus === 'paid' && prevStatus !== newStatus) {
+        if (newStatus && (newStatus as any) === 'paid' && prevStatus !== newStatus) {
           const stripeUrl = process.env.STRIPE_PAYMENTS_URL;
           if (stripeUrl) {
             const idempotencyKey = `claim-${id}-status-${newStatus}`;
