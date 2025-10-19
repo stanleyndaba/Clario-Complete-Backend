@@ -17,7 +17,7 @@ app.use('/api/v1/ledger', ledgerRoutes);
 app.use('/api/v1/discrepancies', discrepancyRoutes);
 app.use('/api/v1/amazon-submission', amazonSubmissionRoutes);
 
-// Health endpoint (defined directly in index.ts)
+// Health endpoint
 app.get('/health', async (req, res) => {
   try {
     const dbConnected = await db.testConnection();
@@ -73,4 +73,3 @@ async function startServer() {
 }
 
 startServer();
-
