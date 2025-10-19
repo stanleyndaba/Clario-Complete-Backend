@@ -13,7 +13,7 @@ const dbConfig = process.env.DATABASE_URL ? {
   database: process.env.DB_NAME || 'refund_engine',
   user: process.env.DB_USER || 'postgres',
   password: process.env.DB_PASSWORD || 'password',
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  ssl: false,
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 2000,
@@ -265,5 +265,6 @@ export async function initializeDatabase(): Promise<void> {
     throw error;
   }
 } 
+
 
 
