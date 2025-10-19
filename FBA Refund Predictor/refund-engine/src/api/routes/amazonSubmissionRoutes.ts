@@ -8,3 +8,4 @@ router.get('/health', AmazonSubmissionController.health);
 router.get('/in-progress', AmazonSubmissionController.inProgress);
 
 export { router };
+

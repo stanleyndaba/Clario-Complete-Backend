@@ -66,10 +66,12 @@ async function startServer() {
   }
 
   app.listen(PORT, () => {
-    console.log(\🚀 Refund Engine API server running on port \\);
-    console.log(\📊 Health check: http://localhost:\/health\);
-    console.log(\📚 API documentation: http://localhost:\/\);
+    console.log(`🚀 Refund Engine API server running on port ${PORT}`);
+    console.log(`📊 Health check: http://localhost:${PORT}/health`);
+    console.log(`📚 API documentation: http://localhost:${PORT}/`);
   });
 }
 
 startServer();
+
+
