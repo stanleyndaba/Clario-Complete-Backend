@@ -3,7 +3,7 @@ import { initializeDatabase, db } from './utils/db';
 import { router as claimsRoutes } from './api/routes/claimsRoutes';
 import { router as ledgerRoutes } from './api/routes/ledgerRoutes';
 import { router as discrepancyRoutes } from './api/routes/discrepancyRoutes';
-import amazonSubmissionRoutes from './api/routes/amazonSubmissionRoutes';
+import { router as amazonSubmissionRoutes } from './api/routes/amazonSubmissionRoutes';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -73,3 +73,4 @@ async function startServer() {
 }
 
 startServer();
+
