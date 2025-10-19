@@ -108,6 +108,7 @@ frontend = os.getenv("FRONTEND_URL") or settings.FRONTEND_URL or "https://opside
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "https://opside-complete-frontend-3jeegig0z-mvelo-ndabas-projects.vercel.app",
         "https://opside-complete-frontend-rmohne2xv-mvelo-ndabas-projects.vercel.app",
         "http://localhost:8080",
         "http://localhost:3000",
