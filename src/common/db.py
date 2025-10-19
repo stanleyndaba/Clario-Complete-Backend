@@ -106,6 +106,7 @@ class DatabaseManager:
                 pass
     
     def _get_connection(self):
+        """Shim for legacy code; returns a SQLite connection."""
         return sqlite3.connect(self.db_url)
     
     def upsert_claim(self, claim: ClaimDetection):
