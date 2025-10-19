@@ -3,7 +3,6 @@ import { initializeDatabase, db } from './utils/db';
 import { router as claimsRoutes } from './api/routes/claimsRoutes';
 import { router as ledgerRoutes } from './api/routes/ledgerRoutes';
 import { router as discrepancyRoutes } from './api/routes/discrepancyRoutes';
-// ... your other imports
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -16,7 +15,7 @@ app.use('/api/v1/claims', claimsRoutes);
 app.use('/api/v1/ledger', ledgerRoutes);
 app.use('/api/v1/discrepancies', discrepancyRoutes);
 
-// Health endpoint (defined directly in index.ts)
+// Health endpoint
 app.get('/health', async (req, res) => {
   try {
     const dbConnected = await db.testConnection();
@@ -30,7 +29,7 @@ app.get('/health', async (req, res) => {
     res.json({
       status: 'degraded',
       timestamp: new Date().toISOString(),
-      database: 'disconnected', 
+      database: 'disconnected',
       version: '1.0.0'
     });
   }
@@ -43,7 +42,7 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     endpoints: {
       claims: '/api/v1/claims',
-      ledger: '/api/v1/ledger', 
+      ledger: '/api/v1/ledger',
       discrepancies: '/api/v1/discrepancies',
       health: '/health'
     }
@@ -55,7 +54,7 @@ async function startServer() {
   try {
     await initializeDatabase();
     console.log('Database initialized successfully');
-    
+
     console.log('Testing database connection...');
     const dbConnected = await db.testConnection();
     console.log(dbConnected ? 'Database connection successful' : 'Database test failed');
@@ -64,9 +63,9 @@ async function startServer() {
   }
 
   app.listen(PORT, () => {
-    console.log(🚀 Refund Engine API server running on port );
-    console.log(📊 Health check: http://localhost:/health);
-    console.log(📚 API documentation: http://localhost:/);
+    console.log(\🚀 Refund Engine API server running on port \\);
+    console.log(\📊 Health check: http://localhost:\/health\);
+    console.log(\📚 API documentation: http://localhost:\/\);
   });
 }
 
