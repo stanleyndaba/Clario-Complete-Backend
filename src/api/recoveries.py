@@ -31,7 +31,8 @@ async def get_recoveries(
         logger.info(f"Getting recoveries for user {user_id}, status={status}, limit={limit}, offset={offset}")
         
         # Call real refund engine service
-        result = await refund_engine_client.get_claims(user_id, status, limit, offset)
+        jwt_token = user.get("jwt") or user.get("token") or None
+        result = await refund_engine_client.get_claims(user_id, status, limit, offset, jwt_token)
         
         if "error" in result:
             logger.error(f"Get recoveries failed: {result['error']}")
@@ -69,7 +70,8 @@ async def get_recovery(
         logger.info(f"Getting recovery {id} for user {user_id}")
         
         # Call real refund engine service
-        result = await refund_engine_client.get_claim(user_id, id)
+        jwt_token = user.get("jwt") or user.get("token") or None
+        result = await refund_engine_client.get_claim(user_id, id, jwt_token)
         
         if "error" in result:
             logger.error(f"Get recovery failed: {result['error']}")
@@ -95,7 +97,8 @@ async def get_recovery_status(
         logger.info(f"Getting recovery status for {id}, user {user_id}")
         
         # Call real refund engine service for status
-        result = await refund_engine_client.get_claim(user_id, id)
+        jwt_token = user.get("jwt") or user.get("token") or None
+        result = await refund_engine_client.get_claim(user_id, id, jwt_token)
         
         if "error" in result:
             logger.error(f"Get recovery status failed: {result['error']}")
@@ -140,10 +143,11 @@ async def submit_claim(
         logger.info(f"Submitting claim {id} for user {user_id}")
         
         # Call real refund engine service to submit claim
+        jwt_token = user.get("jwt") or user.get("token") or None
         result = await refund_engine_client.create_claim(user_id, {
             "claim_id": id,
             "action": "submit"
-        })
+        }, jwt_token)
         
         if "error" in result:
             logger.error(f"Submit claim failed: {result['error']}")

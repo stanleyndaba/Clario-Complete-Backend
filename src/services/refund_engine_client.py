@@ -15,7 +15,7 @@ class RefundEngineClient:
     def __init__(self):
         self.service_name = "refund-engine"
     
-    async def create_claim(self, user_id: str, claim_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def create_claim(self, user_id: str, claim_data: Dict[str, Any], jwt_token: Optional[str] = None) -> Dict[str, Any]:
         """Create a new refund claim"""
         try:
             response = await service_directory.call_service(
@@ -25,7 +25,8 @@ class RefundEngineClient:
                 json={
                     "userId": user_id,
                     **claim_data
-                }
+                },
+                headers={"Authorization": f"Bearer {jwt_token}"} if jwt_token else None
             )
             
             if response and response.status_code == 200:
@@ -37,7 +38,7 @@ class RefundEngineClient:
             logger.error(f"Create claim failed: {e}")
             return {"error": str(e)}
     
-    async def get_claims(self, user_id: str, status: Optional[str] = None, limit: int = 20, offset: int = 0) -> Dict[str, Any]:
+    async def get_claims(self, user_id: str, status: Optional[str] = None, limit: int = 20, offset: int = 0, jwt_token: Optional[str] = None) -> Dict[str, Any]:
         """Get user's claims"""
         try:
             params = {"userId": user_id, "limit": limit, "offset": offset}
@@ -48,7 +49,8 @@ class RefundEngineClient:
                 self.service_name,
                 "GET",
                 "/api/v1/claims",
-                params=params
+                params=params,
+                headers={"Authorization": f"Bearer {jwt_token}"} if jwt_token else None
             )
             
             if response and response.status_code == 200:
@@ -60,14 +62,15 @@ class RefundEngineClient:
             logger.error(f"Get claims failed: {e}")
             return {"error": str(e)}
     
-    async def get_claim(self, user_id: str, claim_id: str) -> Dict[str, Any]:
+    async def get_claim(self, user_id: str, claim_id: str, jwt_token: Optional[str] = None) -> Dict[str, Any]:
         """Get specific claim"""
         try:
             response = await service_directory.call_service(
                 self.service_name,
                 "GET",
                 f"/api/v1/claims/{claim_id}",
-                params={"userId": user_id}
+                params={"userId": user_id},
+                headers={"Authorization": f"Bearer {jwt_token}"} if jwt_token else None
             )
             
             if response and response.status_code == 200:
@@ -79,14 +82,15 @@ class RefundEngineClient:
             logger.error(f"Get claim failed: {e}")
             return {"error": str(e)}
     
-    async def get_discrepancies(self, user_id: str, limit: int = 20, offset: int = 0) -> Dict[str, Any]:
+    async def get_discrepancies(self, user_id: str, limit: int = 20, offset: int = 0, jwt_token: Optional[str] = None) -> Dict[str, Any]:
         """Get ML-powered discrepancy detection results"""
         try:
             response = await service_directory.call_service(
                 self.service_name,
                 "GET",
                 "/api/v1/discrepancies",
-                params={"userId": user_id, "limit": limit, "offset": offset}
+                params={"userId": user_id, "limit": limit, "offset": offset},
+                headers={"Authorization": f"Bearer {jwt_token}"} if jwt_token else None
             )
             
             if response and response.status_code == 200:
@@ -98,14 +102,15 @@ class RefundEngineClient:
             logger.error(f"Get discrepancies failed: {e}")
             return {"error": str(e)}
     
-    async def get_ledger(self, user_id: str, limit: int = 20, offset: int = 0) -> Dict[str, Any]:
+    async def get_ledger(self, user_id: str, limit: int = 20, offset: int = 0, jwt_token: Optional[str] = None) -> Dict[str, Any]:
         """Get ledger entries"""
         try:
             response = await service_directory.call_service(
                 self.service_name,
                 "GET",
                 "/api/v1/ledger",
-                params={"userId": user_id, "limit": limit, "offset": offset}
+                params={"userId": user_id, "limit": limit, "offset": offset},
+                headers={"Authorization": f"Bearer {jwt_token}"} if jwt_token else None
             )
             
             if response and response.status_code == 200:
@@ -117,14 +122,15 @@ class RefundEngineClient:
             logger.error(f"Get ledger failed: {e}")
             return {"error": str(e)}
     
-    async def get_claim_stats(self, user_id: str) -> Dict[str, Any]:
+    async def get_claim_stats(self, user_id: str, jwt_token: Optional[str] = None) -> Dict[str, Any]:
         """Get claims statistics"""
         try:
             response = await service_directory.call_service(
                 self.service_name,
                 "GET",
                 "/api/v1/claims/stats",
-                params={"userId": user_id}
+                params={"userId": user_id},
+                headers={"Authorization": f"Bearer {jwt_token}"} if jwt_token else None
             )
             
             if response and response.status_code == 200:
