@@ -8,16 +8,16 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 import logging
 
-from api.auth_middleware import get_current_user
-from api.schemas import (
+from src.api.auth_middleware import get_current_user
+from src.api.schemas import (
     AutoSubmitRequest, AutoSubmitResponse,
     SmartPromptAnswer, SmartPromptAnswerResponse,
     EvidenceMatchMetrics, EvidenceMatchingJob
 )
-from evidence.auto_submit_service import AutoSubmitService
-from evidence.smart_prompts_service import SmartPromptsService
-from evidence.matching_worker import evidence_matching_worker
-from evidence.matching_engine import EvidenceMatchingEngine
+from src.evidence.auto_submit_service import AutoSubmitService
+from src.evidence.smart_prompts_service import SmartPromptsService
+from src.evidence.matching_worker import evidence_matching_worker
+from src.evidence.matching_engine import EvidenceMatchingEngine
 
 logger = logging.getLogger(__name__)
 

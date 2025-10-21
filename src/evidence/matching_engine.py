@@ -13,11 +13,11 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 import re
 
-from api.schemas import (
+from src.api.schemas import (
     DisputeCase, EvidenceDocument, ParsedInvoiceData, 
     DisputeEvidenceLink, LinkType, EvidenceMatchingResult
 )
-from common.db_postgresql import DatabaseManager
+from src.common.db_postgresql import DatabaseManager
 
 logger = logging.getLogger(__name__)
 

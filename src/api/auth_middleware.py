@@ -9,7 +9,7 @@ from fastapi import WebSocket
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional
 import logging
-from common.config import settings
+from src.common.config import settings
 
 logger = logging.getLogger(__name__)
 
