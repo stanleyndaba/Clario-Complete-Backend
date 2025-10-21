@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import config from '../config/env';
 import logger from '../utils/logger';
 
@@ -6,7 +6,7 @@ const supabaseUrl = config.SUPABASE_URL;
 const supabaseAnonKey = config.SUPABASE_ANON_KEY;
 
 // Create a demo client if Supabase config is missing
-let supabase;
+let supabase: SupabaseClient | any;
 
 if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
   logger.warn('Using demo Supabase client - no real database connection');

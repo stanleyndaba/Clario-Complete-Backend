@@ -54,3 +54,12 @@ export const errorHandler = (err: CustomError, req: Request, res: Response, _nex
     message: error.message || 'Internal Server Error'
   });
 };
+
+// Convenience helper to create typed errors
+export const createError = (message: string, statusCode = 400): CustomError => {
+  const e = new Error(message) as CustomError;
+  e.statusCode = statusCode;
+  e.status = statusCode >= 500 ? 'error' : 'fail';
+  e.isOperational = true;
+  return e;
+};
