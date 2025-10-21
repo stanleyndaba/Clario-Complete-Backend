@@ -22,8 +22,9 @@
     "node_modules",
     "dist",
     "**/*.test.ts",
-    "opsided-backend",
+    "opsided-backend/**/*",
     "src/jobs/disputeSubmissionWorker.ts",
     "src/notifications/services/delivery/websocket_service.ts"
   ]
 }
+
