@@ -34,6 +34,14 @@ export class OrchestrationJobManager {
   /**
    * Initialize job queues and processors
    */
+  private static async fetchRawAmazonData(_userId: string): Promise<any[]> {
+    return [];
+  }
+
+  private static async fetchMCDEDocs(_userId: string): Promise<any[]> {
+    return [];
+  }
+
   static initialize(): void {
     this.setupOrchestrationProcessor();
     this.setupSyncProgressProcessor();
@@ -154,9 +162,9 @@ export class OrchestrationJobManager {
         // Update sync progress to failed
         await this.updateSyncProgress(userId, syncId, step, totalSteps, currentStep, 'failed', {
           success: false,
-          error: error.message
-        });
-
+          step: step,
+          message: 'Step failed',
+          error: String((error as any)?.message ?? 'Unknown error')
         throw error;
       }
     });
@@ -203,7 +211,7 @@ export class OrchestrationJobManager {
         userId: job.data.userId,
         syncId: job.data.syncId,
         step: job.data.step,
-        error: error.message 
+        error: String((error as any)?.message ?? 'Unknown error')
       });
     });
 
@@ -220,7 +228,7 @@ export class OrchestrationJobManager {
         jobId: job.id, 
         userId: job.data.userId,
         syncId: job.data.syncId,
-        error: error.message 
+        error: String((error as any)?.message ?? 'Unknown error')
       });
     });
   }
@@ -258,7 +266,7 @@ export class OrchestrationJobManager {
         success: false,
         step: 1,
         message: 'Failed to fetch Amazon claims',
-        error: error.message
+        error: String((error as any)?.message ?? 'Unknown error')
       };
     }
   }
@@ -301,7 +309,7 @@ export class OrchestrationJobManager {
         success: false,
         step: 2,
         message: 'Failed to normalize and ingest Amazon data',
-        error: error.message
+        error: String((error as any)?.message ?? 'Unknown error')
       };
     }
   }
@@ -310,13 +318,13 @@ export class OrchestrationJobManager {
     try {
       logger.info('Executing Step 3: Create Ledger Entries', { userId, syncId });
       
-      await dataOrchestrator.createCaseFileLedgerEntry(userId, 'CASE-AMZ-CLAIM-001-1234567890', {
-        claimId: 'AMZ-CLAIM-001',
-        entryType: 'document_linked',
-        description: 'Additional processing completed',
-        metadata: { processedAt: new Date().toISOString() }
-      });
-      
+      await dataOrchestrator.createCaseFileLedgerEntry(
+        userId,
+        'CASE-AMZ-CLAIM-001-1234567890',
+        [],            // normalized
+        null,          // mcdeDocId
+        []             // auditLog
+      );
       return {
         success: true,
         step: 3,
@@ -329,7 +337,7 @@ export class OrchestrationJobManager {
         success: false,
         step: 3,
         message: 'Failed to create ledger entries',
-        error: error.message
+        error: String((error as any)?.message ?? 'Unknown error')
       };
     }
   }
@@ -354,7 +362,7 @@ export class OrchestrationJobManager {
         success: false,
         step: 4,
         message: 'Failed to process Stripe transactions',
-        error: error.message
+        error: String((error as any)?.message ?? 'Unknown error')
       };
     }
   }
@@ -377,7 +385,7 @@ export class OrchestrationJobManager {
         success: false,
         step: 5,
         message: 'Failed to finalize cases',
-        error: error.message
+        error: String((error as any)?.message ?? 'Unknown error')
       };
     }
   }
