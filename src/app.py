@@ -1,5 +1,12 @@
 # Compatibility patch for Python 3.13
-from compatibility_patch import *
+try:
+    from .compatibility_patch import *  # type: ignore
+except ImportError:
+    # Fallback for execution contexts where package-relative import fails
+    import sys
+    import os
+    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+    from compatibility_patch import *  # type: ignore
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,30 +17,30 @@ import asyncio
 import logging
 import os
 
-from cdd.router import router as detect_router
-from acg.router import router as filing_router
-from ml_detector.router import router as ml_router
-from api.auth_sandbox import router as auth_router
-from api.integrations import router as integrations_router
-from api.detections import router as detections_router
-from api.recoveries import router as recoveries_router
-from api.evidence import router as evidence_router
-from api.evidence_sources import router as evidence_sources_router
-from api.parser import router as parser_router
-from api.evidence_matching import router as evidence_matching_router
-from api.zero_effort_evidence import router as zero_effort_evidence_router
-from api.metrics import router as metrics_router
-from api.sync import router as sync_router
-from api.websocket import router as websocket_router
-from api.evidence_prompts_proof_packets import router as evidence_prompts_router
-from api.websocket_endpoints import router as websocket_endpoints_router
-from api.dispute_submissions import router as dispute_submissions_router
-from api.security import router as security_router
-from api.analytics import router as analytics_router
-from api.feature_flags import router as feature_flags_router
-from analytics.analytics_integration import analytics_integration
-from features.feature_integration import feature_integration
-from services.service_directory import service_directory
+from .cdd.router import router as detect_router
+from .acg.router import router as filing_router
+from .ml_detector.router import router as ml_router
+from .api.auth_sandbox import router as auth_router
+from .api.integrations import router as integrations_router
+from .api.detections import router as detections_router
+from .api.recoveries import router as recoveries_router
+from .api.evidence import router as evidence_router
+from .api.evidence_sources import router as evidence_sources_router
+from .api.parser import router as parser_router
+from .api.evidence_matching import router as evidence_matching_router
+from .api.zero_effort_evidence import router as zero_effort_evidence_router
+from .api.metrics import router as metrics_router
+from .api.sync import router as sync_router
+from .api.websocket import router as websocket_router
+from .api.evidence_prompts_proof_packets import router as evidence_prompts_router
+from .api.websocket_endpoints import router as websocket_endpoints_router
+from .api.dispute_submissions import router as dispute_submissions_router
+from .api.security import router as security_router
+from .api.analytics import router as analytics_router
+from .api.feature_flags import router as feature_flags_router
+from .analytics.analytics_integration import analytics_integration
+from .features.feature_integration import feature_integration
+from .services.service_directory import service_directory
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +82,7 @@ app = FastAPI(
 )
 
 # Enable CORS for frontend integration (env-driven, supports multiple origins)
-from common.config import settings
+from .common.config import settings
 
 # Build explicit origin list, never use '*'
 origins_raw = (

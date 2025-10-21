@@ -12,5 +12,5 @@ COPY . .
 # Expose the port
 EXPOSE 10000
 
-# Start the application
-CMD ["uvicorn", "src.app:app", "--host", "0.0.0.0", "--port", "10000"]
+# Start the application (bind to Render's PORT if provided)
+CMD ["sh", "-c", "uvicorn src.app:app --host 0.0.0.0 --port ${PORT:-10000}"]
