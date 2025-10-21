@@ -35,7 +35,7 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
   supabase = createClient(supabaseUrl, supabaseAnonKey);
   
   // Test connection on startup
-  supabase.auth.getSession().then(({ data, error }) => {
+  supabase.auth.getSession().then(({ data, error }: { data: any; error: any }) => {
     if (error) {
       logger.warn('Supabase connection failed', { error: error.message });
     } else {
@@ -206,3 +206,5 @@ export const tokenManager = {
 };
 
 export default supabase;
+
+

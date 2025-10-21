@@ -28,6 +28,8 @@ export interface IngestionResult {
 }
 
 export class DataOrchestrator {
+  async mapAmazonClaimToRefundEngine(_userId: string, _claim: any): Promise<void> { return; }
+  async updateCaseFileStatus(_userId: string, _caseId: string, _status: string): Promise<void> { return; }
   normalizeInventoryLedger(raw: any[]): NormalizedLedgerEntry[] {
     return raw.map((item) => ({
       claimId: item.claim_id || item.id,

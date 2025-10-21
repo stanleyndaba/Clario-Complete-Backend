@@ -60,10 +60,10 @@ export class GmailService {
 
   async initiateOAuth(userId: string): Promise<string> {
     try {
-      const authUrl = new URL(config.GMAIL_AUTH_URL);
-      authUrl.searchParams.set('client_id', config.GMAIL_CLIENT_ID);
+      const authUrl = new URL(config.GMAIL_AUTH_URL!);
+      authUrl.searchParams.set('client_id', config.GMAIL_CLIENT_ID!);
       authUrl.searchParams.set('response_type', 'code');
-      authUrl.searchParams.set('redirect_uri', config.GMAIL_REDIRECT_URI);
+      authUrl.searchParams.set('redirect_uri', config.GMAIL_REDIRECT_URI!);
       authUrl.searchParams.set('scope', 'https://www.googleapis.com/auth/gmail.readonly');
       authUrl.searchParams.set('access_type', 'offline');
       authUrl.searchParams.set('prompt', 'consent');
@@ -82,9 +82,9 @@ export class GmailService {
       const tokenResponse = await axios.post(this.authUrl, {
         grant_type: 'authorization_code',
         code,
-        client_id: config.GMAIL_CLIENT_ID,
+        client_id: config.GMAIL_CLIENT_ID!,
         client_secret: config.GMAIL_CLIENT_SECRET,
-        redirect_uri: config.GMAIL_REDIRECT_URI
+        redirect_uri: config.GMAIL_REDIRECT_URI!
       });
 
       const tokenData: GmailOAuthResponse = tokenResponse.data;
@@ -113,7 +113,7 @@ export class GmailService {
       const response = await axios.post(this.authUrl, {
         grant_type: 'refresh_token',
         refresh_token: tokenData.refreshToken,
-        client_id: config.GMAIL_CLIENT_ID,
+        client_id: config.GMAIL_CLIENT_ID!,
         client_secret: config.GMAIL_CLIENT_SECRET
       });
 
@@ -160,15 +160,13 @@ export class GmailService {
       const isConnected = await tokenManager.isTokenValid(userId, 'gmail');
       
       if (isConnected) {
-        return { success: true, message: 'Gmail already connected' };
+        return { success: true, authUrl: authUrl.toString(), message: 'Gmail already connected' };
       }
 
       const authUrl = await this.initiateOAuth(userId);
       
       logger.info('Gmail connection initiated', { userId });
-      return { 
-        success: true, 
-        message: 'Gmail connection initiated',
+      return { success: true, authUrl: authUrl.toString(), message: 'Gmail connection initiated',
         authUrl 
       };
     } catch (error) {
@@ -289,4 +287,6 @@ export class GmailService {
 
 export const gmailService = new GmailService();
 export default gmailService; 
+
+
 

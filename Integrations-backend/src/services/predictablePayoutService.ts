@@ -38,11 +38,11 @@ export const predictablePayoutService = {
         .limit(50);
 
       const lagsDetectionToSubmission = (history || [])
-        .filter(r => r.submission_date)
-        .map(r => (new Date(r.submission_date as any).getTime() - new Date(r.created_at).getTime()) / (24*3600*1000));
+        .filter((r: any) => r.submission_date)
+        .map((r: any) => (new Date(r.submission_date as any).getTime() - new Date(r.created_at).getTime()) / (24*3600*1000));
       const lagsSubmissionToApproval = (history || [])
-        .filter(r => r.submission_date && r.resolution_date)
-        .map(r => (new Date(r.resolution_date as any).getTime() - new Date(r.submission_date as any).getTime()) / (24*3600*1000));
+        .filter((r: any) => r.submission_date && r.resolution_date)
+        .map((r: any) => (new Date(r.resolution_date as any).getTime() - new Date(r.submission_date as any).getTime()) / (24*3600*1000));
       const avgDetToSub = average(lagsDetectionToSubmission) || 2;
       const avgSubToAppr = average(lagsSubmissionToApproval) || 5;
 
@@ -124,4 +124,5 @@ export const predictablePayoutService = {
 };
 
 export default predictablePayoutService;
+
 

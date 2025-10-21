@@ -41,8 +41,8 @@ export const evidenceIngestionService = {
       });
       
       if (response.ok) {
-        const job = await response.json();
-        logger.info('Step 5 parsing job started', { documentId, jobId: job.job_id, sellerId });
+        const job = (await response.json()) as { job_id?: string };
+        logger.info('Step 5 parsing job started', { documentId, jobId: (job as any).job_id, sellerId });
       }
     } catch (error) {
       logger.error('Failed to trigger Step 5 parsing', { documentId, sellerId, error });
@@ -106,6 +106,8 @@ export const evidenceIngestionService = {
 };
 
 export default evidenceIngestionService;
+
+
 
 
 

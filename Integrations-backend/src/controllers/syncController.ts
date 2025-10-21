@@ -91,3 +91,10 @@ export const forceSync = async (_req: Request, res: Response) => {
     });
   }
 };
+
+export default {
+  startSync,
+  getSyncStatus,
+  getSyncHistory,
+  forceSync
+};

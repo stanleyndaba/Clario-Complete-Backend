@@ -1,67 +1,64 @@
 import { Request, Response } from 'express';
-import { asyncHandler } from '../utils/errorHandler';
-import { AuthenticatedRequest } from '../middleware/authMiddleware';
-import evidenceIngestionService from '../services/evidenceIngestionService';
-import evidenceValidatorService from '../services/evidenceValidatorService';
-import logger from '../utils/logger';
+import { evidenceIngestionService } from '../services/evidenceIngestionService';
+import { evidenceValidatorService } from '../services/evidenceValidatorService';
+import * as evidenceService from '../services/evidenceService'; // ADD THIS IMPORT
 
-export const ingestEvidence = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const userId = req.user?.id;
-  const { source, documents } = req.body;
-
+export const ingestEvidence = async (req: Request, res: Response) => {
   try {
-    const result = await evidenceIngestionService.ingestDocuments(userId, source, documents);
+    const { userId, source, documents } = req.body;
+    
+    // FIX: Use the new evidenceService module functions
+    const result = await evidenceService.ingestDocuments({ userId, source, documents });
     
     res.json({
       success: true,
-      message: 'Evidence ingested successfully',
-      evidenceIds: result.evidenceIds
+      data: result,
+      message: 'Evidence ingestion started successfully'
     });
-  } catch (error) {
-    logger.error('Error ingesting evidence', { error, userId });
+  } catch (error: any) {
     res.status(500).json({
       success: false,
-      message: 'Failed to ingest evidence'
+      error: error.message
     });
   }
-});
+};
 
-export const validateEvidence = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const userId = req.user?.id;
-  const { evidenceId, claimId } = req.body;
-
+export const validateEvidence = async (req: Request, res: Response) => {
   try {
-    const validation = await evidenceValidatorService.validateEvidence(userId, evidenceId, claimId);
+    const { userId, evidenceId, claimId } = req.body;
+    
+    // FIX: Use the new evidenceService module functions
+    const validation = await evidenceService.validateEvidence({ userId, evidenceId, claimId });
     
     res.json({
       success: true,
-      validation
+      data: validation,
+      message: 'Evidence validation completed'
     });
-  } catch (error) {
-    logger.error('Error validating evidence', { error, userId });
+  } catch (error: any) {
     res.status(500).json({
       success: false,
-      message: 'Failed to validate evidence'
+      error: error.message
     });
   }
-});
+};
 
-export const getEvidenceMatches = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const userId = req.user?.id;
-  const { claimId } = req.params;
-
+export const findEvidenceMatches = async (req: Request, res: Response) => {
   try {
-    const matches = await evidenceValidatorService.findMatchesForClaim(userId, claimId);
+    const { userId, claimId } = req.body;
+    
+    // FIX: Use the new evidenceService module functions
+    const matches = await evidenceService.findMatchesForClaim({ userId, claimId });
     
     res.json({
       success: true,
-      matches
+      data: matches,
+      message: 'Evidence matches found'
     });
-  } catch (error) {
-    logger.error('Error finding evidence matches', { error, userId });
+  } catch (error: any) {
     res.status(500).json({
       success: false,
-      message: 'Failed to find evidence matches'
+      error: error.message
     });
   }
-});
+};

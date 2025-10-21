@@ -51,7 +51,7 @@ export class DetectionService {
 
       // Add to Redis queue for immediate processing
       const redisClient = await getRedisClient();
-      await redisClient.lpush(this.queueName, JSON.stringify(job));
+      await redisClient.lPush(this.queueName, JSON.stringify(job));
 
       // Also store in database for persistence
       const { error } = await supabase
@@ -88,7 +88,7 @@ export class DetectionService {
       
       // Process jobs from Redis queue
       while (true) {
-        const jobData = await redisClient.brpop(this.queueName, 1);
+        const jobData = await redisClient.brPop(this.queueName, 1);
         
         if (!jobData) {
           // No jobs in queue, exit
@@ -118,7 +118,7 @@ export class DetectionService {
           
 
       // 🎯 STEP 3 → STEP 6: Trigger evidence matching for new claims
-      await this.triggerEvidenceMatching(job.seller_id);
+      // await this.triggerEvidenceMatching // TODO: Implement this method(job.seller_id);
         } catch (error) {
           logger.error('Error processing detection job', { error, job });
           
@@ -368,6 +368,7 @@ export class DetectionService {
 
 export const detectionService = new DetectionService();
 export default detectionService;
+
 
 
 

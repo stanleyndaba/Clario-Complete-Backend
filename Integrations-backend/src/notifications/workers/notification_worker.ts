@@ -1,5 +1,5 @@
 import { getLogger } from '../../utils/logger';
-import { Queue, Worker, Job, QueueScheduler, JobOptions } from 'bullmq';
+import { Queue, Worker, Job, JobsOptions } from 'bullmq';
 import Notification, { NotificationStatus } from '../models/notification';
 import { notificationService } from '../services/notification_service';
 
@@ -39,8 +39,8 @@ export class NotificationWorker {
           type: 'exponential',
           delay: 2000
         },
-        removeOnComplete: 100,
-        removeOnFail: 50
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 50 }
       }
     });
 
@@ -64,8 +64,8 @@ export class NotificationWorker {
           db: parseInt(process.env.REDIS_DB || '0')
         },
         concurrency: parseInt(process.env.NOTIFICATION_WORKER_CONCURRENCY || '5'),
-        removeOnComplete: 100,
-        removeOnFail: 50
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 50 }
       }
     );
 
@@ -465,4 +465,5 @@ export class NotificationWorker {
 }
 
 export default NotificationWorker;
+
 
