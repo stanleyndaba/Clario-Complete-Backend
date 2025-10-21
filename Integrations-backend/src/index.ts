@@ -89,7 +89,8 @@ app.use('/api/sse', sseRoutes);
 // app.use('/api/enhanced-detections', enhancedDetectionRoutes); // Temporarily disabled
 app.use('/api/enhanced-sync', enhancedSyncRoutes);
 app.use('/api/auth', authRoutes);
-app.use('/api/sync-alias', syncAliasRoutes);
+app.use('/api/v1/integrations/sync', syncAliasRoutes);
+app.use('/api/v1/integrations', integrationRoutes);
 app.use('/api/detections', detectionRoutes);
 app.use('/api/disputes', disputeRoutes);
 app.use('/api/autoclaim', autoclaimRoutes);
