@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import amazonService from '../services/amazonService';
+import logger from '../utils/logger';
 
 export const startAmazonOAuth = async (_req: Request, res: Response) => {
   try {
@@ -11,7 +12,7 @@ export const startAmazonOAuth = async (_req: Request, res: Response) => {
       message: 'OAuth flow initiated'
     });
   } catch (error) {
-    console.error('OAuth initiation error:', error);
+    logger.error('OAuth initiation error', { error });
     res.status(500).json({
       success: false,
       error: 'Failed to start OAuth flow'
@@ -39,7 +40,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       data: result
     });
   } catch (error) {
-    console.error('OAuth callback error:', error);
+    logger.error('OAuth callback error', { error });
     res.status(500).json({
       success: false,
       error: 'Failed to complete OAuth flow'
@@ -57,7 +58,7 @@ export const syncAmazonData = async (_req: Request, res: Response) => {
       data: result
     });
   } catch (error) {
-    console.error('Data sync error:', error);
+    logger.error('Data sync error', { error });
     res.status(500).json({
       success: false,
       error: 'Failed to sync data'

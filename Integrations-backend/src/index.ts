@@ -81,6 +81,8 @@ app.get('/api/status', (_, res) => {
 
 // Mount routes
 app.use('/api/v1/integrations/amazon', amazonRoutes);
+// Backward-compatible mount without version prefix
+app.use('/api/integrations/amazon', amazonRoutes);
 app.use('/api/v1/integrations/gmail', gmailRoutes);
 app.use('/api/v1/integrations/stripe', stripeRoutes);
 app.use('/api/sync', syncRoutes);
