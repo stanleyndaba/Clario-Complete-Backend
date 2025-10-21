@@ -29,3 +29,70 @@ export class AmazonService {
 }
 
 export default new AmazonService();
+  async fetchClaims(accountId: string, startDate?: Date, endDate?: Date): Promise<any> {
+    try {
+      const credentials = await this.getCredentials(accountId);
+      console.log([AmazonService] Fetching claims for account ${accountId});
+      return { success: true, data: [], message: 'Claims fetch method called' };
+    } catch (error) {
+      console.error('Error fetching Amazon claims:', error);
+      throw new Error(Failed to fetch claims: ${error.message});
+    }
+  }
+
+  async fetchInventory(accountId: string): Promise<any> {
+    try {
+      const credentials = await this.getCredentials(accountId);
+      console.log([AmazonService] Fetching inventory for account ${accountId});
+      return { success: true, data: [], message: 'Inventory fetch method called' };
+    } catch (error) {
+      console.error('Error fetching Amazon inventory:', error);
+      throw new Error(Failed to fetch inventory: ${error.message});
+    }
+  }
+
+  async fetchFees(accountId: string, startDate?: Date, endDate?: Date): Promise<any> {
+    try {
+      const credentials = await this.getCredentials(accountId);
+      console.log([AmazonService] Fetching fees for account ${accountId});
+      return { success: true, data: [], message: 'Fees fetch method called' };
+    } catch (error) {
+      console.error('Error fetching Amazon fees:', error);
+      throw new Error(Failed to fetch fees: ${error.message});
+    }
+  }
+}
+
+  async fetchClaims(accountId: string, startDate?: Date, endDate?: Date): Promise<any> {
+    try {
+      const credentials = await this.getCredentials(accountId);
+      console.log([AmazonService] Fetching claims for account ${accountId});
+      return { success: true, data: [], message: 'Claims fetch method called' };
+    } catch (error) {
+      console.error('Error fetching Amazon claims:', error);
+      throw new Error(Failed to fetch claims: ${error.message});
+    }
+  }
+
+  async fetchInventory(accountId: string): Promise<any> {
+    try {
+      const credentials = await this.getCredentials(accountId);
+      console.log([AmazonService] Fetching inventory for account ${accountId});
+      return { success: true, data: [], message: 'Inventory fetch method called' };
+    } catch (error) {
+      console.error('Error fetching Amazon inventory:', error);
+      throw new Error(Failed to fetch inventory: ${error.message});
+    }
+  }
+
+  async fetchFees(accountId: string, startDate?: Date, endDate?: Date): Promise<any> {
+    try {
+      const credentials = await this.getCredentials(accountId);
+      console.log([AmazonService] Fetching fees for account ${accountId});
+      return { success: true, data: [], message: 'Fees fetch method called' };
+    } catch (error) {
+      console.error('Error fetching Amazon fees:', error);
+      throw new Error(Failed to fetch fees: ${error.message});
+    }
+  }
+}
