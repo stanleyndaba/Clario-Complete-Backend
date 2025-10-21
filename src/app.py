@@ -1,12 +1,18 @@
 # Compatibility patch for Python 3.13
 try:
     from .compatibility_patch import *  # type: ignore
-except ImportError:
+except Exception:
     # Fallback for execution contexts where package-relative import fails
     import sys
     import os
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from compatibility_patch import *  # type: ignore
+    try:
+        src_dir = os.path.dirname(__file__)  # e.g., /app/src
+        if src_dir not in sys.path:
+            sys.path.append(src_dir)
+        # Retry absolute-style import from the src directory
+        from compatibility_patch import *  # type: ignore
+    except Exception as _compat_err:  # Final fallback: don't crash on missing patch
+        print(f"[startup-warning] compatibility_patch not applied: {_compat_err}")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
