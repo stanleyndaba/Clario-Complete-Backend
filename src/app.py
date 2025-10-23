@@ -1,4 +1,49 @@
 # Compatibility patch for Python 3.13
+# Apply ultra-early shim to typing.ForwardRef._evaluate so Pydantic v1 works on Python 3.13
+try:
+    import sys
+    import typing
+
+    if sys.version_info >= (3, 13):
+        _ForwardRef = getattr(typing, "ForwardRef", None)
+        if _ForwardRef is not None and hasattr(_ForwardRef, "_evaluate"):
+            _orig_forwardref_evaluate = _ForwardRef._evaluate  # type: ignore[attr-defined]
+
+            def _forwardref_evaluate_shim(self, *args, **kwargs):  # type: ignore[no-redef]
+                try:
+                    # Try original call first (works on one of the runtimes)
+                    return _orig_forwardref_evaluate(self, *args, **kwargs)
+                except TypeError:
+                    # Handle Python 3.13 kw-only signature by mapping positionals
+                    if not kwargs:
+                        if len(args) == 3:
+                            g, l, r = args
+                            try:
+                                return _orig_forwardref_evaluate(self, globalns=g, localns=l, recursive_guard=r)
+                            except TypeError:
+                                return _orig_forwardref_evaluate(self, g, l, r)
+                        if len(args) == 2:
+                            g, l = args
+                            return _orig_forwardref_evaluate(self, globalns=g, localns=l, recursive_guard=set())
+                    # Last-resort: normalize kwargs to positional order
+                    try:
+                        return _orig_forwardref_evaluate(
+                            self,
+                            kwargs.get("globalns"),
+                            kwargs.get("localns"),
+                            kwargs.get("recursive_guard", set()),
+                        )
+                    except Exception:
+                        raise
+
+            try:
+                _ForwardRef._evaluate = _forwardref_evaluate_shim  # type: ignore[assignment]
+            except Exception:
+                # If we cannot set the attribute, continue without blocking startup
+                pass
+except Exception:
+    # Never fail startup from the shim
+    pass
 try:
     from .compatibility_patch import *  # type: ignore
 except Exception:
