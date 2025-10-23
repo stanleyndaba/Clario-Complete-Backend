@@ -11,8 +11,53 @@ except Exception:
             sys.path.append(src_dir)
         # Retry absolute-style import from the src directory
         from compatibility_patch import *  # type: ignore
-    except Exception as _compat_err:  # Final fallback: don't crash on missing patch
+    except Exception as _compat_err:  # Final fallback: apply an inline shim
         print(f"[startup-warning] compatibility_patch not applied: {_compat_err}")
+        # Inline, safe shim for Pydantic v1 on Python 3.13+
+        try:
+            import typing
+            import pydantic  # type: ignore
+
+            def _apply_inline_py313_pydantic_v1_patch() -> None:
+                try:
+                    version = getattr(pydantic, "__version__", "1")
+                    major = int(str(version).split(".")[0])
+                except Exception:
+                    major = 1
+
+                if major != 1:
+                    return
+
+                if sys.version_info < (3, 13):
+                    return
+
+                try:
+                    import pydantic.typing as pyd_typing  # type: ignore
+                except Exception:
+                    return
+
+                original = getattr(pyd_typing, "evaluate_forwardref", None)
+                ForwardRef = getattr(typing, "ForwardRef", None)
+                if not callable(original) or ForwardRef is None:
+                    return
+
+                def _patched(type_, globalns, localns):  # type: ignore
+                    try:
+                        if isinstance(type_, ForwardRef):
+                            return type_._evaluate(globalns=globalns, localns=localns, recursive_guard=set())
+                    except TypeError:
+                        return type_._evaluate(globalns, localns, set())
+                    return original(type_, globalns, localns)
+
+                try:
+                    pyd_typing.evaluate_forwardref = _patched  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
+            _apply_inline_py313_pydantic_v1_patch()
+        except Exception:
+            # If even the inline shim fails, proceed without blocking startup
+            pass
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
