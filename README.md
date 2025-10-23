@@ -132,6 +132,9 @@ Key variables:
 1. Connect your GitHub repository to Render
 2. Use the provided `render.yaml` configuration
 3. Set environment variables in Render dashboard
+4. Recommended: pin Python version to avoid regressions
+   - Set environment variable `PYTHON_VERSION=3.11.x` (e.g., `3.11.9`)
+   - With Pydantic v2, Python 3.13+ is supported, but pinning ensures consistent builds
 
 ### Using Fly.io
 1. Install Fly CLI: `curl -L https://fly.io/install.sh | sh`
