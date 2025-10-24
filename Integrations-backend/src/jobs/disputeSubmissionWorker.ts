@@ -9,7 +9,8 @@ export class DisputeSubmissionWorker {
 
   async enqueue(disputeId: string) {
     const redis = await getRedisClient();
-    await redis.lpush(QUEUE_KEY, disputeId);
+    // node-redis v4 uses camelCase command methods
+    await (redis as any).lPush(QUEUE_KEY, disputeId);
   }
 
   start() {
@@ -24,9 +25,10 @@ export class DisputeSubmissionWorker {
     const redis = await getRedisClient();
     while (this.running) {
       try {
-        const res = await redis.brpop(QUEUE_KEY, 5);
+        // brPop returns [key, element] | null in v4 client wrappers
+        const res = await (redis as any).brPop(QUEUE_KEY, 5);
         if (!res) { continue; }
-        const disputeId = res.element as string;
+        const disputeId = Array.isArray(res) ? (res[1] as string) : (res.element as string);
 
         // Load dispute details
         const { data: dispute, error } = await supabase
