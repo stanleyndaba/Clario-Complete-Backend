@@ -3,7 +3,7 @@ import logger from '../utils/logger';
 import dataOrchestrator from '../orchestration/dataOrchestrator';
 import websocketService from '../services/websocketService';
 import { supabase } from '../database/supabaseClient';
-
+import ledgers from '../../opsided-backend/shared/db/ledgers';
 
 export interface OrchestrationJobData {
   userId: string;
@@ -30,10 +30,6 @@ const orchestrationQueue = new Queue<OrchestrationJobData>('orchestration', REDI
 const syncProgressQueue = new Queue<OrchestrationJobData>('sync-progress', REDIS_URL);
 
 export class OrchestrationJobManager {
-  
-  /**
-   * Initialize job queues and processors
-   */
   private static async fetchRawAmazonData(_userId: string): Promise<any[]> {
     return [];
   }
@@ -41,7 +37,10 @@ export class OrchestrationJobManager {
   private static async fetchMCDEDocs(_userId: string): Promise<any[]> {
     return [];
   }
-
+  
+  /**
+   * Initialize job queues and processors
+   */
   static initialize(): void {
     this.setupOrchestrationProcessor();
     this.setupSyncProgressProcessor();
@@ -162,9 +161,9 @@ export class OrchestrationJobManager {
         // Update sync progress to failed
         await this.updateSyncProgress(userId, syncId, step, totalSteps, currentStep, 'failed', {
           success: false,
-          step: step,
-          message: 'Step failed',
           error: String((error as any)?.message ?? 'Unknown error')
+        });
+
         throw error;
       }
     });
@@ -211,7 +210,7 @@ export class OrchestrationJobManager {
         userId: job.data.userId,
         syncId: job.data.syncId,
         step: job.data.step,
-        error: String((error as any)?.message ?? 'Unknown error')
+        error: String((error as any)?.message ?? 'Unknown error') 
       });
     });
 
@@ -228,7 +227,7 @@ export class OrchestrationJobManager {
         jobId: job.id, 
         userId: job.data.userId,
         syncId: job.data.syncId,
-        error: String((error as any)?.message ?? 'Unknown error')
+        error: String((error as any)?.message ?? 'Unknown error') 
       });
     });
   }
@@ -318,13 +317,13 @@ export class OrchestrationJobManager {
     try {
       logger.info('Executing Step 3: Create Ledger Entries', { userId, syncId });
       
-      await dataOrchestrator.createCaseFileLedgerEntry(
-        userId,
-        'CASE-AMZ-CLAIM-001-1234567890',
-        [],            // normalized
-        null,          // mcdeDocId
-        []             // auditLog
-      );
+      await dataOrchestrator.createCaseFileLedgerEntry(userId, 'CASE-AMZ-CLAIM-001-1234567890', {
+        claimId: 'AMZ-CLAIM-001',
+        entryType: 'document_linked',
+        description: 'Additional processing completed',
+        metadata: { processedAt: new Date().toISOString() }
+      });
+      
       return {
         success: true,
         step: 3,
@@ -522,4 +521,3 @@ export class OrchestrationJobManager {
 }
 
 export default OrchestrationJobManager; 
-
