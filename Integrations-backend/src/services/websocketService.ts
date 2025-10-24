@@ -96,6 +96,12 @@ export class WebSocketService {
             updatedAt: new Date().toISOString()
           };
 
+          socket.emit('sync_progress_update', currentProgress);
+        } catch (error) {
+          logger.error('Error handling sync progress subscription', { error, socketId: socket.id });
+        }
+      });
+
       // Handle sync progress unsubscription
       socket.on('unsubscribe_sync_progress', (data: { syncId: string }) => {
         const { syncId } = data;
