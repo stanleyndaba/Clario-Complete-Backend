@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2020",
     "module": "commonjs",
-    "lib": ["ES2020"],
+    "lib": ["ES2020", "DOM", "DOM.Iterable", "ES6", "ES2015", "ES2017", "ES2018", "ES2019", "ES2020", "ES2021"],
     "outDir": "./dist",
     "rootDir": "./src",
     "strict": false,
@@ -27,7 +27,6 @@
     "dist",
     "**/*.test.ts",
     "opsided-backend/**/*",
-    "src/jobs/disputeSubmissionWorker.ts",
-    "src/notifications/services/delivery/websocket_service.ts"
+    "src/jobs/disputeSubmissionWorker.ts"
   ]
 }

@@ -262,7 +262,6 @@ export class WebSocketService {
       logger.error('Error sending notification via WebSocket:', error);
       throw error;
     }
-    }
   }
 
   /**
