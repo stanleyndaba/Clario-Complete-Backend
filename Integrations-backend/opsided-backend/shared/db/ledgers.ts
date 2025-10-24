@@ -1,5 +1,5 @@
 import { getLogger } from '../utils/logger';
-import { connection } from './connection';
+import { getDatabase } from './connection';
 
 const logger = getLogger('Ledgers');
 
@@ -47,7 +47,7 @@ class Ledgers {
       logger.info(`Storing ${data.length} records for user ${userId}, report type: ${reportType}`);
 
       // Begin transaction
-      const trx = await connection.transaction();
+      const trx = await getDatabase().transaction();
 
       try {
         // Store the main report data
@@ -154,7 +154,7 @@ class Ledgers {
 
   async getSyncStatus(userId: string, reportType?: string): Promise<SyncStatus[]> {
     try {
-      let query = connection('sync_status').where('user_id', userId);
+      let query = getDatabase()('sync_status').where('user_id', userId);
       
       if (reportType) {
         query = query.where('report_type', reportType);
@@ -180,7 +180,7 @@ class Ledgers {
     try {
       const now = new Date().toISOString();
       
-      await connection('sync_status').insert({
+      await getDatabase()('sync_status').insert({
         user_id: userId,
         report_type: reportType,
         status: 'pending',
@@ -209,7 +209,7 @@ class Ledgers {
     offset: number = 0
   ): Promise<ReportData[]> {
     try {
-      let query = connection('case_file_ledger').where('user_id', userId);
+      let query = getDatabase()('case_file_ledger').where('user_id', userId);
 
       if (reportType) {
         query = query.where('report_type', reportType);
@@ -254,7 +254,7 @@ class Ledgers {
 
   async getReportSummary(userId: string, startDate?: string, endDate?: string): Promise<any> {
     try {
-      let query = connection('case_file_ledger').where('user_id', userId);
+      let query = getDatabase()('case_file_ledger').where('user_id', userId);
 
       if (startDate) {
         query = query.where('record_date', '>=', startDate);
@@ -269,8 +269,8 @@ class Ledgers {
           'report_type',
           'record_type',
           'currency',
-          connection.raw('COUNT(*) as record_count'),
-          connection.raw('SUM(amount) as total_amount')
+          getDatabase().raw('COUNT(*) as record_count'),
+          getDatabase().raw('SUM(amount) as total_amount')
         )
         .groupBy('report_type', 'record_type', 'currency');
 
@@ -290,7 +290,7 @@ class Ledgers {
     endDate: string
   ): Promise<number> {
     try {
-      const deletedCount = await connection('case_file_ledger')
+      const deletedCount = await getDatabase()('case_file_ledger')
         .where({
           user_id: userId,
           report_type: reportType,
@@ -309,14 +309,14 @@ class Ledgers {
 
   async getDuplicateRecords(userId: string, reportType: string): Promise<ReportData[]> {
     try {
-      const duplicates = await connection('case_file_ledger')
+      const duplicates = await getDatabase()('case_file_ledger')
         .where({
           user_id: userId,
           report_type: reportType,
         })
         .whereNotNull('external_id')
         .groupBy('external_id')
-        .having(connection.raw('COUNT(*) > 1'))
+        .having(getDatabase().raw('COUNT(*) > 1'))
         .select('external_id');
 
       logger.info(`Found ${duplicates.length} duplicate external IDs for user ${userId}, report type: ${reportType}`);
@@ -337,17 +337,17 @@ class Ledgers {
 
       for (const duplicate of duplicates) {
         // Keep the most recent record, delete the rest
-        const recordsToDelete = await connection('case_file_ledger')
+        const recordsToDelete = await getDatabase()('case_file_ledger')
           .where({
             user_id: userId,
             report_type: reportType,
-            external_id: duplicate.external_id,
+            external_id: duplicate.externalId,
           })
           .orderBy('created_at', 'desc')
           .offset(1); // Skip the first (most recent) record
 
         if (recordsToDelete.length > 0) {
-          const deletedCount = await connection('case_file_ledger')
+          const deletedCount = await getDatabase()('case_file_ledger')
             .whereIn('id', recordsToDelete.map(r => r.id))
             .del();
 
@@ -375,7 +375,7 @@ class Ledgers {
     try {
       // Idempotency: upsert by user_id + claim_id
       const now = new Date().toISOString();
-      await connection('refund_engine_cases')
+      await getDatabase()('refund_engine_cases')
         .insert({
           user_id: userId,
           claim_id: claimId,
@@ -399,7 +399,7 @@ class Ledgers {
   async updateCaseFileStatus(userId: string, claimId: string, status: string, auditLog?: any): Promise<void> {
     try {
       const now = new Date().toISOString();
-      await connection('refund_engine_cases')
+      await getDatabase()('refund_engine_cases')
         .where({ user_id: userId, claim_id: claimId })
         .update({
           case_status: status,
@@ -415,7 +415,7 @@ class Ledgers {
 
   async getCaseFilesForUser(userId: string): Promise<any[]> {
     try {
-      const cases = await connection('refund_engine_cases')
+      const cases = await getDatabase()('refund_engine_cases')
         .where({ user_id: userId })
         .orderBy('synced_at', 'desc');
       logger.info('Fetched case files for user', { userId, count: cases.length });
@@ -432,7 +432,7 @@ class Ledgers {
       logger.info('Initializing ledger tables');
 
       // Create case_file_ledger table
-      await connection.schema.createTableIfNotExists('case_file_ledger', (table) => {
+      await getDatabase().schema.createTableIfNotExists('case_file_ledger', (table) => {
         table.increments('id').primary();
         table.string('user_id').notNullable();
         table.string('report_type').notNullable();
@@ -450,8 +450,8 @@ class Ledgers {
         table.string('sync_type').notNullable();
         table.date('sync_start_date').notNullable();
         table.date('sync_end_date').notNullable();
-        table.timestamp('created_at').defaultTo(connection.fn.now());
-        table.timestamp('updated_at').defaultTo(connection.fn.now());
+        table.timestamp('created_at').defaultTo(getDatabase().fn.now());
+        table.timestamp('updated_at').defaultTo(getDatabase().fn.now());
 
         // Indexes for performance
         table.index(['user_id', 'report_type']);
@@ -461,7 +461,7 @@ class Ledgers {
       });
 
       // Create sync_status table
-      await connection.schema.createTableIfNotExists('sync_status', (table) => {
+      await getDatabase().schema.createTableIfNotExists('sync_status', (table) => {
         table.increments('id').primary();
         table.string('user_id').notNullable();
         table.string('report_type').notNullable();
@@ -471,8 +471,8 @@ class Ledgers {
         table.date('start_date').notNullable();
         table.date('end_date').notNullable();
         table.text('error_message');
-        table.timestamp('created_at').defaultTo(connection.fn.now());
-        table.timestamp('updated_at').defaultTo(connection.fn.now());
+        table.timestamp('created_at').defaultTo(getDatabase().fn.now());
+        table.timestamp('updated_at').defaultTo(getDatabase().fn.now());
 
         // Indexes for performance
         table.index(['user_id', 'report_type']);
