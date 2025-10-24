@@ -165,6 +165,7 @@ export class OrchestrationJobManager {
           step: step,
           message: 'Step failed',
           error: String((error as any)?.message ?? 'Unknown error')
+        });
         throw error;
       }
     });
