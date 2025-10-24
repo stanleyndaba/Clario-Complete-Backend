@@ -1,15 +1,15 @@
 {
-  \"extends\": \"./tsconfig.json\",
-  \"compilerOptions\": {
-    \"declaration\": false,
-    \"rootDir\": \"./src\",
-    \"outDir\": \"./dist\"
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "rootDir": "./src",
+    "outDir": "./dist"
   },
-  \"include\": [\"src/**/*\"],
-  \"exclude\": [
-    \"opsided-backend/**/*\",
-    \"tests/**/*\", 
-    \"src/notifications/workers/**/*\",
-    \"node_modules/**/*\"
+  "include": ["src/**/*"],
+  "exclude": [
+    "opsided-backend/**/*",
+    "tests/**/*",
+    "src/notifications/workers/**/*",
+    "node_modules/**/*"
   ]
 }
