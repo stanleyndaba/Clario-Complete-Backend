@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
+import jwt, { Secret, SignOptions } from 'jsonwebtoken';
 import config from '../config/env';
 import logger from '../utils/logger';
 import { createError } from '../utils/errorHandler';
@@ -90,11 +90,9 @@ export const requireAuth = (req: AuthenticatedRequest, res: Response, next: Next
 };
 
 export const generateToken = (userId: string, email: string): string => {
-  return jwt.sign(
-    { id: userId, email },
-    config.JWT_SECRET,
-    { expiresIn: config.JWT_EXPIRES_IN }
-  );
+  const secret: Secret = config.JWT_SECRET as unknown as Secret;
+  const options: SignOptions = { expiresIn: config.JWT_EXPIRES_IN as any };
+  return jwt.sign({ id: userId, email }, secret, options);
 };
 
 export const verifyToken = (token: string): { id: string; email: string } => {

@@ -1,7 +1,22 @@
 import { supabase } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import { v4 as uuidv4 } from 'uuid';
-import { DisputeCase } from './enhancedDetectionService';
+export interface DisputeCase {
+  id: string;
+  seller_id: string;
+  detection_result_id?: string;
+  case_number: string;
+  status: string;
+  claim_amount: number;
+  currency: string;
+  case_type: 'amazon_fba' | 'stripe_dispute' | 'shopify_refund';
+  provider: 'amazon' | 'stripe' | 'shopify';
+  evidence_attachments?: any;
+  created_at?: string;
+  updated_at?: string;
+  resolution_date?: string;
+  resolution_amount?: number;
+}
 
 export interface DisputeAutomationRule {
   id: string;

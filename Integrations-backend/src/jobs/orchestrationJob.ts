@@ -3,7 +3,6 @@ import logger from '../utils/logger';
 import dataOrchestrator from '../orchestration/dataOrchestrator';
 import websocketService from '../services/websocketService';
 import { supabase } from '../database/supabaseClient';
-import ledgers from '../../opsided-backend/shared/db/ledgers';
 
 export interface OrchestrationJobData {
   userId: string;
@@ -161,6 +160,8 @@ export class OrchestrationJobManager {
         // Update sync progress to failed
         await this.updateSyncProgress(userId, syncId, step, totalSteps, currentStep, 'failed', {
           success: false,
+          step,
+          message: 'Job failed',
           error: String((error as any)?.message ?? 'Unknown error')
         });
 
@@ -317,12 +318,22 @@ export class OrchestrationJobManager {
     try {
       logger.info('Executing Step 3: Create Ledger Entries', { userId, syncId });
       
-      await dataOrchestrator.createCaseFileLedgerEntry(userId, 'CASE-AMZ-CLAIM-001-1234567890', {
-        claimId: 'AMZ-CLAIM-001',
-        entryType: 'document_linked',
-        description: 'Additional processing completed',
-        metadata: { processedAt: new Date().toISOString() }
-      });
+      await dataOrchestrator.createCaseFileLedgerEntry(
+        userId,
+        { claim_id: 'AMZ-CLAIM-001', raw: { note: 'Additional processing completed' } },
+        [
+          {
+            claimId: 'AMZ-CLAIM-001',
+            type: 'document_linked',
+            amount: 0,
+            currency: 'USD',
+            date: new Date().toISOString(),
+            details: { processedAt: new Date().toISOString() }
+          }
+        ],
+        null,
+        [{ step: 'executeStep3', timestamp: new Date().toISOString() }]
+      );
       
       return {
         success: true,
@@ -466,7 +477,7 @@ export class OrchestrationJobManager {
     result?: JobResult
   ): void {
     const progress = Math.round((step / totalSteps) * 100);
-    
+
     const progressUpdate = {
       syncId,
       step,
@@ -475,11 +486,12 @@ export class OrchestrationJobManager {
       status,
       progress,
       message: result?.message || `Step ${step}/${totalSteps}: ${currentStep}`,
-      metadata: result,
+      metadata: (result ?? {}) as Record<string, any>,
       updatedAt: new Date().toISOString()
     };
 
-    websocketService.broadcastSyncProgress(syncId, progressUpdate);
+    // Send a step-based progress update directly to the user
+    websocketService.sendSyncProgressToUser(userId, progressUpdate as any);
   }
 
   /**

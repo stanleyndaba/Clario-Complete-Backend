@@ -1,0 +1,45 @@
+export declare const APP_NAME = "Opsided Backend";
+export declare const APP_VERSION = "1.0.0";
+export declare const DB_SCHEMA_VERSION = "1.0.0";
+export declare const DB_NAME = "opsided_db";
+export declare const API_VERSION = "v1";
+export declare const DEFAULT_PAGE_SIZE = 20;
+export declare const MAX_PAGE_SIZE = 100;
+export declare const JWT_EXPIRES_IN = "24h";
+export declare const JWT_REFRESH_EXPIRES_IN = "7d";
+export declare const RATE_LIMIT_WINDOW_MS: number;
+export declare const RATE_LIMIT_MAX_REQUESTS = 100;
+export declare const MAX_FILE_SIZE: number;
+export declare const ALLOWED_FILE_TYPES: string[];
+export declare const DEFAULT_OFFSET = 0;
+export declare const DEFAULT_LIMIT = 20;
+export declare const STATUS_PENDING = "pending";
+export declare const STATUS_APPROVED = "approved";
+export declare const STATUS_REJECTED = "rejected";
+export declare const STATUS_PROCESSING = "processing";
+export declare const SOURCE_AMAZON = "amazon";
+export declare const SOURCE_STRIPE = "stripe";
+export declare const SOURCE_MANUAL = "manual";
+export declare const SOURCE_SYNC = "sync";
+export declare const ROLE_ADMIN = "admin";
+export declare const ROLE_USER = "user";
+export declare const ROLE_VIEWER = "viewer";
+export declare const LOCATION_WAREHOUSE = "warehouse";
+export declare const LOCATION_STORE = "store";
+export declare const LOCATION_ONLINE = "online";
+export declare const ERROR_MESSAGES: {
+    readonly UNAUTHORIZED: "Unauthorized access";
+    readonly FORBIDDEN: "Access forbidden";
+    readonly NOT_FOUND: "Resource not found";
+    readonly VALIDATION_ERROR: "Validation error";
+    readonly INTERNAL_ERROR: "Internal server error";
+    readonly DATABASE_ERROR: "Database error";
+    readonly ENCRYPTION_ERROR: "Encryption error";
+};
+export declare const SUCCESS_MESSAGES: {
+    readonly CREATED: "Resource created successfully";
+    readonly UPDATED: "Resource updated successfully";
+    readonly DELETED: "Resource deleted successfully";
+    readonly SYNCED: "Data synced successfully";
+};
+//# sourceMappingURL=constants.d.ts.map

@@ -2,7 +2,7 @@ import { Router } from 'express';
 
 const router = Router();
 
-router.get('/user', async (req, res) => {
+router.get('/me', async (req, res) => {
   try {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -52,7 +52,14 @@ router.get('/profile', async (_req, res) => {
   }
 });
 
-router.post('/profile', async (req, res) => {
+router.post('/logout', async (_req, res) => {
+  try {
+    res.clearCookie('session', { path: '/', sameSite: 'none', secure: true });
+    res.json({ ok: true });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error?.message || 'Internal server error' });
+  }
+});
   try {
     const { name, company } = req.body;
     

@@ -16,8 +16,8 @@ const wrap = (fn: any) => async (req: any, res: any, next: any) => {
   try { await fn(req, res, next); } catch (err) { logger.error('Amazon route error', { err }); next(err); }
 };
 
-router.get('/auth/start', wrap(startAmazonOAuth));
-router.get('/auth/callback', wrap(handleAmazonCallback));
+router.get('/auth', wrap(startAmazonOAuth));
+router.get('/callback', wrap(handleAmazonCallback));
 router.post('/sync', wrap(syncAmazonData));
 router.get('/claims', wrap(getAmazonClaims));
 router.get('/inventory', wrap(getAmazonInventory));

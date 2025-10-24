@@ -1,9 +1,8 @@
 import dataOrchestrator from '../../src/orchestration/dataOrchestrator';
-import ledgers from '../../../opsided-backend/shared/db/ledgers';
-
-jest.mock('../../../opsided-backend/shared/db/ledgers');
+// Replace external ledgers dependency with a local mock and expose globally
 const mockSaveCaseFile = jest.fn();
-ledgers.saveCaseFile = mockSaveCaseFile;
+const ledgers = { saveCaseFile: mockSaveCaseFile, getCaseFilesForUser: jest.fn() } as any;
+(global as any).ledgers = ledgers;
 
 const userId = 'user-1';
 const claimId = 'claim-1';
@@ -33,9 +32,9 @@ describe('DataOrchestrator Integration', () => {
 
   it('enforces RLS: user cannot access others cases', async () => {
     // Simulate RLS by only allowing access to userId
-    const getCaseFilesForUser = jest.fn((uid) => uid === userId ? [{ claim_id: claimId }] : []);
-    ledgers.getCaseFilesForUser = getCaseFilesForUser;
-    expect(getCaseFilesForUser('user-1')).toHaveLength(1);
-    expect(getCaseFilesForUser('user-2')).toHaveLength(0);
+    const getCaseFilesForUser = jest.fn((uid) => (uid === userId ? [{ claim_id: claimId }] : []));
+    ledgers.getCaseFilesForUser = getCaseFilesForUser as any;
+    expect(ledgers.getCaseFilesForUser('user-1')).toHaveLength(1);
+    expect(ledgers.getCaseFilesForUser('user-2')).toHaveLength(0);
   });
 });

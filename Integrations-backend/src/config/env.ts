@@ -62,7 +62,15 @@ const config = {
   STRIPE_REDIRECT_URI: process.env.STRIPE_REDIRECT_URI,
   GMAIL_AUTH_URL: process.env.GMAIL_AUTH_URL,
   STRIPE_AUTH_URL: process.env.STRIPE_AUTH_URL,
-    JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
+  // Amazon SP-API OAuth (sandbox/real)
+  AMAZON_SPAPI_BASE_URL: process.env.AMAZON_SPAPI_BASE_URL,
+  AMAZON_SPAPI_CLIENT_ID: process.env.AMAZON_SPAPI_CLIENT_ID,
+  AMAZON_SPAPI_CLIENT_SECRET: process.env.AMAZON_SPAPI_CLIENT_SECRET,
+  AMAZON_SPAPI_REDIRECT_URI: process.env.AMAZON_SPAPI_REDIRECT_URI,
+  AMAZON_SPAPI_REFRESH_TOKEN: process.env.AMAZON_SPAPI_REFRESH_TOKEN,
+  AMAZON_AUTH_CONSENT_URL: process.env.AMAZON_AUTH_CONSENT_URL || 'https://sellercentral.amazon.com/apps/authorize/consent',
+  COOKIE_DOMAIN: process.env.COOKIE_DOMAIN,
+  JWT_EXPIRES_IN: (process.env.JWT_EXPIRES_IN || '7d') as string,
 };
 
 export default config;

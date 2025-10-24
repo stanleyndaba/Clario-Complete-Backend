@@ -152,20 +152,18 @@ export class StripeService {
   }
 
   // STUB FUNCTION: Connect Stripe account
-  async connectStripe(userId: string): Promise<{ success: boolean; message: string }> {
+  async connectStripe(userId: string): Promise<{ success: boolean; message: string; authUrl?: string }> {
     try {
       const isConnected = await tokenManager.isTokenValid(userId, 'stripe');
       
       if (isConnected) {
-        return { success: true, authUrl: authUrl.toString(), message: 'Stripe already connected' };
+        return { success: true, message: 'Stripe already connected' };
       }
 
-      const authUrl = await this.initiateOAuth(userId);
+      const oauthUrl = await this.initiateOAuth(userId);
       
       logger.info('Stripe connection initiated', { userId });
-      return { success: true, authUrl: authUrl.toString(), message: 'Stripe connection initiated',
-        authUrl 
-      };
+      return { success: true, authUrl: oauthUrl.toString(), message: 'Stripe connection initiated' };
     } catch (error) {
       logger.error('Error connecting Stripe', { error, userId });
       throw createError('Failed to connect Stripe', 500);
