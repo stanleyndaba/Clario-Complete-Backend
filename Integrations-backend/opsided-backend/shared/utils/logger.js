@@ -7,7 +7,13 @@ exports.setupLogRotation = exports.logSyncOperation = exports.logExternalApiCall
 const winston_1 = __importDefault(require("winston"));
 const winston_daily_rotate_file_1 = __importDefault(require("winston-daily-rotate-file"));
 const path_1 = __importDefault(require("path"));
-const env_1 = __importDefault(require("../../integration-backend/src/config/env"));
+// Use local minimal config fallback to avoid cross-package import errors during build
+const config = {
+    NODE_ENV: process.env.NODE_ENV || 'production',
+    LOG_LEVEL: process.env.LOG_LEVEL || 'info',
+    LOG_MAX_SIZE: process.env.LOG_MAX_SIZE || '5m',
+    LOG_MAX_FILES: process.env.LOG_MAX_FILES || '14d'
+};
 // ========================================
 // LOG LEVELS
 // ========================================
@@ -59,9 +65,9 @@ const httpFormat = winston_1.default.format.combine(winston_1.default.format.tim
 const createTransports = () => {
     const transports = [];
     // Console transport for development
-    if (env_1.default.NODE_ENV !== 'production') {
+    if (config.NODE_ENV !== 'production') {
         transports.push(new winston_1.default.transports.Console({
-            level: env_1.default.LOG_LEVEL,
+            level: config.LOG_LEVEL,
             format: consoleFormat
         }));
     }
@@ -71,9 +77,9 @@ const createTransports = () => {
     transports.push(new winston_daily_rotate_file_1.default({
         filename: path_1.default.join(logDir, 'application-%DATE%.log'),
         datePattern: 'YYYY-MM-DD',
-        maxSize: env_1.default.LOG_MAX_SIZE,
-        maxFiles: env_1.default.LOG_MAX_FILES,
-        level: env_1.default.LOG_LEVEL,
+        maxSize: config.LOG_MAX_SIZE,
+        maxFiles: config.LOG_MAX_FILES,
+        level: config.LOG_LEVEL,
         format: fileFormat,
         zippedArchive: true
     }));
@@ -81,8 +87,8 @@ const createTransports = () => {
     transports.push(new winston_daily_rotate_file_1.default({
         filename: path_1.default.join(logDir, 'error-%DATE%.log'),
         datePattern: 'YYYY-MM-DD',
-        maxSize: env_1.default.LOG_MAX_SIZE,
-        maxFiles: env_1.default.LOG_MAX_FILES,
+        maxSize: config.LOG_MAX_SIZE,
+        maxFiles: config.LOG_MAX_FILES,
         level: 'error',
         format: fileFormat,
         zippedArchive: true
@@ -91,20 +97,20 @@ const createTransports = () => {
     transports.push(new winston_daily_rotate_file_1.default({
         filename: path_1.default.join(logDir, 'http-%DATE%.log'),
         datePattern: 'YYYY-MM-DD',
-        maxSize: env_1.default.LOG_MAX_SIZE,
-        maxFiles: env_1.default.LOG_MAX_FILES,
+        maxSize: config.LOG_MAX_SIZE,
+        maxFiles: config.LOG_MAX_FILES,
         level: 'http',
         format: httpFormat,
         zippedArchive: true
     }));
     // Integration-specific logs
-    if (env_1.default.NODE_ENV === 'production') {
+    if (config.NODE_ENV === 'production') {
         // Amazon API logs
         transports.push(new winston_daily_rotate_file_1.default({
             filename: path_1.default.join(logDir, 'amazon-api-%DATE%.log'),
             datePattern: 'YYYY-MM-DD',
-            maxSize: env_1.default.LOG_MAX_SIZE,
-            maxFiles: env_1.default.LOG_MAX_FILES,
+            maxSize: config.LOG_MAX_SIZE,
+            maxFiles: config.LOG_MAX_FILES,
             level: 'info',
             format: fileFormat,
             zippedArchive: true
@@ -113,18 +119,18 @@ const createTransports = () => {
         transports.push(new winston_daily_rotate_file_1.default({
             filename: path_1.default.join(logDir, 'gmail-api-%DATE%.log'),
             datePattern: 'YYYY-MM-DD',
-            maxSize: env_1.default.LOG_MAX_SIZE,
-            maxFiles: env_1.default.LOG_MAX_FILES,
+            maxSize: config.LOG_MAX_SIZE,
+            maxFiles: config.LOG_MAX_FILES,
             level: 'info',
             format: fileFormat,
             zippedArchive: true
         }));
         // Stripe API logs
         transports.push(new winston_daily_rotate_file_1.default({
-            filename: path_1.default.join(logDir(), 'stripe-api-%DATE%.log'),
+            filename: path_1.default.join(logDir, 'stripe-api-%DATE%.log'),
             datePattern: 'YYYY-MM-DD',
-            maxSize: env_1.default.LOG_MAX_SIZE,
-            maxFiles: env_1.default.LOG_MAX_FILES,
+            maxSize: config.LOG_MAX_SIZE,
+            maxFiles: config.LOG_MAX_FILES,
             level: 'info',
             format: fileFormat,
             zippedArchive: true
@@ -136,7 +142,7 @@ const createTransports = () => {
 // LOGGER INSTANCE
 // ========================================
 const logger = winston_1.default.createLogger({
-    level: env_1.default.LOG_LEVEL,
+    level: config.LOG_LEVEL,
     levels: logLevels,
     format: fileFormat,
     transports: createTransports(),
@@ -159,7 +165,7 @@ const getLogger = (module) => {
             logger.info(message, { module, ...meta });
         },
         http: (message, meta) => {
-            logger.http(message, { module, ...meta });
+            logger.http ? logger.http(message, { module, ...meta }) : logger.info(message, { module, ...meta });
         },
         debug: (message, meta) => {
             logger.debug(message, { module, ...meta });
@@ -184,8 +190,8 @@ const createHttpLogger = () => {
             new winston_daily_rotate_file_1.default({
                 filename: path_1.default.join(process.cwd(), 'logs', 'http-%DATE%.log'),
                 datePattern: 'YYYY-MM-DD',
-                maxSize: env_1.default.LOG_MAX_SIZE,
-                maxFiles: env_1.default.LOG_MAX_FILES,
+                maxSize: config.LOG_MAX_SIZE,
+                maxFiles: config.LOG_MAX_FILES,
                 zippedArchive: true
             })
         ]
@@ -203,8 +209,8 @@ const getAmazonLogger = () => {
             new winston_daily_rotate_file_1.default({
                 filename: path_1.default.join(process.cwd(), 'logs', 'amazon-api-%DATE%.log'),
                 datePattern: 'YYYY-MM-DD',
-                maxSize: env_1.default.LOG_MAX_SIZE,
-                maxFiles: env_1.default.LOG_MAX_FILES,
+                maxSize: config.LOG_MAX_SIZE,
+                maxFiles: config.LOG_MAX_FILES,
                 zippedArchive: true
             })
         ]
@@ -219,8 +225,8 @@ const getGmailLogger = () => {
             new winston_daily_rotate_file_1.default({
                 filename: path_1.default.join(process.cwd(), 'logs', 'gmail-api-%DATE%.log'),
                 datePattern: 'YYYY-MM-DD',
-                maxSize: env_1.default.LOG_MAX_SIZE,
-                maxFiles: env_1.default.LOG_MAX_FILES,
+                maxSize: config.LOG_MAX_SIZE,
+                maxFiles: config.LOG_MAX_FILES,
                 zippedArchive: true
             })
         ]
@@ -235,8 +241,8 @@ const getStripeLogger = () => {
             new winston_daily_rotate_file_1.default({
                 filename: path_1.default.join(process.cwd(), 'logs', 'stripe-api-%DATE%.log'),
                 datePattern: 'YYYY-MM-DD',
-                maxSize: env_1.default.LOG_MAX_SIZE,
-                maxFiles: env_1.default.LOG_MAX_FILES,
+                maxSize: config.LOG_MAX_SIZE,
+                maxFiles: config.LOG_MAX_FILES,
                 zippedArchive: true
             })
         ]
@@ -344,3 +350,4 @@ exports.default = logger;
 // File transports
 exports.default = logger;
 exports.default = logger;
+//# sourceMappingURL=logger.js.map

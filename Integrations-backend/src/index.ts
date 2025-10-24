@@ -17,6 +17,7 @@ import integrationRoutes from './routes/integrationRoutes';
 import sseRoutes from './routes/sseRoutes';
 // import enhancedDetectionRoutes from './routes/enhancedDetectionRoutes'; // Temporarily disabled
 import enhancedSyncRoutes from './routes/enhancedSyncRoutes';
+import enhancedDetectionRoutes from './routes/enhancedDetectionRoutes';
 import authRoutes from './routes/authRoutes';
 import syncAliasRoutes from './routes/syncAliasRoutes';
 import detectionRoutes from './routes/detectionRoutes';
@@ -88,7 +89,7 @@ app.use('/api/v1/integrations/stripe', stripeRoutes);
 app.use('/api/sync', syncRoutes);
 app.use('/api/integrations', integrationRoutes);
 app.use('/api/sse', sseRoutes);
-// app.use('/api/enhanced-detections', enhancedDetectionRoutes); // Temporarily disabled
+app.use('/api/enhanced-detections', enhancedDetectionRoutes);
 app.use('/api/enhanced-sync', enhancedSyncRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/v1/integrations/sync', syncAliasRoutes);
@@ -117,5 +118,7 @@ server.listen(PORT, () => {
   console.log('Server running on port ' + PORT);
   console.log('Environment: ' + config.NODE_ENV);
 });
+
+export default app;
 
 

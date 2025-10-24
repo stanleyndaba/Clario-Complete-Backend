@@ -30,7 +30,9 @@ export const authenticateSSE = (
     });
 
     const authHeader = req.headers.authorization;
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    const parts = typeof authHeader === 'string' ? authHeader.split(' ') : [];
+    const isBearer = parts.length === 2 && parts[0] === 'Bearer' && typeof parts[1] === 'string' && parts[1].length > 0;
+    const token = isBearer ? parts[1] : null;
 
     if (!token) {
       logger.warn('SSE authentication failed: No token provided', {

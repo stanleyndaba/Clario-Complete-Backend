@@ -40,10 +40,10 @@ describe('Rate Limit Middleware', () => {
     
     mockRequest = {
       ip: '192.168.1.1',
-      connection: { remoteAddress: '192.168.1.1' },
+      connection: { remoteAddress: '192.168.1.1' } as any,
       get: jest.fn().mockReturnValue('test-user-agent'),
       user: { id: 'test-user-123' }
-    };
+    } as any;
 
     mockResponse = {
       set: jest.fn(),
@@ -155,7 +155,7 @@ describe('Rate Limit Middleware', () => {
     });
 
     it('should handle requests without IP', async () => {
-      const requestWithoutIP = { ...mockRequest, ip: undefined, connection: { remoteAddress: undefined } };
+      const requestWithoutIP = { ...mockRequest, ip: undefined, connection: { remoteAddress: undefined } as any } as any;
       mockPipeline.exec.mockResolvedValue([1, 1]);
 
       const middleware = rateLimit(options);

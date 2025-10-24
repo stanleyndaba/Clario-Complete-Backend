@@ -62,7 +62,7 @@ const config = {
   STRIPE_REDIRECT_URI: process.env.STRIPE_REDIRECT_URI,
   GMAIL_AUTH_URL: process.env.GMAIL_AUTH_URL,
   STRIPE_AUTH_URL: process.env.STRIPE_AUTH_URL,
-    JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
+  JWT_EXPIRES_IN: (process.env.JWT_EXPIRES_IN || '7d') as string,
 };
 
 export default config;

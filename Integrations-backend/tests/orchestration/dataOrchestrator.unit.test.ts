@@ -41,7 +41,17 @@ describe('DataOrchestrator Unit', () => {
       from: () => ({ select: () => ({ eq: () => ({ single: () => ({ data: { id: 'existing' }, error: null }) }) }) })
     };
     const spy = jest.spyOn(console, 'info').mockImplementation(() => {});
-    await expect(dataOrchestrator.createCaseFileLedgerEntry(userId, { claim_id: claimId, raw: {} }, [{}], 'mcde-1', [])).resolves.toBeUndefined();
+    await expect(
+      dataOrchestrator.createCaseFileLedgerEntry(
+        userId,
+        { claim_id: claimId, raw: {} },
+        [
+          { claimId: claimId, type: 'inventory', amount: 0, currency: 'USD', date: new Date().toISOString(), details: {} }
+        ],
+        'mcde-1',
+        []
+      )
+    ).resolves.toBeUndefined();
     spy.mockRestore();
   });
 });

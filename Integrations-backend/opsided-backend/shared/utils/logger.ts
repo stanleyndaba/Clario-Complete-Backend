@@ -1,7 +1,13 @@
 import winston from 'winston';
 import DailyRotateFile from 'winston-daily-rotate-file';
 import path from 'path';
-import config from '../../integration-backend/src/config/env';
+// Use local minimal config fallback to avoid cross-package import errors during build
+const config = {
+  NODE_ENV: process.env.NODE_ENV || 'production',
+  LOG_LEVEL: process.env.LOG_LEVEL || 'info',
+  LOG_MAX_SIZE: process.env.LOG_MAX_SIZE || '5m',
+  LOG_MAX_FILES: process.env.LOG_MAX_FILES || '14d'
+};
 
 // ========================================
 // LOG LEVELS
@@ -79,7 +85,7 @@ const createTransports = () => {
   if (config.NODE_ENV !== 'production') {
     transports.push(
       new winston.transports.Console({
-        level: config.LOG_LEVEL,
+        level: config.LOG_LEVEL as any,
         format: consoleFormat
       })
     );
@@ -93,8 +99,8 @@ const createTransports = () => {
     new DailyRotateFile({
       filename: path.join(logDir, 'application-%DATE%.log'),
       datePattern: 'YYYY-MM-DD',
-      maxSize: config.LOG_MAX_SIZE,
-      maxFiles: config.LOG_MAX_FILES,
+      maxSize: config.LOG_MAX_SIZE as any,
+      maxFiles: config.LOG_MAX_FILES as any,
       level: config.LOG_LEVEL,
       format: fileFormat,
       zippedArchive: true
@@ -106,8 +112,8 @@ const createTransports = () => {
     new DailyRotateFile({
       filename: path.join(logDir, 'error-%DATE%.log'),
       datePattern: 'YYYY-MM-DD',
-      maxSize: config.LOG_MAX_SIZE,
-      maxFiles: config.LOG_MAX_FILES,
+      maxSize: config.LOG_MAX_SIZE as any,
+      maxFiles: config.LOG_MAX_FILES as any,
       level: 'error',
       format: fileFormat,
       zippedArchive: true
@@ -119,8 +125,8 @@ const createTransports = () => {
     new DailyRotateFile({
       filename: path.join(logDir, 'http-%DATE%.log'),
       datePattern: 'YYYY-MM-DD',
-      maxSize: config.LOG_MAX_SIZE,
-      maxFiles: config.LOG_MAX_FILES,
+      maxSize: config.LOG_MAX_SIZE as any,
+      maxFiles: config.LOG_MAX_FILES as any,
       level: 'http',
       format: httpFormat,
       zippedArchive: true
@@ -134,8 +140,8 @@ const createTransports = () => {
       new DailyRotateFile({
         filename: path.join(logDir, 'amazon-api-%DATE%.log'),
         datePattern: 'YYYY-MM-DD',
-        maxSize: config.LOG_MAX_SIZE,
-        maxFiles: config.LOG_MAX_FILES,
+        maxSize: config.LOG_MAX_SIZE as any,
+        maxFiles: config.LOG_MAX_FILES as any,
         level: 'info',
         format: fileFormat,
         zippedArchive: true
@@ -147,8 +153,8 @@ const createTransports = () => {
       new DailyRotateFile({
         filename: path.join(logDir, 'gmail-api-%DATE%.log'),
         datePattern: 'YYYY-MM-DD',
-        maxSize: config.LOG_MAX_SIZE,
-        maxFiles: config.LOG_MAX_FILES,
+        maxSize: config.LOG_MAX_SIZE as any,
+        maxFiles: config.LOG_MAX_FILES as any,
         level: 'info',
         format: fileFormat,
         zippedArchive: true
@@ -158,10 +164,10 @@ const createTransports = () => {
     // Stripe API logs
     transports.push(
       new DailyRotateFile({
-        filename: path.join(logDir(), 'stripe-api-%DATE%.log'),
+        filename: path.join(logDir, 'stripe-api-%DATE%.log'),
         datePattern: 'YYYY-MM-DD',
-        maxSize: config.LOG_MAX_SIZE,
-        maxFiles: config.LOG_MAX_FILES,
+        maxSize: config.LOG_MAX_SIZE as any,
+        maxFiles: config.LOG_MAX_FILES as any,
         level: 'info',
         format: fileFormat,
         zippedArchive: true
@@ -203,7 +209,7 @@ export const getLogger = (module: string) => {
       logger.info(message, { module, ...meta });
     },
     http: (message: string, meta?: any) => {
-      logger.http(message, { module, ...meta });
+      (logger as any).http ? (logger as any).http(message, { module, ...meta }) : logger.info(message, { module, ...meta });
     },
     debug: (message: string, meta?: any) => {
       logger.debug(message, { module, ...meta });
@@ -229,8 +235,8 @@ export const createHttpLogger = () => {
       new DailyRotateFile({
         filename: path.join(process.cwd(), 'logs', 'http-%DATE%.log'),
         datePattern: 'YYYY-MM-DD',
-        maxSize: config.LOG_MAX_SIZE,
-        maxFiles: config.LOG_MAX_FILES,
+        maxSize: config.LOG_MAX_SIZE as any,
+        maxFiles: config.LOG_MAX_FILES as any,
         zippedArchive: true
       })
     ]
