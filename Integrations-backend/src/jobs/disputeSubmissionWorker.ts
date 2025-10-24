@@ -2,16 +2,6 @@ import { getRedisClient } from '../utils/redisClient';
 import logger from '../utils/logger';
 import { supabase } from '../database/supabaseClient';
 
-// Skip Redis-dependent workers when Redis is disabled
-if (process.env.DISABLE_REDIS === 'true') {
-  console.log('Redis disabled - skipping DisputeSubmissionWorker');
-  export const disputeSubmissionWorker = {
-    start: () => console.log('DisputeSubmissionWorker disabled - Redis not available'),
-    stop: () => console.log('DisputeSubmissionWorker disabled - Redis not available')
-  };
-} else {
-  // Original worker code here...
-
 const QUEUE_KEY = 'pending_disputes_queue';
 
 export class DisputeSubmissionWorker {

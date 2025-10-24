@@ -11,14 +11,6 @@
     "opsided-backend/**/*",
     "tests/**/*",
     "src/tests/**/*",
-    "src/notifications/**/*",
-    "src/jobs/**/*",
-    "src/services/gmailService.ts",
-    "src/services/stripeService.ts",
-    "src/services/disputeService.ts",
-    "src/middleware/enhancedAuthMiddleware.ts",
-    "src/utils/logger.ts",
-    "src/config/env.ts",
     "node_modules/**/*"
   ]
 }
