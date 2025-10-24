@@ -1,6 +1,6 @@
 import winston from 'winston';
 import path from 'path';
-import config from '../config/env';
+import config from "../../config/env";;
 // Resolve log file path safely to avoid undefined causing path.join errors
 const resolvedLogFile = (() => {
   try {
