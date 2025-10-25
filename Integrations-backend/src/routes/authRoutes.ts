@@ -75,6 +75,15 @@ router.post('/profile', async (req, res) => {
   }
 });
 
+router.post('/logout', async (_req, res) => {
+  try {
+    res.clearCookie('session', { path: '/', sameSite: 'none', secure: true });
+    res.json({ ok: true });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error?.message || 'Internal server error' });
+  }
+});
+
 router.get('/billing', async (_req, res) => {
   try {
     // Mock billing data
