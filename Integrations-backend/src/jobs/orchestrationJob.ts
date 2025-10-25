@@ -3,7 +3,6 @@ import logger from '../utils/logger';
 import dataOrchestrator from '../orchestration/dataOrchestrator';
 import websocketService from '../services/websocketService';
 import { supabase } from '../database/supabaseClient';
-import ledgers from '../../opsided-backend/shared/db/ledgers';
 
 export interface OrchestrationJobData {
   userId: string;
@@ -161,6 +160,8 @@ export class OrchestrationJobManager {
         // Update sync progress to failed
         await this.updateSyncProgress(userId, syncId, step, totalSteps, currentStep, 'failed', {
           success: false,
+          step,
+          message: String((error as any)?.message ?? 'Unknown error'),
           error: String((error as any)?.message ?? 'Unknown error')
         });
 
@@ -317,12 +318,7 @@ export class OrchestrationJobManager {
     try {
       logger.info('Executing Step 3: Create Ledger Entries', { userId, syncId });
       
-      await dataOrchestrator.createCaseFileLedgerEntry(userId, 'CASE-AMZ-CLAIM-001-1234567890', {
-        claimId: 'AMZ-CLAIM-001',
-        entryType: 'document_linked',
-        description: 'Additional processing completed',
-        metadata: { processedAt: new Date().toISOString() }
-      });
+      await dataOrchestrator.createCaseFileLedgerEntry(userId, 'CASE-AMZ-CLAIM-001-1234567890', [], null, []);
       
       return {
         success: true,
@@ -469,13 +465,11 @@ export class OrchestrationJobManager {
     
     const progressUpdate = {
       syncId,
-      step,
-      totalSteps,
-      currentStep,
-      status,
-      progress,
-      message: result?.message || `Step ${step}/${totalSteps}: ${currentStep}`,
-      metadata: result,
+      stage: currentStep,
+      percent: progress,
+      totalCases: totalSteps,
+      processedCases: step,
+      audit: [],
       updatedAt: new Date().toISOString()
     };
 

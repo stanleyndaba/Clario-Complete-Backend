@@ -155,20 +155,19 @@ export class GmailService {
   }
 
   // STUB FUNCTION: Connect Gmail account
-  async connectGmail(userId: string): Promise<{ success: boolean; message: string }> {
+  async connectGmail(userId: string): Promise<{ success: boolean; message: string; authUrl?: string }> {
     try {
       const isConnected = await tokenManager.isTokenValid(userId, 'gmail');
       
       if (isConnected) {
+        const authUrl = await this.initiateOAuth(userId);
         return { success: true, authUrl: authUrl.toString(), message: 'Gmail already connected' };
       }
 
       const authUrl = await this.initiateOAuth(userId);
       
       logger.info('Gmail connection initiated', { userId });
-      return { success: true, authUrl: authUrl.toString(), message: 'Gmail connection initiated',
-        authUrl 
-      };
+      return { success: true, authUrl: authUrl.toString(), message: 'Gmail connection initiated' };
     } catch (error) {
       logger.error('Error connecting Gmail', { error, userId });
       throw createError('Failed to connect Gmail', 500);

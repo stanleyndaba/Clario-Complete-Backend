@@ -68,3 +68,4 @@ const checkDatabaseHealth = async () => {
     }
 };
 exports.checkDatabaseHealth = checkDatabaseHealth;
+//# sourceMappingURL=connection.js.map

@@ -90,11 +90,12 @@ export const requireAuth = (req: AuthenticatedRequest, res: Response, next: Next
 };
 
 export const generateToken = (userId: string, email: string): string => {
+  const secret = config.JWT_SECRET || 'demo-secret-change-me';
+  
   return jwt.sign(
     { id: userId, email },
-    config.JWT_SECRET,
-    { expiresIn: config.JWT_EXPIRES_IN }
-  );
+    secret
+  ) as string;
 };
 
 export const verifyToken = (token: string): { id: string; email: string } => {

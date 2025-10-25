@@ -1,7 +1,23 @@
 import { supabase } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import { v4 as uuidv4 } from 'uuid';
-import { DisputeCase } from './enhancedDetectionService';
+// Define DisputeCase interface locally since it's not exported from enhancedDetectionService
+interface DisputeCase {
+  id: string;
+  seller_id: string;
+  detection_result_id: string;
+  case_type: string;
+  amount: number;
+  claim_amount: number; // Add missing property
+  currency: string;
+  status: string;
+  provider: string;
+  provider_case_id?: string;
+  evidence?: any;
+  created_at: string;
+  updated_at: string;
+  resolution_date?: string; // Add missing property
+}
 
 export interface DisputeAutomationRule {
   id: string;

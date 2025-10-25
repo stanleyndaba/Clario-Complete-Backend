@@ -9,7 +9,7 @@ export class DisputeSubmissionWorker {
 
   async enqueue(disputeId: string) {
     const redis = await getRedisClient();
-    await redis.lpush(QUEUE_KEY, disputeId);
+    await redis.lPush(QUEUE_KEY, disputeId);
   }
 
   start() {
@@ -24,7 +24,7 @@ export class DisputeSubmissionWorker {
     const redis = await getRedisClient();
     while (this.running) {
       try {
-        const res = await redis.brpop(QUEUE_KEY, 5);
+        const res = await redis.brPop(QUEUE_KEY, 5);
         if (!res) { continue; }
         const disputeId = res.element as string;
 
