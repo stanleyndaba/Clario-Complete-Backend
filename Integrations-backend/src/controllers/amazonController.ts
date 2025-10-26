@@ -66,25 +66,45 @@ export const syncAmazonData = async (_req: Request, res: Response) => {
   }
 };
 
-// Mock endpoints for other routes that the frontend might call
-export const getAmazonClaims = async (_req: Request, res: Response) => {
-  res.json({
-    success: true,
-    claims: [
-      { id: 1, amount: 45.50, status: 'pending', type: 'lost_inventory' },
-      { id: 2, amount: 120.75, status: 'approved', type: 'fee_overcharge' }
-    ]
-  });
+// Real endpoints that call actual SP-API service
+export const getAmazonClaims = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id || 'demo-user';
+    const result = await amazonService.fetchClaims(userId);
+    
+    res.json({
+      success: true,
+      claims: result.data || [],
+      message: result.message
+    });
+  } catch (error) {
+    logger.error('Get Amazon claims error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch claims',
+      claims: []
+    });
+  }
 };
 
-export const getAmazonInventory = async (_req: Request, res: Response) => {
-  res.json({
-    success: true,
-    inventory: [
-      { sku: 'PROD-001', quantity: 45, status: 'active' },
-      { sku: 'PROD-002', quantity: 12, status: 'inactive' }
-    ]
-  });
+export const getAmazonInventory = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id || 'demo-user';
+    const result = await amazonService.fetchInventory(userId);
+    
+    res.json({
+      success: true,
+      inventory: result.data || [],
+      message: result.message
+    });
+  } catch (error) {
+    logger.error('Get Amazon inventory error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch inventory',
+      inventory: []
+    });
+  }
 };
 
 export const disconnectAmazon = async (_req: Request, res: Response) => {
