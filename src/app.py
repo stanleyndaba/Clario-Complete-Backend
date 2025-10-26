@@ -119,10 +119,33 @@ for o in (computed_origins or default_origins):
         allow_origins.append(o)
 
 # Apply strict CORS like minimal app
+# Add Vercel frontend domain explicitly
+vercel_origins = [
+    "https://opside-complete-frontend-kqvxrzg4s-mvelo-ndabas-projects.vercel.app",
+    "https://opside-complete-frontend.onrender.com",
+    "https://clario-complete-backend-y5cd.onrender.com",
+    # Support any vercel preview deployments
+    "https://*.vercel.app",
+    "https://opside-complete-frontend-kqvxrzg4s*.vercel.app",
+]
 frontend = os.getenv("FRONTEND_URL") or settings.FRONTEND_URL or "https://opside-complete-frontend.onrender.com"
+# Filter out wildcard patterns from the explicit origins list
+explicit_origins = [o for o in vercel_origins if "*" not in o]
+all_allowed_origins = list(set(allow_origins + explicit_origins + [frontend]))
+
+# Debug logging
+logger.info(f"CORS Configuration - allow_origins computed: {allow_origins}")
+logger.info(f"CORS Configuration - explicit_origins: {explicit_origins}")
+logger.info(f"CORS Configuration - Final all_allowed_origins: {all_allowed_origins}")
+
+# Use allow_origin_regex for Vercel wildcard support
+import re
+vercel_pattern = re.compile(r"https://.*\.vercel\.app$")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[frontend],
+    allow_origins=all_allowed_origins,
+    allow_origin_regex=vercel_pattern.pattern,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -203,8 +226,8 @@ async def services_status():
 def cors_debug():
     """Expose current CORS configuration for debugging deployments"""
     return {
-        "allow_origins": allow_origins,
-        "allow_origin_regex": allow_origin_regex,
+        "allow_origins": all_allowed_origins,
+        "frontend_url": frontend,
     }
 
 # ------------------------------------------------------------
@@ -213,13 +236,43 @@ def cors_debug():
 # ------------------------------------------------------------
 
 # Amazon SP-API Aliases
+@app.options("/api/v1/integrations/amazon/sandbox/callback")
 @app.get("/api/v1/integrations/amazon/sandbox/callback")
 async def amazon_sandbox_callback(request: Request):
-    # Redirect to existing Amazon OAuth callback
-    target = "/api/auth/amazon/callback"
-    if request.url.query:
-        target = f"{target}?{request.url.query}"
-    return RedirectResponse(target)
+    """Handle sandbox Amazon OAuth callback with CORS headers"""
+    from fastapi.responses import JSONResponse, Response
+    from src.api.auth_sandbox import MOCK_USERS
+    
+    # Handle OPTIONS preflight request
+    if request.method == "OPTIONS":
+        origin = request.headers.get("Origin", "*")
+        if origin in all_allowed_origins or any(o in origin for o in ["vercel.app", "onrender.com"]):
+            response = Response(status_code=204)
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With"
+            response.headers["Access-Control-Max-Age"] = "3600"
+            return response
+    
+    # Call the actual sandbox auth handler
+    user_data = MOCK_USERS["sandbox-user"]
+    
+    origin = request.headers.get("Origin", "*")
+    response = JSONResponse(
+        content={
+            "user": user_data,
+            "access_token": "mock_jwt_token_sandbox",
+            "message": "Sandbox login successful"
+        }
+    )
+    
+    # Set CORS headers explicitly
+    if origin in all_allowed_origins or any(o in origin for o in ["vercel.app", "onrender.com"]):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    
+    return response
 
 @app.get("/api/v1/integrations/amazon/recoveries")
 async def amazon_recoveries_summary(request: Request):
