@@ -242,6 +242,8 @@ async def amazon_sandbox_callback(request: Request):
     """Handle sandbox Amazon OAuth callback with CORS headers"""
     from fastapi.responses import JSONResponse, Response
     from src.api.auth_sandbox import MOCK_USERS
+    import jwt
+    from datetime import datetime, timedelta
     
     # Handle OPTIONS preflight request
     if request.method == "OPTIONS":
@@ -255,16 +257,31 @@ async def amazon_sandbox_callback(request: Request):
             response.headers["Access-Control-Max-Age"] = "3600"
             return response
     
-    # Call the actual sandbox auth handler
+    # Create proper session token for sandbox user
     user_data = MOCK_USERS["sandbox-user"]
+    session_token = jwt.encode(
+        {"user_id": user_data["user_id"], "exp": datetime.utcnow() + timedelta(days=7)}, 
+        settings.JWT_SECRET, 
+        algorithm="HS256"
+    )
     
     origin = request.headers.get("Origin", "*")
     response = JSONResponse(
         content={
             "user": user_data,
-            "access_token": "mock_jwt_token_sandbox",
+            "access_token": session_token,
             "message": "Sandbox login successful"
         }
+    )
+    
+    # Set session cookie
+    response.set_cookie(
+        key="session_token",
+        value=session_token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        max_age=7*24*3600,
     )
     
     # Set CORS headers explicitly

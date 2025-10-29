@@ -79,17 +79,31 @@ def get_current_user_profile(user: dict = Depends(get_current_user)):
 
 @router.get("/auth/amazon/start", response_model=AmazonLoginResponse)
 def amazon_login_start(response: Response):
-    """Initiate Amazon OAuth login"""
-    # Generate state parameter for CSRF protection
-    state = secrets.token_urlsafe(32)
+    """Initiate Amazon OAuth login - uses sandbox mode if no credentials"""
+    # Check if we have real Amazon credentials
+    if not settings.AMAZON_CLIENT_ID or settings.AMAZON_CLIENT_ID == "your-amazon-client-id":
+        # Use sandbox mode
+        state = secrets.token_urlsafe(32)
+        redirect_url = f"{settings.FRONTEND_URL}/auth/callback?code=mock_auth_code&state={state}"
+        
+        return AmazonLoginResponse(
+            auth_url=redirect_url,
+            state=state
+        )
     
-    # Amazon OAuth URL (replace with your actual client ID)
-    client_id = settings.AMAZON_CLIENT_ID or "your-amazon-client-id"
+    # Production mode with real credentials
+    state = secrets.token_urlsafe(32)
+    client_id = settings.AMAZON_CLIENT_ID
     redirect_uri = settings.AMAZON_REDIRECT_URI
     scope = "profile"
     
+    # Use sandbox OAuth URL if using sandbox SP-API
+    oauth_base = "https://www.amazon.com/ap/oa"
+    if "sandbox" in settings.AMAZON_SPAPI_BASE_URL:
+        oauth_base = "https://www.amazon.com/ap/oa"  # Same for sandbox
+    
     auth_url = (
-        f"https://www.amazon.com/ap/oa?"
+        f"{oauth_base}?"
         f"client_id={client_id}&"
         f"scope={scope}&"
         f"response_type=code&"
@@ -97,7 +111,6 @@ def amazon_login_start(response: Response):
         f"state={state}"
     )
 
-    # Set state in HttpOnly cookie for CSRF validation
     response.set_cookie(
         key="oauth_state",
         value=state,
@@ -132,7 +145,43 @@ async def amazon_callback(request: Request):
     if not code or not state:
         raise HTTPException(status_code=400, detail="Missing OAuth parameters")
 
-    # CSRF validation
+    # Check if this is sandbox mode (mock code)
+    if code == "mock_auth_code":
+        # Sandbox mode - create mock user session
+        from .auth_sandbox import MOCK_USERS
+        user_data = MOCK_USERS["sandbox-user"]
+        user_id = user_data["user_id"]
+        
+        # Ensure sandbox user exists in database
+        try:
+            db_module.db.upsert_user_profile(
+                seller_id=user_data["amazon_seller_id"],
+                company_name="Sandbox Company",
+                marketplaces=["ATVPDKIKX0DER"]  # US marketplace
+            )
+        except Exception:
+            pass  # Ignore database errors in sandbox mode
+        
+        # Create session JWT
+        session_token = jwt.encode(
+            {"user_id": user_id, "exp": datetime.utcnow() + timedelta(days=7)}, 
+            settings.JWT_SECRET, 
+            algorithm="HS256"
+        )
+        
+        response = Response(status_code=302)
+        response.set_cookie(
+            key="session_token",
+            value=session_token,
+            httponly=True,
+            secure=True,
+            samesite="none",
+            max_age=7*24*3600,
+        )
+        response.headers["Location"] = f"{settings.FRONTEND_URL}/dashboard"
+        return response
+
+    # CSRF validation for production mode
     if not state_cookie or state_cookie != state:
         raise HTTPException(status_code=400, detail="Invalid or expired state")
 
@@ -174,7 +223,9 @@ async def amazon_callback(request: Request):
         if not access_token or not refresh_token:
             return Response(status_code=302, headers={"Location": f"{settings.FRONTEND_URL}/auth/error?reason=missing_tokens"})
 
-        sellers_url = "https://sellingpartnerapi-na.amazon.com/sellers/v1/marketplaceParticipations"
+        # Use sandbox or production SP-API URL
+        spapi_base = settings.AMAZON_SPAPI_BASE_URL or "https://sellingpartnerapi-na.amazon.com"
+        sellers_url = f"{spapi_base}/sellers/v1/marketplaceParticipations"
         try:
             sellers_resp = await client.get(
                 sellers_url,
