@@ -30,9 +30,9 @@ def _get_fernet() -> Fernet:
     key = base64.urlsafe_b64encode((raw + b"0" * 32)[:32])
     return Fernet(key)
 
-# Mock JWT secret - in production, use environment variable
-JWT_SECRET = "your-secret-key-change-in-production"
-JWT_ALGORITHM = "HS256"
+# Use JWT secret from settings
+JWT_SECRET = settings.JWT_SECRET
+JWT_ALGORITHM = settings.JWT_ALGORITHM
 
 def create_access_token(user_id: str) -> str:
     """Create JWT access token"""

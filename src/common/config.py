@@ -51,7 +51,7 @@ class Settings(BaseModel):
     FEATURE_FLAG_EV_SMART_PROMPTS: bool = os.getenv("FEATURE_FLAG_EV_SMART_PROMPTS", "True").lower() == "true"
     
     # Security configuration
-    JWT_SECRET: str = os.getenv("JWT_SECRET", "your-secret-key-change-in-production")
+    JWT_SECRET: str = os.getenv("JWT_SECRET", "fallback_dev_secret_only_never_use_in_prod")
     JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
     JWT_EXPIRES_IN_MINUTES: int = int(os.getenv("JWT_EXPIRES_IN_MINUTES", "10080"))  # 7 days
     # Prefer ENCRYPTION_MASTER_KEY if provided (fallback to CRYPTO_SECRET)
