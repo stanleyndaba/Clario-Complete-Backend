@@ -27,7 +27,7 @@ import os
 # from .cdd.router import router as detect_router
 # from .acg.router import router as filing_router
 # from .ml_detector.router import router as ml_router
-# from .api.auth_sandbox import router as auth_router
+from .api.auth_sandbox import router as auth_router
 # from .api.integrations import router as integrations_router
 # from .api.detections import router as detections_router
 # from .api.recoveries import router as recoveries_router
@@ -118,17 +118,13 @@ logger.info(f"CORS Configuration - allow_origins computed: {allow_origins}")
 logger.info(f"CORS Configuration - explicit_origins: {explicit_origins}")
 logger.info(f"CORS Configuration - Final all_allowed_origins: {all_allowed_origins}")
 
-# Use allow_origin_regex for Vercel wildcard support
-import re
-vercel_pattern = re.compile(r"https://.*\.vercel\.app$")
-
+# Secure CORS - no wildcards with credentials
 app.add_middleware(
     CORSMiddleware,
     allow_origins=all_allowed_origins,
-    allow_origin_regex=vercel_pattern.pattern,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
 )
 
 # Define main endpoints before including routers
@@ -155,9 +151,15 @@ def integrations():
 @app.get("/health")
 async def health():
     """Health check endpoint with service status"""
-    services_status = service_directory.get_all_services_status()
-    healthy_services = sum(1 for service in services_status.values() if service["is_healthy"])
-    total_services = len(services_status)
+    try:
+        from .services.service_directory import service_directory
+        services_status = service_directory.get_all_services_status()
+        healthy_services = sum(1 for service in services_status.values() if service["is_healthy"])
+        total_services = len(services_status)
+    except ImportError:
+        services_status = {}
+        healthy_services = 0
+        total_services = 0
     
     return {
         "status": "healthy" if healthy_services == total_services else "degraded",
@@ -174,7 +176,7 @@ async def health():
 # app.include_router(detect_router)
 # app.include_router(filing_router)
 # app.include_router(ml_router)
-# app.include_router(auth_router, tags=["auth"])
+app.include_router(auth_router, tags=["auth"])
 # app.include_router(integrations_router, tags=["integrations"])
 # app.include_router(detections_router, tags=["detections"])
 # app.include_router(recoveries_router, tags=["recoveries"])
@@ -200,6 +202,15 @@ async def services_status():
     """Get status of all microservices"""
     return {"status": "ok", "services": []}
 
+# Protected endpoints require authentication
+from .api.auth_middleware import get_current_user
+from fastapi import Depends
+
+@app.get("/api/user/profile")
+async def get_user_profile(user: dict = Depends(get_current_user)):
+    """Get current user profile - protected endpoint"""
+    return {"user": user}
+
 @app.get("/cors/debug")
 def cors_debug():
     """Expose current CORS configuration for debugging deployments"""
@@ -219,7 +230,7 @@ def cors_debug():
 async def amazon_sandbox_callback(request: Request):
     """Handle sandbox Amazon OAuth callback with CORS headers"""
     from fastapi.responses import JSONResponse, Response
-    from src.api.auth_sandbox import MOCK_USERS
+    from .api.auth_sandbox import MOCK_USERS
     import jwt
     from datetime import datetime, timedelta
     
@@ -295,9 +306,9 @@ async def resubmit_recovery(id: str):
 
 # Evidence Aliases
 @app.post("/api/evidence/auto-collect")
-async def auto_collect_evidence():
+async def auto_collect_evidence(user: dict = Depends(get_current_user)):
     # Simple stub indicating auto-collect enabled
-    return {"ok": True, "message": "Auto-collect enabled"}
+    return {"ok": True, "message": "Auto-collect enabled", "user_id": user["user_id"]}
 
 @app.post("/api/evidence/sync")
 async def evidence_sync():
