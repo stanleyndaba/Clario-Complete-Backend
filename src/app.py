@@ -47,16 +47,32 @@ from .api.auth_sandbox import router as auth_router
 # from .api.feature_flags import router as feature_flags_router
 # from .analytics.analytics_integration import analytics_integration
 # from .features.feature_integration import feature_integration
-# from .services.service_directory import service_directory
+from .services.service_directory import service_directory
 
 logger = logging.getLogger(__name__)
 
 # Simplified lifespan for debugging
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting simplified app...")
+    """Application lifespan manager"""
+    # Startup
+    logger.info("Starting Opside FBA Claims Pipeline Orchestrator...")
+    
+    # Start service health monitoring
+    health_task = asyncio.create_task(service_directory.start_health_monitoring())
+    
+    # Initial health check
+    await service_directory.check_all_services()
+    
+    logger.info("Orchestrator started successfully")
+    
     yield
-    logger.info("Shutting down...")
+    
+    # Shutdown
+    logger.info("Shutting down orchestrator...")
+    health_task.cancel()
+    await service_directory.close()
+    logger.info("Orchestrator shutdown complete")
 
 app = FastAPI(
     title="Opside Integrations API",
@@ -151,15 +167,9 @@ def integrations():
 @app.get("/health")
 async def health():
     """Health check endpoint with service status"""
-    try:
-        from .services.service_directory import service_directory
-        services_status = service_directory.get_all_services_status()
-        healthy_services = sum(1 for service in services_status.values() if service["is_healthy"])
-        total_services = len(services_status)
-    except ImportError:
-        services_status = {}
-        healthy_services = 0
-        total_services = 0
+    services_status = service_directory.get_all_services_status()
+    healthy_services = sum(1 for service in services_status.values() if service["is_healthy"])
+    total_services = len(services_status)
     
     return {
         "status": "healthy" if healthy_services == total_services else "degraded",
@@ -200,7 +210,7 @@ app.include_router(auth_router, tags=["auth"])
 @app.get("/api/services/status")
 async def services_status():
     """Get status of all microservices"""
-    return {"status": "ok", "services": []}
+    return service_directory.get_all_services_status()
 
 # Protected endpoints require authentication
 from .api.auth_middleware import get_current_user
