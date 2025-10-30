@@ -38,6 +38,7 @@ const createConnection = () => {
         },
     });
 };
+// Singleton instance
 let db = null;
 const getDatabase = () => {
     if (!db) {
@@ -54,6 +55,7 @@ const closeDatabase = async () => {
     }
 };
 exports.closeDatabase = closeDatabase;
+// Health check
 const checkDatabaseHealth = async () => {
     try {
         const database = (0, exports.getDatabase)();

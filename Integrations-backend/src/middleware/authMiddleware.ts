@@ -2,57 +2,20 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import config from '../config/env';
 import logger from '../utils/logger';
-import { createError } from '../utils/errorHandler';
 
 export interface AuthenticatedRequest extends Request {
   user?: {
     id: string;
     email: string;
+    role: string;
   };
 }
 
-// Define public routes that don't require authentication
-const PUBLIC_ROUTES = [
-  { method: 'GET', path: '/health' },
-  { method: 'GET', path: '/api/status' },
-  { method: 'GET', path: '/api/amazon/callback' },
-  { method: 'GET', path: '/api/amazon/auth' },
-  { method: 'POST', path: '/api/metrics/track' },
-  { method: 'OPTIONS', path: '*' },
-];
-
-// Check if a route is public
-function isPublicRoute(req: Request): boolean {
-  return PUBLIC_ROUTES.some(route => 
-    route.method === req.method && 
-    (route.path === '*' || req.path === route.path || req.path.startsWith(route.path))
-  );
-}
-
-export const authenticateToken = (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): void => {
-  // Allow OPTIONS requests (preflight)
-  if (req.method === 'OPTIONS') {
-    return next();
-  }
-
-  // Check if route is public
-  if (isPublicRoute(req)) {
-    return next();
-  }
-
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+export const authenticateToken = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
-    logger.warn('Authentication failed: No token provided', {
-      url: req.url,
-      method: req.method,
-      ip: req.ip
-    });
     res.status(401).json({
       success: false,
       message: 'Access token required'
@@ -61,16 +24,15 @@ export const authenticateToken = (
   }
 
   try {
-    const decoded = jwt.verify(token, config.JWT_SECRET) as { id: string; email: string };
-    req.user = decoded;
+    const decoded = jwt.verify(token, config.JWT_SECRET) as any;
+    req.user = {
+      id: decoded.userId,
+      email: decoded.email,
+      role: decoded.role
+    };
     next();
   } catch (error) {
-    logger.warn('Authentication failed: Invalid token', {
-      error: error instanceof Error ? error.message : 'Unknown error',
-      url: req.url,
-      method: req.method,
-      ip: req.ip
-    });
+    logger.error('JWT verification failed', { error });
     res.status(403).json({
       success: false,
       message: 'Invalid or expired token'
@@ -78,29 +40,6 @@ export const authenticateToken = (
   }
 };
 
-export const requireAuth = (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
-  if (!req.user) {
-    res.status(401).json({
-      success: false,
-      message: 'Authentication required'
-    });
-    return;
-  }
-  next();
-};
-
-export const generateToken = (userId: string, email: string): string => {
-  return jwt.sign(
-    { id: userId, email },
-    config.JWT_SECRET,
-    { expiresIn: config.JWT_EXPIRES_IN }
-  );
-};
-
-export const verifyToken = (token: string): { id: string; email: string } => {
-  try {
-    return jwt.verify(token, config.JWT_SECRET) as { id: string; email: string };
-  } catch (error) {
-    throw createError('Invalid token', 401);
-  }
+export const generateToken = (payload: { userId: string; email: string; role: string }) => {
+  return jwt.sign(payload, config.JWT_SECRET, { expiresIn: '24h' });
 };

@@ -14,7 +14,12 @@ from src.api.schemas import (
     ParserStatus,
     ParsedInvoiceData
 )
-from src.parsers.parser_worker import parser_worker
+try:
+    from src.parsers.parser_worker import parser_worker  # type: ignore
+except Exception as _parser_err:
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Parser worker unavailable at startup: {_parser_err}")
+    parser_worker = None  # type: ignore
 from src.common.db_postgresql import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -44,6 +49,8 @@ async def force_parse_document(
         # Determine parser type based on content type
         parser_type = _determine_parser_type(document['content_type'], document['filename'])
         
+        if parser_worker is None:
+            raise HTTPException(status_code=503, detail="Parser subsystem unavailable")
         # Create parser job
         job_id = await parser_worker.create_parser_job(document_id, user_id, parser_type)
         
@@ -98,6 +105,8 @@ async def get_parser_job_status(
         user_id = user["user_id"]
         logger.info(f"Getting parser job status {job_id} for user {user_id}")
         
+        if parser_worker is None:
+            raise HTTPException(status_code=503, detail="Parser subsystem unavailable")
         # Get job status
         job_status = await parser_worker.get_job_status(job_id)
         if not job_status:
@@ -384,6 +393,9 @@ def _get_estimated_completion(parser_type: str) -> str:
 async def _process_document_async(job_id: str, document_id: str, parser_type: str):
     """Background task to process document"""
     try:
+        if parser_worker is None:
+            logger.error("Parser subsystem unavailable in background task")
+            return
         await parser_worker._process_job({
             'id': job_id,
             'document_id': document_id,

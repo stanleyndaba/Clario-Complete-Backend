@@ -52,7 +52,19 @@ const config = {
   // Stripe (not used in demo phase)
   STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY,
   STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET,
+
+  // OAuth client configuration (optional)
+  GMAIL_CLIENT_ID: process.env.GMAIL_CLIENT_ID,
+  GMAIL_CLIENT_SECRET: process.env.GMAIL_CLIENT_SECRET,
+  GMAIL_REDIRECT_URI: process.env.GMAIL_REDIRECT_URI,
+  STRIPE_CLIENT_ID: process.env.STRIPE_CLIENT_ID,
+  STRIPE_CLIENT_SECRET: process.env.STRIPE_CLIENT_SECRET,
+  STRIPE_REDIRECT_URI: process.env.STRIPE_REDIRECT_URI,
+  GMAIL_AUTH_URL: process.env.GMAIL_AUTH_URL,
+  STRIPE_AUTH_URL: process.env.STRIPE_AUTH_URL,
+    JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
 };
 
 export default config;
+
 

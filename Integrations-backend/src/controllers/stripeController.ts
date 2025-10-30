@@ -68,7 +68,7 @@ export const connectStripe = asyncHandler(async (req: AuthenticatedRequest, res:
     res.json({
       success: true,
       message: result.message,
-      authUrl: result.authUrl
+      authUrl: (result as any).authUrl
     });
   } catch (error) {
     logger.error('Error connecting Stripe', { error, userId });

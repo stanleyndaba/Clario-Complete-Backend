@@ -74,7 +74,7 @@ class IntegrationService {
       }
 
       // Add computed fields to each status
-      const statuses: IntegrationStatus[] = data.map(status => ({
+      const statuses: IntegrationStatus[] = data.map((status: any) => ({
         ...status,
         lastSyncedAt: status.metadata?.last_synced_at,
         message: this.getStatusMessage(status.status, status.provider)
@@ -206,3 +206,4 @@ class IntegrationService {
 }
 
 export const integrationService = new IntegrationService();
+

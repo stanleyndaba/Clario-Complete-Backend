@@ -49,4 +49,4 @@ router.post('/batch-predict', DiscrepancyController.batchPredictDiscrepancies);
  */
 router.get('/case/:caseId', DiscrepancyController.getCaseDiscrepancyAnalysis);
 
-export default router; 
+export { router }; 

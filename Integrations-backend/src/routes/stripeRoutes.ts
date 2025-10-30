@@ -1,45 +1,31 @@
 import { Router } from 'express';
-import { getStripeAccountStatus } from '../services/stripeService';
-import { authenticateToken } from '../middleware/authMiddleware';
-import {
-  initiateStripeOAuth,
-  handleStripeCallback,
-  connectStripe,
-  getStripeTransactions,
-  getStripeAccountInfo,
-  getStripeTransaction,
-  disconnectStripe
-} from '../controllers/stripeController';
 
 const router = Router();
 
-router.get('/status', authenticateToken, async (req, res) => {
-  const userId = req.user?.id;
-  if (!userId) {
-    return res.status(401).json({ success: false, message: 'Authentication required' });
-  }
-  const status = await getStripeAccountStatus(userId);
-  res.json({ success: true, status });
+// Mock stripe status endpoint
+router.get('/status', (_, res) => {
+  res.json({
+    success: true,
+    connected: false,
+    message: 'Stripe not configured - using mock mode'
+  });
 });
 
-// OAuth routes (no authentication required for callback)
-router.get('/callback', handleStripeCallback);
+// Mock stripe connect endpoint  
+router.post('/connect', (_, res) => {
+  res.json({
+    success: true,
+    message: 'Stripe connection initiated (mock)',
+    url: 'https://stripe.com/mock-connect'
+  });
+});
 
-// Protected routes
-router.use(authenticateToken);
+// Mock stripe webhook endpoint
+router.post('/webhook', (_, res) => {
+  res.json({
+    success: true,
+    message: 'Webhook received (mock)'
+  });
+});
 
-// OAuth initiation
-router.get('/auth', initiateStripeOAuth);
-
-// Connection
-router.post('/connect', connectStripe);
-
-// Transaction operations
-router.get('/transactions', getStripeTransactions);
-router.get('/account', getStripeAccountInfo);
-router.get('/transactions/:transactionId', getStripeTransaction);
-
-// Disconnect
-router.delete('/disconnect', disconnectStripe);
-
-export default router; 
+export default router;

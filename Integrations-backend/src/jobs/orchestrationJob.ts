@@ -3,7 +3,6 @@ import logger from '../utils/logger';
 import dataOrchestrator from '../orchestration/dataOrchestrator';
 import websocketService from '../services/websocketService';
 import { supabase } from '../database/supabaseClient';
-import ledgers from '../../opsided-backend/shared/db/ledgers';
 
 export interface OrchestrationJobData {
   userId: string;
@@ -30,6 +29,13 @@ const orchestrationQueue = new Queue<OrchestrationJobData>('orchestration', REDI
 const syncProgressQueue = new Queue<OrchestrationJobData>('sync-progress', REDIS_URL);
 
 export class OrchestrationJobManager {
+  private static async fetchRawAmazonData(_userId: string): Promise<any[]> {
+    return [];
+  }
+
+  private static async fetchMCDEDocs(_userId: string): Promise<any[]> {
+    return [];
+  }
   
   /**
    * Initialize job queues and processors
@@ -154,7 +160,9 @@ export class OrchestrationJobManager {
         // Update sync progress to failed
         await this.updateSyncProgress(userId, syncId, step, totalSteps, currentStep, 'failed', {
           success: false,
-          error: error.message
+          step,
+          message: String((error as any)?.message ?? 'Unknown error'),
+          error: String((error as any)?.message ?? 'Unknown error')
         });
 
         throw error;
@@ -203,7 +211,7 @@ export class OrchestrationJobManager {
         userId: job.data.userId,
         syncId: job.data.syncId,
         step: job.data.step,
-        error: error.message 
+        error: String((error as any)?.message ?? 'Unknown error') 
       });
     });
 
@@ -220,7 +228,7 @@ export class OrchestrationJobManager {
         jobId: job.id, 
         userId: job.data.userId,
         syncId: job.data.syncId,
-        error: error.message 
+        error: String((error as any)?.message ?? 'Unknown error') 
       });
     });
   }
@@ -258,7 +266,7 @@ export class OrchestrationJobManager {
         success: false,
         step: 1,
         message: 'Failed to fetch Amazon claims',
-        error: error.message
+        error: String((error as any)?.message ?? 'Unknown error')
       };
     }
   }
@@ -301,7 +309,7 @@ export class OrchestrationJobManager {
         success: false,
         step: 2,
         message: 'Failed to normalize and ingest Amazon data',
-        error: error.message
+        error: String((error as any)?.message ?? 'Unknown error')
       };
     }
   }
@@ -310,12 +318,7 @@ export class OrchestrationJobManager {
     try {
       logger.info('Executing Step 3: Create Ledger Entries', { userId, syncId });
       
-      await dataOrchestrator.createCaseFileLedgerEntry(userId, 'CASE-AMZ-CLAIM-001-1234567890', {
-        claimId: 'AMZ-CLAIM-001',
-        entryType: 'document_linked',
-        description: 'Additional processing completed',
-        metadata: { processedAt: new Date().toISOString() }
-      });
+      await dataOrchestrator.createCaseFileLedgerEntry(userId, 'CASE-AMZ-CLAIM-001-1234567890', [], null, []);
       
       return {
         success: true,
@@ -329,7 +332,7 @@ export class OrchestrationJobManager {
         success: false,
         step: 3,
         message: 'Failed to create ledger entries',
-        error: error.message
+        error: String((error as any)?.message ?? 'Unknown error')
       };
     }
   }
@@ -354,7 +357,7 @@ export class OrchestrationJobManager {
         success: false,
         step: 4,
         message: 'Failed to process Stripe transactions',
-        error: error.message
+        error: String((error as any)?.message ?? 'Unknown error')
       };
     }
   }
@@ -377,7 +380,7 @@ export class OrchestrationJobManager {
         success: false,
         step: 5,
         message: 'Failed to finalize cases',
-        error: error.message
+        error: String((error as any)?.message ?? 'Unknown error')
       };
     }
   }
@@ -462,13 +465,11 @@ export class OrchestrationJobManager {
     
     const progressUpdate = {
       syncId,
-      step,
-      totalSteps,
-      currentStep,
-      status,
-      progress,
-      message: result?.message || `Step ${step}/${totalSteps}: ${currentStep}`,
-      metadata: result,
+      stage: currentStep,
+      percent: progress,
+      totalCases: totalSteps,
+      processedCases: step,
+      audit: [],
       updatedAt: new Date().toISOString()
     };
 

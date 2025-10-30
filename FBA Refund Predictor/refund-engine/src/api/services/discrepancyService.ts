@@ -245,7 +245,7 @@ export class DiscrepancyService {
     let totalPotentialRefund = 0;
     let totalPrediction = 0;
 
-    result.rows.forEach(row => {
+    result.rows.forEach((row: any) => {
       const category = row.product_category;
       const count = parseInt(row.category_count);
       const amount = parseFloat(row.category_amount);
@@ -277,7 +277,7 @@ export class DiscrepancyService {
     );
 
     const byPredictionClass: Record<string, number> = {};
-    classResult.rows.forEach(row => {
+    classResult.rows.forEach((row: any) => {
       byPredictionClass[row.prediction_class] = parseInt(row.count);
     });
 

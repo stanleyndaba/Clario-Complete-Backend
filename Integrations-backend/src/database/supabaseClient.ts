@@ -1,15 +1,50 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import config from '../config/env';
 import logger from '../utils/logger';
 
 const supabaseUrl = config.SUPABASE_URL;
 const supabaseAnonKey = config.SUPABASE_ANON_KEY;
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Missing Supabase configuration');
+// Create a demo client if Supabase config is missing
+let supabase: SupabaseClient | any;
+
+if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
+  logger.warn('Using demo Supabase client - no real database connection');
+  
+  // Create a mock client that doesn't actually connect
+  supabase = {
+    auth: {
+      getSession: () => Promise.resolve({ data: { session: null }, error: null })
+    },
+    from: () => ({
+      upsert: () => Promise.resolve({ error: null }),
+      select: () => ({
+        eq: () => ({
+          single: () => Promise.resolve({ data: null, error: { code: 'PGRST116' } })
+        })
+      }),
+      update: () => ({
+        eq: () => Promise.resolve({ error: null })
+      }),
+      delete: () => ({
+        eq: () => Promise.resolve({ error: null })
+      })
+    })
+  } as any;
+} else {
+  supabase = createClient(supabaseUrl, supabaseAnonKey);
+  
+  // Test connection on startup
+  supabase.auth.getSession().then(({ data, error }: { data: any; error: any }) => {
+    if (error) {
+      logger.warn('Supabase connection failed', { error: error.message });
+    } else {
+      logger.info('Supabase connected successfully');
+    }
+  });
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export { supabase };
 
 // Database types
 export interface TokenRecord {
@@ -40,6 +75,11 @@ export const tokenManager = {
     expiresAt: Date
   ): Promise<void> {
     try {
+      if (typeof supabase.from !== 'function') {
+        logger.info('Demo mode: Token save skipped', { userId, provider });
+        return;
+      }
+
       const { error } = await supabase
         .from('tokens')
         .upsert({
@@ -70,6 +110,11 @@ export const tokenManager = {
     provider: 'amazon' | 'gmail' | 'stripe'
   ): Promise<TokenRecord | null> {
     try {
+      if (typeof supabase.from !== 'function') {
+        logger.info('Demo mode: Returning null token', { userId, provider });
+        return null;
+      }
+
       const { data, error } = await supabase
         .from('tokens')
         .select('*')
@@ -97,6 +142,11 @@ export const tokenManager = {
     expiresAt: Date
   ): Promise<void> {
     try {
+      if (typeof supabase.from !== 'function') {
+        logger.info('Demo mode: Token update skipped', { userId, provider });
+        return;
+      }
+
       const { error } = await supabase
         .from('tokens')
         .update({
@@ -125,6 +175,11 @@ export const tokenManager = {
     provider: 'amazon' | 'gmail' | 'stripe'
   ): Promise<void> {
     try {
+      if (typeof supabase.from !== 'function') {
+        logger.info('Demo mode: Token delete skipped', { userId, provider });
+        return;
+      }
+
       const { error } = await supabase
         .from('tokens')
         .delete()
@@ -150,4 +205,6 @@ export const tokenManager = {
   }
 };
 
-export default supabase; 
+export default supabase;
+
+

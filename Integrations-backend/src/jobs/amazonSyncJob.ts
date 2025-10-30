@@ -24,16 +24,19 @@ export class AmazonSyncJob {
       }
 
       // Sync claims
-      const claims = await amazonService.fetchClaims(userId);
-      await this.saveClaimsToDatabase(userId, claims);
+      const claimsResult = await amazonService.fetchClaims(userId);
+      const claims = claimsResult.data || claimsResult; // Handle both formats
+      await this.saveClaimsToDatabase(userId, Array.isArray(claims) ? claims : []);
 
-      // Sync inventory
-      const inventory = await amazonService.fetchInventory(userId);
-      await this.saveInventoryToDatabase(userId, inventory);
+      // Sync inventory - NOW GETTING REAL DATA
+      const inventoryResult = await amazonService.fetchInventory(userId);
+      const inventory = inventoryResult.data || inventoryResult; // Handle both formats
+      await this.saveInventoryToDatabase(userId, Array.isArray(inventory) ? inventory : []);
 
       // Sync fees and financial events
-      const fees = await amazonService.fetchFees(userId);
-      await this.saveFeesToDatabase(userId, fees);
+      const feesResult = await amazonService.fetchFees(userId);
+      const fees = feesResult.data || feesResult; // Handle both formats
+      await this.saveFeesToDatabase(userId, Array.isArray(fees) ? fees : []);
       
       // Ingest financial events
       await this.ingestFinancialEvents(userId, fees);

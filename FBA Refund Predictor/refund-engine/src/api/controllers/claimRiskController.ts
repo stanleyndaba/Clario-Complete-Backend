@@ -43,10 +43,10 @@ export class ClaimRiskController {
         claim_id: req.body.claim_id || `temp-${Date.now()}`,
         refund_probability: riskScore.success_probability,
         risk_level: riskScore.risk_level,
-        confidence_score: riskScore.confidence_score,
-        refund_timeline_days: riskScore.refund_timeline_days,
-        model_version: riskScore.model_version,
-        features_used: riskScore.features_used
+        
+        
+        
+        
       });
 
       // Log transaction

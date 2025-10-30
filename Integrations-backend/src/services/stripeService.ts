@@ -58,10 +58,10 @@ export class StripeService {
 
   async initiateOAuth(userId: string): Promise<string> {
     try {
-      const authUrl = new URL(config.STRIPE_AUTH_URL);
-      authUrl.searchParams.set('client_id', config.STRIPE_CLIENT_ID);
+      const authUrl = new URL(config.STRIPE_AUTH_URL!);
+      authUrl.searchParams.set('client_id', config.STRIPE_CLIENT_ID!);
       authUrl.searchParams.set('response_type', 'code');
-      authUrl.searchParams.set('redirect_uri', config.STRIPE_REDIRECT_URI);
+      authUrl.searchParams.set('redirect_uri', config.STRIPE_REDIRECT_URI!);
       authUrl.searchParams.set('scope', 'read_write');
       authUrl.searchParams.set('state', userId);
 
@@ -78,9 +78,9 @@ export class StripeService {
       const tokenResponse = await axios.post(this.authUrl, {
         grant_type: 'authorization_code',
         code,
-        client_id: config.STRIPE_CLIENT_ID,
+        client_id: config.STRIPE_CLIENT_ID!,
         client_secret: config.STRIPE_CLIENT_SECRET,
-        redirect_uri: config.STRIPE_REDIRECT_URI
+        redirect_uri: config.STRIPE_REDIRECT_URI!
       });
 
       const tokenData: StripeOAuthResponse = tokenResponse.data;
@@ -110,7 +110,7 @@ export class StripeService {
       const response = await axios.post(this.authUrl, {
         grant_type: 'refresh_token',
         refresh_token: tokenData.refreshToken,
-        client_id: config.STRIPE_CLIENT_ID,
+        client_id: config.STRIPE_CLIENT_ID!,
         client_secret: config.STRIPE_CLIENT_SECRET
       });
 
@@ -152,22 +152,19 @@ export class StripeService {
   }
 
   // STUB FUNCTION: Connect Stripe account
-  async connectStripe(userId: string): Promise<{ success: boolean; message: string }> {
+  async connectStripe(userId: string): Promise<{ success: boolean; message: string; authUrl?: string }> {
     try {
       const isConnected = await tokenManager.isTokenValid(userId, 'stripe');
       
       if (isConnected) {
-        return { success: true, message: 'Stripe already connected' };
+        const authUrl = await this.initiateOAuth(userId);
+        return { success: true, authUrl: authUrl.toString(), message: 'Stripe already connected' };
       }
 
       const authUrl = await this.initiateOAuth(userId);
       
       logger.info('Stripe connection initiated', { userId });
-      return { 
-        success: true, 
-        message: 'Stripe connection initiated',
-        authUrl 
-      };
+      return { success: true, authUrl: authUrl.toString(), message: 'Stripe connection initiated' };
     } catch (error) {
       logger.error('Error connecting Stripe', { error, userId });
       throw createError('Failed to connect Stripe', 500);
@@ -333,3 +330,5 @@ export class StripeService {
 
 export const stripeService = new StripeService();
 export default stripeService; 
+
+

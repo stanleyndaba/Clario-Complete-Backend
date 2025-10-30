@@ -13,6 +13,7 @@ import os
 import tempfile
 
 from src.common.db_postgresql import DatabaseManager
+from src.evidence.matching_worker import evidence_matching_worker
 from src.api.schemas import ParserStatus, ParserJob, ParsedInvoiceData
 
 # Import ParsingResult
@@ -181,7 +182,15 @@ class ParserWorker:
                 # Save parsing results
                 await self._save_parsing_results(job_id, document_id, result)
                 await self._mark_job_completed(job_id, result.confidence)
-                logger.info(f"Job {job_id} completed successfully with confidence {result.confidence}")
+
+                # 🎯 STEP 5 → STEP 6: Trigger evidence matching
+                try:
+                    await self._trigger_evidence_matching(document_id)
+                    logger.info(
+                        f"Job {job_id} completed successfully with confidence {result.confidence}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Post-parse hook failed for job {job_id}: {e}")
             else:
                 # Handle parsing failure
                 await self._handle_parsing_failure(job_id, result.error)
@@ -249,6 +258,32 @@ class ParserWorker:
                     result.confidence,
                     document_id
                 ))
+
+    async def _trigger_evidence_matching(self, document_id: str) -> None:
+        """Trigger evidence matching job for the document's owner, if available."""
+        try:
+            # Look up the user_id for the document to scope matching
+            with self.db._get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT user_id
+                        FROM evidence_documents
+                        WHERE id = %s
+                        """,
+                        (document_id,),
+                    )
+                    row = cursor.fetchone()
+
+            user_id = str(row[0]) if row and row[0] else None
+            if not user_id:
+                return
+
+            # Create a matching job for this user; worker loop will process it
+            await evidence_matching_worker.create_matching_job(user_id)
+        except Exception as e:
+            # Best-effort hook; log and continue
+            logger.warning(f"Failed to trigger evidence matching for document {document_id}: {e}")
                 
                 # Save detailed results
                 cursor.execute("""
@@ -401,3 +436,4 @@ class ParserWorker:
 
 # Global parser worker instance
 parser_worker = ParserWorker()
+
