@@ -8,13 +8,14 @@ from typing import Dict, Any, Optional
 import logging
 
 from .advanced_detector_service import advanced_detector_service
+from src.api.auth_middleware import get_current_user
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ml", tags=["ml-detection"])
 
 @router.post("/detect/advanced")
-def advanced_detect_claim(claim_data: Dict[str, Any]):
+def advanced_detect_claim(claim_data: Dict[str, Any], user: dict = Depends(get_current_user)):
     """Advanced multi-stage claim detection"""
     try:
         # Ensure service is initialized
@@ -54,7 +55,7 @@ def get_ml_status():
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/retrain")
-def retrain_model(training_data: Optional[list] = None):
+def retrain_model(training_data: Optional[list] = None, user: dict = Depends(get_current_user)):
     """Retrain the advanced detection model"""
     try:
         # Ensure service is initialized
@@ -77,7 +78,7 @@ def retrain_model(training_data: Optional[list] = None):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/initialize")
-def initialize_ml_service():
+def initialize_ml_service(user: dict = Depends(get_current_user)):
     """Initialize the ML detection service"""
     try:
         success = advanced_detector_service.initialize()
