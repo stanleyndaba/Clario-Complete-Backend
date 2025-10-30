@@ -81,10 +81,12 @@ async def lifespan(app: FastAPI):
     logger.info("Orchestrator shutdown complete")
 
 app = FastAPI(
-    title="FBA Claims Pipeline Orchestrator",
+    title="Opside Integrations API",
     description="Production-ready orchestrator for Claim Detection, Evidence Validation, and Auto-Claims Generation",
-    version="2.0.0",
-    lifespan=lifespan
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
 # Enable CORS for frontend integration (env-driven, supports multiple origins)
@@ -198,23 +200,20 @@ async def health():
 def root():
     """Root endpoint with service information"""
     return {
-        "service": "FBA Claims Pipeline Orchestrator",
-        "version": "2.0.0",
-        "description": "Production-ready microservices orchestrator",
-        "endpoints": {
-            "auth": "/api/auth",
-            "integrations": "/api/integrations", 
-            "detections": "/api/detections",
-            "recoveries": "/api/recoveries",
-            "evidence": "/api/documents",
-            "evidence-sources": "/api/v1/integrations/evidence/sources",
-            "parser": "/api/v1/evidence/parse",
-            "evidence-matching": "/api/internal/evidence",
-            "zero-effort-evidence": "/api/internal/events",
-            "metrics": "/api/metrics",
-            "health": "/health",
-            "services": "/api/services/status"
-        }
+        "message": "Opside Integrations API",
+        "version": "1.0.0"
+    }
+
+@app.get("/integrations")
+def integrations():
+    """Simple integrations endpoint"""
+    return {
+        "status": "ok",
+        "integrations": [
+            {"name": "amazon", "status": "available"},
+            {"name": "gmail", "status": "available"},
+            {"name": "stripe", "status": "available"}
+        ]
     }
 
 @app.get("/api/services/status")
