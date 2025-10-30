@@ -153,6 +153,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Define main endpoints before including routers
+@app.get("/")
+def root():
+    """Root endpoint with service information"""
+    return {
+        "message": "Opside Integrations API",
+        "version": "1.0.0"
+    }
+
+@app.get("/integrations")
+def integrations():
+    """Simple integrations endpoint"""
+    return {
+        "status": "ok",
+        "integrations": [
+            {"name": "amazon", "status": "available"},
+            {"name": "gmail", "status": "available"},
+            {"name": "stripe", "status": "available"}
+        ]
+    }
+
+@app.get("/health")
+async def health():
+    """Health check endpoint with service status"""
+    services_status = service_directory.get_all_services_status()
+    healthy_services = sum(1 for service in services_status.values() if service["is_healthy"])
+    total_services = len(services_status)
+    
+    return {
+        "status": "healthy" if healthy_services == total_services else "degraded",
+        "service": "FBA Claims Pipeline Orchestrator",
+        "version": "2.0.0",
+        "services": {
+            "healthy": healthy_services,
+            "total": total_services,
+            "status": services_status
+        }
+    }
+
 # Include routers
 app.include_router(detect_router)
 app.include_router(filing_router)
@@ -178,43 +217,7 @@ app.include_router(security_router, tags=["security"])
 app.include_router(analytics_router, tags=["analytics"])
 app.include_router(feature_flags_router, tags=["feature-flags"])
 
-@app.get("/health")
-async def health():
-    """Health check endpoint with service status"""
-    services_status = service_directory.get_all_services_status()
-    healthy_services = sum(1 for service in services_status.values() if service["is_healthy"])
-    total_services = len(services_status)
-    
-    return {
-        "status": "healthy" if healthy_services == total_services else "degraded",
-        "service": "FBA Claims Pipeline Orchestrator",
-        "version": "2.0.0",
-        "services": {
-            "healthy": healthy_services,
-            "total": total_services,
-            "status": services_status
-        }
-    }
 
-@app.get("/")
-def root():
-    """Root endpoint with service information"""
-    return {
-        "message": "Opside Integrations API",
-        "version": "1.0.0"
-    }
-
-@app.get("/integrations")
-def integrations():
-    """Simple integrations endpoint"""
-    return {
-        "status": "ok",
-        "integrations": [
-            {"name": "amazon", "status": "available"},
-            {"name": "gmail", "status": "available"},
-            {"name": "stripe", "status": "available"}
-        ]
-    }
 
 @app.get("/api/services/status")
 async def services_status():
