@@ -40,23 +40,20 @@
 
 ## 🔧 Deployment Instructions for Missing Services
 
-### **Deploy Service #1: Stripe Payments Service**
+> **Note**: These 2 services will be deployed on **Railway**, not Render. See `RAILWAY_DEPLOYMENT_GUIDE.md` for detailed steps.
 
-#### Step 1: Prepare the Service
-```bash
-cd stripe-payments
-npm install
-npm run build
-```
+### **Deploy Service #1: Stripe Payments Service (Railway)**
 
-#### Step 2: Create Render Web Service
-1. Go to [Render Dashboard](https://dashboard.render.com)
-2. Click **"New +"** → **"Web Service"**
-3. Connect your GitHub repository: `stanleyndaba/Clario-Complete-Backend`
-4. Configure:
+#### Step 1: Create Railway Project
+1. Go to [Railway Dashboard](https://railway.app/dashboard)
+2. Click **"New Project"** → **"Deploy from GitHub repo"**
+3. Choose repository: `stanleyndaba/Clario-Complete-Backend`
+
+#### Step 2: Create Stripe Service
+1. Click **"New Service"** → **"GitHub Repo"**
+2. Configure:
    - **Name**: `opside-stripe-payments`
    - **Root Directory**: `stripe-payments`
-   - **Environment**: `Node`
    - **Build Command**: `npm install && npm run build`
    - **Start Command**: `npm start`
 
@@ -100,23 +97,13 @@ npm run webhook:register
 
 ---
 
-### **Deploy Service #2: Cost Documentation Service**
+### **Deploy Service #2: Cost Documentation Service (Railway)**
 
-#### Step 1: Prepare the Service
-```bash
-cd "FBA Refund Predictor/cost-documentation-module"
-npm install
-npm run build
-```
-
-#### Step 2: Create Render Web Service
-1. Go to [Render Dashboard](https://dashboard.render.com)
-2. Click **"New +"** → **"Web Service"**
-3. Connect your GitHub repository: `stanleyndaba/Clario-Complete-Backend`
-4. Configure:
+#### Step 1: Create Second Service
+1. In same Railway project, click **"New Service"** → **"GitHub Repo"**
+2. Configure:
    - **Name**: `opside-cost-documentation`
    - **Root Directory**: `FBA Refund Predictor/cost-documentation-module`
-   - **Environment**: `Node`
    - **Build Command**: `npm install && npm run build`
    - **Start Command**: `npm start`
 
@@ -166,9 +153,9 @@ After deploying the 2 missing services, update the **Orchestrator** environment 
 
 ### On Render Dashboard → Orchestrator Service → Environment:
 ```env
-# Update these URLs
-STRIPE_SERVICE_URL=https://opside-stripe-payments.onrender.com
-COST_DOC_SERVICE_URL=https://opside-cost-documentation.onrender.com
+# Update these URLs (Railway services)
+STRIPE_SERVICE_URL=https://opside-stripe-payments-production.up.railway.app
+COST_DOC_SERVICE_URL=https://opside-cost-documentation-production.up.railway.app
 
 # Keep existing URLs
 INTEGRATIONS_URL=https://clario-complete-backend-mvak.onrender.com
@@ -182,11 +169,11 @@ MCDE_URL=https://clario-complete-backend-yjjr.onrender.com
 
 ### 1. Test Service Health Checks
 ```bash
-# Stripe Payments
-curl https://opside-stripe-payments.onrender.com/health
+# Stripe Payments (Railway)
+curl https://opside-stripe-payments-production.up.railway.app/health
 
-# Cost Documentation
-curl https://opside-cost-documentation.onrender.com/health
+# Cost Documentation (Railway)
+curl https://opside-cost-documentation-production.up.railway.app/health
 
 # Orchestrator Service Status
 curl https://clario-complete-backend-y5cd.onrender.com/api/services/status
@@ -264,11 +251,12 @@ Frontend (Vercel)
     ↓
 Orchestrator (Render) ← Routes to all services
     ↓
-├── Integrations Backend (Amazon OAuth, Sync)
-├── Refund Engine (Claims, ML Detection)
-├── MCDE (Evidence Validation)
-├── Stripe Payments (Commission Charging) ✅ NEW
-└── Cost Documentation (PDF Generation) ✅ NEW
+├── Integrations Backend (Render) - Amazon OAuth, Sync
+├── Refund Engine (Render) - Claims, ML Detection
+├── MCDE (Render) - Evidence Validation
+├── Backend (Render) - Core API
+├── Stripe Payments (Railway) ✅ NEW - Commission Charging
+└── Cost Documentation (Railway) ✅ NEW - PDF Generation
 ```
 
 ### Full Feature Set
