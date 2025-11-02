@@ -30,7 +30,7 @@ import os
 from .api.auth_sandbox import router as auth_router
 # from .api.integrations import router as integrations_router
 # from .api.detections import router as detections_router
-# from .api.recoveries import router as recoveries_router
+from .api.recoveries import router as recoveries_router
 # from .api.evidence import router as evidence_router
 # from .api.evidence_sources import router as evidence_sources_router
 # from .api.parser import router as parser_router
@@ -189,7 +189,7 @@ async def health():
 app.include_router(auth_router, tags=["auth"])
 # app.include_router(integrations_router, tags=["integrations"])
 # app.include_router(detections_router, tags=["detections"])
-# app.include_router(recoveries_router, tags=["recoveries"])
+app.include_router(recoveries_router, tags=["recoveries"])
 # app.include_router(evidence_router, tags=["evidence"])
 # app.include_router(evidence_sources_router, tags=["evidence-sources"])
 # app.include_router(parser_router, tags=["parser"])
@@ -303,16 +303,9 @@ async def start_amazon_sync():
     # Redirect to existing sync start endpoint
     return RedirectResponse("/api/sync/start")
 
-# Recoveries Aliases
-@app.post("/api/recoveries/{id}/submit")
-async def submit_recovery(id: str):
-    # Redirect to existing claims submit endpoint
-    return RedirectResponse(f"/api/claims/{id}/submit")
-
-@app.post("/api/recoveries/{id}/resubmit")
-async def resubmit_recovery(id: str):
-    # Reuse the same submit endpoint
-    return RedirectResponse(f"/api/claims/{id}/submit")
+# Recoveries Aliases - These endpoints are now in recoveries_router
+# The redirect was breaking authentication (403 errors)
+# Now using the actual router endpoints which properly handle auth
 
 # Evidence Aliases
 @app.post("/api/evidence/auto-collect")

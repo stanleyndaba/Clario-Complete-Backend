@@ -115,11 +115,12 @@ async def get_recovery_status(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/api/claims/{id}/submit", response_model=ClaimSubmissionResponse)
+@router.post("/api/recoveries/{id}/submit", response_model=ClaimSubmissionResponse)
 async def submit_claim(
     id: str,
     user: dict = Depends(get_current_user)
 ):
-    """Submit claim to Amazon"""
+    """Submit claim to Amazon - supports both /claims/{id}/submit and /recoveries/{id}/submit"""
     
     try:
         user_id = user["user_id"]
