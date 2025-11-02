@@ -38,20 +38,30 @@ class IntegrationsClient:
     async def connect_integration(self, user_id: str, integration_type: str) -> Dict[str, Any]:
         """Connect to an integration"""
         try:
-            response = await service_directory.call_service(
-                self.service_name,
-                "POST",
-                "/api/v1/integrations",
-                json={
-                    "userId": user_id,
-                    "type": integration_type
-                }
-            )
+            # For Amazon, call the OAuth start endpoint
+            if integration_type == "amazon":
+                response = await service_directory.call_service(
+                    self.service_name,
+                    "GET",  # Amazon OAuth start is a GET endpoint
+                    "/api/v1/integrations/amazon/auth/start",  # Correct endpoint
+                )
+            else:
+                # For other integrations, try POST endpoint
+                response = await service_directory.call_service(
+                    self.service_name,
+                    "POST",
+                    f"/api/v1/integrations/{integration_type}/connect",
+                    json={
+                        "userId": user_id
+                    }
+                )
             
             if response and response.status_code == 200:
                 return response.json()
             else:
-                return {"error": "Failed to connect integration", "status_code": response.status_code if response else None}
+                error_msg = f"Failed to connect integration. Status: {response.status_code if response else 'No response'}"
+                logger.error(error_msg)
+                return {"error": error_msg, "status_code": response.status_code if response else None}
                 
         except Exception as e:
             logger.error(f"Integration connection failed: {e}")
