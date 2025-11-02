@@ -3,12 +3,13 @@ Detections API Router
 Handles ML-powered claim detection operations
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, Body
 from typing import Optional
+from datetime import datetime
 import logging
 from src.api.auth_middleware import get_current_user
 from src.api.schemas import DetectionJob, DetectionResult
-from src.services.refund_engine_client import refund_engine_client
+from src.services.integrations_client import integrations_client
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +17,14 @@ router = APIRouter()
 
 @router.post("/api/detections/run", response_model=DetectionJob)
 async def run_detection(
+    body: dict = Body(None),
     user: dict = Depends(get_current_user)
 ):
     """
     Run ML-powered claim detection for the authenticated user
     
     Args:
+        body: Request body with syncId and optional triggerType
         user: Authenticated user information
         
     Returns:
@@ -29,25 +32,39 @@ async def run_detection(
     """
     try:
         user_id = user["user_id"]
-        logger.info(f"Starting detection for user {user_id}")
+        sync_id = body.get("syncId") if body else None
+        trigger_type = body.get("triggerType", "inventory") if body else "inventory"
         
-        # Call refund engine service to run detection
-        result = await refund_engine_client.get_discrepancies(user_id)
+        logger.info(f"Starting detection for user {user_id}, syncId={sync_id}")
         
-        if "error" in result:
-            logger.error(f"Detection failed: {result['error']}")
+        if not sync_id:
+            # Try to get latest sync or create one
+            logger.warning(f"No syncId provided, attempting to start sync first")
+            sync_result = await integrations_client.start_sync(user_id, "inventory")
+            if "error" in sync_result:
+                raise HTTPException(status_code=400, detail="syncId is required. Please start a sync first.")
+            sync_id = sync_result.get("syncId") or sync_result.get("id")
+        
+        # Call integrations backend detection service
+        import time
+        result = await integrations_client.run_detection(user_id, sync_id, trigger_type)
+        
+        if "error" in result or not result.get("success"):
+            error_msg = result.get("error", {}).get("message") if isinstance(result.get("error"), dict) else result.get("error", "Unknown error")
+            logger.error(f"Detection failed: {error_msg}")
             raise HTTPException(
                 status_code=502,
-                detail=f"Detection service error: {result['error']}"
+                detail=f"Detection service error: {error_msg}"
             )
         
+        job_data = result.get("job", {})
         # Create detection job response
         detection_job = DetectionJob(
-            id=result.get("detection_id", "det_" + str(int(logging.time.time()))),
+            id=job_data.get("sync_id", sync_id),
             status="processing",
-            started_at=result.get("started_at", "2025-01-07T00:00:00Z"),
-            completed_at=result.get("completed_at"),
-            estimated_completion=result.get("estimated_completion"),
+            started_at=datetime.utcnow().isoformat() + "Z",
+            completed_at=None,
+            estimated_completion=None,
             message="Detection job started successfully"
         )
         
@@ -81,28 +98,30 @@ async def get_detection_status(
         user_id = user["user_id"]
         logger.info(f"Getting detection status for {detectionId}, user {user_id}")
         
-        # Call refund engine service to get detection status
-        result = await refund_engine_client.get_claim_stats(user_id)
+        # Call integrations backend to get detection status
+        result = await integrations_client.get_detection_status(detectionId, user_id)
         
-        if "error" in result:
-            logger.error(f"Get detection status failed: {result['error']}")
+        if "error" in result or not result.get("success"):
+            error_msg = result.get("error", {}).get("message") if isinstance(result.get("error"), dict) else result.get("error", "Unknown error")
+            logger.error(f"Get detection status failed: {error_msg}")
             raise HTTPException(
                 status_code=502,
-                detail=f"Detection service error: {result['error']}"
+                detail=f"Detection service error: {error_msg}"
             )
         
+        results = result.get("results", [])
         # Create detection result response
         detection_result = DetectionResult(
             id=detectionId,
-            status=result.get("status", "completed"),
-            started_at=result.get("started_at", "2025-01-07T00:00:00Z"),
-            completed_at=result.get("completed_at", "2025-01-07T00:05:00Z"),
-            claims_found=result.get("total_claims", 0),
-            total_amount=result.get("total_amount", 0.0),
-            high_confidence_claims=result.get("high_confidence_claims", 0),
-            medium_confidence_claims=result.get("medium_confidence_claims", 0),
-            low_confidence_claims=result.get("low_confidence_claims", 0),
-            processing_time_seconds=result.get("processing_time_seconds", 300)
+            status="completed" if results else "processing",
+            started_at=datetime.utcnow().isoformat() + "Z",
+            completed_at=datetime.utcnow().isoformat() + "Z" if results else None,
+            claims_found=len(results),
+            total_amount=sum(float(r.get("amount", 0)) for r in results),
+            high_confidence_claims=sum(1 for r in results if r.get("confidence", 0) > 0.8),
+            medium_confidence_claims=sum(1 for r in results if 0.5 <= r.get("confidence", 0) <= 0.8),
+            low_confidence_claims=sum(1 for r in results if r.get("confidence", 0) < 0.5),
+            processing_time_seconds=300
         )
         
         return detection_result

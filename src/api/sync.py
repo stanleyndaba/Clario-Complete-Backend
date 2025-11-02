@@ -37,8 +37,27 @@ async def start_sync(
         # Call integrations service to start sync
         sync_job = await integrations_client.start_sync(user_id)
         
-        # Start background task for sync monitoring
-        background_tasks.add_task(monitor_sync_progress, sync_job["id"], user_id)
+        if "error" in sync_job:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Sync service error: {sync_job['error']}"
+            )
+        
+        # Get sync ID from response
+        sync_id = sync_job.get("syncId") or sync_job.get("id") or sync_job.get("job", {}).get("id")
+        
+        if sync_id:
+            # Start background task for sync monitoring
+            background_tasks.add_task(monitor_sync_progress, sync_id, user_id)
+        
+        # Ensure response has required fields
+        if "id" not in sync_job:
+            sync_job["id"] = sync_id or "unknown"
+        if "status" not in sync_job:
+            sync_job["status"] = "processing"
+        if "started_at" not in sync_job:
+            from datetime import datetime
+            sync_job["started_at"] = datetime.utcnow().isoformat() + "Z"
         
         return SyncJob(**sync_job)
         

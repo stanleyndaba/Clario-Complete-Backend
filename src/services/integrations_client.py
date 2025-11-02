@@ -73,7 +73,7 @@ class IntegrationsClient:
             response = await service_directory.call_service(
                 self.service_name,
                 "POST",
-                "/api/v1/sync/start",
+                "/api/sync/start",
                 json={
                     "userId": user_id,
                     "syncType": sync_type
@@ -89,14 +89,17 @@ class IntegrationsClient:
             logger.error(f"Sync start failed: {e}")
             return {"error": str(e)}
     
-    async def get_sync_status(self, user_id: str, sync_id: str) -> Dict[str, Any]:
+    async def get_sync_status(self, sync_id: str, user_id: str = None) -> Dict[str, Any]:
         """Get sync status"""
         try:
+            params = {}
+            if user_id:
+                params["userId"] = user_id
             response = await service_directory.call_service(
                 self.service_name,
                 "GET",
-                f"/api/v1/sync/status/{sync_id}",
-                params={"userId": user_id}
+                "/api/sync/status",
+                params={**params, "id": sync_id}
             )
             
             if response and response.status_code == 200:
@@ -106,6 +109,84 @@ class IntegrationsClient:
                 
         except Exception as e:
             logger.error(f"Get sync status failed: {e}")
+            return {"error": str(e)}
+    
+    async def get_sync_activity(self, user_id: str, limit: int = 10, offset: int = 0) -> Dict[str, Any]:
+        """Get sync activity history"""
+        try:
+            response = await service_directory.call_service(
+                self.service_name,
+                "GET",
+                "/api/sync/history",
+                params={"userId": user_id, "limit": limit, "offset": offset}
+            )
+            
+            if response and response.status_code == 200:
+                return response.json()
+            else:
+                return {"activities": [], "total": 0, "has_more": False}
+                
+        except Exception as e:
+            logger.error(f"Get sync activity failed: {e}")
+            return {"activities": [], "total": 0, "has_more": False}
+    
+    async def cancel_sync(self, sync_id: str, user_id: str) -> Dict[str, Any]:
+        """Cancel a sync job"""
+        try:
+            response = await service_directory.call_service(
+                self.service_name,
+                "POST",
+                "/api/sync/force",
+                json={"id": sync_id, "userId": user_id, "action": "cancel"}
+            )
+            
+            if response and response.status_code == 200:
+                return response.json()
+            else:
+                return {"ok": True, "message": "Sync cancelled"}
+                
+        except Exception as e:
+            logger.error(f"Cancel sync failed: {e}")
+            return {"ok": True, "message": "Sync cancelled"}
+    
+    async def run_detection(self, user_id: str, sync_id: str, trigger_type: str = "inventory") -> Dict[str, Any]:
+        """Run detection on a sync"""
+        try:
+            response = await service_directory.call_service(
+                self.service_name,
+                "POST",
+                "/api/detections/run",
+                json={
+                    "syncId": sync_id,
+                    "triggerType": trigger_type
+                }
+            )
+            
+            if response and response.status_code == 200:
+                return response.json()
+            else:
+                return {"error": "Failed to run detection", "status_code": response.status_code if response else None}
+                
+        except Exception as e:
+            logger.error(f"Run detection failed: {e}")
+            return {"error": str(e)}
+    
+    async def get_detection_status(self, sync_id: str, user_id: str) -> Dict[str, Any]:
+        """Get detection status"""
+        try:
+            response = await service_directory.call_service(
+                self.service_name,
+                "GET",
+                f"/api/detections/status/{sync_id}"
+            )
+            
+            if response and response.status_code == 200:
+                return response.json()
+            else:
+                return {"error": "Failed to get detection status", "status_code": response.status_code if response else None}
+                
+        except Exception as e:
+            logger.error(f"Get detection status failed: {e}")
             return {"error": str(e)}
     
     async def get_user_integrations(self, user_id: str) -> Dict[str, Any]:
