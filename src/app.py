@@ -57,23 +57,31 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     # Startup
-    logger.info("Starting Opside FBA Claims Pipeline Orchestrator...")
+    logger.info("Starting Opside Python API (Consolidated Services)...")
     
-    # Start service health monitoring
-    health_task = asyncio.create_task(service_directory.start_health_monitoring())
+    # Note: All Python services are now consolidated internally
+    # Only start health monitoring if there are external services to check
+    if service_directory.services:
+        health_task = asyncio.create_task(service_directory.start_health_monitoring())
+        # Initial health check
+        await service_directory.check_all_services()
+    else:
+        logger.info("All services consolidated - no external health checks needed")
     
-    # Initial health check
-    await service_directory.check_all_services()
-    
-    logger.info("Orchestrator started successfully")
+    logger.info("Python API started successfully")
     
     yield
     
     # Shutdown
-    logger.info("Shutting down orchestrator...")
-    health_task.cancel()
+    logger.info("Shutting down Python API...")
+    if service_directory.services:
+        health_task.cancel()
+        try:
+            await health_task
+        except asyncio.CancelledError:
+            pass
     await service_directory.close()
-    logger.info("Orchestrator shutdown complete")
+    logger.info("Python API shutdown complete")
 
 app = FastAPI(
     title="Opside Integrations API",

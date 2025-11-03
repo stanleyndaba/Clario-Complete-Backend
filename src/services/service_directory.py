@@ -37,34 +37,26 @@ class ServiceDirectory:
         self._register_services()
 
     def _register_services(self):
-        """Register all microservices with their endpoints"""
-        self.services = {
-            "integrations": ServiceInfo(
-                name="integrations-backend",
-                base_url=settings.INTEGRATIONS_URL,
-                health_endpoint="/health"
-            ),
-            "stripe": ServiceInfo(
-                name="stripe-payments",
-                base_url=settings.STRIPE_SERVICE_URL,
-                health_endpoint="/"  # Will test multiple endpoints
-            ),
-            "cost-docs": ServiceInfo(
-                name="cost-documentation",
-                base_url=settings.COST_DOC_SERVICE_URL,
-                health_endpoint="/"
-            ),
-            "refund-engine": ServiceInfo(
-                name="refund-engine",
-                base_url=settings.REFUND_ENGINE_URL,
-                health_endpoint="/"
-            ),
-            "mcde": ServiceInfo(
-                name="mcde",
-                base_url=settings.MCDE_URL,
-                health_endpoint="/"
-            )
-        }
+        """Register external services (all Python services are now consolidated internally)"""
+        # Only register the Node.js backend as an external service
+        # All Python services (mcde, claim-detector, evidence-engine, test-service) 
+        # are now consolidated into this same service
+        # All Node.js services (stripe, cost-docs, refund-engine, inventory-sync)
+        # are consolidated into opside-node-api
+        self.services = {}
+        
+        # Only register Node.js backend if it exists as separate service
+        # (If using consolidated deployment, this will be empty)
+        if hasattr(settings, 'INTEGRATIONS_URL') and settings.INTEGRATIONS_URL:
+            # Check if it's a different URL (external service)
+            # If it's localhost or same domain, skip it (consolidated)
+            integrations_url = settings.INTEGRATIONS_URL
+            if not integrations_url.startswith(('http://localhost', 'https://localhost', 'http://127.0.0.1')):
+                self.services["integrations"] = ServiceInfo(
+                    name="opside-node-api",
+                    base_url=integrations_url,
+                    health_endpoint="/health"
+                )
 
     async def check_service_health(self, service_name: str) -> bool:
         """Check health of a specific service with multiple endpoint attempts"""
