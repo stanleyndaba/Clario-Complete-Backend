@@ -205,8 +205,46 @@ app.include_router(test_service_router)
 
 @app.get("/api/services/status")
 async def services_status():
-    """Get status of all microservices"""
-    return service_directory.get_all_services_status()
+    """Get status of services (consolidated architecture)"""
+    # All Python services are now consolidated internally
+    consolidated_services = {
+        "mcde": {
+            "name": "MCDE",
+            "status": "internal",
+            "consolidated": True,
+            "endpoint": "/api/v1/mcde"
+        },
+        "claim-detector": {
+            "name": "Claim Detector",
+            "status": "internal",
+            "consolidated": True,
+            "endpoint": "/api/v1/claim-detector"
+        },
+        "evidence-engine": {
+            "name": "Evidence Engine",
+            "status": "internal",
+            "consolidated": True,
+            "endpoint": "/api/v1/evidence-engine"
+        },
+        "test-service": {
+            "name": "Test Service",
+            "status": "internal",
+            "consolidated": True,
+            "endpoint": "/api/v1/tests"
+        }
+    }
+    
+    # Include external services if any (e.g., Node.js backend)
+    external_services = service_directory.get_all_services_status()
+    
+    return {
+        "consolidated": True,
+        "architecture": "monolithic",
+        "internal_services": consolidated_services,
+        "external_services": external_services,
+        "total_internal": len(consolidated_services),
+        "total_external": len(external_services)
+    }
 
 # Protected endpoints require authentication
 from .api.auth_middleware import get_current_user
