@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi import Request
 from contextlib import asynccontextmanager
+from datetime import datetime
 import asyncio
 import logging
 import os
@@ -166,20 +167,12 @@ def integrations():
 
 @app.get("/health")
 async def health():
-    """Health check endpoint with service status"""
-    services_status = service_directory.get_all_services_status()
-    healthy_services = sum(1 for service in services_status.values() if service["is_healthy"])
-    total_services = len(services_status)
-    
+    """Simple health check endpoint for Render and monitoring"""
     return {
-        "status": "healthy" if healthy_services == total_services else "degraded",
-        "service": "FBA Claims Pipeline Orchestrator",
+        "status": "ok",
+        "service": "Opside Python API",
         "version": "2.0.0",
-        "services": {
-            "healthy": healthy_services,
-            "total": total_services,
-            "status": services_status
-        }
+        "timestamp": datetime.utcnow().isoformat()
     }
 
 # Consolidated routers - all services merged into main-api
