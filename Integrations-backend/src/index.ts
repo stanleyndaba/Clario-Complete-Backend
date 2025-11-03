@@ -40,7 +40,15 @@ app.use(helmet({
   contentSecurityPolicy: false
 }));
 app.use(cors({
-  origin: ['https://clario-refunds-frontend.onrender.com', 'https://clario-complete-backend-y5cd.onrender.com', 'http://localhost:8080', 'http://localhost:5173'],
+  origin: [
+    'https://opside-complete-frontend-4poy2f2lh-mvelo-ndabas-projects.vercel.app',
+    'https://opside-complete-frontend-kqvxrzg4s-mvelo-ndabas-projects.vercel.app',
+    'https://clario-refunds-frontend.onrender.com',
+    'https://opside-complete-frontend.onrender.com',
+    'http://localhost:8080',
+    'http://localhost:5173',
+    'http://localhost:3000'
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
