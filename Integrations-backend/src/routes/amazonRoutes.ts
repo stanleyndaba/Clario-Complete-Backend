@@ -16,26 +16,9 @@ const wrap = (fn: any) => async (req: any, res: any, next: any) => {
   try { await fn(req, res, next); } catch (err) { logger.error('Amazon route error', { err }); next(err); }
 };
 
-// Root Amazon endpoint - redirect to auth/start for backward compatibility
-router.get('/', (req, res) => {
-  // If it's a connect request, redirect to auth/start
-  if (req.query.connect || req.query.action === 'connect') {
-    return res.redirect('/api/v1/integrations/amazon/auth/start');
-  }
-  // Otherwise return endpoint info
-  res.json({
-    success: true,
-    message: 'Amazon integration endpoints',
-    endpoints: {
-      connect: '/api/v1/integrations/amazon/auth/start',
-      callback: '/api/v1/integrations/amazon/auth/callback',
-      sync: '/api/v1/integrations/amazon/sync',
-      claims: '/api/v1/integrations/amazon/claims',
-      inventory: '/api/v1/integrations/amazon/inventory',
-      disconnect: '/api/v1/integrations/amazon/disconnect'
-    }
-  });
-});
+// Root Amazon endpoint - start OAuth flow directly (for backward compatibility)
+// This handles requests to /api/v1/integrations/amazon
+router.get('/', wrap(startAmazonOAuth));
 
 router.get('/auth/start', wrap(startAmazonOAuth));
 router.get('/auth/callback', wrap(handleAmazonCallback));

@@ -97,6 +97,10 @@ app.get('/api/status', (_, res) => {
 app.use('/api/v1/integrations/amazon', amazonRoutes);
 // Backward-compatible mount without version prefix
 app.use('/api/integrations/amazon', amazonRoutes);
+// Legacy connect endpoint (for frontend compatibility)
+app.get('/api/v1/integrations/connectamazon', (req, res) => {
+  res.redirect(302, '/api/v1/integrations/amazon/auth/start');
+});
 app.use('/api/v1/integrations/gmail', gmailRoutes);
 app.use('/api/v1/integrations/stripe', stripeRoutes);
 app.use('/api/sync', syncRoutes);
