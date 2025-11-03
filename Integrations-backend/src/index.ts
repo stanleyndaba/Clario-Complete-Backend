@@ -25,6 +25,12 @@ import autoclaimRoutes from './routes/autoclaimRoutes';
 import internalEventsRoutes from './routes/internalEventsRoutes';
 import stripeWebhookRoutes from './routes/stripeWebhookRoutes';
 
+// Consolidated service routes (merged from separate microservices)
+import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
+import consolidatedCostDocsRoutes from './routes/consolidated/costDocsRoutes';
+import consolidatedRefundEngineRoutes from './routes/consolidated/refundEngineRoutes';
+import consolidatedInventorySyncRoutes from './routes/consolidated/inventorySyncRoutes';
+
 const app = express();
 const server = createServer(app);
 
@@ -98,6 +104,12 @@ app.use('/api/disputes', disputeRoutes);
 app.use('/api/autoclaim', autoclaimRoutes);
 app.use('/api/internal-events', internalEventsRoutes);
 app.use('/api/stripe-webhook', stripeWebhookRoutes);
+
+// Consolidated service routes (merged from separate microservices)
+app.use('/api/v1/stripe-payments', consolidatedStripeRoutes);
+app.use('/api/v1/cost-docs', consolidatedCostDocsRoutes);
+app.use('/api/v1/refund-engine', consolidatedRefundEngineRoutes);
+app.use('/api/v1/inventory-sync', consolidatedInventorySyncRoutes);
 
 // Root endpoint
 app.get('/', (_, res) => {

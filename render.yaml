@@ -1,0 +1,92 @@
+# Render Deployment Configuration - Consolidated Services
+# 2 services instead of 10 for cost optimization
+
+services:
+  # Python Monolith - All Python services consolidated
+  - type: web
+    name: opside-python-api
+    env: python
+    buildCommand: pip install -r requirements-consolidated.txt
+    startCommand: uvicorn src.app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: CORS_ALLOW_ORIGINS
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: AMAZON_CLIENT_ID
+        sync: false
+      - key: AMAZON_CLIENT_SECRET
+        sync: false
+      - key: AMAZON_SPAPI_REFRESH_TOKEN
+        sync: false
+      - key: AMAZON_MARKETPLACE_ID
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: S3_BUCKET_NAME
+        sync: false
+    healthCheckPath: /health
+    plan: free  # Start with free tier
+
+  # Node.js Monolith - All Node.js services consolidated
+  - type: web
+    name: opside-node-api
+    env: node
+    buildCommand: cd Integrations-backend && npm install && npm run build
+    startCommand: cd Integrations-backend && npm start
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: CORS_ALLOW_ORIGINS
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: AMAZON_CLIENT_ID
+        sync: false
+      - key: AMAZON_CLIENT_SECRET
+        sync: false
+      - key: AMAZON_SPAPI_REFRESH_TOKEN
+        sync: false
+      - key: AMAZON_MARKETPLACE_ID
+        sync: false
+      - key: AMAZON_SPAPI_BASE_URL
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: S3_BUCKET_NAME
+        sync: false
+    healthCheckPath: /health
+    plan: free  # Start with free tier
+

@@ -182,28 +182,23 @@ async def health():
         }
     }
 
-# Temporarily comment out all router includes to debug
-# app.include_router(detect_router)
-# app.include_router(filing_router)
-# app.include_router(ml_router)
+# Consolidated routers - all services merged into main-api
+from .api.consolidated.mcde_router import mcde_router
+from .api.consolidated.claim_detector_router import claim_detector_router
+from .api.consolidated.evidence_engine_router import evidence_engine_router
+from .api.consolidated.test_service_router import test_service_router
+
+# Existing routers
 app.include_router(auth_router, tags=["auth"])
-# app.include_router(integrations_router, tags=["integrations"])
 app.include_router(detections_router, tags=["detections"])
 app.include_router(recoveries_router, tags=["recoveries"])
-# app.include_router(evidence_router, tags=["evidence"])
-# app.include_router(evidence_sources_router, tags=["evidence-sources"])
-# app.include_router(parser_router, tags=["parser"])
-# app.include_router(evidence_matching_router, tags=["evidence-matching"])
-# app.include_router(zero_effort_evidence_router, tags=["zero-effort-evidence"])
-# app.include_router(metrics_router, tags=["metrics"])
 app.include_router(sync_router, tags=["sync"])
-# app.include_router(websocket_router, tags=["websocket"])
-# app.include_router(evidence_prompts_router, tags=["evidence-prompts"])
-# app.include_router(websocket_endpoints_router, tags=["websocket-endpoints"])
-# app.include_router(dispute_submissions_router, tags=["dispute-submissions"])
-# app.include_router(security_router, tags=["security"])
-# app.include_router(analytics_router, tags=["analytics"])
-# app.include_router(feature_flags_router, tags=["feature-flags"])
+
+# Consolidated service routers (merged from separate microservices)
+app.include_router(mcde_router)
+app.include_router(claim_detector_router)
+app.include_router(evidence_engine_router)
+app.include_router(test_service_router)
 
 
 
