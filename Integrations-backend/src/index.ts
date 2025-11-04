@@ -32,6 +32,9 @@ import consolidatedCostDocsRoutes from './routes/consolidated/costDocsRoutes';
 import consolidatedRefundEngineRoutes from './routes/consolidated/refundEngineRoutes';
 import consolidatedInventorySyncRoutes from './routes/consolidated/inventorySyncRoutes';
 
+// Proxy routes to Python backend
+import proxyRoutes from './routes/proxyRoutes';
+
 const app = express();
 const server = createServer(app);
 
@@ -146,13 +149,17 @@ app.use('/api/v1/cost-docs', consolidatedCostDocsRoutes);
 app.use('/api/v1/refund-engine', consolidatedRefundEngineRoutes);
 app.use('/api/v1/inventory-sync', consolidatedInventorySyncRoutes);
 
-// Root endpoint
+// Root endpoint (must come before proxy routes)
 app.get('/', (_, res) => {
   res.json({ 
     message: 'Opside Integrations API',
     version: '1.0.0'
   });
 });
+
+// Proxy routes to Python backend (recoveries, documents, metrics)
+// These proxy requests to opside-python-api.onrender.com
+app.use('/', proxyRoutes);
 
 // Error handling middleware
 app.use(notFoundHandler);
