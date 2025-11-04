@@ -47,12 +47,33 @@ export const reconnectIntegration = async (req: Request, res: Response) => {
 
 export const disconnectIntegration = async (req: Request, res: Response) => {
   try {
-    const { provider } = req.params;
+    // Support both path params and query params (for frontend compatibility)
+    const provider = req.params.provider || req.query.provider as string;
+    const purge = req.query.purge === '1' || req.query.purge === 'true';
     
-    // Mock disconnect
+    if (!provider) {
+      return res.status(400).json({
+        success: false,
+        error: 'Provider is required'
+      });
+    }
+
+    // Handle provider-specific disconnect logic
+    if (provider === 'gmail') {
+      // Import and call Gmail disconnect
+      const { disconnectGmail } = require('./gmailController');
+      return disconnectGmail(req, res);
+    } else if (provider === 'amazon') {
+      // Import and call Amazon disconnect
+      const { disconnectAmazon } = require('./amazonController');
+      return disconnectAmazon(req, res);
+    }
+
+    // Generic disconnect
     res.json({
       success: true,
       provider: provider,
+      purged: purge,
       message: 'Integration disconnected successfully'
     });
   } catch (error) {
