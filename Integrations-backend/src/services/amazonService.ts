@@ -67,7 +67,12 @@ export class AmazonService {
         throw new Error('Amazon SP-API credentials not configured');
       }
 
-      logger.info('Refreshing Amazon SP-API access token');
+      logger.info('Refreshing Amazon SP-API access token', {
+        hasClientId: !!clientId,
+        hasClientSecret: !!clientSecret,
+        hasRefreshToken: !!refreshToken,
+        baseUrl: this.baseUrl
+      });
 
       const response = await axios.post<AccessTokenResponse>(
         'https://api.amazon.com/auth/o2/token',
@@ -87,15 +92,71 @@ export class AmazonService {
 
       logger.info('Successfully refreshed Amazon SP-API access token');
     } catch (error: any) {
-      logger.error('Failed to refresh access token:', error);
-      throw new Error(`Failed to refresh access token: ${error.message}`);
+      const errorMessage = error.response?.data?.error_description || error.response?.data?.error || error.message;
+      logger.error('Failed to refresh access token:', {
+        error: errorMessage,
+        status: error.response?.status,
+        data: error.response?.data
+      });
+      
+      // Provide more helpful error message
+      if (error.response?.status === 401) {
+        throw new Error('Amazon refresh token is invalid or expired. Please reconnect your Amazon account.');
+      }
+      throw new Error(`Failed to refresh access token: ${errorMessage}`);
     }
   }
 
   async startOAuth() {
-    return {
-      authUrl: "https://sandbox.sellingpartnerapi-na.amazon.com/authorization?mock=true"
-    };
+    try {
+      // Get client ID (checks both variable names for consistency)
+      const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
+      
+      if (!clientId || clientId.trim() === '') {
+        logger.warn('Amazon client ID not configured, returning mock URL');
+        return {
+          authUrl: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?code=mock_auth_code&state=mock_state`,
+          message: 'Mock OAuth URL (credentials not configured)'
+        };
+      }
+
+      // Generate state for CSRF protection
+      const crypto = require('crypto');
+      const state = crypto.randomBytes(32).toString('hex');
+      
+      // Get redirect URI from environment or use default
+      const redirectUri = process.env.AMAZON_REDIRECT_URI || 
+                         process.env.AMAZON_SPAPI_REDIRECT_URI ||
+                         `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/amazon/auth/callback`;
+      
+      // Amazon OAuth URL (same for sandbox and production)
+      const oauthBase = 'https://www.amazon.com/ap/oa';
+      
+      // For SP-API, we need the sellingpartnerapi scope
+      const scope = 'sellingpartnerapi::migration';
+      
+      // Build proper OAuth URL
+      const authUrl = `${oauthBase}?` +
+        `client_id=${encodeURIComponent(clientId)}&` +
+        `scope=${encodeURIComponent(scope)}&` +
+        `response_type=code&` +
+        `redirect_uri=${encodeURIComponent(redirectUri)}&` +
+        `state=${state}`;
+
+      logger.info('Generated Amazon OAuth URL', {
+        hasClientId: !!clientId,
+        redirectUri,
+        stateLength: state.length
+      });
+
+      return {
+        authUrl,
+        state
+      };
+    } catch (error: any) {
+      logger.error('Error generating OAuth URL:', error);
+      throw new Error(`Failed to generate OAuth URL: ${error.message}`);
+    }
   }
 
   async handleCallback(_code: string) {
