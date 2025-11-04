@@ -340,7 +340,22 @@ export class AmazonService {
       const accessToken = await this.getAccessToken();
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
 
-      logger.info(`Fetching inventory for account ${accountId} from SP-API`);
+      logger.info(`Fetching inventory for account ${accountId} from SP-API`, {
+        baseUrl: this.baseUrl,
+        marketplaceId,
+        isSandbox: this.baseUrl.includes('sandbox')
+      });
+
+      // Build params - sandbox may not support granularityType
+      const params: any = {
+        marketplaceIds: marketplaceId
+      };
+
+      // Only include granularityType for production (sandbox may not support it)
+      if (!this.baseUrl.includes('sandbox')) {
+        params.granularityType = 'Marketplace';
+        params.granularityId = marketplaceId;
+      }
 
       // Make real SP-API call to fetch inventory
       const response = await axios.get(
@@ -351,82 +366,51 @@ export class AmazonService {
             'x-amz-access-token': accessToken,
             'Content-Type': 'application/json'
           },
-          params: {
-            marketplaceIds: marketplaceId,
-            granularityType: 'Marketplace',
-            granularityId: marketplaceId
-          },
+          params,
           timeout: 30000
         }
       );
 
-      const summaries = response.data?.payload?.inventorySummaries || [];
+      const payload = response.data?.payload || response.data;
+      const summaries = payload?.inventorySummaries || (Array.isArray(payload) ? payload : []);
       
-      logger.info(`Successfully fetched ${summaries.length} inventory items from SP-API`);
+      logger.info(`Successfully fetched ${summaries.length} inventory items from SP-API`, {
+        itemCount: summaries.length,
+        accountId
+      });
 
       // Transform SP-API response to our format
       const inventory = summaries.map((item: any) => ({
-        sku: item.sellerSku,
+        sku: item.sellerSku || item.sku,
         asin: item.asin,
         fnSku: item.fnSku,
-        quantity: item.inventoryDetails?.availableQuantity || 0,
-        condition: item.condition,
+        quantity: item.inventoryDetails?.availableQuantity || item.quantity || 0,
+        condition: item.condition || 'New',
         location: 'FBA',
-        status: item.inventoryDetails?.availableQuantity > 0 ? 'active' : 'inactive',
-        reserved: item.inventoryDetails?.reservedQuantity || 0,
-        damaged: item.inventoryDetails?.damagedQuantity || 0,
-        lastUpdated: item.lastUpdatedTime
+        status: (item.inventoryDetails?.availableQuantity || item.quantity || 0) > 0 ? 'active' : 'inactive',
+        reserved: item.inventoryDetails?.reservedQuantity || item.reserved || 0,
+        damaged: item.inventoryDetails?.damagedQuantity || item.damaged || 0,
+        lastUpdated: item.lastUpdatedTime || item.lastUpdated || new Date().toISOString()
       }));
 
       return { 
         success: true, 
         data: inventory, 
-        message: `Fetched ${inventory.length} inventory items from SP-API` 
+        message: `Fetched ${inventory.length} inventory items from SP-API`,
+        fromApi: true  // Flag to indicate this is real API data, not mock
       };
     } catch (error: any) {
-      logger.error("Error fetching Amazon inventory:", error);
+      logger.error("Error fetching Amazon inventory from SP-API:", {
+        error: error.message,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        accountId
+      });
       
-      // Return sandbox mock data as fallback
-      logger.warn('SP-API call failed, returning sandbox mock data for testing');
-      return {
-        success: true,
-        data: [
-          { 
-            sku: 'TEST-SKU-001', 
-            quantity: 150, 
-            status: 'active', 
-            asin: 'B08N5WRWNW',
-            condition: 'New',
-            location: 'FBA',
-            reserved: 5,
-            damaged: 0,
-            lastUpdated: new Date().toISOString()
-          },
-          { 
-            sku: 'TEST-SKU-002', 
-            quantity: 75, 
-            status: 'active', 
-            asin: 'B08N5XYZ123',
-            condition: 'New', 
-            location: 'FBA',
-            reserved: 2,
-            damaged: 1,
-            lastUpdated: new Date().toISOString()
-          },
-          {
-            sku: 'TEST-SKU-003',
-            quantity: 0,
-            status: 'inactive',
-            asin: 'B08N5ABC456',
-            condition: 'New',
-            location: 'FBA',
-            reserved: 0,
-            damaged: 0,
-            lastUpdated: new Date().toISOString()
-          }
-        ],
-        message: "Sandbox inventory data (SP-API integration in progress)"
-      };
+      // Don't silently fall back to mock data - throw error so caller knows
+      // This ensures sync jobs can track failures properly
+      throw new Error(`Failed to fetch inventory from SP-API: ${error.response?.data?.errors?.[0]?.message || error.message}`);
     }
   }
 
