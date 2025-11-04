@@ -108,7 +108,10 @@ router.post('/api/recoveries/:id/answer', (req, res) => proxyToPython(req, res, 
 router.post('/api/recoveries/:id/documents/upload', (req, res) => proxyToPython(req, res, `/api/recoveries/${req.params.id}/documents/upload`));
 
 // Documents endpoints
-router.get('/api/documents', (req, res) => proxyToPython(req, res, '/api/documents'));
+router.get('/api/documents', (req, res) => {
+  logger.info('Documents endpoint hit', { path: req.path, query: req.query });
+  proxyToPython(req, res, '/api/documents');
+});
 router.get('/api/documents/:id', (req, res) => proxyToPython(req, res, `/api/documents/${req.params.id}`));
 router.get('/api/documents/:id/view', (req, res) => proxyToPython(req, res, `/api/documents/${req.params.id}/view`));
 router.get('/api/documents/:id/download', (req, res) => proxyToPython(req, res, `/api/documents/${req.params.id}/download`));
