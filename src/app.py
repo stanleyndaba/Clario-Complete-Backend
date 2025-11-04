@@ -32,7 +32,7 @@ from .api.auth_sandbox import router as auth_router
 # from .api.integrations import router as integrations_router
 from .api.detections import router as detections_router
 from .api.recoveries import router as recoveries_router
-# from .api.evidence import router as evidence_router
+from .api.evidence import router as evidence_router
 # from .api.evidence_sources import router as evidence_sources_router
 # from .api.parser import router as parser_router
 # from .api.evidence_matching import router as evidence_matching_router
@@ -233,6 +233,7 @@ from .api.consolidated.test_service_router import test_service_router
 app.include_router(auth_router, tags=["auth"])
 app.include_router(detections_router, tags=["detections"])
 app.include_router(recoveries_router, tags=["recoveries"])
+app.include_router(evidence_router, tags=["evidence"])
 app.include_router(sync_router, tags=["sync"])
 
 # Consolidated service routers (merged from separate microservices)
