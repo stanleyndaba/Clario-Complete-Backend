@@ -89,7 +89,8 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    debug=False  # Disable debug mode to prevent verbose error responses
 )
 
 # Enable CORS for frontend integration (env-driven, supports multiple origins)
@@ -336,6 +337,45 @@ async def amazon_recoveries_summary(request: Request):
 async def start_amazon_sync():
     # Redirect to existing sync start endpoint
     return RedirectResponse("/api/sync/start")
+
+# Custom exception handlers to return clean error responses (no stack traces)
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Return clean HTTP exception responses"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": True,
+            "message": exc.detail,
+            "status_code": exc.status_code
+        }
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Return clean validation error responses"""
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": True,
+            "message": "Validation error",
+            "status_code": 422,
+            "details": exc.errors()
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Return clean error responses for unhandled exceptions (no stack traces)"""
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": True,
+            "message": "Internal server error",
+            "status_code": 500
+        }
+    )
 
 # Recoveries Aliases - These endpoints are now in recoveries_router
 # The redirect was breaking authentication (403 errors)
