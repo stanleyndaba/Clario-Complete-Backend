@@ -57,15 +57,15 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) 
         raise HTTPException(status_code=401, detail="Invalid token")
 
 @router.get("/api/auth/me", response_model=UserProfile)
-def get_current_user_profile(user: dict = Depends(get_current_user)):
-    """Get current user profile"""
+def get_current_user_profile(request: Request, user: dict = Depends(get_current_user)):
+    """Get current user profile - returns 401 if not authenticated"""
     user_id = user["user_id"]
     
     # Get user data from database
     user_data = db_module.db.get_user_by_id(user_id)
     
     if not user_data:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=401, detail="User not found")
     
     return UserProfile(
         id=user_id,
@@ -79,10 +79,13 @@ def get_current_user_profile(user: dict = Depends(get_current_user)):
 
 @router.get("/auth/amazon/start", response_model=AmazonLoginResponse)
 def amazon_login_start(response: Response):
-    """Initiate Amazon OAuth login - uses sandbox mode if no credentials"""
-    # Check if we have real Amazon credentials
-    if not settings.AMAZON_CLIENT_ID or settings.AMAZON_CLIENT_ID == "your-amazon-client-id":
-        # Use sandbox mode
+    """Initiate Amazon OAuth login - works with both sandbox and production credentials"""
+    # Get client ID (checks both AMAZON_CLIENT_ID and AMAZON_SPAPI_CLIENT_ID)
+    client_id = settings.AMAZON_CLIENT_ID or settings.AMAZON_SPAPI_CLIENT_ID
+    
+    # Check if we have real Amazon credentials (not placeholder)
+    if not client_id or client_id == "your-amazon-client-id" or client_id.strip() == "":
+        # Use mock sandbox mode (no real credentials)
         state = secrets.token_urlsafe(32)
         redirect_url = f"{settings.FRONTEND_URL}/auth/callback?code=mock_auth_code&state={state}"
         
@@ -91,16 +94,13 @@ def amazon_login_start(response: Response):
             state=state
         )
     
-    # Production mode with real credentials
+    # Real credentials found (sandbox or production) - proceed with OAuth
     state = secrets.token_urlsafe(32)
-    client_id = settings.AMAZON_CLIENT_ID
     redirect_uri = settings.AMAZON_REDIRECT_URI
     scope = "profile"
     
-    # Use sandbox OAuth URL if using sandbox SP-API
+    # OAuth URL is the same for both sandbox and production
     oauth_base = "https://www.amazon.com/ap/oa"
-    if "sandbox" in settings.AMAZON_SPAPI_BASE_URL:
-        oauth_base = "https://www.amazon.com/ap/oa"  # Same for sandbox
     
     auth_url = (
         f"{oauth_base}?"
@@ -207,8 +207,8 @@ async def amazon_callback(request: Request):
                     data={
                         "grant_type": "authorization_code",
                         "code": code,
-                        "client_id": settings.AMAZON_CLIENT_ID,
-                        "client_secret": settings.AMAZON_CLIENT_SECRET,
+                        "client_id": settings.AMAZON_CLIENT_ID or settings.AMAZON_SPAPI_CLIENT_ID,
+                        "client_secret": settings.AMAZON_CLIENT_SECRET or settings.AMAZON_SPAPI_CLIENT_SECRET,
                         "redirect_uri": settings.AMAZON_REDIRECT_URI,
                     },
                     headers={"Content-Type": "application/x-www-form-urlencoded"}

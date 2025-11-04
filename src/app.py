@@ -14,10 +14,10 @@ except Exception:
     except Exception as _compat_err:  # Final fallback: don't crash on missing patch
         print(f"[startup-warning] compatibility_patch not applied: {_compat_err}")
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
-from fastapi import Request
+from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
 from contextlib import asynccontextmanager
 from datetime import datetime
 import asyncio
@@ -93,6 +93,46 @@ app = FastAPI(
     debug=False  # Disable debug mode to prevent verbose error responses
 )
 
+# Custom exception handlers to return clean error responses (no stack traces)
+# Define these immediately after app creation to ensure imports are available
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Return clean HTTP exception responses"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": True,
+            "message": exc.detail,
+            "status_code": exc.status_code
+        }
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Return clean validation error responses"""
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": True,
+            "message": "Validation error",
+            "status_code": 422,
+            "details": exc.errors()
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Return clean error responses for unhandled exceptions (no stack traces)"""
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": True,
+            "message": "Internal server error",
+            "status_code": 500
+        }
+    )
+
 # Enable CORS for frontend integration (env-driven, supports multiple origins)
 from .common.config import settings
 
@@ -127,12 +167,11 @@ for o in (computed_origins or default_origins):
 # Apply strict CORS like minimal app
 # Add Vercel frontend domain explicitly
 vercel_origins = [
+    "https://opside-complete-frontend-4poy2f2lh-mvelo-ndabas-projects.vercel.app",
     "https://opside-complete-frontend-kqvxrzg4s-mvelo-ndabas-projects.vercel.app",
+    "https://opside-complete-frontend-nwcors9h1-mvelo-ndabas-projects.vercel.app",
     "https://opside-complete-frontend.onrender.com",
     "https://clario-complete-backend-y5cd.onrender.com",
-    # Support any vercel preview deployments
-    "https://*.vercel.app",
-    "https://opside-complete-frontend-kqvxrzg4s*.vercel.app",
 ]
 frontend = os.getenv("FRONTEND_URL") or settings.FRONTEND_URL or "https://opside-complete-frontend.onrender.com"
 # Filter out wildcard patterns from the explicit origins list
@@ -337,45 +376,6 @@ async def amazon_recoveries_summary(request: Request):
 async def start_amazon_sync():
     # Redirect to existing sync start endpoint
     return RedirectResponse("/api/sync/start")
-
-# Custom exception handlers to return clean error responses (no stack traces)
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    """Return clean HTTP exception responses"""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": True,
-            "message": exc.detail,
-            "status_code": exc.status_code
-        }
-    )
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Return clean validation error responses"""
-    return JSONResponse(
-        status_code=422,
-        content={
-            "error": True,
-            "message": "Validation error",
-            "status_code": 422,
-            "details": exc.errors()
-        }
-    )
-
-@app.exception_handler(Exception)
-async def general_exception_handler(request: Request, exc: Exception):
-    """Return clean error responses for unhandled exceptions (no stack traces)"""
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": True,
-            "message": "Internal server error",
-            "status_code": 500
-        }
-    )
 
 # Recoveries Aliases - These endpoints are now in recoveries_router
 # The redirect was breaking authentication (403 errors)

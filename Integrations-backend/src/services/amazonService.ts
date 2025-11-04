@@ -58,8 +58,9 @@ export class AmazonService {
 
   private async refreshAccessToken(): Promise<void> {
     try {
-      const clientId = process.env.AMAZON_CLIENT_ID;
-      const clientSecret = process.env.AMAZON_CLIENT_SECRET;
+      // Use AMAZON_SPAPI_CLIENT_ID as fallback if AMAZON_CLIENT_ID not set (for consistency)
+      const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
+      const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET;
       const refreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
 
       if (!clientId || !clientSecret || !refreshToken) {

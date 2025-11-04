@@ -4,7 +4,7 @@ Handles JWT token validation and user extraction for all API endpoints
 """
 
 import jwt
-from fastapi import HTTPException, Depends, status
+from fastapi import HTTPException, Depends, status, Request
 from fastapi import WebSocket
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional
@@ -13,8 +13,8 @@ from src.common.config import settings
 
 logger = logging.getLogger(__name__)
 
-# HTTP Bearer token scheme
-security = HTTPBearer()
+# HTTP Bearer token scheme (optional for cookie-based auth)
+security = HTTPBearer(auto_error=False)
 
 class JWTError(Exception):
     """Custom JWT error"""
@@ -48,12 +48,14 @@ def verify_jwt_token(token: str) -> dict:
         logger.error(f"JWT verification error: {str(e)}")
         raise JWTError("Token verification failed")
 
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+def get_current_user(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> dict:
     """
     Extract and validate current user from JWT token
+    Checks cookies first (session_token), then Authorization header
     
     Args:
-        credentials: HTTP Bearer credentials
+        request: FastAPI Request object
+        credentials: Optional HTTP Bearer credentials
         
     Returns:
         dict: User information from token
@@ -61,8 +63,23 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     Raises:
         HTTPException: If authentication fails
     """
-    try:
+    token = None
+    
+    # Priority 1: Check cookie (session_token)
+    token = request.cookies.get("session_token")
+    
+    # Priority 2: Check Authorization header
+    if not token and credentials:
         token = credentials.credentials
+    
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    try:
         payload = verify_jwt_token(token)
         
         # Extract user information
@@ -92,22 +109,43 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
             detail="Authentication service error"
         )
 
-def get_optional_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Optional[dict]:
+def get_optional_user(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Optional[dict]:
     """
     Extract user from JWT token, but don't fail if no token provided
+    Checks cookies first, then Authorization header
     
     Args:
+        request: FastAPI Request object
         credentials: Optional HTTP Bearer credentials
         
     Returns:
         dict or None: User information if token is valid, None otherwise
     """
-    if not credentials:
+    token = None
+    
+    # Priority 1: Check cookie
+    token = request.cookies.get("session_token")
+    
+    # Priority 2: Check Authorization header
+    if not token and credentials:
+        token = credentials.credentials
+    
+    if not token:
         return None
         
     try:
-        return get_current_user(credentials)
-    except HTTPException:
+        payload = verify_jwt_token(token)
+        user_id = payload.get("user_id")
+        if not user_id:
+            return None
+        return {
+            "user_id": user_id,
+            "email": payload.get("email"),
+            "name": payload.get("name"),
+            "amazon_seller_id": payload.get("amazon_seller_id"),
+            "exp": payload.get("exp")
+        }
+    except Exception:
         return None
 
 def create_jwt_token(user_data: dict) -> str:

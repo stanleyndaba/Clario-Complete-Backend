@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
+import cookieParser from 'cookie-parser';
 import { createServer } from 'http';
 import config from './config/env';
 import logger from './utils/logger';
@@ -40,15 +41,35 @@ app.use(helmet({
   contentSecurityPolicy: false
 }));
 app.use(cors({
-  origin: [
-    'https://opside-complete-frontend-4poy2f2lh-mvelo-ndabas-projects.vercel.app',
-    'https://opside-complete-frontend-kqvxrzg4s-mvelo-ndabas-projects.vercel.app',
-    'https://clario-refunds-frontend.onrender.com',
-    'https://opside-complete-frontend.onrender.com',
-    'http://localhost:8080',
-    'http://localhost:5173',
-    'http://localhost:3000'
-  ],
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) {
+      return callback(null, true);
+    }
+    
+    const allowedOrigins = [
+      'https://opside-complete-frontend-4poy2f2lh-mvelo-ndabas-projects.vercel.app',
+      'https://opside-complete-frontend-kqvxrzg4s-mvelo-ndabas-projects.vercel.app',
+      'https://opside-complete-frontend-nwcors9h1-mvelo-ndabas-projects.vercel.app',
+      'https://clario-refunds-frontend.onrender.com',
+      'https://opside-complete-frontend.onrender.com',
+      'http://localhost:8080',
+      'http://localhost:5173',
+      'http://localhost:3000'
+    ];
+    
+    // Allow all Vercel preview deployments (pattern matching)
+    if (origin.includes('vercel.app') || origin.includes('onrender.com')) {
+      return callback(null, true);
+    }
+    
+    // Check exact match
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
@@ -67,6 +88,8 @@ app.use(limiter);
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// Cookie parsing middleware (required for cookie-based auth)
+app.use(cookieParser());
 // Public metrics endpoint (no auth required)
 app.post('/api/metrics/track', (req, res) => {
   // Accept metrics but don't require auth

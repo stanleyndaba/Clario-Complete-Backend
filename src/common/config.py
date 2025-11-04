@@ -23,8 +23,11 @@ class Settings(BaseModel):
     ALLOWED_ORIGIN_REGEX: str | None = os.getenv("ALLOWED_ORIGIN_REGEX")
     
     # Amazon OAuth configuration
-    AMAZON_CLIENT_ID: str = os.getenv("AMAZON_CLIENT_ID", "")
-    AMAZON_CLIENT_SECRET: str = os.getenv("AMAZON_CLIENT_SECRET", "")
+    # Use AMAZON_SPAPI_CLIENT_ID as fallback if AMAZON_CLIENT_ID not set (for consistency)
+    _amazon_client_id = os.getenv("AMAZON_CLIENT_ID") or os.getenv("AMAZON_SPAPI_CLIENT_ID", "")
+    AMAZON_CLIENT_ID: str = _amazon_client_id
+    _amazon_client_secret = os.getenv("AMAZON_CLIENT_SECRET") or os.getenv("AMAZON_SPAPI_CLIENT_SECRET", "")
+    AMAZON_CLIENT_SECRET: str = _amazon_client_secret
     AMAZON_REDIRECT_URI: str = os.getenv("AMAZON_REDIRECT_URI", "http://localhost:8000/api/auth/amazon/callback")
     
     # Evidence Sources OAuth configuration
@@ -74,9 +77,12 @@ class Settings(BaseModel):
     S3_REGION: str = os.getenv("S3_REGION", "us-east-1")
 
     # Amazon SP-API configuration
+    # Use AMAZON_CLIENT_ID as fallback if AMAZON_SPAPI_CLIENT_ID not set (for consistency)
     AMAZON_SPAPI_BASE_URL: str = os.getenv("AMAZON_SPAPI_BASE_URL", "https://sellingpartnerapi-na.amazon.com")
-    AMAZON_SPAPI_CLIENT_ID: str = os.getenv("AMAZON_SPAPI_CLIENT_ID", "")
-    AMAZON_SPAPI_CLIENT_SECRET: str = os.getenv("AMAZON_SPAPI_CLIENT_SECRET", "")
+    _spapi_client_id = os.getenv("AMAZON_SPAPI_CLIENT_ID") or os.getenv("AMAZON_CLIENT_ID", "")
+    AMAZON_SPAPI_CLIENT_ID: str = _spapi_client_id
+    _spapi_client_secret = os.getenv("AMAZON_SPAPI_CLIENT_SECRET") or os.getenv("AMAZON_CLIENT_SECRET", "")
+    AMAZON_SPAPI_CLIENT_SECRET: str = _spapi_client_secret
     AMAZON_SPAPI_REFRESH_TOKEN: str = os.getenv("AMAZON_SPAPI_REFRESH_TOKEN", "")
     
     @property
