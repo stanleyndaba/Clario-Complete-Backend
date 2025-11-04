@@ -8,6 +8,23 @@ const router = express.Router();
 const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://opside-python-api.onrender.com';
 
 /**
+ * Extract JWT token from cookie or Authorization header
+ */
+function extractToken(req: Request): string | null {
+  // Priority 1: Check cookie (session_token)
+  const cookieToken = req.cookies?.session_token;
+  if (cookieToken) return cookieToken;
+  
+  // Priority 2: Check Authorization header
+  const authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return authHeader.split(' ')[1];
+  }
+  
+  return null;
+}
+
+/**
  * Proxy function to forward requests to Python backend
  */
 async function proxyToPython(req: Request, res: Response, path: string) {
@@ -19,17 +36,25 @@ async function proxyToPython(req: Request, res: Response, path: string) {
       'Content-Type': req.headers['content-type'] || 'application/json',
     };
     
-    // Forward authorization header if present
-    if (req.headers.authorization) {
-      headers['Authorization'] = req.headers.authorization;
+    // Extract token from cookie or Authorization header
+    const token = extractToken(req);
+    if (token) {
+      // Forward as Authorization header (works cross-domain)
+      headers['Authorization'] = `Bearer ${token}`;
+      logger.debug(`Extracted token from request, forwarding as Authorization header`);
+    } else {
+      logger.warn(`No token found in request for ${req.path}`);
     }
     
-    // Forward cookies if present
+    // Also forward cookies if present (for compatibility)
     if (req.headers.cookie) {
       headers['Cookie'] = req.headers.cookie;
     }
     
-    logger.info(`Proxying ${req.method} ${req.path} to ${url}`);
+    logger.info(`Proxying ${req.method} ${req.path} to ${url}`, {
+      hasToken: !!token,
+      hasCookie: !!req.headers.cookie
+    });
     
     const config: any = {
       method: req.method,
