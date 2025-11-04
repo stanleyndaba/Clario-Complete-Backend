@@ -48,7 +48,7 @@ services:
   - type: web
     name: opside-node-api
     env: node
-    buildCommand: cd Integrations-backend && PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true npm install --no-optional && npm run build
+    buildCommand: cd Integrations-backend && PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true npm ci --no-audit --no-fund --prefer-offline && npm run build
     startCommand: cd Integrations-backend && npm start
     envVars:
       - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
