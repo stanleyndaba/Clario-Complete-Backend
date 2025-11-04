@@ -1,6 +1,7 @@
 // Amazon Service with Real SP-API Integration
 
 import axios from 'axios';
+import crypto from 'crypto';
 import logger from '../utils/logger';
 
 export interface AmazonClaim {
@@ -121,7 +122,6 @@ export class AmazonService {
       }
 
       // Generate state for CSRF protection
-      const crypto = require('crypto');
       const state = crypto.randomBytes(32).toString('hex');
       
       // Get redirect URI from environment or use default
@@ -132,8 +132,10 @@ export class AmazonService {
       // Amazon OAuth URL (same for sandbox and production)
       const oauthBase = 'https://www.amazon.com/ap/oa';
       
-      // For SP-API, we need the sellingpartnerapi scope
-      const scope = 'sellingpartnerapi::migration';
+      // For sandbox mode, use "profile" scope (Login with Amazon)
+      // SP-API scopes like "sellingpartnerapi::migration" are NOT valid for OAuth
+      // You get SP-API access automatically after OAuth completes with Login with Amazon
+      const scope = 'profile';
       
       // Build proper OAuth URL
       const authUrl = `${oauthBase}?` +
@@ -146,6 +148,7 @@ export class AmazonService {
       logger.info('Generated Amazon OAuth URL', {
         hasClientId: !!clientId,
         redirectUri,
+        scope,
         stateLength: state.length
       });
 
