@@ -1,5 +1,13 @@
-import puppeteer from 'puppeteer';
 import logger from '../../utils/logger';
+
+// Try to load Puppeteer (optional dependency)
+let puppeteer: any;
+try {
+  puppeteer = require('puppeteer');
+} catch (error) {
+  logger.warn('Puppeteer not installed. PDF generation will be unavailable.');
+  puppeteer = null;
+}
 
 export interface PDFGenerationOptions {
   format?: 'A4' | 'Letter';
@@ -25,7 +33,7 @@ export interface DocumentData {
 }
 
 export class PDFGenerationService {
-  private browser: puppeteer.Browser | null = null;
+  private browser: any = null;
   private initialized: boolean = false;
 
   /**
@@ -34,6 +42,10 @@ export class PDFGenerationService {
   async initialize(): Promise<void> {
     if (this.initialized && this.browser) {
       return;
+    }
+
+    if (!puppeteer) {
+      throw new Error('Puppeteer is not installed. PDF generation requires Puppeteer. Install it with: npm install puppeteer');
     }
 
     try {
