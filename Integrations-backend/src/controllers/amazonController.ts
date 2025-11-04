@@ -22,7 +22,20 @@ export const startAmazonOAuth = async (_req: Request, res: Response) => {
 
 export const handleAmazonCallback = async (req: Request, res: Response) => {
   try {
-    const { code, state } = req.query;
+    // Handle both GET (query params) and POST (JSON body) requests
+    let code: string | undefined;
+    let state: string | undefined;
+    
+    if (req.method === 'GET') {
+      // GET request - read from query params
+      code = req.query.code as string;
+      state = req.query.state as string;
+    } else if (req.method === 'POST') {
+      // POST request - read from JSON body
+      const body = req.body || {};
+      code = body.code || req.query.code;
+      state = body.state || req.query.state;
+    }
 
     if (!code) {
       res.status(400).json({
@@ -33,15 +46,34 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     }
 
     logger.info('Amazon OAuth callback received', {
+      method: req.method,
       hasCode: !!code,
-      hasState: !!state
+      hasState: !!state,
+      isSandbox: req.path.includes('sandbox')
     });
 
-    const result = await amazonService.handleCallback(code as string, state as string);
+    const result = await amazonService.handleCallback(code, state);
     
-    // Redirect to frontend with success message
+    // For POST requests, return JSON instead of redirect
+    if (req.method === 'POST') {
+      // Set CORS headers for POST response
+      const origin = req.headers.origin || '*';
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Access-Control-Allow-Credentials', 'true');
+      res.header('Content-Type', 'application/json');
+      
+      return res.status(200).json({
+        ok: true,
+        connected: true,
+        success: result.success,
+        message: result.message,
+        data: result.data
+      });
+    }
+    
+    // For GET requests, redirect to frontend
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const redirectUrl = `${frontendUrl}/dashboard?amazon_connected=true&message=${encodeURIComponent(result.message)}`;
+    const redirectUrl = `${frontendUrl}/dashboard?amazon_connected=true&message=${encodeURIComponent(result.message || 'Connected successfully')}`;
     
     // Set session cookie if we have tokens
     if (result.data?.refresh_token) {
@@ -54,6 +86,20 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
   } catch (error: any) {
     logger.error('OAuth callback error', { error: error.message });
     
+    // For POST requests, return JSON error
+    if (req.method === 'POST') {
+      const origin = req.headers.origin || '*';
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Access-Control-Allow-Credentials', 'true');
+      return res.status(400).json({
+        ok: false,
+        connected: false,
+        success: false,
+        error: error.message || 'OAuth callback failed'
+      });
+    }
+    
+    // For GET requests, redirect to error page
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const errorUrl = `${frontendUrl}/auth/error?reason=${encodeURIComponent(error.message || 'oauth_failed')}`;
     res.redirect(302, errorUrl);
