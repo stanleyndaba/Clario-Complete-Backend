@@ -312,10 +312,12 @@ def cors_debug():
 # Amazon SP-API Aliases
 @app.options("/api/v1/integrations/amazon/sandbox/callback")
 @app.get("/api/v1/integrations/amazon/sandbox/callback")
+@app.post("/api/v1/integrations/amazon/sandbox/callback")
 async def amazon_sandbox_callback(request: Request):
-    """Handle sandbox Amazon OAuth callback with CORS headers"""
+    """Handle sandbox Amazon OAuth callback with CORS headers - accepts POST with JSON body"""
     from fastapi.responses import JSONResponse, Response
     from .api.auth_sandbox import MOCK_USERS
+    from .common import db as db_module
     import jwt
     from datetime import datetime, timedelta
     
@@ -331,6 +333,80 @@ async def amazon_sandbox_callback(request: Request):
             response.headers["Access-Control-Max-Age"] = "3600"
             return response
     
+    # Handle POST request with JSON body
+    if request.method == "POST":
+        try:
+            body = await request.json()
+            state = body.get("state", "")
+            
+            # Create or retrieve sandbox user
+            user_data = MOCK_USERS["sandbox-user"]
+            user_id = user_data["user_id"]
+            
+            # Ensure sandbox user exists in database
+            try:
+                db_module.db.upsert_user_profile(
+                    seller_id=user_data["amazon_seller_id"],
+                    company_name=user_data.get("name", "Sandbox Company"),
+                    marketplaces=["ATVPDKIKX0DER"]  # US marketplace
+                )
+            except Exception as e:
+                logger.warning(f"Database upsert failed (sandbox mode): {e}")
+                # Continue even if database fails - sandbox mode is forgiving
+            
+            # Generate JWT token with proper payload
+            now = datetime.utcnow()
+            payload = {
+                "user_id": user_id,
+                "email": user_data.get("email", "sandbox@example.com"),
+                "name": user_data.get("name", "Sandbox User"),
+                "amazon_seller_id": user_data.get("amazon_seller_id", "SANDBOX"),
+                "exp": int((now + timedelta(days=7)).timestamp()),
+                "iat": int(now.timestamp())
+            }
+            session_token = jwt.encode(payload, settings.JWT_SECRET, algorithm="HS256")
+            
+            # Create response
+            origin = request.headers.get("Origin", "*")
+            response = JSONResponse(
+                content={
+                    "ok": True,
+                    "connected": True
+                }
+            )
+            
+            # Set session cookie with correct configuration
+            response.set_cookie(
+                key="session_token",
+                value=session_token,
+                httponly=True,
+                secure=settings.ENV == "production",  # Secure only in production
+                samesite="none",
+                max_age=604800,  # 7 days
+                path="/"
+            )
+            
+            # Set CORS headers explicitly
+            if origin in all_allowed_origins or any(o in origin for o in ["vercel.app", "onrender.com"]):
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Access-Control-Allow-Credentials"] = "true"
+            
+            logger.info(f"Sandbox session established for user {user_id}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Sandbox callback error: {e}")
+            origin = request.headers.get("Origin", "*")
+            error_response = JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": "Invalid request", "message": str(e)}
+            )
+            if origin in all_allowed_origins or any(o in origin for o in ["vercel.app", "onrender.com"]):
+                error_response.headers["Access-Control-Allow-Origin"] = origin
+                error_response.headers["Access-Control-Allow-Credentials"] = "true"
+            return error_response
+    
+    # Handle GET request (backward compatibility)
     # Create proper session token for sandbox user
     user_data = MOCK_USERS["sandbox-user"]
     session_token = jwt.encode(
@@ -366,12 +442,54 @@ async def amazon_sandbox_callback(request: Request):
     return response
 
 @app.get("/api/v1/integrations/amazon/recoveries")
-async def amazon_recoveries_summary(request: Request):
-    # Redirect to existing recovery metrics endpoint
-    target = "/api/metrics/recoveries"
-    if request.url.query:
-        target = f"{target}?{request.url.query}"
-    return RedirectResponse(target)
+async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_current_user)):
+    """Get Amazon recovery summary - returns totalAmount, currency, and claimCount"""
+    from fastapi.responses import JSONResponse
+    from .services.refund_engine_client import refund_engine_client
+    
+    try:
+        user_id = user["user_id"]
+        logger.info(f"Getting Amazon recoveries summary for user {user_id}")
+        
+        # Get recovery metrics from refund engine
+        try:
+            result = await refund_engine_client.get_claim_stats(user_id)
+            
+            if "error" not in result:
+                # Extract totals from result
+                total_amount = result.get("total_amount", 0) or result.get("approved_amount", 0)
+                claim_count = result.get("total_claims", 0)
+                
+                return JSONResponse(
+                    content={
+                        "totalAmount": float(total_amount),
+                        "currency": "USD",
+                        "claimCount": int(claim_count)
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"Failed to get recovery metrics: {e}")
+            # Fall through to default response
+        
+        # Default response (sandbox mode or service unavailable)
+        return JSONResponse(
+            content={
+                "totalAmount": 0.0,
+                "currency": "USD",
+                "claimCount": 0
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting recoveries summary: {e}")
+        # Return zeros on error (frontend handles gracefully)
+        return JSONResponse(
+            content={
+                "totalAmount": 0.0,
+                "currency": "USD",
+                "claimCount": 0
+            }
+        )
 
 @app.post("/api/v1/integrations/amazon/start-sync")
 async def start_amazon_sync():

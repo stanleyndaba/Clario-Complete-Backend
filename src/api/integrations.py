@@ -24,14 +24,73 @@ async def get_integrations_status(
         user_id = user["user_id"]
         logger.info(f"Getting integrations status for user {user_id}")
         
-        # Call real integrations service
-        result = await integrations_client.get_user_integrations(user_id)
+        # Check if user has Amazon connected (from token or database)
+        amazon_connected = bool(user.get("amazon_seller_id")) or False
         
-        if "error" in result:
-            logger.error(f"Get integrations status failed: {result['error']}")
-            raise HTTPException(status_code=502, detail=f"Integration service error: {result['error']}")
+        # If not in token, check database
+        if not amazon_connected:
+            try:
+                from src.common import db as db_module
+                user_data = db_module.db.get_user_by_id(user_id)
+                if user_data:
+                    amazon_connected = bool(user_data.get("amazon_seller_id"))
+            except Exception as e:
+                logger.warning(f"Failed to check database for Amazon connection: {e}")
         
-        return {"ok": True, "data": result}
+        # Try to get more detailed status from integrations service
+        try:
+            result = await integrations_client.get_user_integrations(user_id)
+            
+            if "error" not in result:
+                # Transform the response to match frontend expectations
+                integrations = result.get("integrations", [])
+                
+                # Check for Amazon
+                amazon_integration = next((i for i in integrations if i.get("type") == "amazon"), None)
+                if amazon_integration:
+                    amazon_connected = amazon_integration.get("status") == "connected"
+                    last_sync = amazon_integration.get("last_sync")
+                else:
+                    last_sync = None
+                
+                # Check for document providers
+                docs_connected = any(
+                    i.get("type", "").startswith("docs_") and i.get("status") == "connected" 
+                    for i in integrations
+                )
+                
+                # Get provider-specific status
+                provider_ingest = {
+                    "gmail": {"connected": any(i.get("type") == "docs_gmail" and i.get("status") == "connected" for i in integrations)},
+                    "outlook": {"connected": any(i.get("type") == "docs_outlook" and i.get("status") == "connected" for i in integrations)},
+                    "gdrive": {"connected": any(i.get("type") == "docs_gdrive" and i.get("status") == "connected" for i in integrations)},
+                    "dropbox": {"connected": any(i.get("type") == "docs_dropbox" and i.get("status") == "connected" for i in integrations)}
+                }
+                
+                return {
+                    "amazon_connected": amazon_connected,
+                    "docs_connected": docs_connected,
+                    "lastSync": last_sync or None,
+                    "lastIngest": None,  # Can be populated from evidence collection service
+                    "providerIngest": provider_ingest
+                }
+        except Exception as e:
+            logger.warning(f"Failed to get detailed integrations status: {e}")
+            # Fall through to default response
+        
+        # Default response if service call fails or returns no data
+        return {
+            "amazon_connected": amazon_connected,
+            "docs_connected": False,
+            "lastSync": None,
+            "lastIngest": None,
+            "providerIngest": {
+                "gmail": {"connected": False},
+                "outlook": {"connected": False},
+                "gdrive": {"connected": False},
+                "dropbox": {"connected": False}
+            }
+        }
         
     except HTTPException:
         raise
