@@ -92,9 +92,7 @@
     "ts-node": "^10.9.1",
     "typescript": "^5.2.2"
   },
-  "optionalDependencies": {
-    "puppeteer": "^21.5.0"
-  },
+
   "engines": {
     "node": ">=18.0.0",
     "npm": ">=8.0.0"

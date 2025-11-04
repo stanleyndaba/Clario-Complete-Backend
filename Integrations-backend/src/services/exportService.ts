@@ -67,7 +67,12 @@ export class ExportService {
       }
 
       // Initialize PDF service
-      await pdfGenerationService.initialize();
+      try {
+        await pdfGenerationService.initialize();
+      } catch (error: any) {
+        logger.warn('PDF generation service not available, export will fail:', error.message);
+        throw new Error(`PDF export is currently unavailable. Puppeteer is required for PDF generation but is not installed.`);
+      }
 
       // Generate export file
       const exportResult = await this.generateExportFile(
