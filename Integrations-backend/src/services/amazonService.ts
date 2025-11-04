@@ -132,15 +132,11 @@ export class AmazonService {
       // Amazon OAuth URL (same for sandbox and production)
       const oauthBase = 'https://www.amazon.com/ap/oa';
       
-      // For sandbox mode, use "profile" scope (Login with Amazon)
-      // SP-API scopes like "sellingpartnerapi::migration" are NOT valid for OAuth
-      // You get SP-API access automatically after OAuth completes with Login with Amazon
-      const scope = 'profile';
-      
-      // Build proper OAuth URL
+      // For SP-API OAuth, scope is typically not required or should be empty
+      // The redirect URI MUST match exactly what's configured in Amazon Seller Central
+      // Build OAuth URL without scope parameter (or with empty scope)
       const authUrl = `${oauthBase}?` +
         `client_id=${encodeURIComponent(clientId)}&` +
-        `scope=${encodeURIComponent(scope)}&` +
         `response_type=code&` +
         `redirect_uri=${encodeURIComponent(redirectUri)}&` +
         `state=${state}`;
@@ -148,8 +144,8 @@ export class AmazonService {
       logger.info('Generated Amazon OAuth URL', {
         hasClientId: !!clientId,
         redirectUri,
-        scope,
-        stateLength: state.length
+        stateLength: state.length,
+        authUrlLength: authUrl.length
       });
 
       return {
