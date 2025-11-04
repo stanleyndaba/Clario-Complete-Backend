@@ -6,8 +6,35 @@
 import { Router } from 'express';
 import { Request, Response } from 'express';
 import logger from '../../utils/logger';
+import { exportService } from '../../services/exportService';
+import axios from 'axios';
 
 const router = Router();
+
+// Helper to extract user ID from request
+function extractUserId(req: Request): string {
+  // Try to get from token (if auth middleware is used)
+  const token = (req as any).user?.id || (req as any).user?.user_id;
+  if (token) return token;
+  
+  // Try to get from Authorization header
+  const authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    // For now, return a default user ID
+    // In production, decode JWT and extract user_id
+    return 'default-user';
+  }
+  
+  // Try to get from cookies
+  const cookieToken = (req as any).cookies?.session_token;
+  if (cookieToken) {
+    // Decode JWT and extract user_id
+    // For now, return default
+    return 'default-user';
+  }
+  
+  return 'default-user';
+}
 
 // Health check
 router.get('/health', (req: Request, res: Response) => {
@@ -45,33 +72,37 @@ router.post('/docs/export', async (req: Request, res: Response) => {
       });
     }
 
+    const userId = extractUserId(req);
+
     logger.info('Export request received', {
       document_count: document_ids.length,
       bundle_name,
-      format
+      format,
+      userId
     });
 
-    // TODO: Implement actual PDF generation
-    // For now, return a mock response indicating the export is being processed
-    // In production, this would:
-    // 1. Fetch the documents from database
-    // 2. Generate PDF(s) using PDF generation service
-    // 3. Create ZIP or combined PDF
-    // 4. Upload to S3
-    // 5. Return download URL
+    // Create export bundle using PDF generation service
+    const exportResult = await exportService.createExportBundle(
+      {
+        document_ids,
+        bundle_name,
+        description,
+        format
+      },
+      userId
+    );
+
+    if (exportResult.status === 'failed') {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to create export bundle'
+      });
+    }
 
     res.json({
       success: true,
-      message: 'Export bundle creation initiated',
-      data: {
-        id: `export-${Date.now()}`,
-        bundle_name,
-        format,
-        document_count: document_ids.length,
-        status: 'processing',
-        message: 'PDF export is being generated. This feature is being implemented.',
-        created_at: new Date().toISOString()
-      }
+      message: 'Export bundle created successfully',
+      data: exportResult
     });
   } catch (error: any) {
     logger.error('Export error:', error);
@@ -119,4 +150,3 @@ router.get('/api/v1/cost-docs', (req: Request, res: Response) => {
 });
 
 export default router;
-
