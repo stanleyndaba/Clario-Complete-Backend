@@ -39,7 +39,8 @@ export class PDFGenerationService {
     try {
       logger.info('Initializing PDF Generation Service with Puppeteer...');
       
-      this.browser = await puppeteer.launch({
+      // Try to use system Chrome if Puppeteer's bundled Chrome isn't available
+      const launchOptions: any = {
         headless: 'new',
         args: [
           '--no-sandbox',
@@ -51,12 +52,46 @@ export class PDFGenerationService {
           '--disable-gpu',
           '--disable-web-security'
         ]
-      });
+      };
+
+      // On Render, try using system Chrome if available
+      // This allows Puppeteer to work even if bundled Chrome wasn't downloaded
+      if (process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD === 'true' || process.env.RENDER) {
+        // Try common Chrome locations on Render/Linux systems
+        const possibleChromePaths = [
+          '/usr/bin/google-chrome',
+          '/usr/bin/google-chrome-stable',
+          '/usr/bin/chromium',
+          '/usr/bin/chromium-browser'
+        ];
+        
+        for (const path of possibleChromePaths) {
+          try {
+            const fs = require('fs');
+            if (fs.existsSync(path)) {
+              launchOptions.executablePath = path;
+              logger.info(`Using system Chrome at ${path}`);
+              break;
+            }
+          } catch (e) {
+            // Continue checking other paths
+          }
+        }
+      }
+      
+      this.browser = await puppeteer.launch(launchOptions);
 
       this.initialized = true;
       logger.info('PDF Generation Service initialized successfully');
     } catch (error: any) {
       logger.error('Failed to initialize PDF Generation Service:', error);
+      
+      // Provide helpful error message for Render deployment
+      if (error.message?.includes('Could not find Chrome') || error.message?.includes('executable')) {
+        logger.warn('Chrome not found. PDF generation will be unavailable. Install Chrome or allow Puppeteer to download it.');
+        throw new Error('PDF Generation Service requires Chrome/Chromium. Please install Chrome or set PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false');
+      }
+      
       throw new Error(`PDF Generation Service initialization failed: ${error.message}`);
     }
   }
