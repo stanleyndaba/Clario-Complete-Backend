@@ -1,4 +1,4 @@
-import logger from '../../utils/logger';
+import logger from '../utils/logger';
 
 // Try to load Puppeteer (optional dependency)
 let puppeteer: any;
@@ -29,6 +29,7 @@ export interface DocumentData {
     seller_id?: string;
     anomaly_id?: string;
     claim_id?: string;
+    document_id?: string;
   };
 }
 
