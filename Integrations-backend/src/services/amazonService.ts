@@ -46,6 +46,14 @@ export class AmazonService {
                      : 'https://sandbox.sellingpartnerapi-na.amazon.com');
   }
 
+  /**
+   * Check if we're using sandbox environment
+   */
+  private isSandbox(): boolean {
+    return this.baseUrl.includes('sandbox') || 
+           process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') === true;
+  }
+
   private async getAccessToken(): Promise<string> {
     // Return token if still valid
     if (this.accessToken && this.tokenExpiry && this.tokenExpiry > new Date()) {
@@ -224,7 +232,7 @@ export class AmazonService {
           refresh_token: refresh_token, // Store this securely!
           token_type: token_type,
           expires_in: expires_in,
-          sandbox_mode: this.baseUrl.includes('sandbox')
+          sandbox_mode: this.isSandbox()
         }
       };
     } catch (error: any) {
@@ -343,7 +351,7 @@ export class AmazonService {
       logger.info(`Fetching inventory for account ${accountId} from SP-API`, {
         baseUrl: this.baseUrl,
         marketplaceId,
-        isSandbox: this.baseUrl.includes('sandbox')
+        isSandbox: this.isSandbox()
       });
 
       // Build params - sandbox may not support granularityType
@@ -352,7 +360,7 @@ export class AmazonService {
       };
 
       // Only include granularityType for production (sandbox may not support it)
-      if (!this.baseUrl.includes('sandbox')) {
+      if (!this.isSandbox()) {
         params.granularityType = 'Marketplace';
         params.granularityId = marketplaceId;
       }
@@ -371,15 +379,17 @@ export class AmazonService {
         }
       );
 
+      // Handle both production and sandbox response formats
       const payload = response.data?.payload || response.data;
       const summaries = payload?.inventorySummaries || (Array.isArray(payload) ? payload : []);
       
       logger.info(`Successfully fetched ${summaries.length} inventory items from SP-API`, {
         itemCount: summaries.length,
-        accountId
+        accountId,
+        isSandbox: this.isSandbox()
       });
 
-      // Transform SP-API response to our format
+      // Transform SP-API response to our format (handle both formats)
       const inventory = summaries.map((item: any) => ({
         sku: item.sellerSku || item.sku,
         asin: item.asin,
@@ -397,20 +407,145 @@ export class AmazonService {
         success: true, 
         data: inventory, 
         message: `Fetched ${inventory.length} inventory items from SP-API`,
-        fromApi: true  // Flag to indicate this is real API data, not mock
+        fromApi: true,  // Flag to indicate this is real API data, not mock
+        isSandbox: this.isSandbox()
       };
     } catch (error: any) {
+      // Enhanced error logging for sandbox vs production
+      const errorDetails = error.response?.data?.errors?.[0] || {};
       logger.error("Error fetching Amazon inventory from SP-API:", {
         error: error.message,
         status: error.response?.status,
         statusText: error.response?.statusText,
+        errorCode: errorDetails.code,
+        errorMessage: errorDetails.message,
         data: error.response?.data,
-        accountId
+        accountId,
+        isSandbox: this.isSandbox()
       });
       
       // Don't silently fall back to mock data - throw error so caller knows
       // This ensures sync jobs can track failures properly
-      throw new Error(`Failed to fetch inventory from SP-API: ${error.response?.data?.errors?.[0]?.message || error.message}`);
+      // For sandbox, provide more helpful error messages
+      const errorMessage = errorDetails.message || error.message;
+      if (this.isSandbox() && error.response?.status === 400) {
+        throw new Error(`Sandbox API error: ${errorMessage}. Note: Sandbox may have limited endpoint support.`);
+      }
+      throw new Error(`Failed to fetch inventory from SP-API: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Get seller information and marketplace participations from Amazon SP-API
+   * Handles both production and sandbox response formats
+   */
+  async getSellersInfo(): Promise<any> {
+    try {
+      const accessToken = await this.getAccessToken();
+      const sellersUrl = `${this.baseUrl}/sellers/v1/marketplaceParticipations`;
+
+      logger.info('Fetching seller information from SP-API', {
+        baseUrl: this.baseUrl,
+        isSandbox: this.isSandbox()
+      });
+
+      const response = await axios.get(sellersUrl, {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'x-amz-access-token': accessToken,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      });
+
+      if (response.status === 200) {
+        const data = response.data;
+        const payload = data.payload || data;
+
+        // Handle different response formats:
+        // Production: {"payload": {"marketplaceParticipations": [...]}}
+        // Sandbox: {"payload": [...]} or just [...]
+        let participations: any[] = [];
+        
+        if (Array.isArray(payload)) {
+          // Sandbox format: payload is directly an array
+          participations = payload;
+        } else if (typeof payload === 'object' && payload !== null) {
+          // Production format: payload has marketplaceParticipations key
+          participations = payload.marketplaceParticipations || [];
+          
+          // Alternative sandbox format: payload is the participation itself
+          if (participations.length === 0 && payload.marketplace) {
+            participations = [payload];
+          }
+        }
+
+        // Extract seller info
+        const sellerInfo: any = {};
+        const marketplaces: any[] = [];
+
+        if (participations.length > 0) {
+          const first = participations[0];
+
+          // Extract seller/store info - handle both formats
+          sellerInfo.seller_id = first.participation?.sellerId || first.sellerId;
+          sellerInfo.seller_name = 
+            first.participation?.sellerName || 
+            first.storeName || 
+            first.sellerName || 
+            'Unknown Seller';
+          sellerInfo.store_name = first.storeName;
+          sellerInfo.has_suspended_participation = 
+            first.participation?.hasSuspendedParticipation || 
+            first.participation?.hasSuspendedListings || 
+            false;
+
+          // Extract marketplace info
+          for (const p of participations) {
+            const mpData = p.marketplace || p;
+            if (mpData && (mpData.id || mpData.marketplaceId)) {
+              marketplaces.push({
+                id: mpData.id || mpData.marketplaceId,
+                name: mpData.name || 'Unknown Marketplace',
+                country_code: mpData.countryCode,
+                currency_code: mpData.defaultCurrencyCode || mpData.currencyCode,
+                language_code: mpData.defaultLanguageCode || mpData.languageCode,
+                domain: mpData.domainName || mpData.domain
+              });
+            }
+          }
+        }
+
+        return {
+          success: true,
+          seller_info: sellerInfo,
+          marketplaces: marketplaces,
+          total_marketplaces: marketplaces.length,
+          raw_response: data, // Include for debugging
+          is_sandbox: this.isSandbox()
+        };
+      } else {
+        const errorText = response.data || response.statusText;
+        logger.error('Sellers API failed', {
+          status: response.status,
+          error: errorText
+        });
+        return {
+          success: false,
+          error: `Sellers API error: ${response.status}`,
+          details: errorText
+        };
+      }
+    } catch (error: any) {
+      logger.error('Failed to get sellers info', {
+        error: error.message,
+        status: error.response?.status,
+        data: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.response?.data?.errors?.[0]?.message || error.message
+      };
     }
   }
 
