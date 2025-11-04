@@ -491,6 +491,87 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
             }
         )
 
+@app.get("/api/v1/integrations/amazon/test-connection")
+async def test_amazon_spapi_connection(user: dict = Depends(get_current_user)):
+    """Test Amazon SP-API connection - verifies credentials and fetches real data"""
+    from .integrations.amazon_spapi_service import amazon_spapi_service
+    
+    try:
+        logger.info(f"Testing Amazon SP-API connection for user {user.get('user_id')}")
+        
+        # Test the connection
+        result = await amazon_spapi_service.test_connection()
+        
+        return JSONResponse(
+            content=result,
+            status_code=200 if result.get("success") else 502
+        )
+        
+    except Exception as e:
+        logger.error(f"Amazon SP-API connection test failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": str(e),
+                "message": "Failed to test Amazon SP-API connection"
+            }
+        )
+
+@app.get("/api/v1/integrations/amazon/sellers-info")
+async def get_amazon_sellers_info(user: dict = Depends(get_current_user)):
+    """Get Amazon seller information and marketplace participations - real SP-API data"""
+    from .integrations.amazon_spapi_service import amazon_spapi_service
+    
+    try:
+        logger.info(f"Getting Amazon sellers info for user {user.get('user_id')}")
+        
+        # Get sellers info
+        result = await amazon_spapi_service.get_sellers_info()
+        
+        return JSONResponse(
+            content=result,
+            status_code=200 if result.get("success") else 502
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to get Amazon sellers info: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": str(e),
+                "message": "Failed to get Amazon sellers information"
+            }
+        )
+
+@app.get("/api/v1/integrations/amazon/inventory-real")
+async def get_amazon_inventory_real(user: dict = Depends(get_current_user)):
+    """Get real Amazon inventory data from SP-API"""
+    from .integrations.amazon_spapi_service import amazon_spapi_service
+    
+    try:
+        logger.info(f"Getting real Amazon inventory for user {user.get('user_id')}")
+        
+        # Get inventory summaries
+        result = await amazon_spapi_service.get_inventory_summaries()
+        
+        return JSONResponse(
+            content=result,
+            status_code=200 if result.get("success") else 502
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to get Amazon inventory: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": str(e),
+                "message": "Failed to get Amazon inventory"
+            }
+        )
+
 @app.post("/api/v1/integrations/amazon/start-sync")
 async def start_amazon_sync():
     # Redirect to existing sync start endpoint

@@ -159,6 +159,68 @@ class AmazonSPAPIService:
                 "error": str(e)
             }
     
+    async def get_inventory_summaries(self, marketplace_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Get FBA inventory summaries from Amazon SP-API"""
+        try:
+            await self._ensure_valid_token()
+            
+            if not marketplace_ids:
+                # Try to get marketplace IDs from sellers info first
+                sellers_info = await self.get_sellers_info()
+                if sellers_info.get("success") and sellers_info.get("marketplaces"):
+                    marketplace_ids = [mp["id"] for mp in sellers_info.get("marketplaces", [])]
+                else:
+                    # Fallback to default US marketplace
+                    marketplace_ids = ["ATVPDKIKX0DER"]
+            
+            inventory_url = f"{self.base_url}/fba/inventory/v1/summaries"
+            # For sandbox, the API format might be different - try without granularityType first
+            params = {
+                "marketplaceIds": ",".join(marketplace_ids)
+            }
+            
+            # Try with granularityType for production, but sandbox may not support it
+            if "sandbox" not in self.base_url.lower():
+                params["granularityType"] = "Marketplace"
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    inventory_url,
+                    headers={
+                        "Authorization": f"Bearer {self.access_token}",
+                        "x-amz-access-token": self.access_token,
+                    },
+                    params=params,
+                    timeout=30.0
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    payload = data.get("payload") or data
+                    summaries = payload.get("inventorySummaries", []) if isinstance(payload, dict) else []
+                    
+                    return {
+                        "success": True,
+                        "total_items": len(summaries),
+                        "inventory_summaries": summaries[:10],  # Return first 10 for verification
+                        "marketplace_ids": marketplace_ids
+                    }
+                else:
+                    error_text = response.text
+                    logger.error(f"Inventory API failed: {response.status_code} - {error_text}")
+                    return {
+                        "success": False,
+                        "error": f"Inventory API error: {response.status_code}",
+                        "details": error_text
+                    }
+                    
+        except Exception as e:
+            logger.error(f"Failed to get inventory summaries: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
     async def get_user_submissions(
         self, 
         user_id: str, 
@@ -225,15 +287,17 @@ class AmazonSPAPIService:
     async def _refresh_access_token(self):
         """Refresh SP-API access token"""
         try:
+            # Use LWA (Login with Amazon) token endpoint, NOT SP-API endpoint
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{self.base_url}/auth/token",
+                    "https://api.amazon.com/auth/o2/token",  # LWA endpoint
                     data={
                         "grant_type": "refresh_token",
                         "refresh_token": self.refresh_token,
                         "client_id": self.client_id,
                         "client_secret": self.client_secret
                     },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
                     timeout=30.0
                 )
                 
@@ -243,12 +307,168 @@ class AmazonSPAPIService:
                     expires_in = data.get("expires_in", 3600)
                     self.token_expires_at = datetime.utcnow() + timedelta(seconds=expires_in - 60)
                     logger.info("SP-API access token refreshed successfully")
+                    return True
                 else:
-                    raise Exception(f"Token refresh failed: {response.status_code} - {response.text}")
+                    error_text = response.text
+                    logger.error(f"Token refresh failed: {response.status_code} - {error_text}")
+                    raise Exception(f"Token refresh failed: {response.status_code} - {error_text}")
                     
         except Exception as e:
             logger.error(f"Failed to refresh SP-API token: {e}")
             raise
+    
+    async def test_connection(self) -> Dict[str, Any]:
+        """Test Amazon SP-API connection - verifies credentials and API access"""
+        try:
+            # Step 1: Refresh access token
+            logger.info("Testing Amazon SP-API connection - refreshing token...")
+            await self._refresh_access_token()
+            
+            if not self.access_token:
+                return {
+                    "success": False,
+                    "error": "Failed to obtain access token",
+                    "details": "Token refresh returned no access token"
+                }
+            
+            # Step 2: Test Sellers API (marketplaceParticipations) - this is the key test
+            logger.info("Testing Sellers API (marketplaceParticipations)...")
+            sellers_result = await self.get_sellers_info()
+            
+            if not sellers_result.get("success"):
+                return {
+                    "success": False,
+                    "error": "Sellers API test failed",
+                    "details": sellers_result.get("error"),
+                    "token_obtained": True
+                }
+            
+            # Step 3: Try to fetch inventory (optional - may not have permissions)
+            inventory_result = None
+            try:
+                logger.info("Testing Inventory API...")
+                inventory_result = await self.get_inventory_summaries()
+            except Exception as inv_error:
+                logger.warning(f"Inventory API test failed (may not have permissions): {inv_error}")
+                inventory_result = {"success": False, "error": str(inv_error), "optional": True}
+            
+            return {
+                "success": True,
+                "message": "Amazon SP-API connection successful",
+                "base_url": self.base_url,
+                "is_sandbox": "sandbox" in self.base_url.lower(),
+                "token_status": "valid",
+                "token_expires_at": self.token_expires_at.isoformat() if self.token_expires_at else None,
+                "sellers_info": sellers_result,
+                "inventory_test": inventory_result,
+                "permissions": {
+                    "sellers_api": sellers_result.get("success", False),
+                    "inventory_api": inventory_result.get("success", False) if inventory_result else False
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Amazon SP-API connection test failed: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "details": "Connection test exception"
+            }
+    
+    async def get_sellers_info(self) -> Dict[str, Any]:
+        """Get seller information and marketplace participations"""
+        try:
+            await self._ensure_valid_token()
+            
+            sellers_url = f"{self.base_url}/sellers/v1/marketplaceParticipations"
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    sellers_url,
+                    headers={
+                        "Authorization": f"Bearer {self.access_token}",
+                        "x-amz-access-token": self.access_token,
+                    },
+                    timeout=30.0
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    payload = data.get("payload") or data
+                    
+                    # Handle both formats:
+                    # Production: {"payload": {"marketplaceParticipations": [...]}}
+                    # Sandbox: {"payload": [...]} or just [...]
+                    participations = []
+                    if isinstance(payload, dict):
+                        participations = payload.get("marketplaceParticipations", [])
+                        # If payload is the participation itself
+                        if not participations and "marketplace" in payload:
+                            participations = [payload]
+                    elif isinstance(payload, list):
+                        participations = payload
+                    
+                    # Extract seller info
+                    seller_info = {}
+                    marketplaces = []
+                    
+                    if isinstance(participations, list) and len(participations) > 0:
+                        first = participations[0]
+                        
+                        # Extract seller/store info
+                        seller_id = (first.get("participation") or {}).get("sellerId") or first.get("sellerId")
+                        seller_name = (
+                            first.get("participation") or {}
+                        ).get("sellerName") or first.get("storeName") or first.get("sellerName")
+                        has_suspended = (
+                            (first.get("participation") or {}).get("hasSuspendedParticipation", False) or
+                            (first.get("participation") or {}).get("hasSuspendedListings", False)
+                        )
+                        
+                        seller_info = {
+                            "seller_id": seller_id,
+                            "seller_name": seller_name,
+                            "store_name": first.get("storeName"),
+                            "has_suspended_participation": has_suspended
+                        }
+                        
+                        # Extract marketplace info
+                        for p in participations:
+                            mp_data = p.get("marketplace") or {}
+                            if mp_data:
+                                mp_id = mp_data.get("id")
+                                mp_name = mp_data.get("name")
+                                if mp_id:
+                                    marketplaces.append({
+                                        "id": mp_id,
+                                        "name": mp_name,
+                                        "country_code": mp_data.get("countryCode"),
+                                        "currency_code": mp_data.get("defaultCurrencyCode"),
+                                        "language_code": mp_data.get("defaultLanguageCode"),
+                                        "domain": mp_data.get("domainName")
+                                    })
+                    
+                    return {
+                        "success": True,
+                        "seller_info": seller_info,
+                        "marketplaces": marketplaces,
+                        "total_marketplaces": len(marketplaces),
+                        "raw_response": data  # Include for debugging
+                    }
+                else:
+                    error_text = response.text
+                    logger.error(f"Sellers API failed: {response.status_code} - {error_text}")
+                    return {
+                        "success": False,
+                        "error": f"Sellers API error: {response.status_code}",
+                        "details": error_text
+                    }
+                    
+        except Exception as e:
+            logger.error(f"Failed to get sellers info: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
     
     async def _prepare_submission_payload(
         self, 
