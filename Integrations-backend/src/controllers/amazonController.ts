@@ -23,8 +23,15 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
         
         logger.info('Bypassing OAuth flow - using existing refresh token');
         
-        // Redirect directly to success (token already exists)
-        return res.redirect(302, `${frontendUrl}/dashboard?amazon_connected=true&message=${encodeURIComponent('Using existing Amazon connection')}`);
+        // Return JSON response with redirect URL (frontend will handle navigation)
+        // This works for both fetch requests and direct browser navigation
+        return res.json({
+          success: true,
+          ok: true,
+          bypassed: true,
+          message: 'Using existing Amazon connection',
+          redirectUrl: `${frontendUrl}/dashboard?amazon_connected=true&message=${encodeURIComponent('Using existing Amazon connection')}`
+        });
       }
     }
     
