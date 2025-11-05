@@ -25,12 +25,52 @@ async def get_recovery_metrics(
         user_id = user["user_id"]
         logger.info(f"Getting recovery metrics for user {user_id}, period={period}")
         
-        # Call real refund engine service for claim stats
-        result = await refund_engine_client.get_claim_stats(user_id)
+        # Call real refund engine service for claim stats with timeout
+        import asyncio
+        try:
+            result = await asyncio.wait_for(
+                refund_engine_client.get_claim_stats(user_id),
+                timeout=10.0  # 10 second timeout
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Metrics request timed out for user {user_id}")
+            # Return empty metrics instead of failing
+            result = {
+                "total_claims": 0,
+                "total_amount": 0,
+                "approved_claims": 0,
+                "approved_amount": 0,
+                "pending_claims": 0,
+                "pending_amount": 0,
+                "rejected_claims": 0,
+                "rejected_amount": 0,
+                "success_rate": 0,
+                "average_claim_amount": 0,
+                "recent_activity": [],
+                "upcoming_payouts": [],
+                "monthly_breakdown": [],
+                "top_claim_types": []
+            }
         
         if "error" in result:
-            logger.error(f"Get recovery metrics failed: {result['error']}")
-            raise HTTPException(status_code=502, detail=f"Refund engine error: {result['error']}")
+            logger.warning(f"Get recovery metrics returned error: {result['error']}, returning empty metrics")
+            # Return empty metrics instead of raising exception
+            result = {
+                "total_claims": 0,
+                "total_amount": 0,
+                "approved_claims": 0,
+                "approved_amount": 0,
+                "pending_claims": 0,
+                "pending_amount": 0,
+                "rejected_claims": 0,
+                "rejected_amount": 0,
+                "success_rate": 0,
+                "average_claim_amount": 0,
+                "recent_activity": [],
+                "upcoming_payouts": [],
+                "monthly_breakdown": [],
+                "top_claim_types": []
+            }
         
         # Calculate date range based on period
         now = datetime.utcnow()
