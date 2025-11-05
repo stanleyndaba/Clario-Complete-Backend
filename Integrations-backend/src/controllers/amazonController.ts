@@ -26,6 +26,19 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     let code: string | undefined;
     let state: string | undefined;
     
+    // Log all request details for debugging
+    logger.info('Amazon OAuth callback received', {
+      method: req.method,
+      path: req.path,
+      query: req.query,
+      body: req.body,
+      headers: {
+        origin: req.headers.origin,
+        referer: req.headers.referer,
+        'content-type': req.headers['content-type']
+      }
+    });
+    
     if (req.method === 'GET') {
       // GET request - read from query params
       code = req.query.code as string;
@@ -38,9 +51,23 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     }
 
     if (!code) {
+      // More detailed error message
+      const errorMessage = req.method === 'GET' 
+        ? 'Authorization code is required. This endpoint should be called by Amazon after OAuth authorization. Make sure you complete the OAuth flow by visiting the auth URL first.'
+        : 'Authorization code is required in the request body or query parameters.';
+      
+      logger.warn('Amazon callback called without authorization code', {
+        method: req.method,
+        path: req.path,
+        query: req.query,
+        body: req.body,
+        errorMessage
+      });
+      
       res.status(400).json({
         success: false,
-        error: 'Authorization code is required'
+        error: errorMessage,
+        hint: 'Did you call /auth/start first? This callback endpoint should only be called by Amazon after you authorize the app.'
       });
       return;
     }
