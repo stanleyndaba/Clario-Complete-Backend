@@ -3,14 +3,41 @@ import amazonService from '../services/amazonService';
 import logger from '../utils/logger';
 import tokenManager from '../utils/tokenManager';
 import { diagnoseSandboxConnection } from '../utils/sandboxDiagnostics';
+import oauthStateStore from '../utils/oauthStateStore';
 
-export const startAmazonOAuth = async (_req: Request, res: Response) => {
+export const startAmazonOAuth = async (req: Request, res: Response) => {
   try {
+    // Extract frontend_url from query parameters (prioritize frontend_url param)
+    const frontendUrl = req.query.frontend_url as string 
+      || req.headers.origin 
+      || process.env.FRONTEND_URL 
+      || 'http://localhost:3000';
+
+    logger.info('Starting OAuth flow', {
+      frontendUrl,
+      hasFrontendUrlParam: !!req.query.frontend_url,
+      hasOriginHeader: !!req.headers.origin,
+      hasEnvVar: !!process.env.FRONTEND_URL
+    });
+
     const result = await amazonService.startOAuth();
+    
+    // Store frontend URL with OAuth state for later redirect
+    if (result.state) {
+      oauthStateStore.set(result.state, {
+        frontendUrl,
+        timestamp: Date.now()
+      });
+      logger.info('Stored frontend URL with OAuth state', {
+        state: result.state,
+        frontendUrl
+      });
+    }
     
     logger.info('OAuth flow initiated successfully', {
       hasAuthUrl: !!result.authUrl,
-      authUrlLength: result.authUrl?.length
+      authUrlLength: result.authUrl?.length,
+      state: result.state
     });
     
     res.json({
@@ -94,7 +121,15 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           return res.status(500).json(errorResponse);
         }
         
-        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        // Try to get frontend URL from state if available
+        const stateFromQuery = req.query.state as string;
+        let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        if (stateFromQuery) {
+          const storedState = oauthStateStore.get(stateFromQuery);
+          if (storedState?.frontendUrl) {
+            frontendUrl = storedState.frontendUrl;
+          }
+        }
         const errorUrl = `${frontendUrl}/dashboard?error=${encodeURIComponent('oauth_config_error')}&amazon_error=true`;
         return res.redirect(302, errorUrl);
       }
@@ -135,7 +170,15 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       const errorParam = req.query.error as string;
       if (errorParam) {
         logger.error('Amazon OAuth error received', { error: errorParam, errorDescription: req.query.error_description });
-        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        // Try to get frontend URL from state if available
+        const stateFromQuery = req.query.state as string;
+        let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        if (stateFromQuery) {
+          const storedState = oauthStateStore.get(stateFromQuery);
+          if (storedState?.frontendUrl) {
+            frontendUrl = storedState.frontendUrl;
+          }
+        }
         const errorUrl = `${frontendUrl}/dashboard?error=${encodeURIComponent(errorParam)}&amazon_error=true&error_description=${encodeURIComponent(req.query.error_description as string || '')}`;
         return res.redirect(302, errorUrl);
       }
@@ -205,14 +248,36 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     }
     
     // For GET requests, redirect to frontend
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    // Retrieve stored frontend URL from OAuth state (if available)
+    let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    
+    if (state) {
+      const storedState = oauthStateStore.get(state);
+      if (storedState?.frontendUrl) {
+        frontendUrl = storedState.frontendUrl;
+        logger.info('Retrieved frontend URL from OAuth state', {
+          state,
+          frontendUrl
+        });
+        // Clean up stored state (one-time use)
+        oauthStateStore.delete(state);
+      } else {
+        logger.warn('OAuth state not found or expired, using default FRONTEND_URL', {
+          state,
+          frontendUrl
+        });
+      }
+    } else {
+      logger.warn('No OAuth state provided, using default FRONTEND_URL', { frontendUrl });
+    }
+    
     const redirectUrl = `${frontendUrl}/dashboard?amazon_connected=true&message=${encodeURIComponent(result.message || 'Connected successfully')}`;
     
     // Set session cookie if we have tokens
     if (result.data?.refresh_token) {
       // In production, you would create a proper session here
       // For now, just redirect to frontend
-      logger.info('Tokens obtained, redirecting to frontend');
+      logger.info('Tokens obtained, redirecting to frontend', { frontendUrl, redirectUrl });
     }
     
     res.redirect(302, redirectUrl);
@@ -242,7 +307,15 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     }
     
     // For GET requests, redirect to error page
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    // Try to get frontend URL from state if available
+    const stateFromQuery = req.query.state as string;
+    let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    if (stateFromQuery) {
+      const storedState = oauthStateStore.get(stateFromQuery);
+      if (storedState?.frontendUrl) {
+        frontendUrl = storedState.frontendUrl;
+      }
+    }
     // Redirect to a page that can handle the error (not /auth/analyzing which doesn't load)
     // Use dashboard or a proper error page
     const errorUrl = `${frontendUrl}/dashboard?error=${encodeURIComponent(error.message || 'oauth_failed')}&amazon_error=true`;
