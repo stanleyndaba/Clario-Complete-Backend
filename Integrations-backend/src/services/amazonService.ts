@@ -191,6 +191,14 @@ export class AmazonService {
 
   async startOAuth() {
     try {
+      // Check if we already have a refresh token - if so, we can skip OAuth
+      const existingRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
+      if (existingRefreshToken && existingRefreshToken.trim() !== '') {
+        logger.info('Refresh token already exists - OAuth may not be needed if token is valid');
+        // Continue with OAuth URL generation anyway, but note that token exists
+        // The user can still use existing token if they have it
+      }
+      
       // Get client ID (checks both variable names for consistency)
       const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
       

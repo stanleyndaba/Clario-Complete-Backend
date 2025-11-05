@@ -7,6 +7,27 @@ import oauthStateStore from '../utils/oauthStateStore';
 
 export const startAmazonOAuth = async (req: Request, res: Response) => {
   try {
+    // Check if we already have a refresh token - if so, we can skip OAuth
+    const existingRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
+    if (existingRefreshToken && existingRefreshToken.trim() !== '') {
+      logger.info('Refresh token already exists in environment - user can skip OAuth if token is valid');
+      // Check if user wants to skip OAuth (bypass parameter)
+      const bypassOAuth = req.query.bypass === 'true' || req.query.skip_oauth === 'true';
+      
+      if (bypassOAuth) {
+        // User wants to skip OAuth and use existing token
+        const frontendUrl = req.query.frontend_url as string 
+          || req.headers.origin 
+          || process.env.FRONTEND_URL 
+          || 'http://localhost:3000';
+        
+        logger.info('Bypassing OAuth flow - using existing refresh token');
+        
+        // Redirect directly to success (token already exists)
+        return res.redirect(302, `${frontendUrl}/dashboard?amazon_connected=true&message=${encodeURIComponent('Using existing Amazon connection')}`);
+      }
+    }
+    
     // Extract frontend_url from query parameters (prioritize frontend_url param)
     const frontendUrl = req.query.frontend_url as string 
       || req.headers.origin 
@@ -17,7 +38,8 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
       frontendUrl,
       hasFrontendUrlParam: !!req.query.frontend_url,
       hasOriginHeader: !!req.headers.origin,
-      hasEnvVar: !!process.env.FRONTEND_URL
+      hasEnvVar: !!process.env.FRONTEND_URL,
+      hasExistingRefreshToken: !!existingRefreshToken
     });
 
     const result = await amazonService.startOAuth();
