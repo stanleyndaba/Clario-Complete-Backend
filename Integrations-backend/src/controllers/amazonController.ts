@@ -352,20 +352,39 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
   }
 };
 
-export const syncAmazonData = async (_req: Request, res: Response) => {
+export const syncAmazonData = async (req: Request, res: Response) => {
   try {
-    const result = await amazonService.syncData('demo-user');
+    // Get user ID from request (set by auth middleware if available)
+    const userId = (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    
+    logger.info(`🔄 Starting Amazon data sync for user: ${userId}`);
+    logger.info(`📡 This will fetch data from SP-API sandbox (if connected)`);
+    
+    const result = await amazonService.syncData(userId);
+    
+    logger.info(`✅ Sync completed for user ${userId}:`, {
+      claimsFound: result.claimsFound,
+      inventoryItems: result.inventoryItems,
+      recoveredAmount: result.recoveredAmount
+    });
     
     res.json({
       success: true,
-      message: 'Data sync completed',
-      data: result
+      message: 'Data sync completed successfully',
+      data: result,
+      userId: userId,
+      source: 'spapi_sandbox'
     });
-  } catch (error) {
-    logger.error('Data sync error', { error });
+  } catch (error: any) {
+    logger.error('❌ Data sync error:', {
+      error: error.message,
+      stack: error.stack,
+      userId: (req as any).user?.id || 'unknown'
+    });
     res.status(500).json({
       success: false,
-      error: 'Failed to sync data'
+      error: 'Failed to sync data',
+      message: error.message || 'Unknown error occurred during sync'
     });
   }
 };
