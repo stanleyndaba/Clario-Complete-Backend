@@ -292,54 +292,137 @@ export class AmazonService {
     return {};
   }
 
-  async fetchClaims(accountId: string, _startDate?: Date, _endDate?: Date): Promise<any> {
+  async fetchClaims(accountId: string, startDate?: Date, endDate?: Date): Promise<any> {
     try {
-      await this.getCredentials(accountId);
-      logger.info(`Fetching claims for account ${accountId}`);
+      const accessToken = await this.getAccessToken();
+      const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
       
-      // Return realistic sandbox data for testing
+      // Default to last 90 days if no dates provided
+      const postedAfter = startDate || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+      const postedBefore = endDate || new Date();
+      
+      logger.info(`Fetching claims/reimbursements for account ${accountId} from SP-API`, {
+        baseUrl: this.baseUrl,
+        marketplaceId,
+        postedAfter: postedAfter.toISOString(),
+        postedBefore: postedBefore.toISOString(),
+        isSandbox: this.isSandbox()
+      });
+
+      // Use Financial Events API to get reimbursements (claims)
+      // Financial Events includes: Reimbursement events, Adjustments, etc.
+      const params: any = {
+        PostedAfter: postedAfter.toISOString(),
+        PostedBefore: postedBefore.toISOString(),
+        MarketplaceIds: marketplaceId
+      };
+
+      let allClaims: any[] = [];
+      let nextToken: string | undefined = undefined;
+
+      // Paginate through all financial events
+      do {
+        if (nextToken) {
+          params.NextToken = nextToken;
+        }
+
+        const response = await axios.get(
+          `${this.baseUrl}/finances/v0/financialEvents`,
+          {
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'x-amz-access-token': accessToken,
+              'Content-Type': 'application/json'
+            },
+            params,
+            timeout: 30000
+          }
+        );
+
+        const payload = response.data?.payload || response.data;
+        const financialEvents = payload?.FinancialEvents || {};
+        
+        // Extract reimbursement events (these are the "claims")
+        const reimbursements = financialEvents.FBALiquidationEventList || [];
+        const adjustments = financialEvents.AdjustmentEventList || [];
+        
+        // Transform reimbursements into claims format
+        for (const reimbursement of reimbursements) {
+          allClaims.push({
+            id: reimbursement.OriginalRemovalOrderId || `RMB-${Date.now()}`,
+            orderId: reimbursement.OriginalRemovalOrderId,
+            amount: parseFloat(reimbursement.LiquidationProceedsAmount?.CurrencyAmount || '0'),
+            status: 'approved', // Reimbursements from Financial Events are already processed
+            type: 'liquidation_reimbursement',
+            currency: reimbursement.LiquidationProceedsAmount?.CurrencyCode || 'USD',
+            createdAt: reimbursement.PostedDate || new Date().toISOString(),
+            description: `FBA Liquidation reimbursement for ${reimbursement.OriginalRemovalOrderId || 'N/A'}`,
+            fromApi: true
+          });
+        }
+        
+        // Transform adjustment events (some are reimbursements)
+        for (const adjustment of adjustments) {
+          const adjustmentAmount = adjustment.AdjustmentAmount?.CurrencyAmount || '0';
+          const amount = parseFloat(adjustmentAmount);
+          
+          // Only include positive adjustments (reimbursements), not charges
+          if (amount > 0) {
+            allClaims.push({
+              id: adjustment.AdjustmentEventId || `ADJ-${Date.now()}`,
+              orderId: adjustment.AdjustmentEventId,
+              amount: amount,
+              status: 'approved',
+              type: 'adjustment_reimbursement',
+              currency: adjustment.AdjustmentAmount?.CurrencyCode || 'USD',
+              createdAt: adjustment.PostedDate || new Date().toISOString(),
+              description: adjustment.AdjustmentType || 'Amazon adjustment reimbursement',
+              fromApi: true
+            });
+          }
+        }
+        
+        // Check for next token (pagination)
+        nextToken = payload?.NextToken;
+        
+        // Rate limiting: respect SP-API limits
+        if (nextToken) {
+          await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay between pages
+        }
+      } while (nextToken);
+
+      logger.info(`Successfully fetched ${allClaims.length} claims/reimbursements from SP-API`, {
+        itemCount: allClaims.length,
+        accountId,
+        isSandbox: this.isSandbox()
+      });
+
       return { 
         success: true, 
-        data: [
-          {
-            id: 'CLM-001',
-            orderId: '123-4567890-1234567',
-            amount: 45.50,
-            status: 'pending',
-            type: 'lost_inventory',
-            sku: 'TEST-SKU-001',
-            asin: 'B08N5WRWNW',
-            createdAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-            description: 'Lost inventory claim for damaged items'
-          },
-          {
-            id: 'CLM-002',
-            orderId: '123-5556666-7778888',
-            amount: 120.75,
-            status: 'approved',
-            type: 'fee_overcharge',
-            sku: 'TEST-SKU-002',
-            asin: 'B08N5XYZ123',
-            createdAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
-            description: 'FBA fee overcharge reimbursement'
-          },
-          {
-            id: 'CLM-003',
-            orderId: '123-9999888-7777666',
-            amount: 89.25,
-            status: 'under_review',
-            type: 'damaged_inventory',
-            sku: 'TEST-SKU-003',
-            asin: 'B08N5ABC456',
-            createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
-            description: 'Damaged inventory reimbursement claim'
-          }
-        ], 
-        message: "Sandbox claims data fetched successfully" 
+        data: allClaims, 
+        message: `Fetched ${allClaims.length} claims/reimbursements from SP-API`,
+        fromApi: true,
+        isSandbox: this.isSandbox()
       };
     } catch (error: any) {
-      logger.error("Error fetching Amazon claims:", error);
-      throw new Error(`Failed to fetch claims: ${error.message}`);
+      const errorDetails = error.response?.data?.errors?.[0] || {};
+      logger.error("Error fetching Amazon claims from SP-API:", {
+        error: error.message,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        errorCode: errorDetails.code,
+        errorMessage: errorDetails.message,
+        data: error.response?.data,
+        accountId,
+        isSandbox: this.isSandbox()
+      });
+      
+      // For sandbox, provide more helpful error messages
+      const errorMessage = errorDetails.message || error.message;
+      if (this.isSandbox() && error.response?.status === 400) {
+        throw new Error(`Sandbox API error: ${errorMessage}. Note: Sandbox may have limited endpoint support.`);
+      }
+      throw new Error(`Failed to fetch claims from SP-API: ${errorMessage}`);
     }
   }
 
@@ -549,61 +632,163 @@ export class AmazonService {
     }
   }
 
-  async fetchFees(accountId: string, _startDate?: Date, _endDate?: Date): Promise<any> {
+  async fetchFees(accountId: string, startDate?: Date, endDate?: Date): Promise<any> {
     try {
-      await this.getCredentials(accountId);
-      logger.info(`Fetching fees for account ${accountId}`);
+      const accessToken = await this.getAccessToken();
+      const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
       
-      // Return realistic sandbox fee data
+      // Default to last 90 days if no dates provided
+      const postedAfter = startDate || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+      const postedBefore = endDate || new Date();
+      
+      logger.info(`Fetching fees for account ${accountId} from SP-API`, {
+        baseUrl: this.baseUrl,
+        marketplaceId,
+        postedAfter: postedAfter.toISOString(),
+        postedBefore: postedBefore.toISOString(),
+        isSandbox: this.isSandbox()
+      });
+
+      // Use Financial Events API to get fee events
+      const params: any = {
+        PostedAfter: postedAfter.toISOString(),
+        PostedBefore: postedBefore.toISOString(),
+        MarketplaceIds: marketplaceId
+      };
+
+      let allFees: any[] = [];
+      let nextToken: string | undefined = undefined;
+
+      // Paginate through all financial events
+      do {
+        if (nextToken) {
+          params.NextToken = nextToken;
+        }
+
+        const response = await axios.get(
+          `${this.baseUrl}/finances/v0/financialEvents`,
+          {
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'x-amz-access-token': accessToken,
+              'Content-Type': 'application/json'
+            },
+            params,
+            timeout: 30000
+          }
+        );
+
+        const payload = response.data?.payload || response.data;
+        const financialEvents = payload?.FinancialEvents || {};
+        
+        // Extract fee events from Financial Events
+        const serviceFeeEvents = financialEvents.ServiceFeeEventList || [];
+        const orderEvents = financialEvents.OrderEventList || [];
+        const adjustmentEvents = financialEvents.AdjustmentEventList || [];
+        
+        // Process service fees (FBA fees, referral fees, etc.)
+        for (const feeEvent of serviceFeeEvents) {
+          for (const fee of feeEvent.FeeList || []) {
+            const feeAmount = fee.FeeAmount?.CurrencyAmount || '0';
+            const amount = Math.abs(parseFloat(feeAmount)); // Fees are negative, make positive
+            
+            if (amount > 0) {
+              allFees.push({
+                type: fee.FeeType || 'SERVICE_FEE',
+                amount: amount,
+                currency: fee.FeeAmount?.CurrencyCode || 'USD',
+                orderId: feeEvent.AmazonOrderId,
+                sku: feeEvent.SellerSKU,
+                asin: feeEvent.ASIN,
+                date: feeEvent.PostedDate || new Date().toISOString(),
+                description: `${fee.FeeType || 'Service fee'} for order ${feeEvent.AmazonOrderId || 'N/A'}`,
+                fromApi: true
+              });
+            }
+          }
+        }
+        
+        // Process order events (fees associated with orders)
+        for (const orderEvent of orderEvents) {
+          const order = orderEvent.OrderChargeList || [];
+          for (const charge of order) {
+            const chargeAmount = charge.ChargeAmount?.CurrencyAmount || '0';
+            const amount = Math.abs(parseFloat(chargeAmount));
+            
+            if (amount > 0 && charge.ChargeType) {
+              allFees.push({
+                type: charge.ChargeType,
+                amount: amount,
+                currency: charge.ChargeAmount?.CurrencyCode || 'USD',
+                orderId: orderEvent.AmazonOrderId,
+                date: orderEvent.PostedDate || new Date().toISOString(),
+                description: `${charge.ChargeType} for order ${orderEvent.AmazonOrderId || 'N/A'}`,
+                fromApi: true
+              });
+            }
+          }
+        }
+        
+        // Process negative adjustments (these are fees/charges)
+        for (const adjustment of adjustmentEvents) {
+          const adjustmentAmount = adjustment.AdjustmentAmount?.CurrencyAmount || '0';
+          const amount = parseFloat(adjustmentAmount);
+          
+          // Negative amounts are fees/charges
+          if (amount < 0) {
+            allFees.push({
+              type: adjustment.AdjustmentType || 'ADJUSTMENT',
+              amount: Math.abs(amount), // Make positive
+              currency: adjustment.AdjustmentAmount?.CurrencyCode || 'USD',
+              orderId: adjustment.AdjustmentEventId,
+              date: adjustment.PostedDate || new Date().toISOString(),
+              description: adjustment.AdjustmentType || 'Amazon adjustment fee',
+              fromApi: true
+            });
+          }
+        }
+        
+        // Check for next token (pagination)
+        nextToken = payload?.NextToken;
+        
+        // Rate limiting: respect SP-API limits
+        if (nextToken) {
+          await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay between pages
+        }
+      } while (nextToken);
+
+      logger.info(`Successfully fetched ${allFees.length} fees from SP-API`, {
+        itemCount: allFees.length,
+        accountId,
+        isSandbox: this.isSandbox()
+      });
+
       return { 
         success: true, 
-        data: [
-          {
-            type: 'FBA_FULFILLMENT_FEE',
-            amount: 15.50,
-            currency: 'USD',
-            orderId: '123-4567890-1234567',
-            sku: 'TEST-SKU-001',
-            asin: 'B08N5WRWNW',
-            date: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
-            description: 'FBA fulfillment fee'
-          },
-          {
-            type: 'MONTHLY_STORAGE_FEE',
-            amount: 8.25,
-            currency: 'USD',
-            orderId: null,
-            sku: 'TEST-SKU-002',
-            asin: 'B08N5XYZ123',
-            date: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-            description: 'Monthly inventory storage fee'
-          },
-          {
-            type: 'REFERRAL_FEE',
-            amount: 23.75,
-            currency: 'USD',
-            orderId: '123-5556666-7778888',
-            sku: 'TEST-SKU-003',
-            asin: 'B08N5ABC456',
-            date: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(),
-            description: 'Amazon referral fee'
-          },
-          {
-            type: 'LONG_TERM_STORAGE_FEE',
-            amount: 45.00,
-            currency: 'USD',
-            orderId: null,
-            sku: 'TEST-SKU-001',
-            asin: 'B08N5WRWNW',
-            date: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString(),
-            description: 'Long-term storage fee'
-          }
-        ], 
-        message: "Sandbox fees data fetched successfully" 
+        data: allFees, 
+        message: `Fetched ${allFees.length} fees from SP-API`,
+        fromApi: true,
+        isSandbox: this.isSandbox()
       };
     } catch (error: any) {
-      logger.error("Error fetching Amazon fees:", error);
-      throw new Error(`Failed to fetch fees: ${error.message}`);
+      const errorDetails = error.response?.data?.errors?.[0] || {};
+      logger.error("Error fetching Amazon fees from SP-API:", {
+        error: error.message,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        errorCode: errorDetails.code,
+        errorMessage: errorDetails.message,
+        data: error.response?.data,
+        accountId,
+        isSandbox: this.isSandbox()
+      });
+      
+      // For sandbox, provide more helpful error messages
+      const errorMessage = errorDetails.message || error.message;
+      if (this.isSandbox() && error.response?.status === 400) {
+        throw new Error(`Sandbox API error: ${errorMessage}. Note: Sandbox may have limited endpoint support.`);
+      }
+      throw new Error(`Failed to fetch fees from SP-API: ${errorMessage}`);
     }
   }
 }
