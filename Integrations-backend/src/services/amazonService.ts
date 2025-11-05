@@ -37,6 +37,9 @@ export class AmazonService {
   private accessToken: string | null = null;
   private tokenExpiry: Date | null = null;
   private baseUrl: string;
+  // Simple in-memory cache for Financial Events API responses
+  private financialEventsCache: Map<string, { data: any; expiresAt: Date }> = new Map();
+  private readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
   constructor() {
     // Use sandbox URL if in development, otherwise production
@@ -52,6 +55,48 @@ export class AmazonService {
   private isSandbox(): boolean {
     return this.baseUrl.includes('sandbox') || 
            process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') === true;
+  }
+
+  /**
+   * Get cache key for Financial Events API call
+   */
+  private getCacheKey(endpoint: string, params: any): string {
+    const paramStr = JSON.stringify(params);
+    return `${endpoint}:${paramStr}`;
+  }
+
+  /**
+   * Get cached response if available and not expired
+   */
+  private getCachedResponse(cacheKey: string): any | null {
+    const cached = this.financialEventsCache.get(cacheKey);
+    if (cached && cached.expiresAt > new Date()) {
+      logger.info('Returning cached Financial Events API response', { cacheKey });
+      return cached.data;
+    }
+    // Remove expired cache entry
+    if (cached) {
+      this.financialEventsCache.delete(cacheKey);
+    }
+    return null;
+  }
+
+  /**
+   * Store response in cache
+   */
+  private setCachedResponse(cacheKey: string, data: any): void {
+    const expiresAt = new Date(Date.now() + this.CACHE_TTL_MS);
+    this.financialEventsCache.set(cacheKey, { data, expiresAt });
+    logger.info('Cached Financial Events API response', { cacheKey, expiresAt });
+  }
+
+  /**
+   * Get rate limit delay based on environment (sandbox can be faster)
+   */
+  private getRateLimitDelay(): number {
+    // Sandbox is typically less strict, so we can use 1 second delay
+    // Production needs 2 seconds to be safe
+    return this.isSandbox() ? 1000 : 2000;
   }
 
   private async getAccessToken(): Promise<string> {
@@ -317,8 +362,24 @@ export class AmazonService {
         MarketplaceIds: marketplaceId
       };
 
+      // Check cache for first page (subsequent pages are less cacheable)
+      const cacheKey = this.getCacheKey('financialEvents', { ...params, endpoint: 'claims' });
+      const cached = this.getCachedResponse(cacheKey);
+      if (cached && !params.NextToken) {
+        logger.info('Using cached claims data', { itemCount: cached.length });
+        return {
+          success: true,
+          data: cached,
+          message: `Fetched ${cached.length} claims/reimbursements from SP-API (cached)`,
+          fromApi: true,
+          isSandbox: this.isSandbox(),
+          cached: true
+        };
+      }
+
       let allClaims: any[] = [];
       let nextToken: string | undefined = undefined;
+      const rateLimitDelay = this.getRateLimitDelay();
 
       // Paginate through all financial events
       do {
@@ -385,17 +446,23 @@ export class AmazonService {
         // Check for next token (pagination)
         nextToken = payload?.NextToken;
         
-        // Rate limiting: respect SP-API limits
+        // Rate limiting: respect SP-API limits (faster for sandbox)
         if (nextToken) {
-          await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay between pages
+          await new Promise(resolve => setTimeout(resolve, rateLimitDelay));
         }
       } while (nextToken);
 
       logger.info(`Successfully fetched ${allClaims.length} claims/reimbursements from SP-API`, {
         itemCount: allClaims.length,
         accountId,
-        isSandbox: this.isSandbox()
+        isSandbox: this.isSandbox(),
+        cacheUsed: false
       });
+
+      // Cache the first page result
+      if (!params.NextToken) {
+        this.setCachedResponse(cacheKey, allClaims);
+      }
 
       return { 
         success: true, 
@@ -656,8 +723,24 @@ export class AmazonService {
         MarketplaceIds: marketplaceId
       };
 
+      // Check cache for first page
+      const cacheKey = this.getCacheKey('financialEvents', { ...params, endpoint: 'fees' });
+      const cached = this.getCachedResponse(cacheKey);
+      if (cached && !params.NextToken) {
+        logger.info('Using cached fees data', { itemCount: cached.length });
+        return {
+          success: true,
+          data: cached,
+          message: `Fetched ${cached.length} fees from SP-API (cached)`,
+          fromApi: true,
+          isSandbox: this.isSandbox(),
+          cached: true
+        };
+      }
+
       let allFees: any[] = [];
       let nextToken: string | undefined = undefined;
+      const rateLimitDelay = this.getRateLimitDelay();
 
       // Paginate through all financial events
       do {
@@ -751,17 +834,23 @@ export class AmazonService {
         // Check for next token (pagination)
         nextToken = payload?.NextToken;
         
-        // Rate limiting: respect SP-API limits
+        // Rate limiting: respect SP-API limits (faster for sandbox)
         if (nextToken) {
-          await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay between pages
+          await new Promise(resolve => setTimeout(resolve, rateLimitDelay));
         }
       } while (nextToken);
 
       logger.info(`Successfully fetched ${allFees.length} fees from SP-API`, {
         itemCount: allFees.length,
         accountId,
-        isSandbox: this.isSandbox()
+        isSandbox: this.isSandbox(),
+        cacheUsed: false
       });
+
+      // Cache the first page result
+      if (!params.NextToken) {
+        this.setCachedResponse(cacheKey, allFees);
+      }
 
       return { 
         success: true, 
