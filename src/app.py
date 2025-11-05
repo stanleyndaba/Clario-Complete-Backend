@@ -446,64 +446,108 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
     """Get Amazon recovery summary - returns totalAmount, currency, and claimCount"""
     from fastapi.responses import JSONResponse
     import httpx
+    import time
     from .common.config import settings
     
     try:
         user_id = user["user_id"]
-        logger.info(f"Getting Amazon recoveries summary for user {user_id}")
+        logger.info(f"🔍 Getting Amazon recoveries summary for user {user_id}")
         
         # Call Node.js backend's Amazon service to get real SP-API data
         # The Node.js backend has the actual Amazon SP-API integration
         integrations_url = settings.INTEGRATIONS_URL or "http://localhost:3001"
+        claims_url = f"{integrations_url}/api/v1/integrations/amazon/claims"
+        
+        logger.info(f"📍 Calling Node.js backend: {claims_url}")
+        logger.info(f"🔗 INTEGRATIONS_URL: {integrations_url}")
         
         try:
+            start_time = time.time()
             async with httpx.AsyncClient(timeout=30.0) as client:
                 # First, try to get claims/reimbursements from Node.js backend
                 # This calls the real SP-API directly
-                claims_response = await client.get(
-                    f"{integrations_url}/api/v1/integrations/amazon/claims",
-                    headers={
-                        "Content-Type": "application/json",
-                        # Forward user context if needed
-                    },
-                    cookies=request.cookies  # Forward auth cookies if needed
-                )
-                
-                if claims_response.status_code == 200:
-                    claims_data = claims_response.json()
-                    claims = claims_data.get("claims", []) or claims_data.get("data", [])
+                try:
+                    claims_response = await client.get(
+                        claims_url,
+                        headers={
+                            "Content-Type": "application/json",
+                            # Forward user context if needed
+                        },
+                        cookies=request.cookies  # Forward auth cookies if needed
+                    )
+                    elapsed_time = time.time() - start_time
                     
-                    # If we got claims, calculate totals
-                    if isinstance(claims, list) and len(claims) > 0:
-                        total_amount = sum(
-                            float(claim.get("amount", 0) or 0)
-                            for claim in claims
-                            if claim.get("status") == "approved"
-                        )
-                        claim_count = len(claims)
+                    logger.info(f"⏱️ Node.js backend response time: {elapsed_time:.2f}s")
+                    logger.info(f"📊 Response status: {claims_response.status_code}")
+                    
+                    if claims_response.status_code == 200:
+                        claims_data = claims_response.json()
+                        logger.info(f"📦 Response data keys: {list(claims_data.keys())}")
                         
-                        logger.info(f"Got {claim_count} claims from Node.js backend, total approved amount: {total_amount}")
+                        claims = claims_data.get("claims", []) or claims_data.get("data", [])
                         
-                        return JSONResponse(
-                            content={
-                                "totalAmount": float(total_amount),
-                                "currency": "USD",
-                                "claimCount": int(claim_count)
-                            }
-                        )
+                        logger.info(f"📋 Found {len(claims) if isinstance(claims, list) else 0} claims in response")
+                        
+                        # If we got claims, calculate totals
+                        if isinstance(claims, list) and len(claims) > 0:
+                            total_amount = sum(
+                                float(claim.get("amount", 0) or 0)
+                                for claim in claims
+                                if claim.get("status") == "approved"
+                            )
+                            claim_count = len(claims)
+                            
+                            logger.info(f"✅ Got {claim_count} claims from Node.js backend, total approved amount: ${total_amount:.2f}")
+                            
+                            return JSONResponse(
+                                content={
+                                    "totalAmount": float(total_amount),
+                                    "currency": "USD",
+                                    "claimCount": int(claim_count),
+                                    "source": "nodejs_backend",
+                                    "responseTime": round(elapsed_time, 2)
+                                }
+                            )
+                        else:
+                            logger.info("⚠️ No claims returned from Node.js backend - may need to sync first")
+                            logger.info(f"📄 Full response: {claims_data}")
+                    elif claims_response.status_code == 401:
+                        logger.error(f"🔒 AUTH ERROR: Node.js backend returned 401 Unauthorized")
+                        logger.error(f"📄 Response body: {claims_response.text[:500]}")
+                    elif claims_response.status_code == 404:
+                        logger.error(f"📍 NOT FOUND: Node.js backend endpoint {claims_url} returned 404")
+                        logger.error(f"📄 Response body: {claims_response.text[:500]}")
+                    elif claims_response.status_code >= 500:
+                        logger.error(f"💥 SERVER ERROR: Node.js backend returned {claims_response.status_code}")
+                        logger.error(f"📄 Response body: {claims_response.text[:500]}")
                     else:
-                        logger.info("No claims returned from Node.js backend - may need to sync first")
-                else:
-                    logger.warning(f"Node.js backend returned {claims_response.status_code}: {claims_response.text}")
-        
-        except httpx.TimeoutException:
-            logger.warning("Timeout calling Node.js backend for Amazon claims")
-        except httpx.RequestError as e:
-            logger.warning(f"Request error calling Node.js backend: {e}")
+                        logger.warning(f"⚠️ Node.js backend returned {claims_response.status_code}: {claims_response.text[:500]}")
+                        
+                except httpx.TimeoutException as e:
+                    elapsed_time = time.time() - start_time
+                    logger.error(f"⏱️ BACKEND TIMEOUT: Node.js backend took longer than 30 seconds (elapsed: {elapsed_time:.2f}s)")
+                    logger.error(f"🔗 URL: {claims_url}")
+                    logger.error(f"❌ Timeout error: {str(e)}")
+                except httpx.RequestError as e:
+                    elapsed_time = time.time() - start_time
+                    logger.error(f"🌐 NETWORK ERROR: Cannot reach Node.js backend")
+                    logger.error(f"🔗 URL: {claims_url}")
+                    logger.error(f"⏱️ Elapsed time: {elapsed_time:.2f}s")
+                    logger.error(f"❌ Request error: {str(e)}")
+                    logger.error(f"📋 Error type: {type(e).__name__}")
+                except Exception as e:
+                    elapsed_time = time.time() - start_time
+                    logger.error(f"❌ UNEXPECTED ERROR calling Node.js backend")
+                    logger.error(f"🔗 URL: {claims_url}")
+                    logger.error(f"⏱️ Elapsed time: {elapsed_time:.2f}s")
+                    logger.error(f"❌ Error: {str(e)}")
+                    logger.error(f"📋 Error type: {type(e).__name__}", exc_info=True)
+                    
         except Exception as e:
-            logger.warning(f"Error calling Node.js backend: {e}")
+            logger.error(f"❌ Outer exception in Node.js backend call: {str(e)}", exc_info=True)
         
         # Fallback: Try refund engine (in case data was synced there)
+        logger.info(f"🔄 Trying refund engine fallback for user {user_id}")
         try:
             from .services.refund_engine_client import refund_engine_client
             result = await refund_engine_client.get_claim_stats(user_id)
@@ -513,40 +557,61 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
                 claim_count = result.get("total_claims", 0)
                 
                 if total_amount > 0 or claim_count > 0:
-                    logger.info(f"Got data from refund engine: {claim_count} claims, ${total_amount}")
+                    logger.info(f"✅ Got data from refund engine: {claim_count} claims, ${total_amount:.2f}")
                     return JSONResponse(
                         content={
                             "totalAmount": float(total_amount),
                             "currency": "USD",
-                            "claimCount": int(claim_count)
+                            "claimCount": int(claim_count),
+                            "source": "refund_engine"
                         }
                     )
+                else:
+                    logger.info(f"⚠️ Refund engine returned zero claims/amount")
+            else:
+                logger.warning(f"❌ Refund engine returned error: {result.get('error')}")
         except Exception as e:
-            logger.warning(f"Refund engine fallback failed: {e}")
+            logger.warning(f"❌ Refund engine fallback failed: {str(e)}", exc_info=True)
         
         # Default response if no data found
         # This might mean:
         # 1. User hasn't synced data yet - frontend should call /api/sync/start
         # 2. Amazon connection not established
         # 3. No claims/reimbursements exist in the date range
-        logger.info(f"No Amazon recovery data found for user {user_id} - may need to sync")
+        # 4. Node.js backend is not responding
+        logger.info(f"⚠️ No Amazon recovery data found for user {user_id} - returning zeros")
+        logger.info(f"💡 Possible reasons:")
+        logger.info(f"   1. User hasn't synced data yet - frontend should call /api/sync/start")
+        logger.info(f"   2. Amazon connection not established")
+        logger.info(f"   3. No claims/reimbursements exist in the date range")
+        logger.info(f"   4. Node.js backend at {integrations_url} is not responding")
+        
         return JSONResponse(
             content={
                 "totalAmount": 0.0,
                 "currency": "USD",
                 "claimCount": 0,
-                "message": "No data found. Please sync your Amazon account first."
+                "message": "No data found. Please sync your Amazon account first.",
+                "source": "fallback",
+                "diagnostics": {
+                    "integrationsUrl": integrations_url,
+                    "claimsUrl": claims_url,
+                    "userId": user_id
+                }
             }
         )
         
     except Exception as e:
-        logger.error(f"Error getting recoveries summary: {e}", exc_info=True)
+        logger.error(f"💥 CRITICAL ERROR getting recoveries summary: {str(e)}", exc_info=True)
         return JSONResponse(
+            status_code=500,
             content={
                 "totalAmount": 0.0,
                 "currency": "USD",
                 "claimCount": 0,
-                "error": str(e)
+                "error": str(e),
+                "source": "error",
+                "message": "Internal server error while fetching recoveries"
             }
         )
 
