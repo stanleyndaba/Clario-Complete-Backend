@@ -240,14 +240,14 @@ export class AmazonService {
   }
 
   async handleCallback(code: string, state?: string): Promise<any> {
-    try {
-      // Get client credentials
-      const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
-      const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET;
-      const redirectUri = process.env.AMAZON_REDIRECT_URI || 
-                         process.env.AMAZON_SPAPI_REDIRECT_URI ||
-                         `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/amazon/auth/callback`;
+    // Get client credentials (declare outside try block so available in catch)
+    const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
+    const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET;
+    const redirectUri = process.env.AMAZON_REDIRECT_URI || 
+                       process.env.AMAZON_SPAPI_REDIRECT_URI ||
+                       `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/amazon/auth/callback`;
 
+    try {
       if (!clientId || !clientSecret) {
         logger.warn('Amazon credentials not configured, returning sandbox mock response');
         return {
