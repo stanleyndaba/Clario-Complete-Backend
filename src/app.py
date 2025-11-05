@@ -458,10 +458,14 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                # Get claims/reimbursements from Node.js backend
+                # First, try to get claims/reimbursements from Node.js backend
+                # This calls the real SP-API directly
                 claims_response = await client.get(
                     f"{integrations_url}/api/v1/integrations/amazon/claims",
-                    headers={"Content-Type": "application/json"},
+                    headers={
+                        "Content-Type": "application/json",
+                        # Forward user context if needed
+                    },
                     cookies=request.cookies  # Forward auth cookies if needed
                 )
                 
@@ -469,23 +473,26 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
                     claims_data = claims_response.json()
                     claims = claims_data.get("claims", []) or claims_data.get("data", [])
                     
-                    # Calculate totals from real Amazon SP-API data
-                    total_amount = sum(
-                        float(claim.get("amount", 0) or 0)
-                        for claim in claims
-                        if claim.get("status") == "approved"
-                    )
-                    claim_count = len(claims)
-                    
-                    logger.info(f"Got {claim_count} claims, total approved amount: {total_amount}")
-                    
-                    return JSONResponse(
-                        content={
-                            "totalAmount": float(total_amount),
-                            "currency": "USD",
-                            "claimCount": int(claim_count)
-                        }
-                    )
+                    # If we got claims, calculate totals
+                    if isinstance(claims, list) and len(claims) > 0:
+                        total_amount = sum(
+                            float(claim.get("amount", 0) or 0)
+                            for claim in claims
+                            if claim.get("status") == "approved"
+                        )
+                        claim_count = len(claims)
+                        
+                        logger.info(f"Got {claim_count} claims from Node.js backend, total approved amount: {total_amount}")
+                        
+                        return JSONResponse(
+                            content={
+                                "totalAmount": float(total_amount),
+                                "currency": "USD",
+                                "claimCount": int(claim_count)
+                            }
+                        )
+                    else:
+                        logger.info("No claims returned from Node.js backend - may need to sync first")
                 else:
                     logger.warning(f"Node.js backend returned {claims_response.status_code}: {claims_response.text}")
         
@@ -506,6 +513,7 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
                 claim_count = result.get("total_claims", 0)
                 
                 if total_amount > 0 or claim_count > 0:
+                    logger.info(f"Got data from refund engine: {claim_count} claims, ${total_amount}")
                     return JSONResponse(
                         content={
                             "totalAmount": float(total_amount),
@@ -517,12 +525,17 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
             logger.warning(f"Refund engine fallback failed: {e}")
         
         # Default response if no data found
-        logger.warning(f"No Amazon recovery data found for user {user_id}")
+        # This might mean:
+        # 1. User hasn't synced data yet - frontend should call /api/sync/start
+        # 2. Amazon connection not established
+        # 3. No claims/reimbursements exist in the date range
+        logger.info(f"No Amazon recovery data found for user {user_id} - may need to sync")
         return JSONResponse(
             content={
                 "totalAmount": 0.0,
                 "currency": "USD",
-                "claimCount": 0
+                "claimCount": 0,
+                "message": "No data found. Please sync your Amazon account first."
             }
         )
         
@@ -532,7 +545,8 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
             content={
                 "totalAmount": 0.0,
                 "currency": "USD",
-                "claimCount": 0
+                "claimCount": 0,
+                "error": str(e)
             }
         )
 
