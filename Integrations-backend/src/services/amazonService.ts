@@ -213,14 +213,23 @@ export class AmazonService {
       // Amazon OAuth URL (same for sandbox and production)
       const oauthBase = 'https://www.amazon.com/ap/oa';
       
-      // For SP-API OAuth, scope is typically not required or should be empty
-      // The redirect URI MUST match exactly what's configured in Amazon Seller Central
-      // Build OAuth URL without scope parameter (or with empty scope)
+      // For SP-API OAuth, scope should NOT be included
+      // Amazon SP-API uses permissions granted in Seller Central, not OAuth scopes
+      // Including scope parameter can cause "unknown scope" errors, especially in sandbox
+      // The redirect URI MUST match exactly what's configured in Amazon Developer Console
+      // Build OAuth URL WITHOUT scope parameter
       const authUrl = `${oauthBase}?` +
         `client_id=${encodeURIComponent(clientId)}&` +
         `response_type=code&` +
         `redirect_uri=${encodeURIComponent(redirectUri)}&` +
         `state=${state}`;
+      
+      // Note: Do NOT include scope parameter for Amazon SP-API
+      // If you get "unknown scope" error, check Amazon Developer Console Security Profile:
+      // 1. Go to https://developer.amazon.com/
+      // 2. Login with Amazon → Your Security Profile
+      // 3. Web Settings → Ensure no scopes are configured/required
+      // 4. The Security Profile should be configured for SP-API, not LWA with scopes
 
       logger.info('Generated Amazon OAuth URL', {
         hasClientId: !!clientId,

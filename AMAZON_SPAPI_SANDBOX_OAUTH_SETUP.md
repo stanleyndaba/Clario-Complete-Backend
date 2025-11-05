@@ -114,8 +114,16 @@ FRONTEND_URL=https://opside-complete-frontend-4poy2f2lh-mvelo-ndabas-projects.ve
 
 ## 🐛 **Troubleshooting**
 
-### **"Unknown scope" error**
-- ✅ Fixed: Removed scope parameter (not needed for SP-API OAuth)
+### **"Unknown scope was requested" error**
+- **Cause**: Security Profile in Amazon Developer Console may have scopes configured
+- **Solution**: 
+  1. Go to https://developer.amazon.com/
+  2. Login with Amazon → Find your Security Profile (matches your Client ID)
+  3. Click on Security Profile → Web Settings
+  4. **Remove any scopes** if configured
+  5. For SP-API, scopes are NOT needed - permissions are granted in Seller Central
+  6. Save changes and try OAuth flow again
+- **Note**: The OAuth URL does NOT include a scope parameter (this is correct for SP-API)
 
 ### **"Redirect URI mismatch" error**
 - Make sure redirect URI is configured in Developer Console
