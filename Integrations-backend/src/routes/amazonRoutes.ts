@@ -6,7 +6,8 @@ import {
   syncAmazonData,
   getAmazonClaims,
   getAmazonInventory,
-  disconnectAmazon
+  disconnectAmazon,
+  diagnoseAmazonConnection
 } from '../controllers/amazonController';
 
 const router = Router();
@@ -38,6 +39,7 @@ router.post('/sync', wrap(syncAmazonData));
 router.get('/claims', wrap(getAmazonClaims));
 router.get('/inventory', wrap(getAmazonInventory));
 router.post('/disconnect', wrap(disconnectAmazon));
+router.get('/diagnose', wrap(diagnoseAmazonConnection)); // Diagnostic endpoint
 
 // Mock fee endpoint since it was referenced
 router.get('/fees', (_, res) => {

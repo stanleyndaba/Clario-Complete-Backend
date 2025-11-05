@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import amazonService from '../services/amazonService';
 import logger from '../utils/logger';
 import tokenManager from '../utils/tokenManager';
+import { diagnoseSandboxConnection } from '../utils/sandboxDiagnostics';
 
 export const startAmazonOAuth = async (_req: Request, res: Response) => {
   try {
@@ -216,7 +217,16 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     
     res.redirect(302, redirectUrl);
   } catch (error: any) {
-    logger.error('OAuth callback error', { error: error.message });
+      logger.error('OAuth callback error', { 
+        error: error.message,
+        stack: error.stack,
+        code: (req.query.code as string)?.substring(0, 20),
+        state: req.query.state,
+        method: req.method,
+        path: req.path,
+        query: req.query,
+        body: req.body
+      });
     
     // For POST requests, return JSON error
     if (req.method === 'POST') {
@@ -305,3 +315,71 @@ export const disconnectAmazon = async (_req: Request, res: Response) => {
     message: 'Amazon account disconnected successfully'
   });
 };
+
+export const diagnoseAmazonConnection = async (_req: Request, res: Response) => {
+  try {
+    logger.info('Running Amazon sandbox diagnostics');
+    const results = await diagnoseSandboxConnection();
+    
+    const allPassed = results.every(r => r.success);
+    const failures = results.filter(r => !r.success);
+    
+    res.json({
+      success: allPassed,
+      summary: {
+        total: results.length,
+        passed: results.filter(r => r.success).length,
+        failed: failures.length
+      },
+      results,
+      failures: failures.length > 0 ? failures : undefined,
+      recommendations: generateRecommendations(failures)
+    });
+  } catch (error: any) {
+    logger.error('Diagnostics error', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to run diagnostics',
+      message: error.message
+    });
+  }
+};
+
+function generateRecommendations(failures: any[]): string[] {
+  const recommendations: string[] = [];
+  
+  for (const failure of failures) {
+    switch (failure.step) {
+      case 'Environment Variables':
+        recommendations.push('Set missing environment variables in Render dashboard');
+        if (failure.details?.missing?.includes('AMAZON_REDIRECT_URI')) {
+          recommendations.push('Configure AMAZON_REDIRECT_URI to match Developer Console settings');
+        }
+        break;
+      case 'OAuth URL Generation':
+        recommendations.push('Check that AMAZON_CLIENT_ID is set correctly');
+        recommendations.push('Verify redirect URI is properly URL-encoded');
+        break;
+      case 'Token Refresh Test':
+        if (failure.details?.errorCode === 'invalid_grant') {
+          recommendations.push('Refresh token is invalid or expired - complete OAuth flow again');
+        } else if (failure.details?.errorCode === 'invalid_client') {
+          recommendations.push('Client ID or Client Secret is incorrect - check Developer Console');
+        } else if (failure.error?.includes('redirect_uri')) {
+          recommendations.push('Redirect URI mismatch - ensure it matches Developer Console exactly');
+        }
+        break;
+      case 'SP-API Endpoint Test':
+        if (failure.details?.status === 401) {
+          recommendations.push('Access token is invalid - check token refresh');
+        } else if (failure.details?.status === 403) {
+          recommendations.push('Token lacks required permissions - check SP-API role in Developer Console');
+        } else if (failure.details?.status === 400) {
+          recommendations.push('Sandbox endpoint may have limited support - check Amazon SP-API documentation');
+        }
+        break;
+    }
+  }
+  
+  return [...new Set(recommendations)]; // Remove duplicates
+}

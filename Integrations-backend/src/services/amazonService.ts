@@ -309,20 +309,41 @@ export class AmazonService {
         }
       };
     } catch (error: any) {
+      const errorData = error.response?.data || {};
+      const errorCode = errorData.error;
+      const errorDescription = errorData.error_description || error.message;
+      const statusCode = error.response?.status;
+
       logger.error('Error exchanging authorization code:', {
-        error: error.message,
-        status: error.response?.status,
-        data: error.response?.data
+        error: errorDescription,
+        errorCode,
+        status: statusCode,
+        data: errorData,
+        redirectUri,
+        hasClientId: !!clientId,
+        hasClientSecret: !!clientSecret,
+        hasCode: !!code
       });
 
-      // If token exchange fails, return sandbox mock response for testing
-      logger.warn('Token exchange failed, returning sandbox mock response');
-      return {
-        success: true,
-        message: "Sandbox authentication successful (mock mode due to token exchange failure)",
-        mockData: true,
-        error: error.response?.data?.error_description || error.message
-      };
+      // Provide specific error messages based on error code
+      let userFriendlyError = errorDescription;
+      
+      if (errorCode === 'invalid_grant') {
+        userFriendlyError = 'Authorization code is invalid or has expired. Please try connecting again.';
+      } else if (errorCode === 'invalid_client') {
+        userFriendlyError = 'Client ID or Client Secret is incorrect. Please check your Amazon Developer Console settings.';
+      } else if (errorCode === 'redirect_uri_mismatch') {
+        userFriendlyError = `Redirect URI mismatch. Expected: ${redirectUri}. Make sure this matches exactly in Amazon Developer Console.`;
+      } else if (errorCode === 'invalid_request') {
+        userFriendlyError = 'Invalid request parameters. Please check your OAuth configuration.';
+      } else if (statusCode === 400) {
+        userFriendlyError = `Bad request: ${errorDescription}. Check your OAuth configuration.`;
+      } else if (statusCode === 401) {
+        userFriendlyError = 'Authentication failed. Check your Client ID and Client Secret.';
+      }
+
+      // Don't return mock response - throw the error so caller knows it failed
+      throw new Error(`Token exchange failed: ${userFriendlyError} (${errorCode || 'unknown'})`);
     }
   }
 
