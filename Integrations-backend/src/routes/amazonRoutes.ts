@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, Request, Response } from 'express';
 import logger from '../utils/logger';
 import {
   startAmazonOAuth,
@@ -9,6 +9,7 @@ import {
   disconnectAmazon,
   diagnoseAmazonConnection
 } from '../controllers/amazonController';
+import amazonService from '../services/amazonService';
 
 const router = Router();
 
@@ -52,20 +53,58 @@ router.get('/fees', (_, res) => {
   });
 });
 
-// Recovery metrics (lightweight placeholder for frontend charts)
-router.get('/recoveries', (_, res) => {
-  res.json({
-    success: true,
-    recoveries: {
-      last_30_days: {
-        total_cases: 12,
-        approved: 8,
-        rejected: 2,
-        pending: 2,
-        recovered_amount: 1825.40
+// Recovery metrics - returns totalAmount, currency, and claimCount
+// This endpoint is called by the frontend and should match the expected format
+router.get('/recoveries', wrap(async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    
+    logger.info(`Getting Amazon recoveries summary for user: ${userId}`);
+    
+    // Try to get claims from the service
+    try {
+      const claimsResult = await amazonService.fetchClaims(userId);
+      const claims = claimsResult.data || claimsResult.claims || [];
+      
+      if (Array.isArray(claims) && claims.length > 0) {
+        // Calculate totals from actual claims
+        const totalAmount = claims
+          .filter((claim: any) => claim.status === 'approved')
+          .reduce((sum: number, claim: any) => sum + (parseFloat(claim.amount) || 0), 0);
+        const claimCount = claims.length;
+        
+        logger.info(`Found ${claimCount} claims, total approved: $${totalAmount}`);
+        
+        return res.json({
+          totalAmount: totalAmount,
+          currency: 'USD',
+          claimCount: claimCount,
+          source: 'spapi_sandbox'
+        });
       }
+    } catch (error: any) {
+      logger.warn(`Error fetching claims for recoveries: ${error.message}`);
+      // Fall through to return zeros
     }
-  });
-});
+    
+    // If no claims found or error, return zeros
+    // Frontend will use mock data as fallback
+    logger.info('No claims found, returning zeros');
+    res.json({
+      totalAmount: 0.0,
+      currency: 'USD',
+      claimCount: 0,
+      message: 'No data found. Please sync your Amazon account first.'
+    });
+  } catch (error: any) {
+    logger.error('Error in recoveries endpoint:', error);
+    res.status(500).json({
+      totalAmount: 0.0,
+      currency: 'USD',
+      claimCount: 0,
+      error: error.message
+    });
+  }
+}));
 
 export default router;
