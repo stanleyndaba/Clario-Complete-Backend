@@ -1,100 +1,223 @@
 import { Request, Response } from 'express';
+import logger from '../utils/logger';
+import { syncJobManager } from '../services/syncJobManager';
 
-export const startSync = async (_req: Request, res: Response) => {
+/**
+ * Start a new sync job
+ * POST /api/sync/start
+ */
+export const startSync = async (req: Request, res: Response) => {
   try {
+    // Get user ID from request (set by auth middleware)
+    const userId = (req as any).user?.id || (req as any).user?.user_id;
+    
+    if (!userId) {
+      logger.warn('Start sync called without user ID');
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    logger.info(`Starting sync for user: ${userId}`);
+
+    // Start sync job (async, returns immediately)
+    const result = await syncJobManager.startSync(userId);
+
     res.json({
-      success: true,
-      message: 'Sync started successfully',
-      syncId: 'mock-sync-123',
-      data: {
-        claimsFound: 8,
-        recoveredAmount: 1250.75,
-        status: 'completed'
-      }
+      syncId: result.syncId,
+      status: result.status,
+      message: 'Sync started successfully'
     });
-  } catch (error) {
-    console.error('Sync start error:', error);
+  } catch (error: any) {
+    logger.error('Sync start error:', error);
+    
+    if (error.message.includes('not found') || error.message.includes('not connected')) {
+      return res.status(400).json({
+        success: false,
+        error: error.message
+      });
+    }
+
+    if (error.message.includes('already in progress')) {
+      return res.status(400).json({
+        success: false,
+        error: error.message
+      });
+    }
+
     res.status(500).json({
       success: false,
-      error: 'Failed to start sync'
+      error: 'Failed to start sync',
+      message: error.message
     });
   }
 };
 
-export const getSyncStatus = async (_req: Request, res: Response) => {
+/**
+ * Get sync status by syncId
+ * GET /api/sync/status/:syncId
+ */
+export const getSyncStatus = async (req: Request, res: Response) => {
   try {
+    const { syncId } = req.params;
+    const userId = (req as any).user?.id || (req as any).user?.user_id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    if (!syncId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Sync ID is required'
+      });
+    }
+
+    logger.info(`Getting sync status for syncId: ${syncId}, userId: ${userId}`);
+
+    const syncStatus = await syncJobManager.getSyncStatus(syncId, userId);
+
+    if (!syncStatus) {
+      return res.status(404).json({
+        success: false,
+        error: 'Sync not found'
+      });
+    }
+
     res.json({
-      success: true,
-      status: 'completed',
-      progress: 100,
-      lastSyncAt: new Date().toISOString(),
-      data: {
-        totalOrders: 245,
-        claimsDetected: 12,
-        recoveryEstimate: 1875.50
-      }
+      syncId: syncStatus.syncId,
+      status: syncStatus.status,
+      progress: syncStatus.progress,
+      message: syncStatus.message,
+      startedAt: syncStatus.startedAt,
+      estimatedCompletion: syncStatus.estimatedCompletion,
+      ordersProcessed: syncStatus.ordersProcessed,
+      totalOrders: syncStatus.totalOrders,
+      completedAt: syncStatus.completedAt,
+      error: syncStatus.error
     });
-  } catch (error) {
-    console.error('Sync status error:', error);
+  } catch (error: any) {
+    logger.error('Get sync status error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to get sync status'
+      error: 'Failed to get sync status',
+      message: error.message
     });
   }
 };
 
-export const getSyncHistory = async (_req: Request, res: Response) => {
+/**
+ * Get sync history for the authenticated user
+ * GET /api/sync/history
+ */
+export const getSyncHistory = async (req: Request, res: Response) => {
   try {
+    const userId = (req as any).user?.id || (req as any).user?.user_id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    const limit = parseInt(req.query.limit as string) || 20;
+    const offset = parseInt(req.query.offset as string) || 0;
+
+    logger.info(`Getting sync history for userId: ${userId}, limit: ${limit}, offset: ${offset}`);
+
+    const history = await syncJobManager.getSyncHistory(userId, limit, offset);
+
     res.json({
-      success: true,
-      history: [
-        {
-          id: 'sync-1',
-          status: 'completed',
-          startedAt: new Date(Date.now() - 86400000).toISOString(),
-          completedAt: new Date(Date.now() - 86300000).toISOString(),
-          claimsFound: 5,
-          amountRecovered: 650.25
-        },
-        {
-          id: 'sync-2', 
-          status: 'completed',
-          startedAt: new Date(Date.now() - 172800000).toISOString(),
-          completedAt: new Date(Date.now() - 171800000).toISOString(),
-          claimsFound: 3,
-          amountRecovered: 420.50
-        }
-      ]
+      syncs: history.syncs.map(sync => ({
+        syncId: sync.syncId,
+        status: sync.status,
+        startedAt: sync.startedAt,
+        completedAt: sync.completedAt,
+        ordersProcessed: sync.ordersProcessed,
+        claimsDetected: sync.claimsDetected,
+        duration: sync.completedAt && sync.startedAt 
+          ? Math.round((new Date(sync.completedAt).getTime() - new Date(sync.startedAt).getTime()) / 1000)
+          : undefined,
+        error: sync.error
+      })),
+      total: history.total
     });
-  } catch (error) {
-    console.error('Sync history error:', error);
+  } catch (error: any) {
+    logger.error('Get sync history error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to get sync history'
+      error: 'Failed to get sync history',
+      message: error.message
     });
   }
 };
 
-export const forceSync = async (_req: Request, res: Response) => {
+/**
+ * Cancel a sync job
+ * POST /api/sync/cancel/:syncId
+ */
+export const cancelSync = async (req: Request, res: Response) => {
   try {
+    const { syncId } = req.params;
+    const userId = (req as any).user?.id || (req as any).user?.user_id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    if (!syncId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Sync ID is required'
+      });
+    }
+
+    logger.info(`Cancelling sync for syncId: ${syncId}, userId: ${userId}`);
+
+    const cancelled = await syncJobManager.cancelSync(syncId, userId);
+
+    if (!cancelled) {
+      return res.status(404).json({
+        success: false,
+        error: 'Sync not found or cannot be cancelled'
+      });
+    }
+
     res.json({
-      success: true,
-      message: 'Forced sync started',
-      syncId: 'force-sync-456',
-      estimatedCompletion: new Date(Date.now() + 120000).toISOString()
+      ok: true,
+      message: 'Sync cancelled successfully'
     });
-  } catch (error) {
-    console.error('Force sync error:', error);
+  } catch (error: any) {
+    logger.error('Cancel sync error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to force sync'
+      error: 'Failed to cancel sync',
+      message: error.message
     });
   }
+};
+
+/**
+ * Force sync (alias for startSync)
+ * POST /api/sync/force
+ */
+export const forceSync = async (req: Request, res: Response) => {
+  // Just call startSync
+  return startSync(req, res);
 };
 
 export default {
   startSync,
   getSyncStatus,
   getSyncHistory,
+  cancelSync,
   forceSync
 };
