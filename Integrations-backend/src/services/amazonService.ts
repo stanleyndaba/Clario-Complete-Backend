@@ -99,32 +99,60 @@ export class AmazonService {
     return this.isSandbox() ? 1000 : 2000;
   }
 
-  private async getAccessToken(): Promise<string> {
+  private async getAccessToken(userId?: string): Promise<string> {
     // Return token if still valid
     if (this.accessToken && this.tokenExpiry && this.tokenExpiry > new Date()) {
       return this.accessToken;
     }
 
-    // Refresh token
-    await this.refreshAccessToken();
+    // Refresh token (will try database first if userId provided)
+    await this.refreshAccessToken(userId);
     return this.accessToken!;
   }
 
-  private async refreshAccessToken(): Promise<void> {
+  private async refreshAccessToken(userId?: string): Promise<void> {
     try {
+      let refreshToken: string | undefined;
+      
+      // First, try to get token from database if userId is provided
+      if (userId) {
+        try {
+          const tokenManager = (await import('../utils/tokenManager')).default;
+          const tokenData = await tokenManager.getToken(userId, 'amazon');
+          
+          if (tokenData && tokenData.refreshToken) {
+            refreshToken = tokenData.refreshToken;
+            logger.info('Using refresh token from database for user', { userId });
+          }
+        } catch (dbError: any) {
+          logger.warn('Could not get token from database, falling back to env vars', { 
+            error: dbError.message,
+            userId 
+          });
+        }
+      }
+      
+      // Fall back to environment variable if no database token found
+      if (!refreshToken) {
+        refreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
+        if (refreshToken) {
+          logger.info('Using refresh token from environment variables');
+        }
+      }
+      
       // Use AMAZON_SPAPI_CLIENT_ID as fallback if AMAZON_CLIENT_ID not set (for consistency)
       const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
       const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET;
-      const refreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
 
       if (!clientId || !clientSecret || !refreshToken) {
-        throw new Error('Amazon SP-API credentials not configured');
+        throw new Error('Amazon SP-API credentials not configured. Please connect your Amazon account first.');
       }
 
       logger.info('Refreshing Amazon SP-API access token', {
         hasClientId: !!clientId,
         hasClientSecret: !!clientSecret,
         hasRefreshToken: !!refreshToken,
+        usingDatabaseToken: !!userId && refreshToken !== process.env.AMAZON_SPAPI_REFRESH_TOKEN,
         baseUrl: this.baseUrl
       });
 
@@ -339,7 +367,7 @@ export class AmazonService {
 
   async fetchClaims(accountId: string, startDate?: Date, endDate?: Date): Promise<any> {
     try {
-      const accessToken = await this.getAccessToken();
+      const accessToken = await this.getAccessToken(accountId);
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
       
       // Default to last 90 days if no dates provided
@@ -495,7 +523,7 @@ export class AmazonService {
 
   async fetchInventory(accountId: string): Promise<any> {
     try {
-      const accessToken = await this.getAccessToken();
+      const accessToken = await this.getAccessToken(accountId);
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
 
       logger.info(`Fetching inventory for account ${accountId} from SP-API`, {
@@ -589,9 +617,9 @@ export class AmazonService {
    * Get seller information and marketplace participations from Amazon SP-API
    * Handles both production and sandbox response formats
    */
-  async getSellersInfo(): Promise<any> {
+  async getSellersInfo(userId?: string): Promise<any> {
     try {
-      const accessToken = await this.getAccessToken();
+      const accessToken = await this.getAccessToken(userId);
       const sellersUrl = `${this.baseUrl}/sellers/v1/marketplaceParticipations`;
 
       logger.info('Fetching seller information from SP-API', {
@@ -701,7 +729,7 @@ export class AmazonService {
 
   async fetchFees(accountId: string, startDate?: Date, endDate?: Date): Promise<any> {
     try {
-      const accessToken = await this.getAccessToken();
+      const accessToken = await this.getAccessToken(accountId);
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
       
       // Default to last 90 days if no dates provided

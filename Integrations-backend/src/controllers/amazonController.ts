@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import amazonService from '../services/amazonService';
 import logger from '../utils/logger';
+import tokenManager from '../utils/tokenManager';
 
 export const startAmazonOAuth = async (_req: Request, res: Response) => {
   try {
@@ -123,6 +124,38 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     });
 
     const result = await amazonService.handleCallback(code, state);
+    
+    // CRITICAL: Store refresh token in database for future API calls
+    // Extract user ID from request (could be from session, JWT, or query param)
+    // For now, we'll need to get it from somewhere - let's check if there's a user session
+    const userId = (req as any).user?.id || (req as any).user?.user_id || req.query.userId as string || 'default-user';
+    
+    if (result.data?.refresh_token) {
+      try {
+        // Store the refresh token securely in the database
+        // TokenManager expects: { accessToken, refreshToken, expiresAt }
+        await tokenManager.saveToken(userId, 'amazon', {
+          accessToken: result.data.access_token,
+          refreshToken: result.data.refresh_token,
+          expiresAt: new Date(Date.now() + (result.data.expires_in || 3600) * 1000)
+        });
+        
+        logger.info('Successfully stored Amazon refresh token in database', { 
+          userId,
+          hasRefreshToken: !!result.data.refresh_token,
+          hasAccessToken: !!result.data.access_token
+        });
+      } catch (tokenError: any) {
+        // Log error but don't fail the callback - token might still be in env vars
+        logger.error('Failed to store Amazon refresh token in database', { 
+          error: tokenError.message,
+          userId 
+        });
+        // Continue anyway - the token is still returned in the response
+      }
+    } else {
+      logger.warn('No refresh token in OAuth callback result - tokens may not persist', { userId });
+    }
     
     // For POST requests, return JSON instead of redirect
     if (req.method === 'POST') {
