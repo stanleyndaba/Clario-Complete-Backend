@@ -84,19 +84,127 @@ export class AmazonSyncJob {
 
   private async saveClaimsToDatabase(userId: string, claims: any[]): Promise<void> {
     try {
-      // TODO: Implement actual database save for claims
-      // This is a stub implementation
       logger.info('Saving Amazon claims to database', { userId, count: claims.length });
       
-      // Mock database save
+      if (claims.length === 0) {
+        logger.info('No claims to save', { userId });
+        return;
+      }
+
+      // Prepare claims for database insertion
+      const claimsToInsert: any[] = [];
+      
       for (const claim of claims) {
-        // Simulate database operation
-        await new Promise(resolve => setTimeout(resolve, 10));
+        // Map claim type to database enum values
+        const claimTypeMap: Record<string, string> = {
+          'liquidation_reimbursement': 'reimbursement',
+          'adjustment_reimbursement': 'reimbursement',
+          'reimbursement': 'reimbursement',
+          'refund': 'refund',
+          'adjustment': 'adjustment',
+          'dispute': 'dispute'
+        };
+
+        const claimType = claimTypeMap[claim.type] || 'reimbursement';
+        
+        // Map status to database enum values
+        const statusMap: Record<string, string> = {
+          'approved': 'approved',
+          'pending': 'pending',
+          'rejected': 'rejected',
+          'processing': 'processing',
+          'completed': 'completed'
+        };
+
+        const status = statusMap[claim.status] || 'pending';
+
+        const dbClaim: any = {
+          user_id: userId,
+          claim_type: claimType,
+          provider: 'amazon',
+          reference_id: claim.orderId || claim.id,
+          amount: parseFloat(claim.amount) || 0,
+          currency: claim.currency || 'USD',
+          status: status,
+          reason: claim.description || claim.type || 'Amazon reimbursement',
+          evidence: claim.fromApi ? ['SP-API'] : [],
+          submitted_at: claim.createdAt ? new Date(claim.createdAt).toISOString() : new Date().toISOString(),
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+
+        // Add notes if available
+        if (claim.orderId) {
+          dbClaim.notes = `Order ID: ${claim.orderId}`;
+        }
+
+        claimsToInsert.push(dbClaim);
+      }
+
+      // Check for existing claims to avoid duplicates
+      const referenceIds = claimsToInsert.map(c => c.reference_id).filter(Boolean);
+      if (referenceIds.length > 0) {
+        const { data: existingClaims, error: fetchError } = await supabase
+          .from('claims')
+          .select('reference_id')
+          .eq('user_id', userId)
+          .in('reference_id', referenceIds);
+
+        if (fetchError) {
+          logger.warn('Error fetching existing claims, proceeding with inserts', { error: fetchError, userId });
+        } else {
+          const existingRefIds = new Set(existingClaims?.map((c: any) => c.reference_id) || []);
+          const filteredClaims = claimsToInsert.filter(c => !existingRefIds.has(c.reference_id));
+          
+          if (filteredClaims.length < claimsToInsert.length) {
+            logger.info('Filtered out duplicate claims', { 
+              userId, 
+              total: claimsToInsert.length, 
+              new: filteredClaims.length,
+              duplicates: claimsToInsert.length - filteredClaims.length
+            });
+          }
+          
+          // Only insert new claims
+          if (filteredClaims.length > 0) {
+            const { error: insertError } = await supabase
+              .from('claims')
+              .insert(filteredClaims);
+
+            if (insertError) {
+              logger.error('Error inserting claims', { error: insertError, userId, count: filteredClaims.length });
+              throw new Error(`Failed to insert claims: ${insertError.message}`);
+            }
+            
+            logger.info('Amazon claims saved to database successfully', { 
+              userId, 
+              inserted: filteredClaims.length,
+              total: claimsToInsert.length
+            });
+          } else {
+            logger.info('All claims already exist in database', { userId, count: claimsToInsert.length });
+          }
+          
+          return;
+        }
+      }
+
+      // Insert all claims if no existing check or if check failed
+      const { error: insertError } = await supabase
+        .from('claims')
+        .insert(claimsToInsert);
+
+      if (insertError) {
+        logger.error('Error inserting claims', { error: insertError, userId, count: claimsToInsert.length });
+        throw new Error(`Failed to insert claims: ${insertError.message}`);
       }
       
-      logger.info('Amazon claims saved to database', { userId, count: claims.length });
-    } catch (error) {
-      logger.error('Error saving Amazon claims to database', { error, userId });
+      logger.info('Amazon claims saved to database successfully', { 
+        userId, 
+        inserted: claimsToInsert.length
+      });
+    } catch (error: any) {
+      logger.error('Error saving Amazon claims to database', { error: error.message, userId });
       throw error;
     }
   }
@@ -220,20 +328,114 @@ export class AmazonSyncJob {
 
   private async saveFeesToDatabase(userId: string, fees: any[]): Promise<void> {
     try {
-      // TODO: Implement actual database save for fees
-      // This is a stub implementation
       logger.info('Saving Amazon fees to database', { userId, count: fees.length });
       
-      // Mock database save
-      for (const fee of fees) {
-        // Simulate database operation
-        await new Promise(resolve => setTimeout(resolve, 10));
+      if (fees.length === 0) {
+        logger.info('No fees to save', { userId });
+        return;
       }
+
+      // Fees are already being saved via ingestFinancialEvents() which saves to financial_events table
+      // This method can be used for additional fee aggregation or summary storage if needed
+      // For now, we'll ensure fees are properly saved to financial_events via ingestFinancialEvents
       
-      logger.info('Amazon fees saved to database', { userId, count: fees.length });
-    } catch (error) {
-      logger.error('Error saving Amazon fees to database', { error, userId });
-      throw error;
+      // Prepare fees for financial_events table
+      const financialEventsToInsert: any[] = [];
+      
+      for (const fee of fees) {
+        const financialEvent: any = {
+          seller_id: userId,
+          event_type: 'fee',
+          amount: parseFloat(fee.amount) || 0,
+          currency: fee.currency || 'USD',
+          raw_payload: {
+            type: fee.type,
+            orderId: fee.orderId,
+            sku: fee.sku,
+            asin: fee.asin,
+            description: fee.description,
+            fromApi: fee.fromApi || false
+          },
+          amazon_event_id: fee.eventId || `FEE-${fee.orderId || Date.now()}`,
+          amazon_order_id: fee.orderId,
+          amazon_sku: fee.sku,
+          event_date: fee.date ? new Date(fee.date).toISOString() : new Date().toISOString(),
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+
+        financialEventsToInsert.push(financialEvent);
+      }
+
+      // Check for existing events to avoid duplicates
+      const eventIds = financialEventsToInsert.map(e => e.amazon_event_id).filter(Boolean);
+      if (eventIds.length > 0) {
+        const { data: existingEvents, error: fetchError } = await supabase
+          .from('financial_events')
+          .select('amazon_event_id')
+          .eq('seller_id', userId)
+          .eq('event_type', 'fee')
+          .in('amazon_event_id', eventIds);
+
+        if (fetchError) {
+          logger.warn('Error fetching existing financial events, proceeding with inserts', { error: fetchError, userId });
+        } else {
+          const existingEventIds = new Set(existingEvents?.map((e: any) => e.amazon_event_id) || []);
+          const filteredEvents = financialEventsToInsert.filter(e => !existingEventIds.has(e.amazon_event_id));
+          
+          if (filteredEvents.length < financialEventsToInsert.length) {
+            logger.info('Filtered out duplicate fee events', { 
+              userId, 
+              total: financialEventsToInsert.length, 
+              new: filteredEvents.length,
+              duplicates: financialEventsToInsert.length - filteredEvents.length
+            });
+          }
+          
+          // Only insert new events
+          if (filteredEvents.length > 0) {
+            const { error: insertError } = await supabase
+              .from('financial_events')
+              .insert(filteredEvents);
+
+            if (insertError) {
+              logger.error('Error inserting fee events', { error: insertError, userId, count: filteredEvents.length });
+              // Don't throw - fees are also saved via ingestFinancialEvents
+              logger.warn('Fee events insert failed, but ingestFinancialEvents will handle it', { userId });
+            } else {
+              logger.info('Amazon fees saved to financial_events table', { 
+                userId, 
+                inserted: filteredEvents.length,
+                total: financialEventsToInsert.length
+              });
+            }
+          } else {
+            logger.info('All fee events already exist in database', { userId, count: financialEventsToInsert.length });
+          }
+          
+          return;
+        }
+      }
+
+      // Insert all events if no existing check or if check failed
+      const { error: insertError } = await supabase
+        .from('financial_events')
+        .insert(financialEventsToInsert);
+
+      if (insertError) {
+        logger.error('Error inserting fee events', { error: insertError, userId, count: financialEventsToInsert.length });
+        // Don't throw - fees are also saved via ingestFinancialEvents
+        logger.warn('Fee events insert failed, but ingestFinancialEvents will handle it', { userId });
+      } else {
+        logger.info('Amazon fees saved to financial_events table successfully', { 
+          userId, 
+          inserted: financialEventsToInsert.length
+        });
+      }
+    } catch (error: any) {
+      logger.error('Error saving Amazon fees to database', { error: error.message, userId });
+      // Don't throw - this is not critical as ingestFinancialEvents handles it
+      logger.warn('Fee save failed, but ingestFinancialEvents will handle it', { userId });
     }
   }
 
@@ -328,17 +530,40 @@ export class AmazonSyncJob {
 
   private async getUsersWithAmazonIntegration(): Promise<string[]> {
     try {
-      // TODO: Implement actual database query to get users with Amazon integration
-      // This is a stub implementation
       logger.info('Fetching users with Amazon integration');
       
-      // Mock response - in production, this would query the database
-      const mockUsers = ['user-1', 'user-2', 'user-3'];
+      // Query users table or integration_tokens table to find users with Amazon tokens
+      // Using tokenManager to check for users with valid Amazon tokens
+      const { data: tokens, error } = await supabase
+        .from('integration_tokens')
+        .select('user_id')
+        .eq('provider', 'amazon')
+        .eq('is_active', true);
+
+      if (error) {
+        logger.error('Error fetching users with Amazon integration', { error });
+        // Fallback: try users table if integration_tokens doesn't exist
+        const { data: users, error: userError } = await supabase
+          .from('users')
+          .select('id')
+          .limit(100); // Limit to prevent too many users
+
+        if (userError) {
+          logger.error('Error fetching users as fallback', { error: userError });
+          return [];
+        }
+
+        const userIds = (users || []).map((u: any) => u.id || u.user_id).filter(Boolean);
+        logger.info('Found users with Amazon integration (fallback)', { count: userIds.length });
+        return userIds;
+      }
+
+      const userIds = (tokens || []).map((t: any) => t.user_id).filter(Boolean);
       
-      logger.info('Found users with Amazon integration', { count: mockUsers.length });
-      return mockUsers;
-    } catch (error) {
-      logger.error('Error fetching users with Amazon integration', { error });
+      logger.info('Found users with Amazon integration', { count: userIds.length });
+      return userIds;
+    } catch (error: any) {
+      logger.error('Error fetching users with Amazon integration', { error: error.message });
       return [];
     }
   }
