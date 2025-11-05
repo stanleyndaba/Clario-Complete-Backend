@@ -73,14 +73,32 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         res.header('Access-Control-Allow-Credentials', 'true');
         res.header('Content-Type', 'application/json');
         
-        return res.status(400).json({
-          ok: false,
-          connected: false,
-          success: false,
-          error: 'OAuth flow not completed',
-          message: 'This endpoint should only be called by Amazon after authorization. Please start the OAuth flow by calling /api/v1/integrations/amazon/auth/start first.',
-          hint: 'The frontend should call GET /api/v1/integrations/amazon/auth/start, redirect the user to the returned authUrl, and let Amazon redirect back to this callback endpoint with the authorization code.'
-        });
+        // Try to generate the OAuth start URL so frontend can redirect
+        try {
+          const oauthResult = await amazonService.startOAuth();
+          return res.status(400).json({
+            ok: false,
+            connected: false,
+            success: false,
+            error: 'OAuth flow not started',
+            message: 'This endpoint should only be called by Amazon after authorization. Please start the OAuth flow first.',
+            hint: 'The frontend should call GET /api/v1/integrations/amazon/auth/start, redirect the user to the returned authUrl, and let Amazon redirect back to this callback endpoint with the authorization code.',
+            authUrl: oauthResult.authUrl, // Provide the auth URL so frontend can redirect
+            redirectTo: oauthResult.authUrl // Alias for convenience
+          });
+        } catch (oauthError: any) {
+          // If we can't generate OAuth URL, return error without it
+          logger.error('Failed to generate OAuth URL in callback error handler', { error: oauthError });
+          return res.status(400).json({
+            ok: false,
+            connected: false,
+            success: false,
+            error: 'OAuth flow not completed',
+            message: 'This endpoint should only be called by Amazon after authorization. Please start the OAuth flow by calling /api/v1/integrations/amazon/auth/start first.',
+            hint: 'The frontend should call GET /api/v1/integrations/amazon/auth/start, redirect the user to the returned authUrl, and let Amazon redirect back to this callback endpoint with the authorization code.',
+            oauthStartEndpoint: '/api/v1/integrations/amazon/auth/start'
+          });
+        }
       }
       
       // For GET requests, try to redirect to start OAuth flow or show helpful error
