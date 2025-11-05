@@ -7,16 +7,26 @@ export const startAmazonOAuth = async (_req: Request, res: Response) => {
   try {
     const result = await amazonService.startOAuth();
     
+    logger.info('OAuth flow initiated successfully', {
+      hasAuthUrl: !!result.authUrl,
+      authUrlLength: result.authUrl?.length
+    });
+    
     res.json({
       success: true,
+      ok: true,
       authUrl: result.authUrl,
-      message: 'OAuth flow initiated'
+      redirectTo: result.authUrl, // Alias for frontend convenience
+      message: result.message || 'OAuth flow initiated',
+      state: result.state // Include state for reference
     });
-  } catch (error) {
-    logger.error('OAuth initiation error', { error });
+  } catch (error: any) {
+    logger.error('OAuth initiation error', { error: error.message, stack: error.stack });
     res.status(500).json({
       success: false,
-      error: 'Failed to start OAuth flow'
+      ok: false,
+      error: 'Failed to start OAuth flow',
+      message: error.message || 'An error occurred while starting the OAuth flow'
     });
   }
 };
@@ -52,86 +62,87 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     }
 
     if (!code) {
-      // More detailed error message
-      const errorMessage = req.method === 'GET' 
-        ? 'Authorization code is required. This endpoint should be called by Amazon after OAuth authorization. Make sure you complete the OAuth flow by visiting the auth URL first.'
-        : 'Authorization code is required in the request body or query parameters.';
-      
       logger.warn('Amazon callback called without authorization code', {
         method: req.method,
         path: req.path,
         query: req.query,
         body: req.body,
-        errorMessage
+        referer: req.headers.referer,
+        origin: req.headers.origin
       });
       
-      // For POST requests that are called directly (not from Amazon), provide helpful response
+      // Try to generate OAuth URL and redirect/return it
+      let oauthResult;
+      try {
+        oauthResult = await amazonService.startOAuth();
+      } catch (oauthError: any) {
+        logger.error('Failed to generate OAuth URL in callback error handler', { error: oauthError });
+        const errorResponse = {
+          ok: false,
+          connected: false,
+          success: false,
+          error: 'OAuth configuration error',
+          message: 'Failed to generate OAuth URL. Please check backend configuration.',
+          oauthStartEndpoint: '/api/v1/integrations/amazon/auth/start'
+        };
+        
+        if (req.method === 'POST') {
+          const origin = req.headers.origin || '*';
+          res.header('Access-Control-Allow-Origin', origin);
+          res.header('Access-Control-Allow-Credentials', 'true');
+          return res.status(500).json(errorResponse);
+        }
+        
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        const errorUrl = `${frontendUrl}/dashboard?error=${encodeURIComponent('oauth_config_error')}&amazon_error=true`;
+        return res.redirect(302, errorUrl);
+      }
+      
+      // For POST requests, return JSON with authUrl for frontend to redirect
       if (req.method === 'POST') {
-        // Set CORS headers
         const origin = req.headers.origin || '*';
         res.header('Access-Control-Allow-Origin', origin);
         res.header('Access-Control-Allow-Credentials', 'true');
         res.header('Content-Type', 'application/json');
         
-        // Try to generate the OAuth start URL so frontend can redirect
-        try {
-          const oauthResult = await amazonService.startOAuth();
-          return res.status(400).json({
-            ok: false,
-            connected: false,
-            success: false,
-            error: 'OAuth flow not started',
-            message: 'This endpoint should only be called by Amazon after authorization. Please start the OAuth flow first.',
-            hint: 'The frontend should call GET /api/v1/integrations/amazon/auth/start, redirect the user to the returned authUrl, and let Amazon redirect back to this callback endpoint with the authorization code.',
-            authUrl: oauthResult.authUrl, // Provide the auth URL so frontend can redirect
-            redirectTo: oauthResult.authUrl // Alias for convenience
-          });
-        } catch (oauthError: any) {
-          // If we can't generate OAuth URL, return error without it
-          logger.error('Failed to generate OAuth URL in callback error handler', { error: oauthError });
-          return res.status(400).json({
-            ok: false,
-            connected: false,
-            success: false,
-            error: 'OAuth flow not completed',
-            message: 'This endpoint should only be called by Amazon after authorization. Please start the OAuth flow by calling /api/v1/integrations/amazon/auth/start first.',
-            hint: 'The frontend should call GET /api/v1/integrations/amazon/auth/start, redirect the user to the returned authUrl, and let Amazon redirect back to this callback endpoint with the authorization code.',
-            oauthStartEndpoint: '/api/v1/integrations/amazon/auth/start'
-          });
-        }
+        // Return 200 with redirect info (not 400) so frontend can handle it
+        return res.status(200).json({
+          ok: false,
+          connected: false,
+          success: false,
+          needsOAuth: true,
+          error: 'OAuth flow not started',
+          message: 'Please start the OAuth flow by redirecting to the authUrl below.',
+          authUrl: oauthResult.authUrl,
+          redirectTo: oauthResult.authUrl,
+          hint: 'The frontend should call GET /api/v1/integrations/amazon/auth/start, redirect the user to the returned authUrl, and let Amazon redirect back to this callback endpoint with the authorization code.'
+        });
       }
       
-      // For GET requests, try to redirect to start OAuth flow or show helpful error
-      // Check if this looks like a direct call (no referer from Amazon)
+      // For GET requests, check if this looks like a direct call (not from Amazon)
       const referer = req.headers.referer || '';
-      if (!referer.includes('amazon.com')) {
-        // Looks like a direct call - redirect to start OAuth
-        logger.info('Callback called directly without Amazon redirect, redirecting to OAuth start');
-        try {
-          const result = await amazonService.startOAuth();
-          const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-          // Redirect frontend to start OAuth, or return the authUrl if this is an API call
-          if (req.headers.accept?.includes('application/json')) {
-            return res.json({
-              success: false,
-              error: 'OAuth flow not started',
-              redirectTo: result.authUrl,
-              message: 'Please start OAuth flow first. Redirect user to the authUrl.'
-            });
-          }
-          // Redirect to OAuth URL
-          return res.redirect(302, result.authUrl);
-        } catch (error: any) {
-          logger.error('Failed to start OAuth in callback handler', { error: error.message });
-        }
+      const isFromAmazon = referer.includes('amazon.com') || referer.includes('amzn.to');
+      
+      if (!isFromAmazon) {
+        // Direct call - automatically redirect to OAuth URL
+        logger.info('Callback called directly without Amazon redirect, redirecting to OAuth URL');
+        return res.redirect(302, oauthResult.authUrl);
       }
       
-      res.status(400).json({
-        success: false,
-        error: errorMessage,
-        hint: 'Did you call /auth/start first? This callback endpoint should only be called by Amazon after you authorize the app.'
-      });
-      return;
+      // Looks like it might be from Amazon but missing code - could be an error
+      // Check if there's an error parameter in the query
+      const errorParam = req.query.error as string;
+      if (errorParam) {
+        logger.error('Amazon OAuth error received', { error: errorParam, errorDescription: req.query.error_description });
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        const errorUrl = `${frontendUrl}/dashboard?error=${encodeURIComponent(errorParam)}&amazon_error=true&error_description=${encodeURIComponent(req.query.error_description as string || '')}`;
+        return res.redirect(302, errorUrl);
+      }
+      
+      // No code, no error param, but from Amazon - might be a partial redirect
+      // Redirect to OAuth start to restart the flow
+      logger.warn('Amazon callback received without code or error - redirecting to restart OAuth');
+      return res.redirect(302, oauthResult.authUrl);
     }
 
     logger.info('Amazon OAuth callback received', {
