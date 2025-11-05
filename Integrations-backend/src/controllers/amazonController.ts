@@ -64,6 +64,49 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         errorMessage
       });
       
+      // For POST requests that are called directly (not from Amazon), provide helpful response
+      if (req.method === 'POST') {
+        // Set CORS headers
+        const origin = req.headers.origin || '*';
+        res.header('Access-Control-Allow-Origin', origin);
+        res.header('Access-Control-Allow-Credentials', 'true');
+        res.header('Content-Type', 'application/json');
+        
+        return res.status(400).json({
+          ok: false,
+          connected: false,
+          success: false,
+          error: 'OAuth flow not completed',
+          message: 'This endpoint should only be called by Amazon after authorization. Please start the OAuth flow by calling /api/v1/integrations/amazon/auth/start first.',
+          hint: 'The frontend should call GET /api/v1/integrations/amazon/auth/start, redirect the user to the returned authUrl, and let Amazon redirect back to this callback endpoint with the authorization code.'
+        });
+      }
+      
+      // For GET requests, try to redirect to start OAuth flow or show helpful error
+      // Check if this looks like a direct call (no referer from Amazon)
+      const referer = req.headers.referer || '';
+      if (!referer.includes('amazon.com')) {
+        // Looks like a direct call - redirect to start OAuth
+        logger.info('Callback called directly without Amazon redirect, redirecting to OAuth start');
+        try {
+          const result = await amazonService.startOAuth();
+          const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+          // Redirect frontend to start OAuth, or return the authUrl if this is an API call
+          if (req.headers.accept?.includes('application/json')) {
+            return res.json({
+              success: false,
+              error: 'OAuth flow not started',
+              redirectTo: result.authUrl,
+              message: 'Please start OAuth flow first. Redirect user to the authUrl.'
+            });
+          }
+          // Redirect to OAuth URL
+          return res.redirect(302, result.authUrl);
+        } catch (error: any) {
+          logger.error('Failed to start OAuth in callback handler', { error: error.message });
+        }
+      }
+      
       res.status(400).json({
         success: false,
         error: errorMessage,
