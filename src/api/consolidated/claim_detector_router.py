@@ -38,6 +38,8 @@ class ClaimRequest(BaseModel):
 
 class ClaimResponse(BaseModel):
     """Response model for claim prediction"""
+    model_config = {"protected_namespaces": ()}
+    
     claim_id: str
     claimable: bool
     probability: float
@@ -57,6 +59,8 @@ class BatchClaimResponse(BaseModel):
 
 class ModelInfo(BaseModel):
     """Model information response"""
+    model_config = {"protected_namespaces": ()}
+    
     model_version: str
     training_date: str
     feature_count: int
