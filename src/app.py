@@ -445,33 +445,79 @@ async def amazon_sandbox_callback(request: Request):
 async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_current_user)):
     """Get Amazon recovery summary - returns totalAmount, currency, and claimCount"""
     from fastapi.responses import JSONResponse
-    from .services.refund_engine_client import refund_engine_client
+    import httpx
+    from .common.config import settings
     
     try:
         user_id = user["user_id"]
         logger.info(f"Getting Amazon recoveries summary for user {user_id}")
         
-        # Get recovery metrics from refund engine
+        # Call Node.js backend's Amazon service to get real SP-API data
+        # The Node.js backend has the actual Amazon SP-API integration
+        integrations_url = settings.INTEGRATIONS_URL or "http://localhost:3001"
+        
         try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Get claims/reimbursements from Node.js backend
+                claims_response = await client.get(
+                    f"{integrations_url}/api/v1/integrations/amazon/claims",
+                    headers={"Content-Type": "application/json"},
+                    cookies=request.cookies  # Forward auth cookies if needed
+                )
+                
+                if claims_response.status_code == 200:
+                    claims_data = claims_response.json()
+                    claims = claims_data.get("claims", []) or claims_data.get("data", [])
+                    
+                    # Calculate totals from real Amazon SP-API data
+                    total_amount = sum(
+                        float(claim.get("amount", 0) or 0)
+                        for claim in claims
+                        if claim.get("status") == "approved"
+                    )
+                    claim_count = len(claims)
+                    
+                    logger.info(f"Got {claim_count} claims, total approved amount: {total_amount}")
+                    
+                    return JSONResponse(
+                        content={
+                            "totalAmount": float(total_amount),
+                            "currency": "USD",
+                            "claimCount": int(claim_count)
+                        }
+                    )
+                else:
+                    logger.warning(f"Node.js backend returned {claims_response.status_code}: {claims_response.text}")
+        
+        except httpx.TimeoutException:
+            logger.warning("Timeout calling Node.js backend for Amazon claims")
+        except httpx.RequestError as e:
+            logger.warning(f"Request error calling Node.js backend: {e}")
+        except Exception as e:
+            logger.warning(f"Error calling Node.js backend: {e}")
+        
+        # Fallback: Try refund engine (in case data was synced there)
+        try:
+            from .services.refund_engine_client import refund_engine_client
             result = await refund_engine_client.get_claim_stats(user_id)
             
             if "error" not in result:
-                # Extract totals from result
                 total_amount = result.get("total_amount", 0) or result.get("approved_amount", 0)
                 claim_count = result.get("total_claims", 0)
                 
-                return JSONResponse(
-                    content={
-                        "totalAmount": float(total_amount),
-                        "currency": "USD",
-                        "claimCount": int(claim_count)
-                    }
-                )
+                if total_amount > 0 or claim_count > 0:
+                    return JSONResponse(
+                        content={
+                            "totalAmount": float(total_amount),
+                            "currency": "USD",
+                            "claimCount": int(claim_count)
+                        }
+                    )
         except Exception as e:
-            logger.warning(f"Failed to get recovery metrics: {e}")
-            # Fall through to default response
+            logger.warning(f"Refund engine fallback failed: {e}")
         
-        # Default response (sandbox mode or service unavailable)
+        # Default response if no data found
+        logger.warning(f"No Amazon recovery data found for user {user_id}")
         return JSONResponse(
             content={
                 "totalAmount": 0.0,
@@ -481,8 +527,7 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
         )
         
     except Exception as e:
-        logger.error(f"Error getting recoveries summary: {e}")
-        # Return zeros on error (frontend handles gracefully)
+        logger.error(f"Error getting recoveries summary: {e}", exc_info=True)
         return JSONResponse(
             content={
                 "totalAmount": 0.0,
