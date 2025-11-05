@@ -171,7 +171,9 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     
     // For GET requests, redirect to error page
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const errorUrl = `${frontendUrl}/auth/error?reason=${encodeURIComponent(error.message || 'oauth_failed')}`;
+    // Redirect to a page that can handle the error (not /auth/analyzing which doesn't load)
+    // Use dashboard or a proper error page
+    const errorUrl = `${frontendUrl}/dashboard?error=${encodeURIComponent(error.message || 'oauth_failed')}&amazon_error=true`;
     res.redirect(302, errorUrl);
   }
 };
