@@ -8,6 +8,7 @@ export interface AuthenticatedRequest extends Request {
   user?: {
     id: string;
     email: string;
+    role?: string;
   };
 }
 
@@ -24,8 +25,8 @@ const PUBLIC_ROUTES = [
 // Check if a route is public
 function isPublicRoute(req: Request): boolean {
   return PUBLIC_ROUTES.some(route => 
-    route.method === req.method && 
-    (route.path === '*' || req.path.startsWith(route.path))
+    route.method === (req as any).method && 
+    (route.path === '*' || (req as any).path?.startsWith(route.path))
   );
 }
 
@@ -35,7 +36,7 @@ export const authenticateToken = (
   next: NextFunction
 ): void => {
   // Allow OPTIONS requests (preflight)
-  if (req.method === 'OPTIONS') {
+  if ((req as any).method === 'OPTIONS') {
     return next();
   }
 
@@ -44,14 +45,14 @@ export const authenticateToken = (
     return next();
   }
 
-  const authHeader = req.headers.authorization;
+  const authHeader = (req as any).headers?.authorization;
   const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
 
   if (!token) {
     logger.warn('Authentication failed: No token provided', {
-      url: req.url,
-      method: req.method,
-      ip: req.ip
+      url: (req as any).url,
+      method: (req as any).method,
+      ip: (req as any).ip
     });
     res.status(401).json({
       success: false,
@@ -67,9 +68,9 @@ export const authenticateToken = (
   } catch (error) {
     logger.warn('Authentication failed: Invalid token', {
       error: error instanceof Error ? error.message : 'Unknown error',
-      url: req.url,
-      method: req.method,
-      ip: req.ip
+      url: (req as any).url,
+      method: (req as any).method,
+      ip: (req as any).ip
     });
     res.status(403).json({
       success: false,
