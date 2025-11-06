@@ -5,7 +5,7 @@ import logger from '../utils/logger';
 const router = express.Router();
 
 // Python backend URL - can be overridden by environment variable
-const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://opside-python-api.onrender.com';
+const PYTHON_API_URL = process.env.PYTHON_API_URL || process.env.PYTHON_API_BASE_URL || 'https://python-api-newest.onrender.com';
 
 /**
  * Extract JWT token from cookie or Authorization header

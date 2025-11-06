@@ -9,6 +9,9 @@ import {
 const router = Router();
 
 router.get('/', getAllIntegrations);
+// General status endpoint (returns all integrations) - MUST come before /:provider/status
+router.get('/status', getAllIntegrations);
+// Provider-specific status endpoint
 router.get('/:provider/status', getIntegrationStatus);
 router.post('/:provider/reconnect', reconnectIntegration);
 router.post('/:provider/disconnect', disconnectIntegration);
