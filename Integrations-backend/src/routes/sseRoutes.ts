@@ -9,6 +9,42 @@ const router = Router();
 // Apply SSE authentication middleware to all SSE routes
 router.use(authenticateSSE);
 
+/**
+ * @route GET /api/sse/status
+ * @desc SSE status endpoint - returns connection status and available endpoints
+ * @access Private (JWT required)
+ */
+router.get('/status', (req: AuthenticatedSSERequest, res) => {
+  const userId = req.user?.id;
+  if (!userId) {
+    closeSSEConnection(res);
+    return;
+  }
+
+  // Send initial connection event
+  sendSSEEvent(res, 'connected', {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    endpoints: ['/api/sse/stream', '/api/sse/sync-progress/:syncId', '/api/sse/notifications']
+  });
+
+  sseHub.addConnection(userId, res);
+
+  const heartbeatInterval = setInterval(() => {
+    sendSSEHeartbeat(res);
+  }, 30000);
+
+  (req as any).on('close', () => {
+    clearInterval(heartbeatInterval);
+    sseHub.removeConnection(userId, res);
+  });
+
+  (req as any).on('error', () => {
+    clearInterval(heartbeatInterval);
+    sseHub.removeConnection(userId, res);
+  });
+});
+
 // Unified stream that sends an initial event and registers the connection.
 // Other parts of the system can still target specific event names via sseHub.sendEvent(userId, event, data)
 router.get('/stream', (req: AuthenticatedSSERequest, res) => {
