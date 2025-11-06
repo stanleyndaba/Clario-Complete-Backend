@@ -2,16 +2,9 @@ import { Request, Response } from 'express';
 import { getLogger } from '../../utils/logger';
 import { notificationService } from '../services/notification_service';
 import { NotificationType, NotificationPriority, NotificationChannel } from '../models/notification';
+import { AuthenticatedRequest } from '../../middleware/authMiddleware';
 
 const logger = getLogger('NotificationController');
-
-export interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    email: string;
-    role: string;
-  };
-}
 
 export class NotificationController {
   /**
@@ -35,7 +28,7 @@ export class NotificationController {
         unread_only,
         limit = '50',
         offset = '0'
-      } = req.query;
+      } = (req as any).query;
 
       // Build filters
       const filters: any = {
@@ -92,7 +85,7 @@ export class NotificationController {
         return;
       }
 
-      const { id } = req.params;
+      const { id } = (req as any).params;
       if (!id) {
         res.status(400).json({ error: 'Notification ID is required' });
         return;
@@ -136,7 +129,7 @@ export class NotificationController {
         return;
       }
 
-      const { notificationIds } = req.body;
+      const { notificationIds } = (req as any).body;
 
       if (!notificationIds) {
         res.status(400).json({ error: 'Notification IDs are required' });
@@ -191,7 +184,7 @@ export class NotificationController {
         payload,
         expires_at,
         immediate
-      } = req.body;
+      } = (req as any).body;
 
       // Validate required fields
       if (!type || !title || !message) {
@@ -252,13 +245,13 @@ export class NotificationController {
         return;
       }
 
-      const { id } = req.params;
+      const { id } = (req as any).params;
       if (!id) {
         res.status(400).json({ error: 'Notification ID is required' });
         return;
       }
 
-      const updates = req.body;
+      const updates = (req as any).body;
       if (!updates || Object.keys(updates).length === 0) {
         res.status(400).json({ error: 'Update data is required' });
         return;
@@ -305,7 +298,7 @@ export class NotificationController {
         return;
       }
 
-      const { id } = req.params;
+      const { id } = (req as any).params;
       if (!id) {
         res.status(400).json({ error: 'Notification ID is required' });
         return;

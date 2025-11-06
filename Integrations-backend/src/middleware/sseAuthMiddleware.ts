@@ -7,6 +7,7 @@ export interface AuthenticatedSSERequest extends Request {
   user?: {
     id: string;
     email: string;
+    role?: string;
   };
 }
 
@@ -29,14 +30,14 @@ export const authenticateSSE = (
       'Access-Control-Allow-Headers': 'Cache-Control'
     });
 
-    const authHeader = req.headers.authorization;
+    const authHeader = (req as any).headers?.authorization;
     const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
 
     if (!token) {
       logger.warn('SSE authentication failed: No token provided', {
-        url: req.url,
-        method: req.method,
-        ip: req.ip
+        url: (req as any).url,
+        method: (req as any).method,
+        ip: (req as any).ip
       });
       
       // Send error event and close connection
@@ -55,8 +56,8 @@ export const authenticateSSE = (
       
       logger.info('SSE authentication successful', {
         user_id: decoded.id,
-        url: req.url,
-        ip: req.ip
+        url: (req as any).url,
+        ip: (req as any).ip
       });
 
       // Send authentication success event
@@ -69,9 +70,9 @@ export const authenticateSSE = (
     } catch (error) {
       logger.warn('SSE authentication failed: Invalid token', {
         error: error instanceof Error ? error.message : 'Unknown error',
-        url: req.url,
-        method: req.method,
-        ip: req.ip
+        url: (req as any).url,
+        method: (req as any).method,
+        ip: (req as any).ip
       });
       
       // Send error event and close connection
