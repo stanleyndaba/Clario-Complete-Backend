@@ -7,6 +7,13 @@ import oauthStateStore from '../utils/oauthStateStore';
 
 export const startAmazonOAuth = async (req: Request, res: Response) => {
   try {
+    // Set CORS headers explicitly
+    const origin = req.headers.origin;
+    if (origin) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Access-Control-Allow-Credentials', 'true');
+    }
+    
     // Check if we already have a refresh token - if so, we can skip OAuth
     const existingRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
     if (existingRefreshToken && existingRefreshToken.trim() !== '') {
@@ -66,7 +73,8 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
     logger.info('OAuth flow initiated successfully', {
       hasAuthUrl: !!result.authUrl,
       authUrlLength: result.authUrl?.length,
-      state: result.state
+      state: result.state,
+      origin: req.headers.origin
     });
     
     res.json({

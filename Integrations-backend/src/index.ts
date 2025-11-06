@@ -47,6 +47,7 @@ app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, Postman, etc.)
     if (!origin) {
+      logger.debug('CORS: Allowing request with no origin');
       return callback(null, true);
     }
     
@@ -54,6 +55,7 @@ app.use(cors({
       'https://opside-complete-frontend-4poy2f2lh-mvelo-ndabas-projects.vercel.app',
       'https://opside-complete-frontend-kqvxrzg4s-mvelo-ndabas-projects.vercel.app',
       'https://opside-complete-frontend-nwcors9h1-mvelo-ndabas-projects.vercel.app',
+      'https://opside-complete-frontend-iigivny9s-mvelo-ndabas-projects.vercel.app',
       'https://clario-refunds-frontend.onrender.com',
       'https://opside-complete-frontend.onrender.com',
       'http://localhost:8080',
@@ -63,19 +65,24 @@ app.use(cors({
     
     // Allow all Vercel preview deployments (pattern matching)
     if (origin.includes('vercel.app') || origin.includes('onrender.com')) {
+      logger.debug(`CORS: Allowing origin (pattern match): ${origin}`);
       return callback(null, true);
     }
     
     // Check exact match
     if (allowedOrigins.includes(origin)) {
+      logger.debug(`CORS: Allowing origin (exact match): ${origin}`);
       return callback(null, true);
     }
     
-    callback(new Error('Not allowed by CORS'));
+    logger.warn(`CORS: Blocked origin: ${origin}`);
+    callback(new Error(`Not allowed by CORS: ${origin}`));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Request-ID'],
+  exposedHeaders: ['Content-Type', 'Authorization'],
+  maxAge: 86400 // 24 hours
 }));
 
 // Rate limiting
@@ -167,7 +174,7 @@ app.use(errorHandler);
 
 const PORT = config.PORT || 3001;
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log('Server running on port ' + PORT);
   console.log('Environment: ' + config.NODE_ENV);
 });
