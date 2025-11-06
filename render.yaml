@@ -52,7 +52,7 @@ services:
     name: opside-node-api
     env: node
     buildCommand: cd Integrations-backend && PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true npm install && npm run build
-    startCommand: cd Integrations-backend && node dist/index.js
+    startCommand: node Integrations-backend/dist/index.js
     envVars:
       - key: NODE_ENV
         value: "production"
