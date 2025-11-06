@@ -16,7 +16,7 @@ router.use((req, res, next) => {
 router.post('/run', async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user?.id as string;
-    const { syncId, triggerType = 'inventory', metadata } = (req.body || {}) as any;
+    const { syncId, triggerType = 'inventory', metadata } = ((req as any).body || {}) as any;
     if (!syncId) {
       return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'syncId is required' } });
     }
@@ -31,7 +31,7 @@ router.post('/run', async (req: AuthenticatedRequest, res) => {
 router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user?.id as string;
-    const { syncId } = req.params as any;
+    const { syncId } = (req as any).params;
     const results = await enhancedDetectionService.getDetectionResults(userId, syncId);
     return res.json({ success: true, results });
   } catch (error: any) {

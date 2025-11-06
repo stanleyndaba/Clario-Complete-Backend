@@ -30,12 +30,12 @@ router.get('/stream', (req: AuthenticatedSSERequest, res) => {
     sendSSEHeartbeat(res);
   }, 30000);
 
-  req.on('close', () => {
+  (req as any).on('close', () => {
     clearInterval(heartbeatInterval);
     sseHub.removeConnection(userId, res);
   });
 
-  req.on('error', () => {
+  (req as any).on('error', () => {
     clearInterval(heartbeatInterval);
     sseHub.removeConnection(userId, res);
   });
@@ -47,7 +47,7 @@ router.get('/stream', (req: AuthenticatedSSERequest, res) => {
  * @access Private (JWT required)
  */
 router.get('/sync-progress/:syncId', (req: AuthenticatedSSERequest, res) => {
-  const { syncId } = req.params;
+  const { syncId } = (req as any).params;
   const userId = req.user?.id;
 
   if (!userId) {
@@ -77,7 +77,7 @@ router.get('/sync-progress/:syncId', (req: AuthenticatedSSERequest, res) => {
   }, 30000); // Every 30 seconds
 
   // Handle client disconnect
-  req.on('close', () => {
+  (req as any).on('close', () => {
     logger.info('SSE sync progress connection closed', {
       user_id: userId,
       sync_id: syncId
@@ -87,7 +87,7 @@ router.get('/sync-progress/:syncId', (req: AuthenticatedSSERequest, res) => {
   });
 
   // Handle errors
-  req.on('error', (error) => {
+  (req as any).on('error', (error) => {
     logger.error('SSE sync progress connection error', {
       error,
       user_id: userId,
@@ -104,7 +104,7 @@ router.get('/sync-progress/:syncId', (req: AuthenticatedSSERequest, res) => {
  * @access Private (JWT required)
  */
 router.get('/detection-updates/:syncId', (req: AuthenticatedSSERequest, res) => {
-  const { syncId } = req.params;
+  const { syncId } = (req as any).params;
   const userId = req.user?.id;
 
   if (!userId) {
@@ -133,7 +133,7 @@ router.get('/detection-updates/:syncId', (req: AuthenticatedSSERequest, res) => 
   }, 30000); // Every 30 seconds
 
   // Handle client disconnect
-  req.on('close', () => {
+  (req as any).on('close', () => {
     logger.info('SSE detection updates connection closed', {
       user_id: userId,
       sync_id: syncId
@@ -143,7 +143,7 @@ router.get('/detection-updates/:syncId', (req: AuthenticatedSSERequest, res) => 
   });
 
   // Handle errors
-  req.on('error', (error) => {
+  (req as any).on('error', (error) => {
     logger.error('SSE detection updates connection error', {
       error,
       user_id: userId,
@@ -186,7 +186,7 @@ router.get('/financial-events', (req: AuthenticatedSSERequest, res) => {
   }, 30000); // Every 30 seconds
 
   // Handle client disconnect
-  req.on('close', () => {
+  (req as any).on('close', () => {
     logger.info('SSE financial events connection closed', {
       user_id: userId
     });
@@ -195,7 +195,7 @@ router.get('/financial-events', (req: AuthenticatedSSERequest, res) => {
   });
 
   // Handle errors
-  req.on('error', (error) => {
+  (req as any).on('error', (error) => {
     logger.error('SSE financial events connection error', {
       error,
       user_id: userId
@@ -237,7 +237,7 @@ router.get('/notifications', (req: AuthenticatedSSERequest, res) => {
   }, 30000); // Every 30 seconds
 
   // Handle client disconnect
-  req.on('close', () => {
+  (req as any).on('close', () => {
     logger.info('SSE notifications connection closed', {
       user_id: userId
     });
@@ -246,7 +246,7 @@ router.get('/notifications', (req: AuthenticatedSSERequest, res) => {
   });
 
   // Handle errors
-  req.on('error', (error) => {
+  (req as any).on('error', (error) => {
     logger.error('SSE notifications connection error', {
       error,
       user_id: userId

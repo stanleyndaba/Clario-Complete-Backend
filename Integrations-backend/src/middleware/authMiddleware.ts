@@ -7,12 +7,12 @@ export interface AuthenticatedRequest extends Request {
   user?: {
     id: string;
     email: string;
-    role: string;
+    role?: string;
   };
 }
 
 export const authenticateToken = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
-  const authHeader = req.headers['authorization'];
+  const authHeader = (req as any).headers?.['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {

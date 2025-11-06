@@ -31,7 +31,7 @@ export const initiateStripeOAuth = asyncHandler(async (req: AuthenticatedRequest
 });
 
 export const handleStripeCallback = asyncHandler(async (req: Request, res: Response) => {
-  const { code, state } = req.query;
+  const { code, state } = (req as any).query;
   
   if (!code || !state) {
     return res.status(400).json({
@@ -88,7 +88,7 @@ export const getStripeTransactions = asyncHandler(async (req: AuthenticatedReque
     });
   }
 
-  const { startDate, endDate, limit } = req.query;
+  const { startDate, endDate, limit } = (req as any).query;
 
   try {
     const transactions = await stripeService.fetchTransactions(
@@ -145,7 +145,7 @@ export const getStripeTransaction = asyncHandler(async (req: AuthenticatedReques
     });
   }
 
-  const { transactionId } = req.params;
+  const { transactionId } = (req as any).params;
 
   if (!transactionId) {
     return res.status(400).json({

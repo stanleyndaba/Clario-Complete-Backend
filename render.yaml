@@ -6,8 +6,9 @@ services:
   - type: web
     name: opside-python-api
     env: python
-    buildCommand: pip install -r requirements-consolidated.txt
-    startCommand: uvicorn src.app:app --host 0.0.0.0 --port $PORT
+    pythonVersion: "3.11"
+    buildCommand: pip install --upgrade pip && pip install -r requirements-consolidated.txt
+    startCommand: PYTHONPATH=/opt/render/project:$PYTHONPATH uvicorn src.app:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -41,6 +42,8 @@ services:
         sync: false
       - key: S3_BUCKET_NAME
         sync: false
+      - key: INTEGRATIONS_URL
+        sync: false
     healthCheckPath: /health
     plan: free  # Start with free tier
 
@@ -48,9 +51,11 @@ services:
   - type: web
     name: opside-node-api
     env: node
-    buildCommand: cd Integrations-backend && PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true npm ci --no-audit --no-fund --prefer-offline && npm run build
-    startCommand: cd Integrations-backend && npm start
+    buildCommand: cd Integrations-backend && PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true npm install && npm run build
+    startCommand: cd Integrations-backend && node dist/index.js
     envVars:
+      - key: NODE_ENV
+        value: "production"
       - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
         value: "true"
       - key: DATABASE_URL
