@@ -774,6 +774,161 @@ export class DetectionService {
   }
 
   /**
+   * Resolve a detection result (mark as resolved)
+   */
+  async resolveDetectionResult(
+    sellerId: string,
+    detectionId: string,
+    notes?: string,
+    resolutionAmount?: number
+  ): Promise<DetectionResultRecord> {
+    try {
+      // First verify the detection result belongs to the seller
+      const { data: detection, error: fetchError } = await supabase
+        .from('detection_results')
+        .select('*')
+        .eq('id', detectionId)
+        .eq('seller_id', sellerId)
+        .single();
+
+      if (fetchError || !detection) {
+        throw new Error('Detection result not found');
+      }
+
+      // Update status to resolved
+      const updateData: any = {
+        status: 'resolved',
+        updated_at: new Date().toISOString()
+      };
+
+      if (notes) {
+        updateData.evidence = {
+          ...(detection.evidence || {}),
+          resolution_notes: notes,
+          resolved_at: new Date().toISOString()
+        };
+      }
+
+      if (resolutionAmount !== undefined) {
+        updateData.evidence = {
+          ...(updateData.evidence || detection.evidence || {}),
+          resolution_amount: resolutionAmount
+        };
+      }
+
+      const { data: updatedDetection, error: updateError } = await supabase
+        .from('detection_results')
+        .update(updateData)
+        .eq('id', detectionId)
+        .eq('seller_id', sellerId)
+        .select()
+        .single();
+
+      if (updateError) {
+        logger.error('Error resolving detection result', { error: updateError, detectionId, sellerId });
+        throw new Error(`Failed to resolve detection result: ${updateError.message}`);
+      }
+
+      logger.info('Detection result resolved successfully', {
+        detection_id: detectionId,
+        seller_id: sellerId,
+        notes: !!notes,
+        resolution_amount: resolutionAmount
+      });
+
+      // Send SSE event for resolution
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(sellerId, 'detection_resolved', {
+        detection_id: detectionId,
+        previous_status: detection.status,
+        new_status: 'resolved',
+        estimated_value: detection.estimated_value,
+        resolution_amount: resolutionAmount,
+        message: `Detection result ${detectionId} has been resolved.`,
+        timestamp: new Date().toISOString()
+      });
+
+      return updatedDetection as DetectionResultRecord;
+    } catch (error) {
+      logger.error('Error in resolveDetectionResult', { error, detectionId, sellerId });
+      throw error;
+    }
+  }
+
+  /**
+   * Update detection result status (generic status update)
+   */
+  async updateDetectionResultStatus(
+    sellerId: string,
+    detectionId: string,
+    status: 'pending' | 'reviewed' | 'disputed' | 'resolved',
+    notes?: string
+  ): Promise<DetectionResultRecord> {
+    try {
+      // First verify the detection result belongs to the seller
+      const { data: detection, error: fetchError } = await supabase
+        .from('detection_results')
+        .select('*')
+        .eq('id', detectionId)
+        .eq('seller_id', sellerId)
+        .single();
+
+      if (fetchError || !detection) {
+        throw new Error('Detection result not found');
+      }
+
+      // Update status
+      const updateData: any = {
+        status,
+        updated_at: new Date().toISOString()
+      };
+
+      if (notes) {
+        updateData.evidence = {
+          ...(detection.evidence || {}),
+          status_notes: notes,
+          status_updated_at: new Date().toISOString()
+        };
+      }
+
+      const { data: updatedDetection, error: updateError } = await supabase
+        .from('detection_results')
+        .update(updateData)
+        .eq('id', detectionId)
+        .eq('seller_id', sellerId)
+        .select()
+        .single();
+
+      if (updateError) {
+        logger.error('Error updating detection result status', { error: updateError, detectionId, sellerId, status });
+        throw new Error(`Failed to update detection result status: ${updateError.message}`);
+      }
+
+      logger.info('Detection result status updated successfully', {
+        detection_id: detectionId,
+        seller_id: sellerId,
+        previous_status: detection.status,
+        new_status: status
+      });
+
+      // Send SSE event for status change
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(sellerId, 'detection_status_changed', {
+        detection_id: detectionId,
+        previous_status: detection.status,
+        new_status: status,
+        message: `Detection result ${detectionId} status changed from ${detection.status} to ${status}.`,
+        timestamp: new Date().toISOString()
+      });
+
+      return updatedDetection as DetectionResultRecord;
+    } catch (error) {
+      logger.error('Error in updateDetectionResultStatus', { error, detectionId, sellerId, status });
+      throw error;
+    }
+  }
+
+  /**
    * Update expired claims (mark as expired when deadline passes)
    */
   async updateExpiredClaims(): Promise<number> {
