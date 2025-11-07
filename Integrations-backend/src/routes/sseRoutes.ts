@@ -42,6 +42,60 @@ router.get('/stream', (req: AuthenticatedSSERequest, res) => {
 });
 
 /**
+ * @route GET /api/sse/status
+ * @desc General status stream for all events (sync, detection, evidence, claims, refunds)
+ * @access Private (JWT required)
+ * @note This is the main endpoint used by the frontend for real-time status updates
+ */
+router.get('/status', (req: AuthenticatedSSERequest, res) => {
+  const userId = req.user?.id;
+  if (!userId) {
+    logger.warn('SSE status endpoint: No user ID, closing connection');
+    closeSSEConnection(res);
+    return;
+  }
+
+  logger.info('SSE status connection established', {
+    user_id: userId,
+    url: (req as any).url
+  });
+
+  // Send initial connection event
+  sendSSEEvent(res, 'connected', {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    user_id: userId
+  });
+
+  // Register connection in hub so events can be sent to this user
+  sseHub.addConnection(userId, res);
+
+  // Set up heartbeat interval to keep connection alive
+  const heartbeatInterval = setInterval(() => {
+    sendSSEHeartbeat(res);
+  }, 30000); // Every 30 seconds
+
+  // Handle client disconnect
+  (req as any).on('close', () => {
+    logger.info('SSE status connection closed', {
+      user_id: userId
+    });
+    clearInterval(heartbeatInterval);
+    sseHub.removeConnection(userId, res);
+  });
+
+  // Handle errors
+  (req as any).on('error', (error: any) => {
+    logger.error('SSE status connection error', {
+      error: error?.message || error,
+      user_id: userId
+    });
+    clearInterval(heartbeatInterval);
+    sseHub.removeConnection(userId, res);
+  });
+});
+
+/**
  * @route GET /api/sse/sync-progress/:syncId
  * @desc Stream real-time sync progress updates
  * @access Private (JWT required)

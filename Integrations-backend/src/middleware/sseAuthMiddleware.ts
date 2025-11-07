@@ -30,20 +30,31 @@ export const authenticateSSE = (
       'Access-Control-Allow-Headers': 'Cache-Control'
     });
 
+    // EventSource can't send custom headers, so we need to support cookies
+    // Priority 1: Check cookie (session_token) - this is how EventSource sends auth
+    const cookieToken = (req as any).cookies?.session_token;
+    
+    // Priority 2: Check Authorization header (for testing with curl/Postman)
     const authHeader = (req as any).headers?.authorization;
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    const headerToken = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    
+    // Use cookie token if available, otherwise use header token
+    const token = cookieToken || headerToken;
 
     if (!token) {
       logger.warn('SSE authentication failed: No token provided', {
         url: (req as any).url,
         method: (req as any).method,
-        ip: (req as any).ip
+        ip: (req as any).ip,
+        hasCookie: !!cookieToken,
+        hasHeader: !!headerToken
       });
       
       // Send error event and close connection
       res.write(`event: error\ndata: ${JSON.stringify({
         error: 'Authentication required',
-        code: 'AUTH_REQUIRED'
+        code: 'AUTH_REQUIRED',
+        message: 'Please ensure you are logged in and cookies are enabled'
       })}\n\n`);
       
       res.end();
