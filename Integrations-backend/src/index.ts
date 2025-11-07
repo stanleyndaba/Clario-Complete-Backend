@@ -156,6 +156,7 @@ app.use('/api/autoclaim', autoclaimRoutes);
 app.use('/api/internal-events', internalEventsRoutes);
 app.use('/api/stripe-webhook', stripeWebhookRoutes);
 app.use('/api/v1/workflow', workflowRoutes);
+logger.info('Workflow routes registered at /api/v1/workflow');
 
 // Consolidated service routes (merged from separate microservices)
 app.use('/api/v1/stripe-payments', consolidatedStripeRoutes);

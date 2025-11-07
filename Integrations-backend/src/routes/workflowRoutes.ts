@@ -4,8 +4,12 @@ import logger from '../utils/logger';
 
 const router = Router();
 
+// Log that workflow routes are being loaded
+logger.info('Workflow routes module loaded');
+
 // Health check endpoint for workflow routes
 router.get('/health', (_req, res) => {
+  logger.info('Workflow health check endpoint hit');
   res.json({ 
     status: 'ok', 
     service: 'workflow-routes',
@@ -33,6 +37,13 @@ function isValidPhaseNumber(num: number): num is PhaseNumber {
  * @param phaseNumber - Must be 1-7 (TypeScript enforces at compile time, runtime validates)
  */
 router.post('/phase/:phaseNumber', async (req: Request, res: Response) => {
+  logger.info('Workflow phase route hit', { 
+    path: req.path, 
+    method: req.method,
+    params: req.params,
+    body: req.body 
+  });
+  
   try {
     const phaseNumberRaw = parseInt(req.params.phaseNumber, 10);
     
