@@ -135,10 +135,37 @@ export class TokenManager {
     provider: 'amazon' | 'gmail' | 'stripe'
   ): Promise<boolean> {
     try {
+      // First check database
       const token = await this.getToken(userId, provider);
-      return token !== null;
+      if (token !== null) {
+        return true;
+      }
+      
+      // If no database token, check environment variables (for sandbox/demo mode)
+      if (provider === 'amazon') {
+        const envRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
+        const envClientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
+        const envClientSecret = process.env.AMAZON_CLIENT_SECRET;
+        
+        if (envRefreshToken && envClientId && envClientSecret) {
+          logger.info('Token valid from environment variables (sandbox mode)', { userId, provider });
+          return true;
+        }
+      }
+      
+      return false;
     } catch (error) {
       logger.error('Error checking token validity', { error, userId, provider });
+      
+      // On error, still check environment variables as fallback
+      if (provider === 'amazon') {
+        const envRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
+        if (envRefreshToken) {
+          logger.info('Token available from environment variables despite error', { userId, provider });
+          return true;
+        }
+      }
+      
       return false;
     }
   }

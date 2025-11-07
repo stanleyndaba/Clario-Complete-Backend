@@ -459,10 +459,11 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
         
         # Call Node.js backend's Amazon service to get real SP-API data
         # The Node.js backend has the actual Amazon SP-API integration
+        # Use /recoveries endpoint which returns summary (totalAmount, claimCount)
         integrations_url = settings.INTEGRATIONS_URL or "http://localhost:3001"
-        claims_url = f"{integrations_url}/api/v1/integrations/amazon/claims"
+        recoveries_url = f"{integrations_url}/api/v1/integrations/amazon/recoveries"
         
-        logger.info(f"📍 Calling Node.js backend: {claims_url}")
+        logger.info(f"📍 Calling Node.js backend: {recoveries_url}")
         logger.info(f"🔗 INTEGRATIONS_URL: {integrations_url}")
         
         try:
@@ -471,8 +472,8 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
                 # First, try to get claims/reimbursements from Node.js backend
                 # This calls the real SP-API directly
                 try:
-                    claims_response = await client.get(
-                        claims_url,
+                    recoveries_response = await client.get(
+                        recoveries_url,
                         headers={
                             "Content-Type": "application/json",
                             # Forward user context if needed
@@ -482,67 +483,61 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
                     elapsed_time = time.time() - start_time
                     
                     logger.info(f"⏱️ Node.js backend response time: {elapsed_time:.2f}s")
-                    logger.info(f"📊 Response status: {claims_response.status_code}")
+                    logger.info(f"📊 Response status: {recoveries_response.status_code}")
                     
-                    if claims_response.status_code == 200:
-                        claims_data = claims_response.json()
-                        logger.info(f"📦 Response data keys: {list(claims_data.keys())}")
+                    if recoveries_response.status_code == 200:
+                        recoveries_data = recoveries_response.json()
+                        logger.info(f"📦 Response data keys: {list(recoveries_data.keys())}")
+                        logger.info(f"📦 Full response: {recoveries_data}")
                         
-                        claims = claims_data.get("claims", []) or claims_data.get("data", [])
+                        # The /recoveries endpoint returns: {totalAmount, currency, claimCount, source, dataSource}
+                        total_amount = recoveries_data.get("totalAmount", 0) or 0
+                        claim_count = recoveries_data.get("claimCount", 0) or 0
+                        source = recoveries_data.get("source", "unknown")
+                        data_source = recoveries_data.get("dataSource", "unknown")
                         
-                        logger.info(f"📋 Found {len(claims) if isinstance(claims, list) else 0} claims in response")
+                        logger.info(f"✅ Got recoveries from Node.js backend: {claim_count} claims, ${total_amount} total (source: {source}, dataSource: {data_source})")
                         
-                        # If we got claims, calculate totals
-                        if isinstance(claims, list) and len(claims) > 0:
-                            total_amount = sum(
-                                float(claim.get("amount", 0) or 0)
-                                for claim in claims
-                                if claim.get("status") == "approved"
-                            )
-                            claim_count = len(claims)
-                            
-                            logger.info(f"✅ Got {claim_count} claims from Node.js backend, total approved amount: ${total_amount:.2f}")
-                            
-                            return JSONResponse(
-                                content={
-                                    "totalAmount": float(total_amount),
-                                    "currency": "USD",
-                                    "claimCount": int(claim_count),
-                                    "source": "nodejs_backend",
-                                    "responseTime": round(elapsed_time, 2)
-                                }
-                            )
-                        else:
-                            logger.info("⚠️ No claims returned from Node.js backend - may need to sync first")
-                            logger.info(f"📄 Full response: {claims_data}")
-                    elif claims_response.status_code == 401:
+                        # Return the response directly (it already has the right format)
+                        return JSONResponse(
+                            content={
+                                "totalAmount": float(total_amount),
+                                "currency": recoveries_data.get("currency", "USD"),
+                                "claimCount": int(claim_count),
+                                "source": source,
+                                "dataSource": data_source,
+                                "message": recoveries_data.get("message"),
+                                "responseTime": round(elapsed_time, 2)
+                            }
+                        )
+                    elif recoveries_response.status_code == 401:
                         logger.error(f"🔒 AUTH ERROR: Node.js backend returned 401 Unauthorized")
-                        logger.error(f"📄 Response body: {claims_response.text[:500]}")
-                    elif claims_response.status_code == 404:
-                        logger.error(f"📍 NOT FOUND: Node.js backend endpoint {claims_url} returned 404")
-                        logger.error(f"📄 Response body: {claims_response.text[:500]}")
-                    elif claims_response.status_code >= 500:
-                        logger.error(f"💥 SERVER ERROR: Node.js backend returned {claims_response.status_code}")
-                        logger.error(f"📄 Response body: {claims_response.text[:500]}")
+                        logger.error(f"📄 Response body: {recoveries_response.text[:500]}")
+                    elif recoveries_response.status_code == 404:
+                        logger.error(f"📍 NOT FOUND: Node.js backend endpoint {recoveries_url} returned 404")
+                        logger.error(f"📄 Response body: {recoveries_response.text[:500]}")
+                    elif recoveries_response.status_code >= 500:
+                        logger.error(f"💥 SERVER ERROR: Node.js backend returned {recoveries_response.status_code}")
+                        logger.error(f"📄 Response body: {recoveries_response.text[:500]}")
                     else:
-                        logger.warning(f"⚠️ Node.js backend returned {claims_response.status_code}: {claims_response.text[:500]}")
+                        logger.warning(f"⚠️ Node.js backend returned {recoveries_response.status_code}: {recoveries_response.text[:500]}")
                         
                 except httpx.TimeoutException as e:
                     elapsed_time = time.time() - start_time
                     logger.error(f"⏱️ BACKEND TIMEOUT: Node.js backend took longer than 30 seconds (elapsed: {elapsed_time:.2f}s)")
-                    logger.error(f"🔗 URL: {claims_url}")
+                    logger.error(f"🔗 URL: {recoveries_url}")
                     logger.error(f"❌ Timeout error: {str(e)}")
                 except httpx.RequestError as e:
                     elapsed_time = time.time() - start_time
                     logger.error(f"🌐 NETWORK ERROR: Cannot reach Node.js backend")
-                    logger.error(f"🔗 URL: {claims_url}")
+                    logger.error(f"🔗 URL: {recoveries_url}")
                     logger.error(f"⏱️ Elapsed time: {elapsed_time:.2f}s")
                     logger.error(f"❌ Request error: {str(e)}")
                     logger.error(f"📋 Error type: {type(e).__name__}")
                 except Exception as e:
                     elapsed_time = time.time() - start_time
                     logger.error(f"❌ UNEXPECTED ERROR calling Node.js backend")
-                    logger.error(f"🔗 URL: {claims_url}")
+                    logger.error(f"🔗 URL: {recoveries_url}")
                     logger.error(f"⏱️ Elapsed time: {elapsed_time:.2f}s")
                     logger.error(f"❌ Error: {str(e)}")
                     logger.error(f"📋 Error type: {type(e).__name__}", exc_info=True)

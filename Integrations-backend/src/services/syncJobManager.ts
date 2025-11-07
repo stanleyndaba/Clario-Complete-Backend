@@ -33,10 +33,33 @@ class SyncJobManager {
   async startSync(userId: string): Promise<{ syncId: string; status: string }> {
     const syncId = `sync_${userId}_${Date.now()}`;
     
-    // Check if user has Amazon connection
+    // Check if user has Amazon connection (database or environment variables)
     const isConnected = await tokenManager.isTokenValid(userId, 'amazon');
     if (!isConnected) {
-      throw new Error('Amazon connection not found. Please connect your Amazon account first.');
+      // Double-check environment variables as fallback (for sandbox mode)
+      const envRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
+      const envClientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
+      const envClientSecret = process.env.AMAZON_CLIENT_SECRET;
+      
+      if (envRefreshToken && envClientId && envClientSecret) {
+        logger.info('Using environment variables for sync (sandbox mode)', {
+          userId,
+          syncId,
+          hasRefreshToken: !!envRefreshToken,
+          hasClientId: !!envClientId,
+          hasClientSecret: !!envClientSecret
+        });
+        // Continue with sync - environment variables are sufficient
+      } else {
+        logger.warn('Amazon connection not found and no environment variables available', {
+          userId,
+          syncId,
+          hasRefreshToken: !!envRefreshToken,
+          hasClientId: !!envClientId,
+          hasClientSecret: !!envClientSecret
+        });
+        throw new Error('Amazon connection not found. Please connect your Amazon account first.');
+      }
     }
 
     // Check if there's already a running sync

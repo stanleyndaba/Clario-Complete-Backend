@@ -16,11 +16,29 @@ export class AmazonSyncJob {
     try {
       logger.info('Starting Amazon sync for user', { userId, syncId });
 
-      // Check if user has valid Amazon token
+      // Check if user has valid Amazon token (database or environment)
       const isConnected = await tokenManager.isTokenValid(userId, 'amazon');
       if (!isConnected) {
-        logger.info('User not connected to Amazon, skipping sync', { userId, syncId });
-        return syncId;
+        // Even if no database token, check environment variables for sandbox mode
+        const envRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
+        const envClientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
+        const envClientSecret = process.env.AMAZON_CLIENT_SECRET;
+        
+        if (envRefreshToken && envClientId && envClientSecret) {
+          logger.info('Using environment variables for Amazon connection (sandbox mode)', { 
+            userId, 
+            syncId,
+            hasRefreshToken: !!envRefreshToken,
+            hasClientId: !!envClientId,
+            hasClientSecret: !!envClientSecret
+          });
+          // Continue with sync using environment variables
+        } else {
+          logger.info('User not connected to Amazon (no database token or env vars), skipping sync', { userId, syncId });
+          return syncId;
+        }
+      } else {
+        logger.info('User has valid Amazon token, proceeding with sync', { userId, syncId });
       }
 
       // Sync claims - GETTING SANDBOX TEST DATA FROM SP-API

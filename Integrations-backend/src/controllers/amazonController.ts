@@ -436,20 +436,61 @@ export const syncAmazonData = async (req: Request, res: Response) => {
 // Real endpoints that call actual SP-API service
 export const getAmazonClaims = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user?.id || 'demo-user';
+    const userId = (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    
+    logger.info(`Getting Amazon claims for user: ${userId}`);
+    
+    // Try database first (where sync saves data)
+    try {
+      const { data: dbClaims, error: dbError } = await (await import('../database/supabaseClient')).supabase
+        .from('claims')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('provider', 'amazon')
+        .order('created_at', { ascending: false });
+      
+      if (!dbError && dbClaims && dbClaims.length > 0) {
+        logger.info(`Found ${dbClaims.length} claims in database`);
+        return res.json({
+          success: true,
+          claims: dbClaims,
+          message: `Found ${dbClaims.length} claims from database`,
+          source: 'database'
+        });
+      }
+    } catch (dbError: any) {
+      logger.warn('Error querying database for claims, falling back to API', { error: dbError.message });
+    }
+    
+    // Fall back to API if no database data
     const result = await amazonService.fetchClaims(userId);
+    const claims = result.data || [];
+    
+    logger.info(`Fetched ${claims.length} claims from SP-API`, {
+      userId,
+      claimCount: claims.length,
+      isSandbox: result.isSandbox || false,
+      dataType: result.dataType || 'unknown'
+    });
     
     res.json({
       success: true,
-      claims: result.data || [],
-      message: result.message
+      claims: claims,
+      message: result.message || `Fetched ${claims.length} claims from SP-API`,
+      source: 'api',
+      isSandbox: result.isSandbox || false,
+      dataType: result.dataType || 'unknown'
     });
-  } catch (error) {
-    logger.error('Get Amazon claims error:', error);
+  } catch (error: any) {
+    logger.error('Get Amazon claims error:', {
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({
       success: false,
       error: 'Failed to fetch claims',
-      claims: []
+      claims: [],
+      message: error.message
     });
   }
 };
