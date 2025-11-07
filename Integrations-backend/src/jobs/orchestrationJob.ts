@@ -56,7 +56,11 @@ export class OrchestrationJobManager {
    */
   static async addOrchestrationJob(data: OrchestrationJobData): Promise<void> {
     try {
+      // Use jobId to prevent duplicate jobs for same user/step/syncId
+      const jobId = `orchestrate_${data.userId}_${data.step}_${data.syncId}`;
+      
       await orchestrationQueue.add('orchestrate', data, {
+        jobId, // Prevents duplicate jobs with same ID
         attempts: 3,
         backoff: {
           type: 'exponential',
