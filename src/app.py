@@ -471,42 +471,42 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
                 # First, try to get claims/reimbursements from Node.js backend
                 # This calls the real SP-API directly
                 try:
-                claims_response = await client.get(
+                    claims_response = await client.get(
                         claims_url,
-                    headers={
-                        "Content-Type": "application/json",
-                        # Forward user context if needed
-                    },
-                    cookies=request.cookies  # Forward auth cookies if needed
-                )
+                        headers={
+                            "Content-Type": "application/json",
+                            # Forward user context if needed
+                        },
+                        cookies=request.cookies  # Forward auth cookies if needed
+                    )
                     elapsed_time = time.time() - start_time
                     
                     logger.info(f"⏱️ Node.js backend response time: {elapsed_time:.2f}s")
                     logger.info(f"📊 Response status: {claims_response.status_code}")
-                
-                if claims_response.status_code == 200:
-                    claims_data = claims_response.json()
+                    
+                    if claims_response.status_code == 200:
+                        claims_data = claims_response.json()
                         logger.info(f"📦 Response data keys: {list(claims_data.keys())}")
                         
-                    claims = claims_data.get("claims", []) or claims_data.get("data", [])
+                        claims = claims_data.get("claims", []) or claims_data.get("data", [])
                         
                         logger.info(f"📋 Found {len(claims) if isinstance(claims, list) else 0} claims in response")
-                    
-                    # If we got claims, calculate totals
-                    if isinstance(claims, list) and len(claims) > 0:
-                        total_amount = sum(
-                            float(claim.get("amount", 0) or 0)
-                            for claim in claims
-                            if claim.get("status") == "approved"
-                        )
-                        claim_count = len(claims)
                         
+                        # If we got claims, calculate totals
+                        if isinstance(claims, list) and len(claims) > 0:
+                            total_amount = sum(
+                                float(claim.get("amount", 0) or 0)
+                                for claim in claims
+                                if claim.get("status") == "approved"
+                            )
+                            claim_count = len(claims)
+                            
                             logger.info(f"✅ Got {claim_count} claims from Node.js backend, total approved amount: ${total_amount:.2f}")
-                        
-                        return JSONResponse(
-                            content={
-                                "totalAmount": float(total_amount),
-                                "currency": "USD",
+                            
+                            return JSONResponse(
+                                content={
+                                    "totalAmount": float(total_amount),
+                                    "currency": "USD",
                                     "claimCount": int(claim_count),
                                     "source": "nodejs_backend",
                                     "responseTime": round(elapsed_time, 2)
@@ -532,7 +532,7 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
                     logger.error(f"⏱️ BACKEND TIMEOUT: Node.js backend took longer than 30 seconds (elapsed: {elapsed_time:.2f}s)")
                     logger.error(f"🔗 URL: {claims_url}")
                     logger.error(f"❌ Timeout error: {str(e)}")
-        except httpx.RequestError as e:
+                except httpx.RequestError as e:
                     elapsed_time = time.time() - start_time
                     logger.error(f"🌐 NETWORK ERROR: Cannot reach Node.js backend")
                     logger.error(f"🔗 URL: {claims_url}")
