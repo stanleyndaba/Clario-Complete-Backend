@@ -35,7 +35,33 @@ class InMemoryOAuthStateStore {
       this.delete(state);
     }, this.TTL_MS);
 
-    logger.debug('OAuth state stored', { state, frontendUrl: data.frontendUrl });
+    logger.debug('OAuth state stored', { state, frontendUrl: data.frontendUrl, userId: data.userId });
+  }
+
+  /**
+   * Store OAuth state with user ID (convenience method)
+   */
+  setState(state: string, userId: string, frontendUrl?: string): void {
+    this.set(state, {
+      userId,
+      frontendUrl: frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000',
+      timestamp: Date.now()
+    });
+  }
+
+  /**
+   * Get user ID from state
+   */
+  getUserId(state: string): string | null {
+    const data = this.get(state);
+    return data?.userId || null;
+  }
+
+  /**
+   * Remove state (alias for delete)
+   */
+  removeState(state: string): boolean {
+    return this.delete(state);
   }
 
   /**

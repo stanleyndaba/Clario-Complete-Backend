@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import logger from '../utils/logger';
 import config from '../config/env';
 import tokenManager from '../utils/tokenManager';
+import oauthStateStore from '../utils/oauthStateStore';
 
 // Gmail OAuth base URL
 const GMAIL_AUTH_BASE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -11,9 +12,19 @@ const GMAIL_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
 export const initiateGmailOAuth = async (req: Request, res: Response) => {
   try {
+    // Get user ID from authenticated request
+    const userId = (req as any).user?.id;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required'
+      });
+    }
+
     const clientId = config.GMAIL_CLIENT_ID || process.env.GMAIL_CLIENT_ID;
     const redirectUri = config.GMAIL_REDIRECT_URI || process.env.GMAIL_REDIRECT_URI || 
-                       `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/gmail/callback`;
+                       `${process.env.INTEGRATIONS_URL || process.env.VITE_API_BASE_URL || 'http://localhost:3001'}/api/v1/integrations/gmail/callback`;
 
     if (!clientId || !config.GMAIL_CLIENT_SECRET) {
       logger.warn('Gmail credentials not configured, returning sandbox mock URL');
@@ -27,8 +38,9 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
       });
     }
 
-    // Generate state for CSRF protection
+    // Generate state for CSRF protection and store it with user ID
     const state = crypto.randomBytes(32).toString('hex');
+    await oauthStateStore.setState(state, userId);
     
     // Gmail OAuth scopes
     const scopes = [
@@ -47,8 +59,10 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
       `state=${state}`;
 
     logger.info('Gmail OAuth initiated', {
+      userId,
       hasClientId: !!clientId,
-      redirectUri
+      redirectUri,
+      state
     });
 
     res.json({
@@ -147,22 +161,34 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
       logger.warn('Failed to fetch Gmail profile:', error.message);
     }
 
-    // Extract user ID from state or use default
-    const userId = (typeof state === 'string' ? state : null) || 'default-user';
+    // Get user ID from state store
+    let userId: string | null = null;
+    if (typeof state === 'string') {
+      userId = await oauthStateStore.getUserId(state);
+      // Clean up used state
+      if (userId) {
+        await oauthStateStore.removeState(state);
+      }
+    }
+
+    if (!userId) {
+      logger.error('Invalid or expired OAuth state', { state });
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      return res.redirect(`${frontendUrl}/auth/error?reason=${encodeURIComponent('invalid_state')}`);
+    }
     
     // Store tokens in token manager
-    if (userId && userId !== 'default-user') {
-      try {
-        await tokenManager.saveToken(userId, 'gmail', {
-          accessToken: access_token,
-          refreshToken: refresh_token || '',
-          expiresAt: new Date(Date.now() + (expires_in * 1000))
-        });
-        logger.info('Gmail tokens saved', { userId, email: userEmail });
-      } catch (error) {
-        logger.warn('Failed to save Gmail tokens:', error);
-        // Continue even if token save fails
-      }
+    try {
+      await tokenManager.saveToken(userId, 'gmail', {
+        accessToken: access_token,
+        refreshToken: refresh_token || '',
+        expiresAt: new Date(Date.now() + (expires_in * 1000))
+      });
+      logger.info('Gmail tokens saved', { userId, email: userEmail });
+    } catch (error) {
+      logger.error('Failed to save Gmail tokens:', error);
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      return res.redirect(`${frontendUrl}/auth/error?reason=${encodeURIComponent('token_save_failed')}`);
     }
 
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -182,11 +208,30 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
   }
 };
 
-export const connectGmail = async (_req: Request, res: Response) => {
+export const connectGmail = async (req: Request, res: Response) => {
   try {
-    // Redirect to OAuth initiation
-    const result = await initiateGmailOAuth(_req, res);
-    return result;
+    // Get user ID from authenticated request
+    const userId = (req as any).user?.id;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required'
+      });
+    }
+
+    // Check if already connected
+    const tokenData = await tokenManager.getToken(userId, 'gmail');
+    if (tokenData && tokenData.accessToken) {
+      return res.json({
+        success: true,
+        message: 'Gmail already connected',
+        connected: true
+      });
+    }
+
+    // Initiate OAuth flow
+    await initiateGmailOAuth(req, res);
   } catch (error) {
     logger.error('Gmail connection error:', error);
     res.status(500).json({
@@ -361,7 +406,7 @@ export const searchGmailEmails = async (req: Request, res: Response) => {
 
 export const getGmailStatus = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user?.id || 'default-user';
+    const userId = (req as any).user?.id;
     
     if (!userId) {
       return res.status(401).json({
@@ -371,13 +416,51 @@ export const getGmailStatus = async (req: Request, res: Response) => {
     }
 
     // Check if Gmail is connected using token manager
-    const tokenData = await tokenManager.getToken(userId, 'gmail');
+    let tokenData;
+    try {
+      tokenData = await tokenManager.getToken(userId, 'gmail');
+    } catch (error) {
+      logger.warn('Error getting Gmail token:', error);
+      tokenData = null;
+    }
+
     const isConnected = !!tokenData && !!tokenData.accessToken;
+    
+    // If connected, try to verify token by getting user profile
+    let email: string | undefined;
+    if (isConnected && tokenData.accessToken) {
+      try {
+        const profileResponse = await axios.get(
+          'https://gmail.googleapis.com/gmail/v1/users/me/profile',
+          {
+            headers: {
+              'Authorization': `Bearer ${tokenData.accessToken}`
+            },
+            timeout: 5000
+          }
+        );
+        email = profileResponse.data.emailAddress;
+      } catch (error: any) {
+        // Token might be expired or invalid
+        if (error.response?.status === 401) {
+          logger.warn('Gmail token expired or invalid, marking as disconnected');
+          // Token is invalid, mark as disconnected
+          return res.json({
+            success: true,
+            connected: false,
+            email: undefined,
+            sandbox: !config.GMAIL_CLIENT_ID,
+            message: 'Gmail token expired or invalid. Please reconnect.'
+          });
+        }
+        logger.warn('Failed to verify Gmail token:', error.message);
+      }
+    }
     
     res.json({
       success: true,
-      connected: isConnected,
-      email: isConnected ? 'Connected to Gmail' : undefined,
+      connected: isConnected && !!email,
+      email: email,
       sandbox: !isConnected && !config.GMAIL_CLIENT_ID
     });
   } catch (error) {
@@ -391,26 +474,29 @@ export const getGmailStatus = async (req: Request, res: Response) => {
 
 export const disconnectGmail = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user?.id || 'default-user';
-    const purge = req.query.purge === '1' || req.query.purge === 'true';
-
-    // Delete tokens from token manager
-    if (userId && userId !== 'default-user') {
-      try {
-        await tokenManager.revokeToken(userId, 'gmail');
-        logger.info('Gmail token revoked', { userId });
-      } catch (error) {
-        logger.warn('Failed to revoke Gmail token:', error);
-        // Continue even if token deletion fails
-      }
+    const userId = (req as any).user?.id;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required'
+      });
     }
 
-    logger.info('Gmail disconnected', { userId, purge });
+    // Delete tokens from token manager
+    try {
+      await tokenManager.revokeToken(userId, 'gmail');
+      logger.info('Gmail token revoked', { userId });
+    } catch (error) {
+      logger.warn('Failed to revoke Gmail token:', error);
+      // Continue even if token deletion fails - might not exist
+    }
+
+    logger.info('Gmail disconnected', { userId });
 
     res.json({
       success: true,
-      message: 'Gmail disconnected successfully',
-      purged: purge
+      message: 'Gmail disconnected successfully'
     });
   } catch (error) {
     logger.error('Gmail disconnect error:', error);
