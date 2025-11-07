@@ -21,8 +21,23 @@ async def get_integrations_status(
     """Get status of all integrations for the user"""
     
     try:
-        user_id = user["user_id"]
+        user_id = user.get("user_id") or user.get("id")
+        if not user_id:
+            logger.error("No user_id found in token", {"user_keys": list(user.keys())})
+            raise HTTPException(status_code=401, detail="Invalid user token")
+        
         logger.info(f"Getting integrations status for user {user_id}")
+        
+        # Initialize default response
+        amazon_connected = False
+        docs_connected = False
+        last_sync = None
+        provider_ingest = {
+            "gmail": {"connected": False},
+            "outlook": {"connected": False},
+            "gdrive": {"connected": False},
+            "dropbox": {"connected": False}
+        }
         
         # Check if user has Amazon connected (from token or database)
         amazon_connected = bool(user.get("amazon_seller_id")) or False
@@ -37,11 +52,12 @@ async def get_integrations_status(
             except Exception as e:
                 logger.warning(f"Failed to check database for Amazon connection: {e}")
         
-        # Try to get more detailed status from integrations service
+        # Try to get more detailed status from integrations service (non-blocking)
+        # This is optional - if it fails, we return the default response
         try:
             result = await integrations_client.get_user_integrations(user_id)
             
-            if "error" not in result:
+            if result and "error" not in result:
                 # Transform the response to match frontend expectations
                 integrations = result.get("integrations", [])
                 
@@ -50,8 +66,6 @@ async def get_integrations_status(
                 if amazon_integration:
                     amazon_connected = amazon_integration.get("status") == "connected"
                     last_sync = amazon_integration.get("last_sync")
-                else:
-                    last_sync = None
                 
                 # Check for document providers
                 docs_connected = any(
@@ -66,21 +80,28 @@ async def get_integrations_status(
                     "gdrive": {"connected": any(i.get("type") == "docs_gdrive" and i.get("status") == "connected" for i in integrations)},
                     "dropbox": {"connected": any(i.get("type") == "docs_dropbox" and i.get("status") == "connected" for i in integrations)}
                 }
-                
-                return {
-                    "amazon_connected": amazon_connected,
-                    "docs_connected": docs_connected,
-                    "lastSync": last_sync or None,
-                    "lastIngest": None,  # Can be populated from evidence collection service
-                    "providerIngest": provider_ingest
-                }
+            else:
+                logger.debug(f"Integrations service returned error or empty result: {result}")
         except Exception as e:
-            logger.warning(f"Failed to get detailed integrations status: {e}")
-            # Fall through to default response
+            logger.warning(f"Failed to get detailed integrations status (non-critical): {e}", exc_info=True)
+            # Continue with default response - this is not a critical error
         
-        # Default response if service call fails or returns no data
+        # Return response (always succeeds even if integrations service is down)
         return {
             "amazon_connected": amazon_connected,
+            "docs_connected": docs_connected,
+            "lastSync": last_sync,
+            "lastIngest": None,  # Can be populated from evidence collection service
+            "providerIngest": provider_ingest
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in get_integrations_status: {e}", exc_info=True)
+        # Return default response instead of raising 500 error
+        return {
+            "amazon_connected": False,
             "docs_connected": False,
             "lastSync": None,
             "lastIngest": None,
@@ -91,12 +112,6 @@ async def get_integrations_status(
                 "dropbox": {"connected": False}
             }
         }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error in get_integrations_status: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/api/v1/integrations/connect-amazon")
 async def connect_amazon(

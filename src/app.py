@@ -29,7 +29,7 @@ import os
 # from .acg.router import router as filing_router
 # from .ml_detector.router import router as ml_router
 from .api.auth_sandbox import router as auth_router
-# from .api.integrations import router as integrations_router
+from .api.integrations import router as integrations_router
 from .api.detections import router as detections_router
 from .api.recoveries import router as recoveries_router
 from .api.evidence import router as evidence_router
@@ -235,6 +235,7 @@ app.include_router(detections_router, tags=["detections"])
 app.include_router(recoveries_router, tags=["recoveries"])
 app.include_router(evidence_router, tags=["evidence"])
 app.include_router(sync_router, tags=["sync"])
+app.include_router(integrations_router, tags=["integrations"])
 
 # Consolidated service routers (merged from separate microservices)
 app.include_router(mcde_router)
