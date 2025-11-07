@@ -58,6 +58,14 @@ class InMemoryOAuthStateStore {
   }
 
   /**
+   * Get frontend URL from state
+   */
+  getFrontendUrl(state: string): string | null {
+    const data = this.get(state);
+    return data?.frontendUrl || null;
+  }
+
+  /**
    * Remove state (alias for delete)
    */
   removeState(state: string): boolean {

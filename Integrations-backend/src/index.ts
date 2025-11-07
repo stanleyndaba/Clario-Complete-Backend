@@ -64,8 +64,12 @@ app.use(cors({
       'http://localhost:3000'
     ];
     
-    // Allow all Vercel preview deployments (pattern matching)
-    if (origin.includes('vercel.app') || origin.includes('onrender.com')) {
+    // Allow all Vercel preview deployments and onrender.com domains (pattern matching)
+    // This handles changing frontend domains automatically
+    if (origin.includes('vercel.app') || 
+        origin.includes('onrender.com') || 
+        origin.includes('vercel.com')) {
+      logger.debug('CORS allowed for dynamic domain', { origin });
       return callback(null, true);
     }
     

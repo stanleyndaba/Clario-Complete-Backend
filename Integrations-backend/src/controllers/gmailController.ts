@@ -22,6 +22,27 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
       });
     }
 
+    // Get frontend URL from request (query param, header, or referer)
+    const frontendUrlFromQuery = (req as any).query?.frontend_url as string;
+    const frontendUrlFromHeader = (req as any).headers?.['x-frontend-url'] as string;
+    const referer = (req as any).headers?.referer as string;
+    
+    // Determine frontend URL: query param > header > referer > env var > default
+    let frontendUrl = frontendUrlFromQuery || 
+                     frontendUrlFromHeader || 
+                     (referer ? new URL(referer).origin : null) ||
+                     process.env.FRONTEND_URL || 
+                     'http://localhost:3000';
+    
+    // Normalize frontend URL (remove trailing slash, handle paths)
+    try {
+      const url = new URL(frontendUrl);
+      frontendUrl = `${url.protocol}//${url.host}`;
+    } catch {
+      // If invalid URL, use default
+      frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    }
+
     const clientId = config.GMAIL_CLIENT_ID || process.env.GMAIL_CLIENT_ID;
     const redirectUri = config.GMAIL_REDIRECT_URI || process.env.GMAIL_REDIRECT_URI || 
                        `${process.env.INTEGRATIONS_URL || process.env.VITE_API_BASE_URL || 'http://localhost:3001'}/api/v1/integrations/gmail/callback`;
@@ -38,9 +59,9 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
       });
     }
 
-    // Generate state for CSRF protection and store it with user ID
+    // Generate state for CSRF protection and store it with user ID and frontend URL
     const state = crypto.randomBytes(32).toString('hex');
-    await oauthStateStore.setState(state, userId);
+    await oauthStateStore.setState(state, userId, frontendUrl);
     
     // Gmail OAuth scopes
     const scopes = [
@@ -60,9 +81,11 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
 
     logger.info('Gmail OAuth initiated', {
       userId,
+      frontendUrl,
       hasClientId: !!clientId,
       redirectUri,
-      state
+      state,
+      source: frontendUrlFromQuery ? 'query' : frontendUrlFromHeader ? 'header' : referer ? 'referer' : 'env'
     });
 
     res.json({
@@ -161,20 +184,24 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
       logger.warn('Failed to fetch Gmail profile:', error.message);
     }
 
-    // Get user ID from state store
+    // Get user ID and frontend URL from state store
     let userId: string | null = null;
+    let frontendUrl: string | null = null;
+    
     if (typeof state === 'string') {
-      userId = await oauthStateStore.getUserId(state);
-      // Clean up used state
-      if (userId) {
+      const stateData = oauthStateStore.get(state);
+      if (stateData) {
+        userId = stateData.userId || null;
+        frontendUrl = stateData.frontendUrl || null;
+        // Clean up used state
         await oauthStateStore.removeState(state);
       }
     }
 
     if (!userId) {
       logger.error('Invalid or expired OAuth state', { state });
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-      return res.redirect(`${frontendUrl}/auth/error?reason=${encodeURIComponent('invalid_state')}`);
+      const defaultFrontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      return res.redirect(`${defaultFrontendUrl}/auth/error?reason=${encodeURIComponent('invalid_state')}`);
     }
     
     // Store tokens in token manager
@@ -187,12 +214,19 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
       logger.info('Gmail tokens saved', { userId, email: userEmail });
     } catch (error) {
       logger.error('Failed to save Gmail tokens:', error);
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-      return res.redirect(`${frontendUrl}/auth/error?reason=${encodeURIComponent('token_save_failed')}`);
+      const defaultFrontendUrl = frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
+      return res.redirect(`${defaultFrontendUrl}/auth/error?reason=${encodeURIComponent('token_save_failed')}`);
     }
 
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const redirectUrl = `${frontendUrl}/dashboard?gmail_connected=true&email=${encodeURIComponent(userEmail)}`;
+    // Use frontend URL from state, or fallback to env var
+    const redirectFrontendUrl = frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
+    const redirectUrl = `${redirectFrontendUrl}/dashboard?gmail_connected=true&email=${encodeURIComponent(userEmail)}`;
+    
+    logger.info('Redirecting to frontend after Gmail OAuth success', {
+      userId,
+      frontendUrl: redirectFrontendUrl,
+      email: userEmail
+    });
     
     res.redirect(302, redirectUrl);
   } catch (error: any) {

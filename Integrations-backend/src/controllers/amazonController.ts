@@ -7,6 +7,31 @@ import oauthStateStore from '../utils/oauthStateStore';
 
 export const startAmazonOAuth = async (req: Request, res: Response) => {
   try {
+    // Get user ID from authenticated request (if available)
+    const userId = (req as any).user?.id || (req as any).user?.user_id || null;
+    
+    // Get frontend URL from request (query param, header, or referer)
+    const frontendUrlFromQuery = (req as any).query?.frontend_url as string;
+    const frontendUrlFromHeader = (req as any).headers?.['x-frontend-url'] as string;
+    const referer = (req as any).headers?.referer as string;
+    
+    // Determine frontend URL: query param > header > referer > env var > default
+    let frontendUrl = frontendUrlFromQuery || 
+                     frontendUrlFromHeader || 
+                     (req.headers.origin as string) ||
+                     (referer ? new URL(referer).origin : null) ||
+                     process.env.FRONTEND_URL || 
+                     'http://localhost:3000';
+    
+    // Normalize frontend URL (remove trailing slash, handle paths)
+    try {
+      const url = new URL(frontendUrl);
+      frontendUrl = `${url.protocol}//${url.host}`;
+    } catch {
+      // If invalid URL, use default
+      frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    }
+
     // Check if we already have a refresh token - if so, we can skip OAuth
     const existingRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
     if (existingRefreshToken && existingRefreshToken.trim() !== '') {
@@ -15,12 +40,6 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
       const bypassOAuth = req.query.bypass === 'true' || req.query.skip_oauth === 'true';
       
       if (bypassOAuth) {
-        // User wants to skip OAuth and use existing token
-        const frontendUrl = req.query.frontend_url as string 
-          || req.headers.origin 
-          || process.env.FRONTEND_URL 
-          || 'http://localhost:3000';
-        
         logger.info('Bypassing OAuth flow - using existing refresh token');
         
         // Return JSON response with redirect URL (frontend will handle navigation)
@@ -34,32 +53,23 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
         });
       }
     }
-    
-    // Extract frontend_url from query parameters (prioritize frontend_url param)
-    const frontendUrl = req.query.frontend_url as string 
-      || req.headers.origin 
-      || process.env.FRONTEND_URL 
-      || 'http://localhost:3000';
 
     logger.info('Starting OAuth flow', {
+      userId,
       frontendUrl,
-      hasFrontendUrlParam: !!req.query.frontend_url,
-      hasOriginHeader: !!req.headers.origin,
-      hasEnvVar: !!process.env.FRONTEND_URL,
+      source: frontendUrlFromQuery ? 'query' : frontendUrlFromHeader ? 'header' : referer ? 'referer' : req.headers.origin ? 'origin' : 'env',
       hasExistingRefreshToken: !!existingRefreshToken
     });
 
     const result = await amazonService.startOAuth();
     
-    // Store frontend URL with OAuth state for later redirect
+    // Store frontend URL and user ID with OAuth state for later redirect
     if (result.state) {
-      oauthStateStore.set(result.state, {
-        frontendUrl,
-        timestamp: Date.now()
-      });
+      await oauthStateStore.setState(result.state, userId || 'anonymous', frontendUrl);
       logger.info('Stored frontend URL with OAuth state', {
         state: result.state,
-        frontendUrl
+        frontendUrl,
+        userId: userId || 'anonymous'
       });
     }
     
