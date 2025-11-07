@@ -254,3 +254,4 @@ Before testing, make sure:
 - Credentials Guide: `AMAZON_CREDENTIALS_VERIFICATION.md`
 - Frontend Guide: `FRONTEND_AMAZON_CONNECTION_VERIFICATION.md`
 
+

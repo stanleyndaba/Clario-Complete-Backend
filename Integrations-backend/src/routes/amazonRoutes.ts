@@ -11,6 +11,7 @@ import {
 } from '../controllers/amazonController';
 import amazonService from '../services/amazonService';
 import { syncJobManager } from '../services/syncJobManager';
+import { supabase } from '../database/supabaseClient';
 
 const router = Router();
 
@@ -62,49 +63,103 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
     
     logger.info(`Getting Amazon recoveries summary for user: ${userId}`);
     
-    // Try to get claims from the service
+    // STEP 1: Try to get claims from DATABASE first (where sync saves them)
     try {
-      logger.info(`Attempting to fetch claims for recoveries`, { userId });
-      const claimsResult = await amazonService.fetchClaims(userId);
-      const claims = claimsResult.data || claimsResult.claims || [];
+      logger.info(`Checking database for synced claims`, { userId });
+      const { data: dbClaims, error: dbError } = await supabase
+        .from('claims')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('provider', 'amazon')
+        .order('created_at', { ascending: false });
       
-      logger.info(`Claims fetch result:`, {
-        hasData: !!claimsResult,
-        claimsType: Array.isArray(claims) ? 'array' : typeof claims,
-        claimsLength: Array.isArray(claims) ? claims.length : 'N/A',
-        claimsResultKeys: claimsResult ? Object.keys(claimsResult) : []
-      });
-      
-      if (Array.isArray(claims) && claims.length > 0) {
-        // Calculate totals from actual claims
-        const totalAmount = claims
-          .filter((claim: any) => claim.status === 'approved')
+      if (dbError) {
+        logger.warn('Error querying database for claims', { error: dbError.message, userId });
+      } else if (dbClaims && dbClaims.length > 0) {
+        // Calculate totals from database claims
+        const totalAmount = dbClaims
+          .filter((claim: any) => claim.status === 'approved' || claim.status === 'completed')
           .reduce((sum: number, claim: any) => sum + (parseFloat(claim.amount) || 0), 0);
-        const claimCount = claims.length;
+        const claimCount = dbClaims.length;
         
-        logger.info(`Found ${claimCount} claims, total approved: $${totalAmount}`);
+        logger.info(`Found ${claimCount} claims in DATABASE, total approved: $${totalAmount}`, {
+          userId,
+          source: 'database',
+          claimCount,
+          totalAmount
+        });
         
         return res.json({
           totalAmount: totalAmount,
           currency: 'USD',
           claimCount: claimCount,
-          source: 'spapi_sandbox'
+          source: 'database',
+          dataSource: 'synced_from_spapi_sandbox',
+          message: `Found ${claimCount} claims from synced data`
         });
       } else {
-        logger.info('No claims found in response (empty array or no data)', {
+        logger.info('No claims found in database', { userId, dbClaimCount: dbClaims?.length || 0 });
+      }
+    } catch (dbQueryError: any) {
+      logger.warn('Error querying database for claims', { error: dbQueryError.message, userId });
+    }
+    
+    // STEP 2: If no database claims, try fetching from API directly (for real-time data)
+    try {
+      logger.info(`No database claims found - attempting to fetch from SP-API`, { userId });
+      const claimsResult = await amazonService.fetchClaims(userId);
+      const claims = claimsResult.data || claimsResult.claims || [];
+      
+      logger.info(`API fetch result:`, {
+        hasData: !!claimsResult,
+        claimsType: Array.isArray(claims) ? 'array' : typeof claims,
+        claimsLength: Array.isArray(claims) ? claims.length : 'N/A',
+        claimsResultKeys: claimsResult ? Object.keys(claimsResult) : [],
+        isSandbox: claimsResult.isSandbox || false,
+        dataType: claimsResult.dataType || 'unknown'
+      });
+      
+      if (Array.isArray(claims) && claims.length > 0) {
+        // Calculate totals from API claims
+        const totalAmount = claims
+          .filter((claim: any) => claim.status === 'approved')
+          .reduce((sum: number, claim: any) => sum + (parseFloat(claim.amount) || 0), 0);
+        const claimCount = claims.length;
+        
+        logger.info(`Found ${claimCount} claims from API, total approved: $${totalAmount}`, {
+          userId,
+          source: 'api',
+          claimCount,
+          totalAmount,
+          isSandbox: claimsResult.isSandbox || false
+        });
+        
+        return res.json({
+          totalAmount: totalAmount,
+          currency: 'USD',
+          claimCount: claimCount,
+          source: 'api',
+          dataSource: claimsResult.isSandbox ? 'spapi_sandbox' : 'spapi_production',
+          message: `Found ${claimCount} claims from API`
+        });
+      } else {
+        logger.info('No claims found in API response (empty array or no data)', {
+          userId,
           claimsResultType: typeof claimsResult,
           claimsResultKeys: claimsResult ? Object.keys(claimsResult) : [],
           claimsType: typeof claims,
-          claimsIsArray: Array.isArray(claims)
+          claimsIsArray: Array.isArray(claims),
+          isSandbox: claimsResult?.isSandbox || false,
+          note: claimsResult?.note || 'No data available'
         });
       }
     } catch (error: any) {
-      logger.error(`Error fetching claims for recoveries:`, {
+      logger.error(`Error fetching claims from API:`, {
         error: error.message,
         stack: error.stack,
         userId
       });
-      // Fall through to return zeros
+      // Fall through to trigger sync
     }
     
     // If no claims found, trigger a sync automatically (if not already running)
