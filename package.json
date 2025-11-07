@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "@supabase/supabase-js": "^2.80.0",
     "dotenv": "^17.2.2"
   }
 }
