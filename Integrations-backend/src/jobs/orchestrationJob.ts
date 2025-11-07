@@ -991,7 +991,8 @@ export class OrchestrationJobManager {
           metadata: result ? { ...result, updatedAt: new Date().toISOString() } : {},
           updated_at: new Date().toISOString()
         })
-        .match({ user_id: userId, sync_id: syncId });
+        .eq('user_id', userId)
+        .eq('sync_id', syncId);
 
       if (error) {
         logger.error('Error updating sync progress', { error, userId, syncId });
@@ -1013,7 +1014,8 @@ export class OrchestrationJobManager {
           progress: 100,
           updated_at: new Date().toISOString()
         })
-        .match({ user_id: userId, sync_id: syncId });
+        .eq('user_id', userId)
+        .eq('sync_id', syncId);
 
       if (error) {
         logger.error('Error completing sync', { error, userId, syncId });

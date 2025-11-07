@@ -24,7 +24,11 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
         })
       }),
       update: () => ({
-        eq: () => Promise.resolve({ error: null })
+        eq: (field: string, value: any) => ({
+          eq: (field2: string, value2: any) => Promise.resolve({ error: null }),
+          match: (conditions: Record<string, any>) => Promise.resolve({ error: null })
+        }),
+        match: (conditions: Record<string, any>) => Promise.resolve({ error: null })
       }),
       delete: () => ({
         eq: () => Promise.resolve({ error: null })
