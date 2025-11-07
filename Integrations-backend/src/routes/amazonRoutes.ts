@@ -18,34 +18,6 @@ const wrap = (fn: any) => async (req: any, res: any, next: any) => {
   try { await fn(req, res, next); } catch (err) { logger.error('Amazon route error', { err }); next(err); }
 };
 
-// Handle CORS preflight for all auth routes
-router.options('/auth', (req, res) => {
-  const origin = req.headers.origin || '*';
-  res.header('Access-Control-Allow-Origin', origin);
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  res.status(204).send();
-});
-
-router.options('/auth/start', (req, res) => {
-  const origin = req.headers.origin || '*';
-  res.header('Access-Control-Allow-Origin', origin);
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  res.status(204).send();
-});
-
-router.options('/auth/callback', (req, res) => {
-  const origin = req.headers.origin || '*';
-  res.header('Access-Control-Allow-Origin', origin);
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  res.status(204).send();
-});
-
 // Root Amazon endpoint - start OAuth flow directly (for backward compatibility)
 // This handles requests to /api/v1/integrations/amazon
 router.get('/', wrap(startAmazonOAuth));

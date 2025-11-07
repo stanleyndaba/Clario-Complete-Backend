@@ -5,7 +5,7 @@ import logger from '../utils/logger';
 const router = express.Router();
 
 // Python backend URL - can be overridden by environment variable
-const PYTHON_API_URL = process.env.PYTHON_API_URL || process.env.PYTHON_API_BASE_URL || 'https://python-api-newest.onrender.com';
+const PYTHON_API_URL = process.env.PYTHON_API_URL || process.env.VITE_PYTHON_API_URL || 'https://python-api-newest.onrender.com';
 
 /**
  * Extract JWT token from cookie or Authorization header
@@ -53,7 +53,8 @@ async function proxyToPython(req: Request, res: Response, path: string) {
     
     logger.info(`Proxying ${req.method} ${req.path} to ${url}`, {
       hasToken: !!token,
-      hasCookie: !!req.headers.cookie
+      hasCookie: !!req.headers.cookie,
+      pythonApiUrl: PYTHON_API_URL
     });
     
     const config: any = {
@@ -120,6 +121,9 @@ router.post('/api/documents/upload', (req, res) => proxyToPython(req, res, '/api
 // Metrics endpoints
 router.get('/api/metrics/recoveries', (req, res) => proxyToPython(req, res, '/api/metrics/recoveries'));
 router.get('/api/metrics/dashboard', (req, res) => proxyToPython(req, res, '/api/metrics/dashboard'));
+
+// Integrations status endpoint - proxy to Python API
+router.get('/api/v1/integrations/status', (req, res) => proxyToPython(req, res, '/api/v1/integrations/status'));
 
 export default router;
 

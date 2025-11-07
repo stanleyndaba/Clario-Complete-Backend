@@ -103,3 +103,4 @@ uvicorn src.app:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 5
 - Use `0.0.0.0` (not `127.0.0.1` or `localhost`) to bind to all interfaces
 - Render requires binding to `0.0.0.0` for external access
 
+

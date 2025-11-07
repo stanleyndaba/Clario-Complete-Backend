@@ -37,7 +37,7 @@ from .api.evidence import router as evidence_router
 # from .api.parser import router as parser_router
 # from .api.evidence_matching import router as evidence_matching_router
 # from .api.zero_effort_evidence import router as zero_effort_evidence_router
-from .api.metrics import router as metrics_router
+# from .api.metrics import router as metrics_router
 from .api.sync import router as sync_router
 # from .api.websocket import router as websocket_router
 # from .api.evidence_prompts_proof_packets import router as evidence_prompts_router
@@ -235,7 +235,6 @@ app.include_router(detections_router, tags=["detections"])
 app.include_router(recoveries_router, tags=["recoveries"])
 app.include_router(evidence_router, tags=["evidence"])
 app.include_router(sync_router, tags=["sync"])
-app.include_router(metrics_router, tags=["metrics"])
 
 # Consolidated service routers (merged from separate microservices)
 app.include_router(mcde_router)
