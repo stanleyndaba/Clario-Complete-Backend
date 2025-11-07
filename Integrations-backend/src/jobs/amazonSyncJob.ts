@@ -29,15 +29,17 @@ export class AmazonSyncJob {
       await this.saveClaimsToDatabase(userId, Array.isArray(claims) ? claims : []);
 
       // Sync inventory - NOW GETTING REAL DATA FROM SP-API
+      let inventory: any[] = [];
       try {
         const inventoryResult = await amazonService.fetchInventory(userId);
-        const inventory = inventoryResult.data || inventoryResult; // Handle both formats
-        await this.saveInventoryToDatabase(userId, Array.isArray(inventory) ? inventory : []);
+        inventory = inventoryResult.data || inventoryResult; // Handle both formats
+        inventory = Array.isArray(inventory) ? inventory : [];
+        await this.saveInventoryToDatabase(userId, inventory);
         
         logger.info('Inventory sync completed', { 
           userId, 
           syncId, 
-          itemCount: Array.isArray(inventory) ? inventory.length : 0,
+          itemCount: inventory.length,
           fromApi: inventoryResult.fromApi || false
         });
       } catch (inventoryError: any) {
@@ -69,7 +71,7 @@ export class AmazonSyncJob {
           userId,
           syncId,
           claims?.length || 0,
-          inventory?.length || 0
+          inventory.length || 0
         );
         logger.info('Phase 2 orchestration triggered after sync', { userId, syncId });
       } catch (error) {

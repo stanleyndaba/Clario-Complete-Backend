@@ -4,6 +4,15 @@ import logger from '../utils/logger';
 
 const router = Router();
 
+// Health check endpoint for workflow routes
+router.get('/health', (_req, res) => {
+  res.json({ 
+    status: 'ok', 
+    service: 'workflow-routes',
+    message: 'Workflow routes are active' 
+  });
+});
+
 /**
  * Valid phase numbers for the 7-phase Clario workflow
  */
