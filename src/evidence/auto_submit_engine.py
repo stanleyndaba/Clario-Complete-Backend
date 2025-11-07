@@ -136,8 +136,15 @@ class AutoSubmitEngine:
             # Trigger proof packet if successful
             if submission_result.success:
                 await self._trigger_proof_packet_generation(
-                    match["dispute_id"], 
+                    match["dispute_id"],
                     user_id
+                )
+                
+                # 🎯 PHASE 5: Notify workflow orchestrator of claim submission
+                await self._notify_workflow_submission(
+                    user_id,
+                    match["dispute_id"],
+                    submission_result.amazon_case_id
                 )
 
             # 🎯 STEP 6 → STEP 7: Start refund engine tracking
@@ -599,6 +606,37 @@ class AutoSubmitEngine:
                 
         except Exception as e:
             logger.error(f"Failed to trigger proof packet generation: {e}")
+    
+    async def _notify_workflow_submission(
+        self,
+        user_id: str,
+        claim_id: str,
+        amazon_case_id: Optional[str]
+    ):
+        """Trigger Node.js orchestrator Phase 5 when claim is submitted"""
+        try:
+            import httpx
+            from src.common.config import settings
+            
+            integrations_url = settings.INTEGRATIONS_URL or "http://localhost:3001"
+            
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(
+                    f"{integrations_url}/api/v1/workflow/phase/5",
+                    json={
+                        "user_id": user_id,
+                        "claim_id": claim_id,
+                        "amazon_case_id": amazon_case_id,
+                        "sync_id": f"claim_{claim_id}"
+                    },
+                    headers={"Content-Type": "application/json"}
+                )
+            
+            logger.info(f"Phase 5 orchestration triggered for claim submission: {claim_id}")
+            
+        except Exception as e:
+            # Non-blocking - orchestrator failure shouldn't break submission
+            logger.warning(f"Failed to trigger Phase 5 orchestration (non-critical): {e}")
 
 # Global instance
 auto_submit_engine = AutoSubmitEngine()

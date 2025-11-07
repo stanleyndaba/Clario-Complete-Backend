@@ -273,35 +273,45 @@ async def amazon_callback(request: Request):
         max_age=7*24*3600,
     )
     response.headers["Location"] = f"{settings.FRONTEND_URL}/dashboard"
-    # Fire-and-forget: first-time sync auto-trigger
+    # 🎬 PHASE 1: Trigger orchestrator Phase 1 (OAuth Completion)
     try:
-        user = db_module.db.get_user_by_id(user_id)
-        if user and not user.get('last_sync_completed_at'):
-            # Run first-time sync in background (non-blocking)
-            import asyncio
-            async def _trigger_sync():
-                retries = 3
-                delay = 1
-                job_id = None
-                for i in range(retries):
-                    try:
+        import asyncio
+        async def _trigger_phase1():
+            try:
+                integrations_url = settings.INTEGRATIONS_URL or "http://localhost:3001"
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    await client.post(
+                        f"{integrations_url}/api/v1/workflow/phase/1",
+                        json={
+                            "user_id": user_id,
+                            "seller_id": seller_id or user_id,
+                            "sync_id": f"oauth_{user_id}_{int(datetime.utcnow().timestamp())}"
+                        },
+                        headers={"Content-Type": "application/json"}
+                    )
+                logger.info(f"Phase 1 orchestration triggered for user {user_id}")
+            except Exception as e:
+                logger.warning(f"Failed to trigger Phase 1 orchestration (non-critical): {e}")
+                # Fallback to original sync trigger
+                try:
+                    user = db_module.db.get_user_by_id(user_id)
+                    if user and not user.get('last_sync_completed_at'):
                         result = await service_connector.start_sync(sync_type="inventory", user_id=user_id)
                         job_id = result.get('id') if isinstance(result, dict) else None
                         db_module.db.record_sync_attempt(user_id, job_id)
-                        break
-                    except Exception:
-                        await asyncio.sleep(delay)
-                        delay *= 2
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(_trigger_sync())
-                else:
-                    loop.create_task(_trigger_sync())
-            except Exception:
-                pass
-    except Exception:
-        pass
+                except Exception:
+                    pass
+        
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(_trigger_phase1())
+            else:
+                loop.create_task(_trigger_phase1())
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning(f"Could not trigger Phase 1 orchestration: {e}")
     return response
 
 

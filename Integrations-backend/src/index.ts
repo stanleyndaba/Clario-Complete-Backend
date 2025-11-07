@@ -25,6 +25,7 @@ import disputeRoutes from './routes/disputeRoutes';
 import autoclaimRoutes from './routes/autoclaimRoutes';
 import internalEventsRoutes from './routes/internalEventsRoutes';
 import stripeWebhookRoutes from './routes/stripeWebhookRoutes';
+import workflowRoutes from './routes/workflowRoutes';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -37,9 +38,14 @@ import proxyRoutes from './routes/proxyRoutes';
 
 // Import background jobs
 import { deadlineMonitoringJob } from './jobs/deadlineMonitoringJob';
+import OrchestrationJobManager from './jobs/orchestrationJob';
+import websocketService from './services/websocketService';
 
 const app = express();
 const server = createServer(app);
+
+// Initialize WebSocket service
+websocketService.initialize(server);
 
 // Security middleware
 app.use(helmet({
@@ -149,6 +155,7 @@ app.use('/api/disputes', disputeRoutes);
 app.use('/api/autoclaim', autoclaimRoutes);
 app.use('/api/internal-events', internalEventsRoutes);
 app.use('/api/stripe-webhook', stripeWebhookRoutes);
+app.use('/api/v1/workflow', workflowRoutes);
 
 // Consolidated service routes (merged from separate microservices)
 app.use('/api/v1/stripe-payments', consolidatedStripeRoutes);
@@ -178,6 +185,10 @@ const PORT = config.PORT || 3001;
 server.listen(PORT, '0.0.0.0', () => {
   console.log('Server running on port ' + PORT);
   console.log('Environment: ' + config.NODE_ENV);
+  
+  // Initialize orchestration job manager (sets up queue processors)
+  OrchestrationJobManager.initialize();
+  logger.info('Orchestration job manager initialized');
   
   // Start background jobs
   deadlineMonitoringJob.start();

@@ -125,10 +125,37 @@ export class DetectionService {
           // Update job status to completed
           await this.updateJobStatus(job.seller_id, job.sync_id, 'completed');
 
-          
-
-      // 🎯 STEP 3 → STEP 6: Trigger evidence matching for new claims
-      // await this.triggerEvidenceMatching // TODO: Implement this method(job.seller_id);
+          // 🎯 PHASE 3: Trigger orchestrator Phase 3 (Detection Completion)
+          try {
+            const OrchestrationJobManager = (await import('../jobs/orchestrationJob')).default;
+            const claims = results.map((result, index) => ({
+              claim_id: `claim_${result.seller_id}_${Date.now()}_${index}`,
+              claim_type: result.anomaly_type,
+              amount: result.estimated_value,
+              confidence: result.confidence_score,
+              currency: result.currency,
+              evidence: result.evidence,
+              discovery_date: result.discovery_date?.toISOString(),
+              deadline_date: result.deadline_date?.toISOString()
+            }));
+            await OrchestrationJobManager.triggerPhase3_DetectionCompletion(
+              job.seller_id,
+              job.sync_id,
+              claims
+            );
+            logger.info('Phase 3 orchestration triggered after detection', {
+              seller_id: job.seller_id,
+              sync_id: job.sync_id,
+              claims_count: claims.length
+            });
+          } catch (error: any) {
+            // Non-blocking - orchestration failure shouldn't break detection
+            logger.warn('Phase 3 orchestration trigger failed (non-critical)', {
+              error: error.message,
+              seller_id: job.seller_id,
+              sync_id: job.sync_id
+            });
+          }
         } catch (error) {
           logger.error('Error processing detection job', { error, job });
           
@@ -479,14 +506,14 @@ export class DetectionService {
                 { deadlineDate: null, daysRemaining: null };
 
             return {
-              seller_id: result.seller_id,
-              sync_id: result.sync_id,
-              anomaly_type: result.anomaly_type,
-              severity: result.severity,
-              estimated_value: result.estimated_value,
-              currency: result.currency,
-              confidence_score: result.confidence_score,
-              evidence: result.evidence,
+            seller_id: result.seller_id,
+            sync_id: result.sync_id,
+            anomaly_type: result.anomaly_type,
+            severity: result.severity,
+            estimated_value: result.estimated_value,
+            currency: result.currency,
+            confidence_score: result.confidence_score,
+            evidence: result.evidence,
               related_event_ids: result.related_event_ids || [],
               discovery_date: result.discovery_date ? new Date(result.discovery_date).toISOString() : new Date().toISOString(),
               deadline_date: deadlineDate ? deadlineDate.toISOString() : null,
@@ -925,6 +952,110 @@ export class DetectionService {
     } catch (error) {
       logger.error('Error in updateDetectionResultStatus', { error, detectionId, sellerId, status });
       throw error;
+    }
+  }
+
+  /**
+   * Trigger evidence matching automatically after detection completes
+   */
+  private async _triggerEvidenceMatching(
+    sellerId: string,
+    results: DetectionResult[]
+  ): Promise<void> {
+    try {
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://opside-python-api.onrender.com';
+      
+      // Transform detection results to claims format for evidence matching
+      const claims = results.map((result, index) => ({
+        claim_id: `claim_${result.seller_id}_${Date.now()}_${index}`,
+        claim_type: result.anomaly_type,
+        amount: result.estimated_value,
+        confidence: result.confidence_score,
+        currency: result.currency,
+        evidence: result.evidence,
+        discovery_date: result.discovery_date?.toISOString(),
+        deadline_date: result.deadline_date?.toISOString()
+      }));
+
+      // Trigger evidence matching via Python API
+      await axios.post(
+        `${pythonApiUrl}/api/internal/evidence/matching/run`,
+        {},
+        {
+          timeout: 30000,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      ).catch((error) => {
+        // Non-blocking - evidence matching can be triggered manually if this fails
+        logger.warn('Automatic evidence matching trigger failed (non-critical)', {
+          error: error.message,
+          seller_id: sellerId
+        });
+      });
+
+      logger.info('Evidence matching triggered after detection', {
+        seller_id: sellerId,
+        claims_count: claims.length
+      });
+    } catch (error: any) {
+      // Non-blocking - don't fail detection if evidence matching trigger fails
+      logger.warn('Failed to trigger evidence matching', {
+        error: error.message,
+        seller_id: sellerId
+      });
+    }
+  }
+
+  /**
+   * Trigger workflow orchestrator webhook when detection completes
+   */
+  private async _triggerWorkflowWebhook(
+    sellerId: string,
+    syncId: string,
+    results: DetectionResult[]
+  ): Promise<void> {
+    try {
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://opside-python-api.onrender.com';
+      
+      // Transform results to claims format
+      const claims = results.map((result, index) => ({
+        claim_id: `claim_${result.seller_id}_${Date.now()}_${index}`,
+        claim_type: result.anomaly_type,
+        amount: result.estimated_value,
+        confidence: result.confidence_score,
+        currency: result.currency,
+        evidence: result.evidence,
+        discovery_date: result.discovery_date?.toISOString(),
+        deadline_date: result.deadline_date?.toISOString()
+      }));
+
+      // Call workflow webhook
+      await axios.post(
+        `${pythonApiUrl}/api/v1/workflow/detection/complete`,
+        {
+          user_id: sellerId,
+          detection_job_id: syncId,
+          claims: claims,
+          claims_found: claims
+        },
+        {
+          timeout: 10000,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
+
+      logger.info('Workflow webhook triggered for detection completion', {
+        seller_id: sellerId,
+        sync_id: syncId,
+        claims_count: claims.length
+      });
+    } catch (error: any) {
+      // Don't fail the detection job if webhook fails
+      logger.warn('Failed to trigger workflow webhook', {
+        error: error.message,
+        seller_id: sellerId,
+        sync_id: syncId
+      });
     }
   }
 

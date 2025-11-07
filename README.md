@@ -17,6 +17,16 @@ A comprehensive backend system for Amazon FBA refund prediction, evidence collec
 - **Gmail Integration**: Email-based evidence collection
 - **Supabase Database**: Scalable database backend
 
+### Workflow Orchestration
+- **7-Phase Clario Experience**: Automated workflow orchestration (Node.js)
+  - Phase 1: Zero-Friction Onboarding (OAuth → Sync)
+  - Phase 2: Autonomous Money Discovery (Sync → Detection)
+  - Phase 3: Intelligent Evidence Ecosystem (Detection → Evidence Matching)
+  - Phase 4: Predictive Refund Orchestration (Evidence → Auto-Submit/Smart Prompts)
+  - Phase 5: Autonomous Recovery Pipeline (Submission → Tracking)
+  - Phase 6: Continuous Learning Brain (Rejection → Learning)
+  - Phase 7: Hyper-Transparency Layer (Payout → Proof Packet)
+
 ### Advanced Features
 - **Feature Flags & Canary Deployment**: Safe feature rollouts
 - **Analytics & Monitoring**: Comprehensive system monitoring
@@ -32,8 +42,13 @@ A comprehensive backend system for Amazon FBA refund prediction, evidence collec
 │   ├── ml_detector/             # Machine learning models
 │   ├── integrations/            # External service integrations
 │   └── security/                # Security & encryption
-├── FBA Refund Predictor/        # ML prediction models
 ├── Integrations-backend/        # Node.js integration services
+│   ├── src/jobs/                # Background jobs & orchestration
+│   │   └── orchestrationJob.ts  # 7-phase workflow orchestrator
+│   ├── src/routes/              # API routes
+│   │   └── workflowRoutes.ts    # Workflow phase endpoints
+│   └── src/services/            # Business logic services
+├── FBA Refund Predictor/        # ML prediction models
 ├── stripe-payments/             # Payment processing service
 ├── evidence-engine/             # Evidence processing engine
 └── Claim Detector Model/        # Claim detection algorithms
@@ -45,6 +60,7 @@ A comprehensive backend system for Amazon FBA refund prediction, evidence collec
 - **Database**: PostgreSQL, Supabase
 - **ML/AI**: scikit-learn, transformers, joblib
 - **Integrations**: Amazon SP-API, Stripe, Gmail API
+- **Orchestration**: Node.js OrchestrationJobManager (Bull queues, Redis)
 - **Deployment**: Docker, Fly.io, Render
 - **Monitoring**: Prometheus, Grafana
 
@@ -162,6 +178,7 @@ docker-compose up -d
 - [Environment Variables](ENVIRONMENT_VARIABLES_GUIDE.md)
 - [API Contracts](API_CONTRACTS.md)
 - [Security Implementation](SECURITY_IMPLEMENTATION_COMPLETE.md)
+- [Workflow Orchestration](WORKFLOW_ORCHESTRATION.md) - 7-phase workflow architecture
 
 ## 🤝 Contributing
 

@@ -135,6 +135,9 @@ class EvidenceMatchingWorker:
                        f"{matching_result['auto_submits']} auto-submits, "
                        f"{matching_result['smart_prompts']} smart prompts")
             
+            # 🎯 PHASE 4: Trigger workflow orchestrator webhook
+            await self._trigger_workflow_webhook(user_id, job_id, matching_result)
+            
         except Exception as e:
             logger.error(f"Job {job_id} failed: {e}")
             await self._mark_job_failed(job_id, str(e))
@@ -245,6 +248,57 @@ class EvidenceMatchingWorker:
                         'metadata': json.loads(result[11]) if result[11] else {}
                     }
                 return None
+    
+    async def _trigger_workflow_webhook(
+        self,
+        user_id: str,
+        job_id: str,
+        matching_result: Dict[str, Any]
+    ):
+        """Trigger Node.js orchestrator Phase 4 when evidence matching completes"""
+        try:
+            import httpx
+            from src.common.config import settings
+            
+            integrations_url = settings.INTEGRATIONS_URL or "http://localhost:3001"
+            
+            # Get detailed matches from database
+            matches = []
+            with self.db._get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT dispute_id, evidence_document_id, final_confidence, match_type, reasoning
+                        FROM evidence_matching_results
+                        WHERE job_id = %s
+                    """, (job_id,))
+                    
+                    for row in cursor.fetchall():
+                        matches.append({
+                            "claim_id": str(row[0]),
+                            "evidence_document_id": str(row[1]),
+                            "confidence": float(row[2]) if row[2] else 0.5,
+                            "match_type": row[3],
+                            "reasoning": row[4] or ""
+                        })
+            
+            # Call Node.js orchestrator Phase 4
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post(
+                    f"{integrations_url}/api/v1/workflow/phase/4",
+                    json={
+                        "user_id": user_id,
+                        "sync_id": job_id,
+                        "matches": matches,
+                        "matching_results": matches
+                    },
+                    headers={"Content-Type": "application/json"}
+                )
+            
+            logger.info(f"Phase 4 orchestration triggered for evidence matching: job={job_id}")
+            
+        except Exception as e:
+            # Don't fail the matching job if orchestrator call fails
+            logger.warning(f"Failed to trigger Phase 4 orchestration: {e}")
     
     async def get_user_metrics(self, user_id: str, days: int = 30) -> Dict[str, Any]:
         """Get evidence matching metrics for a user"""

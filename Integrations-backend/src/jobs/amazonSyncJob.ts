@@ -59,8 +59,23 @@ export class AmazonSyncJob {
       // Ingest financial events
       await this.ingestFinancialEvents(userId, fees);
 
-      // Trigger detection job
+      // 🎯 PHASE 2: Trigger detection job automatically (existing functionality)
       await this.triggerDetectionJob(userId, syncId);
+      
+      // 🎯 PHASE 2: Trigger orchestrator Phase 2 (Sync Completion)
+      try {
+        const OrchestrationJobManager = (await import('./orchestrationJob')).default;
+        await OrchestrationJobManager.triggerPhase2_SyncCompletion(
+          userId,
+          syncId,
+          claims?.length || 0,
+          inventory?.length || 0
+        );
+        logger.info('Phase 2 orchestration triggered after sync', { userId, syncId });
+      } catch (error) {
+        // Non-blocking - orchestration failure shouldn't break sync
+        logger.warn('Phase 2 orchestration trigger failed (non-critical)', { error, userId, syncId });
+      }
 
       logger.info('Amazon sync completed successfully', { userId, syncId });
       return syncId;

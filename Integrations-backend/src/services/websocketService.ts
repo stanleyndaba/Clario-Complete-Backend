@@ -199,6 +199,36 @@ export class WebSocketService {
     const room = this.io.sockets.adapter.rooms.get(roomId);
     return room ? room.size : 0;
   }
+
+  /**
+   * Emit workflow phase event (e.g., workflow.phase.1.completed)
+   */
+  emitWorkflowPhaseEvent(
+    userId: string,
+    phaseNumber: number,
+    event: 'started' | 'completed' | 'failed',
+    data?: any
+  ): void {
+    if (!this.io) {
+      logger.warn('WebSocket service not initialized');
+      return;
+    }
+
+    const roomId = this.userRooms.get(userId);
+    if (roomId) {
+      const eventName = `workflow.phase.${phaseNumber}.${event}`;
+      this.io.to(roomId).emit(eventName, {
+        phase: phaseNumber,
+        event,
+        timestamp: new Date().toISOString(),
+        ...data
+      });
+      logger.info('Workflow phase event emitted', { userId, phase: phaseNumber, event });
+    } else {
+      // Also broadcast to sync room if user room not found
+      logger.debug('User room not found, skipping workflow phase event', { userId });
+    }
+  }
 }
 
 export const websocketService = new WebSocketService();
