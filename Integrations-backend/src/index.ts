@@ -187,6 +187,13 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('Server running on port ' + PORT);
   console.log('Environment: ' + config.NODE_ENV);
   
+  // Log all registered routes for debugging
+  logger.info('All routes registered', {
+    workflow: '/api/v1/workflow',
+    proxy: '/ (proxyRoutes)',
+    routeCount: 'See logs above for details'
+  });
+  
   // Initialize orchestration job manager (sets up queue processors)
   OrchestrationJobManager.initialize();
   logger.info('Orchestration job manager initialized');
