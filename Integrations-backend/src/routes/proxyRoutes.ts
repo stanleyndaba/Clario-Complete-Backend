@@ -125,5 +125,9 @@ router.get('/api/metrics/dashboard', (req, res) => proxyToPython(req, res, '/api
 // Integrations status endpoint - proxy to Python API
 router.get('/api/v1/integrations/status', (req, res) => proxyToPython(req, res, '/api/v1/integrations/status'));
 
+// Evidence endpoints - proxy to Python API
+router.post('/api/evidence/sync', (req, res) => proxyToPython(req, res, '/api/evidence/sync'));
+router.post('/api/evidence/auto-collect', (req, res) => proxyToPython(req, res, '/api/evidence/auto-collect'));
+
 export default router;
 

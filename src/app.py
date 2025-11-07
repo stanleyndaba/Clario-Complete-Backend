@@ -712,9 +712,65 @@ async def auto_collect_evidence(user: dict = Depends(get_current_user)):
     return {"ok": True, "message": "Auto-collect enabled", "user_id": user["user_id"]}
 
 @app.post("/api/evidence/sync")
-async def evidence_sync():
-    # Simple stub indicating evidence sync started
-    return {"ok": True, "started": True}
+async def evidence_sync(user: dict = Depends(get_current_user)):
+    """Trigger evidence sync for all connected sources (primarily Gmail)"""
+    try:
+        user_id = user["user_id"]
+        logger.info(f"Triggering evidence sync for user {user_id}")
+        
+        from src.evidence.ingestion_service import EvidenceIngestionService
+        from src.common.db_postgresql import DatabaseManager
+        
+        evidence_service = EvidenceIngestionService()
+        db = DatabaseManager()
+        
+        # Find all connected Gmail sources for this user
+        with db._get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, provider, account_email, status
+                    FROM evidence_sources 
+                    WHERE user_id = %s AND status = 'connected' AND provider = 'gmail'
+                    ORDER BY connected_at DESC
+                """, (user_id,))
+                
+                sources = cursor.fetchall()
+                
+        if not sources:
+            return {
+                "ok": False,
+                "error": "No connected Gmail sources found. Please connect Gmail first.",
+                "started": False
+            }
+        
+        # Trigger sync for each Gmail source
+        job_ids = []
+        for source_id, provider, account_email, status in sources:
+            try:
+                job_id = await evidence_service._start_ingestion_job(str(source_id), user_id)
+                job_ids.append(job_id)
+                logger.info(f"Started ingestion job {job_id} for Gmail source {source_id} ({account_email})")
+            except Exception as e:
+                logger.error(f"Failed to start ingestion job for source {source_id}: {e}")
+        
+        if job_ids:
+            return {
+                "ok": True,
+                "started": True,
+                "message": f"Evidence sync started for {len(job_ids)} Gmail source(s)",
+                "job_ids": job_ids,
+                "sources_synced": len(job_ids)
+            }
+        else:
+            return {
+                "ok": False,
+                "error": "Failed to start evidence sync",
+                "started": False
+            }
+            
+    except Exception as e:
+        logger.error(f"Error in evidence_sync: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start evidence sync: {str(e)}")
 
 # SSE Alias
 @app.get("/api/sse/status")

@@ -191,14 +191,43 @@ async def trigger_sync(
         user_id = user["user_id"]
         logger.info(f"Triggering sync for source {source_id} and user {user_id}")
         
-        # TODO: Implement manual sync trigger
-        # For now, return success
+        # Verify source exists and belongs to user
+        with evidence_service.db._get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, provider, account_email, status
+                    FROM evidence_sources 
+                    WHERE id = %s AND user_id = %s
+                """, (source_id, user_id))
+                
+                result = cursor.fetchone()
+                if not result:
+                    raise HTTPException(status_code=404, detail="Evidence source not found")
+                
+                source_id_db, provider, account_email, status = result
+                
+                if status != 'connected':
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Evidence source is not connected (status: {status})"
+                    )
+        
+        # Start ingestion job
+        job_id = await evidence_service._start_ingestion_job(source_id, user_id)
+        
+        logger.info(f"Sync triggered successfully for source {source_id}, job {job_id}")
+        
         return {
             "ok": True,
             "message": "Sync triggered successfully",
-            "job_id": "sync_job_placeholder"
+            "job_id": job_id,
+            "source_id": source_id,
+            "provider": provider,
+            "account_email": account_email
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Unexpected error in trigger_sync: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
