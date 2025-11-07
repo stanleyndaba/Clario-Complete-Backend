@@ -35,6 +35,9 @@ import consolidatedInventorySyncRoutes from './routes/consolidated/inventorySync
 // Proxy routes to Python backend
 import proxyRoutes from './routes/proxyRoutes';
 
+// Import background jobs
+import { deadlineMonitoringJob } from './jobs/deadlineMonitoringJob';
+
 const app = express();
 const server = createServer(app);
 
@@ -171,6 +174,12 @@ const PORT = config.PORT || 3001;
 server.listen(PORT, '0.0.0.0', () => {
   console.log('Server running on port ' + PORT);
   console.log('Environment: ' + config.NODE_ENV);
+  
+  // Start background jobs
+  deadlineMonitoringJob.start();
+  logger.info('Background jobs started', {
+    deadline_monitoring: 'started'
+  });
 });
 
 

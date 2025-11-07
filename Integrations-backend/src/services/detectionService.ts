@@ -19,6 +19,9 @@ export interface DetectionResult {
   confidence_score: number;
   evidence: any;
   related_event_ids?: string[];
+  discovery_date?: Date; // When the discrepancy was discovered
+  deadline_date?: Date; // 60 days from discovery date (Amazon claim deadline)
+  days_remaining?: number; // Days until deadline
 }
 
 export interface DetectionResultRecord {
@@ -33,6 +36,11 @@ export interface DetectionResultRecord {
   evidence: any;
   status: 'pending' | 'reviewed' | 'disputed' | 'resolved';
   related_event_ids: string[];
+  discovery_date?: string;
+  deadline_date?: string;
+  days_remaining?: number;
+  expiration_alert_sent?: boolean;
+  expired?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -360,6 +368,19 @@ export class DetectionService {
   }
 
   /**
+   * Calculate 60-day deadline from discovery date (Amazon claim deadline)
+   */
+  private calculateDeadline(discoveryDate: Date): { deadlineDate: Date; daysRemaining: number } {
+    const deadlineDate = new Date(discoveryDate);
+    deadlineDate.setDate(deadlineDate.getDate() + 60); // Add 60 days
+    
+    const now = new Date();
+    const daysRemaining = Math.max(0, Math.ceil((deadlineDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+    
+    return { deadlineDate, daysRemaining };
+  }
+
+  /**
    * Map Claim Detector API response to DetectionResult
    */
   private mapClaimToDetectionResult(
@@ -384,6 +405,14 @@ export class DetectionService {
     else if (detectedClaim.probability >= 0.70) severity = 'high';
     else if (detectedClaim.probability >= 0.50) severity = 'medium';
 
+    // Calculate discovery date (use claim_date from API or current date)
+    const discoveryDate = detectedClaim.claim_date ? 
+      new Date(detectedClaim.claim_date) : 
+      new Date();
+    
+    // Calculate 60-day deadline
+    const { deadlineDate, daysRemaining } = this.calculateDeadline(discoveryDate);
+
     return {
       seller_id: sellerId,
       sync_id: syncId,
@@ -398,7 +427,10 @@ export class DetectionService {
         category: detectedClaim.category,
         ...detectedClaim.evidence
       },
-      related_event_ids: [detectedClaim.order_id]
+      related_event_ids: [detectedClaim.order_id],
+      discovery_date: discoveryDate,
+      deadline_date: deadlineDate,
+      days_remaining: daysRemaining
     };
   }
 
@@ -406,6 +438,10 @@ export class DetectionService {
    * Create basic detection result from financial event (fallback when API fails)
    */
   private createBasicDetectionResult(event: any, sellerId: string, syncId: string): DetectionResult {
+    // Use event date as discovery date, or current date if not available
+    const discoveryDate = event.event_date ? new Date(event.event_date) : new Date();
+    const { deadlineDate, daysRemaining } = this.calculateDeadline(discoveryDate);
+
     return {
       seller_id: sellerId,
       sync_id: syncId,
@@ -419,7 +455,10 @@ export class DetectionService {
         event_type: event.event_type,
         ...event.raw_payload
       },
-      related_event_ids: [event.amazon_event_id || event.id]
+      related_event_ids: [event.amazon_event_id || event.id],
+      discovery_date: discoveryDate,
+      deadline_date: deadlineDate,
+      days_remaining: daysRemaining
     };
   }
 
@@ -431,17 +470,31 @@ export class DetectionService {
       const { error } = await supabase
         .from('detection_results')
         .insert(
-          results.map(result => ({
-            seller_id: result.seller_id,
-            sync_id: result.sync_id,
-            anomaly_type: result.anomaly_type,
-            severity: result.severity,
-            estimated_value: result.estimated_value,
-            currency: result.currency,
-            confidence_score: result.confidence_score,
-            evidence: result.evidence,
-            related_event_ids: result.related_event_ids || []
-          }))
+          results.map(result => {
+            // Recalculate days remaining before storing (in case time passed)
+            const { deadlineDate, daysRemaining } = result.deadline_date && result.discovery_date ?
+              this.calculateDeadline(new Date(result.discovery_date)) :
+              result.deadline_date ? 
+                { deadlineDate: new Date(result.deadline_date), daysRemaining: result.days_remaining || 0 } :
+                { deadlineDate: null, daysRemaining: null };
+
+            return {
+              seller_id: result.seller_id,
+              sync_id: result.sync_id,
+              anomaly_type: result.anomaly_type,
+              severity: result.severity,
+              estimated_value: result.estimated_value,
+              currency: result.currency,
+              confidence_score: result.confidence_score,
+              evidence: result.evidence,
+              related_event_ids: result.related_event_ids || [],
+              discovery_date: result.discovery_date ? new Date(result.discovery_date).toISOString() : new Date().toISOString(),
+              deadline_date: deadlineDate ? deadlineDate.toISOString() : null,
+              days_remaining: daysRemaining,
+              expired: daysRemaining !== null && daysRemaining === 0,
+              expiration_alert_sent: false
+            };
+          })
         );
 
       if (error) {
@@ -450,8 +503,12 @@ export class DetectionService {
       }
 
       logger.info('Detection results stored successfully', {
-        count: results.length
+        count: results.length,
+        with_deadlines: results.filter(r => r.deadline_date).length
       });
+
+      // Check for expiring claims and send alerts
+      await this.checkExpiringClaims(results.map(r => r.seller_id));
     } catch (error) {
       logger.error('Error in storeDetectionResults', { error });
       throw error;
@@ -543,11 +600,13 @@ export class DetectionService {
     total_value: number;
     by_severity: Record<string, { count: number; value: number }>;
     by_type: Record<string, { count: number; value: number }>;
+    expiring_soon: number;
+    expired_count: number;
   }> {
     try {
       const { data, error } = await supabase
         .from('detection_results')
-        .select('anomaly_type, severity, estimated_value')
+        .select('anomaly_type, severity, estimated_value, days_remaining, expired')
         .eq('seller_id', sellerId);
 
       if (error) {
@@ -555,10 +614,12 @@ export class DetectionService {
         throw new Error(`Failed to fetch detection statistics: ${error.message}`);
       }
 
-      const results = data as { anomaly_type: string; severity: string; estimated_value: number }[];
+      const results = data as { anomaly_type: string; severity: string; estimated_value: number; days_remaining?: number; expired?: boolean }[];
       const by_severity: Record<string, { count: number; value: number }> = {};
       const by_type: Record<string, { count: number; value: number }> = {};
       let total_value = 0;
+      let expiring_soon = 0;
+      let expired_count = 0;
 
       results.forEach(result => {
         // By severity
@@ -576,17 +637,195 @@ export class DetectionService {
         by_type[result.anomaly_type].value += result.estimated_value;
 
         total_value += result.estimated_value;
+
+        // Count expiring and expired
+        if (result.days_remaining !== null && result.days_remaining <= 7 && result.days_remaining > 0) {
+          expiring_soon++;
+        }
+        if (result.expired) {
+          expired_count++;
+        }
       });
 
       return {
         total_anomalies: results.length,
         total_value,
         by_severity,
-        by_type
+        by_type,
+        expiring_soon,
+        expired_count
       };
     } catch (error) {
       logger.error('Error in getDetectionStatistics', { error, sellerId });
       throw error;
+    }
+  }
+
+  /**
+   * Check for expiring claims and send alerts
+   */
+  async checkExpiringClaims(sellerIds: string[]): Promise<void> {
+    try {
+      const uniqueSellerIds = [...new Set(sellerIds)];
+      
+      for (const sellerId of uniqueSellerIds) {
+        // Get claims expiring in 7 days or less
+        const { data: expiringClaims, error } = await supabase
+          .from('detection_results')
+          .select('*')
+          .eq('seller_id', sellerId)
+          .eq('expiration_alert_sent', false)
+          .eq('expired', false)
+          .not('deadline_date', 'is', null)
+          .lte('days_remaining', 7)
+          .gte('days_remaining', 0)
+          .in('status', ['pending', 'reviewed']);
+
+        if (error) {
+          logger.error('Error checking expiring claims', { error, sellerId });
+          continue;
+        }
+
+        if (!expiringClaims || expiringClaims.length === 0) {
+          continue;
+        }
+
+        logger.info('Found expiring claims', {
+          seller_id: sellerId,
+          count: expiringClaims.length
+        });
+
+        // Send alerts for each expiring claim
+        for (const claim of expiringClaims) {
+          await this.sendExpirationAlert(sellerId, claim);
+        }
+      }
+    } catch (error) {
+      logger.error('Error in checkExpiringClaims', { error });
+    }
+  }
+
+  /**
+   * Send expiration alert for a claim
+   */
+  private async sendExpirationAlert(sellerId: string, claim: any): Promise<void> {
+    try {
+      const daysRemaining = claim.days_remaining || 0;
+      const urgency = daysRemaining <= 3 ? 'critical' : daysRemaining <= 7 ? 'high' : 'medium';
+
+      // Send SSE event for real-time alert
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(sellerId, 'claim_expiring', {
+        claim_id: claim.id,
+        anomaly_type: claim.anomaly_type,
+        estimated_value: claim.estimated_value,
+        currency: claim.currency,
+        days_remaining: daysRemaining,
+        deadline_date: claim.deadline_date,
+        urgency,
+        message: daysRemaining === 0 
+          ? `Claim deadline expired! Claim ${claim.id} can no longer be filed.`
+          : `Claim expires in ${daysRemaining} day${daysRemaining > 1 ? 's' : ''}. File soon to avoid missing the deadline.`
+      });
+
+      // Mark alert as sent
+      await supabase
+        .from('detection_results')
+        .update({ expiration_alert_sent: true })
+        .eq('id', claim.id);
+
+      logger.info('Expiration alert sent', {
+        seller_id: sellerId,
+        claim_id: claim.id,
+        days_remaining: daysRemaining
+      });
+    } catch (error) {
+      logger.error('Error sending expiration alert', { error, sellerId, claimId: claim.id });
+    }
+  }
+
+  /**
+   * Get claims approaching deadline
+   */
+  async getClaimsApproachingDeadline(sellerId: string, daysThreshold: number = 7): Promise<DetectionResultRecord[]> {
+    try {
+      const { data, error } = await supabase
+        .from('detection_results')
+        .select('*')
+        .eq('seller_id', sellerId)
+        .eq('expired', false)
+        .not('deadline_date', 'is', null)
+        .lte('days_remaining', daysThreshold)
+        .gte('days_remaining', 0)
+        .in('status', ['pending', 'reviewed'])
+        .order('days_remaining', { ascending: true })
+        .order('severity', { ascending: false });
+
+      if (error) {
+        logger.error('Error fetching claims approaching deadline', { error, sellerId });
+        throw new Error(`Failed to fetch claims approaching deadline: ${error.message}`);
+      }
+
+      return (data || []) as DetectionResultRecord[];
+    } catch (error) {
+      logger.error('Error in getClaimsApproachingDeadline', { error, sellerId });
+      throw error;
+    }
+  }
+
+  /**
+   * Update expired claims (mark as expired when deadline passes)
+   */
+  async updateExpiredClaims(): Promise<number> {
+    try {
+      // Update claims where deadline has passed
+      const { data: expiredClaims, error: fetchError } = await supabase
+        .from('detection_results')
+        .select('id, seller_id')
+        .eq('expired', false)
+        .not('deadline_date', 'is', null)
+        .lte('deadline_date', new Date().toISOString())
+        .in('status', ['pending', 'reviewed']);
+
+      if (fetchError) {
+        logger.error('Error fetching expired claims', { error: fetchError });
+        return 0;
+      }
+
+      if (!expiredClaims || expiredClaims.length === 0) {
+        return 0;
+      }
+
+      // Mark as expired
+      const claimIds = expiredClaims.map(c => c.id);
+      const { error: updateError } = await supabase
+        .from('detection_results')
+        .update({ 
+          expired: true,
+          days_remaining: 0,
+          updated_at: new Date().toISOString()
+        })
+        .in('id', claimIds);
+
+      if (updateError) {
+        logger.error('Error updating expired claims', { error: updateError });
+        return 0;
+      }
+
+      // Send expiration notifications via SSE
+      const sseHub = (await import('../utils/sseHub')).default;
+      for (const claim of expiredClaims) {
+        sseHub.sendEvent(claim.seller_id, 'claim_expired', {
+          claim_id: claim.id,
+          message: 'Claim deadline has expired. This claim can no longer be filed with Amazon.'
+        });
+      }
+
+      logger.info('Updated expired claims', { count: expiredClaims.length });
+      return expiredClaims.length;
+    } catch (error) {
+      logger.error('Error in updateExpiredClaims', { error });
+      return 0;
     }
   }
 }

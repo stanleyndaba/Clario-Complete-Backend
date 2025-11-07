@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticateToken, AuthenticatedRequest } from '../middleware/authMiddleware';
 import enhancedDetectionService from '../services/enhancedDetectionService';
+import detectionService from '../services/detectionService';
 
 const router = Router();
 
@@ -34,6 +35,36 @@ router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
     const { syncId } = (req as any).params;
     const results = await enhancedDetectionService.getDetectionResults(userId, syncId);
     return res.json({ success: true, results });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
+  }
+});
+
+// GET /api/v1/integrations/detections/deadlines
+// Get claims approaching deadline (Discovery Agent - 60-day deadline tracking)
+router.get('/deadlines', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user?.id as string;
+    const daysThreshold = parseInt((req as any).query.days || '7', 10);
+    const claims = await detectionService.getClaimsApproachingDeadline(userId, daysThreshold);
+    return res.json({ 
+      success: true, 
+      claims,
+      count: claims.length,
+      threshold_days: daysThreshold
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
+  }
+});
+
+// GET /api/v1/integrations/detections/statistics
+// Get detection statistics including deadline info
+router.get('/statistics', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user?.id as string;
+    const stats = await detectionService.getDetectionStatistics(userId);
+    return res.json({ success: true, statistics: stats });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
   }

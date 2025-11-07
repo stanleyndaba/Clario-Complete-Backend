@@ -530,6 +530,9 @@ export class AmazonService {
         this.setCachedResponse(cacheKey, allClaims);
       }
 
+      // Track payment status changes for Transparency Agent (after fetching all claims)
+      await this.trackPaymentStatusChanges(accountId, allClaims);
+
       return { 
         success: true, 
         data: allClaims, 
@@ -944,6 +947,95 @@ export class AmazonService {
         throw new Error(`Sandbox API error: ${errorMessage}. Note: Sandbox may have limited endpoint support.`);
       }
       throw new Error(`Failed to fetch fees from SP-API: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Track payment status changes for Transparency Agent
+   * Sends SSE events when claim payment status changes
+   */
+  private async trackPaymentStatusChanges(accountId: string, claims: any[]): Promise<void> {
+    try {
+      const { supabase } = await import('../database/supabaseClient');
+      const sseHub = (await import('../utils/sseHub')).default;
+
+      // Get previous claim statuses from database
+      const { data: previousClaims } = await supabase
+        .from('detection_results')
+        .select('id, status, estimated_value, currency')
+        .eq('seller_id', accountId)
+        .in('status', ['pending', 'reviewed', 'disputed']);
+
+      const previousClaimsMap = new Map((previousClaims || []).map((c: any) => [c.id, c]));
+
+      // Track status changes and send SSE events
+      for (const claim of claims) {
+        const previousClaim = previousClaimsMap.get(claim.id) as { status: string; estimated_value: number; currency?: string } | undefined;
+        
+        if (previousClaim && claim.status === 'approved' && previousClaim.status !== 'approved') {
+          // Payment approved - send transparency event
+          sseHub.sendEvent(accountId, 'payment_approved', {
+            claim_id: claim.id,
+            order_id: claim.orderId,
+            amount: claim.amount,
+            currency: claim.currency || 'USD',
+            previous_status: previousClaim.status,
+            new_status: claim.status,
+            message: `Claim approved! Payment of ${claim.amount} ${claim.currency || 'USD'} will be processed.`,
+            timestamp: new Date().toISOString()
+          });
+
+          logger.info('Payment status change detected', {
+            account_id: accountId,
+            claim_id: claim.id,
+            previous_status: previousClaim.status,
+            new_status: claim.status,
+            amount: claim.amount
+          });
+        }
+
+        // Reconcile payment amount (Transparency Agent)
+        if (claim.status === 'approved' && previousClaim) {
+          const expectedAmount = previousClaim.estimated_value;
+          const actualAmount = claim.amount;
+          const discrepancy = Math.abs(expectedAmount - actualAmount);
+
+          if (discrepancy > 0.01) { // More than 1 cent difference
+            sseHub.sendEvent(accountId, 'payment_discrepancy', {
+              claim_id: claim.id,
+              expected_amount: expectedAmount,
+              actual_amount: actualAmount,
+              discrepancy: discrepancy,
+              currency: claim.currency || previousClaim.currency || 'USD',
+              message: `Payment discrepancy detected: Expected $${expectedAmount}, received $${actualAmount}. Difference: $${discrepancy}`,
+              timestamp: new Date().toISOString()
+            });
+
+            logger.warn('Payment discrepancy detected', {
+              account_id: accountId,
+              claim_id: claim.id,
+              expected: expectedAmount,
+              actual: actualAmount,
+              discrepancy
+            });
+          } else {
+            // Payment reconciled successfully
+            sseHub.sendEvent(accountId, 'payment_reconciled', {
+              claim_id: claim.id,
+              amount: actualAmount,
+              currency: claim.currency || 'USD',
+              message: `Payment reconciled successfully: $${actualAmount} matches expected amount.`,
+              timestamp: new Date().toISOString()
+            });
+          }
+        }
+      }
+    } catch (error: any) {
+      logger.error('Error tracking payment status changes', {
+        error: error.message,
+        account_id: accountId
+      });
+      // Don't throw - this is a monitoring function, shouldn't break main flow
     }
   }
 }
