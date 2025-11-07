@@ -1130,19 +1130,30 @@ export class OrchestrationJobManager {
     rollbackToPhase?: number;
   }): Promise<void> {
     try {
-      await supabase.from('workflow_phase_logs').insert({
-        workflow_id: data.workflowId,
+      // Use existing sync_progress table - update with phase tracking info
+      await supabase.from('sync_progress').upsert({
         user_id: data.userId,
+        sync_id: data.workflowId,
+        step: data.phaseNumber,
+        total_steps: 7,
+        current_step: `Phase ${data.phaseNumber}`,
+        status: data.status === 'started' ? 'running' : data.status === 'completed' ? 'completed' : 'failed',
+        progress: Math.round((data.phaseNumber / 7) * 100),
         phase_number: data.phaseNumber,
-        status: data.status,
         duration_ms: data.durationMs || null,
         previous_phase: data.previousPhase || null,
         error_message: data.errorMessage || null,
         error_stack: data.errorStack || null,
-        metadata: data.metadata || {},
         rollback_triggered: data.rollbackTriggered || false,
         rollback_to_phase: data.rollbackToPhase || null,
-        timestamp: new Date().toISOString()
+        metadata: {
+          ...(data.metadata || {}),
+          phase_status: data.status,
+          timestamp: new Date().toISOString()
+        },
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: 'user_id,sync_id'
       });
       
       logger.debug('Phase transition logged', {
@@ -1161,11 +1172,12 @@ export class OrchestrationJobManager {
    */
   private static async getLastPhaseLog(workflowId: string): Promise<{ phase_number: number; status: string } | null> {
     try {
+      // Use existing sync_progress table
       const { data, error } = await supabase
-        .from('workflow_phase_logs')
+        .from('sync_progress')
         .select('phase_number, status')
-        .eq('workflow_id', workflowId)
-        .order('timestamp', { ascending: false })
+        .eq('sync_id', workflowId)
+        .order('updated_at', { ascending: false })
         .limit(1)
         .single();
       
@@ -1173,7 +1185,10 @@ export class OrchestrationJobManager {
         return null;
       }
       
-      return data as { phase_number: number; status: string };
+      return {
+        phase_number: data.phase_number || data.step || 0,
+        status: data.status
+      };
     } catch (error) {
       logger.warn('Failed to get last phase log', { error, workflowId });
       return null;

@@ -1,39 +1,67 @@
 -- Workflow Phase Audit Log Migration
--- Tracks all phase transitions for debugging and SLA monitoring
+-- Extends existing sync_progress table to track phase transitions for debugging and SLA monitoring
+-- Uses existing sync_progress table - only adds missing columns
 
--- Workflow phase logs table
-CREATE TABLE IF NOT EXISTS workflow_phase_logs (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    workflow_id VARCHAR(255) NOT NULL, -- Unique identifier for the workflow instance (sync_id, claim_id, etc.)
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    phase_number INTEGER NOT NULL CHECK (phase_number >= 1 AND phase_number <= 7),
-    status VARCHAR(50) NOT NULL DEFAULT 'started', -- started, completed, failed, rolled_back
-    timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    duration_ms INTEGER, -- Duration in milliseconds (null if still running)
-    previous_phase INTEGER, -- Previous phase number (for rollback tracking)
-    error_message TEXT,
-    error_stack TEXT,
-    metadata JSONB DEFAULT '{}'::jsonb,
-    rollback_triggered BOOLEAN DEFAULT FALSE,
-    rollback_to_phase INTEGER,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-);
+-- Add phase tracking columns to existing sync_progress table (if they don't exist)
+DO $$ 
+BEGIN
+    -- Add phase_number column if it doesn't exist (maps to step, but for 7-phase workflow)
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name = 'sync_progress' AND column_name = 'phase_number') THEN
+        ALTER TABLE sync_progress ADD COLUMN phase_number INTEGER;
+        COMMENT ON COLUMN sync_progress.phase_number IS 'Phase number for 7-phase workflow (1-7), maps to step';
+    END IF;
+    
+    -- Add duration_ms for phase timing
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name = 'sync_progress' AND column_name = 'duration_ms') THEN
+        ALTER TABLE sync_progress ADD COLUMN duration_ms INTEGER;
+        COMMENT ON COLUMN sync_progress.duration_ms IS 'Duration of phase in milliseconds';
+    END IF;
+    
+    -- Add previous_phase for rollback tracking
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name = 'sync_progress' AND column_name = 'previous_phase') THEN
+        ALTER TABLE sync_progress ADD COLUMN previous_phase INTEGER;
+        COMMENT ON COLUMN sync_progress.previous_phase IS 'Previous phase number for rollback tracking';
+    END IF;
+    
+    -- Add error tracking columns
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name = 'sync_progress' AND column_name = 'error_message') THEN
+        ALTER TABLE sync_progress ADD COLUMN error_message TEXT;
+        COMMENT ON COLUMN sync_progress.error_message IS 'Error message if phase failed';
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name = 'sync_progress' AND column_name = 'error_stack') THEN
+        ALTER TABLE sync_progress ADD COLUMN error_stack TEXT;
+        COMMENT ON COLUMN sync_progress.error_stack IS 'Full error stack trace if phase failed';
+    END IF;
+    
+    -- Add rollback tracking
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name = 'sync_progress' AND column_name = 'rollback_triggered') THEN
+        ALTER TABLE sync_progress ADD COLUMN rollback_triggered BOOLEAN DEFAULT FALSE;
+        COMMENT ON COLUMN sync_progress.rollback_triggered IS 'Whether rollback was triggered for this phase';
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name = 'sync_progress' AND column_name = 'rollback_to_phase') THEN
+        ALTER TABLE sync_progress ADD COLUMN rollback_to_phase INTEGER;
+        COMMENT ON COLUMN sync_progress.rollback_to_phase IS 'Phase number to rollback to if rollback triggered';
+    END IF;
+END $$;
 
--- Indexes for fast queries
-CREATE INDEX IF NOT EXISTS idx_workflow_phase_logs_workflow_id ON workflow_phase_logs(workflow_id);
-CREATE INDEX IF NOT EXISTS idx_workflow_phase_logs_user_id ON workflow_phase_logs(user_id);
-CREATE INDEX IF NOT EXISTS idx_workflow_phase_logs_phase_number ON workflow_phase_logs(phase_number);
-CREATE INDEX IF NOT EXISTS idx_workflow_phase_logs_status ON workflow_phase_logs(status);
-CREATE INDEX IF NOT EXISTS idx_workflow_phase_logs_timestamp ON workflow_phase_logs(timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_workflow_phase_logs_rollback ON workflow_phase_logs(rollback_triggered) WHERE rollback_triggered = TRUE;
+-- Add indexes for phase tracking (using existing sync_progress table)
+CREATE INDEX IF NOT EXISTS idx_sync_progress_phase_number ON sync_progress(phase_number) WHERE phase_number IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sync_progress_rollback ON sync_progress(rollback_triggered) WHERE rollback_triggered = TRUE;
+CREATE INDEX IF NOT EXISTS idx_sync_progress_phase_status ON sync_progress(phase_number, status) WHERE phase_number IS NOT NULL;
 
--- Composite index for common queries (workflow status tracking)
-CREATE INDEX IF NOT EXISTS idx_workflow_phase_logs_workflow_phase ON workflow_phase_logs(workflow_id, phase_number, timestamp DESC);
-
--- View for phase transition analytics
+-- View for phase transition analytics (using existing sync_progress table)
 CREATE OR REPLACE VIEW workflow_phase_analytics AS
 SELECT 
-    workflow_id,
+    sync_id as workflow_id,
     user_id,
     phase_number,
     COUNT(*) as transition_count,
@@ -43,20 +71,21 @@ SELECT
     AVG(duration_ms) as avg_duration_ms,
     MIN(duration_ms) as min_duration_ms,
     MAX(duration_ms) as max_duration_ms,
-    MIN(timestamp) as first_transition,
-    MAX(timestamp) as last_transition
-FROM workflow_phase_logs
-GROUP BY workflow_id, user_id, phase_number;
+    MIN(created_at) as first_transition,
+    MAX(updated_at) as last_transition
+FROM sync_progress
+WHERE phase_number IS NOT NULL
+GROUP BY sync_id, user_id, phase_number;
 
--- View for SLA tracking (phases that took longer than expected)
+-- View for SLA tracking (phases that took longer than expected) - using existing sync_progress table
 CREATE OR REPLACE VIEW workflow_phase_sla_violations AS
 SELECT 
     id,
-    workflow_id,
+    sync_id as workflow_id,
     user_id,
     phase_number,
     duration_ms,
-    timestamp,
+    updated_at as timestamp,
     CASE 
         WHEN phase_number = 1 AND duration_ms > 30000 THEN 'Phase 1 SLA violation (>30s)'
         WHEN phase_number = 2 AND duration_ms > 60000 THEN 'Phase 2 SLA violation (>60s)'
@@ -67,9 +96,10 @@ SELECT
         WHEN phase_number = 7 AND duration_ms > 60000 THEN 'Phase 7 SLA violation (>60s)'
         ELSE NULL
     END as violation_reason
-FROM workflow_phase_logs
+FROM sync_progress
 WHERE status = 'completed' 
     AND duration_ms IS NOT NULL
+    AND phase_number IS NOT NULL
     AND (
         (phase_number = 1 AND duration_ms > 30000) OR
         (phase_number = 2 AND duration_ms > 60000) OR
