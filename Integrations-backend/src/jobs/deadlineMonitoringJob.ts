@@ -76,8 +76,9 @@ export class DeadlineMonitoringJob {
         return;
       }
 
-      // Get unique seller IDs
-      const uniqueSellerIds = [...new Set(sellers.map((s: any) => s.seller_id as string))];
+      // Get unique seller IDs with proper type assertion
+      const sellerIds = (sellers || []).map((s: { seller_id: string }) => s.seller_id) as string[];
+      const uniqueSellerIds = Array.from(new Set(sellerIds)) as string[];
 
       // Check expiring claims for each seller
       for (const sellerId of uniqueSellerIds) {
