@@ -4,6 +4,7 @@ import logger from '../utils/logger';
 import tokenManager from '../utils/tokenManager';
 import { diagnoseSandboxConnection } from '../utils/sandboxDiagnostics';
 import oauthStateStore from '../utils/oauthStateStore';
+import { syncJobManager } from '../services/syncJobManager';
 
 export const startAmazonOAuth = async (req: Request, res: Response) => {
   try {
@@ -41,6 +42,27 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
       
       if (bypassOAuth) {
         logger.info('Bypassing OAuth flow - using existing refresh token');
+        
+        // Try to trigger sync if we have a userId
+        // For bypass flow, userId might not be available, so we'll attempt sync if possible
+        const userId = (req as any).user?.id || (req as any).user?.user_id || req.query.userId as string;
+        
+        if (userId && userId !== 'default-user' && userId !== 'demo-user') {
+          // Trigger sync in background - don't block the response
+          syncJobManager.startSync(userId).catch((syncError: any) => {
+            logger.warn('Failed to trigger automatic sync after bypass', {
+              userId,
+              error: syncError.message,
+              // Don't fail the bypass if sync fails - it's a background operation
+            });
+          });
+          
+          logger.info('Triggered automatic sync after bypass', { userId });
+        } else {
+          logger.info('No valid userId for sync trigger in bypass flow - sync will trigger when recoveries endpoint is called', {
+            userId: userId || 'not provided'
+          });
+        }
         
         // Return JSON response with redirect URL (frontend will handle navigation)
         // This works for both fetch requests and direct browser navigation
@@ -257,6 +279,18 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           hasRefreshToken: !!result.data.refresh_token,
           hasAccessToken: !!result.data.access_token
         });
+        
+        // Trigger automatic sync after successful connection
+        // Run in background - don't block the response
+        syncJobManager.startSync(userId).catch((syncError: any) => {
+          logger.warn('Failed to trigger automatic sync after Amazon connection', {
+            userId,
+            error: syncError.message,
+            // Don't fail the OAuth callback if sync fails - it's a background operation
+          });
+        });
+        
+        logger.info('Triggered automatic sync after Amazon OAuth callback', { userId });
       } catch (tokenError: any) {
         // Log error but don't fail the callback - token might still be in env vars
         logger.error('Failed to store Amazon refresh token in database', { 

@@ -23,12 +23,25 @@ export class AmazonSyncJob {
         return syncId;
       }
 
-      // Sync claims
+      // Sync claims - GETTING SANDBOX TEST DATA FROM SP-API
+      // Note: Sandbox may return empty or limited test data - this is normal for testing
+      logger.info('Fetching claims from SP-API SANDBOX (test data only)', { userId, syncId });
       const claimsResult = await amazonService.fetchClaims(userId);
       const claims = claimsResult.data || claimsResult; // Handle both formats
       await this.saveClaimsToDatabase(userId, Array.isArray(claims) ? claims : []);
+      
+      logger.info('Claims sync completed (SANDBOX TEST DATA)', {
+        userId,
+        syncId,
+        claimCount: Array.isArray(claims) ? claims.length : 0,
+        dataType: 'SANDBOX_TEST_DATA',
+        note: (!claims || (Array.isArray(claims) && claims.length === 0))
+          ? 'Sandbox returned empty claims - this is normal for testing'
+          : 'Sandbox test claims data retrieved successfully'
+      });
 
-      // Sync inventory - NOW GETTING REAL DATA FROM SP-API
+      // Sync inventory - GETTING SANDBOX TEST DATA FROM SP-API
+      // Note: Sandbox may return empty or limited test data - this is normal
       let inventory: any[] = [];
       try {
         const inventoryResult = await amazonService.fetchInventory(userId);
@@ -36,11 +49,15 @@ export class AmazonSyncJob {
         inventory = Array.isArray(inventory) ? inventory : [];
         await this.saveInventoryToDatabase(userId, inventory);
         
-        logger.info('Inventory sync completed', { 
+        logger.info('Inventory sync completed (SANDBOX TEST DATA)', { 
           userId, 
           syncId, 
           itemCount: inventory.length,
-          fromApi: inventoryResult.fromApi || false
+          fromApi: inventoryResult.fromApi || false,
+          dataType: 'SANDBOX_TEST_DATA',
+          note: inventory.length === 0 
+            ? 'Sandbox returned empty inventory - this is normal for testing' 
+            : 'Sandbox test inventory data retrieved successfully'
         });
       } catch (inventoryError: any) {
         // Log inventory sync failure but don't fail entire sync

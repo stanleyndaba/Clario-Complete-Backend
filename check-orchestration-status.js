@@ -82,6 +82,25 @@ async function checkStatus() {
       console.log('');
     }
 
+    // Get failed jobs for debugging
+    const failedJobs = await orchestrationQueue.getJobs(['failed'], 0, 10);
+    if (failedJobs.length > 0) {
+      console.log('❌ Failed Jobs (Recent):');
+      failedJobs.forEach((job, index) => {
+        console.log(`  ${index + 1}. Job ${job.id}:`);
+        console.log(`     User: ${job.data.userId}`);
+        console.log(`     Sync ID: ${job.data.syncId}`);
+        console.log(`     Step: ${job.data.step}`);
+        if (job.failedReason) {
+          console.log(`     Error: ${job.failedReason}`);
+        }
+        if (job.stacktrace && job.stacktrace.length > 0) {
+          console.log(`     Stack: ${job.stacktrace[0].substring(0, 200)}...`);
+        }
+      });
+      console.log('');
+    }
+
     // Check for duplicate jobs (concurrency check)
     const allJobs = [...waitingJobs, ...activeJobs];
     const jobGroups = new Map();

@@ -10,6 +10,7 @@ import {
   diagnoseAmazonConnection
 } from '../controllers/amazonController';
 import amazonService from '../services/amazonService';
+import { syncJobManager } from '../services/syncJobManager';
 
 const router = Router();
 
@@ -63,8 +64,16 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
     
     // Try to get claims from the service
     try {
+      logger.info(`Attempting to fetch claims for recoveries`, { userId });
       const claimsResult = await amazonService.fetchClaims(userId);
       const claims = claimsResult.data || claimsResult.claims || [];
+      
+      logger.info(`Claims fetch result:`, {
+        hasData: !!claimsResult,
+        claimsType: Array.isArray(claims) ? 'array' : typeof claims,
+        claimsLength: Array.isArray(claims) ? claims.length : 'N/A',
+        claimsResultKeys: claimsResult ? Object.keys(claimsResult) : []
+      });
       
       if (Array.isArray(claims) && claims.length > 0) {
         // Calculate totals from actual claims
@@ -81,20 +90,66 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
           claimCount: claimCount,
           source: 'spapi_sandbox'
         });
+      } else {
+        logger.info('No claims found in response (empty array or no data)', {
+          claimsResultType: typeof claimsResult,
+          claimsResultKeys: claimsResult ? Object.keys(claimsResult) : [],
+          claimsType: typeof claims,
+          claimsIsArray: Array.isArray(claims)
+        });
       }
     } catch (error: any) {
-      logger.warn(`Error fetching claims for recoveries: ${error.message}`);
+      logger.error(`Error fetching claims for recoveries:`, {
+        error: error.message,
+        stack: error.stack,
+        userId
+      });
       // Fall through to return zeros
     }
     
-    // If no claims found or error, return zeros
-    // Frontend will use mock data as fallback
-    logger.info('No claims found, returning zeros');
+    // If no claims found, trigger a sync automatically (if not already running)
+    // This ensures data is synced when user connects Amazon
+    try {
+      // Check if there's already a sync in progress by checking sync history
+      // We'll attempt to start sync - it will check internally if one is already running
+      logger.info('No claims found - attempting to trigger automatic sync', { userId });
+      
+      // Trigger sync in background - don't block the response
+      // syncJobManager.startSync will check if sync is already in progress
+      syncJobManager.startSync(userId).then((result) => {
+        logger.info('Successfully triggered automatic sync from recoveries endpoint', { 
+          userId, 
+          syncId: result.syncId 
+        });
+      }).catch((syncError: any) => {
+        // If sync is already in progress, that's OK - just log it
+        if (syncError.message && syncError.message.includes('already in progress')) {
+          logger.info('Sync already in progress, skipping automatic trigger', { userId });
+        } else {
+          logger.warn('Failed to trigger automatic sync from recoveries endpoint', {
+            userId,
+            error: syncError.message,
+            // Don't fail the recoveries endpoint if sync fails
+          });
+        }
+      });
+    } catch (syncTriggerError: any) {
+      // Log but don't fail - sync trigger is optional
+      logger.warn('Error triggering sync from recoveries endpoint', {
+        userId,
+        error: syncTriggerError.message
+      });
+    }
+    
+    // Return zeros with message
+    logger.info('No claims found, returning zeros - sync may be in progress');
     res.json({
       totalAmount: 0.0,
       currency: 'USD',
       claimCount: 0,
-      message: 'No data found. Please sync your Amazon account first.'
+      message: 'No data found. Syncing your Amazon account... Please refresh in a few moments.',
+      needsSync: true,
+      syncTriggered: true
     });
   } catch (error: any) {
     logger.error('Error in recoveries endpoint:', error);
