@@ -1079,7 +1079,7 @@ export class OrchestrationJobManager {
   }
 
   /**
-   * Get queue statistics
+   * Get queue statistics with metrics
    */
   static async getQueueStats(): Promise<any> {
     try {
@@ -1088,10 +1088,27 @@ export class OrchestrationJobManager {
         syncProgressQueue.getJobCounts()
       ]);
 
+      // Get recent job durations for metrics
+      const recentCompleted = await orchestrationQueue.getJobs(['completed'], 0, 10);
+      const durations = recentCompleted
+        .filter(job => job.finishedOn && job.processedOn)
+        .map(job => job.finishedOn! - job.processedOn!);
+
+      const avgDuration = durations.length > 0 
+        ? durations.reduce((a, b) => a + b, 0) / durations.length 
+        : 0;
+
       return {
         orchestration: orchestrationStats,
         syncProgress: syncProgressStats,
-        connectedClients: websocketService.getConnectedClientsCount()
+        connectedClients: websocketService.getConnectedClientsCount(),
+        metrics: {
+          recentJobCount: recentCompleted.length,
+          averageJobDuration: Math.round(avgDuration),
+          successRate: orchestrationStats.completed > 0
+            ? (orchestrationStats.completed / (orchestrationStats.completed + orchestrationStats.failed) * 100).toFixed(2) + '%'
+            : 'N/A'
+        }
       };
     } catch (error) {
       logger.error('Error getting queue stats', { error });
@@ -1112,6 +1129,34 @@ export class OrchestrationJobManager {
       logger.info('Orchestration job manager cleaned up');
     } catch (error) {
       logger.error('Error cleaning up orchestration job manager', { error });
+    }
+  }
+
+  /**
+   * Clean old jobs from queues
+   * @param grace - Grace period in milliseconds (default: 0 = all old jobs)
+   * @param status - Job status to clean ('failed' | 'completed' | 'active' | 'delayed' | 'wait')
+   */
+  static async cleanOldJobs(grace: number = 0, status: 'failed' | 'completed' | 'active' | 'delayed' | 'wait' = 'failed'): Promise<{ orchestration: number; syncProgress: number }> {
+    try {
+      const [cleanedOrchestration, cleanedSyncProgress] = await Promise.all([
+        orchestrationQueue.clean(grace, status),
+        syncProgressQueue.clean(grace, status)
+      ]);
+
+      logger.info('Old jobs cleaned', {
+        status,
+        orchestration: cleanedOrchestration.length,
+        syncProgress: cleanedSyncProgress.length
+      });
+
+      return {
+        orchestration: cleanedOrchestration.length,
+        syncProgress: cleanedSyncProgress.length
+      };
+    } catch (error) {
+      logger.error('Error cleaning old jobs', { error });
+      throw error;
     }
   }
 

@@ -192,5 +192,48 @@ router.post('/phase/:phaseNumber', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /api/v1/workflow/queue/stats
+ * Get queue statistics and metrics
+ */
+router.get('/queue/stats', async (_req: Request, res: Response) => {
+  try {
+    const stats = await OrchestrationJobManager.getQueueStats();
+    return res.json({ success: true, stats });
+  } catch (error: any) {
+    logger.error('Error getting queue stats', { error: error.message });
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error' 
+    });
+  }
+});
+
+/**
+ * POST /api/v1/workflow/queue/clean
+ * Clean old jobs from queues
+ * Query params: grace (ms), status (failed|completed|active|delayed|wait)
+ */
+router.post('/queue/clean', async (req: Request, res: Response) => {
+  try {
+    const grace = parseInt(req.query.grace as string) || 0;
+    const status = (req.query.status as 'failed' | 'completed' | 'active' | 'delayed' | 'wait') || 'failed';
+    
+    const result = await OrchestrationJobManager.cleanOldJobs(grace, status);
+    
+    return res.json({ 
+      success: true, 
+      message: `Cleaned ${result.orchestration + result.syncProgress} old jobs`,
+      result 
+    });
+  } catch (error: any) {
+    logger.error('Error cleaning queue', { error: error.message });
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error' 
+    });
+  }
+});
+
 export default router;
 
