@@ -196,15 +196,23 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
       });
     }
     
-    // Return zeros with message
-    logger.info('No claims found, returning zeros - sync may be in progress');
+    // Return zeros with message (include source field for consistency)
+    const isSandbox = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || false;
+    logger.info('No claims found, returning zeros - sync may be in progress', {
+      userId,
+      isSandbox,
+      syncTriggered: true
+    });
     res.json({
       totalAmount: 0.0,
       currency: 'USD',
       claimCount: 0,
+      source: 'none',
+      dataSource: isSandbox ? 'spapi_sandbox_empty' : 'spapi_production_empty',
       message: 'No data found. Syncing your Amazon account... Please refresh in a few moments.',
       needsSync: true,
-      syncTriggered: true
+      syncTriggered: true,
+      isSandbox: isSandbox
     });
   } catch (error: any) {
     logger.error('Error in recoveries endpoint:', error);
