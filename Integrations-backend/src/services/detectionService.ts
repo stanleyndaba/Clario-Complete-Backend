@@ -378,7 +378,8 @@ export class DetectionService {
         const lowConfidence = results.filter(r => r.confidence_score < 0.50).length;
         const totalAmount = results.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
         
-        logger.info('Detection algorithms completed (SANDBOX MODE)', {
+        const environment = isSandbox ? 'SANDBOX' : 'PRODUCTION';
+        logger.info(`Detection algorithms completed (${environment} MODE)`, {
           seller_id: job.seller_id,
           sync_id: job.sync_id,
           results_count: results.length,

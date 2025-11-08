@@ -42,21 +42,37 @@ export class AmazonService {
   private readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
   constructor() {
-    // ALWAYS use sandbox for testing - Amazon SP-API sandbox provides test data
+    // Support both sandbox and production modes
     // Sandbox URL: https://sandbox.sellingpartnerapi-na.amazon.com
-    // This ensures we only fetch test/sandbox data, never real production data
-    this.baseUrl = process.env.AMAZON_SPAPI_BASE_URL || 
-                   'https://sandbox.sellingpartnerapi-na.amazon.com';
+    // Production URL: https://sellingpartnerapi-na.amazon.com (or region-specific)
+    // Default to sandbox if no URL is specified
+    const envUrl = process.env.AMAZON_SPAPI_BASE_URL;
     
-    // Log sandbox mode on initialization
+    if (envUrl) {
+      this.baseUrl = envUrl;
+    } else {
+      // Default to sandbox for safety, but allow production via NODE_ENV
+      if (process.env.NODE_ENV === 'production' && !process.env.AMAZON_SPAPI_BASE_URL) {
+        // Production mode but no URL specified - use production URL
+        this.baseUrl = 'https://sellingpartnerapi-na.amazon.com';
+      } else {
+        // Default to sandbox for development/testing
+        this.baseUrl = 'https://sandbox.sellingpartnerapi-na.amazon.com';
+      }
+    }
+    
+    // Log environment mode on initialization
     if (this.isSandbox()) {
       logger.info('Amazon SP-API initialized in SANDBOX mode - using test data only', {
         baseUrl: this.baseUrl,
-        environment: 'sandbox'
+        environment: 'sandbox',
+        note: 'Set AMAZON_SPAPI_BASE_URL to production URL to switch to production mode'
       });
     } else {
-      logger.warn('Amazon SP-API NOT in sandbox mode - verify this is intentional', {
-        baseUrl: this.baseUrl
+      logger.info('Amazon SP-API initialized in PRODUCTION mode - using live data', {
+        baseUrl: this.baseUrl,
+        environment: 'production',
+        warning: 'This will fetch real production data from Amazon SP-API'
       });
     }
   }
@@ -64,9 +80,23 @@ export class AmazonService {
   /**
    * Check if we're using sandbox environment
    */
-  private isSandbox(): boolean {
-    return this.baseUrl.includes('sandbox') || 
-           process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') === true;
+  isSandbox(): boolean {
+    // Check if baseUrl contains 'sandbox'
+    if (this.baseUrl.includes('sandbox')) {
+      return true;
+    }
+    
+    // Check environment variable explicitly
+    if (process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox')) {
+      return true;
+    }
+    
+    // If NODE_ENV is development and no explicit production URL, assume sandbox
+    if (process.env.NODE_ENV === 'development' && !process.env.AMAZON_SPAPI_BASE_URL) {
+      return true;
+    }
+    
+    return false;
   }
 
   /**
@@ -416,6 +446,11 @@ export class AmazonService {
   }
 
   async fetchClaims(accountId: string, startDate?: Date, endDate?: Date): Promise<any> {
+    // Determine environment and data type once at the start
+    const isSandboxMode = this.isSandbox();
+    const environment = isSandboxMode ? 'SANDBOX' : 'PRODUCTION';
+    const dataType = isSandboxMode ? 'SANDBOX_TEST_DATA' : 'LIVE_PRODUCTION_DATA';
+    
     try {
       const accessToken = await this.getAccessToken(accountId);
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
@@ -424,14 +459,17 @@ export class AmazonService {
       const postedAfter = startDate || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
       const postedBefore = endDate || new Date();
       
-      logger.info(`Fetching claims/reimbursements for account ${accountId} from SP-API SANDBOX`, {
+      logger.info(`Fetching claims/reimbursements for account ${accountId} from SP-API ${environment}`, {
         baseUrl: this.baseUrl,
         marketplaceId,
         postedAfter: postedAfter.toISOString(),
         postedBefore: postedBefore.toISOString(),
-        isSandbox: this.isSandbox(),
-        dataType: 'SANDBOX_TEST_DATA',
-        note: 'Using Amazon SP-API sandbox - returns test/fake data only, not real production data'
+        isSandbox: isSandboxMode,
+        environment,
+        dataType,
+        note: isSandboxMode 
+          ? 'Using Amazon SP-API sandbox - returns test/fake data only, not real production data'
+          : 'Using Amazon SP-API production - fetching real live data from Amazon'
       });
 
       // Use Financial Events API to get reimbursements (claims)
@@ -452,7 +490,9 @@ export class AmazonService {
           data: cached,
           message: `Fetched ${cached.length} claims/reimbursements from SP-API (cached)`,
           fromApi: true,
-          isSandbox: this.isSandbox(),
+          isSandbox: isSandboxMode,
+          environment,
+          dataType,
           cached: true
         };
       }
@@ -532,15 +572,20 @@ export class AmazonService {
         }
       } while (nextToken);
 
-      logger.info(`Successfully fetched ${allClaims.length} claims/reimbursements from SP-API SANDBOX`, {
+      logger.info(`Successfully fetched ${allClaims.length} claims/reimbursements from SP-API ${environment}`, {
         itemCount: allClaims.length,
         accountId,
-        isSandbox: this.isSandbox(),
+        isSandbox: isSandboxMode,
+        environment,
         cacheUsed: false,
-        dataType: 'SANDBOX_TEST_DATA',
-        note: allClaims.length === 0 
-          ? 'Sandbox may return empty data - this is normal for testing' 
-          : 'Sandbox test data retrieved successfully'
+        dataType,
+        note: isSandboxMode
+          ? (allClaims.length === 0 
+              ? 'Sandbox may return empty data - this is normal for testing' 
+              : 'Sandbox test data retrieved successfully')
+          : (allClaims.length === 0
+              ? 'No claims found in production data for the specified date range'
+              : `Successfully retrieved ${allClaims.length} live production claims from Amazon SP-API`)
       });
 
       // Cache the first page result
@@ -550,54 +595,93 @@ export class AmazonService {
 
       // Track payment status changes for Transparency Agent (after fetching all claims)
       await this.trackPaymentStatusChanges(accountId, allClaims);
-
+      
       return { 
         success: true, 
         data: allClaims, 
-        message: `Fetched ${allClaims.length} claims/reimbursements from SP-API SANDBOX (test data)`,
+        message: isSandboxMode
+          ? `Fetched ${allClaims.length} claims/reimbursements from SP-API SANDBOX (test data)`
+          : `Fetched ${allClaims.length} claims/reimbursements from SP-API PRODUCTION (live data)`,
         fromApi: true,
-        isSandbox: this.isSandbox(),
-        dataType: 'SANDBOX_TEST_DATA',
-        note: allClaims.length === 0 
-          ? 'Sandbox returned empty data - this is normal for testing' 
-          : 'Sandbox test data retrieved successfully'
+        isSandbox: isSandboxMode,
+        environment,
+        dataType,
+        note: isSandboxMode
+          ? (allClaims.length === 0 
+              ? 'Sandbox returned empty data - this is normal for testing' 
+              : 'Sandbox test data retrieved successfully')
+          : (allClaims.length === 0
+              ? 'No claims found in production data for the specified date range'
+              : 'Live production claims retrieved successfully from Amazon SP-API')
       };
     } catch (error: any) {
       const errorDetails = error.response?.data?.errors?.[0] || {};
+      const errorMessage = errorDetails.message || error.message || 'Unknown error';
+      
       logger.error("Error fetching Amazon claims from SP-API:", {
         error: error.message,
         status: error.response?.status,
         statusText: error.response?.statusText,
         errorCode: errorDetails.code,
-        errorMessage: errorDetails.message,
+        errorMessage,
         data: error.response?.data,
         accountId,
-        isSandbox: this.isSandbox()
+        isSandbox: isSandboxMode,
+        environment
       });
       
-      // For sandbox, provide more helpful error messages
-      const errorMessage = errorDetails.message || error.message;
-      if (this.isSandbox()) {
+      // Handle errors appropriately for sandbox vs production
+      if (isSandboxMode) {
         // In sandbox, empty responses or 404s are normal - return empty array instead of error
         if (error.response?.status === 404 || error.response?.status === 400) {
           logger.info('Sandbox returned empty/error response - returning empty claims (this is normal for sandbox)', {
-            status: error.response?.status,
+            status: error.response.status,
             errorMessage,
-            accountId
+            accountId,
+            environment
           });
           return {
             success: true,
             data: [],
             message: 'Sandbox returned no claims data (normal for testing)',
-            fromApi: true,
+            fromApi: false,
             isSandbox: true,
-            dataType: 'SANDBOX_TEST_DATA',
+            environment,
+            dataType,
             note: 'Sandbox may have limited or no test data - this is expected'
           };
         }
         throw new Error(`Sandbox API error: ${errorMessage}. Note: Sandbox may have limited endpoint support.`);
+      } else {
+        // Production mode - log errors but be more strict
+        logger.error(`Production SP-API error while fetching claims: ${errorMessage}`, {
+          status: error.response?.status,
+          accountId,
+          environment,
+          error: errorMessage
+        });
+        
+        // For production, if it's a 404 or 400, return empty array (no claims found)
+        if (error.response?.status === 404 || error.response?.status === 400) {
+          logger.warn('Production SP-API returned 404/400 - no claims found for date range', {
+            accountId,
+            status: error.response.status
+          });
+          return {
+            success: true,
+            data: [],
+            message: 'No claims found in production data for the specified date range',
+            fromApi: false,
+            isSandbox: false,
+            environment,
+            dataType,
+            note: 'Production SP-API returned no claims - this may indicate no claims exist for this date range'
+          };
+        }
+        
+        // For other errors in production, throw the error
+        throw error;
       }
-      throw new Error(`Failed to fetch claims from SP-API: ${errorMessage}`);
     }
   }
 

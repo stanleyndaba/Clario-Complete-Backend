@@ -9,8 +9,8 @@
 **URL**: `https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/claims`
 **Status Code**: 500
 **Response**:
-```json
-{
+     ```json
+     {
   "success": false,
   "error": "Failed to fetch claims",
   "claims": []
@@ -21,8 +21,8 @@
 **URL**: `https://opside-node-api-woco.onrender.com/health`
 **Status Code**: 200
 **Response**:
-```json
-{
+     ```json
+     {
   "status": "ok",
   "timestamp": "2025-11-08T20:49:28.957Z"
 }
