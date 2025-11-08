@@ -534,17 +534,31 @@ export class AmazonSyncJob {
    */
   private async triggerDetectionJob(userId: string, syncId: string): Promise<void> {
     try {
-      logger.info('Triggering detection job', { userId, syncId });
+      const isSandbox = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || 
+                        process.env.NODE_ENV === 'development';
+      
+      logger.info('Triggering detection job (SANDBOX MODE)', { 
+        userId, 
+        syncId,
+        isSandbox,
+        mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
+      });
 
       const detectionJob = {
         seller_id: userId,
         sync_id: syncId,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        is_sandbox: isSandbox
       };
 
       await detectionService.enqueueDetectionJob(detectionJob);
 
-      logger.info('Detection job triggered successfully', { userId, syncId });
+      logger.info('Detection job triggered successfully (SANDBOX MODE)', { 
+        userId, 
+        syncId,
+        isSandbox,
+        mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
+      });
     } catch (error) {
       logger.error('Error triggering detection job', { error, userId, syncId });
       // Don't throw error as detection is not critical for sync

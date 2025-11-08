@@ -52,18 +52,25 @@ export class DetectionService {
   /**
    * Enqueue a detection job after sync completion
    */
-  async enqueueDetectionJob(job: DetectionJob): Promise<void> {
+  async enqueueDetectionJob(job: DetectionJob & { is_sandbox?: boolean }): Promise<void> {
     try {
-      logger.info('Enqueueing detection job', {
+      const isSandbox = job.is_sandbox || 
+                        process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || 
+                        process.env.NODE_ENV === 'development';
+      
+      logger.info('Enqueueing detection job (SANDBOX MODE)', {
         seller_id: job.seller_id,
-        sync_id: job.sync_id
+        sync_id: job.sync_id,
+        isSandbox,
+        mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
       });
 
-      // Add to Redis queue for immediate processing
+      // Add to Redis queue for immediate processing (include sandbox flag)
+      const jobWithSandbox = { ...job, is_sandbox: isSandbox };
       const redisClient = await getRedisClient();
-      await redisClient.lPush(this.queueName, JSON.stringify(job));
+      await redisClient.lPush(this.queueName, JSON.stringify(jobWithSandbox));
 
-      // Also store in database for persistence
+      // Also store in database for persistence (include sandbox flag)
       const { error } = await supabase
         .from('detection_queue')
         .insert({
@@ -71,7 +78,8 @@ export class DetectionService {
           sync_id: job.sync_id,
           status: 'pending',
           priority: 1,
-          payload: job
+          payload: jobWithSandbox,
+          is_sandbox: isSandbox
         });
 
       if (error) {
@@ -125,6 +133,56 @@ export class DetectionService {
           // Update job status to completed
           await this.updateJobStatus(job.seller_id, job.sync_id, 'completed');
 
+          // Categorize claims by ML confidence score
+          const highConfidenceClaims = results.filter(r => r.confidence_score >= 0.85);
+          const mediumConfidenceClaims = results.filter(r => r.confidence_score >= 0.50 && r.confidence_score < 0.85);
+          const lowConfidenceClaims = results.filter(r => r.confidence_score < 0.50);
+          
+          // Send notifications for each category
+          const websocketService = (await import('./websocketService')).default;
+          
+          if (highConfidenceClaims.length > 0) {
+            websocketService.sendNotificationToUser(job.seller_id, {
+              type: 'success',
+              title: '⚡ ' + highConfidenceClaims.length + ' claims ready for auto submission',
+              message: `High confidence (85%+): ${highConfidenceClaims.length} claims totaling $${highConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0).toFixed(2)}`,
+              data: {
+                category: 'high_confidence',
+                count: highConfidenceClaims.length,
+                total_amount: highConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
+                is_sandbox: (job as any).is_sandbox || false
+              }
+            });
+          }
+          
+          if (mediumConfidenceClaims.length > 0) {
+            websocketService.sendNotificationToUser(job.seller_id, {
+              type: 'warning',
+              title: '❓ ' + mediumConfidenceClaims.length + ' claims need your input',
+              message: `Medium confidence (50-85%): Review required for ${mediumConfidenceClaims.length} claims`,
+              data: {
+                category: 'medium_confidence',
+                count: mediumConfidenceClaims.length,
+                total_amount: mediumConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
+                is_sandbox: (job as any).is_sandbox || false
+              }
+            });
+          }
+          
+          if (lowConfidenceClaims.length > 0) {
+            websocketService.sendNotificationToUser(job.seller_id, {
+              type: 'info',
+              title: '📋 ' + lowConfidenceClaims.length + ' claims need manual review',
+              message: `Low confidence (<50%): Manual review required`,
+              data: {
+                category: 'low_confidence',
+                count: lowConfidenceClaims.length,
+                total_amount: lowConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
+                is_sandbox: (job as any).is_sandbox || false
+              }
+            });
+          }
+          
           // 🎯 PHASE 3: Trigger orchestrator Phase 3 (Detection Completion)
           try {
             const OrchestrationJobManager = (await import('../jobs/orchestrationJob')).default;
@@ -133,20 +191,28 @@ export class DetectionService {
               claim_type: result.anomaly_type,
               amount: result.estimated_value,
               confidence: result.confidence_score,
+              confidence_category: result.confidence_score >= 0.85 ? 'high' : 
+                                  result.confidence_score >= 0.50 ? 'medium' : 'low',
               currency: result.currency,
               evidence: result.evidence,
               discovery_date: result.discovery_date?.toISOString(),
-              deadline_date: result.deadline_date?.toISOString()
+              deadline_date: result.deadline_date?.toISOString(),
+              is_sandbox: (job as any).is_sandbox || false
             }));
             await OrchestrationJobManager.triggerPhase3_DetectionCompletion(
               job.seller_id,
               job.sync_id,
               claims
             );
-            logger.info('Phase 3 orchestration triggered after detection', {
+            logger.info('Phase 3 orchestration triggered after detection (SANDBOX MODE)', {
               seller_id: job.seller_id,
               sync_id: job.sync_id,
-              claims_count: claims.length
+              claims_count: claims.length,
+              high_confidence: highConfidenceClaims.length,
+              medium_confidence: mediumConfidenceClaims.length,
+              low_confidence: lowConfidenceClaims.length,
+              is_sandbox: (job as any).is_sandbox || false,
+              mode: (job as any).is_sandbox ? 'SANDBOX' : 'PRODUCTION'
             });
           } catch (error: any) {
             // Non-blocking - orchestration failure shouldn't break detection
@@ -175,9 +241,15 @@ export class DetectionService {
    */
   private async runDetectionAlgorithms(job: DetectionJob): Promise<DetectionResult[]> {
     try {
-      logger.info('Running detection algorithms (Phase 2: Autonomous Money Discovery)', {
+      const isSandbox = (job as any).is_sandbox || 
+                        process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || 
+                        process.env.NODE_ENV === 'development';
+      
+      logger.info('Running detection algorithms (Phase 2: Autonomous Money Discovery - SANDBOX MODE)', {
         seller_id: job.seller_id,
-        sync_id: job.sync_id
+        sync_id: job.sync_id,
+        isSandbox,
+        mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
       });
 
       const results: DetectionResult[] = [];
@@ -185,10 +257,50 @@ export class DetectionService {
       // Step 1: Get financial events from database (synced from SP-API)
       const financialEvents = await this.getFinancialEventsForUser(job.seller_id);
       
-      logger.info('Found financial events for claim detection', {
+      logger.info('Found financial events for claim detection (SANDBOX MODE)', {
         seller_id: job.seller_id,
-        event_count: financialEvents.length
+        event_count: financialEvents.length,
+        isSandbox,
+        mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
       });
+      
+      // For sandbox: If no financial events, create mock events from claims table for testing
+      if (isSandbox && financialEvents.length === 0) {
+        logger.info('No financial events found - checking claims table for sandbox test data', {
+          seller_id: job.seller_id
+        });
+        
+        const { data: claims } = await supabase
+          .from('claims')
+          .select('*')
+          .eq('user_id', job.seller_id)
+          .eq('provider', 'amazon')
+          .limit(100);
+        
+        if (claims && claims.length > 0) {
+          // Convert claims to financial events format for detection
+          const mockEvents = claims.map((claim: any) => ({
+            id: claim.id,
+            seller_id: job.seller_id,
+            event_type: claim.type || 'fee',
+            amount: parseFloat(claim.amount) || 0,
+            currency: claim.currency || 'USD',
+            event_date: claim.created_at || new Date().toISOString(),
+            amazon_order_id: claim.order_id || claim.amazon_order_id,
+            raw_payload: claim.raw_data || {}
+          }));
+          
+          logger.info('Using claims as mock financial events for sandbox detection', {
+            seller_id: job.seller_id,
+            mock_event_count: mockEvents.length
+          });
+          
+          // Use mock events for detection
+          for (const mockEvent of mockEvents) {
+            financialEvents.push(mockEvent);
+          }
+        }
+      }
 
       // Step 2: Get inventory discrepancies from database
       const inventoryDiscrepancies = await this.getInventoryDiscrepancies(job.seller_id);
@@ -245,28 +357,125 @@ export class DetectionService {
           }
         }
 
-        logger.info('Detection algorithms completed', {
+        const highConfidence = results.filter(r => r.confidence_score >= 0.85).length;
+        const mediumConfidence = results.filter(r => r.confidence_score >= 0.50 && r.confidence_score < 0.85).length;
+        const lowConfidence = results.filter(r => r.confidence_score < 0.50).length;
+        const totalAmount = results.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
+        
+        logger.info('Detection algorithms completed (SANDBOX MODE)', {
           seller_id: job.seller_id,
           sync_id: job.sync_id,
           results_count: results.length,
-          high_confidence: results.filter(r => r.confidence_score >= 0.85).length,
-          medium_confidence: results.filter(r => r.confidence_score >= 0.50 && r.confidence_score < 0.85).length,
-          low_confidence: results.filter(r => r.confidence_score < 0.50).length
+          high_confidence: highConfidence,
+          medium_confidence: mediumConfidence,
+          low_confidence: lowConfidence,
+          total_amount: totalAmount,
+          isSandbox,
+          mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
         });
+        
+        // Send real-time notification with results (sandbox mode indicator)
+        const websocketService = (await import('./websocketService')).default;
+        const sandboxPrefix = isSandbox ? '[SANDBOX] ' : '';
+        websocketService.sendNotificationToUser(job.seller_id, {
+          type: 'success',
+          title: sandboxPrefix + '💰 Found $' + totalAmount.toFixed(2) + ' in recoverable funds',
+          message: `${results.length} claims detected: ${highConfidence} high confidence, ${mediumConfidence} need review${isSandbox ? ' (Sandbox Test Data)' : ''}`,
+          data: {
+            claims_found: results.length,
+            total_amount: totalAmount,
+            high_confidence: highConfidence,
+            medium_confidence: mediumConfidence,
+            low_confidence: lowConfidence,
+            auto_submit_ready: highConfidence,
+            needs_review: mediumConfidence + lowConfidence,
+            is_sandbox: isSandbox,
+            mode: isSandbox ? 'SANDBOX' : 'PRODUCTION',
+            sandbox_test_data: isSandbox
+          }
+        });
+        
+        // Send additional toast for high-confidence claims ready for auto-submit
+        if (highConfidence > 0) {
+          websocketService.sendNotificationToUser(job.seller_id, {
+            type: 'success',
+            title: sandboxPrefix + '⚡ ' + highConfidence + ' claims ready for auto submission',
+            message: `High confidence (85%+): ${highConfidence} claims totaling $${results.filter(r => r.confidence_score >= 0.85).reduce((sum, r) => sum + (r.estimated_value || 0), 0).toFixed(2)}${isSandbox ? ' (Sandbox)' : ''}`,
+            data: {
+              category: 'high_confidence',
+              count: highConfidence,
+              total_amount: results.filter(r => r.confidence_score >= 0.85).reduce((sum, r) => sum + (r.estimated_value || 0), 0),
+              is_sandbox: isSandbox,
+              sandbox_test_data: isSandbox
+            }
+          });
+        }
 
       } catch (error: any) {
-        logger.error('Error calling Claim Detector API', {
+        logger.error('Error calling Claim Detector API (SANDBOX MODE)', {
           error: error.message,
           response: error.response?.data,
-          seller_id: job.seller_id
+          seller_id: job.seller_id,
+          isSandbox,
+          mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
         });
         
         // Fallback: Create basic detection results from financial events if API fails
-        logger.warn('Falling back to basic detection from financial events');
-        for (const event of financialEvents) {
-          if (event.amount && event.amount > 0) {
-            const basicResult = this.createBasicDetectionResult(event, job.seller_id, job.sync_id);
-            results.push(basicResult);
+        // For sandbox, this is acceptable - we'll create mock claims from synced data
+        logger.warn('Falling back to basic detection from financial events (SANDBOX MODE)', {
+          isSandbox,
+          event_count: financialEvents.length
+        });
+        
+        if (financialEvents.length === 0 && isSandbox) {
+          // Sandbox may have no financial events - create mock claims from claims table
+          logger.info('No financial events - creating mock claims from synced claims for sandbox testing', {
+            seller_id: job.seller_id
+          });
+          
+          const { data: claims } = await supabase
+            .from('claims')
+            .select('*')
+            .eq('user_id', job.seller_id)
+            .eq('provider', 'amazon')
+            .limit(50);
+          
+          if (claims && claims.length > 0) {
+            // Create detection results from claims with mock confidence scores
+            for (const claim of claims) {
+              const mockConfidence = 0.5 + Math.random() * 0.4; // 0.5-0.9 for testing
+              const basicResult = this.createBasicDetectionResult({
+                id: claim.id,
+                seller_id: job.seller_id,
+                event_type: claim.type || 'fee',
+                amount: parseFloat(claim.amount) || 0,
+                currency: claim.currency || 'USD',
+                event_date: claim.created_at || new Date().toISOString(),
+                amazon_order_id: claim.order_id || claim.amazon_order_id,
+                raw_payload: claim.raw_data || {}
+              }, job.seller_id, job.sync_id);
+              
+              // Override confidence with mock value for sandbox
+              basicResult.confidence_score = mockConfidence;
+              results.push(basicResult);
+            }
+            
+            logger.info('Created mock detection results from claims for sandbox testing', {
+              seller_id: job.seller_id,
+              mock_results_count: results.length
+            });
+          }
+        } else {
+          // Create from financial events
+          for (const event of financialEvents) {
+            if (event.amount && event.amount > 0) {
+              const basicResult = this.createBasicDetectionResult(event, job.seller_id, job.sync_id);
+              // For sandbox, add some variance to confidence scores for testing
+              if (isSandbox) {
+                basicResult.confidence_score = 0.5 + Math.random() * 0.4;
+              }
+              results.push(basicResult);
+            }
           }
         }
       }

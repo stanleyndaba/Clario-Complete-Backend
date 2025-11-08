@@ -410,42 +410,74 @@ export class OrchestrationJobManager {
     metadata?: Record<string, any>
   ): Promise<JobResult> {
     try {
-      logger.info('🔍 Phase 2: Autonomous Money Discovery', { userId, syncId });
+      const isSandbox = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || 
+                       process.env.NODE_ENV === 'development';
+      
+      logger.info('🔍 Phase 2: Autonomous Money Discovery (SANDBOX MODE)', { 
+        userId, 
+        syncId,
+        isSandbox,
+        mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
+      });
       
       const ordersCount = metadata?.orders_count || 0;
       const inventoryItems = metadata?.inventory_items || 0;
       
-      // Send real-time update
+      // Send real-time update with sandbox indicator
       websocketService.sendNotificationToUser(userId, {
-        type: 'success',
-        title: 'Sync Complete',
+        type: 'info',
+        title: isSandbox ? '🔍 Analyzing your orders (Sandbox Mode)...' : '🔍 Analyzing your orders...',
         message: 'Data sync complete! Scanning for potential claims...',
         data: {
           orders_count: ordersCount,
           inventory_items: inventoryItems,
-          next_step: 'Running detection algorithms...'
+          next_step: 'Running detection algorithms...',
+          is_sandbox: isSandbox,
+          mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
         }
       });
       
-      // Step 1: Trigger claim detection automatically
+      // Step 1: Trigger claim detection automatically (with sandbox flag)
       const detectionJob = {
         seller_id: userId,
         sync_id: syncId,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        is_sandbox: isSandbox
       };
+      
+      // Send initial toast: "Analyzing your orders..."
+      websocketService.sendNotificationToUser(userId, {
+        type: 'info',
+        title: isSandbox ? '🔍 Analyzing your orders… (Sandbox Mode)' : '🔍 Analyzing your orders…',
+        message: 'Data sync complete! Scanning for potential claims...',
+        data: {
+          orders_count: ordersCount,
+          inventory_items: inventoryItems,
+          next_step: 'Running detection algorithms...',
+          is_sandbox: isSandbox,
+          mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
+        }
+      });
       
       await detectionService.enqueueDetectionJob(detectionJob);
       
-      logger.info('Detection job triggered after sync', { userId, syncId });
+      logger.info('Detection job triggered after sync (SANDBOX MODE)', { 
+        userId, 
+        syncId,
+        isSandbox,
+        mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
+      });
       
       return {
         success: true,
         step: 2,
-        message: 'Phase 2: Detection triggered after sync',
+        message: `Phase 2: Detection triggered after sync (${isSandbox ? 'SANDBOX' : 'PRODUCTION'} MODE)`,
         data: { 
           orders_count: ordersCount, 
           inventory_items: inventoryItems,
-          detection_job_queued: true
+          detection_job_queued: true,
+          is_sandbox: isSandbox,
+          mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
         }
       };
     } catch (error) {
@@ -474,16 +506,67 @@ export class OrchestrationJobManager {
       const claims = metadata?.claims || metadata?.claims_found || [];
       const claimsCount = Array.isArray(claims) ? claims.length : 0;
       
-      // Send real-time update
+      const isSandbox = metadata?.is_sandbox || 
+                       process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || 
+                       process.env.NODE_ENV === 'development';
+      
+      // Calculate success probability (mock for sandbox)
+      const highConfidenceCount = Array.isArray(claims) ? 
+        claims.filter((c: any) => (c.confidence || 0) >= 0.85).length : 0;
+      const mediumConfidenceCount = Array.isArray(claims) ? 
+        claims.filter((c: any) => (c.confidence || 0) >= 0.50 && (c.confidence || 0) < 0.85).length : 0;
+      const avgConfidence = Array.isArray(claims) && claims.length > 0 ?
+        claims.reduce((sum: number, c: any) => sum + (c.confidence || 0), 0) / claims.length : 0;
+      const successProbability = Math.round(avgConfidence * 100);
+      
+      // Send real-time update with success probability
       websocketService.sendNotificationToUser(userId, {
         type: 'success',
         title: 'Detection Complete',
         message: `${claimsCount} potential claims found! Matching evidence...`,
         data: {
           claims_found: claimsCount,
-          next_step: 'Matching evidence documents...'
+          high_confidence: highConfidenceCount,
+          medium_confidence: mediumConfidenceCount,
+          success_probability: successProbability,
+          next_step: 'Matching evidence documents...',
+          is_sandbox: isSandbox,
+          mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
         }
       });
+      
+      // Send success probability notification (with sandbox indicator)
+      if (successProbability > 0) {
+        const sandboxPrefix = isSandbox ? '[SANDBOX] ' : '';
+        websocketService.sendNotificationToUser(userId, {
+          type: 'info',
+          title: sandboxPrefix + '📊 Success probability: ' + successProbability + '%',
+          message: `Based on ML confidence scoring: ${highConfidenceCount} high, ${mediumConfidenceCount} medium confidence claims${isSandbox ? ' (Sandbox Test Data)' : ''}`,
+          data: {
+            success_probability: successProbability,
+            high_confidence: highConfidenceCount,
+            medium_confidence: mediumConfidenceCount,
+            is_sandbox: isSandbox,
+            sandbox_test_data: isSandbox,
+            mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
+          }
+        });
+      }
+      
+      // Send notification for evidence validation starting (mock for sandbox)
+      if (isSandbox) {
+        websocketService.sendNotificationToUser(userId, {
+          type: 'info',
+          title: '[SANDBOX] 🔍 Validating evidence...',
+          message: `Running evidence validator on ${claimsCount} claims (Sandbox Mode - Mock Validation)`,
+          data: {
+            claims_count: claimsCount,
+            validation_mode: 'sandbox_mock',
+            is_sandbox: true,
+            sandbox_test_data: true
+          }
+        });
+      }
       
       // Step 1: Trigger evidence matching automatically
       const pythonApiUrl = process.env.PYTHON_API_URL || 'https://opside-python-api.onrender.com';

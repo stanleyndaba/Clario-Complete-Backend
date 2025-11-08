@@ -40,6 +40,7 @@ import proxyRoutes from './routes/proxyRoutes';
 import { deadlineMonitoringJob } from './jobs/deadlineMonitoringJob';
 import OrchestrationJobManager from './jobs/orchestrationJob';
 import websocketService from './services/websocketService';
+import detectionService from './services/detectionService';
 
 const app = express();
 const server = createServer(app);
@@ -200,8 +201,32 @@ server.listen(PORT, '0.0.0.0', () => {
   
   // Start background jobs
   deadlineMonitoringJob.start();
+  
+  // Start detection job processor (processes detection jobs from queue)
+  // This runs continuously to process detection jobs queued after sync
+  const startDetectionProcessor = async () => {
+    try {
+      // Process detection jobs in a loop (non-blocking)
+      const processLoop = async () => {
+        try {
+          await detectionService.processDetectionJobs();
+        } catch (error) {
+          logger.error('Error in detection job processor', { error });
+        }
+        // Schedule next processing (every 5 seconds)
+        setTimeout(processLoop, 5000);
+      };
+      processLoop();
+      logger.info('Detection job processor started');
+    } catch (error) {
+      logger.error('Failed to start detection job processor', { error });
+    }
+  };
+  startDetectionProcessor();
+  
   logger.info('Background jobs started', {
-    deadline_monitoring: 'started'
+    deadline_monitoring: 'started',
+    detection_processor: 'started'
   });
 });
 
