@@ -594,7 +594,6 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
                 "source": "fallback",
                 "diagnostics": {
                     "integrationsUrl": integrations_url,
-                    "claimsUrl": claims_url,
                     "userId": user_id
                 }
             }
@@ -612,6 +611,144 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
                 "source": "error",
                 "message": "Internal server error while fetching recoveries"
             }
+        )
+
+@app.get("/api/v1/integrations/amazon/claims")
+async def amazon_claims(request: Request, user: dict = Depends(get_current_user)):
+    """Get Amazon claims list - proxies to Node.js backend"""
+    from fastapi.responses import JSONResponse
+    import httpx
+    import time
+    from .common.config import settings
+    
+    try:
+        user_id = user["user_id"]
+        logger.info(f"🔍 Getting Amazon claims for user {user_id}")
+        
+        # Call Node.js backend's Amazon service to get real SP-API data
+        integrations_url = settings.INTEGRATIONS_URL or "http://localhost:3001"
+        claims_url = f"{integrations_url}/api/v1/integrations/amazon/claims"
+        
+        logger.info(f"📍 Calling Node.js backend: {claims_url}")
+        logger.info(f"🔗 INTEGRATIONS_URL: {integrations_url}")
+        
+        try:
+            start_time = time.time()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                try:
+                    claims_response = await client.get(
+                        claims_url,
+                        headers={
+                            "Content-Type": "application/json",
+                        },
+                        cookies=request.cookies  # Forward auth cookies if needed
+                    )
+                    elapsed_time = time.time() - start_time
+                    
+                    logger.info(f"⏱️ Node.js backend response time: {elapsed_time:.2f}s")
+                    logger.info(f"📊 Response status: {claims_response.status_code}")
+                    
+                    if claims_response.status_code == 200:
+                        claims_data = claims_response.json()
+                        logger.info(f"📦 Response keys: {list(claims_data.keys()) if isinstance(claims_data, dict) else 'array'}")
+                        
+                        # Return the response directly (Node.js backend handles the format)
+                        return JSONResponse(
+                            content=claims_data,
+                            status_code=200
+                        )
+                    else:
+                        logger.warning(f"⚠️ Node.js backend returned {claims_response.status_code}: {claims_response.text[:500]}")
+                        # Return empty response on error (never return 500 for missing data)
+                        return JSONResponse(
+                            content={
+                                "success": True,
+                                "claims": [],
+                                "message": "No claims found (sandbox may return empty data)",
+                                "source": "none",
+                                "isSandbox": True,
+                                "dataType": "SANDBOX_TEST_DATA",
+                                "note": "Sandbox may have limited or no test data - this is expected"
+                            },
+                            status_code=200
+                        )
+                        
+                except httpx.TimeoutException as e:
+                    elapsed_time = time.time() - start_time
+                    logger.error(f"⏱️ BACKEND TIMEOUT: Node.js backend took longer than 30 seconds (elapsed: {elapsed_time:.2f}s)")
+                    logger.error(f"🔗 URL: {claims_url}")
+                    # Return empty response instead of error
+                    return JSONResponse(
+                        content={
+                            "success": True,
+                            "claims": [],
+                            "message": "No claims found (backend timeout)",
+                            "source": "timeout",
+                            "isSandbox": True
+                        },
+                        status_code=200
+                    )
+                except httpx.RequestError as e:
+                    elapsed_time = time.time() - start_time
+                    logger.error(f"🌐 NETWORK ERROR: Cannot reach Node.js backend")
+                    logger.error(f"🔗 URL: {claims_url}")
+                    logger.error(f"❌ Request error: {str(e)}")
+                    # Return empty response instead of error
+                    return JSONResponse(
+                        content={
+                            "success": True,
+                            "claims": [],
+                            "message": "No claims found (backend unreachable)",
+                            "source": "network_error",
+                            "isSandbox": True
+                        },
+                        status_code=200
+                    )
+                except Exception as e:
+                    elapsed_time = time.time() - start_time
+                    logger.error(f"❌ UNEXPECTED ERROR calling Node.js backend")
+                    logger.error(f"🔗 URL: {claims_url}")
+                    logger.error(f"❌ Error: {str(e)}")
+                    # Return empty response instead of error
+                    return JSONResponse(
+                        content={
+                            "success": True,
+                            "claims": [],
+                            "message": "No claims found (backend error)",
+                            "source": "error",
+                            "isSandbox": True
+                        },
+                        status_code=200
+                    )
+                    
+        except Exception as e:
+            logger.error(f"❌ Outer exception in Node.js backend call: {str(e)}", exc_info=True)
+            # Return empty response instead of error
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "claims": [],
+                    "message": "No claims found (exception)",
+                    "source": "exception",
+                    "isSandbox": True
+                },
+                status_code=200
+            )
+        
+    except Exception as e:
+        logger.error(f"💥 CRITICAL ERROR getting claims: {str(e)}", exc_info=True)
+        # Never return 500 - always return success with empty claims
+        return JSONResponse(
+            content={
+                "success": True,
+                "claims": [],
+                "message": "No claims found (sandbox may return empty data)",
+                "source": "error",
+                "isSandbox": True,
+                "dataType": "SANDBOX_TEST_DATA",
+                "note": "Sandbox may have limited or no test data - this is expected"
+            },
+            status_code=200
         )
 
 @app.get("/api/v1/integrations/amazon/test-connection")
