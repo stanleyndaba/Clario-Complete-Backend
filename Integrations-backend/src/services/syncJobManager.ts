@@ -315,7 +315,102 @@ class SyncJobManager {
   }
 
   /**
-   * Get active sync for a user
+   * Get active sync status for a user (for frontend monitoring)
+   * Returns format: { hasActiveSync: boolean, lastSync: { syncId, status, ... } | null }
+   */
+  async getActiveSyncStatus(userId: string): Promise<{
+    hasActiveSync: boolean;
+    lastSync: {
+      syncId: string;
+      status: string;
+      progress?: number;
+      message?: string;
+      startedAt?: string;
+      completedAt?: string;
+    } | null;
+  }> {
+    // Check running jobs first
+    for (const job of this.runningJobs.values()) {
+      if (job.status.userId === userId && job.status.status === 'in_progress') {
+        return {
+          hasActiveSync: true,
+          lastSync: {
+            syncId: job.status.syncId,
+            status: job.status.status,
+            progress: job.status.progress,
+            message: job.status.message,
+            startedAt: job.status.startedAt,
+            completedAt: job.status.completedAt
+          }
+        };
+      }
+    }
+
+    // Check database for active syncs
+    try {
+      const { data, error } = await supabase
+        .from('sync_progress')
+        .select('*')
+        .eq('user_id', userId)
+        .in('status', ['running', 'in_progress'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error || !data) {
+        // No active sync, get last sync (completed or failed)
+        const { data: lastSyncData } = await supabase
+          .from('sync_progress')
+          .select('*')
+          .eq('user_id', userId)
+          .in('status', ['complete', 'completed', 'failed', 'cancelled'])
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (lastSyncData) {
+          return {
+            hasActiveSync: false,
+            lastSync: {
+              syncId: lastSyncData.sync_id,
+              status: lastSyncData.status,
+              progress: lastSyncData.progress || 0,
+              message: lastSyncData.current_step || 'Unknown',
+              startedAt: lastSyncData.created_at,
+              completedAt: lastSyncData.updated_at
+            }
+          };
+        }
+
+        return {
+          hasActiveSync: false,
+          lastSync: null
+        };
+      }
+
+      // Found active sync
+      return {
+        hasActiveSync: true,
+        lastSync: {
+          syncId: data.sync_id,
+          status: data.status,
+          progress: data.progress || 0,
+          message: data.current_step || 'Unknown',
+          startedAt: data.created_at,
+          completedAt: data.updated_at
+        }
+      };
+    } catch (error) {
+      logger.error(`Error getting active sync status for ${userId}:`, error);
+      return {
+        hasActiveSync: false,
+        lastSync: null
+      };
+    }
+  }
+
+  /**
+   * Get active sync for a user (private helper)
    */
   private async getActiveSync(userId: string): Promise<SyncJobStatus | null> {
     // Check running jobs first
@@ -331,10 +426,10 @@ class SyncJobManager {
         .from('sync_progress')
         .select('*')
         .eq('user_id', userId)
-        .eq('status', 'running')
+        .in('status', ['running', 'in_progress'])
         .order('created_at', { ascending: false })
         .limit(1)
-        .single();
+        .maybeSingle();
 
       if (error || !data) {
         return null;

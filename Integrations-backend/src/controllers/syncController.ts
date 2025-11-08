@@ -8,8 +8,8 @@ import { syncJobManager } from '../services/syncJobManager';
  */
 export const startSync = async (req: Request, res: Response) => {
   try {
-    // Get user ID from request (set by auth middleware)
-    const userId = (req as any).user?.id || (req as any).user?.user_id;
+    // Extract user ID from middleware (set by userIdMiddleware)
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     
     if (!userId) {
       logger.warn('Start sync called without user ID');
@@ -55,13 +55,45 @@ export const startSync = async (req: Request, res: Response) => {
 };
 
 /**
+ * Get active sync status (without syncId) - for frontend monitoring
+ * GET /api/sync/status
+ */
+export const getActiveSyncStatus = async (req: Request, res: Response) => {
+  try {
+    // Extract user ID from middleware (set by userIdMiddleware)
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    logger.info(`Getting active sync status for userId: ${userId}`);
+
+    const activeSyncStatus = await syncJobManager.getActiveSyncStatus(userId);
+
+    res.json(activeSyncStatus);
+  } catch (error: any) {
+    logger.error('Get active sync status error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get active sync status',
+      message: error.message
+    });
+  }
+};
+
+/**
  * Get sync status by syncId
  * GET /api/sync/status/:syncId
  */
 export const getSyncStatus = async (req: Request, res: Response) => {
   try {
     const { syncId } = req.params;
-    const userId = (req as any).user?.id || (req as any).user?.user_id;
+    // Extract user ID from middleware (set by userIdMiddleware)
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
 
     if (!userId) {
       return res.status(401).json({
@@ -116,7 +148,8 @@ export const getSyncStatus = async (req: Request, res: Response) => {
  */
 export const getSyncHistory = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user?.id || (req as any).user?.user_id;
+    // Extract user ID from middleware (set by userIdMiddleware)
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
 
     if (!userId) {
       return res.status(401).json({
@@ -164,7 +197,8 @@ export const getSyncHistory = async (req: Request, res: Response) => {
 export const cancelSync = async (req: Request, res: Response) => {
   try {
     const { syncId } = req.params;
-    const userId = (req as any).user?.id || (req as any).user?.user_id;
+    // Extract user ID from middleware (set by userIdMiddleware)
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
 
     if (!userId) {
       return res.status(401).json({
@@ -216,6 +250,7 @@ export const forceSync = async (req: Request, res: Response) => {
 
 export default {
   startSync,
+  getActiveSyncStatus,
   getSyncStatus,
   getSyncHistory,
   cancelSync,

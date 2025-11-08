@@ -89,17 +89,43 @@ class IntegrationsClient:
             logger.error(f"Sync start failed: {e}")
             return {"error": str(e)}
     
-    async def get_sync_status(self, sync_id: str, user_id: str = None) -> Dict[str, Any]:
-        """Get sync status"""
+    async def get_active_sync_status(self, user_id: str = None) -> Dict[str, Any]:
+        """Get active sync status (without sync_id) - for frontend monitoring"""
         try:
-            params = {}
+            # Forward user ID in headers
+            headers = {}
             if user_id:
-                params["userId"] = user_id
+                headers["X-User-Id"] = user_id
+            
             response = await service_directory.call_service(
                 self.service_name,
                 "GET",
                 "/api/sync/status",
-                params={**params, "id": sync_id}
+                headers=headers
+            )
+            
+            if response and response.status_code == 200:
+                return response.json()
+            else:
+                return {"hasActiveSync": False, "lastSync": None, "error": "Failed to get active sync status", "status_code": response.status_code if response else None}
+                
+        except Exception as e:
+            logger.error(f"Get active sync status failed: {e}")
+            return {"hasActiveSync": False, "lastSync": None, "error": str(e)}
+    
+    async def get_sync_status(self, sync_id: str, user_id: str = None) -> Dict[str, Any]:
+        """Get sync status by sync_id"""
+        try:
+            # Forward user ID in headers
+            headers = {}
+            if user_id:
+                headers["X-User-Id"] = user_id
+            
+            response = await service_directory.call_service(
+                self.service_name,
+                "GET",
+                f"/api/sync/status/{sync_id}",
+                headers=headers
             )
             
             if response and response.status_code == 200:

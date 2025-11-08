@@ -68,36 +68,71 @@ async def start_sync(
             detail=f"Failed to start sync: {str(e)}"
         )
 
-@router.get("/api/sync/status", response_model=SyncJob)
+@router.get("/api/sync/status")
 async def get_sync_status(
-    id: str = Query(..., description="Sync job ID"),
+    id: Optional[str] = Query(None, description="Sync job ID (optional - if not provided, returns active sync status)"),
     user: dict = Depends(get_current_user)
 ):
     """
-    Get status of a specific sync job
+    Get sync status - supports two modes:
+    1. Without id: Returns active sync status (hasActiveSync, lastSync)
+    2. With id: Returns specific sync job status
     
     Args:
-        id: Sync job ID
+        id: Optional sync job ID
         user: Authenticated user information
         
     Returns:
-        SyncJob: Sync job status
+        If id provided: SyncJob status
+        If id not provided: { hasActiveSync: bool, lastSync: {...} | null }
     """
     try:
         user_id = user["user_id"]
-        logger.info(f"Getting sync status for job {id}, user {user_id}")
         
-        # Call integrations service to get sync status
-        sync_status = await integrations_client.get_sync_status(id, user_id)
+        # If id is provided, get specific sync status
+        if id:
+            logger.info(f"Getting sync status for job {id}, user {user_id}")
+            sync_status = await integrations_client.get_sync_status(id, user_id)
+            
+            # Check if response has error
+            if "error" in sync_status:
+                raise HTTPException(
+                    status_code=404 if sync_status.get("status_code") == 404 else 500,
+                    detail=sync_status.get("error", "Failed to get sync status")
+                )
+            
+            return SyncJob(**sync_status)
+        else:
+            # No id provided - get active sync status
+            logger.info(f"Getting active sync status for user {user_id}")
+            active_sync_status = await integrations_client.get_active_sync_status(user_id)
+            
+            # Check if response has error
+            if "error" in active_sync_status and active_sync_status.get("status_code") not in [200, None]:
+                logger.warning(f"Failed to get active sync status: {active_sync_status.get('error')}")
+                # Return default response instead of error
+                return {
+                    "hasActiveSync": False,
+                    "lastSync": None
+                }
+            
+            return active_sync_status
         
-        return SyncJob(**sync_status)
-        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Failed to get sync status for job {id}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get sync status: {str(e)}"
-        )
+        logger.error(f"Failed to get sync status: {str(e)}")
+        # If id was provided, raise error
+        if id:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to get sync status: {str(e)}"
+            )
+        # If no id, return default response
+        return {
+            "hasActiveSync": False,
+            "lastSync": None
+        }
 
 @router.get("/api/sync/activity", response_model=SyncActivityResponse)
 async def get_sync_activity(

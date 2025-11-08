@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   startSync,
+  getActiveSyncStatus,
   getSyncStatus,
   getSyncHistory,
   cancelSync,
@@ -11,6 +12,10 @@ const router = Router();
 
 // POST /api/sync/start - Start a new sync job
 router.post('/start', startSync);
+
+// GET /api/sync/status - Get active sync status (for frontend monitoring)
+// This must come BEFORE /status/:syncId to avoid route conflicts
+router.get('/status', getActiveSyncStatus);
 
 // GET /api/sync/status/:syncId - Get sync status by syncId
 router.get('/status/:syncId', getSyncStatus);
