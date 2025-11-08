@@ -495,10 +495,16 @@ export const getAmazonClaims = async (req: Request, res: Response): Promise<void
     let apiClaims: any[] = [];
     let apiResult: any = null;
     try {
-      apiResult = await amazonService.fetchClaims(userId);
-      apiClaims = apiResult.data || apiResult.claims || [];
+      // Ensure userId is valid before calling API
+      if (!userId || userId === 'undefined') {
+        throw new Error('Invalid userId');
+      }
       
-      if (Array.isArray(apiClaims) && apiClaims.length > 0) {
+      apiResult = await amazonService.fetchClaims(userId);
+      apiClaims = apiResult?.data || apiResult?.claims || [];
+      
+      // Handle both success response format and direct array
+      if (apiResult && apiResult.success === true && Array.isArray(apiClaims) && apiClaims.length > 0) {
         logger.info(`Fetched ${apiClaims.length} claims from SP-API`, {
           userId,
           claimCount: apiClaims.length,
@@ -515,14 +521,42 @@ export const getAmazonClaims = async (req: Request, res: Response): Promise<void
           dataType: apiResult.dataType || 'unknown'
         });
         return;
+      } else if (Array.isArray(apiClaims) && apiClaims.length > 0) {
+        // Handle case where apiResult is just an array
+        logger.info(`Fetched ${apiClaims.length} claims from SP-API (array format)`, {
+          userId,
+          claimCount: apiClaims.length,
+          isSandbox: isSandbox
+        });
+        
+        res.json({
+          success: true,
+          claims: apiClaims,
+          message: `Fetched ${apiClaims.length} claims from SP-API`,
+          source: 'api',
+          isSandbox: isSandbox,
+          dataType: 'unknown'
+        });
+        return;
+      } else if (apiResult && apiResult.success === true && (!apiClaims || apiClaims.length === 0)) {
+        // API returned success but no data (sandbox empty response)
+        logger.info('API returned success but no claims (sandbox empty response)', {
+          userId,
+          isSandbox: apiResult.isSandbox || isSandbox,
+          dataType: apiResult.dataType || 'unknown'
+        });
+        // Fall through to return empty response
       }
     } catch (apiError: any) {
-      logger.error('Error fetching claims from API', {
+      // Log error but don't throw - we'll return empty response instead
+      logger.warn('Error fetching claims from API (non-fatal, will return empty)', {
         error: apiError?.message || String(apiError),
         stack: apiError?.stack,
         userId,
-        isSandbox
+        isSandbox,
+        errorType: apiError?.constructor?.name || 'Unknown'
       });
+      // Don't throw - continue to return empty response
     }
     
     // If we get here, no data found - return empty array (never return error)

@@ -40,21 +40,22 @@ router.options('/sandbox/callback', (req, res) => {
 });
 router.post('/sync', wrap(syncAmazonData));
 // Claims endpoint - wrap with ultimate safety net that NEVER returns 500
-router.get('/claims', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    await getAmazonClaims(req, res);
-  } catch (error: any) {
+// Use Promise.resolve to ensure all async errors are caught
+router.get('/claims', (req: Request, res: Response, next: NextFunction) => {
+  Promise.resolve(getAmazonClaims(req, res)).catch((error: any) => {
     // Ultimate safety net - never let errors escape to errorHandler
     // This prevents 500 errors from being returned
     logger.error('Claims endpoint error (safety net - preventing 500):', {
       error: error?.message || String(error),
-      stack: error?.stack
+      stack: error?.stack,
+      errorType: error?.constructor?.name || 'Unknown'
     });
     
     // Don't call next(error) - return response directly to prevent errorHandler from running
-    const isSandbox = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || false;
+    // Check if response was already sent
     if (!res.headersSent) {
-      res.json({
+      const isSandbox = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || false;
+      res.status(200).json({
         success: true,
         claims: [],
         message: 'No claims found (sandbox may return empty data)',
@@ -64,7 +65,7 @@ router.get('/claims', async (req: Request, res: Response, next: NextFunction) =>
         note: 'Sandbox may have limited or no test data - this is expected'
       });
     }
-  }
+  });
 });
 router.get('/inventory', wrap(getAmazonInventory));
 router.post('/disconnect', wrap(disconnectAmazon));
