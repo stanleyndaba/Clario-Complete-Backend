@@ -58,10 +58,12 @@ router.get('/fees', (_, res) => {
 // Recovery metrics - returns totalAmount, currency, and claimCount
 // This endpoint is called by the frontend and should match the expected format
 router.get('/recoveries', wrap(async (req: Request, res: Response) => {
+  const userId = (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+  const isSandbox = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || false;
+  
+  logger.info(`Getting Amazon recoveries summary for user: ${userId}`, { isSandbox });
+  
   try {
-    const userId = (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
-    
-    logger.info(`Getting Amazon recoveries summary for user: ${userId}`);
     
     // STEP 1: Try to get claims from DATABASE first (where sync saves them)
     try {

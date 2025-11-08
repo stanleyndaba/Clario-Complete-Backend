@@ -12,26 +12,62 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
   logger.warn('Using demo Supabase client - no real database connection');
   
   // Create a mock client that doesn't actually connect
+  // This mock properly chains query methods for compatibility
+  const createMockQueryBuilder = () => {
+    const builder: any = {
+      eq: (field: string, value: any) => builder,
+      neq: (field: string, value: any) => builder,
+      gt: (field: string, value: any) => builder,
+      gte: (field: string, value: any) => builder,
+      lt: (field: string, value: any) => builder,
+      lte: (field: string, value: any) => builder,
+      like: (field: string, pattern: string) => builder,
+      ilike: (field: string, pattern: string) => builder,
+      is: (field: string, value: any) => builder,
+      in: (field: string, values: any[]) => builder,
+      contains: (field: string, value: any) => builder,
+      order: (field: string, options?: any) => builder,
+      limit: (count: number) => builder,
+      range: (from: number, to: number) => builder,
+      single: () => Promise.resolve({ data: null, error: { code: 'PGRST116', message: 'No rows returned' } }),
+      then: (resolve: any) => Promise.resolve({ data: [], error: null }).then(resolve)
+    };
+    return builder;
+  };
+  
   supabase = {
     auth: {
       getSession: () => Promise.resolve({ data: { session: null }, error: null })
     },
-    from: () => ({
-      upsert: () => Promise.resolve({ error: null }),
-      select: () => ({
-        eq: () => ({
-          single: () => Promise.resolve({ data: null, error: { code: 'PGRST116' } })
-        })
+    from: (table: string) => ({
+      select: (columns?: string) => createMockQueryBuilder(),
+      insert: (data: any) => ({
+        select: (columns?: string) => Promise.resolve({ data: null, error: null }),
+        then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
       }),
-      update: () => ({
+      upsert: (data: any, options?: any) => ({
+        select: (columns?: string) => Promise.resolve({ data: null, error: null }),
+        then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
+      }),
+      update: (data: any) => ({
         eq: (field: string, value: any) => ({
-          eq: (field2: string, value2: any) => Promise.resolve({ error: null }),
-          match: (conditions: Record<string, any>) => Promise.resolve({ error: null })
+          eq: (field2: string, value2: any) => ({
+            select: (columns?: string) => Promise.resolve({ data: null, error: null }),
+            then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
+          }),
+          select: (columns?: string) => Promise.resolve({ data: null, error: null }),
+          then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
         }),
-        match: (conditions: Record<string, any>) => Promise.resolve({ error: null })
+        match: (conditions: Record<string, any>) => Promise.resolve({ data: null, error: null }),
+        select: (columns?: string) => Promise.resolve({ data: null, error: null }),
+        then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
       }),
       delete: () => ({
-        eq: () => Promise.resolve({ error: null })
+        eq: (field: string, value: any) => ({
+          eq: (field2: string, value2: any) => Promise.resolve({ data: null, error: null }),
+          then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
+        }),
+        then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
       })
     })
   } as any;

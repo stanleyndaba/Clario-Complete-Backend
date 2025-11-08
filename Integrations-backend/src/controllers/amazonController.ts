@@ -435,102 +435,111 @@ export const syncAmazonData = async (req: Request, res: Response) => {
 
 // Real endpoints that call actual SP-API service
 export const getAmazonClaims = async (req: Request, res: Response) => {
+  const userId = (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+  const isSandbox = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || false;
+  
+  logger.info(`Getting Amazon claims for user: ${userId}`, { isSandbox });
+  
+  // Try database first (where sync saves data)
+  let dbClaims: any[] = [];
   try {
-    const userId = (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    const { supabase } = await import('../database/supabaseClient');
+    const queryResult = await supabase
+      .from('claims')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('provider', 'amazon')
+      .order('created_at', { ascending: false });
     
-    logger.info(`Getting Amazon claims for user: ${userId}`);
+    dbClaims = queryResult.data || [];
+    const dbError = queryResult.error;
     
-    // Try database first (where sync saves data)
-    try {
-      const { supabase } = await import('../database/supabaseClient');
-      const { data: dbClaims, error: dbError } = await supabase
-        .from('claims')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('provider', 'amazon')
-        .order('created_at', { ascending: false });
-      
-      if (dbError) {
-        logger.warn('Error querying database for claims', { 
-          error: dbError.message,
-          userId 
-        });
-      } else if (dbClaims && dbClaims.length > 0) {
-        logger.info(`Found ${dbClaims.length} claims in database`, {
-          userId,
-          claimCount: dbClaims.length,
-          source: 'database'
-        });
-        return res.json({
-          success: true,
-          claims: dbClaims,
-          message: `Found ${dbClaims.length} claims from database`,
-          source: 'database',
-          isSandbox: process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || false
-        });
-      } else {
-        logger.info('No claims found in database', { 
-          userId,
-          dbClaimCount: dbClaims?.length || 0 
-        });
-      }
-    } catch (dbError: any) {
-      logger.warn('Error querying database for claims, falling back to API', { 
-        error: dbError?.message || String(dbError),
-        userId 
-      });
-    }
-    
-    // Fall back to API if no database data
-    try {
-      const result = await amazonService.fetchClaims(userId);
-      const claims = result.data || result.claims || [];
-      
-      logger.info(`Fetched ${claims.length} claims from SP-API`, {
+    if (dbError) {
+      logger.warn('Error querying database for claims', { 
+        error: dbError.message,
         userId,
-        claimCount: claims.length,
-        isSandbox: result.isSandbox || false,
-        dataType: result.dataType || 'unknown'
+        isSandbox
       });
-      
+    } else if (dbClaims && dbClaims.length > 0) {
+      logger.info(`Found ${dbClaims.length} claims in database`, {
+        userId,
+        claimCount: dbClaims.length,
+        source: 'database',
+        isSandbox
+      });
       return res.json({
         success: true,
-        claims: Array.isArray(claims) ? claims : [],
-        message: result.message || `Fetched ${claims.length} claims from SP-API`,
-        source: 'api',
-        isSandbox: result.isSandbox || false,
-        dataType: result.dataType || 'unknown'
+        claims: dbClaims,
+        message: `Found ${dbClaims.length} claims from database`,
+        source: 'database',
+        isSandbox: isSandbox
       });
-    } catch (apiError: any) {
-      logger.error('Error fetching claims from API', {
-        error: apiError?.message || String(apiError),
-        stack: apiError?.stack,
-        userId
-      });
-      
-      // Return empty array instead of error - this is acceptable for sandbox
-      return res.json({
-        success: true,
-        claims: [],
-        message: 'No claims found (sandbox may return empty data)',
-        source: 'api',
-        isSandbox: process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || false,
-        dataType: 'SANDBOX_TEST_DATA',
-        note: 'Sandbox may have limited or no test data - this is expected'
+    } else {
+      logger.info('No claims found in database', { 
+        userId,
+        dbClaimCount: dbClaims?.length || 0,
+        isSandbox
       });
     }
-  } catch (error: any) {
-    logger.error('Get Amazon claims error:', {
-      error: error?.message || String(error),
-      stack: error?.stack
-    });
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch claims',
-      claims: [],
-      message: error?.message || 'Unknown error'
+  } catch (dbError: any) {
+    logger.warn('Error querying database for claims, falling back to API', { 
+      error: dbError?.message || String(dbError),
+      userId,
+      isSandbox
     });
   }
+  
+  // Fall back to API if no database data
+  let apiClaims: any[] = [];
+  let apiResult: any = null;
+  try {
+    apiResult = await amazonService.fetchClaims(userId);
+    apiClaims = apiResult.data || apiResult.claims || [];
+    
+    if (Array.isArray(apiClaims) && apiClaims.length > 0) {
+      logger.info(`Fetched ${apiClaims.length} claims from SP-API`, {
+        userId,
+        claimCount: apiClaims.length,
+        isSandbox: apiResult.isSandbox || isSandbox,
+        dataType: apiResult.dataType || 'unknown'
+      });
+      
+      return res.json({
+        success: true,
+        claims: apiClaims,
+        message: apiResult.message || `Fetched ${apiClaims.length} claims from SP-API`,
+        source: 'api',
+        isSandbox: apiResult.isSandbox || isSandbox,
+        dataType: apiResult.dataType || 'unknown'
+      });
+    }
+  } catch (apiError: any) {
+    logger.error('Error fetching claims from API', {
+      error: apiError?.message || String(apiError),
+      stack: apiError?.stack,
+      userId,
+      isSandbox
+    });
+  }
+  
+  // If we get here, no data found - return empty array (never return error)
+  // This is acceptable for sandbox - empty data is normal
+  logger.info('No claims found in database or API, returning empty array', {
+    userId,
+    isSandbox,
+    dbClaimsCount: dbClaims?.length || 0,
+    apiClaimsCount: apiClaims?.length || 0
+  });
+  
+  return res.json({
+    success: true,
+    claims: [],
+    message: 'No claims found (sandbox may return empty data)',
+    source: 'none',
+    isSandbox: isSandbox,
+    dataType: 'SANDBOX_TEST_DATA',
+    note: 'Sandbox may have limited or no test data - this is expected'
+  });
 };
 
 export const getAmazonInventory = async (req: Request, res: Response) => {
