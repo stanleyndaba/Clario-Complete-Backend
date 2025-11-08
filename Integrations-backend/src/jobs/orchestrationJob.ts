@@ -25,11 +25,82 @@ export interface JobResult {
 }
 
 // Create Redis connection (you'll need to add Redis to your environment)
-const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+// Make Redis optional - if not available, queues will be disabled
+const REDIS_URL = process.env.REDIS_URL;
+let orchestrationQueue: Queue<OrchestrationJobData> | null = null;
+let syncProgressQueue: Queue<OrchestrationJobData> | null = null;
+let queueInitialized = false;
 
-// Create job queues
-const orchestrationQueue = new Queue<OrchestrationJobData>('orchestration', REDIS_URL);
-const syncProgressQueue = new Queue<OrchestrationJobData>('sync-progress', REDIS_URL);
+// Initialize queues only if Redis is available
+function initializeQueues(): void {
+  if (queueInitialized) {
+    return;
+  }
+
+  // Check if Redis URL is configured and not pointing to localhost
+  // This prevents queues from being created if Redis is not available
+  if (!REDIS_URL || 
+      REDIS_URL === 'redis://localhost:6379' || 
+      REDIS_URL.includes('localhost') ||
+      REDIS_URL.includes('127.0.0.1')) {
+    // Don't log warning here - Redis is optional, this is expected behavior
+    queueInitialized = true;
+    return;
+  }
+
+  try {
+    // Create queues - Bull Queue accepts Redis URL string directly
+    // It will attempt to connect, but we'll handle errors gracefully
+    orchestrationQueue = new Queue<OrchestrationJobData>('orchestration', REDIS_URL);
+    syncProgressQueue = new Queue<OrchestrationJobData>('sync-progress', REDIS_URL);
+
+    // Track error counts to suppress repeated errors
+    let orchestrationErrorCount = 0;
+    let syncProgressErrorCount = 0;
+
+    // Handle queue errors gracefully - suppress repeated errors
+    orchestrationQueue.on('error', (error: any) => {
+      orchestrationErrorCount++;
+      // Only log first error and every 100th error
+      if (orchestrationErrorCount === 1 || orchestrationErrorCount % 100 === 0) {
+        logger.warn(`Orchestration queue error (${orchestrationErrorCount}${orchestrationErrorCount === 1 ? 'st' : 'th'} error) - queues disabled: ${error?.message || 'Unknown error'}`);
+      }
+      // Disable queue if connection fails
+      orchestrationQueue = null;
+    });
+
+    syncProgressQueue.on('error', (error: any) => {
+      syncProgressErrorCount++;
+      // Only log first error and every 100th error
+      if (syncProgressErrorCount === 1 || syncProgressErrorCount % 100 === 0) {
+        logger.warn(`Sync progress queue error (${syncProgressErrorCount}${syncProgressErrorCount === 1 ? 'st' : 'th'} error) - queues disabled: ${error?.message || 'Unknown error'}`);
+      }
+      // Disable queue if connection fails
+      syncProgressQueue = null;
+    });
+
+    // Handle successful connection
+    orchestrationQueue.on('ready', () => {
+      logger.info('Orchestration queue connected to Redis');
+    });
+
+    syncProgressQueue.on('ready', () => {
+      logger.info('Sync progress queue connected to Redis');
+    });
+
+    queueInitialized = true;
+    logger.info('Job queues initialized (will connect to Redis when available)');
+  } catch (error: any) {
+    // Queue creation failed - this is OK, queues will be disabled
+    logger.debug('Job queues not initialized - Redis not available (this is OK if Redis is not configured)', { error: error?.message });
+    orchestrationQueue = null;
+    syncProgressQueue = null;
+    queueInitialized = true;
+  }
+}
+
+// Initialize queues on module load (but don't fail if Redis is unavailable)
+initializeQueues();
 
 export class OrchestrationJobManager {
   private static async fetchRawAmazonData(_userId: string): Promise<any[]> {
@@ -55,6 +126,12 @@ export class OrchestrationJobManager {
    * Add orchestration job to queue
    */
   static async addOrchestrationJob(data: OrchestrationJobData): Promise<void> {
+    // Skip if queues are not available (Redis not configured)
+    if (!orchestrationQueue) {
+      logger.debug('Orchestration queue not available - skipping job addition (Redis not configured)');
+      return;
+    }
+
     try {
       // Use jobId to prevent duplicate jobs for same user/step/syncId
       const jobId = `orchestrate_${data.userId}_${data.step}_${data.syncId}`;
@@ -75,9 +152,9 @@ export class OrchestrationJobManager {
         syncId: data.syncId,
         step: data.step 
       });
-    } catch (error) {
-      logger.error('Error adding orchestration job to queue', { error, data });
-      throw error;
+    } catch (error: any) {
+      // Don't throw error - queue failures are non-critical
+      logger.warn('Error adding orchestration job to queue (non-critical)', { error: error?.message, data });
     }
   }
 
@@ -85,6 +162,12 @@ export class OrchestrationJobManager {
    * Add sync progress update job to queue
    */
   static async addSyncProgressJob(data: OrchestrationJobData): Promise<void> {
+    // Skip if queues are not available (Redis not configured)
+    if (!syncProgressQueue) {
+      logger.debug('Sync progress queue not available - skipping job addition (Redis not configured)');
+      return;
+    }
+
     try {
       await syncProgressQueue.add('update-progress', data, {
         attempts: 2,
@@ -100,9 +183,9 @@ export class OrchestrationJobManager {
         userId: data.userId, 
         syncId: data.syncId 
       });
-    } catch (error) {
-      logger.error('Error adding sync progress job to queue', { error, data });
-      throw error;
+    } catch (error: any) {
+      // Don't throw error - queue failures are non-critical
+      logger.warn('Error adding sync progress job to queue (non-critical)', { error: error?.message, data });
     }
   }
 
@@ -110,6 +193,12 @@ export class OrchestrationJobManager {
    * Setup orchestration job processor
    */
   private static setupOrchestrationProcessor(): void {
+    // Skip if queues are not available (Redis not configured)
+    if (!orchestrationQueue) {
+      logger.debug('Orchestration queue not available - skipping processor setup (Redis not configured)');
+      return;
+    }
+
     orchestrationQueue.process('orchestrate', async (job) => {
       const { userId, syncId, step, totalSteps, currentStep, metadata } = job.data;
       
@@ -284,6 +373,12 @@ export class OrchestrationJobManager {
    * Setup sync progress job processor
    */
   private static setupSyncProgressProcessor(): void {
+    // Skip if queues are not available (Redis not configured)
+    if (!syncProgressQueue) {
+      logger.debug('Sync progress queue not available - skipping processor setup (Redis not configured)');
+      return;
+    }
+
     syncProgressQueue.process('update-progress', async (job) => {
       const { userId, syncId, step, totalSteps, currentStep } = job.data;
       
@@ -306,6 +401,12 @@ export class OrchestrationJobManager {
    * Setup queue event handlers
    */
   private static setupQueueEventHandlers(): void {
+    // Skip if queues are not available (Redis not configured)
+    if (!orchestrationQueue || !syncProgressQueue) {
+      logger.debug('Queues not available - skipping event handler setup (Redis not configured)');
+      return;
+    }
+
     orchestrationQueue.on('completed', (job, result) => {
       logger.info('Orchestration job completed', { 
         jobId: job.id, 
@@ -1165,6 +1266,21 @@ export class OrchestrationJobManager {
    * Get queue statistics with metrics
    */
   static async getQueueStats(): Promise<any> {
+    // Return empty stats if queues are not available
+    if (!orchestrationQueue || !syncProgressQueue) {
+      return {
+        orchestration: { waiting: 0, active: 0, completed: 0, failed: 0 },
+        syncProgress: { waiting: 0, active: 0, completed: 0, failed: 0 },
+        connectedClients: websocketService.getConnectedClientsCount(),
+        metrics: {
+          recentJobCount: 0,
+          averageJobDuration: 0,
+          successRate: 'N/A',
+          note: 'Redis not configured - queues disabled'
+        }
+      };
+    }
+
     try {
       const [orchestrationStats, syncProgressStats] = await Promise.all([
         orchestrationQueue.getJobCounts(),
@@ -1193,9 +1309,20 @@ export class OrchestrationJobManager {
             : 'N/A'
         }
       };
-    } catch (error) {
-      logger.error('Error getting queue stats', { error });
-      throw error;
+    } catch (error: any) {
+      logger.warn('Error getting queue stats (non-critical)', { error: error?.message });
+      // Return empty stats on error
+      return {
+        orchestration: { waiting: 0, active: 0, completed: 0, failed: 0 },
+        syncProgress: { waiting: 0, active: 0, completed: 0, failed: 0 },
+        connectedClients: websocketService.getConnectedClientsCount(),
+        metrics: {
+          recentJobCount: 0,
+          averageJobDuration: 0,
+          successRate: 'N/A',
+          error: 'Failed to get queue stats'
+        }
+      };
     }
   }
 
@@ -1203,15 +1330,25 @@ export class OrchestrationJobManager {
    * Clean up queues
    */
   static async cleanup(): Promise<void> {
+    // Skip if queues are not available
+    if (!orchestrationQueue && !syncProgressQueue) {
+      return;
+    }
+
     try {
-      await Promise.all([
-        orchestrationQueue.close(),
-        syncProgressQueue.close()
-      ]);
+      const closePromises: Promise<void>[] = [];
+      if (orchestrationQueue) {
+        closePromises.push(orchestrationQueue.close());
+      }
+      if (syncProgressQueue) {
+        closePromises.push(syncProgressQueue.close());
+      }
+      
+      await Promise.all(closePromises);
       
       logger.info('Orchestration job manager cleaned up');
-    } catch (error) {
-      logger.error('Error cleaning up orchestration job manager', { error });
+    } catch (error: any) {
+      logger.warn('Error cleaning up orchestration job manager (non-critical)', { error: error?.message });
     }
   }
 
@@ -1221,25 +1358,38 @@ export class OrchestrationJobManager {
    * @param status - Job status to clean ('failed' | 'completed' | 'active' | 'delayed' | 'wait')
    */
   static async cleanOldJobs(grace: number = 0, status: 'failed' | 'completed' | 'active' | 'delayed' | 'wait' = 'failed'): Promise<{ orchestration: number; syncProgress: number }> {
+    // Skip if queues are not available
+    if (!orchestrationQueue && !syncProgressQueue) {
+      logger.debug('Queues not available - skipping clean old jobs (Redis not configured)');
+      return { orchestration: 0, syncProgress: 0 };
+    }
+
     try {
-      const [cleanedOrchestration, cleanedSyncProgress] = await Promise.all([
-        orchestrationQueue.clean(grace, status),
-        syncProgressQueue.clean(grace, status)
-      ]);
+      const cleanPromises: Promise<any>[] = [];
+      if (orchestrationQueue) {
+        cleanPromises.push(orchestrationQueue.clean(grace, status));
+      }
+      if (syncProgressQueue) {
+        cleanPromises.push(syncProgressQueue.clean(grace, status));
+      }
+
+      const results = await Promise.all(cleanPromises);
+      const cleanedOrchestration = results[0] || [];
+      const cleanedSyncProgress = results[1] || [];
 
       logger.info('Old jobs cleaned', {
         status,
-        orchestration: cleanedOrchestration.length,
-        syncProgress: cleanedSyncProgress.length
+        orchestration: cleanedOrchestration.length || 0,
+        syncProgress: cleanedSyncProgress.length || 0
       });
 
       return {
-        orchestration: cleanedOrchestration.length,
-        syncProgress: cleanedSyncProgress.length
+        orchestration: cleanedOrchestration.length || 0,
+        syncProgress: cleanedSyncProgress.length || 0
       };
-    } catch (error) {
-      logger.error('Error cleaning old jobs', { error });
-      throw error;
+    } catch (error: any) {
+      logger.warn('Error cleaning old jobs (non-critical)', { error: error?.message });
+      return { orchestration: 0, syncProgress: 0 };
     }
   }
 
@@ -1491,14 +1641,17 @@ export class OrchestrationJobManager {
         return; // Skip - already completed
       }
       
-      // Check if Phase 1 is already in queue or running
-      const jobs = await orchestrationQueue.getJobs(['waiting', 'active']);
-      const existingJob = jobs.find(
-        (job) => 
-          job.data.userId === userId && 
-          job.data.step === 1 && 
-          (job.data.syncId === workflowId || job.data.syncId?.startsWith(`oauth_${userId}_`))
-      );
+      // Check if Phase 1 is already in queue or running (skip if queue not available)
+      let existingJob = null;
+      if (orchestrationQueue) {
+        const jobs = await orchestrationQueue.getJobs(['waiting', 'active']);
+        existingJob = jobs.find(
+          (job) => 
+            job.data.userId === userId && 
+            job.data.step === 1 && 
+            (job.data.syncId === workflowId || job.data.syncId?.startsWith(`oauth_${userId}_`))
+        );
+      }
       
       if (existingJob) {
         logger.info('Phase 1 job already exists in queue (idempotency)', {

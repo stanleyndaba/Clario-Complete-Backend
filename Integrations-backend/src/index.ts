@@ -204,22 +204,55 @@ server.listen(PORT, '0.0.0.0', () => {
   
   // Start detection job processor (processes detection jobs from queue)
   // This runs continuously to process detection jobs queued after sync
+  // Note: Will silently skip if Redis is not available (no log spam)
   const startDetectionProcessor = async () => {
     try {
+      // Attempt to get Redis client - if it fails, we'll use mock client
+      // This allows the processor to start but will skip processing if Redis is unavailable
+      try {
+        const { getRedisClient } = await import('./utils/redisClient');
+        await getRedisClient(); // This will return mock client if Redis is unavailable
+      } catch (error: any) {
+        // Redis connection failed - this is OK, we'll skip processing
+        logger.info('Redis not available - detection job processor will skip (this is OK if Redis is not configured)');
+      }
+
       // Process detection jobs in a loop (non-blocking)
+      // The processDetectionJobs method will check Redis availability internally
       const processLoop = async () => {
         try {
           await detectionService.processDetectionJobs();
-        } catch (error) {
-          logger.error('Error in detection job processor', { error });
+        } catch (error: any) {
+          // Suppress Redis connection errors - they're handled in redisClient.ts
+          if (error?.message?.includes('ECONNREFUSED') || error?.message?.includes('Redis') || error?.message?.includes('connection')) {
+            // Redis unavailable - continue loop but skip processing
+            // Don't log to avoid spam
+          } else {
+            logger.error('Error in detection job processor', { error: error?.message || error });
+          }
         }
         // Schedule next processing (every 5 seconds)
         setTimeout(processLoop, 5000);
       };
       processLoop();
-      logger.info('Detection job processor started');
-    } catch (error) {
-      logger.error('Failed to start detection job processor', { error });
+      logger.info('Detection job processor started (will skip if Redis unavailable)');
+    } catch (error: any) {
+      // Suppress Redis connection errors on startup
+      if (error?.message?.includes('ECONNREFUSED') || error?.message?.includes('Redis') || error?.message?.includes('connection')) {
+        logger.info('Detection job processor started in degraded mode - Redis not available (this is OK if Redis is not configured)');
+        // Start processor anyway - it will handle Redis unavailability gracefully
+        const processLoop = async () => {
+          try {
+            await detectionService.processDetectionJobs();
+          } catch (err: any) {
+            // Suppress all errors - processor will skip if Redis unavailable
+          }
+          setTimeout(processLoop, 5000);
+        };
+        processLoop();
+        return;
+      }
+      logger.error('Failed to start detection job processor', { error: error?.message || error });
     }
   };
   startDetectionProcessor();

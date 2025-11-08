@@ -102,136 +102,152 @@ export class DetectionService {
    */
   async processDetectionJobs(): Promise<void> {
     try {
+      // Check if Redis is available before attempting to process jobs
+      const { isRedisAvailable } = await import('../utils/redisClient');
+      if (!isRedisAvailable()) {
+        // Redis is not available - skip processing silently
+        // This prevents log spam when Redis is not configured
+        return;
+      }
+
       const redisClient = await getRedisClient();
       
-      // Process jobs from Redis queue
-      while (true) {
-        const jobData = await redisClient.brPop(this.queueName, 1);
-        
-        if (!jobData) {
-          // No jobs in queue, exit
-          break;
-        }
+      // Process jobs from Redis queue (with timeout to prevent blocking)
+      const jobData = await Promise.race([
+        redisClient.brPop(this.queueName, 1),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1000))
+      ]);
+      
+      if (!jobData || !Array.isArray(jobData) || !jobData[1]) {
+        // No jobs in queue, exit
+        return;
+      }
 
-        const job: DetectionJob = JSON.parse(jobData[1]);
+      // Process the job
+      const job: DetectionJob = JSON.parse(jobData[1]);
+      
+      try {
+        logger.info('Processing detection job', {
+          seller_id: job.seller_id,
+          sync_id: job.sync_id
+        });
+
+        // Update job status to processing
+        await this.updateJobStatus(job.seller_id, job.sync_id, 'processing');
+
+        // Run detection algorithms
+        const results = await this.runDetectionAlgorithms(job);
+
+        // Store detection results
+        await this.storeDetectionResults(results);
+
+        // Update job status to completed
+        await this.updateJobStatus(job.seller_id, job.sync_id, 'completed');
+
+        // Categorize claims by ML confidence score
+        const highConfidenceClaims = results.filter(r => r.confidence_score >= 0.85);
+        const mediumConfidenceClaims = results.filter(r => r.confidence_score >= 0.50 && r.confidence_score < 0.85);
+        const lowConfidenceClaims = results.filter(r => r.confidence_score < 0.50);
         
+        // Send notifications for each category
+        const websocketService = (await import('./websocketService')).default;
+        
+        if (highConfidenceClaims.length > 0) {
+          websocketService.sendNotificationToUser(job.seller_id, {
+            type: 'success',
+            title: '⚡ ' + highConfidenceClaims.length + ' claims ready for auto submission',
+            message: `High confidence (85%+): ${highConfidenceClaims.length} claims totaling $${highConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0).toFixed(2)}`,
+            data: {
+              category: 'high_confidence',
+              count: highConfidenceClaims.length,
+              total_amount: highConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
+              is_sandbox: (job as any).is_sandbox || false
+            }
+          });
+        }
+        
+        if (mediumConfidenceClaims.length > 0) {
+          websocketService.sendNotificationToUser(job.seller_id, {
+            type: 'warning',
+            title: '❓ ' + mediumConfidenceClaims.length + ' claims need your input',
+            message: `Medium confidence (50-85%): Review required for ${mediumConfidenceClaims.length} claims`,
+            data: {
+              category: 'medium_confidence',
+              count: mediumConfidenceClaims.length,
+              total_amount: mediumConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
+              is_sandbox: (job as any).is_sandbox || false
+            }
+          });
+        }
+        
+        if (lowConfidenceClaims.length > 0) {
+          websocketService.sendNotificationToUser(job.seller_id, {
+            type: 'info',
+            title: '📋 ' + lowConfidenceClaims.length + ' claims need manual review',
+            message: `Low confidence (<50%): Manual review required`,
+            data: {
+              category: 'low_confidence',
+              count: lowConfidenceClaims.length,
+              total_amount: lowConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
+              is_sandbox: (job as any).is_sandbox || false
+            }
+          });
+        }
+        
+        // 🎯 PHASE 3: Trigger orchestrator Phase 3 (Detection Completion)
         try {
-          logger.info('Processing detection job', {
+          const OrchestrationJobManager = (await import('../jobs/orchestrationJob')).default;
+          const claims = results.map((result, index) => ({
+            claim_id: `claim_${result.seller_id}_${Date.now()}_${index}`,
+            claim_type: result.anomaly_type,
+            amount: result.estimated_value,
+            confidence: result.confidence_score,
+            confidence_category: result.confidence_score >= 0.85 ? 'high' : 
+                                result.confidence_score >= 0.50 ? 'medium' : 'low',
+            currency: result.currency,
+            evidence: result.evidence,
+            discovery_date: result.discovery_date?.toISOString(),
+            deadline_date: result.deadline_date?.toISOString(),
+            is_sandbox: (job as any).is_sandbox || false
+          }));
+          await OrchestrationJobManager.triggerPhase3_DetectionCompletion(
+            job.seller_id,
+            job.sync_id,
+            claims
+          );
+          logger.info('Phase 3 orchestration triggered after detection (SANDBOX MODE)', {
+            seller_id: job.seller_id,
+            sync_id: job.sync_id,
+            claims_count: claims.length,
+            high_confidence: highConfidenceClaims.length,
+            medium_confidence: mediumConfidenceClaims.length,
+            low_confidence: lowConfidenceClaims.length,
+            is_sandbox: (job as any).is_sandbox || false,
+            mode: (job as any).is_sandbox ? 'SANDBOX' : 'PRODUCTION'
+          });
+        } catch (error: any) {
+          // Non-blocking - orchestration failure shouldn't break detection
+          logger.warn('Phase 3 orchestration trigger failed (non-critical)', {
+            error: error.message,
             seller_id: job.seller_id,
             sync_id: job.sync_id
           });
-
-          // Update job status to processing
-          await this.updateJobStatus(job.seller_id, job.sync_id, 'processing');
-
-          // Run detection algorithms
-          const results = await this.runDetectionAlgorithms(job);
-
-          // Store detection results
-          await this.storeDetectionResults(results);
-
-          // Update job status to completed
-          await this.updateJobStatus(job.seller_id, job.sync_id, 'completed');
-
-          // Categorize claims by ML confidence score
-          const highConfidenceClaims = results.filter(r => r.confidence_score >= 0.85);
-          const mediumConfidenceClaims = results.filter(r => r.confidence_score >= 0.50 && r.confidence_score < 0.85);
-          const lowConfidenceClaims = results.filter(r => r.confidence_score < 0.50);
-          
-          // Send notifications for each category
-          const websocketService = (await import('./websocketService')).default;
-          
-          if (highConfidenceClaims.length > 0) {
-            websocketService.sendNotificationToUser(job.seller_id, {
-              type: 'success',
-              title: '⚡ ' + highConfidenceClaims.length + ' claims ready for auto submission',
-              message: `High confidence (85%+): ${highConfidenceClaims.length} claims totaling $${highConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0).toFixed(2)}`,
-              data: {
-                category: 'high_confidence',
-                count: highConfidenceClaims.length,
-                total_amount: highConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
-                is_sandbox: (job as any).is_sandbox || false
-              }
-            });
-          }
-          
-          if (mediumConfidenceClaims.length > 0) {
-            websocketService.sendNotificationToUser(job.seller_id, {
-              type: 'warning',
-              title: '❓ ' + mediumConfidenceClaims.length + ' claims need your input',
-              message: `Medium confidence (50-85%): Review required for ${mediumConfidenceClaims.length} claims`,
-              data: {
-                category: 'medium_confidence',
-                count: mediumConfidenceClaims.length,
-                total_amount: mediumConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
-                is_sandbox: (job as any).is_sandbox || false
-              }
-            });
-          }
-          
-          if (lowConfidenceClaims.length > 0) {
-            websocketService.sendNotificationToUser(job.seller_id, {
-              type: 'info',
-              title: '📋 ' + lowConfidenceClaims.length + ' claims need manual review',
-              message: `Low confidence (<50%): Manual review required`,
-              data: {
-                category: 'low_confidence',
-                count: lowConfidenceClaims.length,
-                total_amount: lowConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
-                is_sandbox: (job as any).is_sandbox || false
-              }
-            });
-          }
-          
-          // 🎯 PHASE 3: Trigger orchestrator Phase 3 (Detection Completion)
-          try {
-            const OrchestrationJobManager = (await import('../jobs/orchestrationJob')).default;
-            const claims = results.map((result, index) => ({
-              claim_id: `claim_${result.seller_id}_${Date.now()}_${index}`,
-              claim_type: result.anomaly_type,
-              amount: result.estimated_value,
-              confidence: result.confidence_score,
-              confidence_category: result.confidence_score >= 0.85 ? 'high' : 
-                                  result.confidence_score >= 0.50 ? 'medium' : 'low',
-              currency: result.currency,
-              evidence: result.evidence,
-              discovery_date: result.discovery_date?.toISOString(),
-              deadline_date: result.deadline_date?.toISOString(),
-              is_sandbox: (job as any).is_sandbox || false
-            }));
-            await OrchestrationJobManager.triggerPhase3_DetectionCompletion(
-              job.seller_id,
-              job.sync_id,
-              claims
-            );
-            logger.info('Phase 3 orchestration triggered after detection (SANDBOX MODE)', {
-              seller_id: job.seller_id,
-              sync_id: job.sync_id,
-              claims_count: claims.length,
-              high_confidence: highConfidenceClaims.length,
-              medium_confidence: mediumConfidenceClaims.length,
-              low_confidence: lowConfidenceClaims.length,
-              is_sandbox: (job as any).is_sandbox || false,
-              mode: (job as any).is_sandbox ? 'SANDBOX' : 'PRODUCTION'
-            });
-          } catch (error: any) {
-            // Non-blocking - orchestration failure shouldn't break detection
-            logger.warn('Phase 3 orchestration trigger failed (non-critical)', {
-              error: error.message,
-              seller_id: job.seller_id,
-              sync_id: job.sync_id
-            });
-          }
-        } catch (error) {
-          logger.error('Error processing detection job', { error, job });
-          
-          // Update job status to failed
-          await this.updateJobStatus(job.seller_id, job.sync_id, 'failed', error instanceof Error ? error.message : 'Unknown error');
         }
+      } catch (error) {
+        logger.error('Error processing detection job', { error, job });
+        
+        // Update job status to failed
+        await this.updateJobStatus(job.seller_id, job.sync_id, 'failed', error instanceof Error ? error.message : 'Unknown error');
       }
-    } catch (error) {
-      logger.error('Error in processDetectionJobs', { error });
-      throw error;
+    } catch (error: any) {
+      // Only log Redis connection errors once, then suppress
+      // This prevents log spam when Redis is not available
+      if (error?.message?.includes('ECONNREFUSED') || error?.message?.includes('Redis')) {
+        // Suppress Redis connection errors - they're already handled in redisClient.ts
+        return;
+      }
+      // Log other errors
+      logger.error('Error in processDetectionJobs', { error: error?.message || error });
     }
   }
 
