@@ -199,10 +199,21 @@ router.get('/fees', (_, res) => {
 // Recovery metrics - returns totalAmount, currency, and claimCount
 // This endpoint is called by the frontend and should match the expected format
 router.get('/recoveries', wrap(async (req: Request, res: Response) => {
-  const userId = (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+  // Extract user ID from middleware (set by userIdMiddleware)
+  const userId = (req as any).userId || (req as any)?.user?.id || (req as any)?.user?.user_id || 'demo-user';
   const isSandbox = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || false;
   
-  logger.info(`Getting Amazon recoveries summary for user: ${userId}`, { isSandbox });
+  logger.info('📊 [RECOVERIES] Getting Amazon recoveries summary', {
+    userId,
+    isSandbox,
+    userSource: (req as any).userId ? 'middleware' : 
+                 (req as any)?.user?.id ? 'req.user.id' : 
+                 'default-demo-user',
+    headers: {
+      'x-user-id': req.headers['x-user-id'],
+      'x-forwarded-user-id': req.headers['x-forwarded-user-id']
+    }
+  });
   
   try {
     

@@ -472,12 +472,19 @@ async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_c
                 # First, try to get claims/reimbursements from Node.js backend
                 # This calls the real SP-API directly
                 try:
+                    # Forward user ID in headers so Node.js backend can identify the user
+                    headers = {
+                        "Content-Type": "application/json",
+                        "X-User-Id": user_id,  # Forward user ID to Node.js backend
+                    }
+                    
+                    # Also forward Authorization header if present (for JWT token)
+                    if request.headers.get("Authorization"):
+                        headers["Authorization"] = request.headers.get("Authorization")
+                    
                     recoveries_response = await client.get(
                         recoveries_url,
-                        headers={
-                            "Content-Type": "application/json",
-                            # Forward user context if needed
-                        },
+                        headers=headers,
                         cookies=request.cookies  # Forward auth cookies if needed
                     )
                     elapsed_time = time.time() - start_time
