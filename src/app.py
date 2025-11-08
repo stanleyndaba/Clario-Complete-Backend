@@ -622,7 +622,7 @@ async def amazon_claims(request: Request, user: dict = Depends(get_current_user)
     from .common.config import settings
     
     try:
-        user_id = user["user_id"]
+        user_id = user.get("user_id") or "demo-user"
         logger.info(f"🔍 Getting Amazon claims for user {user_id}")
         
         # Call Node.js backend's Amazon service to get real SP-API data
@@ -749,6 +749,148 @@ async def amazon_claims(request: Request, user: dict = Depends(get_current_user)
                 "note": "Sandbox may have limited or no test data - this is expected"
             },
             status_code=200
+        )
+
+@app.get("/api/v1/integrations/amazon/claims/test")
+async def amazon_claims_test(request: Request):
+    """Test endpoint for Amazon claims - no auth required for testing"""
+    from fastapi.responses import JSONResponse
+    import httpx
+    import time
+    from .common.config import settings
+    
+    try:
+        logger.info("🔍 Testing Amazon claims endpoint (no auth required)")
+        
+        # Call Node.js backend's Amazon service
+        integrations_url = settings.INTEGRATIONS_URL or "http://localhost:3001"
+        claims_url = f"{integrations_url}/api/v1/integrations/amazon/claims"
+        
+        logger.info(f"📍 Calling Node.js backend: {claims_url}")
+        logger.info(f"🔗 INTEGRATIONS_URL: {integrations_url}")
+        
+        # Check if INTEGRATIONS_URL is set
+        if not integrations_url or integrations_url == "http://localhost:3001":
+            logger.warning("⚠️ INTEGRATIONS_URL not set or using default localhost")
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "error": "INTEGRATIONS_URL not configured",
+                    "message": "Please set INTEGRATIONS_URL environment variable to point to your Node.js backend",
+                    "example": "INTEGRATIONS_URL=https://opside-node-api-woco.onrender.com",
+                    "current_value": integrations_url
+                },
+                status_code=500
+            )
+        
+        try:
+            start_time = time.time()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                try:
+                    claims_response = await client.get(
+                        claims_url,
+                        headers={
+                            "Content-Type": "application/json",
+                        }
+                    )
+                    elapsed_time = time.time() - start_time
+                    
+                    logger.info(f"⏱️ Node.js backend response time: {elapsed_time:.2f}s")
+                    logger.info(f"📊 Response status: {claims_response.status_code}")
+                    
+                    if claims_response.status_code == 200:
+                        claims_data = claims_response.json()
+                        return JSONResponse(
+                            content={
+                                "success": True,
+                                "test": True,
+                                "nodejs_backend_url": claims_url,
+                                "response_time": round(elapsed_time, 2),
+                                "claims_data": claims_data,
+                                "message": "Successfully connected to Node.js backend"
+                            },
+                            status_code=200
+                        )
+                    else:
+                        return JSONResponse(
+                            content={
+                                "success": False,
+                                "test": True,
+                                "nodejs_backend_url": claims_url,
+                                "response_status": claims_response.status_code,
+                                "response_body": claims_response.text[:500],
+                                "message": f"Node.js backend returned {claims_response.status_code}"
+                            },
+                            status_code=200
+                        )
+                        
+                except httpx.TimeoutException as e:
+                    elapsed_time = time.time() - start_time
+                    logger.error(f"⏱️ BACKEND TIMEOUT: {elapsed_time:.2f}s")
+                    return JSONResponse(
+                        content={
+                            "success": False,
+                            "test": True,
+                            "error": "timeout",
+                            "nodejs_backend_url": claims_url,
+                            "elapsed_time": round(elapsed_time, 2),
+                            "message": "Node.js backend did not respond within 30 seconds"
+                        },
+                        status_code=200
+                    )
+                except httpx.RequestError as e:
+                    elapsed_time = time.time() - start_time
+                    logger.error(f"🌐 NETWORK ERROR: {str(e)}")
+                    return JSONResponse(
+                        content={
+                            "success": False,
+                            "test": True,
+                            "error": "network_error",
+                            "nodejs_backend_url": claims_url,
+                            "error_message": str(e),
+                            "message": "Cannot reach Node.js backend - check INTEGRATIONS_URL"
+                        },
+                        status_code=200
+                    )
+                except Exception as e:
+                    elapsed_time = time.time() - start_time
+                    logger.error(f"❌ ERROR: {str(e)}")
+                    return JSONResponse(
+                        content={
+                            "success": False,
+                            "test": True,
+                            "error": "unexpected_error",
+                            "nodejs_backend_url": claims_url,
+                            "error_message": str(e),
+                            "message": "Unexpected error calling Node.js backend"
+                        },
+                        status_code=200
+                    )
+                    
+        except Exception as e:
+            logger.error(f"❌ Outer exception: {str(e)}", exc_info=True)
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "test": True,
+                    "error": "exception",
+                    "error_message": str(e),
+                    "message": "Error testing claims endpoint"
+                },
+                status_code=200
+            )
+        
+    except Exception as e:
+        logger.error(f"💥 CRITICAL ERROR: {str(e)}", exc_info=True)
+        return JSONResponse(
+            content={
+                "success": False,
+                "test": True,
+                "error": "critical_error",
+                "error_message": str(e),
+                "message": "Critical error in test endpoint"
+            },
+            status_code=500
         )
 
 @app.get("/api/v1/integrations/amazon/test-connection")
