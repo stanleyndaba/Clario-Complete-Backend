@@ -1,18 +1,26 @@
 # Phase 2: Production Migration Guide
 
-## 🎯 Goal
-Switch from sandbox mode to production mode and ensure real-time claim detection is fully functional with live SP-API data.
+## ⚠️ Current Status: SANDBOX MODE (Default)
+
+**The system is currently configured for SANDBOX mode by default.** This is the correct configuration until full SP-API production credentials are received from Amazon.
+
+**Production mode is available but not enabled by default.** This guide explains how to switch to production mode when ready.
+
+## 🎯 Goal (Future)
+When production credentials are received from Amazon, switch from sandbox mode to production mode and ensure real-time claim detection is fully functional with live SP-API data.
 
 ---
 
 ## ✅ What's Been Updated
 
-### 1. **Amazon Service - Production Mode Support**
+### 1. **Amazon Service - Production Mode Support (Ready for Future Use)**
 - ✅ Updated `amazonService.ts` to properly detect production vs sandbox
+- ✅ **Default mode: SANDBOX** (remains in sandbox until explicitly switched)
 - ✅ Enhanced logging to distinguish between sandbox and production
 - ✅ Updated `fetchClaims()` to work with both sandbox and production SP-API
 - ✅ Improved error handling for production mode
 - ✅ Production mode now returns `LIVE_PRODUCTION_DATA` instead of `SANDBOX_TEST_DATA`
+- ✅ **System stays in sandbox mode by default** - production mode only activates when explicitly configured
 
 ### 2. **Environment Detection**
 - ✅ `isSandbox()` method now correctly detects production mode
@@ -28,9 +36,28 @@ Switch from sandbox mode to production mode and ensure real-time claim detection
 
 ## 🔧 Configuration Changes
 
-### Step 1: Update Environment Variables
+### Step 1: Current Configuration (Sandbox - Default)
 
-**For Production Mode:**
+**Current Setup (Sandbox Mode):**
+
+```bash
+# Sandbox SP-API URL (DEFAULT - currently active)
+AMAZON_SPAPI_BASE_URL=https://sandbox.sellingpartnerapi-na.amazon.com
+
+# Sandbox credentials (currently in use)
+AMAZON_CLIENT_ID=<sandbox-client-id>
+AMAZON_CLIENT_SECRET=<sandbox-client-secret>
+AMAZON_SPAPI_REFRESH_TOKEN=<sandbox-refresh-token>
+
+# NODE_ENV can be development or production (doesn't affect sandbox mode)
+NODE_ENV=development
+```
+
+**⚠️ IMPORTANT: System is currently in SANDBOX mode. Do not change to production until full SP-API credentials are received from Amazon.**
+
+### Step 2: Future Configuration (Production - When Ready)
+
+**For Production Mode (Future - When Credentials Received):**
 
 ```bash
 # Production SP-API URL (remove 'sandbox' from URL)
@@ -40,28 +67,13 @@ AMAZON_SPAPI_BASE_URL=https://sellingpartnerapi-na.amazon.com
 # EU: https://sellingpartnerapi-eu.amazon.com
 # FE: https://sellingpartnerapi-fe.amazon.com
 
-# Production credentials (from Amazon Seller Central)
+# Production credentials (from Amazon Seller Central - when received)
 AMAZON_CLIENT_ID=<production-client-id>
 AMAZON_CLIENT_SECRET=<production-client-secret>
 AMAZON_SPAPI_REFRESH_TOKEN=<production-refresh-token>
 
-# Set NODE_ENV to production
+# Set NODE_ENV to production (optional - URL determines mode)
 NODE_ENV=production
-```
-
-**For Sandbox Mode (Testing):**
-
-```bash
-# Sandbox SP-API URL
-AMAZON_SPAPI_BASE_URL=https://sandbox.sellingpartnerapi-na.amazon.com
-
-# Sandbox credentials
-AMAZON_CLIENT_ID=<sandbox-client-id>
-AMAZON_CLIENT_SECRET=<sandbox-client-secret>
-AMAZON_SPAPI_REFRESH_TOKEN=<sandbox-refresh-token>
-
-# NODE_ENV can be development or production
-NODE_ENV=development
 ```
 
 ---
@@ -119,9 +131,23 @@ curl -H "X-User-Id: test-user" \
 
 ---
 
-## 🚀 Deployment Steps
+## 🚀 Current Status: Sandbox Mode (Active)
 
-### Step 1: Get Production Credentials
+### ✅ System is Currently Configured for Sandbox
+- ✅ Sandbox URL is the default
+- ✅ Sandbox credentials are in use
+- ✅ All endpoints return `SANDBOX_TEST_DATA`
+- ✅ Real-time claim detection works with sandbox data
+- ✅ System will remain in sandbox until explicitly switched to production
+
+### 🔄 No Action Required
+The system is correctly configured for sandbox mode. No changes needed until production credentials are received from Amazon.
+
+---
+
+## 🚀 Future Deployment Steps (When Production Credentials Received)
+
+### Step 1: Get Production Credentials (Future)
 
 1. **Go to Amazon Seller Central**
    - Navigate to Apps & Services → Develop Apps
