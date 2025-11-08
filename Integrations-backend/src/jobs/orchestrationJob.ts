@@ -27,8 +27,10 @@ export interface JobResult {
 // Create Redis connection (you'll need to add Redis to your environment)
 // Make Redis optional - if not available, queues will be disabled
 const REDIS_URL = process.env.REDIS_URL;
-let orchestrationQueue: Queue<OrchestrationJobData> | null = null;
-let syncProgressQueue: Queue<OrchestrationJobData> | null = null;
+// Type queues as any since Queue from 'bull' has type issues with TypeScript
+// We check for null before using them anyway, so this is safe
+let orchestrationQueue: any = null;
+let syncProgressQueue: any = null;
 let queueInitialized = false;
 
 // Initialize queues only if Redis is available
