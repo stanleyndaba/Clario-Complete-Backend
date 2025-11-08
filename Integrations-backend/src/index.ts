@@ -9,6 +9,9 @@ import config from './config/env';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './utils/errorHandler';
 
+// Import middleware
+import { userIdMiddleware } from './middleware/userIdMiddleware';
+
 // Import routes
 import amazonRoutes from './routes/amazonRoutes';
 import gmailRoutes from './routes/gmailRoutes';
@@ -89,7 +92,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-User-Id', 'X-Forwarded-User-Id']
 }));
 
 // Rate limiting
@@ -118,6 +121,10 @@ app.post('/api/metrics/track', (req, res) => {
 app.use(morgan('combined', {
   stream: { write: (message) => logger.info(message.trim()) }
 }));
+
+// User ID extraction middleware (extracts user ID from headers/cookies)
+// This should be early in the pipeline so all routes have access to req.userId
+app.use(userIdMiddleware);
 
 // Health check endpoint
 app.get('/health', (_, res) => {

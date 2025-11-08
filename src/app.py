@@ -636,17 +636,38 @@ async def amazon_claims(request: Request, user: dict = Depends(get_current_user)
             start_time = time.time()
             async with httpx.AsyncClient(timeout=30.0) as client:
                 try:
+                    # Forward user ID in headers so Node.js backend can identify the user
+                    headers = {
+                        "Content-Type": "application/json",
+                        "X-User-Id": user_id,  # Forward user ID to Node.js backend
+                    }
+                    
+                    # Also forward Authorization header if present (for JWT token)
+                    if request.headers.get("Authorization"):
+                        headers["Authorization"] = request.headers.get("Authorization")
+                    
                     claims_response = await client.get(
                         claims_url,
-                        headers={
-                            "Content-Type": "application/json",
-                        },
+                        headers=headers,
                         cookies=request.cookies  # Forward auth cookies if needed
                     )
                     elapsed_time = time.time() - start_time
                     
-                    logger.info(f"⏱️ Node.js backend response time: {elapsed_time:.2f}s")
+                    logger.info(f"⏱️ Node.js backend response time: {elapsed_time:.2f}s for user {user_id}")
                     logger.info(f"📊 Response status: {claims_response.status_code}")
+                    
+                    # Log observability metrics
+                    if claims_response.status_code == 200:
+                        claims_data = claims_response.json()
+                        claim_count = len(claims_data.get("claims", [])) if isinstance(claims_data, dict) else 0
+                        logger.info(f"📈 [OBSERVABILITY] Claims request completed", {
+                            "user_id": user_id,
+                            "response_time": f"{elapsed_time:.2f}s",
+                            "status_code": claims_response.status_code,
+                            "claim_count": claim_count,
+                            "source": claims_data.get("source", "unknown"),
+                            "is_sandbox": claims_data.get("isSandbox", False)
+                        })
                     
                     if claims_response.status_code == 200:
                         claims_data = claims_response.json()

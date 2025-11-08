@@ -22,43 +22,101 @@ const wrap = (fn: any) => async (req: any, res: any, next: any) => {
 // ============================================================================
 // CRITICAL: Claims endpoint - MUST BE FIRST to ensure priority registration
 // ============================================================================
-// This endpoint is completely isolated and returns success immediately
-// It has NO dependencies on services, imports, or async operations
-// This ensures it ALWAYS works, even if other parts of the system fail
-router.get('/claims', (req: Request, res: Response) => {
-  // Absolute safety - wrap in try-catch as final safety net
+// This endpoint fetches real claims from Amazon SP-API
+// It uses the user ID from middleware (extracted from headers/cookies)
+router.get('/claims', async (req: Request, res: Response) => {
+  const startTime = Date.now();
+  let userId: string = 'demo-user';
+  
   try {
-    // Extract user ID safely (with multiple fallbacks)
-    const userId = (req as any)?.user?.id || (req as any)?.user?.user_id || (req as any)?.query?.userId || 'demo-user';
+    // Extract user ID from middleware (set by userIdMiddleware)
+    userId = (req as any).userId || (req as any)?.user?.id || (req as any)?.user?.user_id || 'demo-user';
     
-    // Determine sandbox mode safely
+    // Determine sandbox mode
     const spapiUrl = process.env.AMAZON_SPAPI_BASE_URL || '';
-    const isSandbox = spapiUrl.includes('sandbox') || true; // Default to sandbox
+    const isSandbox = spapiUrl.includes('sandbox') || process.env.NODE_ENV === 'development';
     
-    // Log using console.log (no logger dependency - works even if logger fails)
-    console.log(`[CLAIMS-ISOLATED] Processing claims request for user: ${userId}`, { isSandbox, timestamp: new Date().toISOString() });
+    // Log request with observability
+    logger.info('🔍 [CLAIMS] Processing claims request', {
+      userId,
+      isSandbox,
+      timestamp: new Date().toISOString(),
+      headers: {
+        'x-user-id': req.headers['x-user-id'],
+        'x-forwarded-user-id': req.headers['x-forwarded-user-id'],
+        'authorization': req.headers['authorization'] ? 'present' : 'missing'
+      },
+      userSource: (req as any).userId ? 'middleware' : 
+                   (req as any)?.user?.id ? 'req.user.id' : 
+                   'default-demo-user'
+    });
     
-    // Build response object safely
-    const response = {
-      success: true,
-      claims: [],
-      message: 'No claims found (sandbox test data)',
-      source: 'isolated_route',
-      isSandbox: isSandbox,
-      dataType: 'SANDBOX_TEST_DATA',
-      note: 'Isolated route - no dependencies',
-      userId: String(userId), // Ensure it's a string
-      timestamp: new Date().toISOString()
-    };
-    
-    // Send response - this should never fail, but if it does, we catch it below
-    if (!res.headersSent) {
-      res.status(200).json(response);
+    // Fetch real claims from Amazon SP-API
+    try {
+      const claimsResult = await amazonService.fetchClaims(userId);
+      const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
+      
+      // Log successful response with observability
+      logger.info('✅ [CLAIMS] Successfully fetched claims from SP-API', {
+        userId,
+        claimCount: claimsResult.data?.length || 0,
+        responseTime: `${elapsedTime}s`,
+        isSandbox,
+        fromApi: claimsResult.fromApi,
+        dataType: claimsResult.dataType,
+        source: 'live_mode'
+      });
+      
+      // Return response with claims data
+      res.status(200).json({
+        success: true,
+        claims: claimsResult.data || [],
+        message: claimsResult.message || `Fetched ${claimsResult.data?.length || 0} claims`,
+        source: 'live_mode',
+        isSandbox: isSandbox,
+        dataType: claimsResult.dataType || (isSandbox ? 'SANDBOX_TEST_DATA' : 'LIVE_DATA'),
+        userId: String(userId),
+        timestamp: new Date().toISOString(),
+        responseTime: `${elapsedTime}s`,
+        claimCount: claimsResult.data?.length || 0
+      });
+    } catch (spapiError: any) {
+      // Handle SP-API errors gracefully
+      const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
+      
+      logger.warn('⚠️ [CLAIMS] SP-API error (returning empty claims)', {
+        userId,
+        error: spapiError?.message,
+        responseTime: `${elapsedTime}s`,
+        isSandbox,
+        errorType: spapiError?.response?.status ? `HTTP_${spapiError.response.status}` : 'UNKNOWN'
+      });
+      
+      // Return empty claims instead of error (graceful degradation)
+      res.status(200).json({
+        success: true,
+        claims: [],
+        message: 'No claims found (SP-API error or empty response)',
+        source: 'live_mode_error_fallback',
+        isSandbox: isSandbox,
+        dataType: isSandbox ? 'SANDBOX_TEST_DATA' : 'LIVE_DATA',
+        userId: String(userId),
+        timestamp: new Date().toISOString(),
+        responseTime: `${elapsedTime}s`,
+        error: spapiError?.message || 'Unknown error',
+        note: 'SP-API call failed - returning empty claims array'
+      });
     }
   } catch (error: any) {
     // CRITICAL SAFETY NET: Even if something catastrophic happens, return success
-    // This should NEVER be reached, but it's here as a final safety measure
-    console.error('[CRITICAL] Claims endpoint safety catch triggered:', error?.message || String(error));
+    const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
+    
+    logger.error('❌ [CLAIMS] Critical error in claims endpoint', {
+      userId,
+      error: error?.message || String(error),
+      stack: error?.stack,
+      responseTime: `${elapsedTime}s`
+    });
     
     // Force success response - even if headers were sent, try to send JSON
     if (!res.headersSent) {
@@ -66,17 +124,20 @@ router.get('/claims', (req: Request, res: Response) => {
         res.status(200).json({
           success: true,
           claims: [],
-          message: 'No claims found (sandbox test data)',
+          message: 'No claims found (internal error)',
           source: 'critical_fallback',
           isSandbox: true,
           dataType: 'SANDBOX_TEST_DATA',
-          error: 'Internal safety catch triggered (should not happen)',
-          timestamp: new Date().toISOString()
+          userId: String(userId),
+          timestamp: new Date().toISOString(),
+          responseTime: `${elapsedTime}s`,
+          error: 'Internal error - safety fallback triggered'
         });
       } catch (finalError: any) {
         // If even this fails, the system is fundamentally broken
-        // But we don't throw - we just log and let Express handle it
-        console.error('[CRITICAL] Failed to send response in claims endpoint safety catch:', finalError?.message || String(finalError));
+        logger.error('❌ [CLAIMS] Failed to send response in critical fallback', {
+          error: finalError?.message || String(finalError)
+        });
       }
     }
   }
@@ -85,12 +146,19 @@ router.get('/claims', (req: Request, res: Response) => {
 // Version check endpoint - confirms which code is running
 router.get('/claims/version', (req: Request, res: Response) => {
   res.json({
-    version: '594bb8b-safe-fallback-v2',
+    version: 'phase2-functional-verification-v1',
     deployed: new Date().toISOString(),
-    codeVersion: 'minimal-safe-version-enhanced',
-    description: 'This endpoint should return success:true immediately',
+    codeVersion: 'phase2-real-claims-flow',
+    description: 'Claims endpoint now fetches real data from Amazon SP-API',
     routeOrder: 'claims-registered-first',
-    safetyNet: 'enabled'
+    features: {
+      realClaimsFetch: true,
+      userIdExtraction: true,
+      observability: true,
+      gracefulDegradation: true
+    },
+    userIdMiddleware: 'enabled',
+    spapiIntegration: 'enabled'
   });
 });
 
