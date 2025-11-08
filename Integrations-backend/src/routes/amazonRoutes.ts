@@ -83,6 +83,16 @@ router.get('/inventory', wrap(getAmazonInventory));
 router.post('/disconnect', wrap(disconnectAmazon));
 router.get('/diagnose', wrap(diagnoseAmazonConnection)); // Diagnostic endpoint
 
+// Version check endpoint - confirms which code is running
+router.get('/claims/version', (req: Request, res: Response) => {
+  res.json({
+    version: '594bb8b-safe-fallback',
+    deployed: new Date().toISOString(),
+    codeVersion: 'minimal-safe-version',
+    description: 'This endpoint should return success:true immediately'
+  });
+});
+
 // Mock fee endpoint since it was referenced
 router.get('/fees', (_, res) => {
   res.json({
