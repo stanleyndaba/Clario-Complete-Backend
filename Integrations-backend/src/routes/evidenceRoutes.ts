@@ -351,10 +351,20 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
 
     // Proxy to Python API /api/documents/upload endpoint
     const pythonApiUrl = process.env.PYTHON_API_URL || process.env.VITE_PYTHON_API_URL || 'https://python-api-newest.onrender.com';
-    const pythonUrl = `${pythonApiUrl}/api/documents/upload`;
+    const pythonUrl = `${pythonApiUrl}/api/documents/upload${claim_id ? `?claim_id=${claim_id}` : ''}`;
     
     // Extract token for authentication
     const token = req.cookies?.session_token || req.headers['authorization']?.replace('Bearer ', '');
+    
+    logger.info('📤 [EVIDENCE] Starting upload to Python API', {
+      pythonApiUrl,
+      pythonUrl,
+      userId,
+      fileCount: files.length,
+      filenames: files.map(f => f.originalname),
+      claim_id,
+      hasToken: !!token
+    });
     
     try {
       const axios = (await import('axios')).default;
@@ -371,39 +381,89 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
         });
       });
       
-      // Add claim_id if provided
+      // Add claim_id if provided (as form field, not query param for POST)
       if (claim_id) {
         formData.append('claim_id', claim_id);
       }
       
       const headers: Record<string, string> = {
-        ...formData.getHeaders()
+        ...formData.getHeaders(),
+        'X-User-Id': userId
       };
       
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
       }
       
-      // Forward X-User-Id header
-      headers['X-User-Id'] = userId;
-      
       logger.info('📤 [EVIDENCE] Forwarding upload to Python API', {
         pythonUrl,
         userId,
-        fileCount: files.length
+        fileCount: files.length,
+        headers: Object.keys(headers)
       });
       
+      // Make request with extended timeout and better error handling
       const response = await axios.post(pythonUrl, formData, {
         headers,
-        timeout: 60000, // 60 second timeout for file uploads
+        timeout: 120000, // 120 second timeout for file uploads (increased)
         maxContentLength: Infinity,
-        maxBodyLength: Infinity
+        maxBodyLength: Infinity,
+        validateStatus: (status) => status < 500, // Don't throw on 4xx errors
+        maxRedirects: 5
+      }).catch((error: any) => {
+        // Enhanced error logging
+        logger.error('❌ [EVIDENCE] Axios error details', {
+          message: error?.message,
+          code: error?.code,
+          status: error?.response?.status,
+          statusText: error?.response?.statusText,
+          data: error?.response?.data,
+          config: {
+            url: error?.config?.url,
+            method: error?.config?.method,
+            timeout: error?.config?.timeout
+          },
+          stack: error?.stack
+        });
+        throw error;
       });
+      
+      // Check if response is successful
+      if (response.status >= 400) {
+        logger.error('❌ [EVIDENCE] Python API returned error status', {
+          status: response.status,
+          statusText: response.statusText,
+          data: response.data,
+          userId
+        });
+        
+        // Send SSE event for upload error
+        try {
+          const sseHub = (await import('../utils/sseHub')).default;
+          sseHub.sendEvent(userId, 'evidence_upload_failed', {
+            userId,
+            error: response.data?.error || response.data?.detail || `HTTP ${response.status}`,
+            statusCode: response.status,
+            errorDetails: response.data,
+            timestamp: new Date().toISOString()
+          });
+        } catch (sseError) {
+          logger.debug('Failed to send SSE event for upload error', { error: sseError });
+        }
+        
+        return res.status(response.status).json({
+          success: false,
+          error: response.data?.error || response.data?.detail || 'Upload failed',
+          message: response.data?.message || `Python API returned status ${response.status}`,
+          details: response.data
+        });
+      }
       
       logger.info('✅ [EVIDENCE] Document upload successful', {
         userId,
         documentId: response.data.id,
-        status: response.data.status
+        status: response.data.status,
+        responseStatus: response.status
       });
       
       // Send SSE event for upload success
@@ -432,37 +492,90 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
         logger.debug('Failed to send SSE event for upload completion', { error: sseError });
       }
       
-      res.json(response.data);
-    } catch (proxyError: any) {
-      logger.error('❌ [EVIDENCE] Error forwarding upload to Python API', {
-        error: proxyError?.message || String(proxyError),
-        status: proxyError?.response?.status,
-        data: proxyError?.response?.data
+      // Return success response
+      return res.json({
+        success: true,
+        ...response.data
       });
+    } catch (proxyError: any) {
+      // Enhanced error handling
+      const errorMessage = proxyError?.message || String(proxyError);
+      const errorCode = proxyError?.code;
+      const responseStatus = proxyError?.response?.status;
+      const responseData = proxyError?.response?.data;
+      
+      logger.error('❌ [EVIDENCE] Error forwarding upload to Python API', {
+        error: errorMessage,
+        code: errorCode,
+        status: responseStatus,
+        data: responseData,
+        pythonUrl,
+        userId,
+        fileCount: files.length,
+        stack: proxyError?.stack
+      });
+      
+      // Determine appropriate error response
+      let statusCode = 502;
+      let errorResponse: any = {
+        success: false,
+        error: 'Failed to upload documents',
+        message: 'Python API unavailable or error occurred'
+      };
+      
+      if (proxyError.response) {
+        // Python API responded with an error
+        statusCode = proxyError.response.status;
+        errorResponse = {
+          success: false,
+          error: responseData?.error || responseData?.detail || 'Upload failed',
+          message: responseData?.message || `Python API returned status ${statusCode}`,
+          details: responseData
+        };
+      } else if (errorCode === 'ECONNREFUSED' || errorCode === 'ETIMEDOUT' || errorCode === 'ENOTFOUND') {
+        // Connection issues
+        statusCode = 502;
+        errorResponse = {
+          success: false,
+          error: 'Python API unavailable',
+          message: `Cannot connect to Python API at ${pythonApiUrl}. Please check if the service is running.`,
+          code: errorCode
+        };
+      } else if (errorCode === 'ECONNABORTED') {
+        // Timeout
+        statusCode = 504;
+        errorResponse = {
+          success: false,
+          error: 'Upload timeout',
+          message: 'The upload request timed out. The file may be too large or the server is busy.',
+          code: errorCode
+        };
+      } else {
+        // Other errors
+        errorResponse = {
+          success: false,
+          error: 'Upload failed',
+          message: errorMessage,
+          code: errorCode
+        };
+      }
       
       // Send SSE event for upload error
       try {
         const sseHub = (await import('../utils/sseHub')).default;
         sseHub.sendEvent(userId, 'evidence_upload_failed', {
           userId,
-          error: proxyError?.message || String(proxyError),
-          statusCode: proxyError?.response?.status || 500,
-          errorDetails: proxyError?.response?.data || null,
+          error: errorResponse.error,
+          message: errorResponse.message,
+          statusCode: statusCode,
+          errorDetails: errorResponse.details || null,
           timestamp: new Date().toISOString()
         });
       } catch (sseError) {
         logger.debug('Failed to send SSE event for upload error', { error: sseError });
       }
       
-      if (proxyError.response) {
-        res.status(proxyError.response.status).json(proxyError.response.data);
-      } else {
-        res.status(502).json({
-          success: false,
-          error: 'Failed to upload documents',
-          message: proxyError?.message || 'Python API unavailable'
-        });
-      }
+      return res.status(statusCode).json(errorResponse);
     }
   } catch (error: any) {
     logger.error('❌ [EVIDENCE] Error in upload endpoint', {
