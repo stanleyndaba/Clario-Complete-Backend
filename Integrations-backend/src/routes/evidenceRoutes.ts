@@ -300,7 +300,6 @@ router.post('/filters', async (req: Request, res: Response) => {
  * Fallback endpoint for document upload - uses multer to handle files and proxies to Python API
  * This endpoint handles file uploads and forwards them to the Python backend
  */
-import multer from 'multer';
 
 // Configure multer for file uploads (memory storage)
 const uploadStorage = multer.memoryStorage();
