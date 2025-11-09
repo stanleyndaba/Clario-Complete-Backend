@@ -218,7 +218,7 @@ app.get('/', (_, res) => {
 
 // Proxy routes to Python backend (recoveries, documents, metrics)
 // IMPORTANT: These must be registered after all other routes to avoid conflicts
-// These proxy requests to python-api-newest.onrender.com
+// These proxy requests to python-api-3-vb5h.onrender.com
 app.use('/', proxyRoutes);
 
 // Error handling middleware
