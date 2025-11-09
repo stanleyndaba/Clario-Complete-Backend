@@ -8,6 +8,16 @@ import multer from 'multer';
 import { gmailIngestionService } from '../services/gmailIngestionService';
 import logger from '../utils/logger';
 
+// Type for multer file
+interface MulterFile {
+  fieldname: string;
+  originalname: string;
+  encoding: string;
+  mimetype: string;
+  buffer: Buffer;
+  size: number;
+}
+
 const router = Router();
 
 /**
@@ -321,7 +331,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
       });
     }
 
-    const files = (req as any).files as Express.Multer.File[];
+    const files = (req as any).files as MulterFile[];
     const claim_id = req.query.claim_id as string | undefined;
     
     if (!files || files.length === 0) {

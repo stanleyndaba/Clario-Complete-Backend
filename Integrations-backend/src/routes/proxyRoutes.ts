@@ -3,6 +3,16 @@ import axios from 'axios';
 import multer from 'multer';
 import logger from '../utils/logger';
 
+// Type for multer file
+interface MulterFile {
+  fieldname: string;
+  originalname: string;
+  encoding: string;
+  mimetype: string;
+  buffer: Buffer;
+  size: number;
+}
+
 const router = express.Router();
 
 // Python backend URL - can be overridden by environment variable
@@ -129,7 +139,7 @@ router.get('/api/documents/:id/download', (req, res) => proxyToPython(req, res, 
 // File upload endpoint - use multer to handle multipart/form-data
 router.post('/api/documents/upload', upload.any(), async (req: Request, res: Response) => {
   try {
-    const files = (req as any).files as Express.Multer.File[];
+    const files = (req as any).files as MulterFile[];
     const claim_id = req.query.claim_id as string | undefined;
     
     if (!files || files.length === 0) {
