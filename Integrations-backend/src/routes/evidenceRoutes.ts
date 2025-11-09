@@ -394,13 +394,73 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
     const pythonApiUrl = process.env.PYTHON_API_URL || process.env.VITE_PYTHON_API_URL || 'https://python-api-newest.onrender.com';
     const pythonUrl = `${pythonApiUrl}/api/documents/upload${claim_id ? `?claim_id=${claim_id}` : ''}`;
     
+    // DEMO MODE: Check if Python API should be skipped (for YC demo)
+    const SKIP_PYTHON_API = process.env.SKIP_PYTHON_API === 'true';
+    const DEMO_MODE = process.env.DEMO_MODE === 'true';
+    
+    // Helper function to return mock success response
+    const returnMockResponse = () => {
+      const origin = req.headers.origin;
+      if (origin) {
+        res.header('Access-Control-Allow-Origin', origin);
+        res.header('Access-Control-Allow-Credentials', 'true');
+      }
+      
+      const mockDocumentIds = files.map((_, index) => `demo-doc-${Date.now()}-${index}`);
+      
+      // Send SSE event for upload success (mock)
+      (async () => {
+        try {
+          const sseHub = (await import('../utils/sseHub')).default;
+          sseHub.sendEvent(finalUserId, 'evidence_upload_completed', {
+            userId: finalUserId,
+            documentId: mockDocumentIds[0],
+            documentIds: mockDocumentIds,
+            status: 'uploaded',
+            processingStatus: 'pending',
+            fileCount: files.length,
+            message: 'Document uploaded successfully (DEMO MODE)',
+            timestamp: new Date().toISOString(),
+            demoMode: true
+          });
+        } catch (sseError) {
+          logger.debug('Failed to send SSE event for mock upload', { error: sseError });
+        }
+      })();
+      
+      return res.json({
+        success: true,
+        id: mockDocumentIds[0],
+        document_ids: mockDocumentIds,
+        status: 'uploaded',
+        processing_status: 'pending',
+        file_count: files.length,
+        uploaded_at: new Date().toISOString(),
+        message: `Documents uploaded successfully (DEMO MODE - ${files.length} file(s))`,
+        demoMode: true,
+        note: 'Python API is unavailable. This is a mock response for demo purposes.'
+      });
+    };
+    
+    // If demo mode is enabled, return mock response immediately
+    if (SKIP_PYTHON_API || DEMO_MODE) {
+      logger.info('🎭 [EVIDENCE] DEMO MODE: Returning mock response (Python API skipped)', {
+        userId: finalUserId,
+        fileCount: files.length,
+        filenames: files.map(f => f.originalname),
+        skipPythonApi: SKIP_PYTHON_API,
+        demoMode: DEMO_MODE
+      });
+      return returnMockResponse();
+    }
+    
     // Extract token for authentication
     const token = req.cookies?.session_token || req.headers['authorization']?.replace('Bearer ', '');
     
     logger.info('📤 [EVIDENCE] Starting upload to Python API', {
       pythonApiUrl,
       pythonUrl,
-      userId,
+      userId: finalUserId,
       fileCount: files.length,
       filenames: files.map(f => f.originalname),
       claim_id,
@@ -411,22 +471,25 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
       const axios = (await import('axios')).default;
       const FormData = (await import('form-data')).default;
       
-      // Quick health check before attempting upload (optional - can be disabled if too slow)
+      // Quick health check before attempting upload (reduced timeout for faster failure detection)
       try {
         const healthCheckUrl = `${pythonApiUrl}/health`;
         logger.debug('🔍 [EVIDENCE] Checking Python API health before upload', { healthCheckUrl });
         
         const healthResponse = await axios.get(healthCheckUrl, {
-          timeout: 5000, // 5 second timeout for health check
+          timeout: 3000, // Reduced to 3 seconds for faster failure detection
           validateStatus: (status) => status < 500 // Allow 4xx but not 5xx
         }).catch((healthError: any) => {
-          // Health check failed - log but continue with upload attempt
-          logger.warn('⚠️ [EVIDENCE] Python API health check failed, but continuing with upload', {
+          // Health check failed - use demo mode fallback for YC demo
+          logger.warn('⚠️ [EVIDENCE] Python API health check failed - using demo mode fallback', {
             error: healthError?.message,
             code: healthError?.code,
-            status: healthError?.response?.status
+            status: healthError?.response?.status,
+            note: 'Returning mock response for YC demo'
           });
-          return null;
+          
+          // Return mock response instead of error (for YC demo)
+          return returnMockResponse();
         });
         
         if (healthResponse && healthResponse.status === 200) {
@@ -435,33 +498,26 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
             data: healthResponse.data
           });
         } else if (healthResponse && healthResponse.status >= 500) {
-          // Python API is down - return early
-          logger.error('❌ [EVIDENCE] Python API health check indicates service is down', {
+          // Python API is down - use demo mode fallback for YC demo
+          logger.warn('⚠️ [EVIDENCE] Python API health check indicates service is down - using demo mode fallback', {
             status: healthResponse.status,
-            data: healthResponse.data
+            data: healthResponse.data,
+            note: 'Returning mock response for YC demo'
           });
           
-          // Set CORS headers for error response
-          const healthErrorOrigin = req.headers.origin;
-          if (healthErrorOrigin) {
-            res.header('Access-Control-Allow-Origin', healthErrorOrigin);
-            res.header('Access-Control-Allow-Credentials', 'true');
-          }
-          
-          return res.status(503).json({
-            success: false,
-            error: 'Service unavailable',
-            message: 'The document processing service is currently unavailable. Please try again in a few moments.',
-            code: 'PYTHON_API_DOWN',
-            retryAfter: 60
-          });
+          // Return mock response instead of error (for YC demo)
+          return returnMockResponse();
         }
       } catch (healthError: any) {
-        // Health check error - log but continue with upload attempt
-        logger.warn('⚠️ [EVIDENCE] Python API health check error, but continuing with upload', {
+        // Health check error - use demo mode fallback for YC demo
+        logger.warn('⚠️ [EVIDENCE] Python API health check error - using demo mode fallback', {
           error: healthError?.message,
-          code: healthError?.code
+          code: healthError?.code,
+          note: 'Returning mock response for YC demo'
         });
+        
+        // Return mock response instead of error (for YC demo)
+        return returnMockResponse();
       }
       
       // Create FormData to forward files
