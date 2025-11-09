@@ -489,18 +489,24 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
           });
           
           // Return mock response instead of error (for YC demo)
-          return returnMockResponse();
+          return null; // Signal that health check failed
         });
         
-        if (healthResponse && healthResponse.status === 200) {
+        if (!healthResponse) {
+          // Health check failed - use demo mode fallback
+          return returnMockResponse();
+        }
+        
+        const healthStatus = healthResponse.status;
+        if (healthStatus === 200) {
           logger.info('✅ [EVIDENCE] Python API health check passed', {
-            status: healthResponse.status,
+            status: healthStatus,
             data: healthResponse.data
           });
-        } else if (healthResponse && healthResponse.status >= 500) {
+        } else if (healthStatus >= 500) {
           // Python API is down - use demo mode fallback for YC demo
           logger.warn('⚠️ [EVIDENCE] Python API health check indicates service is down - using demo mode fallback', {
-            status: healthResponse.status,
+            status: healthStatus,
             data: healthResponse.data,
             note: 'Returning mock response for YC demo'
           });
