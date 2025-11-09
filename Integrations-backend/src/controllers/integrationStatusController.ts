@@ -138,39 +138,39 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       logger.warn('Failed to check evidence sources', { error: evidenceError });
     }
 
-    // Also check token manager for evidence providers (fallback)
-    const evidenceProviders = ['gmail', 'outlook', 'gdrive', 'dropbox'];
-    for (const provider of evidenceProviders) {
-      if (!response.providerIngest[provider as keyof typeof response.providerIngest].connected) {
-        try {
-          const token = await tokenManager.getToken(userId, provider);
-          if (token && token.accessToken) {
-            response.providerIngest[provider as keyof typeof response.providerIngest].connected = true;
-            response.docs_connected = true;
+    // Also check token manager for Gmail (fallback, only for supported providers)
+    if (!response.providerIngest.gmail.connected) {
+      try {
+        const token = await tokenManager.getToken(userId, 'gmail');
+        if (token && token.accessToken) {
+          response.providerIngest.gmail.connected = true;
+          response.docs_connected = true;
+          
+          // Try to get last sync from evidence_sources
+          try {
+            const { data: source } = await supabase
+              .from('evidence_sources')
+              .select('last_sync_at')
+              .eq('user_id', userId)
+              .eq('provider', 'gmail')
+              .eq('status', 'connected')
+              .maybeSingle();
             
-            // Try to get last sync from evidence_sources
-            try {
-              const { data: source } = await supabase
-                .from('evidence_sources')
-                .select('last_sync_at')
-                .eq('user_id', userId)
-                .eq('provider', provider)
-                .eq('status', 'connected')
-                .maybeSingle();
-              
-              if (source?.last_sync_at) {
-                response.providerIngest[provider as keyof typeof response.providerIngest].lastIngest = source.last_sync_at;
-              }
-            } catch (dbError) {
-              logger.debug('Failed to get last sync from database', { provider, error: dbError });
+            if (source?.last_sync_at) {
+              response.providerIngest.gmail.lastIngest = source.last_sync_at;
             }
+          } catch (dbError) {
+            logger.debug('Failed to get last sync from database', { provider: 'gmail', error: dbError });
           }
-        } catch (tokenError) {
-          // Provider not connected, that's okay
-          logger.debug(`Provider ${provider} not connected`, { error: tokenError });
         }
+      } catch (tokenError) {
+        // Gmail not connected, that's okay
+        logger.debug('Gmail not connected', { error: tokenError });
       }
     }
+    
+    // For other providers (outlook, gdrive, dropbox), connection status is already
+    // checked from the evidence_sources database query above
 
     logger.info('Integration status retrieved', {
       userId,

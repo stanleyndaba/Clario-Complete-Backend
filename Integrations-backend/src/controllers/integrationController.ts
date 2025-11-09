@@ -17,12 +17,18 @@ async function disconnectEvidenceSource(req: Request, res: Response, provider: s
       });
     }
 
-    // Revoke token from token manager
-    try {
-      await tokenManager.revokeToken(userId, provider);
-      logger.info('Evidence source token revoked', { userId, provider });
-    } catch (error) {
-      logger.warn('Failed to revoke evidence source token', { error, provider });
+    // Revoke token from token manager (only for supported providers)
+    if (provider === 'gmail') {
+      try {
+        await tokenManager.revokeToken(userId, 'gmail');
+        logger.info('Evidence source token revoked', { userId, provider });
+      } catch (error) {
+        logger.warn('Failed to revoke evidence source token', { error, provider });
+      }
+    } else {
+      // For other providers, tokens are stored in database metadata
+      // The database update below will handle the status change
+      logger.info('Evidence source token revoke skipped (stored in database)', { userId, provider });
     }
 
     // Update evidence_sources status to disconnected
