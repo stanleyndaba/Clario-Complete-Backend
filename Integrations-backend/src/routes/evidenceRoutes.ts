@@ -370,6 +370,52 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
       const axios = (await import('axios')).default;
       const FormData = (await import('form-data')).default;
       
+      // Quick health check before attempting upload (optional - can be disabled if too slow)
+      try {
+        const healthCheckUrl = `${pythonApiUrl}/health`;
+        logger.debug('🔍 [EVIDENCE] Checking Python API health before upload', { healthCheckUrl });
+        
+        const healthResponse = await axios.get(healthCheckUrl, {
+          timeout: 5000, // 5 second timeout for health check
+          validateStatus: (status) => status < 500 // Allow 4xx but not 5xx
+        }).catch((healthError: any) => {
+          // Health check failed - log but continue with upload attempt
+          logger.warn('⚠️ [EVIDENCE] Python API health check failed, but continuing with upload', {
+            error: healthError?.message,
+            code: healthError?.code,
+            status: healthError?.response?.status
+          });
+          return null;
+        });
+        
+        if (healthResponse && healthResponse.status === 200) {
+          logger.info('✅ [EVIDENCE] Python API health check passed', {
+            status: healthResponse.status,
+            data: healthResponse.data
+          });
+        } else if (healthResponse && healthResponse.status >= 500) {
+          // Python API is down - return early
+          logger.error('❌ [EVIDENCE] Python API health check indicates service is down', {
+            status: healthResponse.status,
+            data: healthResponse.data
+          });
+          
+          return res.status(503).json({
+            success: false,
+            error: 'Service unavailable',
+            message: 'The document processing service is currently unavailable. Please try again in a few moments.',
+            code: 'PYTHON_API_DOWN',
+            retryAfter: 60
+          });
+        }
+      } catch (healthError: any) {
+        // Health check error - log but continue with upload attempt
+        logger.warn('⚠️ [EVIDENCE] Python API health check error, but continuing with upload', {
+          error: healthError?.message,
+          code: healthError?.code
+        });
+      }
+      
       // Create FormData to forward files
       const formData = new FormData();
       
@@ -412,12 +458,20 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
         maxRedirects: 5
       }).catch((error: any) => {
         // Enhanced error logging
+        const responseData = error?.response?.data;
+        const isHtmlError = typeof responseData === 'string' && (
+          responseData.trim().startsWith('<!DOCTYPE') || 
+          responseData.trim().startsWith('<html')
+        );
+        
         logger.error('❌ [EVIDENCE] Axios error details', {
           message: error?.message,
           code: error?.code,
           status: error?.response?.status,
           statusText: error?.response?.statusText,
-          data: error?.response?.data,
+          isHtmlError: isHtmlError,
+          data: isHtmlError ? 'HTML error page (service down)' : responseData,
+          contentType: error?.response?.headers?.['content-type'],
           config: {
             url: error?.config?.url,
             method: error?.config?.method,
@@ -425,11 +479,68 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
           },
           stack: error?.stack
         });
+        
+        // If it's an HTML error page, wrap it in a more useful error
+        if (isHtmlError && error?.response?.status === 502) {
+          const serviceDownError: any = new Error('Python API service unavailable (502)');
+          serviceDownError.code = 'PYTHON_API_DOWN';
+          serviceDownError.response = {
+            status: 503,
+            data: {
+              success: false,
+              error: 'Service unavailable',
+              message: 'The document processing service is currently unavailable. Please try again in a few moments.',
+              code: 'PYTHON_API_DOWN'
+            }
+          };
+          throw serviceDownError;
+        }
+        
         throw error;
       });
       
-      // Check if response is successful
+      // Check if response is successful and valid JSON
       if (response.status >= 400) {
+        // Check if response is HTML (Render error page)
+        const contentType = response.headers['content-type'] || '';
+        const isHtml = typeof response.data === 'string' && (
+          response.data.trim().startsWith('<!DOCTYPE') || 
+          response.data.trim().startsWith('<html') ||
+          contentType.includes('text/html')
+        );
+        
+        if (isHtml) {
+          logger.error('❌ [EVIDENCE] Python API returned HTML error page (service may be down)', {
+            status: response.status,
+            pythonApiUrl,
+            pythonUrl,
+            userId,
+            responsePreview: typeof response.data === 'string' ? response.data.substring(0, 200) : 'N/A'
+          });
+          
+          // Send SSE event for upload error
+          try {
+            const sseHub = (await import('../utils/sseHub')).default;
+            sseHub.sendEvent(userId, 'evidence_upload_failed', {
+              userId,
+              error: 'Python API service unavailable',
+              statusCode: 503,
+              message: 'The document processing service is currently unavailable. Please try again later.',
+              timestamp: new Date().toISOString()
+            });
+          } catch (sseError) {
+            logger.debug('Failed to send SSE event for upload error', { error: sseError });
+          }
+          
+          return res.status(503).json({
+            success: false,
+            error: 'Service unavailable',
+            message: 'The document processing service is currently unavailable. Please try again in a few moments.',
+            code: 'PYTHON_API_DOWN',
+            retryAfter: 60
+          });
+        }
+        
         logger.error('❌ [EVIDENCE] Python API returned error status', {
           status: response.status,
           statusText: response.statusText,
@@ -532,14 +643,25 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
           message: responseData?.message || `Python API returned status ${statusCode}`,
           details: responseData
         };
-      } else if (errorCode === 'ECONNREFUSED' || errorCode === 'ETIMEDOUT' || errorCode === 'ENOTFOUND') {
-        // Connection issues
-        statusCode = 502;
+      } else if (errorCode === 'PYTHON_API_DOWN' || (responseStatus === 502 && typeof responseData === 'string' && responseData.includes('<!DOCTYPE'))) {
+        // Python API is down (502 with HTML response)
+        statusCode = 503;
         errorResponse = {
           success: false,
-          error: 'Python API unavailable',
-          message: `Cannot connect to Python API at ${pythonApiUrl}. Please check if the service is running.`,
-          code: errorCode
+          error: 'Service unavailable',
+          message: 'The document processing service is currently unavailable. Please try again in a few moments.',
+          code: 'PYTHON_API_DOWN',
+          retryAfter: 60
+        };
+      } else if (errorCode === 'ECONNREFUSED' || errorCode === 'ETIMEDOUT' || errorCode === 'ENOTFOUND') {
+        // Connection issues
+        statusCode = 503;
+        errorResponse = {
+          success: false,
+          error: 'Service unavailable',
+          message: `Cannot connect to the document processing service at ${pythonApiUrl}. The service may be temporarily unavailable. Please try again in a few moments.`,
+          code: errorCode,
+          retryAfter: 60
         };
       } else if (errorCode === 'ECONNABORTED') {
         // Timeout
@@ -547,16 +669,18 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
         errorResponse = {
           success: false,
           error: 'Upload timeout',
-          message: 'The upload request timed out. The file may be too large or the server is busy.',
-          code: errorCode
+          message: 'The upload request timed out. The file may be too large or the server is busy. Please try again with a smaller file or wait a few moments.',
+          code: errorCode,
+          retryAfter: 30
         };
       } else {
         // Other errors
+        statusCode = responseStatus || 502;
         errorResponse = {
           success: false,
           error: 'Upload failed',
-          message: errorMessage,
-          code: errorCode
+          message: errorMessage || 'An unexpected error occurred during upload. Please try again.',
+          code: errorCode || 'UNKNOWN_ERROR'
         };
       }
       
