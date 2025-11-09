@@ -136,6 +136,13 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
 
     const result = await amazonService.startOAuth();
     
+    // Set CORS headers explicitly for OAuth response
+    const origin = req.headers.origin;
+    if (origin) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Access-Control-Allow-Credentials', 'true');
+    }
+    
     // Store frontend URL and user ID with OAuth state for later redirect
     if (result.state) {
       await oauthStateStore.setState(result.state, userId || 'anonymous', frontendUrl);
