@@ -54,7 +54,12 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
     };
 
     // Check Amazon connection
+    // In sandbox mode, Amazon connection can be via:
+    // 1. Token stored in database (tokenManager)
+    // 2. Refresh token in environment variables (AMAZON_SPAPI_REFRESH_TOKEN)
+    // 3. Token in environment variables (for testing/sandbox)
     try {
+      // First, try to get token from tokenManager (database)
       const amazonToken = await tokenManager.getToken(userId, 'amazon');
       if (amazonToken && amazonToken.accessToken) {
         response.amazon_connected = true;
@@ -76,9 +81,54 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         } catch (syncError) {
           logger.debug('Failed to get last sync time', { error: syncError });
         }
+      } else {
+        // If no token in database, check environment variables (sandbox mode)
+        // This is common in sandbox/testing where refresh token is in env vars
+        const envRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
+        const envClientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
+        const envClientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET;
+        
+        // If we have refresh token and credentials in environment, Amazon is "connected"
+        // This is the typical sandbox setup
+        if (envRefreshToken && envRefreshToken.trim() !== '' && envClientId && envClientSecret) {
+          response.amazon_connected = true;
+          logger.info('Amazon connection detected via environment variables (sandbox mode)', {
+            userId,
+            hasRefreshToken: !!envRefreshToken,
+            hasClientId: !!envClientId,
+            hasClientSecret: !!envClientSecret
+          });
+          
+          // Try to get last sync from sync_progress table
+          try {
+            const { data: lastSync } = await supabase
+              .from('sync_progress')
+              .select('updated_at')
+              .eq('user_id', userId)
+              .eq('status', 'completed')
+              .order('updated_at', { ascending: false })
+              .limit(1)
+              .maybeSingle();
+            
+            if (lastSync?.updated_at) {
+              response.lastSync = lastSync.updated_at;
+            }
+          } catch (syncError) {
+            logger.debug('Failed to get last sync time', { error: syncError });
+          }
+        } else {
+          logger.debug('Amazon not connected - no token in database or environment', {
+            userId,
+            hasDbToken: !!amazonToken,
+            hasEnvRefreshToken: !!envRefreshToken,
+            hasEnvClientId: !!envClientId,
+            hasEnvClientSecret: !!envClientSecret
+          });
+        }
       }
     } catch (amazonError) {
-      logger.debug('Amazon not connected', { error: amazonError });
+      logger.debug('Error checking Amazon connection', { error: amazonError });
+      // Don't set amazon_connected to true if there's an error
     }
 
     // Check evidence sources from database
