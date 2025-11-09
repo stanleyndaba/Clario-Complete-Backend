@@ -166,6 +166,30 @@ router.get('/claims/version', (req: Request, res: Response) => {
 // This handles requests to /api/v1/integrations/amazon
 router.get('/', wrap(startAmazonOAuth));
 
+// CORS preflight handler for auth endpoints
+router.options('/auth', (req, res) => {
+  const origin = req.headers.origin;
+  logger.debug('CORS preflight for /auth', { origin });
+  res.header('Access-Control-Allow-Origin', origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Frontend-URL, Origin, Referer');
+  res.header('Access-Control-Max-Age', '86400');
+  res.status(204).send();
+});
+
+router.options('/auth/start', (req, res) => {
+  const origin = req.headers.origin;
+  logger.debug('CORS preflight for /auth/start', { origin });
+  res.header('Access-Control-Allow-Origin', origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Frontend-URL, Origin, Referer');
+  res.header('Access-Control-Max-Age', '86400');
+  res.status(204).send();
+});
+
+router.get('/auth', wrap(startAmazonOAuth));
 router.get('/auth/start', wrap(startAmazonOAuth));
 router.get('/auth/callback', wrap(handleAmazonCallback));
 // Sandbox callback endpoint - same as regular callback (sandbox uses same OAuth flow)
@@ -173,11 +197,13 @@ router.get('/sandbox/callback', wrap(handleAmazonCallback));
 router.post('/sandbox/callback', wrap(handleAmazonCallback));
 router.options('/sandbox/callback', (req, res) => {
   // Handle CORS preflight for sandbox callback
-  const origin = req.headers.origin || '*';
-  res.header('Access-Control-Allow-Origin', origin);
+  const origin = req.headers.origin;
+  logger.debug('CORS preflight for /sandbox/callback', { origin });
+  res.header('Access-Control-Allow-Origin', origin || '*');
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Frontend-URL, Origin, Referer');
+  res.header('Access-Control-Max-Age', '86400');
   res.status(204).send();
 });
 router.post('/sync', wrap(syncAmazonData));

@@ -62,6 +62,7 @@ app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, Postman, etc.)
     if (!origin) {
+      logger.debug('CORS: Allowing request with no origin', { origin: 'null' });
       return callback(null, true);
     }
     
@@ -78,23 +79,47 @@ app.use(cors({
     
     // Allow all Vercel preview deployments and onrender.com domains (pattern matching)
     // This handles changing frontend domains automatically
-    if (origin.includes('vercel.app') || 
-        origin.includes('onrender.com') || 
-        origin.includes('vercel.com')) {
-      logger.debug('CORS allowed for dynamic domain', { origin });
+    // Check for vercel.app, onrender.com, or vercel.com domains
+    const isVercelApp = origin.includes('vercel.app');
+    const isOnRender = origin.includes('onrender.com');
+    const isVercelCom = origin.includes('vercel.com');
+    
+    if (isVercelApp || isOnRender || isVercelCom) {
+      logger.info('CORS: Allowing dynamic domain', { 
+        origin, 
+        type: isVercelApp ? 'vercel.app' : isOnRender ? 'onrender.com' : 'vercel.com' 
+      });
       return callback(null, true);
     }
     
     // Check exact match
     if (allowedOrigins.includes(origin)) {
+      logger.debug('CORS: Allowing exact match', { origin });
       return callback(null, true);
     }
     
-    callback(new Error('Not allowed by CORS'));
+    // Log rejected origin for debugging
+    logger.warn('CORS: Rejecting origin', { 
+      origin,
+      allowedPatterns: ['vercel.app', 'onrender.com', 'vercel.com'],
+      allowedOrigins: allowedOrigins.length
+    });
+    callback(new Error(`CORS: Origin ${origin} is not allowed`));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-User-Id', 'X-Forwarded-User-Id']
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With', 
+    'X-User-Id', 
+    'X-Forwarded-User-Id',
+    'X-Frontend-URL',
+    'Origin',
+    'Referer'
+  ],
+  exposedHeaders: ['X-User-Id', 'X-Request-Id'],
+  maxAge: 86400 // 24 hours
 }));
 
 // Rate limiting

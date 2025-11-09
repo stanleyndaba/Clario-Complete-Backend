@@ -97,6 +97,13 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
           redirectUrl = `${frontendUrl}/integrations-hub?amazon_connected=true&message=${encodeURIComponent('Using existing Amazon connection')}`;
         }
         
+        // Set CORS headers explicitly for JSON response
+        const origin = req.headers.origin;
+        if (origin) {
+          res.header('Access-Control-Allow-Origin', origin);
+          res.header('Access-Control-Allow-Credentials', 'true');
+        }
+        
         // Return JSON response with redirect URL (frontend will handle navigation)
         // This works for both fetch requests and direct browser navigation
         return res.json({
