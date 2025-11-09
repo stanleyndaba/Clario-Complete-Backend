@@ -222,12 +222,15 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
 
     // Use frontend URL from state, or fallback to env var
     const redirectFrontendUrl = frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
-    const redirectUrl = `${redirectFrontendUrl}/dashboard?gmail_connected=true&email=${encodeURIComponent(userEmail)}`;
+    // Redirect to integrations-hub instead of /dashboard (which may not exist)
+    // This route exists and shows the integrations status
+    const redirectUrl = `${redirectFrontendUrl}/integrations-hub?gmail_connected=true&email=${encodeURIComponent(userEmail)}`;
     
     logger.info('Redirecting to frontend after Gmail OAuth success', {
       userId,
       frontendUrl: redirectFrontendUrl,
-      email: userEmail
+      email: userEmail,
+      redirectPath: '/integrations-hub'
     });
     
     res.redirect(302, redirectUrl);
