@@ -12,8 +12,10 @@ const GMAIL_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
 export const initiateGmailOAuth = async (req: Request, res: Response) => {
   try {
-    // Get user ID from authenticated request
-    const userId = (req as any).user?.id;
+    // Get user ID from authenticated request or X-User-Id header (for testing)
+    const userId = (req as any).user?.id || (req as any).userId || 
+                   (req as any).headers['x-user-id'] || 
+                   (req as any).headers['x-forwarded-user-id'];
     
     if (!userId) {
       return res.status(401).json({
@@ -244,8 +246,10 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
 
 export const connectGmail = async (req: Request, res: Response) => {
   try {
-    // Get user ID from authenticated request
-    const userId = (req as any).user?.id;
+    // Get user ID from authenticated request or X-User-Id header (for testing)
+    const userId = (req as any).user?.id || (req as any).userId || 
+                   (req as any).headers['x-user-id'] || 
+                   (req as any).headers['x-forwarded-user-id'];
     
     if (!userId) {
       return res.status(401).json({
