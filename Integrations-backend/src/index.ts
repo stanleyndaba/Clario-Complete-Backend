@@ -29,6 +29,7 @@ import autoclaimRoutes from './routes/autoclaimRoutes';
 import internalEventsRoutes from './routes/internalEventsRoutes';
 import stripeWebhookRoutes from './routes/stripeWebhookRoutes';
 import workflowRoutes from './routes/workflowRoutes';
+import evidenceRoutes from './routes/evidenceRoutes';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -167,6 +168,8 @@ app.use('/api/internal-events', internalEventsRoutes);
 app.use('/api/stripe-webhook', stripeWebhookRoutes);
 app.use('/api/v1/workflow', workflowRoutes);
 logger.info('Workflow routes registered at /api/v1/workflow');
+app.use('/api/evidence', evidenceRoutes);
+logger.info('Evidence routes registered at /api/evidence');
 
 // Consolidated service routes (merged from separate microservices)
 app.use('/api/v1/stripe-payments', consolidatedStripeRoutes);
