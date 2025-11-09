@@ -116,7 +116,9 @@ app.use(cors({
     'X-Forwarded-User-Id',
     'X-Frontend-URL',
     'Origin',
-    'Referer'
+    'Referer',
+    'Accept',
+    'Cache-Control'
   ],
   exposedHeaders: ['X-User-Id', 'X-Request-Id'],
   maxAge: 86400 // 24 hours

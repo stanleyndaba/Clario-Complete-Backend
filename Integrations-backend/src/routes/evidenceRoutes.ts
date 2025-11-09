@@ -322,12 +322,43 @@ const uploadMulter = multer({
 
 router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    // Extract user ID from multiple sources (for flexibility)
+    const userId = (req as any).userId || 
+                   (req as any).user?.id || 
+                   (req as any).user?.user_id ||
+                   req.headers['x-user-id'] ||
+                   req.headers['x-forwarded-user-id'] ||
+                   req.query.userId as string;
     
-    if (!userId) {
+    // Log all available user identification sources for debugging
+    logger.debug('🔍 [EVIDENCE] User ID extraction', {
+      'req.userId': (req as any).userId,
+      'req.user.id': (req as any).user?.id,
+      'req.user.user_id': (req as any).user?.user_id,
+      'x-user-id': req.headers['x-user-id'],
+      'x-forwarded-user-id': req.headers['x-forwarded-user-id'],
+      'query.userId': req.query.userId,
+      'extractedUserId': userId,
+      'hasAuthHeader': !!req.headers['authorization'],
+      'hasCookie': !!req.cookies?.session_token
+    });
+    
+    // For testing/development, allow demo-user, but in production require real user
+    if (!userId || (userId === 'demo-user' && process.env.NODE_ENV === 'production')) {
+      logger.warn('⚠️ [EVIDENCE] Upload request without valid user ID', {
+        userId: userId || 'none',
+        headers: {
+          'x-user-id': req.headers['x-user-id'],
+          'authorization': req.headers['authorization'] ? 'present' : 'missing'
+        }
+      });
+      
+      // Return a more helpful error message
       return res.status(401).json({
         success: false,
-        error: 'Unauthorized'
+        error: 'Unauthorized',
+        message: 'User authentication required. Please ensure you are logged in and your session is valid.',
+        hint: 'If testing, provide X-User-Id header or ensure authentication middleware is working'
       });
     }
 
