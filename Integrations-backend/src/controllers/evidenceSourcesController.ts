@@ -342,8 +342,18 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
         accountEmail
       });
 
-      // Redirect to frontend with success
-      return res.redirect(`${frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?provider=${provider}&success=true`);
+      // Redirect to integrations-hub instead of /auth/callback (which may not exist)
+      // This route exists and shows the integrations status
+      const redirectUrl = `${frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000'}/integrations-hub?${provider}_connected=true&email=${encodeURIComponent(accountEmail || '')}`;
+      
+      logger.info('Redirecting to frontend after evidence source OAuth success', {
+        userId,
+        provider,
+        accountEmail,
+        redirectPath: '/integrations-hub'
+      });
+      
+      return res.redirect(302, redirectUrl);
     } catch (tokenError: any) {
       logger.error('Failed to exchange OAuth code for token', {
         error: tokenError?.message || String(tokenError),
