@@ -154,6 +154,7 @@ async def get_document_download_url(
 @router.post("/api/documents/upload", response_model=DocumentUploadResponse)
 async def upload_document(
     request: Request,
+    background_tasks: BackgroundTasks,
     claim_id: Optional[str] = Query(None, description="Associate with specific claim"),
     user: dict = Depends(get_current_user)
 ):
@@ -234,38 +235,33 @@ async def upload_document(
                         # For now, we'll just store metadata
                         logger.info(f"Document {document_id} stored for user {user_id}")
                         
-                        # Trigger parsing by calling the parser endpoint directly
-                        # This will be done asynchronously after the response is returned
-                        try:
-                            import asyncio
-                            from src.api.parser import _determine_parser_type
-                            from src.parsers.parser_worker import parser_worker
-                            
-                            if parser_worker:
-                                # Determine parser type
-                                parser_type = _determine_parser_type(content_type, filename)
+                        # Trigger parsing using background task
+                        # This will call the parser endpoint after the response is returned
+                        async def trigger_parsing(doc_id: str, uid: str, content_t: str, file_name: str):
+                            try:
+                                import httpx
+                                # Get Python API URL (self-reference)
+                                python_api_url = os.getenv('PYTHON_API_URL', 'http://localhost:8000')
                                 
-                                # Create parser job (this will be processed asynchronously by the worker)
-                                async def trigger_parsing():
-                                    try:
-                                        job_id = await parser_worker.create_parser_job(document_id, user_id, parser_type)
-                                        logger.info(f"Parser job {job_id} created for document {document_id}")
-                                        # Start processing (non-blocking)
-                                        await parser_worker._process_job({
-                                            'id': job_id,
-                                            'document_id': document_id,
-                                            'parser_type': parser_type
-                                        })
-                                    except Exception as e:
-                                        logger.error(f"Failed to trigger parsing for document {document_id}: {e}")
-                                
-                                # Schedule parsing task (non-blocking)
-                                asyncio.create_task(trigger_parsing())
-                                logger.info(f"Parsing scheduled for document {document_id}")
-                            else:
-                                logger.warn(f"Parser worker not available, skipping parsing for document {document_id}")
-                        except Exception as parse_error:
-                            logger.warn(f"Failed to trigger parsing for document {document_id}: {parse_error}")
+                                # Call the parser endpoint
+                                async with httpx.AsyncClient(timeout=30.0) as client:
+                                    response = await client.post(
+                                        f"{python_api_url}/api/v1/evidence/parse/{doc_id}",
+                                        headers={
+                                            'X-User-Id': uid,
+                                            'Content-Type': 'application/json'
+                                        }
+                                    )
+                                    if response.status_code == 200:
+                                        logger.info(f"Parsing triggered for document {doc_id}: {response.json()}")
+                                    else:
+                                        logger.warn(f"Failed to trigger parsing for document {doc_id}: {response.status_code} - {response.text}")
+                            except Exception as e:
+                                logger.error(f"Error triggering parsing for document {doc_id}: {e}")
+                        
+                        # Schedule parsing as background task
+                        background_tasks.add_task(trigger_parsing, document_id, user_id, content_type, filename)
+                        logger.info(f"Parsing scheduled for document {document_id}")
                 
             except Exception as file_error:
                 logger.error(f"Error processing file {file.filename}: {file_error}")
