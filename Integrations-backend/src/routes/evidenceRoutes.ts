@@ -411,10 +411,23 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
         const sseHub = (await import('../utils/sseHub')).default;
         sseHub.sendEvent(userId, 'evidence_upload_completed', {
           userId,
-          documentId: response.data.id,
-          status: response.data.status,
+          documentId: response.data.id || response.data.document_ids?.[0],
+          documentIds: response.data.document_ids || [response.data.id],
+          status: response.data.status || 'uploaded',
+          processingStatus: response.data.processing_status || 'processing',
+          fileCount: response.data.file_count || 1,
+          message: response.data.message || 'Document uploaded successfully',
           timestamp: new Date().toISOString()
         });
+        
+        // Also send parsing_started event if processing_status is 'processing'
+        if (response.data.processing_status === 'processing') {
+          sseHub.sendEvent(userId, 'parsing_started', {
+            userId,
+            documentId: response.data.id || response.data.document_ids?.[0],
+            timestamp: new Date().toISOString()
+          });
+        }
       } catch (sseError) {
         logger.debug('Failed to send SSE event for upload completion', { error: sseError });
       }
@@ -433,6 +446,8 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
         sseHub.sendEvent(userId, 'evidence_upload_failed', {
           userId,
           error: proxyError?.message || String(proxyError),
+          statusCode: proxyError?.response?.status || 500,
+          errorDetails: proxyError?.response?.data || null,
           timestamp: new Date().toISOString()
         });
       } catch (sseError) {

@@ -236,17 +236,34 @@ async def upload_document(
                         logger.info(f"Document {document_id} stored for user {user_id}")
                         
                         # Trigger parsing using background task
-                        # This will call the parser endpoint after the response is returned
+                        # Import parser worker to trigger parsing directly
                         async def trigger_parsing(doc_id: str, uid: str, content_t: str, file_name: str):
                             try:
-                                import httpx
-                                # Get Python API URL (self-reference)
-                                python_api_url = os.getenv('PYTHON_API_URL', 'http://localhost:8000')
+                                # Try to use parser worker directly if available
+                                try:
+                                    from src.parsers.parser_worker import parser_worker
+                                    if parser_worker:
+                                        logger.info(f"Triggering parsing for document {doc_id} using parser worker")
+                                        # Trigger parsing job directly
+                                        await parser_worker.parse_document(doc_id, uid)
+                                        logger.info(f"Parsing job started for document {doc_id}")
+                                        return
+                                except ImportError:
+                                    logger.debug("Parser worker not available, using HTTP endpoint")
                                 
-                                # Call the parser endpoint
+                                # Fallback: Call parser endpoint via HTTP
+                                import httpx
+                                python_api_url = os.getenv('PYTHON_API_URL', 'http://localhost:8000')
+                                if python_api_url.startswith('http://localhost') or python_api_url.startswith('https://'):
+                                    # Use full URL for external calls
+                                    parse_url = f"{python_api_url}/api/v1/evidence/parse/{doc_id}"
+                                else:
+                                    # Use relative URL for internal calls
+                                    parse_url = f"/api/v1/evidence/parse/{doc_id}"
+                                
                                 async with httpx.AsyncClient(timeout=30.0) as client:
                                     response = await client.post(
-                                        f"{python_api_url}/api/v1/evidence/parse/{doc_id}",
+                                        parse_url,
                                         headers={
                                             'X-User-Id': uid,
                                             'Content-Type': 'application/json'
@@ -257,7 +274,7 @@ async def upload_document(
                                     else:
                                         logger.warn(f"Failed to trigger parsing for document {doc_id}: {response.status_code} - {response.text}")
                             except Exception as e:
-                                logger.error(f"Error triggering parsing for document {doc_id}: {e}")
+                                logger.error(f"Error triggering parsing for document {doc_id}: {e}", exc_info=True)
                         
                         # Schedule parsing as background task
                         background_tasks.add_task(trigger_parsing, document_id, user_id, content_type, filename)
