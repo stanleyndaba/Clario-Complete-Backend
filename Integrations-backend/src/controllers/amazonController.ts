@@ -34,14 +34,29 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
     }
 
     // Check if we already have a refresh token - if so, we can skip OAuth
+    // This is the RECOMMENDED approach for sandbox mode
     const existingRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
+    const isSandboxMode = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || 
+                          !process.env.AMAZON_SPAPI_BASE_URL || 
+                          process.env.NODE_ENV === 'development';
+    
     if (existingRefreshToken && existingRefreshToken.trim() !== '') {
-      logger.info('Refresh token already exists in environment - user can skip OAuth if token is valid');
+      logger.info('Refresh token already exists in environment - user can skip OAuth if token is valid', {
+        isSandboxMode,
+        note: 'For sandbox mode, bypass flow is recommended to avoid OAuth configuration issues'
+      });
+      
       // Check if user wants to skip OAuth (bypass parameter)
-      const bypassOAuth = req.query.bypass === 'true' || req.query.skip_oauth === 'true';
+      // In sandbox mode, we can also auto-suggest bypass if OAuth is not explicitly requested
+      const bypassOAuth = req.query.bypass === 'true' || 
+                         req.query.skip_oauth === 'true' ||
+                         (isSandboxMode && req.query.force_oauth !== 'true');
       
       if (bypassOAuth) {
-        logger.info('Bypassing OAuth flow - using existing refresh token');
+        logger.info('Bypassing OAuth flow - using existing refresh token', {
+          isSandboxMode,
+          reason: isSandboxMode ? 'Sandbox mode - using existing token (recommended)' : 'User requested bypass'
+        });
         
         // Try to trigger sync if we have a userId
         // For bypass flow, userId might not be available, so we'll attempt sync if possible
@@ -64,6 +79,24 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
           });
         }
         
+        // Determine redirect URL based on frontend URL
+        // Preserve the full frontend URL path if it exists
+        let redirectUrl: string;
+        try {
+          const frontendUrlObj = new URL(frontendUrl);
+          // If frontend URL already has a path, preserve it; otherwise use default
+          if (frontendUrlObj.pathname && frontendUrlObj.pathname !== '/') {
+            // Frontend URL already includes path (e.g., /integrations-hub)
+            redirectUrl = `${frontendUrl}?amazon_connected=true&message=${encodeURIComponent('Using existing Amazon connection')}`;
+          } else {
+            // Frontend URL is just domain, use default path
+            redirectUrl = `${frontendUrl}/integrations-hub?amazon_connected=true&message=${encodeURIComponent('Using existing Amazon connection')}`;
+          }
+        } catch {
+          // If URL parsing fails, construct simple redirect
+          redirectUrl = `${frontendUrl}/integrations-hub?amazon_connected=true&message=${encodeURIComponent('Using existing Amazon connection')}`;
+        }
+        
         // Return JSON response with redirect URL (frontend will handle navigation)
         // This works for both fetch requests and direct browser navigation
         return res.json({
@@ -71,9 +104,20 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
           ok: true,
           bypassed: true,
           message: 'Using existing Amazon connection',
-          redirectUrl: `${frontendUrl}/dashboard?amazon_connected=true&message=${encodeURIComponent('Using existing Amazon connection')}`
+          redirectUrl: redirectUrl,
+          sandboxMode: isSandboxMode,
+          note: isSandboxMode ? 'Sandbox mode: Using existing refresh token (recommended for testing)' : 'Using existing refresh token'
         });
       }
+    }
+    
+    // If we reach here, user wants OAuth flow (or no refresh token exists)
+    // In sandbox mode, warn that bypass is recommended
+    if (isSandboxMode && existingRefreshToken) {
+      logger.warn('OAuth flow requested in sandbox mode, but refresh token exists', {
+        suggestion: 'Consider using bypass flow (?bypass=true) for sandbox testing',
+        note: 'OAuth flow in sandbox requires proper Security Profile configuration in Amazon Developer Console'
+      });
     }
 
     logger.info('Starting OAuth flow', {

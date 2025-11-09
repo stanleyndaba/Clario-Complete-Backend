@@ -281,16 +281,26 @@ export class AmazonService {
       // 3. Web Settings → Ensure no scopes are configured/required
       // 4. The Security Profile should be configured for SP-API, not LWA with scopes
 
+      const isSandboxMode = this.isSandbox();
+      
       logger.info('Generated Amazon OAuth URL', {
         hasClientId: !!clientId,
         redirectUri,
         stateLength: state.length,
-        authUrlLength: authUrl.length
+        authUrlLength: authUrl.length,
+        isSandboxMode,
+        note: isSandboxMode 
+          ? 'SANDBOX MODE: If you get "unknown scope" error, this is likely due to Security Profile configuration in Amazon Developer Console. For sandbox testing, use bypass flow (?bypass=true) instead.'
+          : 'OAuth URL generated - ensure Security Profile is configured correctly in Amazon Developer Console'
       });
 
       return {
         authUrl,
-        state
+        state,
+        sandboxMode: isSandboxMode,
+        warning: isSandboxMode 
+          ? 'For sandbox testing, using bypass flow (?bypass=true) is recommended if refresh token exists. OAuth flow requires proper Security Profile configuration in Amazon Developer Console.'
+          : undefined
       };
     } catch (error: any) {
       logger.error('Error generating OAuth URL:', error);
