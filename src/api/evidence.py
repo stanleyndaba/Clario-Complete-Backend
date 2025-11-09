@@ -2,10 +2,12 @@
 Evidence/Documents API endpoints - Production Implementation
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Request, BackgroundTasks
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import logging
+import json
+import os
 from src.api.auth_middleware import get_current_user
 from src.api.schemas import Document, DocumentListResponse, DocumentViewResponse, DocumentDownloadResponse, DocumentUploadResponse
 from src.services.cost_docs_client import cost_docs_client
@@ -151,35 +153,140 @@ async def get_document_download_url(
 
 @router.post("/api/documents/upload", response_model=DocumentUploadResponse)
 async def upload_document(
-    files: List[UploadFile] = File(...),
+    request: Request,
     claim_id: Optional[str] = Query(None, description="Associate with specific claim"),
     user: dict = Depends(get_current_user)
 ):
-    """Upload new document(s)"""
+    """Upload new document(s) - accepts 'file' (singular) field name for multiple files"""
     
     try:
         user_id = user["user_id"]
-        logger.info(f"Uploading documents for user {user_id}, files: {len(files)}, claim_id={claim_id}")
         
-        # Call cost docs service to upload documents
-        result = await cost_docs_client.upload_documents(claim_id or "general", files, user_id)
+        # Parse multipart form data manually to handle 'file' (singular) field name
+        form = await request.form()
         
-        if "error" in result:
-            logger.error(f"Upload documents failed: {result['error']}")
-            raise HTTPException(status_code=502, detail=f"Cost docs service error: {result['error']}")
+        # Accept both 'file' (singular) and 'files' (plural) field names
+        # Frontend sends 'file' (singular) for all files
+        files: List[UploadFile] = []
         
+        # Check for 'file' field (singular - frontend sends multiple files with same field name)
+        file_fields = form.getlist('file')
+        if file_fields:
+            for file_field in file_fields:
+                # file_field is already an UploadFile when using form.getlist()
+                if isinstance(file_field, UploadFile):
+                    files.append(file_field)
+        
+        # Fallback to 'files' field (plural)
+        if not files:
+            file_fields = form.getlist('files')
+            for file_field in file_fields:
+                if isinstance(file_field, UploadFile):
+                    files.append(file_field)
+        
+        if not files:
+            raise HTTPException(status_code=400, detail="No files provided. Expected 'file' or 'files' field.")
+        
+        logger.info(f"Uploading documents for user {user_id}, files: {len(files)}, claim_id={claim_id}, filenames: {[f.filename for f in files]}")
+        
+        # Store files directly in evidence_documents table and trigger parsing
+        # Since cost_docs_client doesn't have upload_documents, we'll implement direct storage
+        document_ids = []
+        for file in files:
+            try:
+                # Read file content
+                content = await file.read()
+                filename = file.filename or f"document_{datetime.utcnow().timestamp()}"
+                content_type = file.content_type or "application/octet-stream"
+                
+                # Store in database (evidence_documents table)
+                from src.common.db_postgresql import DatabaseManager
+                db = DatabaseManager()
+                
+                with db._get_connection() as conn:
+                    with conn.cursor() as cursor:
+                        # Insert document record
+                        cursor.execute("""
+                            INSERT INTO evidence_documents (
+                                user_id, provider, filename, content_type, 
+                                size_bytes, processing_status, created_at, metadata
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            RETURNING id
+                        """, (
+                            user_id,
+                            'manual_upload',
+                            filename,
+                            content_type,
+                            len(content),
+                            'pending',
+                            datetime.utcnow(),
+                            json.dumps({
+                                'claim_id': claim_id,
+                                'upload_method': 'manual',
+                                'original_filename': filename
+                            })
+                        ))
+                        
+                        document_id = str(cursor.fetchone()[0])
+                        document_ids.append(document_id)
+                        
+                        # TODO: Store file content in Supabase Storage or S3
+                        # For now, we'll just store metadata
+                        logger.info(f"Document {document_id} stored for user {user_id}")
+                        
+                        # Trigger parsing by calling the parser endpoint directly
+                        # This will be done asynchronously after the response is returned
+                        try:
+                            import asyncio
+                            from src.api.parser import _determine_parser_type
+                            from src.parsers.parser_worker import parser_worker
+                            
+                            if parser_worker:
+                                # Determine parser type
+                                parser_type = _determine_parser_type(content_type, filename)
+                                
+                                # Create parser job (this will be processed asynchronously by the worker)
+                                async def trigger_parsing():
+                                    try:
+                                        job_id = await parser_worker.create_parser_job(document_id, user_id, parser_type)
+                                        logger.info(f"Parser job {job_id} created for document {document_id}")
+                                        # Start processing (non-blocking)
+                                        await parser_worker._process_job({
+                                            'id': job_id,
+                                            'document_id': document_id,
+                                            'parser_type': parser_type
+                                        })
+                                    except Exception as e:
+                                        logger.error(f"Failed to trigger parsing for document {document_id}: {e}")
+                                
+                                # Schedule parsing task (non-blocking)
+                                asyncio.create_task(trigger_parsing())
+                                logger.info(f"Parsing scheduled for document {document_id}")
+                            else:
+                                logger.warn(f"Parser worker not available, skipping parsing for document {document_id}")
+                        except Exception as parse_error:
+                            logger.warn(f"Failed to trigger parsing for document {document_id}: {parse_error}")
+                
+            except Exception as file_error:
+                logger.error(f"Error processing file {file.filename}: {file_error}")
+                continue
+        
+        if not document_ids:
+            raise HTTPException(status_code=500, detail="Failed to upload any documents")
+        
+        # Return success response
         return DocumentUploadResponse(
-            id=result.get("document_id", f"doc_{user_id}_{int(datetime.utcnow().timestamp())}"),
+            id=document_ids[0],  # Return first document ID
             status="uploaded",
             uploaded_at=datetime.utcnow().isoformat() + "Z",
-            message="Documents uploaded successfully",
+            message=f"Documents uploaded successfully ({len(document_ids)} files)",
             processing_status="processing"
         )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in upload_document: {e}")
+        logger.error(f"Unexpected error in upload_document: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

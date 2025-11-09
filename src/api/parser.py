@@ -3,11 +3,11 @@ Document Parser API endpoints
 Handles document parsing requests and job management
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, Query, BackgroundTasks, Request
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import logging
-from src.api.auth_middleware import get_current_user
+from src.api.auth_middleware import get_current_user, get_optional_user
 from src.api.schemas import (
     ParserJobResponse, 
     DocumentWithParsedData,
@@ -33,12 +33,24 @@ db = DatabaseManager()
 async def force_parse_document(
     document_id: str,
     background_tasks: BackgroundTasks,
-    user: dict = Depends(get_current_user)
+    request: Request,
+    user: Optional[dict] = Depends(get_optional_user)
 ):
     """Force parse a specific document"""
     
     try:
-        user_id = user["user_id"]
+        # Support both authenticated user and X-User-Id header (for Node.js backend calls)
+        user_id = None
+        if user:
+            user_id = user.get("user_id")
+        
+        # Fallback to X-User-Id header if no authenticated user
+        if not user_id:
+            user_id = request.headers.get("X-User-Id")
+        
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User ID required (authenticate or provide X-User-Id header)")
+        
         logger.info(f"Force parsing document {document_id} for user {user_id}")
         
         # Check if document exists and belongs to user
@@ -73,12 +85,23 @@ async def force_parse_document(
 @router.get("/api/v1/evidence/documents/{document_id}", response_model=DocumentWithParsedData)
 async def get_document_with_parsed_data(
     document_id: str,
-    user: dict = Depends(get_current_user)
+    request: Request,
+    user: Optional[dict] = Depends(get_optional_user)
 ):
     """Get document with parsed invoice data"""
     
     try:
-        user_id = user["user_id"]
+        # Support both authenticated user and X-User-Id header
+        user_id = None
+        if user:
+            user_id = user.get("user_id")
+        
+        if not user_id:
+            user_id = request.headers.get("X-User-Id")
+        
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User ID required")
+        
         logger.info(f"Getting document {document_id} with parsed data for user {user_id}")
         
         # Get document with parsed data
@@ -97,12 +120,23 @@ async def get_document_with_parsed_data(
 @router.get("/api/v1/evidence/parse/jobs/{job_id}")
 async def get_parser_job_status(
     job_id: str,
-    user: dict = Depends(get_current_user)
+    request: Request,
+    user: Optional[dict] = Depends(get_optional_user)
 ):
     """Get parser job status"""
     
     try:
-        user_id = user["user_id"]
+        # Support both authenticated user and X-User-Id header
+        user_id = None
+        if user:
+            user_id = user.get("user_id")
+        
+        if not user_id:
+            user_id = request.headers.get("X-User-Id")
+        
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User ID required")
+        
         logger.info(f"Getting parser job status {job_id} for user {user_id}")
         
         if parser_worker is None:

@@ -1,11 +1,21 @@
 import express, { Request, Response } from 'express';
 import axios from 'axios';
+import multer from 'multer';
 import logger from '../utils/logger';
 
 const router = express.Router();
 
 // Python backend URL - can be overridden by environment variable
 const PYTHON_API_URL = process.env.PYTHON_API_URL || process.env.VITE_PYTHON_API_URL || 'https://python-api-newest.onrender.com';
+
+// Configure multer for file uploads (memory storage)
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 50 * 1024 * 1024 // 50MB limit
+  }
+});
 
 /**
  * Extract JWT token from cookie or Authorization header
@@ -116,7 +126,86 @@ router.get('/api/documents', (req, res) => {
 router.get('/api/documents/:id', (req, res) => proxyToPython(req, res, `/api/documents/${req.params.id}`));
 router.get('/api/documents/:id/view', (req, res) => proxyToPython(req, res, `/api/documents/${req.params.id}/view`));
 router.get('/api/documents/:id/download', (req, res) => proxyToPython(req, res, `/api/documents/${req.params.id}/download`));
-router.post('/api/documents/upload', (req, res) => proxyToPython(req, res, '/api/documents/upload'));
+// File upload endpoint - use multer to handle multipart/form-data
+router.post('/api/documents/upload', upload.any(), async (req: Request, res: Response) => {
+  try {
+    const files = (req as any).files as Express.Multer.File[];
+    const claim_id = req.query.claim_id as string | undefined;
+    
+    if (!files || files.length === 0) {
+      return res.status(400).json({
+        error: 'No files provided',
+        message: 'Expected at least one file in the request'
+      });
+    }
+    
+    logger.info(`Proxying file upload to Python API`, {
+      fileCount: files.length,
+      filenames: files.map(f => f.originalname),
+      claim_id
+    });
+    
+    // Create FormData to forward files to Python API
+    const FormData = (await import('form-data')).default;
+    const formData = new FormData();
+    
+    // Add all files with 'file' field name (singular, as expected by Python API)
+    files.forEach(file => {
+      formData.append('file', file.buffer, {
+        filename: file.originalname,
+        contentType: file.mimetype
+      });
+    });
+    
+    // Add claim_id if provided
+    if (claim_id) {
+      formData.append('claim_id', claim_id);
+    }
+    
+    // Extract token for authentication
+    const token = req.cookies?.session_token || req.headers['authorization']?.replace('Bearer ', '');
+    
+    const headers: Record<string, string> = {
+      ...formData.getHeaders()
+    };
+    
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    
+    // Forward X-User-Id if present
+    if (req.headers['x-user-id']) {
+      headers['X-User-Id'] = req.headers['x-user-id'] as string;
+    }
+    
+    const pythonUrl = `${PYTHON_API_URL}/api/documents/upload${claim_id ? `?claim_id=${claim_id}` : ''}`;
+    
+    const response = await axios.post(pythonUrl, formData, {
+      headers,
+      timeout: 60000, // 60 second timeout for file uploads
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity
+    });
+    
+    res.status(response.status).json(response.data);
+  } catch (error: any) {
+    logger.error(`Proxy error for file upload:`, error.message);
+    
+    if (error.response) {
+      res.status(error.response.status).json(error.response.data);
+    } else if (error.code === 'ECONNABORTED') {
+      res.status(504).json({ 
+        error: 'Gateway Timeout', 
+        message: 'Python backend did not respond in time' 
+      });
+    } else {
+      res.status(502).json({ 
+        error: 'Bad Gateway', 
+        message: 'Failed to connect to Python backend' 
+      });
+    }
+  }
+});
 
 // Metrics endpoints
 router.get('/api/metrics/recoveries', (req, res) => proxyToPython(req, res, '/api/metrics/recoveries'));

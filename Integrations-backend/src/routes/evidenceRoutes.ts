@@ -4,6 +4,7 @@
  */
 
 import { Router, Request, Response } from 'express';
+import multer from 'multer';
 import { gmailIngestionService } from '../services/gmailIngestionService';
 import logger from '../utils/logger';
 
@@ -290,6 +291,165 @@ router.post('/filters', async (req: Request, res: Response) => {
     res.status(500).json({
       ok: false,
       error: 'Failed to update filters'
+    });
+  }
+});
+
+/**
+ * POST /api/evidence/upload
+ * Fallback endpoint for document upload - uses multer to handle files and proxies to Python API
+ * This endpoint handles file uploads and forwards them to the Python backend
+ */
+import multer from 'multer';
+
+// Configure multer for file uploads (memory storage)
+const uploadStorage = multer.memoryStorage();
+const uploadMulter = multer({
+  storage: uploadStorage,
+  limits: {
+    fileSize: 50 * 1024 * 1024 // 50MB limit
+  }
+});
+
+router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    const files = (req as any).files as Express.Multer.File[];
+    const claim_id = req.query.claim_id as string | undefined;
+    
+    if (!files || files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No files provided',
+        message: 'Expected at least one file in the request'
+      });
+    }
+
+    logger.info('📤 [EVIDENCE] Document upload request received', {
+      userId,
+      fileCount: files.length,
+      filenames: files.map(f => f.originalname),
+      claim_id
+    });
+
+    // Proxy to Python API /api/documents/upload endpoint
+    const pythonApiUrl = process.env.PYTHON_API_URL || process.env.VITE_PYTHON_API_URL || 'https://python-api-newest.onrender.com';
+    const pythonUrl = `${pythonApiUrl}/api/documents/upload`;
+    
+    // Extract token for authentication
+    const token = req.cookies?.session_token || req.headers['authorization']?.replace('Bearer ', '');
+    
+    try {
+      const axios = (await import('axios')).default;
+      const FormData = (await import('form-data')).default;
+      
+      // Create FormData to forward files
+      const formData = new FormData();
+      
+      // Add all files with 'file' field name (singular, as expected by Python API)
+      files.forEach(file => {
+        formData.append('file', file.buffer, {
+          filename: file.originalname,
+          contentType: file.mimetype
+        });
+      });
+      
+      // Add claim_id if provided
+      if (claim_id) {
+        formData.append('claim_id', claim_id);
+      }
+      
+      const headers: Record<string, string> = {
+        ...formData.getHeaders()
+      };
+      
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      
+      // Forward X-User-Id header
+      headers['X-User-Id'] = userId;
+      
+      logger.info('📤 [EVIDENCE] Forwarding upload to Python API', {
+        pythonUrl,
+        userId,
+        fileCount: files.length
+      });
+      
+      const response = await axios.post(pythonUrl, formData, {
+        headers,
+        timeout: 60000, // 60 second timeout for file uploads
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
+      });
+      
+      logger.info('✅ [EVIDENCE] Document upload successful', {
+        userId,
+        documentId: response.data.id,
+        status: response.data.status
+      });
+      
+      // Send SSE event for upload success
+      try {
+        const sseHub = (await import('../utils/sseHub')).default;
+        sseHub.sendEvent(userId, 'evidence_upload_completed', {
+          userId,
+          documentId: response.data.id,
+          status: response.data.status,
+          timestamp: new Date().toISOString()
+        });
+      } catch (sseError) {
+        logger.debug('Failed to send SSE event for upload completion', { error: sseError });
+      }
+      
+      res.json(response.data);
+    } catch (proxyError: any) {
+      logger.error('❌ [EVIDENCE] Error forwarding upload to Python API', {
+        error: proxyError?.message || String(proxyError),
+        status: proxyError?.response?.status,
+        data: proxyError?.response?.data
+      });
+      
+      // Send SSE event for upload error
+      try {
+        const sseHub = (await import('../utils/sseHub')).default;
+        sseHub.sendEvent(userId, 'evidence_upload_failed', {
+          userId,
+          error: proxyError?.message || String(proxyError),
+          timestamp: new Date().toISOString()
+        });
+      } catch (sseError) {
+        logger.debug('Failed to send SSE event for upload error', { error: sseError });
+      }
+      
+      if (proxyError.response) {
+        res.status(proxyError.response.status).json(proxyError.response.data);
+      } else {
+        res.status(502).json({
+          success: false,
+          error: 'Failed to upload documents',
+          message: proxyError?.message || 'Python API unavailable'
+        });
+      }
+    }
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in upload endpoint', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to process upload request',
+      message: error?.message || String(error)
     });
   }
 });
