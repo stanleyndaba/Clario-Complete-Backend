@@ -440,7 +440,8 @@ export const searchGmailEmails = async (req: Request, res: Response) => {
 
 export const getGmailStatus = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user?.id;
+    // Support both userIdMiddleware (req.userId) and auth middleware (req.user.id)
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     
     if (!userId) {
       return res.status(401).json({
@@ -462,6 +463,8 @@ export const getGmailStatus = async (req: Request, res: Response) => {
     
     // If connected, try to verify token by getting user profile
     let email: string | undefined;
+    let lastSync: string | undefined;
+    
     if (isConnected && tokenData.accessToken) {
       try {
         const profileResponse = await axios.get(
@@ -474,16 +477,33 @@ export const getGmailStatus = async (req: Request, res: Response) => {
           }
         );
         email = profileResponse.data.emailAddress;
+        
+        // Get last sync time from evidence_sources table
+        try {
+          const { supabase } = await import('../database/supabaseClient');
+          const { data: source } = await supabase
+            .from('evidence_sources')
+            .select('last_sync_at')
+            .eq('user_id', userId)
+            .eq('provider', 'gmail')
+            .eq('status', 'connected')
+            .maybeSingle();
+          
+          if (source?.last_sync_at) {
+            lastSync = source.last_sync_at;
+          }
+        } catch (dbError) {
+          logger.debug('Could not fetch last sync time from database', { error: dbError });
+        }
       } catch (error: any) {
         // Token might be expired or invalid
         if (error.response?.status === 401) {
           logger.warn('Gmail token expired or invalid, marking as disconnected');
           // Token is invalid, mark as disconnected
           return res.json({
-            success: true,
             connected: false,
             email: undefined,
-            sandbox: !config.GMAIL_CLIENT_ID,
+            lastSync: undefined,
             message: 'Gmail token expired or invalid. Please reconnect.'
           });
         }
@@ -491,11 +511,11 @@ export const getGmailStatus = async (req: Request, res: Response) => {
       }
     }
     
+    // Return response matching frontend expectations
     res.json({
-      success: true,
       connected: isConnected && !!email,
       email: email,
-      sandbox: !isConnected && !config.GMAIL_CLIENT_ID
+      lastSync: lastSync
     });
   } catch (error) {
     logger.error('Gmail status error:', error);
@@ -508,7 +528,8 @@ export const getGmailStatus = async (req: Request, res: Response) => {
 
 export const disconnectGmail = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user?.id;
+    // Support both userIdMiddleware (req.userId) and auth middleware (req.user.id)
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     
     if (!userId) {
       return res.status(401).json({
@@ -524,6 +545,18 @@ export const disconnectGmail = async (req: Request, res: Response) => {
     } catch (error) {
       logger.warn('Failed to revoke Gmail token:', error);
       // Continue even if token deletion fails - might not exist
+    }
+
+    // Update evidence_sources status to disconnected
+    try {
+      const { supabase } = await import('../database/supabaseClient');
+      await supabase
+        .from('evidence_sources')
+        .update({ status: 'disconnected', updated_at: new Date().toISOString() })
+        .eq('user_id', userId)
+        .eq('provider', 'gmail');
+    } catch (dbError) {
+      logger.warn('Failed to update evidence_sources status', { error: dbError });
     }
 
     logger.info('Gmail disconnected', { userId });
