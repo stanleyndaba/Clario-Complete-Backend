@@ -388,7 +388,23 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       logger.warn('No OAuth state provided, using default FRONTEND_URL', { frontendUrl });
     }
     
-    const redirectUrl = `${frontendUrl}/dashboard?amazon_connected=true&message=${encodeURIComponent(result.message || 'Connected successfully')}`;
+    // Determine redirect URL based on frontend URL
+    // Preserve the full frontend URL path if it exists (e.g., /integrations-hub)
+    let redirectUrl: string;
+    try {
+      const frontendUrlObj = new URL(frontendUrl);
+      // If frontend URL already has a path, preserve it; otherwise use default
+      if (frontendUrlObj.pathname && frontendUrlObj.pathname !== '/') {
+        // Frontend URL already includes path (e.g., /integrations-hub)
+        redirectUrl = `${frontendUrl}?amazon_connected=true&message=${encodeURIComponent(result.message || 'Connected successfully')}`;
+      } else {
+        // Frontend URL is just domain, use default path
+        redirectUrl = `${frontendUrl}/integrations-hub?amazon_connected=true&message=${encodeURIComponent(result.message || 'Connected successfully')}`;
+      }
+    } catch {
+      // If URL parsing fails, construct simple redirect
+      redirectUrl = `${frontendUrl}/integrations-hub?amazon_connected=true&message=${encodeURIComponent(result.message || 'Connected successfully')}`;
+    }
     
     // Set session cookie if we have tokens
     if (result.data?.refresh_token) {
