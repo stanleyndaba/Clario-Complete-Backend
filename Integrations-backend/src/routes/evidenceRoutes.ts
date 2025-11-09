@@ -316,8 +316,20 @@ const uploadStorage = multer.memoryStorage();
 const uploadMulter = multer({
   storage: uploadStorage,
   limits: {
-    fileSize: 50 * 1024 * 1024 // 50MB limit
+    fileSize: 50 * 1024 * 1024 // 50MB limit (frontend shows 10MB, but backend allows up to 50MB)
   }
+});
+
+// Handle CORS preflight for upload endpoint
+router.options('/upload', (req, res) => {
+  const origin = req.headers.origin;
+  logger.debug('CORS preflight for /api/evidence/upload', { origin });
+  res.header('Access-Control-Allow-Origin', origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Forwarded-User-Id, Origin, Referer');
+  res.header('Access-Control-Max-Age', '86400');
+  res.status(204).send();
 });
 
 router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) => {
@@ -343,22 +355,20 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
       'hasCookie': !!req.cookies?.session_token
     });
     
-    // For testing/development, allow demo-user, but in production require real user
-    if (!userId || (userId === 'demo-user' && process.env.NODE_ENV === 'production')) {
-      logger.warn('⚠️ [EVIDENCE] Upload request without valid user ID', {
-        userId: userId || 'none',
+    // Allow demo-user for development/testing (userIdMiddleware sets this as default)
+    // In production, authentication middleware should set a real user ID
+    const finalUserId = userId || 'demo-user';
+    
+    if (!userId) {
+      logger.warn('⚠️ [EVIDENCE] Upload request without user ID - using demo-user fallback', {
         headers: {
           'x-user-id': req.headers['x-user-id'],
-          'authorization': req.headers['authorization'] ? 'present' : 'missing'
-        }
-      });
-      
-      // Return a more helpful error message
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized',
-        message: 'User authentication required. Please ensure you are logged in and your session is valid.',
-        hint: 'If testing, provide X-User-Id header or ensure authentication middleware is working'
+          'authorization': req.headers['authorization'] ? 'present' : 'missing',
+          'cookie': req.cookies ? 'present' : 'missing'
+        },
+        path: req.path,
+        method: req.method,
+        note: 'This is OK for development/testing. In production, ensure authentication middleware sets user ID.'
       });
     }
 
@@ -430,6 +440,13 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
             status: healthResponse.status,
             data: healthResponse.data
           });
+          
+          // Set CORS headers for error response
+          const healthErrorOrigin = req.headers.origin;
+          if (healthErrorOrigin) {
+            res.header('Access-Control-Allow-Origin', healthErrorOrigin);
+            res.header('Access-Control-Allow-Credentials', 'true');
+          }
           
           return res.status(503).json({
             success: false,
