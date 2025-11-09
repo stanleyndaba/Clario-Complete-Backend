@@ -30,6 +30,7 @@ import internalEventsRoutes from './routes/internalEventsRoutes';
 import stripeWebhookRoutes from './routes/stripeWebhookRoutes';
 import workflowRoutes from './routes/workflowRoutes';
 import evidenceRoutes from './routes/evidenceRoutes';
+import evidenceSourcesRoutes from './routes/evidenceSourcesRoutes';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -151,6 +152,9 @@ app.get('/api/v1/integrations/connectamazon', (req, res) => {
 });
 app.use('/api/v1/integrations/gmail', gmailRoutes);
 app.use('/api/v1/integrations/stripe', stripeRoutes);
+// Evidence sources routes (must be registered before generic integration routes)
+app.use('/api/v1/integrations', evidenceSourcesRoutes);
+logger.info('Evidence sources routes registered at /api/v1/integrations/{provider}/connect');
 // Sync routes - must be registered before proxy routes
 app.use('/api/sync', syncRoutes);
 logger.info('Sync routes registered at /api/sync');
