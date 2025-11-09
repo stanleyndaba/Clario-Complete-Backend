@@ -150,7 +150,9 @@ app.get('/api/v1/integrations/connectamazon', (req, res) => {
 });
 app.use('/api/v1/integrations/gmail', gmailRoutes);
 app.use('/api/v1/integrations/stripe', stripeRoutes);
+// Sync routes - must be registered before proxy routes
 app.use('/api/sync', syncRoutes);
+logger.info('Sync routes registered at /api/sync');
 app.use('/api/integrations', integrationRoutes);
 app.use('/api/sse', sseRoutes);
 // app.use('/api/enhanced-detections', enhancedDetectionRoutes); // Temporarily disabled

@@ -15,6 +15,7 @@ router.post('/start', startSync);
 
 // GET /api/sync/status - Get active sync status (for frontend monitoring)
 // This must come BEFORE /status/:syncId to avoid route conflicts
+// IMPORTANT: Route order matters - this exact path must be registered first
 router.get('/status', getActiveSyncStatus);
 
 // GET /api/sync/status/:syncId - Get sync status by syncId
