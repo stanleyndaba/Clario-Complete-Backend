@@ -51,6 +51,7 @@ export class DetectionService {
 
   /**
    * Enqueue a detection job after sync completion
+   * If Redis is not available, processes the job directly from the database
    */
   async enqueueDetectionJob(job: DetectionJob & { is_sandbox?: boolean }): Promise<void> {
     try {
@@ -65,13 +66,9 @@ export class DetectionService {
         mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
       });
 
-      // Add to Redis queue for immediate processing (include sandbox flag)
+      // Store in database for persistence (include sandbox flag)
       const jobWithSandbox = { ...job, is_sandbox: isSandbox };
-      const redisClient = await getRedisClient();
-      await redisClient.lPush(this.queueName, JSON.stringify(jobWithSandbox));
-
-      // Also store in database for persistence (include sandbox flag)
-      const { error } = await supabase
+      const { error: dbError } = await supabase
         .from('detection_queue')
         .insert({
           seller_id: job.seller_id,
@@ -82,9 +79,43 @@ export class DetectionService {
           is_sandbox: isSandbox
         });
 
-      if (error) {
-        logger.error('Error storing detection job in database', { error, job });
-        // Don't throw error as Redis queue is the primary mechanism
+      if (dbError) {
+        logger.error('Error storing detection job in database', { error: dbError, job });
+        // Continue anyway - we'll try to process directly
+      }
+
+      // Try to add to Redis queue for immediate processing
+      try {
+        const { isRedisAvailable } = await import('../utils/redisClient');
+        if (isRedisAvailable()) {
+          const redisClient = await getRedisClient();
+          await redisClient.lPush(this.queueName, JSON.stringify(jobWithSandbox));
+          logger.info('Detection job added to Redis queue', {
+            seller_id: job.seller_id,
+            sync_id: job.sync_id
+          });
+        } else {
+          // Redis not available - process directly from database
+          logger.info('Redis not available, processing detection job directly from database', {
+            seller_id: job.seller_id,
+            sync_id: job.sync_id
+          });
+          // Process the job directly (don't await - let it run in background)
+          this.processDetectionJobDirectly(jobWithSandbox).catch((error) => {
+            logger.error('Error processing detection job directly', { error, job });
+          });
+        }
+      } catch (redisError: any) {
+        // Redis error - process directly from database as fallback
+        logger.warn('Redis error, processing detection job directly from database', {
+          error: redisError.message,
+          seller_id: job.seller_id,
+          sync_id: job.sync_id
+        });
+        // Process the job directly (don't await - let it run in background)
+        this.processDetectionJobDirectly(jobWithSandbox).catch((error) => {
+          logger.error('Error processing detection job directly', { error, job });
+        });
       }
 
       logger.info('Detection job enqueued successfully', {
@@ -93,6 +124,132 @@ export class DetectionService {
       });
     } catch (error) {
       logger.error('Error enqueueing detection job', { error, job });
+      throw error;
+    }
+  }
+
+  /**
+   * Process a detection job directly (fallback when Redis is not available)
+   */
+  private async processDetectionJobDirectly(job: DetectionJob & { is_sandbox?: boolean }): Promise<void> {
+    try {
+      logger.info('Processing detection job directly from database', {
+        seller_id: job.seller_id,
+        sync_id: job.sync_id
+      });
+
+      // Update job status to processing
+      await this.updateJobStatus(job.seller_id, job.sync_id, 'processing');
+
+      // Run detection algorithms
+      const results = await this.runDetectionAlgorithms(job);
+
+      // Store detection results
+      await this.storeDetectionResults(results);
+
+      // Update job status to completed
+      await this.updateJobStatus(job.seller_id, job.sync_id, 'completed');
+
+      // Categorize claims by ML confidence score
+      const highConfidenceClaims = results.filter(r => r.confidence_score >= 0.85);
+      const mediumConfidenceClaims = results.filter(r => r.confidence_score >= 0.50 && r.confidence_score < 0.85);
+      const lowConfidenceClaims = results.filter(r => r.confidence_score < 0.50);
+      
+      // Send notifications for each category
+      const websocketService = (await import('./websocketService')).default;
+      
+      if (highConfidenceClaims.length > 0) {
+        websocketService.sendNotificationToUser(job.seller_id, {
+          type: 'success',
+          title: '⚡ ' + highConfidenceClaims.length + ' claims ready for auto submission',
+          message: `High confidence (85%+): ${highConfidenceClaims.length} claims totaling $${highConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0).toFixed(2)}`,
+          data: {
+            category: 'high_confidence',
+            count: highConfidenceClaims.length,
+            total_amount: highConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
+            is_sandbox: job.is_sandbox || false
+          }
+        });
+      }
+      
+      if (mediumConfidenceClaims.length > 0) {
+        websocketService.sendNotificationToUser(job.seller_id, {
+          type: 'warning',
+          title: '❓ ' + mediumConfidenceClaims.length + ' claims need your input',
+          message: `Medium confidence (50-85%): Review required for ${mediumConfidenceClaims.length} claims`,
+          data: {
+            category: 'medium_confidence',
+            count: mediumConfidenceClaims.length,
+            total_amount: mediumConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
+            is_sandbox: job.is_sandbox || false
+          }
+        });
+      }
+      
+      if (lowConfidenceClaims.length > 0) {
+        websocketService.sendNotificationToUser(job.seller_id, {
+          type: 'info',
+          title: '📋 ' + lowConfidenceClaims.length + ' claims need manual review',
+          message: `Low confidence (<50%): Manual review required`,
+          data: {
+            category: 'low_confidence',
+            count: lowConfidenceClaims.length,
+            total_amount: lowConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
+            is_sandbox: job.is_sandbox || false
+          }
+        });
+      }
+      
+      // 🎯 PHASE 3: Trigger orchestrator Phase 3 (Detection Completion)
+      try {
+        const OrchestrationJobManager = (await import('../jobs/orchestrationJob')).default;
+        const claims = results.map((result, index) => ({
+          claim_id: `claim_${result.seller_id}_${Date.now()}_${index}`,
+          claim_type: result.anomaly_type,
+          amount: result.estimated_value,
+          confidence: result.confidence_score,
+          confidence_category: result.confidence_score >= 0.85 ? 'high' : 
+                              result.confidence_score >= 0.50 ? 'medium' : 'low',
+          currency: result.currency,
+          evidence: result.evidence,
+          discovery_date: result.discovery_date?.toISOString(),
+          deadline_date: result.deadline_date?.toISOString(),
+          is_sandbox: job.is_sandbox || false
+        }));
+        await OrchestrationJobManager.triggerPhase3_DetectionCompletion(
+          job.seller_id,
+          job.sync_id,
+          claims
+        );
+        logger.info('Phase 3 orchestration triggered after detection', {
+          seller_id: job.seller_id,
+          sync_id: job.sync_id,
+          claims_count: claims.length,
+          high_confidence: highConfidenceClaims.length,
+          medium_confidence: mediumConfidenceClaims.length,
+          low_confidence: lowConfidenceClaims.length,
+          is_sandbox: job.is_sandbox || false,
+          mode: job.is_sandbox ? 'SANDBOX' : 'PRODUCTION'
+        });
+      } catch (error: any) {
+        // Non-blocking - orchestration failure shouldn't break detection
+        logger.warn('Phase 3 orchestration trigger failed (non-critical)', {
+          error: error.message,
+          seller_id: job.seller_id,
+          sync_id: job.sync_id
+        });
+      }
+
+      logger.info('Detection job processed successfully', {
+        seller_id: job.seller_id,
+        sync_id: job.sync_id,
+        results_count: results.length
+      });
+    } catch (error) {
+      logger.error('Error processing detection job directly', { error, job });
+      
+      // Update job status to failed
+      await this.updateJobStatus(job.seller_id, job.sync_id, 'failed', error instanceof Error ? error.message : 'Unknown error');
       throw error;
     }
   }

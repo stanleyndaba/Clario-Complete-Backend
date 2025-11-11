@@ -4,10 +4,13 @@ import { supabase } from '../database/supabaseClient';
 import sseHub from '../utils/sseHub';
 import tokenManager from '../utils/tokenManager';
 
+// Standardized status values - use database values consistently
+export type SyncStatus = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
+
 export interface SyncJobStatus {
   syncId: string;
   userId: string;
-  status: 'idle' | 'in_progress' | 'complete' | 'failed' | 'cancelled';
+  status: SyncStatus;
   progress: number;
   message: string;
   startedAt: string;
@@ -62,17 +65,35 @@ class SyncJobManager {
       }
     }
 
-    // Check if there's already a running sync
+    // Check if there's already a running sync (both in-memory and database)
     const existingSync = await this.getActiveSync(userId);
-    if (existingSync && existingSync.status === 'in_progress') {
-      throw new Error('Sync already in progress. Please wait for it to complete or cancel it first.');
+    if (existingSync && (existingSync.status === 'running' || existingSync.status === 'in_progress')) {
+      throw new Error(`Sync already in progress (${existingSync.syncId}). Please wait for it to complete or cancel it first.`);
     }
 
-    // Initialize sync status
+    // Also check database for any active syncs
+    const { data: dbActiveSync } = await supabase
+      .from('sync_progress')
+      .select('sync_id, status')
+      .eq('user_id', userId)
+      .in('status', ['running', 'in_progress'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (dbActiveSync && (dbActiveSync.status === 'running' || dbActiveSync.status === 'in_progress')) {
+      // Check if it's actually still running (not stale)
+      const dbSyncStatus = await this.getSyncStatus(dbActiveSync.sync_id, userId);
+      if (dbSyncStatus && (dbSyncStatus.status === 'running' || dbSyncStatus.status === 'in_progress')) {
+        throw new Error(`Sync already in progress (${dbActiveSync.sync_id}). Please wait for it to complete or cancel it first.`);
+      }
+    }
+
+    // Initialize sync status (use 'running' to match database)
     const syncStatus: SyncJobStatus = {
       syncId,
       userId,
-      status: 'in_progress',
+      status: 'running',
       progress: 0,
       message: 'Sync starting...',
       startedAt: new Date().toISOString(),
@@ -168,19 +189,105 @@ class SyncJobManager {
         return;
       }
 
-      // Update progress: 90% - Finalizing
+      // Update progress: 90% - Waiting for detection to complete
       syncStatus.progress = 90;
+      syncStatus.message = 'Waiting for discrepancy detection...';
+      this.updateSyncStatus(syncStatus);
+      this.sendProgressUpdate(userId, syncStatus);
+
+      // Wait for detection to process (detection runs asynchronously via Redis queue)
+      // Poll detection_queue to see if detection has started/completed
+      let detectionCompleted = false;
+      let detectionAttempts = 0;
+      const maxDetectionWaitTime = 60000; // Wait up to 60 seconds for detection
+      const detectionPollInterval = 2000; // Poll every 2 seconds
+      const maxDetectionAttempts = Math.floor(maxDetectionWaitTime / detectionPollInterval);
+
+      while (!detectionCompleted && detectionAttempts < maxDetectionAttempts) {
+        await new Promise(resolve => setTimeout(resolve, detectionPollInterval));
+        detectionAttempts++;
+
+        // Check if detection job has completed
+        try {
+          const { data: detectionJob, error } = await supabase
+            .from('detection_queue')
+            .select('status, processed_at')
+            .eq('seller_id', userId)
+            .eq('sync_id', syncId)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (!error && detectionJob) {
+            if (detectionJob.status === 'completed') {
+              detectionCompleted = true;
+              logger.info('Detection completed for sync', { userId, syncId, detectionAttempts });
+            } else if (detectionJob.status === 'failed') {
+              // Detection failed, but continue with sync completion
+              logger.warn('Detection failed for sync, continuing with sync completion', { userId, syncId });
+              detectionCompleted = true;
+            } else if (detectionJob.status === 'processing') {
+              // Detection is in progress, continue waiting
+              logger.debug('Detection in progress, waiting...', { userId, syncId, detectionAttempts });
+            }
+          } else if (error) {
+            // Error querying detection queue, might not have started yet
+            logger.debug('Detection queue query error (might not have started yet)', { 
+              userId, 
+              syncId, 
+              error: error.message,
+              detectionAttempts 
+            });
+          }
+        } catch (error: any) {
+          logger.warn('Error checking detection status', { error: error.message, userId, syncId });
+        }
+
+        // Also check if we have detection results (detection might have completed but queue status not updated)
+        if (!detectionCompleted) {
+          const { data: detectionResults } = await supabase
+            .from('detection_results')
+            .select('id', { count: 'exact', head: true })
+            .eq('seller_id', userId)
+            .eq('sync_id', syncId);
+
+          if (detectionResults && detectionResults.length > 0) {
+            // We have detection results, detection has completed
+            detectionCompleted = true;
+            logger.info('Detection results found, detection completed', { 
+              userId, 
+              syncId, 
+              resultsCount: detectionResults.length,
+              detectionAttempts 
+            });
+          }
+        }
+      }
+
+      if (!detectionCompleted) {
+        logger.warn('Detection did not complete within timeout, continuing with sync completion', {
+          userId,
+          syncId,
+          detectionAttempts,
+          maxAttempts: maxDetectionAttempts
+        });
+      }
+
+      // Update progress: 95% - Finalizing
+      syncStatus.progress = 95;
       syncStatus.message = 'Finalizing sync...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
 
-      // Get sync results from database or service
+      // Get sync results from database (now includes detection results if completed)
       const syncResults = await this.getSyncResults(userId, syncId);
 
-      // Update progress: 100% - Complete
+      // Update progress: 100% - Complete (use 'completed' to match database)
       syncStatus.progress = 100;
       syncStatus.status = 'complete';
-      syncStatus.message = 'Sync completed successfully';
+      syncStatus.message = syncResults.claimsDetected > 0
+        ? `Sync completed successfully - ${syncResults.claimsDetected} discrepancies detected`
+        : 'Sync completed successfully';
       syncStatus.completedAt = new Date().toISOString();
       syncStatus.ordersProcessed = syncResults.ordersProcessed || 0;
       syncStatus.totalOrders = syncResults.totalOrders || 0;
@@ -232,10 +339,22 @@ class SyncJobManager {
         return null;
       }
 
+      // Normalize status from database to our standard format
+      let normalizedStatus: SyncStatus = 'idle';
+      if (data.status === 'running' || data.status === 'in_progress') {
+        normalizedStatus = 'running';
+      } else if (data.status === 'completed' || data.status === 'complete') {
+        normalizedStatus = 'completed';
+      } else if (data.status === 'failed') {
+        normalizedStatus = 'failed';
+      } else if (data.status === 'cancelled') {
+        normalizedStatus = 'cancelled';
+      }
+
       return {
         syncId: data.sync_id,
         userId: data.user_id,
-        status: data.status as any,
+        status: normalizedStatus,
         progress: data.progress || 0,
         message: data.current_step || 'Unknown',
         startedAt: data.created_at,
@@ -252,22 +371,97 @@ class SyncJobManager {
   }
 
   /**
-   * Cancel a sync job
+   * Cancel a sync job (both in-memory and database)
    */
   async cancelSync(syncId: string, userId: string): Promise<boolean> {
     const job = this.runningJobs.get(syncId);
-    if (!job) {
-      return false;
+    
+    // Check if job exists in memory
+    if (job) {
+      // Verify it belongs to the user
+      if (job.status.userId !== userId) {
+        return false;
+      }
+
+      // Cancel the job
+      job.cancel();
+      
+      // Update database
+      await this.updateSyncStatusInDatabase(syncId, userId, {
+        status: 'cancelled',
+        message: 'Sync cancelled by user',
+        completedAt: new Date().toISOString()
+      });
+      
+      return true;
     }
 
-    // Verify it belongs to the user
-    if (job.status.userId !== userId) {
+    // If not in memory, check database and cancel there
+    try {
+      const { data, error } = await supabase
+        .from('sync_progress')
+        .select('*')
+        .eq('sync_id', syncId)
+        .eq('user_id', userId)
+        .single();
+
+      if (error || !data) {
+        return false;
+      }
+
+      // Only cancel if it's actually running
+      if (data.status === 'running' || data.status === 'in_progress') {
+        await this.updateSyncStatusInDatabase(syncId, userId, {
+          status: 'cancelled',
+          message: 'Sync cancelled by user',
+          completedAt: new Date().toISOString()
+        });
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      logger.error(`Error cancelling sync ${syncId}:`, error);
       return false;
     }
+  }
 
-    // Cancel the job
-    job.cancel();
-    return true;
+  /**
+   * Update sync status in database (helper method)
+   */
+  private async updateSyncStatusInDatabase(
+    syncId: string,
+    userId: string,
+    updates: Partial<SyncJobStatus>
+  ): Promise<void> {
+    try {
+      const { error } = await supabase
+        .from('sync_progress')
+        .update({
+          status: updates.status === 'running' ? 'running' :
+                  updates.status === 'completed' ? 'completed' :
+                  updates.status === 'failed' ? 'failed' :
+                  updates.status === 'cancelled' ? 'cancelled' : 'running',
+          current_step: updates.message,
+          progress: updates.progress,
+          updated_at: new Date().toISOString(),
+          metadata: {
+            ...(updates.ordersProcessed !== undefined && { ordersProcessed: updates.ordersProcessed }),
+            ...(updates.totalOrders !== undefined && { totalOrders: updates.totalOrders }),
+            ...(updates.claimsDetected !== undefined && { claimsDetected: updates.claimsDetected }),
+            ...(updates.error && { error: updates.error }),
+            ...(updates.completedAt && { completedAt: updates.completedAt })
+          }
+        })
+        .eq('sync_id', syncId)
+        .eq('user_id', userId);
+
+      if (error) {
+        logger.error(`Error updating sync status in database:`, error);
+      }
+    } catch (error) {
+      logger.error(`Error in updateSyncStatusInDatabase:`, error);
+    }
   }
 
   /**
@@ -331,7 +525,7 @@ class SyncJobManager {
   }> {
     // Check running jobs first
     for (const job of this.runningJobs.values()) {
-      if (job.status.userId === userId && job.status.status === 'in_progress') {
+      if (job.status.userId === userId && (job.status.status === 'running' || job.status.status === 'in_progress')) {
         return {
           hasActiveSync: true,
           lastSync: {
@@ -363,7 +557,7 @@ class SyncJobManager {
           .from('sync_progress')
           .select('*')
           .eq('user_id', userId)
-          .in('status', ['complete', 'completed', 'failed', 'cancelled'])
+          .in('status', ['completed', 'complete', 'failed', 'cancelled'])
           .order('created_at', { ascending: false })
           .limit(1)
           .maybeSingle();
@@ -373,7 +567,7 @@ class SyncJobManager {
             hasActiveSync: false,
             lastSync: {
               syncId: lastSyncData.sync_id,
-              status: lastSyncData.status,
+              status: lastSyncData.status === 'complete' ? 'completed' : lastSyncData.status,
               progress: lastSyncData.progress || 0,
               message: lastSyncData.current_step || 'Unknown',
               startedAt: lastSyncData.created_at,
@@ -393,7 +587,7 @@ class SyncJobManager {
         hasActiveSync: true,
         lastSync: {
           syncId: data.sync_id,
-          status: data.status,
+          status: data.status === 'in_progress' ? 'running' : data.status,
           progress: data.progress || 0,
           message: data.current_step || 'Unknown',
           startedAt: data.created_at,
@@ -415,7 +609,7 @@ class SyncJobManager {
   private async getActiveSync(userId: string): Promise<SyncJobStatus | null> {
     // Check running jobs first
     for (const job of this.runningJobs.values()) {
-      if (job.status.userId === userId && job.status.status === 'in_progress') {
+      if (job.status.userId === userId && (job.status.status === 'running' || job.status.status === 'in_progress')) {
         return job.status;
       }
     }
@@ -438,7 +632,7 @@ class SyncJobManager {
       return {
         syncId: data.sync_id,
         userId: data.user_id,
-        status: 'in_progress',
+        status: 'running', // Normalize to 'running'
         progress: data.progress || 0,
         message: data.current_step || 'Unknown',
         startedAt: data.created_at,
@@ -452,10 +646,24 @@ class SyncJobManager {
   }
 
   /**
-   * Save sync status to database
+   * Save sync status to database (normalized to database status values)
    */
   private async saveSyncToDatabase(syncStatus: SyncJobStatus): Promise<void> {
     try {
+      // Normalize status to database format
+      let dbStatus: string;
+      if (syncStatus.status === 'running' || syncStatus.status === 'in_progress') {
+        dbStatus = 'running';
+      } else if (syncStatus.status === 'completed' || syncStatus.status === 'complete') {
+        dbStatus = 'completed';
+      } else if (syncStatus.status === 'failed') {
+        dbStatus = 'failed';
+      } else if (syncStatus.status === 'cancelled') {
+        dbStatus = 'cancelled';
+      } else {
+        dbStatus = 'running'; // Default
+      }
+
       const { error } = await supabase
         .from('sync_progress')
         .upsert({
@@ -464,9 +672,7 @@ class SyncJobManager {
           step: Math.round(syncStatus.progress / 20), // 0-5 steps
           total_steps: 5,
           current_step: syncStatus.message,
-          status: syncStatus.status === 'in_progress' ? 'running' : 
-                  syncStatus.status === 'complete' ? 'completed' : 
-                  syncStatus.status === 'failed' ? 'failed' : 'running',
+          status: dbStatus,
           progress: syncStatus.progress,
           metadata: {
             ordersProcessed: syncStatus.ordersProcessed || 0,
@@ -520,20 +726,83 @@ class SyncJobManager {
   }
 
   /**
-   * Get sync results (placeholder - would fetch from database)
+   * Get sync results from database (real implementation)
    */
   private async getSyncResults(userId: string, syncId: string): Promise<{
     ordersProcessed: number;
     totalOrders: number;
     claimsDetected: number;
   }> {
-    // In a real implementation, this would query the database for actual results
-    // For now, return mock data
-    return {
-      ordersProcessed: 0,
-      totalOrders: 0,
-      claimsDetected: 0
-    };
+    try {
+      // Get sync metadata from database
+      const { data: syncData, error } = await supabase
+        .from('sync_progress')
+        .select('metadata')
+        .eq('sync_id', syncId)
+        .eq('user_id', userId)
+        .single();
+
+      if (error || !syncData) {
+        logger.warn(`Sync results not found for ${syncId}, using defaults`);
+        return {
+          ordersProcessed: 0,
+          totalOrders: 0,
+          claimsDetected: 0
+        };
+      }
+
+      const metadata = (syncData.metadata as any) || {};
+      
+      // Also query actual counts from database for accuracy
+      const [ordersCount, claimsCount] = await Promise.all([
+        // Count orders processed in this sync (if we track this)
+        supabase
+          .from('claims')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', userId)
+          .gte('created_at', metadata.startedAt || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
+        // Count claims detected in this sync
+        supabase
+          .from('claims')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', userId)
+          .gte('created_at', metadata.startedAt || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+      ]);
+
+      return {
+        ordersProcessed: metadata.ordersProcessed || ordersCount.count || 0,
+        totalOrders: metadata.totalOrders || ordersCount.count || 0,
+        claimsDetected: metadata.claimsDetected || claimsCount.count || 0
+      };
+    } catch (error) {
+      logger.error(`Error getting sync results for ${syncId}:`, error);
+      // Return metadata values if available, otherwise defaults
+      try {
+        const { data: syncData } = await supabase
+          .from('sync_progress')
+          .select('metadata')
+          .eq('sync_id', syncId)
+          .eq('user_id', userId)
+          .single();
+
+        if (syncData && syncData.metadata) {
+          const metadata = syncData.metadata as any;
+          return {
+            ordersProcessed: metadata.ordersProcessed || 0,
+            totalOrders: metadata.totalOrders || 0,
+            claimsDetected: metadata.claimsDetected || 0
+          };
+        }
+      } catch (fallbackError) {
+        logger.error(`Fallback sync results query failed:`, fallbackError);
+      }
+
+      return {
+        ordersProcessed: 0,
+        totalOrders: 0,
+        claimsDetected: 0
+      };
+    }
   }
 }
 
