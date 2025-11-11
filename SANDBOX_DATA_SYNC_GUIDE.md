@@ -22,6 +22,15 @@ The SP-API sandbox is a **black-box API**. It returns mock JSON responses when y
 2. **You must parse the JSON** - Data doesn't magically appear in your UI
 3. **You must store it** - Sandbox data is ephemeral unless you save it
 
+## 🛠️ Sandbox Prerequisites
+
+- ✅ Configure AWS signing credentials so every SP-API call is SigV4-signed  
+  `AMAZON_AWS_ACCESS_KEY_ID`, `AMAZON_AWS_SECRET_ACCESS_KEY`, optional `AMAZON_AWS_SESSION_TOKEN`, and `AMAZON_REGION`
+- ✅ Keep the sandbox base URL set: `AMAZON_SPAPI_BASE_URL=https://sandbox.sellingpartnerapi-na.amazon.com`
+- ✅ (Optional) Provide a sandbox test case for deterministic data, e.g. `AMAZON_SPAPI_TEST_CASE_ID=FBAINVE-001`
+
+Without these values the sandbox responds with authorization errors or empty payloads, even though OAuth succeeds.
+
 ## ✅ How to See Sandbox Data in Your App
 
 ### Step 1: Trigger a Sync
@@ -252,6 +261,17 @@ The SP-API sandbox returns **predictable mock data**:
 ## 🔄 Sync Flow Diagram
 
 ```
+
+### Test 4: One-Command Verification
+
+```bash
+cd Integrations-backend
+npm run verify:sandbox
+```
+
+- Prints a table with sandbox inventory, claim and fee counts
+- Set `AMAZON_REQUIRE_SANDBOX_DATA=true` to fail the command if any dataset is empty
+- Supports `AMAZON_SPAPI_TEST_CASE_ID` so you can lock the sandbox onto a known mock scenario
 1. User connects to sandbox (OAuth)
    ↓
 2. User triggers sync: POST /api/v1/integrations/amazon/sync
