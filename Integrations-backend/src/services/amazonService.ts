@@ -3,6 +3,7 @@
 import axios from 'axios';
 import crypto from 'crypto';
 import logger from '../utils/logger';
+import { callAmazonSpApi } from '../utils/amazonSpApiClient';
 
 export interface AmazonClaim {
   id: string;
@@ -482,107 +483,106 @@ export class AmazonService {
           : 'Using Amazon SP-API production - fetching real live data from Amazon'
       });
 
-      // Use Financial Events API to get reimbursements (claims)
-      // Financial Events includes: Reimbursement events, Adjustments, etc.
-      const params: any = {
-        PostedAfter: postedAfter.toISOString(),
-        PostedBefore: postedBefore.toISOString(),
-        MarketplaceIds: marketplaceId
-      };
-
-      // Check cache for first page (subsequent pages are less cacheable)
-      const cacheKey = this.getCacheKey('financialEvents', { ...params, endpoint: 'claims' });
-      const cached = this.getCachedResponse(cacheKey);
-      if (cached && !params.NextToken) {
-        logger.info('Using cached claims data', { itemCount: cached.length });
-        return {
-          success: true,
-          data: cached,
-          message: `Fetched ${cached.length} claims/reimbursements from SP-API (cached)`,
-          fromApi: true,
-          isSandbox: isSandboxMode,
-          environment,
-          dataType,
-          cached: true
+        // Use Financial Events API to get reimbursements (claims)
+        // Financial Events includes: Reimbursement events, Adjustments, etc.
+        const baseQuery: Record<string, string> = {
+          PostedAfter: postedAfter.toISOString(),
+          PostedBefore: postedBefore.toISOString(),
+          MarketplaceIds: marketplaceId
         };
-      }
 
-      let allClaims: any[] = [];
-      let nextToken: string | undefined = undefined;
-      const rateLimitDelay = this.getRateLimitDelay();
-
-      // Paginate through all financial events
-      do {
-        if (nextToken) {
-          params.NextToken = nextToken;
-        }
-
-        const response = await axios.get(
-          `${this.baseUrl}/finances/v0/financialEvents`,
-          {
-            headers: {
-              'Authorization': `Bearer ${accessToken}`,
-              'x-amz-access-token': accessToken,
-              'Content-Type': 'application/json'
-            },
-            params,
-            timeout: 30000
+        if (isSandboxMode) {
+          const testCaseId = process.env.AMAZON_SPAPI_TEST_CASE_ID;
+          if (testCaseId) {
+            baseQuery.TestCaseId = testCaseId;
           }
-        );
-
-        const payload = response.data?.payload || response.data;
-        const financialEvents = payload?.FinancialEvents || {};
-        
-        // Extract reimbursement events (these are the "claims")
-        const reimbursements = financialEvents.FBALiquidationEventList || [];
-        const adjustments = financialEvents.AdjustmentEventList || [];
-        
-        // Transform reimbursements into claims format
-        for (const reimbursement of reimbursements) {
-          allClaims.push({
-            id: reimbursement.OriginalRemovalOrderId || `RMB-${Date.now()}`,
-            orderId: reimbursement.OriginalRemovalOrderId,
-            amount: parseFloat(reimbursement.LiquidationProceedsAmount?.CurrencyAmount || '0'),
-            status: 'approved', // Reimbursements from Financial Events are already processed
-            type: 'liquidation_reimbursement',
-            currency: reimbursement.LiquidationProceedsAmount?.CurrencyCode || 'USD',
-            createdAt: reimbursement.PostedDate || new Date().toISOString(),
-            description: `FBA Liquidation reimbursement for ${reimbursement.OriginalRemovalOrderId || 'N/A'}`,
-            fromApi: true
-          });
         }
-        
-        // Transform adjustment events (some are reimbursements)
-        for (const adjustment of adjustments) {
-          const adjustmentAmount = adjustment.AdjustmentAmount?.CurrencyAmount || '0';
-          const amount = parseFloat(adjustmentAmount);
+
+        // Check cache for first page (subsequent pages are less cacheable)
+        const cacheKey = this.getCacheKey('financialEvents', { ...baseQuery, endpoint: 'claims' });
+        const cached = this.getCachedResponse(cacheKey);
+        if (cached) {
+          logger.info('Using cached claims data', { itemCount: cached.length });
+          return {
+            success: true,
+            data: cached,
+            message: `Fetched ${cached.length} claims/reimbursements from SP-API (cached)`,
+            fromApi: true,
+            isSandbox: isSandboxMode,
+            environment,
+            dataType,
+            cached: true
+          };
+        }
+
+        const allClaims: any[] = [];
+        let nextToken: string | undefined;
+        const rateLimitDelay = this.getRateLimitDelay();
+
+        // Paginate through all financial events
+        do {
+          const query = nextToken ? { ...baseQuery, NextToken: nextToken } : baseQuery;
+
+          const response = await callAmazonSpApi({
+            method: 'GET',
+            path: '/finances/v0/financialEvents',
+            query,
+            accessToken
+          });
+
+          const payload = response.data?.payload || response.data;
+          const financialEvents = payload?.FinancialEvents || {};
           
-          // Only include positive adjustments (reimbursements), not charges
-          if (amount > 0) {
+          // Extract reimbursement events (these are the "claims")
+          const reimbursements = financialEvents.FBALiquidationEventList || [];
+          const adjustments = financialEvents.AdjustmentEventList || [];
+          
+          // Transform reimbursements into claims format
+          for (const reimbursement of reimbursements) {
             allClaims.push({
-              id: adjustment.AdjustmentEventId || `ADJ-${Date.now()}`,
-              orderId: adjustment.AdjustmentEventId,
-              amount: amount,
-              status: 'approved',
-              type: 'adjustment_reimbursement',
-              currency: adjustment.AdjustmentAmount?.CurrencyCode || 'USD',
-              createdAt: adjustment.PostedDate || new Date().toISOString(),
-              description: adjustment.AdjustmentType || 'Amazon adjustment reimbursement',
+              id: reimbursement.OriginalRemovalOrderId || `RMB-${Date.now()}`,
+              orderId: reimbursement.OriginalRemovalOrderId,
+              amount: parseFloat(reimbursement.LiquidationProceedsAmount?.CurrencyAmount || '0'),
+              status: 'approved', // Reimbursements from Financial Events are already processed
+              type: 'liquidation_reimbursement',
+              currency: reimbursement.LiquidationProceedsAmount?.CurrencyCode || 'USD',
+              createdAt: reimbursement.PostedDate || new Date().toISOString(),
+              description: `FBA Liquidation reimbursement for ${reimbursement.OriginalRemovalOrderId || 'N/A'}`,
               fromApi: true
             });
           }
-        }
-        
-        // Check for next token (pagination)
-        nextToken = payload?.NextToken;
-        
-        // Rate limiting: respect SP-API limits (faster for sandbox)
-        if (nextToken) {
-          await new Promise(resolve => setTimeout(resolve, rateLimitDelay));
-        }
-      } while (nextToken);
+          
+          // Transform adjustment events (some are reimbursements)
+          for (const adjustment of adjustments) {
+            const adjustmentAmount = adjustment.AdjustmentAmount?.CurrencyAmount || '0';
+            const amount = parseFloat(adjustmentAmount);
+            
+            // Only include positive adjustments (reimbursements), not charges
+            if (amount > 0) {
+              allClaims.push({
+                id: adjustment.AdjustmentEventId || `ADJ-${Date.now()}`,
+                orderId: adjustment.AdjustmentEventId,
+                amount: amount,
+                status: 'approved',
+                type: 'adjustment_reimbursement',
+                currency: adjustment.AdjustmentAmount?.CurrencyCode || 'USD',
+                createdAt: adjustment.PostedDate || new Date().toISOString(),
+                description: adjustment.AdjustmentType || 'Amazon adjustment reimbursement',
+                fromApi: true
+              });
+            }
+          }
+          
+          // Check for next token (pagination)
+          nextToken = payload?.NextToken;
+          
+          // Rate limiting: respect SP-API limits (faster for sandbox)
+          if (nextToken) {
+            await new Promise(resolve => setTimeout(resolve, rateLimitDelay));
+          }
+        } while (nextToken);
 
-      logger.info(`Successfully fetched ${allClaims.length} claims/reimbursements from SP-API ${environment}`, {
+        logger.info(`Successfully fetched ${allClaims.length} claims/reimbursements from SP-API ${environment}`, {
         itemCount: allClaims.length,
         accountId,
         isSandbox: isSandboxMode,
@@ -598,10 +598,8 @@ export class AmazonService {
               : `Successfully retrieved ${allClaims.length} live production claims from Amazon SP-API`)
       });
 
-      // Cache the first page result
-      if (!params.NextToken) {
+        // Cache the first page result
         this.setCachedResponse(cacheKey, allClaims);
-      }
 
       // Track payment status changes for Transparency Agent (after fetching all claims)
       await this.trackPaymentStatusChanges(accountId, allClaims);
@@ -708,39 +706,42 @@ export class AmazonService {
         note: 'Using Amazon SP-API sandbox - returns test/fake data only, not real production data'
       });
 
-      // Build params - sandbox may not support granularityType
-      const params: any = {
-        marketplaceIds: marketplaceId
-      };
+        // Build params - sandbox may not support granularityType
+        const query: Record<string, string> = {
+          marketplaceIds: marketplaceId
+        };
 
-      // Only include granularityType for production (sandbox may not support it)
-      if (!this.isSandbox()) {
-        params.granularityType = 'Marketplace';
-        params.granularityId = marketplaceId;
-      }
+        const isSandboxMode = this.isSandbox();
 
-      // Make real SP-API call to fetch inventory
-      const response = await axios.get(
-        `${this.baseUrl}/fba/inventory/v1/summaries`,
-        {
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'x-amz-access-token': accessToken,
-            'Content-Type': 'application/json'
-          },
-          params,
-          timeout: 30000
+        // Only include granularityType for production (sandbox may not support it)
+        if (!isSandboxMode) {
+          query.granularityType = 'Marketplace';
+          query.granularityId = marketplaceId;
         }
-      );
 
-      // Handle both production and sandbox response formats
-      const payload = response.data?.payload || response.data;
+        if (isSandboxMode) {
+          const testCaseId = process.env.AMAZON_SPAPI_TEST_CASE_ID;
+          if (testCaseId) {
+            query.TestCaseId = testCaseId;
+          }
+        }
+
+        // Make real SP-API call to fetch inventory
+        const response = await callAmazonSpApi({
+          method: 'GET',
+          path: '/fba/inventory/v1/summaries',
+          query,
+          accessToken
+        });
+
+        // Handle both production and sandbox response formats
+        const payload = response.data?.payload || response.data;
       const summaries = payload?.inventorySummaries || (Array.isArray(payload) ? payload : []);
       
       logger.info(`Successfully fetched ${summaries.length} inventory items from SP-API SANDBOX`, {
         itemCount: summaries.length,
         accountId,
-        isSandbox: this.isSandbox(),
+          isSandbox: isSandboxMode,
         dataType: 'SANDBOX_TEST_DATA',
         note: summaries.length === 0 
           ? 'Sandbox returned empty inventory - this is normal for testing' 
@@ -818,23 +819,18 @@ export class AmazonService {
   async getSellersInfo(userId?: string): Promise<any> {
     try {
       const accessToken = await this.getAccessToken(userId);
-      const sellersUrl = `${this.baseUrl}/sellers/v1/marketplaceParticipations`;
+        logger.info('Fetching seller information from SP-API', {
+          baseUrl: this.baseUrl,
+          isSandbox: this.isSandbox()
+        });
 
-      logger.info('Fetching seller information from SP-API', {
-        baseUrl: this.baseUrl,
-        isSandbox: this.isSandbox()
-      });
+        const response = await callAmazonSpApi({
+          method: 'GET',
+          path: '/sellers/v1/marketplaceParticipations',
+          accessToken
+        });
 
-      const response = await axios.get(sellersUrl, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'x-amz-access-token': accessToken,
-          'Content-Type': 'application/json'
-        },
-        timeout: 30000
-      });
-
-      if (response.status === 200) {
+        if (response.status === 200) {
         const data = response.data;
         const payload = data.payload || data;
 
@@ -942,17 +938,24 @@ export class AmazonService {
         isSandbox: this.isSandbox()
       });
 
-      // Use Financial Events API to get fee events
-      const params: any = {
-        PostedAfter: postedAfter.toISOString(),
-        PostedBefore: postedBefore.toISOString(),
-        MarketplaceIds: marketplaceId
-      };
+        // Use Financial Events API to get fee events
+        const baseQuery: Record<string, string> = {
+          PostedAfter: postedAfter.toISOString(),
+          PostedBefore: postedBefore.toISOString(),
+          MarketplaceIds: marketplaceId
+        };
 
-      // Check cache for first page
-      const cacheKey = this.getCacheKey('financialEvents', { ...params, endpoint: 'fees' });
-      const cached = this.getCachedResponse(cacheKey);
-      if (cached && !params.NextToken) {
+        if (this.isSandbox()) {
+          const testCaseId = process.env.AMAZON_SPAPI_TEST_CASE_ID;
+          if (testCaseId) {
+            baseQuery.TestCaseId = testCaseId;
+          }
+        }
+
+        // Check cache for first page
+        const cacheKey = this.getCacheKey('financialEvents', { ...baseQuery, endpoint: 'fees' });
+        const cached = this.getCachedResponse(cacheKey);
+        if (cached) {
         logger.info('Using cached fees data', { itemCount: cached.length });
         return {
           success: true,
@@ -964,30 +967,22 @@ export class AmazonService {
         };
       }
 
-      let allFees: any[] = [];
-      let nextToken: string | undefined = undefined;
+        const allFees: any[] = [];
+        let nextToken: string | undefined;
       const rateLimitDelay = this.getRateLimitDelay();
 
       // Paginate through all financial events
       do {
-        if (nextToken) {
-          params.NextToken = nextToken;
-        }
+          const query = nextToken ? { ...baseQuery, NextToken: nextToken } : baseQuery;
 
-        const response = await axios.get(
-          `${this.baseUrl}/finances/v0/financialEvents`,
-          {
-            headers: {
-              'Authorization': `Bearer ${accessToken}`,
-              'x-amz-access-token': accessToken,
-              'Content-Type': 'application/json'
-            },
-            params,
-            timeout: 30000
-          }
-        );
+          const response = await callAmazonSpApi({
+            method: 'GET',
+            path: '/finances/v0/financialEvents',
+            query,
+            accessToken
+          });
 
-        const payload = response.data?.payload || response.data;
+          const payload = response.data?.payload || response.data;
         const financialEvents = payload?.FinancialEvents || {};
         
         // Extract fee events from Financial Events
@@ -1074,9 +1069,7 @@ export class AmazonService {
       });
 
       // Cache the first page result
-      if (!params.NextToken) {
         this.setCachedResponse(cacheKey, allFees);
-      }
 
       return { 
         success: true, 
