@@ -497,7 +497,18 @@ export class DetectionService {
       });
 
       // Step 4: Call Claim Detector API (batch detection)
+      const apiCallStartTime = Date.now();
+      let apiResponseTimeMs = 0;
+      let apiCallSuccess = false;
+      let apiCallError: string | undefined;
+      
       try {
+        logger.info('Calling Claim Detector API for batch prediction', {
+          seller_id: job.seller_id,
+          claim_count: claimsToDetect.length,
+          api_url: `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`
+        });
+
         const detectionResponse = await axios.post(
           `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
           { claims: claimsToDetect },
@@ -508,25 +519,74 @@ export class DetectionService {
             }
           }
         );
-
-        const detectedClaims = detectionResponse.data?.results || detectionResponse.data?.claims || [];
         
-        logger.info('Claim Detector API response', {
+        apiResponseTimeMs = Date.now() - apiCallStartTime;
+        apiCallSuccess = true;
+
+        // Parse API response - the API returns { predictions: [], batch_metrics: {} }
+        const apiPredictions = detectionResponse.data?.predictions || detectionResponse.data?.results || detectionResponse.data?.claims || [];
+        const batchMetrics = detectionResponse.data?.batch_metrics || {};
+        
+        logger.info('Claim Detector API response received', {
           seller_id: job.seller_id,
-          detected_count: detectedClaims.length,
-          total_processed: claimsToDetect.length
+          predictions_count: apiPredictions.length,
+          total_processed: claimsToDetect.length,
+          batch_metrics: batchMetrics,
+          response_keys: Object.keys(detectionResponse.data || {})
         });
 
-        // Step 5: Transform Claim Detector results into DetectionResult format
-        for (const detectedClaim of detectedClaims) {
-          if (detectedClaim.claimable && detectedClaim.probability >= 0.5) {
+        // Create a map of claim_id to original claim data for preserving metadata
+        const claimsMap = new Map(claimsToDetect.map(claim => [claim.claim_id, claim]));
+
+        // Step 5: Transform Claim Detector predictions into DetectionResult format
+        for (const prediction of apiPredictions) {
+          // Get the original claim data to preserve amount and other fields
+          const originalClaim = claimsMap.get(prediction.claim_id);
+          
+          if (!originalClaim) {
+            logger.warn('Original claim not found for prediction', {
+              claim_id: prediction.claim_id,
+              seller_id: job.seller_id
+            });
+            continue;
+          }
+
+          // Only process claimable predictions with probability >= 0.5
+          if (prediction.claimable && prediction.probability >= 0.5) {
+            // Merge prediction with original claim data
+            const enrichedClaim = {
+              ...originalClaim,
+              ...prediction,
+              // Preserve original amount and metadata
+              amount: originalClaim.amount || prediction.amount || 0,
+              currency: originalClaim.currency || prediction.currency || 'USD',
+              order_id: originalClaim.order_id || prediction.order_id,
+              category: originalClaim.category || prediction.category,
+              evidence: originalClaim.evidence || {}
+            };
+
             // Map claim detector response to detection result
             const detectionResult = this.mapClaimToDetectionResult(
-              detectedClaim,
+              enrichedClaim,
               job.seller_id,
               job.sync_id
             );
             results.push(detectionResult);
+            
+            logger.debug('Mapped prediction to detection result', {
+              claim_id: prediction.claim_id,
+              claimable: prediction.claimable,
+              probability: prediction.probability,
+              confidence: prediction.confidence,
+              anomaly_type: detectionResult.anomaly_type,
+              estimated_value: detectionResult.estimated_value
+            });
+          } else {
+            logger.debug('Skipping non-claimable or low-probability prediction', {
+              claim_id: prediction.claim_id,
+              claimable: prediction.claimable,
+              probability: prediction.probability
+            });
           }
         }
 
@@ -534,6 +594,55 @@ export class DetectionService {
         const mediumConfidence = results.filter(r => r.confidence_score >= 0.50 && r.confidence_score < 0.85).length;
         const lowConfidence = results.filter(r => r.confidence_score < 0.50).length;
         const totalAmount = results.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
+        
+        // Record detection accuracy metrics and API call metrics
+        try {
+          const syncMonitoringService = (await import('./syncMonitoringService')).default;
+          const claimsByType: Record<string, number> = {};
+          const claimsBySeverity: Record<string, number> = {};
+          
+          results.forEach(result => {
+            claimsByType[result.anomaly_type] = (claimsByType[result.anomaly_type] || 0) + 1;
+            claimsBySeverity[result.severity] = (claimsBySeverity[result.severity] || 0) + 1;
+          });
+          
+          const averageConfidence = results.length > 0
+            ? results.reduce((sum, r) => sum + r.confidence_score, 0) / results.length
+            : 0;
+          const averageProbability = apiPredictions.length > 0
+            ? apiPredictions.reduce((sum, p) => sum + (p.probability || 0), 0) / apiPredictions.length
+            : 0;
+          
+          // Record detection accuracy metrics
+          await syncMonitoringService.recordDetectionAccuracy({
+            sync_id: job.sync_id,
+            user_id: job.seller_id,
+            total_predictions: apiPredictions.length,
+            claimable_predictions: results.length,
+            high_confidence_count: highConfidence,
+            average_confidence: averageConfidence,
+            average_probability: averageProbability,
+            claims_by_type: claimsByType,
+            claims_by_severity: claimsBySeverity
+          });
+          
+          // Record API call metrics
+          await syncMonitoringService.recordApiCallMetrics(
+            job.sync_id,
+            job.seller_id,
+            'claim_detector_api',
+            apiResponseTimeMs,
+            apiCallSuccess,
+            apiCallError
+          );
+        } catch (monitoringError) {
+          // Non-blocking - monitoring failures shouldn't break detection
+          logger.warn('Failed to record detection metrics', {
+            error: monitoringError,
+            seller_id: job.seller_id,
+            sync_id: job.sync_id
+          });
+        }
         
         const environment = isSandbox ? 'SANDBOX' : 'PRODUCTION';
         logger.info(`Detection algorithms completed (${environment} MODE)`, {
@@ -586,13 +695,61 @@ export class DetectionService {
         }
 
       } catch (error: any) {
-        logger.error('Error calling Claim Detector API (SANDBOX MODE)', {
-          error: error.message,
-          response: error.response?.data,
+        apiResponseTimeMs = Date.now() - apiCallStartTime;
+        apiCallSuccess = false;
+        apiCallError = error.message || 'Unknown error';
+        
+        // Enhanced error logging with full context
+        const errorDetails = {
+          error_message: error.message,
+          error_code: error.code,
+          error_response: error.response?.data,
+          error_status: error.response?.status,
+          error_statusText: error.response?.statusText,
+          api_url: `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
           seller_id: job.seller_id,
+          claims_sent: claimsToDetect.length,
+          response_time_ms: apiResponseTimeMs,
           isSandbox,
-          mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
-        });
+          mode: isSandbox ? 'SANDBOX' : 'PRODUCTION',
+          stack: error.stack
+        };
+        
+        logger.error('Error calling Claim Detector API', errorDetails);
+        
+        // Record API call metrics even on failure
+        try {
+          const syncMonitoringService = (await import('./syncMonitoringService')).default;
+          await syncMonitoringService.recordApiCallMetrics(
+            job.sync_id,
+            job.seller_id,
+            'claim_detector_api',
+            apiResponseTimeMs,
+            false,
+            apiCallError
+          );
+        } catch (monitoringError) {
+          // Non-blocking
+          logger.warn('Failed to record API call metrics', { error: monitoringError });
+        }
+        
+        // If API is unreachable or returns error, log detailed diagnostics
+        if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+          logger.error('Claim Detector API is unreachable', {
+            api_url: this.pythonApiUrl,
+            error_code: error.code,
+            seller_id: job.seller_id,
+            response_time_ms: apiResponseTimeMs
+          });
+        } else if (error.response?.status) {
+          logger.error('Claim Detector API returned error status', {
+            status: error.response.status,
+            statusText: error.response.statusText,
+            response_data: error.response.data,
+            seller_id: job.seller_id,
+            response_time_ms: apiResponseTimeMs
+          });
+        }
         
         // Fallback: Create basic detection results from financial events if API fails
         // For sandbox, this is acceptable - we'll create mock claims from synced data
@@ -724,10 +881,13 @@ export class DetectionService {
     // Process financial events as potential fee overcharges or missing reimbursements
     for (const event of financialEvents) {
       if (event.event_type === 'fee' || event.event_type === 'adjustment') {
+        const eventDate = event.event_date ? new Date(event.event_date) : new Date();
+        const daysSinceOrder = Math.floor((Date.now() - eventDate.getTime()) / (1000 * 60 * 60 * 24));
+        
         claims.push({
           claim_id: `claim_${event.id}_${Date.now()}`,
           seller_id: event.seller_id,
-          order_id: event.amazon_order_id || event.event_id,
+          order_id: event.amazon_order_id || event.event_id || `event_${event.id}`,
           category: 'fee_error',
           subcategory: event.event_type,
           reason_code: 'INCORRECT_FEE',
@@ -735,41 +895,103 @@ export class DetectionService {
           fulfillment_center: event.fulfillment_center || 'UNKNOWN',
           amount: Math.abs(event.amount || 0),
           quantity: 1,
-          order_value: event.amount || 0,
+          order_value: Math.abs(event.amount || 0),
           shipping_cost: 0,
-          days_since_order: event.event_date ? 
-            Math.floor((Date.now() - new Date(event.event_date).getTime()) / (1000 * 60 * 60 * 24)) : 0,
-          days_since_delivery: 0,
-          description: `Potential ${event.event_type} discrepancy`,
-          reason: 'Automated detection from financial events',
-          claim_date: new Date().toISOString(),
-          evidence: event.raw_payload || {}
+          days_since_order: daysSinceOrder,
+          days_since_delivery: Math.max(0, daysSinceOrder - 7), // Estimate delivery 7 days after order
+          description: `Potential ${event.event_type} discrepancy: ${event.event_type} event detected`,
+          reason: `Automated detection from financial events: ${event.event_type}`,
+          notes: event.description || event.notes || '',
+          claim_date: eventDate.toISOString(),
+          currency: event.currency || 'USD',
+          evidence: {
+            event_id: event.id,
+            event_type: event.event_type,
+            raw_payload: event.raw_payload || {},
+            event_date: event.event_date
+          }
         });
       }
     }
 
     // Process inventory discrepancies as lost/damaged inventory claims
     for (const item of inventoryDiscrepancies) {
-      if (item.dimensions?.damaged > 0) {
+      const damagedQty = item.dimensions?.damaged || 0;
+      const estimatedValuePerUnit = item.price || item.cost || 10; // Use item price if available, else default to $10
+      
+      if (damagedQty > 0) {
+        const discoveryDate = item.updated_at ? new Date(item.updated_at) : new Date();
+        const daysSinceOrder = Math.floor((Date.now() - discoveryDate.getTime()) / (1000 * 60 * 60 * 24));
+        
         claims.push({
           claim_id: `claim_inv_${item.id}_${Date.now()}`,
           seller_id: item.user_id,
-          order_id: item.sku,
+          order_id: item.sku || `sku_${item.id}`,
           category: 'inventory_loss',
           subcategory: 'damaged_goods',
           reason_code: 'DAMAGED_INVENTORY',
-          marketplace: 'US',
-          fulfillment_center: item.dimensions?.location || 'UNKNOWN',
-          amount: item.dimensions?.damaged * 10 || 0, // Estimated value
-          quantity: item.dimensions?.damaged || 0,
-          order_value: item.dimensions?.damaged * 10 || 0,
+          marketplace: item.marketplace || 'US',
+          fulfillment_center: item.dimensions?.location || item.fulfillment_center || 'UNKNOWN',
+          amount: damagedQty * estimatedValuePerUnit,
+          quantity: damagedQty,
+          order_value: damagedQty * estimatedValuePerUnit,
           shipping_cost: 0,
-          days_since_order: 0,
-          days_since_delivery: 0,
-          description: `Damaged inventory detected for SKU ${item.sku}`,
-          reason: 'Automated detection from inventory sync',
-          claim_date: new Date().toISOString(),
-          evidence: item.dimensions || {}
+          days_since_order: daysSinceOrder,
+          days_since_delivery: Math.max(0, daysSinceOrder - 7),
+          description: `Damaged inventory detected for SKU ${item.sku}: ${damagedQty} unit(s) damaged`,
+          reason: `Automated detection from inventory sync: ${damagedQty} damaged unit(s) found`,
+          notes: item.notes || '',
+          claim_date: discoveryDate.toISOString(),
+          currency: item.currency || 'USD',
+          evidence: {
+            item_id: item.id,
+            sku: item.sku,
+            asin: item.asin,
+            dimensions: item.dimensions || {},
+            quantity_available: item.quantity_available,
+            quantity_reserved: item.quantity_reserved,
+            price: item.price,
+            cost: item.cost
+          }
+        });
+      }
+      
+      // Also check for missing units (quantity_available === 0 but quantity_reserved > 0)
+      if (item.quantity_available === 0 && item.quantity_reserved > 0) {
+        const missingQty = item.quantity_reserved;
+        const estimatedValuePerUnit = item.price || item.cost || 10;
+        const discoveryDate = item.updated_at ? new Date(item.updated_at) : new Date();
+        const daysSinceOrder = Math.floor((Date.now() - discoveryDate.getTime()) / (1000 * 60 * 60 * 24));
+        
+        claims.push({
+          claim_id: `claim_missing_${item.id}_${Date.now()}`,
+          seller_id: item.user_id,
+          order_id: item.sku || `sku_${item.id}`,
+          category: 'inventory_loss',
+          subcategory: 'missing_unit',
+          reason_code: 'MISSING_UNIT',
+          marketplace: item.marketplace || 'US',
+          fulfillment_center: item.dimensions?.location || item.fulfillment_center || 'UNKNOWN',
+          amount: missingQty * estimatedValuePerUnit,
+          quantity: missingQty,
+          order_value: missingQty * estimatedValuePerUnit,
+          shipping_cost: 0,
+          days_since_order: daysSinceOrder,
+          days_since_delivery: Math.max(0, daysSinceOrder - 7),
+          description: `Missing inventory detected for SKU ${item.sku}: ${missingQty} unit(s) reserved but not available`,
+          reason: `Automated detection from inventory sync: ${missingQty} missing unit(s)`,
+          notes: item.notes || '',
+          claim_date: discoveryDate.toISOString(),
+          currency: item.currency || 'USD',
+          evidence: {
+            item_id: item.id,
+            sku: item.sku,
+            asin: item.asin,
+            quantity_available: item.quantity_available,
+            quantity_reserved: item.quantity_reserved,
+            price: item.price,
+            cost: item.cost
+          }
         });
       }
     }
@@ -798,7 +1020,7 @@ export class DetectionService {
     sellerId: string,
     syncId: string
   ): DetectionResult {
-    // Map claim type to anomaly type
+    // Map claim type to anomaly type (check subcategory first for more specific mapping)
     const anomalyTypeMap: Record<string, DetectionResult['anomaly_type']> = {
       'fee_error': 'incorrect_fee',
       'inventory_loss': 'missing_unit',
@@ -806,8 +1028,21 @@ export class DetectionService {
       'overcharge': 'overcharge',
       'duplicate': 'duplicate_charge'
     };
+    
+    // Map by subcategory if available for more specific detection
+    const subcategoryMap: Record<string, DetectionResult['anomaly_type']> = {
+      'damaged_goods': 'damaged_stock',
+      'missing_unit': 'missing_unit',
+      'fee': 'incorrect_fee',
+      'adjustment': 'incorrect_fee',
+      'overcharge': 'overcharge',
+      'duplicate': 'duplicate_charge'
+    };
 
-    const anomalyType = anomalyTypeMap[detectedClaim.category] || 'missing_unit';
+    // Prefer subcategory mapping if available, otherwise use category
+    const anomalyType = subcategoryMap[detectedClaim.subcategory] || 
+                        anomalyTypeMap[detectedClaim.category] || 
+                        'missing_unit';
 
     // Map confidence to severity
     let severity: DetectionResult['severity'] = 'low';
