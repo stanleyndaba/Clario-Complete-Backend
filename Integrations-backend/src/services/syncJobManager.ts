@@ -67,7 +67,7 @@ class SyncJobManager {
 
     // Check if there's already a running sync (both in-memory and database)
     const existingSync = await this.getActiveSync(userId);
-    if (existingSync && (existingSync.status === 'running' || existingSync.status === 'in_progress')) {
+    if (existingSync && existingSync.status === 'running') {
       throw new Error(`Sync already in progress (${existingSync.syncId}). Please wait for it to complete or cancel it first.`);
     }
 
@@ -76,15 +76,15 @@ class SyncJobManager {
       .from('sync_progress')
       .select('sync_id, status')
       .eq('user_id', userId)
-      .in('status', ['running', 'in_progress'])
+      .eq('status', 'running')
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (dbActiveSync && (dbActiveSync.status === 'running' || dbActiveSync.status === 'in_progress')) {
+    if (dbActiveSync && dbActiveSync.status === 'running') {
       // Check if it's actually still running (not stale)
       const dbSyncStatus = await this.getSyncStatus(dbActiveSync.sync_id, userId);
-      if (dbSyncStatus && (dbSyncStatus.status === 'running' || dbSyncStatus.status === 'in_progress')) {
+      if (dbSyncStatus && dbSyncStatus.status === 'running') {
         throw new Error(`Sync already in progress (${dbActiveSync.sync_id}). Please wait for it to complete or cancel it first.`);
       }
     }
@@ -284,7 +284,7 @@ class SyncJobManager {
 
       // Update progress: 100% - Complete (use 'completed' to match database)
       syncStatus.progress = 100;
-      syncStatus.status = 'complete';
+      syncStatus.status = 'completed';
       syncStatus.message = syncResults.claimsDetected > 0
         ? `Sync completed successfully - ${syncResults.claimsDetected} discrepancies detected`
         : 'Sync completed successfully';
@@ -525,7 +525,7 @@ class SyncJobManager {
   }> {
     // Check running jobs first
     for (const job of this.runningJobs.values()) {
-      if (job.status.userId === userId && (job.status.status === 'running' || job.status.status === 'in_progress')) {
+      if (job.status.userId === userId && job.status.status === 'running') {
         return {
           hasActiveSync: true,
           lastSync: {
@@ -546,7 +546,7 @@ class SyncJobManager {
         .from('sync_progress')
         .select('*')
         .eq('user_id', userId)
-        .in('status', ['running', 'in_progress'])
+        .eq('status', 'running')
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -557,7 +557,7 @@ class SyncJobManager {
           .from('sync_progress')
           .select('*')
           .eq('user_id', userId)
-          .in('status', ['completed', 'complete', 'failed', 'cancelled'])
+          .in('status', ['completed', 'failed', 'cancelled'])
           .order('created_at', { ascending: false })
           .limit(1)
           .maybeSingle();
@@ -609,7 +609,7 @@ class SyncJobManager {
   private async getActiveSync(userId: string): Promise<SyncJobStatus | null> {
     // Check running jobs first
     for (const job of this.runningJobs.values()) {
-      if (job.status.userId === userId && (job.status.status === 'running' || job.status.status === 'in_progress')) {
+      if (job.status.userId === userId && job.status.status === 'running') {
         return job.status;
       }
     }
@@ -620,7 +620,7 @@ class SyncJobManager {
         .from('sync_progress')
         .select('*')
         .eq('user_id', userId)
-        .in('status', ['running', 'in_progress'])
+        .eq('status', 'running')
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -650,19 +650,8 @@ class SyncJobManager {
    */
   private async saveSyncToDatabase(syncStatus: SyncJobStatus): Promise<void> {
     try {
-      // Normalize status to database format
-      let dbStatus: string;
-      if (syncStatus.status === 'running' || syncStatus.status === 'in_progress') {
-        dbStatus = 'running';
-      } else if (syncStatus.status === 'completed' || syncStatus.status === 'complete') {
-        dbStatus = 'completed';
-      } else if (syncStatus.status === 'failed') {
-        dbStatus = 'failed';
-      } else if (syncStatus.status === 'cancelled') {
-        dbStatus = 'cancelled';
-      } else {
-        dbStatus = 'running'; // Default
-      }
+      // Normalize status to database format (status is already in correct format)
+      const dbStatus: string = syncStatus.status;
 
       const { error } = await supabase
         .from('sync_progress')
