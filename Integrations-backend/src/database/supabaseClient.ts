@@ -24,11 +24,13 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
       like: (field: string, pattern: string) => builder,
       ilike: (field: string, pattern: string) => builder,
       is: (field: string, value: any) => builder,
+      not: (field: string, operator: string, value: any) => builder, // Add .not() method
       in: (field: string, values: any[]) => builder,
       contains: (field: string, value: any) => builder,
       order: (field: string, options?: any) => builder,
       limit: (count: number) => builder,
       range: (from: number, to: number) => builder,
+      maybeSingle: () => Promise.resolve({ data: null, error: null }),
       single: () => Promise.resolve({ data: null, error: { code: 'PGRST116', message: 'No rows returned' } }),
       then: (resolve: any) => Promise.resolve({ data: [], error: null }).then(resolve)
     };
@@ -40,7 +42,7 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
       getSession: () => Promise.resolve({ data: { session: null }, error: null })
     },
     from: (table: string) => ({
-      select: (columns?: string) => createMockQueryBuilder(),
+      select: (columns?: string, options?: any) => createMockQueryBuilder(),
       insert: (data: any) => ({
         select: (columns?: string) => Promise.resolve({ data: null, error: null }),
         then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
@@ -49,26 +51,8 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
         select: (columns?: string) => Promise.resolve({ data: null, error: null }),
         then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
       }),
-      update: (data: any) => ({
-        eq: (field: string, value: any) => ({
-          eq: (field2: string, value2: any) => ({
-            select: (columns?: string) => Promise.resolve({ data: null, error: null }),
-            then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
-          }),
-          select: (columns?: string) => Promise.resolve({ data: null, error: null }),
-          then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
-        }),
-        match: (conditions: Record<string, any>) => Promise.resolve({ data: null, error: null }),
-        select: (columns?: string) => Promise.resolve({ data: null, error: null }),
-        then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
-      }),
-      delete: () => ({
-        eq: (field: string, value: any) => ({
-          eq: (field2: string, value2: any) => Promise.resolve({ data: null, error: null }),
-          then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
-        }),
-        then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
-      })
+      update: (data: any) => createMockQueryBuilder(), // Use query builder for update chains
+      delete: () => createMockQueryBuilder() // Use query builder for delete chains
     })
   } as any;
 } else {
