@@ -22,9 +22,13 @@ export class DeadlineMonitoringJob {
       await this.checkExpiringClaims();
     });
 
-    // Also run on startup
-    this.checkExpiringClaims().catch(error => {
-      logger.error('Error in initial deadline check', { error });
+    // Also run on startup (don't block startup if it fails)
+    this.checkExpiringClaims().catch((error: any) => {
+      const errorMessage = error?.message || String(error) || 'Unknown error';
+      logger.error('Error in initial deadline check (non-blocking)', { 
+        error: errorMessage,
+        note: 'This error does not prevent server startup'
+      });
     });
 
     this.isRunning = true;
@@ -67,7 +71,11 @@ export class DeadlineMonitoringJob {
         .in('status', ['pending', 'reviewed']);
 
       if (error) {
-        logger.error('Error fetching sellers with expiring claims', { error });
+        logger.error('Error fetching sellers with expiring claims', { 
+          error: error?.message || String(error),
+          code: error?.code,
+          details: error?.details
+        });
         return;
       }
 
@@ -89,8 +97,13 @@ export class DeadlineMonitoringJob {
         sellers_checked: uniqueSellerIds.length,
         expired_count: expiredCount
       });
-    } catch (error) {
-      logger.error('Error in deadline monitoring check', { error });
+    } catch (error: any) {
+      const errorMessage = error?.message || String(error) || 'Unknown error';
+      logger.error('Error in deadline monitoring check', { 
+        error: errorMessage,
+        stack: error?.stack,
+        errorType: error?.constructor?.name
+      });
     }
   }
 }

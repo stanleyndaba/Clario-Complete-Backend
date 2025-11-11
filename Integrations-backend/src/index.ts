@@ -155,9 +155,23 @@ app.use(morgan('combined', {
 // This should be early in the pipeline so all routes have access to req.userId
 app.use(userIdMiddleware);
 
-// Health check endpoint
+// Health check endpoint (must respond quickly for Render)
 app.get('/health', (_, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.status(200).json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    service: 'integrations-backend'
+  });
+});
+
+// Root health check (for Render)
+app.get('/', (_, res) => {
+  res.status(200).json({ 
+    message: 'Opside Integrations API',
+    status: 'operational',
+    version: '1.0.0',
+    timestamp: new Date().toISOString()
+  });
 });
 
 // API status endpoint
@@ -208,14 +222,6 @@ app.use('/api/v1/cost-docs', consolidatedCostDocsRoutes);
 app.use('/api/v1/refund-engine', consolidatedRefundEngineRoutes);
 app.use('/api/v1/inventory-sync', consolidatedInventorySyncRoutes);
 
-// Root endpoint (must come before proxy routes)
-app.get('/', (_, res) => {
-  res.json({ 
-    message: 'Opside Integrations API',
-    version: '1.0.0'
-  });
-});
-
 // Proxy routes to Python backend (recoveries, documents, metrics)
 // IMPORTANT: These must be registered after all other routes to avoid conflicts
 // These proxy requests to python-api-3-vb5h.onrender.com
@@ -238,71 +244,81 @@ server.listen(PORT, '0.0.0.0', () => {
     routeCount: 'See logs above for details'
   });
   
-  // Initialize orchestration job manager (sets up queue processors)
-  OrchestrationJobManager.initialize();
-  logger.info('Orchestration job manager initialized');
-  
-  // Start background jobs
-  deadlineMonitoringJob.start();
-  
-  // Start detection job processor (processes detection jobs from queue)
-  // This runs continuously to process detection jobs queued after sync
-  // Note: Will silently skip if Redis is not available (no log spam)
-  const startDetectionProcessor = async () => {
+  // Initialize background jobs asynchronously (don't block server startup)
+  setImmediate(() => {
     try {
-      // Attempt to get Redis client - if it fails, we'll use mock client
-      // This allows the processor to start but will skip processing if Redis is unavailable
-      try {
-        const { getRedisClient } = await import('./utils/redisClient');
-        await getRedisClient(); // This will return mock client if Redis is unavailable
-      } catch (error: any) {
-        // Redis connection failed - this is OK, we'll skip processing
-        logger.info('Redis not available - detection job processor will skip (this is OK if Redis is not configured)');
-      }
-
-      // Process detection jobs in a loop (non-blocking)
-      // The processDetectionJobs method will check Redis availability internally
-      const processLoop = async () => {
+      // Initialize orchestration job manager (sets up queue processors)
+      OrchestrationJobManager.initialize();
+      logger.info('Orchestration job manager initialized');
+      
+      // Start background jobs (non-blocking)
+      deadlineMonitoringJob.start();
+      
+      // Start detection job processor (processes detection jobs from queue)
+      // This runs continuously to process detection jobs queued after sync
+      // Note: Will silently skip if Redis is not available (no log spam)
+      const startDetectionProcessor = async () => {
         try {
-          await detectionService.processDetectionJobs();
-        } catch (error: any) {
-          // Suppress Redis connection errors - they're handled in redisClient.ts
-          if (error?.message?.includes('ECONNREFUSED') || error?.message?.includes('Redis') || error?.message?.includes('connection')) {
-            // Redis unavailable - continue loop but skip processing
-            // Don't log to avoid spam
-          } else {
-            logger.error('Error in detection job processor', { error: error?.message || error });
-          }
-        }
-        // Schedule next processing (every 5 seconds)
-        setTimeout(processLoop, 5000);
-      };
-      processLoop();
-      logger.info('Detection job processor started (will skip if Redis unavailable)');
-    } catch (error: any) {
-      // Suppress Redis connection errors on startup
-      if (error?.message?.includes('ECONNREFUSED') || error?.message?.includes('Redis') || error?.message?.includes('connection')) {
-        logger.info('Detection job processor started in degraded mode - Redis not available (this is OK if Redis is not configured)');
-        // Start processor anyway - it will handle Redis unavailability gracefully
-        const processLoop = async () => {
+          // Attempt to get Redis client - if it fails, we'll use mock client
+          // This allows the processor to start but will skip processing if Redis is unavailable
           try {
-            await detectionService.processDetectionJobs();
-          } catch (err: any) {
-            // Suppress all errors - processor will skip if Redis unavailable
+            const { getRedisClient } = await import('./utils/redisClient');
+            await getRedisClient(); // This will return mock client if Redis is unavailable
+          } catch (error: any) {
+            // Redis connection failed - this is OK, we'll skip processing
+            logger.info('Redis not available - detection job processor will skip (this is OK if Redis is not configured)');
           }
-          setTimeout(processLoop, 5000);
-        };
-        processLoop();
-        return;
-      }
-      logger.error('Failed to start detection job processor', { error: error?.message || error });
+
+          // Process detection jobs in a loop (non-blocking)
+          // The processDetectionJobs method will check Redis availability internally
+          const processLoop = async () => {
+            try {
+              await detectionService.processDetectionJobs();
+            } catch (error: any) {
+              // Suppress Redis connection errors - they're handled in redisClient.ts
+              if (error?.message?.includes('ECONNREFUSED') || error?.message?.includes('Redis') || error?.message?.includes('connection')) {
+                // Redis unavailable - continue loop but skip processing
+                // Don't log to avoid spam
+              } else {
+                logger.error('Error in detection job processor', { error: error?.message || error });
+              }
+            }
+            // Schedule next processing (every 5 seconds)
+            setTimeout(processLoop, 5000);
+          };
+          processLoop();
+          logger.info('Detection job processor started (will skip if Redis unavailable)');
+        } catch (error: any) {
+          // Suppress Redis connection errors on startup
+          if (error?.message?.includes('ECONNREFUSED') || error?.message?.includes('Redis') || error?.message?.includes('connection')) {
+            logger.info('Detection job processor started in degraded mode - Redis not available (this is OK if Redis is not configured)');
+            // Start processor anyway - it will handle Redis unavailability gracefully
+            const processLoop = async () => {
+              try {
+                await detectionService.processDetectionJobs();
+              } catch (err: any) {
+                // Suppress all errors - processor will skip if Redis unavailable
+              }
+              setTimeout(processLoop, 5000);
+            };
+            processLoop();
+            return;
+          }
+          logger.error('Failed to start detection job processor', { error: error?.message || error });
+        }
+      };
+      startDetectionProcessor();
+      
+      logger.info('Background jobs started', {
+        deadline_monitoring: 'started',
+        detection_processor: 'started'
+      });
+    } catch (error: any) {
+      logger.error('Error starting background jobs (non-blocking)', { 
+        error: error?.message || String(error),
+        note: 'Server will continue to run without background jobs'
+      });
     }
-  };
-  startDetectionProcessor();
-  
-  logger.info('Background jobs started', {
-    deadline_monitoring: 'started',
-    detection_processor: 'started'
   });
 });
 

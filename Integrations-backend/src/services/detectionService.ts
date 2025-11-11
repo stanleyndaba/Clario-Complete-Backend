@@ -1457,7 +1457,11 @@ export class DetectionService {
         .in('status', ['pending', 'reviewed']);
 
       if (fetchError) {
-        logger.error('Error fetching expired claims', { error: fetchError });
+        logger.error('Error fetching expired claims', { 
+          error: fetchError?.message || String(fetchError),
+          code: fetchError?.code,
+          details: fetchError?.details
+        });
         return 0;
       }
 
@@ -1477,23 +1481,41 @@ export class DetectionService {
         .in('id', claimIds);
 
       if (updateError) {
-        logger.error('Error updating expired claims', { error: updateError });
+        logger.error('Error updating expired claims', { 
+          error: updateError?.message || String(updateError),
+          code: updateError?.code,
+          details: updateError?.details
+        });
         return 0;
       }
 
-      // Send expiration notifications via SSE
-      const sseHub = (await import('../utils/sseHub')).default;
-      for (const claim of expiredClaims) {
-        sseHub.sendEvent(claim.seller_id, 'claim_expired', {
-          claim_id: claim.id,
-          message: 'Claim deadline has expired. This claim can no longer be filed with Amazon.'
+      // Send expiration notifications via SSE (don't block on this)
+      try {
+        const sseHub = (await import('../utils/sseHub')).default;
+        for (const claim of expiredClaims) {
+          sseHub.sendEvent(claim.seller_id, 'claim_expired', {
+            claim_id: claim.id,
+            message: 'Claim deadline has expired. This claim can no longer be filed with Amazon.'
+          });
+        }
+      } catch (sseError: any) {
+        // Don't fail if SSE fails
+        logger.warn('Error sending SSE events for expired claims', { 
+          error: sseError?.message || String(sseError)
         });
       }
 
       logger.info('Updated expired claims', { count: expiredClaims.length });
       return expiredClaims.length;
-    } catch (error) {
-      logger.error('Error in updateExpiredClaims', { error });
+    } catch (error: any) {
+      // Handle error properly with serializable error message
+      const errorMessage = error?.message || String(error) || 'Unknown error';
+      const errorStack = error?.stack;
+      logger.error('Error in updateExpiredClaims', { 
+        error: errorMessage,
+        stack: errorStack,
+        errorType: error?.constructor?.name
+      });
       return 0;
     }
   }
