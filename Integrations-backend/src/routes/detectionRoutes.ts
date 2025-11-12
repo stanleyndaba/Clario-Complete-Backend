@@ -5,11 +5,14 @@ import detectionService from '../services/detectionService';
 
 const router = Router();
 
-router.use((req, res, next) => {
+// Auth middleware - allows both JWT tokens and service role key
+router.use(async (req, res, next) => {
   try {
-    return (authenticateToken as any)(req as any, res as any, next as any);
-  } catch {
-    return next();
+    await authenticateToken(req as any, res as any, next);
+  } catch (error) {
+    // If auth fails, try userIdMiddleware as fallback (for testing)
+    const { userIdMiddleware } = await import('../middleware/userIdMiddleware');
+    userIdMiddleware(req as any, res as any, next);
   }
 });
 

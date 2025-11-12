@@ -6,6 +6,11 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { gmailIngestionService } from '../services/gmailIngestionService';
+import { outlookIngestionService } from '../services/outlookIngestionService';
+import { googleDriveIngestionService } from '../services/googleDriveIngestionService';
+import { dropboxIngestionService } from '../services/dropboxIngestionService';
+import { unifiedIngestionService } from '../services/unifiedIngestionService';
+import { supabase } from '../database/supabaseClient';
 import logger from '../utils/logger';
 
 // Type for multer file
@@ -19,6 +24,328 @@ interface MulterFile {
 }
 
 const router = Router();
+
+/**
+ * POST /api/evidence/ingest/outlook
+ * Trigger Outlook evidence ingestion
+ */
+router.post('/ingest/outlook', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    const { query, maxResults, autoParse } = req.body;
+
+    logger.info('🔍 [EVIDENCE] Starting Outlook evidence ingestion', {
+      userId,
+      query,
+      maxResults,
+      autoParse
+    });
+
+    // Send SSE event for ingestion start
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_ingestion_started', {
+        userId,
+        provider: 'outlook',
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for ingestion start', { error: sseError });
+    }
+
+    const result = await outlookIngestionService.ingestEvidenceFromOutlook(userId, {
+      query,
+      maxResults: maxResults || 50,
+      autoParse: autoParse !== false
+    });
+
+    // Send SSE event for ingestion completion
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_ingestion_completed', {
+        userId,
+        provider: 'outlook',
+        documentsIngested: result.documentsIngested,
+        emailsProcessed: result.emailsProcessed,
+        errors: result.errors.length,
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for ingestion completion', { error: sseError });
+    }
+
+    res.json({
+      success: result.success,
+      documentsIngested: result.documentsIngested,
+      emailsProcessed: result.emailsProcessed,
+      errors: result.errors,
+      message: `Ingested ${result.documentsIngested} documents from ${result.emailsProcessed} emails`
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in Outlook ingestion endpoint', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to ingest evidence from Outlook',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * POST /api/evidence/ingest/gdrive
+ * Trigger Google Drive evidence ingestion
+ */
+router.post('/ingest/gdrive', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    const { query, maxResults, autoParse, folderId } = req.body;
+
+    logger.info('🔍 [EVIDENCE] Starting Google Drive evidence ingestion', {
+      userId,
+      query,
+      maxResults,
+      autoParse,
+      folderId
+    });
+
+    // Send SSE event for ingestion start
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_ingestion_started', {
+        userId,
+        provider: 'gdrive',
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for ingestion start', { error: sseError });
+    }
+
+    const result = await googleDriveIngestionService.ingestEvidenceFromGoogleDrive(userId, {
+      query,
+      maxResults: maxResults || 50,
+      autoParse: autoParse !== false,
+      folderId
+    });
+
+    // Send SSE event for ingestion completion
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_ingestion_completed', {
+        userId,
+        provider: 'gdrive',
+        documentsIngested: result.documentsIngested,
+        filesProcessed: result.filesProcessed,
+        errors: result.errors.length,
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for ingestion completion', { error: sseError });
+    }
+
+    res.json({
+      success: result.success,
+      documentsIngested: result.documentsIngested,
+      filesProcessed: result.filesProcessed,
+      errors: result.errors,
+      message: `Ingested ${result.documentsIngested} documents from ${result.filesProcessed} files`
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in Google Drive ingestion endpoint', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to ingest evidence from Google Drive',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * POST /api/evidence/ingest/dropbox
+ * Trigger Dropbox evidence ingestion
+ */
+router.post('/ingest/dropbox', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    const { query, maxResults, autoParse, folderPath } = req.body;
+
+    logger.info('🔍 [EVIDENCE] Starting Dropbox evidence ingestion', {
+      userId,
+      query,
+      maxResults,
+      autoParse,
+      folderPath
+    });
+
+    // Send SSE event for ingestion start
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_ingestion_started', {
+        userId,
+        provider: 'dropbox',
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for ingestion start', { error: sseError });
+    }
+
+    const result = await dropboxIngestionService.ingestEvidenceFromDropbox(userId, {
+      query,
+      maxResults: maxResults || 50,
+      autoParse: autoParse !== false,
+      folderPath
+    });
+
+    // Send SSE event for ingestion completion
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_ingestion_completed', {
+        userId,
+        provider: 'dropbox',
+        documentsIngested: result.documentsIngested,
+        filesProcessed: result.filesProcessed,
+        errors: result.errors.length,
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for ingestion completion', { error: sseError });
+    }
+
+    res.json({
+      success: result.success,
+      documentsIngested: result.documentsIngested,
+      filesProcessed: result.filesProcessed,
+      errors: result.errors,
+      message: `Ingested ${result.documentsIngested} documents from ${result.filesProcessed} files`
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in Dropbox ingestion endpoint', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to ingest evidence from Dropbox',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * POST /api/evidence/ingest/all
+ * Trigger unified evidence ingestion from all connected sources
+ */
+router.post('/ingest/all', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    const { providers, query, maxResults, autoParse, folderId, folderPath } = req.body;
+
+    logger.info('🔍 [EVIDENCE] Starting unified evidence ingestion', {
+      userId,
+      providers,
+      query,
+      maxResults,
+      autoParse
+    });
+
+    // Send SSE event for ingestion start
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_ingestion_started', {
+        userId,
+        provider: 'all',
+        providers: providers,
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for ingestion start', { error: sseError });
+    }
+
+    const result = await unifiedIngestionService.ingestFromAllSources(userId, {
+      providers,
+      query,
+      maxResults: maxResults || 50,
+      autoParse: autoParse !== false,
+      folderId,
+      folderPath
+    });
+
+    // Send SSE event for ingestion completion
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_ingestion_completed', {
+        userId,
+        provider: 'all',
+        totalDocumentsIngested: result.totalDocumentsIngested,
+        totalItemsProcessed: result.totalItemsProcessed,
+        errors: result.errors.length,
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for ingestion completion', { error: sseError });
+    }
+
+    res.json({
+      success: result.success,
+      totalDocumentsIngested: result.totalDocumentsIngested,
+      totalItemsProcessed: result.totalItemsProcessed,
+      errors: result.errors,
+      results: result.results,
+      message: `Ingested ${result.totalDocumentsIngested} documents from ${result.totalItemsProcessed} items across all sources`
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in unified ingestion endpoint', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to ingest evidence from all sources',
+      message: error?.message || String(error)
+    });
+  }
+});
 
 /**
  * POST /api/evidence/ingest/gmail
@@ -859,6 +1186,310 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
     res.status(500).json({
       success: false,
       error: 'Failed to process upload request',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * GET /api/evidence/sources
+ * List all connected evidence sources
+ */
+router.get('/sources', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    // Try user_id first, fallback to seller_id if needed
+    let { data: sources, error } = await supabase
+      .from('evidence_sources')
+      .select('id, provider, account_email, status, last_sync_at, created_at, metadata')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+    
+    // If user_id doesn't exist, try seller_id
+    if (error && error.message?.includes('column') && error.message?.includes('user_id')) {
+      const retry = await supabase
+        .from('evidence_sources')
+        .select('id, provider, account_email, status, last_sync_at, created_at, metadata')
+        .eq('seller_id', userId)
+        .order('created_at', { ascending: false });
+      sources = retry.data;
+      error = retry.error;
+    }
+
+    if (error) {
+      logger.error('❌ [EVIDENCE] Error fetching evidence sources', {
+        error: error.message,
+        userId
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch evidence sources',
+        message: error.message
+      });
+    }
+
+    res.json({
+      success: true,
+      sources: sources || [],
+      count: sources?.length || 0
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in sources endpoint', {
+      error: error?.message || String(error)
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get evidence sources',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * GET /api/evidence/sources/:id
+ * Get specific evidence source details
+ */
+router.get('/sources/:id', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const { id } = req.params;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    // Try user_id first, fallback to seller_id if needed
+    let { data: source, error } = await supabase
+      .from('evidence_sources')
+      .select('*')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .single();
+    
+    // If user_id doesn't exist, try seller_id
+    if (error && error.message?.includes('column') && error.message?.includes('user_id')) {
+      const retry = await supabase
+        .from('evidence_sources')
+        .select('*')
+        .eq('id', id)
+        .eq('seller_id', userId)
+        .single();
+      source = retry.data;
+      error = retry.error;
+    }
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return res.status(404).json({
+          success: false,
+          error: 'Evidence source not found'
+        });
+      }
+      logger.error('❌ [EVIDENCE] Error fetching evidence source', {
+        error: error.message,
+        sourceId: id,
+        userId
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch evidence source',
+        message: error.message
+      });
+    }
+
+    res.json({
+      success: true,
+      source: source
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in source details endpoint', {
+      error: error?.message || String(error)
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get evidence source',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * GET /api/evidence/sources/:id/status
+ * Check connection status of evidence source
+ */
+router.get('/sources/:id/status', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const { id } = req.params;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    // Try user_id first, fallback to seller_id if needed
+    let { data: source, error } = await supabase
+      .from('evidence_sources')
+      .select('id, provider, status, last_sync_at, metadata')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .single();
+    
+    // If user_id doesn't exist, try seller_id
+    if (error && error.message?.includes('column') && error.message?.includes('user_id')) {
+      const retry = await supabase
+        .from('evidence_sources')
+        .select('id, provider, status, last_sync_at, metadata')
+        .eq('id', id)
+        .eq('seller_id', userId)
+        .single();
+      source = retry.data;
+      error = retry.error;
+    }
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return res.status(404).json({
+          success: false,
+          error: 'Evidence source not found'
+        });
+      }
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch source status',
+        message: error.message
+      });
+    }
+
+    // Check if token is still valid (basic check)
+    const hasToken = !!(source.metadata?.access_token);
+    const isConnected = source.status === 'connected' && hasToken;
+
+    res.json({
+      success: true,
+      status: {
+        connected: isConnected,
+        status: source.status,
+        lastSync: source.last_sync_at,
+        hasToken: hasToken,
+        provider: source.provider
+      }
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error checking source status', {
+      error: error?.message || String(error)
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to check source status',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * DELETE /api/evidence/sources/:id
+ * Disconnect evidence source
+ */
+router.delete('/sources/:id', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const { id } = req.params;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    // Update status to disconnected instead of deleting (preserve history)
+    // Try user_id first, fallback to seller_id if needed
+    let { data: source, error } = await supabase
+      .from('evidence_sources')
+      .update({
+        status: 'disconnected',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .eq('user_id', userId)
+      .select('id, provider')
+      .single();
+    
+    // If user_id doesn't exist, try seller_id
+    if (error && error.message?.includes('column') && error.message?.includes('user_id')) {
+      const retry = await supabase
+        .from('evidence_sources')
+        .update({
+          status: 'disconnected',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', id)
+        .eq('seller_id', userId)
+        .select('id, provider')
+        .single();
+      source = retry.data;
+      error = retry.error;
+    }
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return res.status(404).json({
+          success: false,
+          error: 'Evidence source not found'
+        });
+      }
+      logger.error('❌ [EVIDENCE] Error disconnecting evidence source', {
+        error: error.message,
+        sourceId: id,
+        userId
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to disconnect evidence source',
+        message: error.message
+      });
+    }
+
+    logger.info('✅ [EVIDENCE] Evidence source disconnected', {
+      sourceId: id,
+      provider: source.provider,
+      userId
+    });
+
+    res.json({
+      success: true,
+      message: 'Evidence source disconnected successfully',
+      source: {
+        id: source.id,
+        provider: source.provider,
+        status: 'disconnected'
+      }
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in disconnect endpoint', {
+      error: error?.message || String(error)
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to disconnect evidence source',
       message: error?.message || String(error)
     });
   }

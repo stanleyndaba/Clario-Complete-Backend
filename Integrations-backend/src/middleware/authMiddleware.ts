@@ -24,9 +24,25 @@ export const authenticateToken = async (req: AuthenticatedRequest, res: Response
   }
 
   try {
+    // Check if token is Supabase service role key (for sandbox testing)
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (serviceRoleKey && token === serviceRoleKey) {
+      // Extract user ID from X-User-Id header or use default
+      const userId = (req as any).headers?.['x-user-id'] || (req as any).userId || 'service-role-user';
+      req.user = {
+        id: userId,
+        email: 'service-role@supabase.local',
+        role: 'service_role'
+      };
+      logger.debug('Service role key authentication successful', { userId });
+      next();
+      return;
+    }
+
+    // Try to verify as JWT token (standard authentication)
     const decoded = jwt.verify(token, config.JWT_SECRET) as any;
     req.user = {
-      id: decoded.userId,
+      id: decoded.userId || decoded.id,
       email: decoded.email,
       role: decoded.role
     };
