@@ -25,18 +25,12 @@
 
 ### 1. Get Detection Results
 ```
-GET /api/v1/integrations/detections/status/:syncId
+GET /api/v1/integrations/detections/results?status={status}&limit={limit}&offset={offset}
 ```
-**Note**: Use the syncId from the last sync. Alternatively, query the database directly or add a new endpoint.
-
-**Alternative**: Query database directly via Supabase:
-```typescript
-const { data } = await supabase
-  .from('detection_results')
-  .select('*')
-  .eq('seller_id', userId)
-  .order('created_at', { ascending: false });
-```
+**Query Parameters**:
+- `status` (optional): Filter by status (pending, reviewed, disputed, resolved)
+- `limit` (optional): Number of results to return (default: 100)
+- `offset` (optional): Pagination offset (default: 0)
 **Response**:
 ```json
 {
@@ -218,9 +212,14 @@ GET /api/v1/integrations/detections/status/:syncId
 // Detection/Claims API methods
 export const detectionApi = {
   // Get all detection results
-  getDetectionResults: async (userId: string) => {
+  getDetectionResults: async (status?: string, limit: number = 100, offset: number = 0) => {
+    const params = new URLSearchParams();
+    if (status) params.append('status', status);
+    params.append('limit', limit.toString());
+    params.append('offset', offset.toString());
+    
     const response = await fetch(
-      `${API_BASE_URL}/api/v1/integrations/detections/results?userId=${userId}`,
+      `${API_BASE_URL}/api/v1/integrations/detections/results?${params.toString()}`,
       {
         headers: {
           'Authorization': `Bearer ${getToken()}`,

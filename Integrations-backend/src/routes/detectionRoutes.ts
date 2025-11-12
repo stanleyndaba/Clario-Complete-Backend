@@ -28,6 +28,25 @@ router.post('/run', async (req: AuthenticatedRequest, res) => {
   }
 });
 
+// GET /api/v1/integrations/detections/results
+// Get all detection results for the authenticated user
+router.get('/results', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user?.id as string;
+    const { status, limit = 100, offset = 0 } = (req as any).query;
+    const results = await detectionService.getDetectionResults(
+      userId,
+      undefined, // syncId - optional
+      status,
+      parseInt(limit as string, 10),
+      parseInt(offset as string, 10)
+    );
+    return res.json({ success: true, results, total: results.length });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
+  }
+});
+
 // GET /api/v1/integrations/detections/status/:syncId
 router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
   try {
