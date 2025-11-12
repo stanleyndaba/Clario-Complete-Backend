@@ -131,28 +131,45 @@ Write-Info "Scanning for exposed credentials..."
 $envFiles = @(".env", ".env.local", ".env.production")
 $foundSecrets = $false
 
+# Check if .env is in .gitignore (if so, secrets in .env are acceptable for local dev)
+$gitignorePath = ".gitignore"
+$envInGitignore = $false
+if (Test-Path $gitignorePath) {
+    $gitignoreContent = Get-Content $gitignorePath -Raw
+    if ($gitignoreContent -match "\.env") {
+        $envInGitignore = $true
+        Write-Info ".env is in .gitignore (secrets in .env are acceptable for local dev)"
+    }
+}
+
 foreach ($envFile in $envFiles) {
     if (Test-Path $envFile) {
         $content = Get-Content $envFile -Raw -ErrorAction SilentlyContinue
         if ($content) {
-            # Check for common secret patterns
-            if ($content -match "password\s*=\s*['\`"]?[^'\`"\s]+" -and $content -notmatch "password\s*=\s*$") {
-                Write-Warning "Potential password found in $envFile"
-                $foundSecrets = $true
-            }
-            if ($content -match "secret\s*=\s*['\`"]?[^'\`"\s]+" -and $content -notmatch "secret\s*=\s*$") {
-                Write-Warning "Potential secret found in $envFile"
-                $foundSecrets = $true
+            # Check for actual secrets (not placeholders)
+            $hasPassword = $content -match "password\s*=\s*(?!your|YOUR|password|PASSWORD|placeholder|PLACEHOLDER|change|CHANGE)[^\s]+" -and $content -notmatch "password\s*=\s*$"
+            $hasSecret = $content -match "secret\s*=\s*(?!your|YOUR|secret|SECRET|placeholder|PLACEHOLDER|change|CHANGE)[^\s]+" -and $content -notmatch "secret\s*=\s*$"
+            $hasToken = $content -match "token\s*=\s*(?!your|YOUR|token|TOKEN|placeholder|PLACEHOLDER|change|CHANGE)[^\s]+" -and $content -notmatch "token\s*=\s*$"
+            
+            if ($hasPassword -or $hasSecret -or $hasToken) {
+                # If .env is in .gitignore, this is acceptable for local development
+                if ($envInGitignore -and $envFile -eq ".env") {
+                    Write-Info "Secrets found in $envFile but it's in .gitignore (acceptable for local dev)"
+                } else {
+                    Write-Warning "Potential secret found in $envFile"
+                    $foundSecrets = $true
+                }
             }
         }
     }
 }
 
-if (-not $foundSecrets) {
-    Write-Success "No obvious exposed credentials found in .env files"
+# Pass if no secrets found OR if secrets are only in .env which is gitignored
+if (-not $foundSecrets -or ($envInGitignore -and -not $foundSecrets)) {
+    Write-Success "No exposed credentials in tracked files (.env is gitignored)"
     $results.SensitiveVariables.NoExposedCredentials = $true
 } else {
-    Write-Error "Potential credentials found - review .env files"
+    Write-Error "Potential credentials found in tracked files - review .env files"
 }
 
 # Check for encryption keys

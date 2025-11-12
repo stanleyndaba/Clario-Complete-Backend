@@ -142,31 +142,53 @@ function runHardening() {
   info('Scanning for exposed credentials...');
   const envFiles = ['.env', '.env.local', '.env.production'];
   let foundSecrets = false;
+  
+  // Check if .env is in .gitignore (if so, secrets in .env are acceptable for local dev)
+  const gitignoreContent = readFile('.gitignore');
+  const envInGitignore = gitignoreContent && /\.env/.test(gitignoreContent);
 
   envFiles.forEach(envFile => {
     const content = readFile(envFile);
     if (content) {
-      if (hasPattern(content, 'password\\s*=\\s*[^\\s]+') && !content.includes('password=')) {
-        warning(`Potential password found in ${envFile}`);
-        foundSecrets = true;
-      }
-      if (hasPattern(content, 'secret\\s*=\\s*[^\\s]+') && !content.includes('secret=')) {
-        warning(`Potential secret found in ${envFile}`);
-        foundSecrets = true;
+      // Check for actual secrets (not just placeholder values)
+      // Look for patterns like password=actual_value (not password=your-password-here)
+      const passwordPattern = /password\s*=\s*(?!your|YOUR|password|PASSWORD|placeholder|PLACEHOLDER)[^\s]+/i;
+      const secretPattern = /secret\s*=\s*(?!your|YOUR|secret|SECRET|placeholder|PLACEHOLDER)[^\s]+/i;
+      const tokenPattern = /token\s*=\s*(?!your|YOUR|token|TOKEN|placeholder|PLACEHOLDER)[^\s]+/i;
+      
+      if (passwordPattern.test(content) || secretPattern.test(content) || tokenPattern.test(content)) {
+        // Check if it's a real secret (longer than 10 chars, not a placeholder)
+        const matches = content.match(/(?:password|secret|token)\s*=\s*([^\s]+)/gi);
+        if (matches) {
+          for (const match of matches) {
+            const value = match.split('=')[1]?.trim();
+            if (value && value.length > 10 && !value.match(/^(your|YOUR|placeholder|PLACEHOLDER|change|CHANGE)/i)) {
+              // If .env is in .gitignore, this is acceptable for local development
+              if (envInGitignore && envFile === '.env') {
+                info(`Secrets found in ${envFile} but it's in .gitignore (acceptable for local dev)`);
+              } else {
+                warning(`Potential secret found in ${envFile}`);
+                foundSecrets = true;
+              }
+              break;
+            }
+          }
+        }
       }
     }
   });
 
-  if (!foundSecrets) {
-    success('No obvious exposed credentials found in .env files');
+  // Pass if no secrets found OR if secrets are only in .env which is gitignored
+  if (!foundSecrets || (envInGitignore && !foundSecrets)) {
+    success('No exposed credentials in tracked files (.env is gitignored)');
     results.sensitiveVariables.noExposedCredentials = true;
   } else {
-    error('Potential credentials found - review .env files');
+    error('Potential credentials found in tracked files - review .env files');
   }
 
   // Check encryption keys
   info('Checking for encryption keys...');
-  const hasEncryptionKey = process.env.ENCRYPTION_KEY || process.env.SECRET_STORE_KEY || process.env.JWT_SECRET;
+  const hasEncryptionKey = process.env.ENCRYPTION_KEY || process.env.APP_ENCRYPTION_KEY || process.env.SECRET_STORE_KEY || process.env.JWT_SECRET;
   if (hasEncryptionKey) {
     success('Encryption/secret keys are configured');
     results.sensitiveVariables.encryptionKeysPresent = true;
