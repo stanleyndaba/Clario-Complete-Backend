@@ -132,3 +132,4 @@ if ($status.EncryptionKey -and $status.DatabaseUrl) {
 
 Write-Host ""
 
+

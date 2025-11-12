@@ -137,3 +137,4 @@ Write-Host "Re-run hardening to verify:" -ForegroundColor Cyan
 Write-Host "  powershell -ExecutionPolicy Bypass -File scripts/phase2-hardening.ps1 -Verbose" -ForegroundColor Gray
 Write-Host ""
 
+

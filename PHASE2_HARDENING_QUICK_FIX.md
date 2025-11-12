@@ -85,3 +85,4 @@ powershell -ExecutionPolicy Bypass -File scripts/phase2-hardening.ps1 -Verbose
 
 **Status**: 2/3 items can be fixed immediately. DATABASE_URL requires your actual database connection string.
 
+

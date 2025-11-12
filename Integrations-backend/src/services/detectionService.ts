@@ -1238,6 +1238,123 @@ export class DetectionService {
   }
 
   /**
+   * Get confidence score distribution for monitoring and calibration
+   */
+  async getConfidenceDistribution(sellerId: string): Promise<{
+    total_detections: number;
+    by_confidence: {
+      high: number;
+      medium: number;
+      low: number;
+    };
+    by_anomaly_type: Record<string, {
+      high: number;
+      medium: number;
+      low: number;
+      total: number;
+    }>;
+    confidence_ranges: {
+      '0.0-0.2': number;
+      '0.2-0.4': number;
+      '0.4-0.6': number;
+      '0.6-0.8': number;
+      '0.8-1.0': number;
+    };
+    recovery_rates?: {
+      high: number;
+      medium: number;
+      low: number;
+    };
+    average_confidence: number;
+  }> {
+    try {
+      const { data, error } = await supabase
+        .from('detection_results')
+        .select('anomaly_type, confidence_score, status')
+        .eq('seller_id', sellerId);
+
+      if (error) {
+        logger.error('Error fetching confidence distribution', { error, sellerId });
+        throw new Error(`Failed to fetch confidence distribution: ${error.message}`);
+      }
+
+      const results = data as { anomaly_type: string; confidence_score: number; status: string }[];
+      
+      // Initialize counters
+      const by_confidence = { high: 0, medium: 0, low: 0 };
+      const by_anomaly_type: Record<string, { high: number; medium: number; low: number; total: number }> = {};
+      const confidence_ranges = {
+        '0.0-0.2': 0,
+        '0.2-0.4': 0,
+        '0.4-0.6': 0,
+        '0.6-0.8': 0,
+        '0.8-1.0': 0
+      };
+      
+      let totalConfidence = 0;
+      const resolvedByConfidence = { high: 0, medium: 0, low: 0 };
+      const totalByConfidence = { high: 0, medium: 0, low: 0 };
+
+      results.forEach(result => {
+        const score = result.confidence_score;
+        totalConfidence += score;
+
+        // Categorize by confidence level
+        let category: 'high' | 'medium' | 'low';
+        if (score >= 0.75) {
+          category = 'high';
+          by_confidence.high++;
+        } else if (score >= 0.50) {
+          category = 'medium';
+          by_confidence.medium++;
+        } else {
+          category = 'low';
+          by_confidence.low++;
+        }
+
+        // Track by anomaly type
+        if (!by_anomaly_type[result.anomaly_type]) {
+          by_anomaly_type[result.anomaly_type] = { high: 0, medium: 0, low: 0, total: 0 };
+        }
+        by_anomaly_type[result.anomaly_type][category]++;
+        by_anomaly_type[result.anomaly_type].total++;
+
+        // Track confidence ranges
+        if (score < 0.2) confidence_ranges['0.0-0.2']++;
+        else if (score < 0.4) confidence_ranges['0.2-0.4']++;
+        else if (score < 0.6) confidence_ranges['0.4-0.6']++;
+        else if (score < 0.8) confidence_ranges['0.6-0.8']++;
+        else confidence_ranges['0.8-1.0']++;
+
+        // Track recovery rates (resolved vs total)
+        totalByConfidence[category]++;
+        if (result.status === 'resolved') {
+          resolvedByConfidence[category]++;
+        }
+      });
+
+      // Calculate recovery rates
+      const recovery_rates = {
+        high: totalByConfidence.high > 0 ? resolvedByConfidence.high / totalByConfidence.high : 0,
+        medium: totalByConfidence.medium > 0 ? resolvedByConfidence.medium / totalByConfidence.medium : 0,
+        low: totalByConfidence.low > 0 ? resolvedByConfidence.low / totalByConfidence.low : 0
+      };
+
+      return {
+        total_detections: results.length,
+        by_confidence,
+        by_anomaly_type,
+        confidence_ranges,
+        recovery_rates,
+        average_confidence: results.length > 0 ? totalConfidence / results.length : 0
+      };
+    } catch (error) {
+      logger.error('Error in getConfidenceDistribution', { error, sellerId });
+      throw error;
+    }
+  }
+
+  /**
    * Get detection statistics for a seller
    */
   async getDetectionStatistics(sellerId: string): Promise<{
@@ -1247,11 +1364,16 @@ export class DetectionService {
     by_type: Record<string, { count: number; value: number }>;
     expiring_soon: number;
     expired_count: number;
+    by_confidence?: {
+      high: number;
+      medium: number;
+      low: number;
+    };
   }> {
     try {
       const { data, error } = await supabase
         .from('detection_results')
-        .select('anomaly_type, severity, estimated_value, days_remaining, expired')
+        .select('anomaly_type, severity, estimated_value, days_remaining, expired, confidence_score')
         .eq('seller_id', sellerId);
 
       if (error) {
@@ -1259,9 +1381,10 @@ export class DetectionService {
         throw new Error(`Failed to fetch detection statistics: ${error.message}`);
       }
 
-      const results = data as { anomaly_type: string; severity: string; estimated_value: number; days_remaining?: number; expired?: boolean }[];
+      const results = data as { anomaly_type: string; severity: string; estimated_value: number; days_remaining?: number; expired?: boolean; confidence_score?: number }[];
       const by_severity: Record<string, { count: number; value: number }> = {};
       const by_type: Record<string, { count: number; value: number }> = {};
+      const by_confidence = { high: 0, medium: 0, low: 0 };
       let total_value = 0;
       let expiring_soon = 0;
       let expired_count = 0;
@@ -1283,6 +1406,17 @@ export class DetectionService {
 
         total_value += result.estimated_value;
 
+        // Count by confidence
+        if (result.confidence_score !== undefined) {
+          if (result.confidence_score >= 0.75) {
+            by_confidence.high++;
+          } else if (result.confidence_score >= 0.50) {
+            by_confidence.medium++;
+          } else {
+            by_confidence.low++;
+          }
+        }
+
         // Count expiring and expired
         if (result.days_remaining !== null && result.days_remaining <= 7 && result.days_remaining > 0) {
           expiring_soon++;
@@ -1298,7 +1432,8 @@ export class DetectionService {
         by_severity,
         by_type,
         expiring_soon,
-        expired_count
+        expired_count,
+        by_confidence
       };
     } catch (error) {
       logger.error('Error in getDetectionStatistics', { error, sellerId });

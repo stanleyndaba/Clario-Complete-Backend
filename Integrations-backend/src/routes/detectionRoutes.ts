@@ -77,13 +77,25 @@ router.get('/deadlines', async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// GET /api/v1/integrations/detections/statistics
-// Get detection statistics including deadline info
+// GET /api/detections/statistics
+// Get detection statistics including confidence distribution and recovery rates
 router.get('/statistics', async (req: AuthenticatedRequest, res) => {
   try {
-    const userId = req.user?.id as string;
+    const userId = (req as any).userId || req.user?.id as string;
     const stats = await detectionService.getDetectionStatistics(userId);
     return res.json({ success: true, statistics: stats });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
+  }
+});
+
+// GET /api/detections/confidence-distribution
+// Get confidence score distribution for monitoring and calibration
+router.get('/confidence-distribution', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = (req as any).userId || req.user?.id as string;
+    const distribution = await detectionService.getConfidenceDistribution(userId);
+    return res.json({ success: true, distribution });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
   }
