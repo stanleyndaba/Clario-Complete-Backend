@@ -211,7 +211,7 @@ function Test-DataSync {
     try {
         $response = Invoke-WebRequest -Uri "$IntegrationsApiUrl/api/v1/integrations/amazon/inventory" -Method GET -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
         $data = $response.Content | ConvertFrom-Json
-        $items = $data.data || $data.inventory || @()
+        $items = if ($data.data) { $data.data } elseif ($data.inventory) { $data.inventory } else { @() }
         
         $verification.Inventory.Found = $true
         $verification.Inventory.Count = if ($items) { $items.Count } else { 0 }
@@ -243,7 +243,7 @@ function Test-DataSync {
     try {
         $response = Invoke-WebRequest -Uri "$IntegrationsApiUrl/api/v1/integrations/amazon/claims" -Method GET -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
         $data = $response.Content | ConvertFrom-Json
-        $claims = $data.data || $data.claims || @()
+        $claims = if ($data.data) { $data.data } elseif ($data.claims) { $data.claims } else { @() }
         
         $verification.Claims.Found = $true
         $verification.Claims.Count = if ($claims) { $claims.Count } else { 0 }
@@ -275,7 +275,7 @@ function Test-DataSync {
     try {
         $response = Invoke-WebRequest -Uri "$IntegrationsApiUrl/api/v1/integrations/amazon/fees" -Method GET -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
         $data = $response.Content | ConvertFrom-Json
-        $fees = $data.data || $data.fees || @()
+        $fees = if ($data.data) { $data.data } elseif ($data.fees) { $data.fees } else { @() }
         
         $verification.Fees.Found = $true
         $verification.Fees.Count = if ($fees) { $fees.Count } else { 0 }
