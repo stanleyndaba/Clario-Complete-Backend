@@ -74,7 +74,8 @@ async function proxyToPython(req: Request, res: Response, path: string) {
     logger.info(`Proxying ${req.method} ${req.path} to ${url}`, {
       hasToken: !!token,
       hasCookie: !!req.headers.cookie,
-      pythonApiUrl: PYTHON_API_URL
+      pythonApiUrl: PYTHON_API_URL,
+      queryParams: Object.keys(req.query).length > 0 ? req.query : undefined
     });
     
     const config: any = {
@@ -99,20 +100,59 @@ async function proxyToPython(req: Request, res: Response, path: string) {
     // Forward response status and data
     res.status(response.status).json(response.data);
   } catch (error: any) {
-    logger.error(`Proxy error for ${req.path}:`, error.message);
+    const errorDetails = {
+      message: error.message,
+      code: error.code,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      url: url,
+      pythonApiUrl: PYTHON_API_URL,
+      path: req.path,
+      method: req.method
+    };
+    
+    logger.error(`Proxy error for ${req.path}:`, errorDetails);
     
     if (error.response) {
       // Forward error response from Python backend
+      logger.error(`Python backend returned error: ${error.response.status}`, {
+        status: error.response.status,
+        data: error.response.data,
+        url
+      });
       res.status(error.response.status).json(error.response.data);
-    } else if (error.code === 'ECONNABORTED') {
+    } else if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+      logger.error(`Python backend timeout`, { url, timeout: 30000 });
       res.status(504).json({ 
         error: 'Gateway Timeout', 
-        message: 'Python backend did not respond in time' 
+        message: 'Python backend did not respond in time',
+        pythonApiUrl: PYTHON_API_URL
       });
-    } else {
+    } else if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+      logger.error(`Cannot connect to Python backend`, { 
+        url, 
+        pythonApiUrl: PYTHON_API_URL,
+        errorCode: error.code,
+        errorMessage: error.message
+      });
       res.status(502).json({ 
         error: 'Bad Gateway', 
-        message: 'Failed to connect to Python backend' 
+        message: `Failed to connect to Python backend at ${PYTHON_API_URL}`,
+        pythonApiUrl: PYTHON_API_URL,
+        errorCode: error.code
+      });
+    } else {
+      logger.error(`Unknown proxy error`, { 
+        error: error.message,
+        code: error.code,
+        stack: error.stack,
+        url
+      });
+      res.status(502).json({ 
+        error: 'Bad Gateway', 
+        message: `Failed to connect to Python backend: ${error.message}`,
+        pythonApiUrl: PYTHON_API_URL,
+        errorCode: error.code
       });
     }
   }
@@ -227,6 +267,46 @@ router.get('/api/v1/integrations/status', (req, res) => proxyToPython(req, res, 
 // Evidence endpoints - proxy to Python API
 router.post('/api/evidence/sync', (req, res) => proxyToPython(req, res, '/api/evidence/sync'));
 router.post('/api/evidence/auto-collect', (req, res) => proxyToPython(req, res, '/api/evidence/auto-collect'));
+
+// Health check endpoint to test Python backend connection
+router.get('/api/health/python-backend', async (req, res) => {
+  try {
+    const healthUrl = `${PYTHON_API_URL}/health`;
+    logger.info(`Checking Python backend health at ${healthUrl}`);
+    
+    const response = await axios.get(healthUrl, {
+      timeout: 10000, // 10 second timeout for health check
+    });
+    
+    res.json({
+      status: 'ok',
+      pythonBackend: {
+        url: PYTHON_API_URL,
+        status: response.status,
+        statusText: response.statusText,
+        data: response.data
+      }
+    });
+  } catch (error: any) {
+    logger.error('Python backend health check failed', {
+      pythonApiUrl: PYTHON_API_URL,
+      error: error.message,
+      code: error.code,
+      status: error.response?.status
+    });
+    
+    res.status(502).json({
+      status: 'error',
+      pythonBackend: {
+        url: PYTHON_API_URL,
+        error: error.message,
+        code: error.code,
+        status: error.response?.status,
+        message: `Cannot connect to Python backend at ${PYTHON_API_URL}`
+      }
+    });
+  }
+});
 
 export default router;
 
