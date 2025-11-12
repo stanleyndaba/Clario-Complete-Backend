@@ -385,11 +385,15 @@ Write-Info "=== STEP 7: Generating Hardening Report ==="
 $totalChecks = 0
 $passedChecks = 0
 
-foreach ($category in $results.PSObject.Properties.Name) {
-    foreach ($check in $results.$category.PSObject.Properties.Name) {
-        $totalChecks++
-        if ($results.$category.$check) {
-            $passedChecks++
+# Count all checks across all categories
+foreach ($categoryKey in $results.Keys) {
+    $category = $results[$categoryKey]
+    if ($category -is [Hashtable]) {
+        foreach ($checkKey in $category.Keys) {
+            $totalChecks++
+            if ($category[$checkKey] -eq $true) {
+                $passedChecks++
+            }
         }
     }
 }
