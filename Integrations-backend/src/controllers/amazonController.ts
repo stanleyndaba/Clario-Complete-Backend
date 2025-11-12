@@ -72,7 +72,7 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
         try {
           // Try to get an access token - this will validate the refresh token
           logger.info('Validating refresh token by attempting to get access token', { userId });
-          const accessToken = await amazonService.getAccessToken(userId);
+          const accessToken = await amazonService.getAccessTokenForService(userId);
           
           if (accessToken) {
             logger.info('✅ Token validation successful - refresh token is valid', { userId });
