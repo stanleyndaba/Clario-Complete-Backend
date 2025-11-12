@@ -25,7 +25,17 @@
 
 ### 1. Get Detection Results
 ```
-GET /api/v1/integrations/detections/results?userId={userId}
+GET /api/v1/integrations/detections/status/:syncId
+```
+**Note**: Use the syncId from the last sync. Alternatively, query the database directly or add a new endpoint.
+
+**Alternative**: Query database directly via Supabase:
+```typescript
+const { data } = await supabase
+  .from('detection_results')
+  .select('*')
+  .eq('seller_id', userId)
+  .order('created_at', { ascending: false });
 ```
 **Response**:
 ```json
