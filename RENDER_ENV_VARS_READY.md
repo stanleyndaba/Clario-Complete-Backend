@@ -1,4 +1,7 @@
-# 🔧 Render Environment Variables - Ready to Copy
+# 🔧 Render Environment Variables - Template
+
+## ⚠️ SECURITY NOTICE
+**This file contains placeholder values. Never commit actual secrets to version control.**
 
 ## ✅ For Both Services (Python & Node.js)
 
@@ -6,30 +9,34 @@ Copy these into **both** `opside-python-api` and `opside-node-api`:
 
 ```bash
 # Database
-DATABASE_URL=postgresql://postgres:Lungilemzila%4075@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require
-SUPABASE_URL=postgresql://postgres.fmzfjhrwbkebqaxjlvzt:Lungilemzila_75@aws-1-eu-central-1.pooler.supabase.com:5432/postgres
+# SECURITY: Replace with your actual database connection string
+DATABASE_URL=postgresql://user:password@host:port/database?sslmode=require
+SUPABASE_URL=postgresql://user:password@host:port/database
 
 # Authentication & Security
-JWT_SECRET=6d55b17615e87f15b252adc68a4b87ee69c2d910ef4b12d5b12fae94568b86cc
-TOKEN_ENC_KEY=1Sp3Vl4N-dvoMk_d8mOkKW006xqrKw5xzBja91Oq-AU=
+# SECURITY: Generate strong random secrets (minimum 32 characters)
+JWT_SECRET=your-super-secret-jwt-key-minimum-32-characters-long
+TOKEN_ENC_KEY=your-encryption-key-base64-encoded
 ENCRYPTION_KEY_VALUE=true
 
 # Frontend & CORS
-FRONTEND_URL=https://opside-complete-frontend-4poy2f2lh-mvelo-ndabas-projects.vercel.app/app
-CORS_ALLOW_ORIGINS=https://opside-complete-frontend-4poy2f2lh-mvelo-ndabas-projects.vercel.app/app
+FRONTEND_URL=https://your-frontend-domain.com
+CORS_ALLOW_ORIGINS=https://your-frontend-domain.com
 
 # Amazon SP-API (Sandbox)
-AMAZON_CLIENT_ID=amzn1.application-oa2-client.2b55e98d58e94feb920b2f1efa166432
-AMAZON_CLIENT_SECRET=amzn1.oa2-cs.v1.25d01a7bb1221bf43f59cd54a7867c5b6feefb0721593fd6370610455ab62ca7
-AMAZON_SPAPI_REFRESH_TOKEN=Atzr|IwEBIGDfQ5v3EK-VNr4xQuvYiYeQz7vfeJDFeKcyEAG4sQwaJhDIaBB0bUHVxUdvfGRz-p9vTlvwBskd0sJW86GV80TXEig-dW203Ihr5snxUuBIgv3XWQEjxu4oSeqKrnTi180AjQukOcL_bKO-aYfePvF-LZwHlCLeojAwxT8gIbBKKILB5PRO137EuR2VRaVNkC9x7_rQFpzy9fnCiyGThf50ABK-qZC7GRzA9wzxRLoeJLfjONJDcGlVx9DVKHVmRzmQnv8lC6bS4ph1YHCobSnyxuiON_dfixwWSIAYsIg2YSDNAZyiInn0yLJeuOTEyPE
+# SECURITY: Get these from Amazon Developer Console
+AMAZON_CLIENT_ID=your-amazon-client-id
+AMAZON_CLIENT_SECRET=your-amazon-client-secret
+AMAZON_SPAPI_REFRESH_TOKEN=your-amazon-refresh-token
 AMAZON_SPAPI_BASE_URL=https://sandbox.sellingpartnerapi-na.amazon.com
 AMAZON_MARKETPLACE_ID=ATVPDKIKX0DER
-AMAZON_SPAPI_CLIENT_ID=amzn1.application-oa2-client.2b55e98d58e94feb920b2f1efa166432
+AMAZON_SPAPI_CLIENT_ID=your-amazon-client-id
 
 # Email (SendGrid)
-EMAIL_API_KEY=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
-EMAIL_FROM_EMAIL=clarioo@gmail.com
-EMAIL_FROM_NAME=Clario
+# SECURITY: Get from SendGrid Dashboard
+EMAIL_API_KEY=your-sendgrid-api-key
+EMAIL_FROM_EMAIL=your-email@domain.com
+EMAIL_FROM_NAME=Your App Name
 EMAIL_PROVIDER=sendgrid
 
 # Application Settings

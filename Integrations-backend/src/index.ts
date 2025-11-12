@@ -9,6 +9,11 @@ import config from './config/env';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './utils/errorHandler';
 
+// Import security utilities (must be imported first)
+import { securityHeadersMiddleware, enforceHttpsMiddleware, validateTlsMiddleware } from './security/securityHeaders';
+import { validateRedirectMiddleware } from './security/validateRedirect';
+import { validateEnvironmentOrFail } from './security/envValidation';
+
 // Import middleware
 import { userIdMiddleware } from './middleware/userIdMiddleware';
 
@@ -31,6 +36,7 @@ import stripeWebhookRoutes from './routes/stripeWebhookRoutes';
 import workflowRoutes from './routes/workflowRoutes';
 import evidenceRoutes from './routes/evidenceRoutes';
 import evidenceSourcesRoutes from './routes/evidenceSourcesRoutes';
+import healthRoutes from './routes/healthRoutes';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -53,10 +59,30 @@ const server = createServer(app);
 // Initialize WebSocket service
 websocketService.initialize(server);
 
-// Security middleware
+// Validate environment variables at startup (fail fast if missing)
+try {
+  validateEnvironmentOrFail(process.env.NODE_ENV === 'production');
+} catch (error: any) {
+  logger.error('Environment validation failed - server will not start', {
+    error: error.message,
+  });
+  process.exit(1);
+}
+
+// Security middleware - enforce HTTPS first
+if (process.env.NODE_ENV === 'production') {
+  app.use(enforceHttpsMiddleware({ allowLocalhost: false }));
+  app.use(validateTlsMiddleware());
+}
+
+// Security headers
+app.use(securityHeadersMiddleware());
+
+// Helmet for additional security (with CSP disabled as we handle it in securityHeadersMiddleware)
 app.use(helmet({
   crossOriginEmbedderPolicy: false,
-  contentSecurityPolicy: false
+  contentSecurityPolicy: false, // We handle CSP in securityHeadersMiddleware
+  hsts: false, // We handle HSTS in securityHeadersMiddleware
 }));
 app.use(cors({
   origin: (origin, callback) => {
@@ -124,15 +150,11 @@ app.use(cors({
   maxAge: 86400 // 24 hours
 }));
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 1000,
-  message: 'Too many requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use(limiter);
+// Import rate limiters
+import { generalRateLimiter, authRateLimiter } from './security/rateLimiter';
+
+// Apply general rate limiting
+app.use(generalRateLimiter);
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
@@ -155,14 +177,8 @@ app.use(morgan('combined', {
 // This should be early in the pipeline so all routes have access to req.userId
 app.use(userIdMiddleware);
 
-// Health check endpoint (must respond quickly for Render)
-app.get('/health', (_, res) => {
-  res.status(200).json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(),
-    service: 'integrations-backend'
-  });
-});
+// Mount health routes (before other routes for fast health checks)
+app.use('/', healthRoutes);
 
 // Root health check (for Render)
 app.get('/', (_, res) => {
@@ -182,6 +198,9 @@ app.get('/api/status', (_, res) => {
     timestamp: new Date().toISOString()
   });
 });
+
+// Note: Rate limiting and redirect validation are applied at the route level
+// See individual route files (amazonRoutes.ts, gmailRoutes.ts, etc.) for implementation
 
 // Mount routes
 app.use('/api/v1/integrations/amazon', amazonRoutes);

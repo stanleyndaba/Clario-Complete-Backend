@@ -1,0 +1,176 @@
+/**
+ * Health Check Routes
+ * 
+ * Provides health check endpoints for monitoring and load balancing
+ */
+
+import { Router, Request, Response } from 'express';
+import { supabase } from '../database/supabaseClient';
+import logger from '../utils/logger';
+import amazonService from '../services/amazonService';
+
+const router = Router();
+
+/**
+ * Basic health check (fast, no dependencies)
+ * GET /health
+ */
+router.get('/health', (req: Request, res: Response) => {
+  res.status(200).json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    service: 'integrations-backend',
+    version: process.env.npm_package_version || '1.0.0',
+  });
+});
+
+/**
+ * Comprehensive health check (checks database and API keys)
+ * GET /healthz
+ */
+router.get('/healthz', async (req: Request, res: Response) => {
+  const health = {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    service: 'integrations-backend',
+    version: process.env.npm_package_version || '1.0.0',
+    checks: {
+      database: { status: 'unknown', error: null as string | null },
+      amazonApi: { status: 'unknown', error: null as string | null },
+      environment: { status: 'unknown', error: null as string | null },
+    },
+  };
+
+  // Check database connectivity
+  try {
+    const { error } = await supabase.from('users').select('id').limit(1);
+    if (error) {
+      health.checks.database = {
+        status: 'error',
+        error: error.message,
+      };
+      health.status = 'degraded';
+    } else {
+      health.checks.database = {
+        status: 'ok',
+        error: null,
+      };
+    }
+  } catch (error: any) {
+    health.checks.database = {
+      status: 'error',
+      error: error.message,
+    };
+    health.status = 'degraded';
+  }
+
+  // Check Amazon API credentials (without making actual API call)
+  try {
+    const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
+    const clientSecret =
+      process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET;
+    const refreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
+
+    if (!clientId || !clientSecret || !refreshToken) {
+      health.checks.amazonApi = {
+        status: 'error',
+        error: 'Missing Amazon API credentials',
+      };
+      health.status = 'degraded';
+    } else {
+      health.checks.amazonApi = {
+        status: 'ok',
+        error: null,
+      };
+    }
+  } catch (error: any) {
+    health.checks.amazonApi = {
+      status: 'error',
+      error: error.message,
+    };
+    health.status = 'degraded';
+  }
+
+  // Check environment variables
+  try {
+    const requiredVars = [
+      'AMAZON_CLIENT_ID',
+      'AMAZON_CLIENT_SECRET',
+      'AMAZON_SPAPI_REFRESH_TOKEN',
+      'JWT_SECRET',
+      'DATABASE_URL',
+    ];
+
+    const missingVars = requiredVars.filter((varName) => {
+      const value = process.env[varName] || process.env[`AMAZON_SPAPI_${varName}`];
+      return !value || value.trim() === '';
+    });
+
+    if (missingVars.length > 0) {
+      health.checks.environment = {
+        status: 'error',
+        error: `Missing required environment variables: ${missingVars.join(', ')}`,
+      };
+      health.status = 'degraded';
+    } else {
+      health.checks.environment = {
+        status: 'ok',
+        error: null,
+      };
+    }
+  } catch (error: any) {
+    health.checks.environment = {
+      status: 'error',
+      error: error.message,
+    };
+    health.status = 'degraded';
+  }
+
+  // Return appropriate status code
+  const statusCode = health.status === 'ok' ? 200 : 503;
+
+  res.status(statusCode).json(health);
+});
+
+/**
+ * Readiness check (for Kubernetes)
+ * GET /ready
+ */
+router.get('/ready', async (req: Request, res: Response) => {
+  try {
+    // Check if database is accessible
+    const { error } = await supabase.from('users').select('id').limit(1);
+
+    if (error) {
+      return res.status(503).json({
+        status: 'not ready',
+        error: 'Database not accessible',
+      });
+    }
+
+    res.status(200).json({
+      status: 'ready',
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    logger.error('Readiness check failed', { error: error.message });
+    res.status(503).json({
+      status: 'not ready',
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * Liveness check (for Kubernetes)
+ * GET /live
+ */
+router.get('/live', (req: Request, res: Response) => {
+  res.status(200).json({
+    status: 'alive',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+export default router;
+

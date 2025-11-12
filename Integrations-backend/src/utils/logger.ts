@@ -1,6 +1,8 @@
 import winston from 'winston';
 import path from 'path';
 import config from "../config/env";
+import { sanitizeLogData } from '../security/logSanitizer';
+
 // Resolve log file path safely to avoid undefined causing path.join errors
 const resolvedLogFile = (() => {
   try {
@@ -14,7 +16,21 @@ const resolvedLogFile = (() => {
   }
 })();
 
+// Custom format to sanitize log data
+const sanitizeFormat = winston.format((info) => {
+  // Sanitize metadata if present
+  if (info.metadata) {
+    info.metadata = sanitizeLogData(info.metadata);
+  }
+  // Sanitize message if it contains sensitive data
+  if (info.message && typeof info.message === 'string') {
+    info.message = sanitizeLogData(info.message);
+  }
+  return info;
+});
+
 const logFormat = winston.format.combine(
+  sanitizeFormat(),
   winston.format.timestamp(),
   winston.format.errors({ stack: true }),
   winston.format.json()

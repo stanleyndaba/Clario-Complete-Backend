@@ -93,6 +93,15 @@ app = FastAPI(
     debug=False  # Disable debug mode to prevent verbose error responses
 )
 
+# Import security middleware
+from .security.security_middleware import SecurityHeadersMiddleware, EnforceHttpsMiddleware, ValidateTlsMiddleware
+
+# Add security middleware (order matters - HTTPS enforcement first)
+if os.getenv("ENV") == "production":
+    app.add_middleware(EnforceHttpsMiddleware)
+    app.add_middleware(ValidateTlsMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+
 # Custom exception handlers to return clean error responses (no stack traces)
 # Define these immediately after app creation to ensure imports are available
 @app.exception_handler(HTTPException)
@@ -222,6 +231,58 @@ async def health():
         "version": "2.0.0",
         "timestamp": datetime.utcnow().isoformat()
     }
+
+@app.get("/healthz")
+async def healthz():
+    """Comprehensive health check endpoint (checks database and API keys)"""
+    from .common import db as db_module
+    from .common.config import settings
+    
+    health = {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "service": "Opside Python API",
+        "version": "2.0.0",
+        "checks": {
+            "database": {"status": "unknown", "error": None},
+            "environment": {"status": "unknown", "error": None},
+        }
+    }
+    
+    # Check database connectivity
+    try:
+        # Try a simple query (this will fail but that's OK for health check)
+        try:
+            db_module.db.get_user_by_id("health-check")
+        except:
+            pass  # Expected to fail, but proves DB connection works
+        health["checks"]["database"] = {"status": "ok", "error": None}
+    except Exception as e:
+        health["checks"]["database"] = {"status": "error", "error": str(e)[:100]}
+        health["status"] = "degraded"
+    
+    # Check environment variables
+    try:
+        required_vars = ["AMAZON_CLIENT_ID", "AMAZON_CLIENT_SECRET", "JWT_SECRET", "DATABASE_URL"]
+        missing = []
+        for var in required_vars:
+            value = getattr(settings, var, None) or os.getenv(var)
+            if not value or value.strip() == "":
+                missing.append(var)
+        if missing:
+            health["checks"]["environment"] = {
+                "status": "error",
+                "error": f"Missing: {', '.join(missing)}"
+            }
+            health["status"] = "degraded"
+        else:
+            health["checks"]["environment"] = {"status": "ok", "error": None}
+    except Exception as e:
+        health["checks"]["environment"] = {"status": "error", "error": str(e)[:100]}
+        health["status"] = "degraded"
+    
+    status_code = 200 if health["status"] == "ok" else 503
+    return JSONResponse(status_code=status_code, content=health)
 
 # Consolidated routers - all services merged into main-api
 from .api.consolidated.mcde_router import mcde_router

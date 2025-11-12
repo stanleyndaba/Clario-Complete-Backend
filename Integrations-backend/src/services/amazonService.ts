@@ -214,14 +214,74 @@ export class AmazonService {
       this.accessToken = response.data.access_token;
       this.tokenExpiry = new Date(Date.now() + (response.data.expires_in - 300) * 1000); // 5 min buffer
 
+      // SECURITY: Implement token rotation if new refresh token is provided
+      if (response.data.refresh_token && response.data.refresh_token !== refreshToken && userId) {
+        try {
+          const { rotateRefreshToken } = await import('../security/tokenRotation');
+          const { logTokenEvent } = await import('../security/auditLogger');
+          
+          const rotationResult = await rotateRefreshToken(
+            userId,
+            'amazon',
+            refreshToken,
+            response.data.refresh_token
+          );
+          
+          if (rotationResult.success) {
+            logger.info('Token rotated successfully', { userId });
+            // Log audit event
+            await logTokenEvent('token_rotated', {
+              userId,
+              provider: 'amazon',
+            });
+          } else {
+            logger.warn('Token rotation failed', { userId, error: rotationResult.error });
+          }
+        } catch (rotationError: any) {
+          // Don't fail the token refresh if rotation fails
+          logger.error('Error during token rotation', {
+            userId,
+            error: rotationError.message,
+          });
+        }
+      }
+
+      // Log audit event for token refresh
+      try {
+        const { logTokenEvent } = await import('../security/auditLogger');
+        await logTokenEvent('token_refresh', {
+          userId,
+          provider: 'amazon',
+        });
+      } catch (auditError: any) {
+        // Don't fail if audit logging fails
+        logger.warn('Failed to log token refresh event', { error: auditError.message });
+      }
+
       logger.info('Successfully refreshed Amazon SP-API access token');
     } catch (error: any) {
       const errorMessage = error.response?.data?.error_description || error.response?.data?.error || error.message;
-      logger.error('Failed to refresh access token:', {
+      // Log audit event for failed token refresh
+      try {
+        const { logTokenEvent } = await import('../security/auditLogger');
+        await logTokenEvent('token_refresh_failed', {
+          userId,
+          provider: 'amazon',
+          reason: errorMessage,
+        });
+      } catch (auditError: any) {
+        // Don't fail if audit logging fails
+        logger.warn('Failed to log token refresh failure event', { error: auditError.message });
+      }
+
+      // Sanitize error data before logging
+      const sanitizedError = {
         error: errorMessage,
         status: error.response?.status,
-        data: error.response?.data
-      });
+        // Don't log full error response data (may contain sensitive info)
+      };
+      
+      logger.error('Failed to refresh access token:', sanitizedError);
       
       // Provide more helpful error message
       if (error.response?.status === 401) {

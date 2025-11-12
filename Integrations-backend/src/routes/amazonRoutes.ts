@@ -11,8 +11,15 @@ import {
 import amazonService from '../services/amazonService';
 import { syncJobManager } from '../services/syncJobManager';
 import { supabase } from '../database/supabaseClient';
+import { authRateLimiter } from '../security/rateLimiter';
+import { validateRedirectMiddleware } from '../security/validateRedirect';
 
 const router = Router();
+
+// Note: Rate limiting and redirect validation are applied selectively:
+// - Rate limiting: Applied to all auth endpoints
+// - Redirect validation: Applied only where redirect URIs are used
+// The middleware is applied conditionally based on route requirements
 
 // Wrap handlers to ensure exceptions are surfaced and logged
 const wrap = (fn: any) => async (req: any, res: any, next: any) => {
@@ -166,6 +173,17 @@ router.get('/claims/version', (req: Request, res: Response) => {
 // This handles requests to /api/v1/integrations/amazon
 router.get('/', wrap(startAmazonOAuth));
 
+// Apply rate limiting to auth endpoints (before route definitions)
+router.use('/auth', authRateLimiter);
+router.use('/auth/start', authRateLimiter);
+router.use('/auth/callback', authRateLimiter);
+
+// Apply redirect validation to auth callback (state validation only on callback)
+router.use('/auth/callback', validateRedirectMiddleware({
+  enforceHttps: process.env.NODE_ENV === 'production',
+  validateState: true, // Validate state on callback
+}));
+
 // CORS preflight handler for auth endpoints
 router.options('/auth', (req, res) => {
   const origin = req.headers.origin;
@@ -189,10 +207,14 @@ router.options('/auth/start', (req, res) => {
   res.status(204).send();
 });
 
+// OAuth routes (with security middleware applied above)
 router.get('/auth', wrap(startAmazonOAuth));
 router.get('/auth/start', wrap(startAmazonOAuth));
 router.get('/auth/callback', wrap(handleAmazonCallback));
+
 // Sandbox callback endpoint - same as regular callback (sandbox uses same OAuth flow)
+// SECURITY: Apply rate limiting to sandbox callback too
+router.use('/sandbox/callback', authRateLimiter);
 router.get('/sandbox/callback', wrap(handleAmazonCallback));
 router.post('/sandbox/callback', wrap(handleAmazonCallback));
 router.options('/sandbox/callback', (req, res) => {

@@ -33,24 +33,28 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
       frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     }
 
-    // Check if we already have a refresh token - if so, we can skip OAuth
-    // This is the RECOMMENDED approach for sandbox mode
-    const existingRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
+    // SECURITY: Disable OAuth bypass in production
+    const isProduction = process.env.NODE_ENV === 'production';
     const isSandboxMode = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || 
                           !process.env.AMAZON_SPAPI_BASE_URL || 
                           process.env.NODE_ENV === 'development';
     
-    if (existingRefreshToken && existingRefreshToken.trim() !== '') {
+    // Check if we already have a refresh token - if so, we can skip OAuth
+    // SECURITY: Only allow bypass in non-production environments
+    const existingRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
+    
+    if (existingRefreshToken && existingRefreshToken.trim() !== '' && !isProduction) {
       logger.info('Refresh token already exists in environment - user can skip OAuth if token is valid', {
         isSandboxMode,
-        note: 'For sandbox mode, bypass flow is recommended to avoid OAuth configuration issues'
+        isProduction: false,
+        note: 'Bypass flow only available in non-production environments'
       });
       
       // Check if user wants to skip OAuth (bypass parameter)
-      // In sandbox mode, we can also auto-suggest bypass if OAuth is not explicitly requested
-      const bypassOAuth = req.query.bypass === 'true' || 
-                         req.query.skip_oauth === 'true' ||
-                         (isSandboxMode && req.query.force_oauth !== 'true');
+      // SECURITY: Only allow bypass in development/sandbox mode
+      const bypassOAuth = (req.query.bypass === 'true' || 
+                          req.query.skip_oauth === 'true' ||
+                          (isSandboxMode && req.query.force_oauth !== 'true')) && !isProduction;
       
       if (bypassOAuth) {
         logger.info('Bypassing OAuth flow - using existing refresh token', {

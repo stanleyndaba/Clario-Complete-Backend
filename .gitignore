@@ -1,150 +1,78 @@
-# Dependencies
-node_modules/
-*/node_modules/
-**/node_modules/
-
-# Build outputs
-dist/
-build/
-*.dll.node
-*.exe
-libquery-engine
-schema-engine
-query_engine-*
-schema-engine-*
-
-# Database files
-*.db
-*.sqlite
-*.sqlite3
-claims.db
-
-# Environment files
+# Environment variables
 .env
 .env.local
 .env.production
-.env.staging
-env.*
-!env.template
-!env.*.template
+.env.development
+.env.test
+*.env
+!.env.example
+!.env.production.example
+
+# Secrets and credentials
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
 
 # Logs
-*.log
 logs/
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
+# Dependencies
+node_modules/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
 
-# Coverage directory used by tools like istanbul
-coverage/
-*.lcov
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
 
-# nyc test coverage
-.nyc_output
-
-# Dependency directories
-jspm_packages/
-
-# Optional npm cache directory
-.npm
-
-# Optional eslint cache
-.eslintcache
-
-# Microbundle cache
-.rpt2_cache/
-.rts2_cache_cjs/
-.rts2_cache_es/
-.rts2_cache_umd/
-
-# Optional REPL history
-.node_repl_history
-
-# Output of 'npm pack'
-*.tgz
-
-# Yarn Integrity file
-.yarn-integrity
-
-# parcel-bundler cache (https://parceljs.org/)
-.cache
-.parcel-cache
-
-# Next.js build output
-.next
-
-# Nuxt.js build / generate output
-.nuxt
-dist
-
-# Gatsby files
-.cache/
-public
-
-# Storybook build outputs
-.out
-.storybook-out
-
-# Temporary folders
-tmp/
-temp/
-
-# Editor directories and files
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS generated files
+# OS
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+# Temporary files
+tmp/
+temp/
+*.tmp
 
-# Machine Learning models (keep templates, exclude actual models)
-*.joblib
-*.pkl
-*.h5
-*.hdf5
-models/production/
-models/registry/
+# Database
+*.db
+*.sqlite
+*.sqlite3
 
-# Large data files
-*.csv
-*.json
-!sample_claim.json
-!package.json
-!package-lock.json
-!tsconfig.json
-!jest.config.js
+# Coverage
+coverage/
+.nyc_output/
 
-# AWS SDK (too large for git)
-aws-sdk-react-native.js
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Redis
+dump.rdb
 
 # Docker
 .dockerignore
 
-# Deployment files (keep templates)
-flyctlopside-complete-frontend/
+# Misc
+.cache/
+*.cache
