@@ -1,5 +1,5 @@
-# Phase 3: Claim Detection - Real SP-API Test
-# Tests Phase 3 with actual Amazon SP-API data
+# Phase 3: Claim Detection - Sandbox SP-API Test
+# Tests Phase 3 with Amazon SP-API sandbox data
 
 param(
     [string]$UserId = "sandbox-user",
