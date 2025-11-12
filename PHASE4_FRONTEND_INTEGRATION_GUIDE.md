@@ -319,7 +319,81 @@ Response: {
 
 ---
 
-### **2. Evidence Source Management Endpoints**
+### **2. OAuth Connection Endpoints** (Connect Sources First!)
+
+**⚠️ IMPORTANT:** Before you can ingest from a source, users must connect it via OAuth. Use these endpoints:
+
+#### **Connect Evidence Source (Initiate OAuth)**
+```typescript
+POST /api/v1/integrations/{provider}/connect
+Query Params: {
+  redirect_uri?: string;  // Optional: Custom redirect URI
+  frontend_uri?: string;   // Optional: Frontend URL for callback
+}
+
+// Providers: 'gmail', 'outlook', 'gdrive', 'dropbox'
+
+Response: {
+  auth_url: string;        // OAuth URL to redirect user to
+  redirect_url: string;    // Callback URL
+}
+```
+
+**Example Usage:**
+```typescript
+// Connect Gmail
+const response = await fetch('/api/v1/integrations/gmail/connect', {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${token}` }
+});
+const { auth_url } = await response.json();
+// Redirect user to auth_url for OAuth consent
+
+// Connect Outlook
+const response = await fetch('/api/v1/integrations/outlook/connect', {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${token}` }
+});
+
+// Connect Google Drive
+const response = await fetch('/api/v1/integrations/gdrive/connect', {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${token}` }
+});
+
+// Connect Dropbox
+const response = await fetch('/api/v1/integrations/dropbox/connect', {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${token}` }
+});
+```
+
+#### **OAuth Callback Handler**
+```typescript
+GET /api/v1/integrations/{provider}/callback
+Query Params: {
+  code: string;      // OAuth authorization code
+  state: string;     // CSRF protection state
+}
+
+// This endpoint handles the OAuth callback automatically
+// Redirects user back to frontend after successful connection
+// No need to call this directly - OAuth provider redirects here
+```
+
+**OAuth Flow:**
+1. User clicks "Connect Gmail" button
+2. Frontend calls `POST /api/v1/integrations/gmail/connect`
+3. Backend returns `auth_url`
+4. Frontend redirects user to `auth_url`
+5. User grants permissions on provider's OAuth page
+6. Provider redirects to `GET /api/v1/integrations/gmail/callback?code=...`
+7. Backend exchanges code for token, stores it, redirects to frontend
+8. Source is now connected and ready for ingestion!
+
+---
+
+### **3. Evidence Source Management Endpoints**
 
 #### **List All Connected Sources**
 ```typescript
@@ -459,6 +533,18 @@ export const evidenceIngestionService = {
     return response.data;
   },
 
+  // OAuth Connection (Connect Sources)
+  async connectSource(provider: 'gmail' | 'outlook' | 'gdrive' | 'dropbox', redirectUri?: string) {
+    const params = new URLSearchParams();
+    if (redirectUri) params.append('redirect_uri', redirectUri);
+    
+    const response = await axios.post(
+      `${API_BASE}/api/v1/integrations/${provider}/connect${params.toString() ? '?' + params.toString() : ''}`,
+      {}
+    );
+    return response.data; // Returns { auth_url, redirect_url }
+  },
+
   // Source Management
   async getSources() {
     const response = await axios.get(`${API_BASE}/api/evidence/sources`);
@@ -505,6 +591,18 @@ export const EvidenceIngestion: React.FC = () => {
       setSources(response.sources || []);
     } catch (error) {
       console.error('Failed to load sources:', error);
+    }
+  };
+
+  // Connect a new source via OAuth
+  const handleConnectSource = async (provider: string) => {
+    try {
+      const response = await evidenceIngestionService.connectSource(provider as any);
+      // Redirect user to OAuth URL
+      window.location.href = response.auth_url;
+    } catch (error) {
+      console.error(`Failed to connect ${provider}:`, error);
+      // Show error toast
     }
   };
 
@@ -563,6 +661,25 @@ export const EvidenceIngestion: React.FC = () => {
   return (
     <div className="evidence-ingestion">
       <h2>Evidence Ingestion</h2>
+
+      {/* Connect Sources */}
+      <div className="connect-sources">
+        <h3>Connect Evidence Sources</h3>
+        <div className="source-buttons">
+          <button onClick={() => handleConnectSource('gmail')}>
+            Connect Gmail
+          </button>
+          <button onClick={() => handleConnectSource('outlook')}>
+            Connect Outlook
+          </button>
+          <button onClick={() => handleConnectSource('gdrive')}>
+            Connect Google Drive
+          </button>
+          <button onClick={() => handleConnectSource('dropbox')}>
+            Connect Dropbox
+          </button>
+        </div>
+      </div>
 
       {/* Connected Sources */}
       <div className="sources-list">
