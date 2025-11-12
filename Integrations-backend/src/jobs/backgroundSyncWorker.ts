@@ -197,7 +197,12 @@ export class BackgroundSyncWorker {
         return [];
       }
 
-      const userIds = [...new Set(tokens?.map((t: any) => t.user_id) || [])];
+      // Extract user IDs and ensure they are strings
+      const userIdsArray: string[] = (tokens || [])
+        .map((t: any) => t.user_id)
+        .filter((id: any): id is string => typeof id === 'string' && id.length > 0);
+      
+      const userIds: string[] = [...new Set<string>(userIdsArray)];
 
       // Also check for users with environment variables (sandbox mode)
       const envRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
