@@ -295,9 +295,9 @@ foreach ($result in $performanceResults) {
     }
 }
 
-# Test 6: Verify Database Storage
+# Test 8: Verify Database Storage
 Write-Host ""
-Write-Host "6️⃣ Verifying Database Storage..." -ForegroundColor Yellow
+Write-Host "8️⃣ Verifying Database Storage..." -ForegroundColor Yellow
 if ($detectionCount -gt 0) {
     Write-Host "✅ Saved $detectionCount rows to detection_results" -ForegroundColor Green
     $testResults.DatabaseSaved = $true
@@ -306,15 +306,15 @@ if ($detectionCount -gt 0) {
     Write-Host "   Note: In sandbox mode, detections may be limited" -ForegroundColor Gray
 }
 
-# Test 7: Verify Notifications
+# Test 9: Verify Notifications
 Write-Host ""
-Write-Host "7️⃣ Verifying Notifications..." -ForegroundColor Yellow
+Write-Host "9️⃣ Verifying Notifications..." -ForegroundColor Yellow
 Write-Host "✅ WebSocket notifications sent (SSE events configured)" -ForegroundColor Green
 $testResults.NotificationsSent = $true
 
-# Test 8: Confidence Distribution
+# Test 10: Confidence Distribution
 Write-Host ""
-Write-Host "8️⃣ Checking Confidence Distribution..." -ForegroundColor Yellow
+Write-Host "🔟 Checking Confidence Distribution..." -ForegroundColor Yellow
 try {
     $confDistResponse = Invoke-RestMethod -Uri "$BaseUrl/api/detections/confidence-distribution" -Method Get -Headers $headers -TimeoutSec 10 -ErrorAction Stop
     if ($confDistResponse.distribution) {
