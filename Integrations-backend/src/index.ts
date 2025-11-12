@@ -52,6 +52,7 @@ import { deadlineMonitoringJob } from './jobs/deadlineMonitoringJob';
 import OrchestrationJobManager from './jobs/orchestrationJob';
 import websocketService from './services/websocketService';
 import detectionService from './services/detectionService';
+import backgroundSyncWorker from './jobs/backgroundSyncWorker';
 
 const app = express();
 const server = createServer(app);
@@ -272,6 +273,16 @@ server.listen(PORT, '0.0.0.0', () => {
       
       // Start background jobs (non-blocking)
       deadlineMonitoringJob.start();
+      
+      // Start Phase 2 background sync worker (if enabled)
+      if (process.env.ENABLE_BACKGROUND_SYNC !== 'false') {
+        backgroundSyncWorker.start().catch((error: any) => {
+          logger.error('Failed to start background sync worker', { error: error.message });
+        });
+        logger.info('Phase 2 background sync worker initialized');
+      } else {
+        logger.info('Phase 2 background sync worker disabled (ENABLE_BACKGROUND_SYNC=false)');
+      }
       
       // Start detection job processor (processes detection jobs from queue)
       // This runs continuously to process detection jobs queued after sync

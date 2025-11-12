@@ -152,6 +152,13 @@ export class AmazonService {
     return this.accessToken!;
   }
 
+  /**
+   * Public method to get access token for use by other services
+   */
+  async getAccessTokenForService(userId?: string): Promise<string> {
+    return this.getAccessToken(userId);
+  }
+
   private async refreshAccessToken(userId?: string): Promise<void> {
     try {
       let refreshToken: string | undefined;
@@ -1255,6 +1262,100 @@ export class AmazonService {
       // Don't throw - this is a monitoring function, shouldn't break main flow
     }
   }
+
+  /**
+   * Fetch orders from Amazon SP-API
+   * Phase 2: Continuous Data Sync
+   */
+  async fetchOrders(userId?: string, startDate?: Date, endDate?: Date): Promise<any> {
+    const environment = this.isSandbox() ? 'SANDBOX' : 'PRODUCTION';
+    const dataType = this.isSandbox() ? 'SANDBOX_TEST_DATA' : 'LIVE_PRODUCTION_DATA';
+
+    try {
+      const accessToken = await this.getAccessToken(userId);
+      const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
+
+      const createdAfter = startDate || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const createdBefore = endDate || new Date();
+
+      logger.info(`Fetching orders for user ${userId} from SP-API ${environment}`, {
+        baseUrl: this.baseUrl,
+        marketplaceId,
+        createdAfter: createdAfter.toISOString(),
+        createdBefore: createdBefore.toISOString(),
+        isSandbox: this.isSandbox(),
+        dataType
+      });
+
+      const params: any = {
+        MarketplaceIds: marketplaceId,
+        CreatedAfter: createdAfter.toISOString(),
+        CreatedBefore: createdBefore.toISOString()
+      };
+
+      const response = await axios.get(`${this.baseUrl}/orders/v0/orders`, {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'x-amz-access-token': accessToken,
+          'Content-Type': 'application/json'
+        },
+        params,
+        timeout: 30000
+      });
+
+      const payload = response.data?.payload || response.data;
+      const orders = payload?.Orders || (Array.isArray(payload) ? payload : []);
+
+      logger.info(`Successfully fetched ${orders.length} orders from SP-API ${environment}`, {
+        orderCount: orders.length,
+        userId,
+        isSandbox: this.isSandbox(),
+        dataType,
+        note: orders.length === 0
+          ? 'Sandbox may return empty orders - this is normal for testing'
+          : 'Orders retrieved successfully'
+      });
+
+      return {
+        success: true,
+        data: orders,
+        message: `Fetched ${orders.length} orders from SP-API ${environment} (${dataType})`,
+        fromApi: true,
+        isSandbox: this.isSandbox(),
+        dataType
+      };
+    } catch (error: any) {
+      const errorDetails = error.response?.data?.errors?.[0] || {};
+      logger.error('Error fetching orders from SP-API', {
+        error: error.message,
+        status: error.response?.status,
+        errorCode: errorDetails.code,
+        errorMessage: errorDetails.message,
+        userId,
+        isSandbox: this.isSandbox()
+      });
+
+      // For sandbox, return empty array instead of error
+      if (this.isSandbox() && (error.response?.status === 404 || error.response?.status === 400)) {
+        logger.info('Sandbox returned empty/error response - returning empty orders (normal for sandbox)', {
+          status: error.response?.status,
+          userId
+        });
+        return {
+          success: true,
+          data: [],
+          message: 'Sandbox returned no orders data (normal for testing)',
+          fromApi: true,
+          isSandbox: true,
+          dataType: 'SANDBOX_TEST_DATA'
+        };
+      }
+
+      // For production, throw error
+      throw new Error(`Failed to fetch orders: ${errorDetails.message || error.message}`);
+    }
+  }
 }
 
-export default new AmazonService();
+const amazonService = new AmazonService();
+export default amazonService;

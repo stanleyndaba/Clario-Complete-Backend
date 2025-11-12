@@ -96,6 +96,130 @@ export class AmazonSyncJob {
       // Ingest financial events
       await this.ingestFinancialEvents(userId, fees);
 
+      // 🎯 PHASE 2: Sync Orders
+      let orders: any[] = [];
+      try {
+        logger.info('Fetching orders from SP-API SANDBOX (test data only)', { userId, syncId });
+        const ordersService = (await import('../services/ordersService')).default;
+        const ordersResult = await ordersService.fetchOrders(userId);
+        const normalizedOrders = ordersResult.data || [];
+        orders = normalizedOrders; // Store for summary
+        await ordersService.saveOrdersToDatabase(userId, normalizedOrders);
+        
+        logger.info('Orders sync completed (SANDBOX TEST DATA)', {
+          userId,
+          syncId,
+          orderCount: orders.length,
+          dataType: 'SANDBOX_TEST_DATA',
+          note: orders.length === 0
+            ? 'Sandbox returned empty orders - this is normal for testing'
+            : 'Sandbox test orders data retrieved successfully'
+        });
+      } catch (ordersError: any) {
+        logger.error('Orders sync failed (non-critical)', {
+          error: ordersError.message,
+          userId,
+          syncId
+        });
+        // Continue with other sync operations
+      }
+
+      // 🎯 PHASE 2: Sync Shipments
+      let shipments: any[] = [];
+      try {
+        logger.info('Fetching shipments from SP-API (report-based)', { userId, syncId });
+        const shipmentsService = (await import('../services/shipmentsService')).default;
+        const shipmentsResult = await shipmentsService.fetchShipments(userId);
+        shipments = shipmentsResult.data || [];
+        shipments = Array.isArray(shipments) ? shipments : [];
+        
+        if (shipments.length > 0) {
+          const normalizedShipments = shipmentsService.normalizeShipments(shipments, userId);
+          await shipmentsService.saveShipmentsToDatabase(userId, normalizedShipments);
+        }
+        
+        logger.info('Shipments sync completed', {
+          userId,
+          syncId,
+          shipmentCount: shipments.length,
+          dataType: 'SANDBOX_TEST_DATA',
+          note: shipments.length === 0
+            ? 'Sandbox returned empty shipments - this is normal for testing'
+            : 'Shipments data retrieved successfully'
+        });
+      } catch (shipmentsError: any) {
+        logger.error('Shipments sync failed (non-critical)', {
+          error: shipmentsError.message,
+          userId,
+          syncId
+        });
+        // Continue with other sync operations
+      }
+
+      // 🎯 PHASE 2: Sync Returns
+      let returns: any[] = [];
+      try {
+        logger.info('Fetching returns from SP-API (report-based)', { userId, syncId });
+        const returnsService = (await import('../services/returnsService')).default;
+        const returnsResult = await returnsService.fetchReturns(userId);
+        returns = returnsResult.data || [];
+        returns = Array.isArray(returns) ? returns : [];
+        
+        if (returns.length > 0) {
+          const normalizedReturns = returnsService.normalizeReturns(returns, userId);
+          await returnsService.saveReturnsToDatabase(userId, normalizedReturns);
+        }
+        
+        logger.info('Returns sync completed', {
+          userId,
+          syncId,
+          returnCount: returns.length,
+          dataType: 'SANDBOX_TEST_DATA',
+          note: returns.length === 0
+            ? 'Sandbox returned empty returns - this is normal for testing'
+            : 'Returns data retrieved successfully'
+        });
+      } catch (returnsError: any) {
+        logger.error('Returns sync failed (non-critical)', {
+          error: returnsError.message,
+          userId,
+          syncId
+        });
+        // Continue with other sync operations
+      }
+
+      // 🎯 PHASE 2: Sync Settlements (Enhanced Financial Events)
+      let settlements: any[] = [];
+      try {
+        logger.info('Fetching settlements from SP-API Financial Events', { userId, syncId });
+        const settlementsService = (await import('../services/settlementsService')).default;
+        const settlementsResult = await settlementsService.fetchSettlements(userId);
+        settlements = settlementsResult.data || [];
+        settlements = Array.isArray(settlements) ? settlements : [];
+        
+        if (settlements.length > 0) {
+          const normalizedSettlements = settlementsService.normalizeSettlements(settlements, userId);
+          await settlementsService.saveSettlementsToDatabase(userId, normalizedSettlements);
+        }
+        
+        logger.info('Settlements sync completed', {
+          userId,
+          syncId,
+          settlementCount: settlements.length,
+          dataType: 'SANDBOX_TEST_DATA',
+          note: settlements.length === 0
+            ? 'Sandbox returned empty settlements - this is normal for testing'
+            : 'Settlements data retrieved successfully'
+        });
+      } catch (settlementsError: any) {
+        logger.error('Settlements sync failed (non-critical)', {
+          error: settlementsError.message,
+          userId,
+          syncId
+        });
+        // Continue with other sync operations
+      }
+
       // 🎯 PHASE 2: Trigger detection job automatically (existing functionality)
       await this.triggerDetectionJob(userId, syncId);
       
