@@ -6,8 +6,11 @@
 
 import fs from 'fs';
 import path from 'path';
-import { parse } from 'csv-parse/sync';
 import logger from '../utils/logger';
+
+// Use require for csv-parse/sync to avoid TypeScript module resolution issues
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { parse } = require('csv-parse/sync');
 
 export interface MockSPAPIParams {
   PostedAfter?: string;
