@@ -1276,7 +1276,9 @@ export class AmazonService {
       const accessToken = await this.getAccessToken(userId);
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
 
-      const createdAfter = startDate || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      // Default to last 18 months for Phase 1 (first sync)
+      // If no dates provided, fetch 18 months of historical data
+      const createdAfter = startDate || new Date(Date.now() - 18 * 30 * 24 * 60 * 60 * 1000);
       const createdBefore = endDate || new Date();
 
       logger.info(`Fetching orders for user ${userId} from SP-API ${environment}`, {
