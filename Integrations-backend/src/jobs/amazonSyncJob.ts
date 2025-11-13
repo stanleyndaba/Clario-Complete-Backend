@@ -41,10 +41,19 @@ export class AmazonSyncJob {
         logger.info('User has valid Amazon token, proceeding with sync', { userId, syncId });
       }
 
-      // Sync claims - GETTING SANDBOX TEST DATA FROM SP-API
+      // Sync claims - GETTING SANDBOX TEST DATA FROM SP-API (18 months for Phase 1)
       // Note: Sandbox may return empty or limited test data - this is normal for testing
-      logger.info('Fetching claims from SP-API SANDBOX (test data only)', { userId, syncId });
-      const claimsResult = await amazonService.fetchClaims(userId);
+      const eighteenMonthsAgo = new Date(Date.now() - 18 * 30 * 24 * 60 * 60 * 1000);
+      const now = new Date();
+      
+      logger.info('Fetching claims from SP-API SANDBOX (18 months of data)', { 
+        userId, 
+        syncId,
+        startDate: eighteenMonthsAgo.toISOString(),
+        endDate: now.toISOString(),
+        months: 18
+      });
+      const claimsResult = await amazonService.fetchClaims(userId, eighteenMonthsAgo, now);
       const claims = claimsResult.data || claimsResult; // Handle both formats
       await this.saveClaimsToDatabase(userId, Array.isArray(claims) ? claims : []);
       
@@ -88,20 +97,40 @@ export class AmazonSyncJob {
         // Still continue with other sync operations
       }
 
-      // Sync fees and financial events
-      const feesResult = await amazonService.fetchFees(userId);
+      // Sync fees and financial events (18 months for Phase 1)
+      const eighteenMonthsAgo = new Date(Date.now() - 18 * 30 * 24 * 60 * 60 * 1000);
+      const now = new Date();
+      
+      logger.info('Fetching fees from SP-API SANDBOX (18 months of data)', {
+        userId,
+        syncId,
+        startDate: eighteenMonthsAgo.toISOString(),
+        endDate: now.toISOString(),
+        months: 18
+      });
+      const feesResult = await amazonService.fetchFees(userId, eighteenMonthsAgo, now);
       const fees = feesResult.data || feesResult; // Handle both formats
       await this.saveFeesToDatabase(userId, Array.isArray(fees) ? fees : []);
       
       // Ingest financial events
       await this.ingestFinancialEvents(userId, fees);
 
-      // 🎯 PHASE 2: Sync Orders
+      // 🎯 PHASE 2: Sync Orders (18 months for Phase 1)
       let orders: any[] = [];
       try {
-        logger.info('Fetching orders from SP-API SANDBOX (test data only)', { userId, syncId });
+        // Calculate 18 months ago for first sync
+        const eighteenMonthsAgo = new Date(Date.now() - 18 * 30 * 24 * 60 * 60 * 1000);
+        const now = new Date();
+        
+        logger.info('Fetching orders from SP-API SANDBOX (18 months of data)', { 
+          userId, 
+          syncId,
+          startDate: eighteenMonthsAgo.toISOString(),
+          endDate: now.toISOString(),
+          months: 18
+        });
         const ordersService = (await import('../services/ordersService')).default;
-        const ordersResult = await ordersService.fetchOrders(userId);
+        const ordersResult = await ordersService.fetchOrders(userId, eighteenMonthsAgo, now);
         const normalizedOrders = ordersResult.data || [];
         orders = normalizedOrders; // Store for summary
         await ordersService.saveOrdersToDatabase(userId, normalizedOrders);

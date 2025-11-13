@@ -997,8 +997,9 @@ export class AmazonService {
       const accessToken = await this.getAccessToken(accountId);
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
       
-      // Default to last 90 days if no dates provided
-      const postedAfter = startDate || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+      // Default to last 18 months for Phase 1 (first sync)
+      // If no dates provided, fetch 18 months of historical data
+      const postedAfter = startDate || new Date(Date.now() - 18 * 30 * 24 * 60 * 60 * 1000);
       const postedBefore = endDate || new Date();
       
       logger.info(`Fetching fees for account ${accountId} from SP-API`, {
