@@ -3,6 +3,7 @@
 import axios from 'axios';
 import crypto from 'crypto';
 import logger from '../utils/logger';
+import { mockSPAPIService } from './mockSPAPIService';
 
 export interface AmazonClaim {
   id: string;
@@ -62,16 +63,26 @@ export class AmazonService {
     }
     
     // Log environment mode on initialization
-    if (this.isSandbox()) {
+    const useMock = process.env.USE_MOCK_SPAPI === 'true';
+    if (useMock) {
+      logger.info('Amazon SP-API initialized in MOCK mode - using CSV files', {
+        baseUrl: this.baseUrl,
+        environment: 'MOCK',
+        useMockSPAPI: true,
+        note: 'Reading data from CSV files in data/mock-spapi/ directory'
+      });
+    } else if (this.isSandbox()) {
       logger.info('Amazon SP-API initialized in SANDBOX mode - using test data only', {
         baseUrl: this.baseUrl,
         environment: 'sandbox',
+        useMockSPAPI: false,
         note: 'Set AMAZON_SPAPI_BASE_URL to production URL to switch to production mode'
       });
     } else {
       logger.info('Amazon SP-API initialized in PRODUCTION mode - using live data', {
         baseUrl: this.baseUrl,
         environment: 'production',
+        useMockSPAPI: false,
         warning: 'This will fetch real production data from Amazon SP-API'
       });
     }
@@ -557,6 +568,65 @@ export class AmazonService {
         MarketplaceIds: marketplaceId
       };
 
+      // Check if using mock SP-API
+      if (process.env.USE_MOCK_SPAPI === 'true') {
+        logger.info('Using Mock SP-API for financial events', { accountId });
+        const mockResponse = await mockSPAPIService.getFinancialEvents(params);
+        const payload = mockResponse.payload || mockResponse;
+        const financialEvents = payload?.FinancialEvents || {};
+        
+        // Extract reimbursement events (these are the "claims")
+        const reimbursements = financialEvents.FBALiquidationEventList || [];
+        const adjustments = financialEvents.AdjustmentEventList || [];
+        
+        // Transform reimbursements into claims format
+        const allClaims: any[] = [];
+        for (const reimbursement of reimbursements) {
+          allClaims.push({
+            id: reimbursement.OriginalRemovalOrderId || `RMB-${Date.now()}`,
+            orderId: reimbursement.OriginalRemovalOrderId,
+            amount: parseFloat(reimbursement.LiquidationProceedsAmount?.CurrencyAmount || '0'),
+            status: 'approved',
+            type: 'liquidation_reimbursement',
+            currency: reimbursement.LiquidationProceedsAmount?.CurrencyCode || 'USD',
+            createdAt: reimbursement.PostedDate || new Date().toISOString(),
+            description: `FBA Liquidation reimbursement for ${reimbursement.OriginalRemovalOrderId || 'N/A'}`,
+            fromApi: true
+          });
+        }
+        
+        // Transform adjustment events (some are reimbursements)
+        for (const adjustment of adjustments) {
+          const adjustmentAmount = adjustment.AdjustmentAmount?.CurrencyAmount || '0';
+          const amount = parseFloat(adjustmentAmount);
+          
+          if (amount > 0) {
+            allClaims.push({
+              id: adjustment.AdjustmentEventId || `ADJ-${Date.now()}`,
+              orderId: adjustment.AdjustmentEventId,
+              amount: amount,
+              status: 'approved',
+              type: 'adjustment_reimbursement',
+              currency: adjustment.AdjustmentAmount?.CurrencyCode || 'USD',
+              createdAt: adjustment.PostedDate || new Date().toISOString(),
+              description: adjustment.AdjustmentType || 'Amazon adjustment reimbursement',
+              fromApi: true
+            });
+          }
+        }
+
+        return {
+          success: true,
+          data: allClaims,
+          message: `Fetched ${allClaims.length} claims/reimbursements from Mock SP-API`,
+          fromApi: true,
+          isSandbox: true,
+          environment: 'MOCK',
+          dataType: 'MOCK_DATA',
+          note: 'Data loaded from CSV files'
+        };
+      }
+
       // Check cache for first page (subsequent pages are less cacheable)
       const cacheKey = this.getCacheKey('financialEvents', { ...params, endpoint: 'claims' });
       const cached = this.getCachedResponse(cacheKey);
@@ -774,6 +844,37 @@ export class AmazonService {
         dataType: 'SANDBOX_TEST_DATA',
         note: 'Using Amazon SP-API sandbox - returns test/fake data only, not real production data'
       });
+
+      // Check if using mock SP-API
+      if (process.env.USE_MOCK_SPAPI === 'true') {
+        logger.info('Using Mock SP-API for inventory', { accountId });
+        const mockResponse = await mockSPAPIService.getInventorySummaries({ MarketplaceIds: marketplaceId });
+        const payload = mockResponse.payload || mockResponse;
+        const summaries = payload?.inventorySummaries || [];
+        
+        const inventory = summaries.map((item: any) => ({
+          sku: item.sellerSku || item.sku,
+          asin: item.asin,
+          fnSku: item.fnSku,
+          quantity: item.inventoryDetails?.availableQuantity || item.quantity || 0,
+          condition: item.condition || 'New',
+          location: 'FBA',
+          status: (item.inventoryDetails?.availableQuantity || item.quantity || 0) > 0 ? 'active' : 'inactive',
+          reserved: item.inventoryDetails?.reservedQuantity || item.reserved || 0,
+          damaged: item.inventoryDetails?.damagedQuantity || item.damaged || 0,
+          lastUpdated: item.lastUpdatedTime || item.lastUpdated || new Date().toISOString()
+        }));
+
+        return {
+          success: true,
+          data: inventory,
+          message: `Fetched ${inventory.length} inventory items from Mock SP-API`,
+          fromApi: true,
+          isSandbox: true,
+          dataType: 'MOCK_DATA',
+          note: 'Data loaded from CSV files'
+        };
+      }
 
       // Build params - sandbox may not support granularityType
       const params: any = {
@@ -1016,6 +1117,72 @@ export class AmazonService {
         PostedBefore: postedBefore.toISOString(),
         MarketplaceIds: marketplaceId
       };
+
+      // Check if using mock SP-API
+      if (process.env.USE_MOCK_SPAPI === 'true') {
+        logger.info('Using Mock SP-API for fees', { accountId });
+        const mockResponse = await mockSPAPIService.getFees(params);
+        const payload = mockResponse.payload || mockResponse;
+        const financialEvents = payload?.FinancialEvents || {};
+        
+        const serviceFeeEvents = financialEvents.ServiceFeeEventList || [];
+        const orderEvents = financialEvents.OrderEventList || [];
+        
+        const allFees: any[] = [];
+        
+        // Process service fees
+        for (const feeEvent of serviceFeeEvents) {
+          for (const fee of feeEvent.FeeList || []) {
+            const feeAmount = fee.FeeAmount?.CurrencyAmount || '0';
+            const amount = Math.abs(parseFloat(feeAmount));
+            
+            if (amount > 0) {
+              allFees.push({
+                type: fee.FeeType || 'SERVICE_FEE',
+                amount: amount,
+                currency: fee.FeeAmount?.CurrencyCode || 'USD',
+                orderId: feeEvent.AmazonOrderId,
+                sku: feeEvent.SellerSKU,
+                asin: feeEvent.ASIN,
+                date: feeEvent.PostedDate || new Date().toISOString(),
+                description: `${fee.FeeType || 'Service fee'} for order ${feeEvent.AmazonOrderId || 'N/A'}`,
+                fromApi: true
+              });
+            }
+          }
+        }
+        
+        // Process order events
+        for (const orderEvent of orderEvents) {
+          const order = orderEvent.OrderChargeList || [];
+          for (const charge of order) {
+            const chargeAmount = charge.ChargeAmount?.CurrencyAmount || '0';
+            const amount = Math.abs(parseFloat(chargeAmount));
+            
+            if (amount > 0 && charge.ChargeType) {
+              allFees.push({
+                type: charge.ChargeType,
+                amount: amount,
+                currency: charge.ChargeAmount?.CurrencyCode || 'USD',
+                orderId: orderEvent.AmazonOrderId,
+                date: orderEvent.PostedDate || new Date().toISOString(),
+                description: `${charge.ChargeType} for order ${orderEvent.AmazonOrderId || 'N/A'}`,
+                fromApi: true
+              });
+            }
+          }
+        }
+
+        return {
+          success: true,
+          data: allFees,
+          message: `Fetched ${allFees.length} fees from Mock SP-API`,
+          fromApi: true,
+          isSandbox: true,
+          dataType: 'MOCK_DATA',
+          note: 'Data loaded from CSV files'
+        };
+      }
 
       // Check cache for first page
       const cacheKey = this.getCacheKey('financialEvents', { ...params, endpoint: 'fees' });

@@ -1,0 +1,7 @@
+{
+  "n_claims": 240,
+  "generated": "2025-11-13T08:33:55Z",
+  "train_rows": 168,
+  "val_rows": 36,
+  "test_rows": 36
+}

@@ -7,6 +7,7 @@ import axios from 'axios';
 import logger from '../utils/logger';
 import { supabase } from '../database/supabaseClient';
 import { logAuditEvent } from '../security/auditLogger';
+import { mockSPAPIService } from './mockSPAPIService';
 
 export interface OrderItem {
   sku: string;
@@ -80,6 +81,23 @@ export class OrdersService {
         CreatedAfter: createdAfter.toISOString(),
         CreatedBefore: createdBefore.toISOString()
       };
+
+      // Check if using mock SP-API
+      if (process.env.USE_MOCK_SPAPI === 'true') {
+        logger.info('Using Mock SP-API for orders', { userId });
+        const mockResponse = await mockSPAPIService.getOrders(params);
+        const payload = mockResponse.payload || mockResponse;
+        const orders = payload?.Orders || [];
+        
+        // Normalize orders
+        const normalizedOrders = this.normalizeOrders(orders, userId);
+
+        return {
+          success: true,
+          data: normalizedOrders,
+          message: `Fetched ${normalizedOrders.length} orders from Mock SP-API`
+        };
+      }
 
       // Fetch orders from SP-API
       const response = await axios.get(`${this.baseUrl}/orders/v0/orders`, {
