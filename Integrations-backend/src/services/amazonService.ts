@@ -4,6 +4,7 @@ import axios from 'axios';
 import crypto from 'crypto';
 import logger from '../utils/logger';
 import { mockSPAPIService } from './mockSPAPIService';
+import { getMockDataGenerator, type MockScenario } from './mockDataGenerator';
 
 export interface AmazonClaim {
   id: string;
@@ -719,16 +720,84 @@ export class AmazonService {
         }
       } while (nextToken);
 
+      // If sandbox returned empty data, use mock data generator
+      if (isSandboxMode && allClaims.length === 0 && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
+        logger.info('Sandbox returned empty data - using mock data generator', {
+          scenario: process.env.MOCK_SCENARIO || 'normal_week',
+          accountId
+        });
+        
+        const mockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
+        const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
+        const generator = getMockDataGenerator(mockScenario);
+        // Override record count if needed
+        if (recordCount !== 75) {
+          (generator as any).recordCount = recordCount;
+        }
+        const mockResponse = generator.generateFinancialEvents();
+        const financialEvents = mockResponse.payload?.FinancialEvents || {};
+        
+        // Extract from mock data (same format as real SP-API)
+        const reimbursements = financialEvents.FBALiquidationEventList || [];
+        const adjustments = financialEvents.AdjustmentEventList || [];
+        
+        // Transform reimbursements into claims format
+        for (const reimbursement of reimbursements) {
+          allClaims.push({
+            id: reimbursement.OriginalRemovalOrderId || `RMB-${Date.now()}`,
+            orderId: reimbursement.OriginalRemovalOrderId,
+            amount: parseFloat(reimbursement.LiquidationProceedsAmount?.CurrencyAmount || '0'),
+            status: 'approved',
+            type: 'liquidation_reimbursement',
+            currency: reimbursement.LiquidationProceedsAmount?.CurrencyCode || 'USD',
+            createdAt: reimbursement.PostedDate || new Date().toISOString(),
+            description: `FBA Liquidation reimbursement for ${reimbursement.OriginalRemovalOrderId || 'N/A'}`,
+            fromApi: true,
+            isMock: true,
+            mockScenario: mockScenario
+          });
+        }
+        
+        // Transform adjustment events
+        for (const adjustment of adjustments) {
+          const adjustmentAmount = adjustment.AdjustmentAmount?.CurrencyAmount || '0';
+          const amount = typeof adjustmentAmount === 'number' ? adjustmentAmount : parseFloat(adjustmentAmount);
+          
+          if (amount > 0) {
+            allClaims.push({
+              id: adjustment.AdjustmentEventId || `ADJ-${Date.now()}`,
+              orderId: adjustment.AmazonOrderId || adjustment.AdjustmentEventId,
+              amount: amount,
+              status: 'approved',
+              type: 'adjustment_reimbursement',
+              currency: adjustment.AdjustmentAmount?.CurrencyCode || 'USD',
+              createdAt: adjustment.PostedDate || new Date().toISOString(),
+              description: adjustment.AdjustmentType || adjustment.Description || 'Amazon adjustment reimbursement',
+              fromApi: true,
+              isMock: true,
+              mockScenario: mockScenario
+            });
+          }
+        }
+        
+        logger.info(`Generated ${allClaims.length} mock claims from generator`, {
+          scenario: mockScenario,
+          accountId
+        });
+      }
+
       logger.info(`Successfully fetched ${allClaims.length} claims/reimbursements from SP-API ${environment}`, {
         itemCount: allClaims.length,
         accountId,
         isSandbox: isSandboxMode,
         environment,
         cacheUsed: false,
-        dataType,
+        dataType: allClaims.length > 0 && allClaims[0]?.isMock ? 'MOCK_GENERATED' : dataType,
         note: isSandboxMode
           ? (allClaims.length === 0 
-              ? 'Sandbox may return empty data - this is normal for testing' 
+              ? 'Sandbox returned empty data and mock generator disabled' 
+              : allClaims[0]?.isMock
+              ? 'Using mock data generator for sandbox testing'
               : 'Sandbox test data retrieved successfully')
           : (allClaims.length === 0
               ? 'No claims found in production data for the specified date range'
@@ -746,16 +815,22 @@ export class AmazonService {
       return { 
         success: true, 
         data: allClaims, 
-        message: isSandboxMode
+        message: isSandboxMode && allClaims[0]?.isMock
+          ? `Generated ${allClaims.length} mock claims using scenario: ${allClaims[0]?.mockScenario || 'normal_week'}`
+          : isSandboxMode
           ? `Fetched ${allClaims.length} claims/reimbursements from SP-API SANDBOX (test data)`
           : `Fetched ${allClaims.length} claims/reimbursements from SP-API PRODUCTION (live data)`,
         fromApi: true,
         isSandbox: isSandboxMode,
         environment,
-        dataType,
+        dataType: allClaims.length > 0 && allClaims[0]?.isMock ? 'MOCK_GENERATED' : dataType,
+        isMock: allClaims.length > 0 && allClaims[0]?.isMock ? true : undefined,
+        mockScenario: allClaims.length > 0 && allClaims[0]?.isMock ? allClaims[0]?.mockScenario : undefined,
         note: isSandboxMode
           ? (allClaims.length === 0 
-              ? 'Sandbox returned empty data - this is normal for testing' 
+              ? 'Sandbox returned empty data and mock generator disabled' 
+              : allClaims[0]?.isMock
+              ? 'Using mock data generator for sandbox testing'
               : 'Sandbox test data retrieved successfully')
           : (allClaims.length === 0
               ? 'No claims found in production data for the specified date range'
@@ -779,6 +854,89 @@ export class AmazonService {
       
       // Handle errors appropriately for sandbox vs production
       if (isSandboxMode) {
+        // Check if error is due to missing credentials - activate mock generator if enabled
+        const isCredentialError = error.message.includes('credentials not configured') || 
+                                 error.message.includes('token') ||
+                                 error.message.includes('Please connect your Amazon account');
+        
+        if (isCredentialError && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
+          logger.info('Sandbox credentials missing - using mock data generator', {
+            scenario: process.env.MOCK_SCENARIO || 'normal_week',
+            accountId
+          });
+          
+          const mockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
+          const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
+          const generator = getMockDataGenerator(mockScenario);
+          if (recordCount !== 75) {
+            (generator as any).recordCount = recordCount;
+          }
+          const mockResponse = generator.generateFinancialEvents();
+          const financialEvents = mockResponse.payload?.FinancialEvents || {};
+          
+          // Extract from mock data (same format as real SP-API)
+          const reimbursements = financialEvents.FBALiquidationEventList || [];
+          const adjustments = financialEvents.AdjustmentEventList || [];
+          
+          const mockClaims: any[] = [];
+          // Transform reimbursements into claims format
+          for (const reimbursement of reimbursements) {
+            mockClaims.push({
+              id: reimbursement.OriginalRemovalOrderId || `RMB-${Date.now()}`,
+              orderId: reimbursement.OriginalRemovalOrderId,
+              amount: parseFloat(reimbursement.LiquidationProceedsAmount?.CurrencyAmount || '0'),
+              status: 'approved',
+              type: 'liquidation_reimbursement',
+              currency: reimbursement.LiquidationProceedsAmount?.CurrencyCode || 'USD',
+              createdAt: reimbursement.PostedDate || new Date().toISOString(),
+              description: `FBA Liquidation reimbursement for ${reimbursement.OriginalRemovalOrderId || 'N/A'}`,
+              fromApi: true,
+              isMock: true,
+              mockScenario: mockScenario
+            });
+          }
+          
+          // Transform adjustment events
+          for (const adjustment of adjustments) {
+            const adjustmentAmount = adjustment.AdjustmentAmount?.CurrencyAmount || '0';
+            const amount = typeof adjustmentAmount === 'number' ? adjustmentAmount : parseFloat(adjustmentAmount);
+            
+            if (amount > 0) {
+              mockClaims.push({
+                id: adjustment.AdjustmentEventId || `ADJ-${Date.now()}`,
+                orderId: adjustment.AmazonOrderId || adjustment.AdjustmentEventId,
+                amount: amount,
+                status: 'approved',
+                type: 'adjustment_reimbursement',
+                currency: adjustment.AdjustmentAmount?.CurrencyCode || 'USD',
+                createdAt: adjustment.PostedDate || new Date().toISOString(),
+                description: adjustment.AdjustmentType || adjustment.Description || 'Amazon adjustment reimbursement',
+                fromApi: true,
+                isMock: true,
+                mockScenario: mockScenario
+              });
+            }
+          }
+          
+          logger.info(`Generated ${mockClaims.length} mock claims from generator (credentials missing)`, {
+            scenario: mockScenario,
+            accountId
+          });
+          
+          return {
+            success: true,
+            data: mockClaims,
+            message: `Generated ${mockClaims.length} mock claims using scenario: ${mockScenario}`,
+            fromApi: true,
+            isSandbox: true,
+            environment,
+            dataType: 'MOCK_GENERATED',
+            isMock: true,
+            mockScenario: mockScenario,
+            note: 'Mock data generated due to missing credentials in sandbox mode'
+          };
+        }
+        
         // In sandbox, empty responses or 404s are normal - return empty array instead of error
         if (error.response?.status === 404 || error.response?.status === 400) {
           logger.info('Sandbox returned empty/error response - returning empty claims (this is normal for sandbox)', {
@@ -905,13 +1063,38 @@ export class AmazonService {
       const payload = response.data?.payload || response.data;
       const summaries = payload?.inventorySummaries || (Array.isArray(payload) ? payload : []);
       
+      // If sandbox returned empty data, use mock data generator
+      if (this.isSandbox() && summaries.length === 0 && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
+        logger.info('Sandbox returned empty inventory - using mock data generator', {
+          scenario: process.env.MOCK_SCENARIO || 'normal_week',
+          accountId
+        });
+        
+        const mockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
+        const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
+        const generator = getMockDataGenerator(mockScenario);
+        // Override record count if needed
+        if (recordCount !== 75) {
+          (generator as any).recordCount = recordCount;
+        }
+        const mockResponse = generator.generateInventory();
+        summaries.push(...(mockResponse.payload?.inventorySummaries || []));
+        
+        logger.info(`Generated ${summaries.length} mock inventory items from generator`, {
+          scenario: mockScenario,
+          accountId
+        });
+      }
+
       logger.info(`Successfully fetched ${summaries.length} inventory items from SP-API SANDBOX`, {
         itemCount: summaries.length,
         accountId,
         isSandbox: this.isSandbox(),
-        dataType: 'SANDBOX_TEST_DATA',
+        dataType: summaries.length > 0 && summaries[0]?.isMock ? 'MOCK_GENERATED' : 'SANDBOX_TEST_DATA',
         note: summaries.length === 0 
-          ? 'Sandbox returned empty inventory - this is normal for testing' 
+          ? 'Sandbox returned empty inventory and mock generator disabled' 
+          : summaries[0]?.isMock
+          ? 'Using mock data generator for sandbox testing'
           : 'Sandbox test inventory data retrieved successfully'
       });
 
@@ -926,7 +1109,9 @@ export class AmazonService {
         status: (item.inventoryDetails?.availableQuantity || item.quantity || 0) > 0 ? 'active' : 'inactive',
         reserved: item.inventoryDetails?.reservedQuantity || item.reserved || 0,
         damaged: item.inventoryDetails?.damagedQuantity || item.damaged || 0,
-        lastUpdated: item.lastUpdatedTime || item.lastUpdated || new Date().toISOString()
+        lastUpdated: item.lastUpdatedTime || item.lastUpdated || new Date().toISOString(),
+        isMock: item.isMock || (summaries.length > 0 && summaries[0]?.isMock ? true : undefined),
+        mockScenario: item.mockScenario || (summaries.length > 0 && summaries[0]?.isMock ? (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week' : undefined)
       }));
 
       return { 
@@ -957,6 +1142,60 @@ export class AmazonService {
       // For sandbox, empty responses or 404s are normal - return empty array instead of error
       const errorMessage = errorDetails.message || error.message;
       if (this.isSandbox()) {
+        // Check if error is due to missing credentials - activate mock generator if enabled
+        const isCredentialError = error.message.includes('credentials not configured') || 
+                                 error.message.includes('token') ||
+                                 error.message.includes('Please connect your Amazon account');
+        
+        if (isCredentialError && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
+          logger.info('Sandbox credentials missing - using mock data generator for inventory', {
+            scenario: process.env.MOCK_SCENARIO || 'normal_week',
+            accountId
+          });
+          
+          const mockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
+          const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
+          const generator = getMockDataGenerator(mockScenario);
+          if (recordCount !== 75) {
+            (generator as any).recordCount = recordCount;
+          }
+          const mockResponse = generator.generateInventory();
+          const summaries = mockResponse.payload?.inventorySummaries || [];
+          
+          logger.info(`Generated ${summaries.length} mock inventory items from generator (credentials missing)`, {
+            scenario: mockScenario,
+            accountId
+          });
+          
+          // Transform to our format
+          const inventory = summaries.map((item: any) => ({
+            sku: item.sellerSku || item.sku,
+            asin: item.asin,
+            fnSku: item.fnSku,
+            quantity: item.inventoryDetails?.availableQuantity || item.quantity || 0,
+            condition: item.condition || 'New',
+            location: 'FBA',
+            status: (item.inventoryDetails?.availableQuantity || item.quantity || 0) > 0 ? 'active' : 'inactive',
+            reserved: item.inventoryDetails?.reservedQuantity || item.reserved || 0,
+            damaged: item.inventoryDetails?.damagedQuantity || item.damaged || 0,
+            lastUpdated: item.lastUpdatedTime || item.lastUpdated || new Date().toISOString(),
+            isMock: true,
+            mockScenario: mockScenario
+          }));
+          
+          return {
+            success: true,
+            data: inventory,
+            message: `Generated ${inventory.length} mock inventory items using scenario: ${mockScenario}`,
+            fromApi: true,
+            isSandbox: true,
+            dataType: 'MOCK_GENERATED',
+            isMock: true,
+            mockScenario: mockScenario,
+            note: 'Mock data generated due to missing credentials in sandbox mode'
+          };
+        }
+        
         if (error.response?.status === 404 || error.response?.status === 400) {
           logger.info('Sandbox returned empty/error response - returning empty inventory (this is normal for sandbox)', {
             status: error.response?.status,
@@ -1476,23 +1715,58 @@ export class AmazonService {
       const payload = response.data?.payload || response.data;
       const orders = payload?.Orders || (Array.isArray(payload) ? payload : []);
 
+      // If sandbox returned empty data, use mock data generator
+      if (this.isSandbox() && orders.length === 0 && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
+        logger.info('Sandbox returned empty orders - using mock data generator', {
+          scenario: process.env.MOCK_SCENARIO || 'normal_week',
+          userId
+        });
+        
+        const mockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
+        const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
+        const generator = getMockDataGenerator(mockScenario);
+        // Override record count if needed
+        if (recordCount !== 75) {
+          (generator as any).recordCount = recordCount;
+        }
+        const mockResponse = generator.generateOrders();
+        orders.push(...(mockResponse.payload?.Orders || []));
+        
+        // Mark as mock data
+        orders.forEach((order: any) => {
+          order.isMock = true;
+          order.mockScenario = mockScenario;
+        });
+        
+        logger.info(`Generated ${orders.length} mock orders from generator`, {
+          scenario: mockScenario,
+          userId
+        });
+      }
+
       logger.info(`Successfully fetched ${orders.length} orders from SP-API ${environment}`, {
         orderCount: orders.length,
         userId,
         isSandbox: this.isSandbox(),
-        dataType,
+        dataType: orders.length > 0 && orders[0]?.isMock ? 'MOCK_GENERATED' : dataType,
         note: orders.length === 0
-          ? 'Sandbox may return empty orders - this is normal for testing'
+          ? 'Sandbox returned empty orders and mock generator disabled'
+          : orders[0]?.isMock
+          ? 'Using mock data generator for sandbox testing'
           : 'Orders retrieved successfully'
       });
 
       return {
         success: true,
         data: orders,
-        message: `Fetched ${orders.length} orders from SP-API ${environment} (${dataType})`,
+        message: this.isSandbox() && orders.length > 0 && orders[0]?.isMock
+          ? `Generated ${orders.length} mock orders using scenario: ${orders[0]?.mockScenario || 'normal_week'}`
+          : `Fetched ${orders.length} orders from SP-API ${environment} (${dataType})`,
         fromApi: true,
         isSandbox: this.isSandbox(),
-        dataType
+        dataType: orders.length > 0 && orders[0]?.isMock ? 'MOCK_GENERATED' : dataType,
+        isMock: orders.length > 0 && orders[0]?.isMock ? true : undefined,
+        mockScenario: orders.length > 0 && orders[0]?.isMock ? orders[0]?.mockScenario : undefined
       };
     } catch (error: any) {
       const errorDetails = error.response?.data?.errors?.[0] || {};
@@ -1506,19 +1780,65 @@ export class AmazonService {
       });
 
       // For sandbox, return empty array instead of error
-      if (this.isSandbox() && (error.response?.status === 404 || error.response?.status === 400)) {
-        logger.info('Sandbox returned empty/error response - returning empty orders (normal for sandbox)', {
-          status: error.response?.status,
-          userId
-        });
-        return {
-          success: true,
-          data: [],
-          message: 'Sandbox returned no orders data (normal for testing)',
-          fromApi: true,
-          isSandbox: true,
-          dataType: 'SANDBOX_TEST_DATA'
-        };
+      if (this.isSandbox()) {
+        // Check if error is due to missing credentials - activate mock generator if enabled
+        const isCredentialError = error.message.includes('credentials not configured') || 
+                                 error.message.includes('token') ||
+                                 error.message.includes('Please connect your Amazon account');
+        
+        if (isCredentialError && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
+          logger.info('Sandbox credentials missing - using mock data generator for orders', {
+            scenario: process.env.MOCK_SCENARIO || 'normal_week',
+            userId
+          });
+          
+          const mockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
+          const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
+          const generator = getMockDataGenerator(mockScenario);
+          if (recordCount !== 75) {
+            (generator as any).recordCount = recordCount;
+          }
+          const mockResponse = generator.generateOrders();
+          const orders = mockResponse.payload?.Orders || [];
+          
+          // Mark as mock data
+          orders.forEach((order: any) => {
+            order.isMock = true;
+            order.mockScenario = mockScenario;
+          });
+          
+          logger.info(`Generated ${orders.length} mock orders from generator (credentials missing)`, {
+            scenario: mockScenario,
+            userId
+          });
+          
+          return {
+            success: true,
+            data: orders,
+            message: `Generated ${orders.length} mock orders using scenario: ${mockScenario}`,
+            fromApi: true,
+            isSandbox: true,
+            dataType: 'MOCK_GENERATED',
+            isMock: true,
+            mockScenario: mockScenario,
+            note: 'Mock data generated due to missing credentials in sandbox mode'
+          };
+        }
+        
+        if (error.response?.status === 404 || error.response?.status === 400) {
+          logger.info('Sandbox returned empty/error response - returning empty orders (normal for sandbox)', {
+            status: error.response?.status,
+            userId
+          });
+          return {
+            success: true,
+            data: [],
+            message: 'Sandbox returned no orders data (normal for testing)',
+            fromApi: true,
+            isSandbox: true,
+            dataType: 'SANDBOX_TEST_DATA'
+          };
+        }
       }
 
       // For production, throw error

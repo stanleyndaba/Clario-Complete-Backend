@@ -72,6 +72,12 @@ const config = {
   GMAIL_AUTH_URL: process.env.GMAIL_AUTH_URL,
   STRIPE_AUTH_URL: process.env.STRIPE_AUTH_URL,
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
+
+  // Amazon SP-API Mock Data Generator (Phase 1 Testing)
+  // Enable mock data generator when sandbox returns empty data
+  USE_MOCK_DATA_GENERATOR: process.env.USE_MOCK_DATA_GENERATOR !== 'false', // Default: true
+  MOCK_SCENARIO: (process.env.MOCK_SCENARIO as 'normal_week' | 'high_volume' | 'with_issues') || 'normal_week',
+  MOCK_RECORD_COUNT: process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75, // Default: 75 (50-100 range)
 };
 
 export default config;

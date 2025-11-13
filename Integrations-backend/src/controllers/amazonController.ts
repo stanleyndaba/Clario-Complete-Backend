@@ -112,54 +112,95 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
           connectionValidated = false;
         }
         
-        // If validation failed, fall back to OAuth flow
+        // If validation failed, handle based on environment
         if (!connectionValidated) {
-          logger.warn('Refresh token validation failed - falling back to OAuth flow', {
-            userId,
-            error: validationError
-          });
-          
-          // Set CORS headers
-          const origin = req.headers.origin;
-          if (origin) {
-            res.header('Access-Control-Allow-Origin', origin);
-            res.header('Access-Control-Allow-Credentials', 'true');
+          // In sandbox mode, proceed anyway (mock generator will handle missing credentials)
+          // This allows end-to-end testing without OAuth setup
+          if (isSandboxMode && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
+            logger.info('✅ Validation failed in sandbox mode - proceeding with mock data generator', {
+              userId,
+              error: validationError,
+              note: 'Mock generator will activate when sync triggers'
+            });
+            
+            // Proceed with bypass anyway - sync will trigger and mock generator will activate
+            // This is the desired behavior for sandbox testing without credentials
+            connectionValidated = true; // Override to proceed
+            
+            logger.info('Proceeding with bypass flow in sandbox mode (mock generator will handle data)', {
+              userId,
+              isSandboxMode,
+              useMockGenerator: true
+            });
+          } else {
+            // In production or without mock generator, fall back to OAuth
+            logger.warn('Refresh token validation failed - falling back to OAuth flow', {
+              userId,
+              error: validationError,
+              isSandboxMode,
+              useMockGenerator: process.env.USE_MOCK_DATA_GENERATOR !== 'false'
+            });
+            
+            // Set CORS headers
+            const origin = req.headers.origin;
+            if (origin) {
+              res.header('Access-Control-Allow-Origin', origin);
+              res.header('Access-Control-Allow-Credentials', 'true');
+            }
+            
+            // Generate OAuth URL as fallback
+            const oauthResult = await amazonService.startOAuth();
+            
+            return res.json({
+              success: false,
+              ok: false,
+              bypassed: false,
+              error: 'Refresh token is invalid or expired',
+              message: 'Please complete OAuth flow to reconnect your Amazon account',
+              authUrl: oauthResult.authUrl,
+              redirectTo: oauthResult.authUrl,
+              validationError: validationError
+            });
           }
-          
-          // Generate OAuth URL as fallback
-          const oauthResult = await amazonService.startOAuth();
-          
-          return res.json({
-            success: false,
-            ok: false,
-            bypassed: false,
-            error: 'Refresh token is invalid or expired',
-            message: 'Please complete OAuth flow to reconnect your Amazon account',
-            authUrl: oauthResult.authUrl,
-            redirectTo: oauthResult.authUrl,
-            validationError: validationError
-          });
         }
         
-        // Validation succeeded - proceed with bypass
-        logger.info('✅ Connection validated successfully - proceeding with bypass', { userId });
-        
-        // Try to trigger sync if we have a valid userId
-        if (userId && userId !== 'default-user' && userId !== 'demo-user') {
-          // Trigger sync in background - don't block the response
-          syncJobManager.startSync(userId).catch((syncError: any) => {
-            logger.warn('Failed to trigger automatic sync after bypass', {
-              userId,
-              error: syncError.message,
-              // Don't fail the bypass if sync fails - it's a background operation
-            });
+        // Validation succeeded (or overridden in sandbox mode) - proceed with bypass
+        if (connectionValidated) {
+          logger.info('✅ Proceeding with bypass flow', { 
+            userId,
+            sandboxMode: isSandboxMode,
+            useMockGenerator: process.env.USE_MOCK_DATA_GENERATOR !== 'false',
+            note: isSandboxMode 
+              ? 'Sandbox mode: Mock generator will activate when sync triggers'
+              : 'Connection validated - proceeding with sync'
           });
           
-          logger.info('Triggered automatic sync after bypass', { userId });
-        } else {
-          logger.info('No valid userId for sync trigger in bypass flow - sync will trigger when recoveries endpoint is called', {
-            userId: userId || 'not provided'
-          });
+          // Try to trigger sync if we have a valid userId
+          // In sandbox mode with mock generator, this will activate mock data even without credentials
+          if (userId && userId !== 'default-user' && userId !== 'demo-user') {
+            // Trigger sync in background - don't block the response
+            // In sandbox mode, this will activate mock generator when API calls fail
+            syncJobManager.startSync(userId).catch((syncError: any) => {
+              logger.warn('Failed to trigger automatic sync after bypass', {
+                userId,
+                error: syncError.message,
+                // Don't fail the bypass if sync fails - it's a background operation
+              });
+            });
+            
+            logger.info('✅ Triggered automatic sync after bypass', { 
+              userId,
+              sandboxMode: isSandboxMode,
+              useMockGenerator: process.env.USE_MOCK_DATA_GENERATOR !== 'false',
+              note: isSandboxMode 
+                ? 'Sync will activate mock generator when credentials are missing'
+                : 'Sync started in background'
+            });
+          } else {
+            logger.info('No valid userId for sync trigger in bypass flow - sync will trigger when recoveries endpoint is called', {
+              userId: userId || 'not provided'
+            });
+          }
         }
         
         // Determine redirect URL based on frontend URL
@@ -193,11 +234,18 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
           success: true,
           ok: true,
           bypassed: true,
-          connectionVerified: true,
-          message: 'Amazon connection verified and ready',
+          connectionVerified: connectionValidated,
+          message: isSandboxMode && !connectionValidated
+            ? 'Amazon connection ready for testing (mock data will be used)'
+            : 'Amazon connection verified and ready',
           redirectUrl: redirectUrl,
           sandboxMode: isSandboxMode,
-          note: isSandboxMode ? 'Sandbox mode: Connection validated successfully' : 'Connection validated successfully'
+          useMockGenerator: process.env.USE_MOCK_DATA_GENERATOR !== 'false',
+          note: isSandboxMode 
+            ? (connectionValidated
+                ? 'Sandbox mode: Connection validated successfully'
+                : 'Sandbox mode: Proceeding without validation - mock generator will activate')
+            : 'Connection validated successfully'
         });
       }
     }
