@@ -8,15 +8,16 @@ import fs from 'fs';
 import path from 'path';
 import logger from '../utils/logger';
 
-// Use csv-parse with callback API and convert to sync
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { parse } = require('csv-parse');
-
 /**
  * Synchronously parse CSV content using callback API
  * This works by using the callback form of csv-parse
+ * Lazy-load csv-parse to avoid module resolution issues
  */
 function parseSync(content: string, options: any): any[] {
+  // Lazy-load csv-parse only when needed
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { parse } = require('csv-parse');
+  
   const records: any[] = [];
   let parseError: Error | null = null;
   let done = false;
