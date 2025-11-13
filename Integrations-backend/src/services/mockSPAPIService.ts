@@ -8,9 +8,62 @@ import fs from 'fs';
 import path from 'path';
 import logger from '../utils/logger';
 
-// Use require for csv-parse/sync to avoid TypeScript module resolution issues
+// Use csv-parse with callback API and convert to sync
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { parse } = require('csv-parse/sync');
+const { parse } = require('csv-parse');
+
+/**
+ * Synchronously parse CSV content using callback API
+ * This works by using the callback form of csv-parse
+ */
+function parseSync(content: string, options: any): any[] {
+  const records: any[] = [];
+  let parseError: Error | null = null;
+  let done = false;
+
+  // Use the callback form which is more reliable
+  parse(content, options, (err: Error | undefined, data: any[]) => {
+    if (err) {
+      parseError = err;
+    } else if (data) {
+      records.push(...data);
+    }
+    done = true;
+  });
+
+  // Wait synchronously - this is a blocking wait
+  // For small CSV files this is acceptable
+  const start = Date.now();
+  const maxWait = 10000; // 10 seconds max
+  
+  while (!done && !parseError) {
+    if (Date.now() - start > maxWait) {
+      throw new Error('CSV parsing timeout after 10 seconds');
+    }
+    // Force event loop to process
+    // This is a simple blocking approach
+    if (global.setImmediate) {
+      // Use a microtask to allow events to process
+      const { execSync } = require('child_process');
+      try {
+        execSync('echo', { stdio: 'ignore', timeout: 10 });
+      } catch {
+        // Ignore exec errors, just trying to yield
+      }
+    }
+    // Small delay to allow event loop
+    const now = Date.now();
+    while (Date.now() - now < 10) {
+      // Busy wait for 10ms
+    }
+  }
+
+  if (parseError) {
+    throw parseError;
+  }
+
+  return records;
+}
 
 export interface MockSPAPIParams {
   PostedAfter?: string;
@@ -102,7 +155,7 @@ export class MockSPAPIService {
 
     try {
       const fileContent = fs.readFileSync(filePath, 'utf-8');
-      const records = parse(fileContent, {
+      const records = parseSync(fileContent, {
         columns: true,
         skip_empty_lines: true,
         trim: true,
