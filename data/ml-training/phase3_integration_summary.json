@@ -1,0 +1,21 @@
+{
+  "integration_date": "2025-11-13T20:12:26.356230",
+  "total_samples": 2740,
+  "label_distribution": {
+    "0": 1652,
+    "1": 1088
+  },
+  "validation_results": {
+    "total_samples": 2500,
+    "quality_score": 0.95,
+    "status": "PASS",
+    "issues": [
+      "order_id: 12.8% missing"
+    ],
+    "label_distribution": {
+      "0": 1615,
+      "1": 885
+    }
+  },
+  "status": "INTEGRATED"
+}

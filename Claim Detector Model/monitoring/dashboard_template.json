@@ -1,0 +1,39 @@
+{
+  "dashboard_name": "Claim Detector Model Monitoring",
+  "created_date": "2025-11-13T21:18:53.425880",
+  "widgets": [
+    {
+      "name": "Prediction Volume",
+      "type": "line_chart",
+      "metric": "prediction_volume",
+      "time_range": "7d"
+    },
+    {
+      "name": "Accuracy Trend",
+      "type": "line_chart",
+      "metric": "prediction_accuracy",
+      "time_range": "30d",
+      "threshold": 0.98
+    },
+    {
+      "name": "Latency Distribution",
+      "type": "histogram",
+      "metric": "inference_latency_p95",
+      "time_range": "7d",
+      "threshold": 2000
+    },
+    {
+      "name": "Error Rate",
+      "type": "gauge",
+      "metric": "error_rate",
+      "threshold": 0.01
+    },
+    {
+      "name": "Data Drift Score",
+      "type": "line_chart",
+      "metric": "data_drift_score",
+      "time_range": "30d",
+      "threshold": 0.1
+    }
+  ]
+}

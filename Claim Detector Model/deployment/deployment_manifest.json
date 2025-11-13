@@ -1,0 +1,12 @@
+{
+  "deployment_id": "deploy_20251113_211823",
+  "deployment_date": "2025-11-13T21:18:23.229252",
+  "model_path": "C:\\Users\\Student\\Contacts\\Clario-Complete-Backend\\Claim Detector Model\\deployment\\claim_detector.pkl",
+  "scaler_path": "C:\\Users\\Student\\Contacts\\Clario-Complete-Backend\\Claim Detector Model\\deployment\\scaler.pkl",
+  "metadata_path": "C:\\Users\\Student\\Contacts\\Clario-Complete-Backend\\Claim Detector Model\\deployment\\deployment_metadata.json",
+  "status": "DEPLOYED",
+  "checksum": {
+    "model_size_bytes": 185143,
+    "scaler_size_bytes": 190
+  }
+}

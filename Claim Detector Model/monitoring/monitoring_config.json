@@ -1,0 +1,45 @@
+{
+  "monitoring_enabled": true,
+  "setup_date": "2025-11-13T21:18:53.332417",
+  "alert_thresholds": {
+    "critical": {
+      "accuracy_drop_below": 0.95,
+      "latency_p95_exceeds_ms": 2000,
+      "error_rate_exceeds": 0.01,
+      "data_drift_exceeds": 0.1
+    },
+    "warning": {
+      "accuracy_drop_below": 0.97,
+      "latency_increase_percent": 50,
+      "prediction_shift_percent": 20
+    }
+  },
+  "monitoring_schedule": {
+    "daily": [
+      "volume",
+      "latency",
+      "errors"
+    ],
+    "weekly": [
+      "accuracy",
+      "distribution",
+      "data_drift"
+    ],
+    "monthly": [
+      "full_review",
+      "feature_importance",
+      "concept_drift"
+    ]
+  },
+  "metrics_to_track": [
+    "prediction_volume",
+    "prediction_accuracy",
+    "inference_latency_p50",
+    "inference_latency_p95",
+    "inference_latency_p99",
+    "error_rate",
+    "prediction_distribution",
+    "feature_distributions",
+    "data_drift_score"
+  ]
+}

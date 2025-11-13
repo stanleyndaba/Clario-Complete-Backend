@@ -1,0 +1,44 @@
+{
+  "rules": [
+    {
+      "name": "Critical Accuracy Drop",
+      "condition": "accuracy < 0.95",
+      "severity": "critical",
+      "action": "notify_team",
+      "enabled": true
+    },
+    {
+      "name": "Critical Latency Spike",
+      "condition": "latency_p95 > 2000",
+      "severity": "critical",
+      "action": "notify_team",
+      "enabled": true
+    },
+    {
+      "name": "High Error Rate",
+      "condition": "error_rate > 0.01",
+      "severity": "critical",
+      "action": "notify_team",
+      "enabled": true
+    },
+    {
+      "name": "Warning Accuracy Drop",
+      "condition": "accuracy < 0.97",
+      "severity": "warning",
+      "action": "log_warning",
+      "enabled": true
+    },
+    {
+      "name": "Data Drift Detected",
+      "condition": "data_drift > 0.10",
+      "severity": "warning",
+      "action": "log_warning",
+      "enabled": true
+    }
+  ],
+  "notification_channels": {
+    "email": [],
+    "slack": [],
+    "pagerduty": []
+  }
+}

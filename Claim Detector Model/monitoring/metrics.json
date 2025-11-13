@@ -1,0 +1,18 @@
+{
+  "daily_metrics": [
+    {
+      "date": "2025-11-13",
+      "volume": 3,
+      "claimable_count": 2,
+      "non_claimable_count": 1,
+      "avg_confidence": 0.994703662054908,
+      "latency_p50_ms": 2311.7904663085938,
+      "latency_p95_ms": 2311.7904663085938,
+      "latency_p99_ms": 2311.7904663085938
+    }
+  ],
+  "weekly_metrics": [],
+  "monthly_metrics": [],
+  "alerts": [],
+  "last_updated": "2025-11-13T21:32:12.431846"
+}

@@ -102,6 +102,9 @@ services:
         sync: false
       - key: PYTHON_API_URL
         sync: false
+      - key: USE_MOCK_SPAPI
+        value: "true"
+        sync: false
     healthCheckPath: /health
     plan: free  # Start with free tier
 
