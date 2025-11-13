@@ -41,11 +41,12 @@ export class AmazonSyncJob {
         logger.info('User has valid Amazon token, proceeding with sync', { userId, syncId });
       }
 
-      // Sync claims - GETTING SANDBOX TEST DATA FROM SP-API (18 months for Phase 1)
-      // Note: Sandbox may return empty or limited test data - this is normal for testing
+      // Calculate 18 months ago for Phase 1 (used for all data syncs)
       const eighteenMonthsAgo = new Date(Date.now() - 18 * 30 * 24 * 60 * 60 * 1000);
       const now = new Date();
-      
+
+      // Sync claims - GETTING SANDBOX TEST DATA FROM SP-API (18 months for Phase 1)
+      // Note: Sandbox may return empty or limited test data - this is normal for testing
       logger.info('Fetching claims from SP-API SANDBOX (18 months of data)', { 
         userId, 
         syncId,
@@ -98,9 +99,6 @@ export class AmazonSyncJob {
       }
 
       // Sync fees and financial events (18 months for Phase 1)
-      const eighteenMonthsAgo = new Date(Date.now() - 18 * 30 * 24 * 60 * 60 * 1000);
-      const now = new Date();
-      
       logger.info('Fetching fees from SP-API SANDBOX (18 months of data)', {
         userId,
         syncId,
@@ -118,10 +116,6 @@ export class AmazonSyncJob {
       // 🎯 PHASE 2: Sync Orders (18 months for Phase 1)
       let orders: any[] = [];
       try {
-        // Calculate 18 months ago for first sync
-        const eighteenMonthsAgo = new Date(Date.now() - 18 * 30 * 24 * 60 * 60 * 1000);
-        const now = new Date();
-        
         logger.info('Fetching orders from SP-API SANDBOX (18 months of data)', { 
           userId, 
           syncId,

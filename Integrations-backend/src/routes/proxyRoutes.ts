@@ -48,9 +48,9 @@ function extractToken(req: Request): string | null {
  * Proxy function to forward requests to Python backend
  */
 async function proxyToPython(req: Request, res: Response, path: string) {
+  const url = `${PYTHON_API_URL}${path}`;
+  
   try {
-    const url = `${PYTHON_API_URL}${path}`;
-    
     // Forward headers (preserve auth, content-type, etc.)
     const headers: Record<string, string> = {
       'Content-Type': req.headers['content-type'] || 'application/json',
