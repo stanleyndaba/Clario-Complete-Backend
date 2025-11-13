@@ -9,61 +9,101 @@ import path from 'path';
 import logger from '../utils/logger';
 
 /**
- * Synchronously parse CSV content using callback API
- * This works by using the callback form of csv-parse
- * Lazy-load csv-parse to avoid module resolution issues
+ * Simple CSV parser - no external dependencies
+ * Handles basic CSV parsing with headers, trimming, and type conversion
  */
-function parseSync(content: string, options: any): any[] {
-  // Lazy-load csv-parse only when needed
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { parse } = require('csv-parse');
-  
-  const records: any[] = [];
-  let parseError: Error | null = null;
-  let done = false;
+function parseCSV(content: string, options: { columns?: boolean; skip_empty_lines?: boolean; trim?: boolean; cast?: (value: any, context: any) => any } = {}): any[] {
+  const lines = content.split(/\r?\n/);
+  if (lines.length === 0) return [];
 
-  // Use the callback form which is more reliable
-  parse(content, options, (err: Error | undefined, data: any[]) => {
-    if (err) {
-      parseError = err;
-    } else if (data) {
-      records.push(...data);
-    }
-    done = true;
-  });
+  // Remove empty lines if requested
+  const nonEmptyLines = options.skip_empty_lines 
+    ? lines.filter(line => line.trim().length > 0)
+    : lines;
 
-  // Wait synchronously - this is a blocking wait
-  // For small CSV files this is acceptable
-  const start = Date.now();
-  const maxWait = 10000; // 10 seconds max
-  
-  while (!done && !parseError) {
-    if (Date.now() - start > maxWait) {
-      throw new Error('CSV parsing timeout after 10 seconds');
-    }
-    // Force event loop to process
-    // This is a simple blocking approach
-    if (global.setImmediate) {
-      // Use a microtask to allow events to process
-      const { execSync } = require('child_process');
-      try {
-        execSync('echo', { stdio: 'ignore', timeout: 10 });
-      } catch {
-        // Ignore exec errors, just trying to yield
-      }
-    }
-    // Small delay to allow event loop
-    const now = Date.now();
-    while (Date.now() - now < 10) {
-      // Busy wait for 10ms
-    }
+  if (nonEmptyLines.length === 0) return [];
+
+  // Parse header
+  const headerLine = nonEmptyLines[0];
+  const headers = parseCSVLine(headerLine, options.trim !== false);
+
+  if (!options.columns || headers.length === 0) {
+    // Return as arrays if no columns option
+    return nonEmptyLines.slice(1).map(line => {
+      const values = parseCSVLine(line, options.trim !== false);
+      return options.cast ? values.map((v, i) => options.cast!(v, { header: false, index: i })) : values;
+    });
   }
 
-  if (parseError) {
-    throw parseError;
+  // Parse data rows as objects
+  const records: any[] = [];
+  for (let i = 1; i < nonEmptyLines.length; i++) {
+    const line = nonEmptyLines[i];
+    if (options.skip_empty_lines && line.trim().length === 0) continue;
+
+    const values = parseCSVLine(line, options.trim !== false);
+    const record: any = {};
+
+    headers.forEach((header, index) => {
+      let value = values[index] !== undefined ? values[index] : null;
+      
+      // Apply cast function if provided
+      if (options.cast) {
+        value = options.cast(value, { header: true, column: header, index });
+      }
+      
+      record[header] = value;
+    });
+
+    records.push(record);
   }
 
   return records;
+}
+
+/**
+ * Parse a single CSV line, handling quoted fields
+ */
+function parseCSVLine(line: string, trim: boolean = true): string[] {
+  const values: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  let i = 0;
+
+  while (i < line.length) {
+    const char = line[i];
+    const nextChar = line[i + 1];
+
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        // Escaped quote
+        current += '"';
+        i += 2;
+        continue;
+      } else {
+        // Toggle quote state
+        inQuotes = !inQuotes;
+        i++;
+        continue;
+      }
+    }
+
+    if (char === ',' && !inQuotes) {
+      // Field separator
+      values.push(trim ? current.trim() : current);
+      current = '';
+      i++;
+      continue;
+    }
+
+    current += char;
+    i++;
+  }
+
+  // Add last field
+  values.push(trim ? current.trim() : current);
+
+  return values;
 }
 
 export interface MockSPAPIParams {
@@ -156,7 +196,7 @@ export class MockSPAPIService {
 
     try {
       const fileContent = fs.readFileSync(filePath, 'utf-8');
-      const records = parseSync(fileContent, {
+      const records = parseCSV(fileContent, {
         columns: true,
         skip_empty_lines: true,
         trim: true,
