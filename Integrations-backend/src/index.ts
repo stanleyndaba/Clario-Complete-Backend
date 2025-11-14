@@ -224,6 +224,11 @@ app.use('/api/integrations', integrationRoutes);
 app.use('/api/sse', sseRoutes);
 // app.use('/api/enhanced-detections', enhancedDetectionRoutes); // Temporarily disabled
 app.use('/api/enhanced-sync', enhancedSyncRoutes);
+
+// Phase 1 diagnostic routes
+import phase1DiagnosticRoutes from './routes/phase1DiagnosticRoutes';
+app.use('/api/phase1', phase1DiagnosticRoutes);
+logger.info('Phase 1 diagnostic routes registered at /api/phase1');
 app.use('/api/auth', authRoutes);
 app.use('/api/v1/integrations/sync', syncAliasRoutes);
 app.use('/api/v1/integrations', integrationRoutes);

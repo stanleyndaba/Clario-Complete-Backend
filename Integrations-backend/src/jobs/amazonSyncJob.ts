@@ -243,22 +243,48 @@ export class AmazonSyncJob {
         // Continue with other sync operations
       }
 
-      // 🎯 PHASE 2: Trigger detection job automatically (existing functionality)
-      await this.triggerDetectionJob(userId, syncId);
+      // 🎯 PHASE 1: Data Intake & Sync Agent - COMPLETE
+      // Phase 1 is ONLY data sync - NO detection, NO analysis, NO orchestration
+      // Purpose: Build the "truth pipe" - raw operational datasets
+      // Everything downstream (Phase 2+) relies on this data
       
-      // 🎯 PHASE 2: Trigger orchestrator Phase 2 (Sync Completion)
+      const summary = {
+        userId,
+        syncId,
+        ordersCount: orders.length,
+        claimsCount: Array.isArray(claims) ? claims.length : 0,
+        feesCount: Array.isArray(fees) ? fees.length : 0,
+        inventoryCount: inventory.length,
+        shipmentsCount: shipments.length,
+        returnsCount: returns.length,
+        settlementsCount: settlements.length
+      };
+      
+      logger.info('✅ Phase 1: Data Intake & Sync Agent completed successfully', {
+        ...summary,
+        note: 'Raw operational datasets saved to database. Ready for Phase 2 (detection/analysis).',
+        phase: 1,
+        dataType: 'RAW_OPERATIONAL_DATASETS'
+      });
+      
+      // Send notification that Phase 1 is complete (raw data synced)
       try {
-        const OrchestrationJobManager = (await import('./orchestrationJob')).default;
-        await OrchestrationJobManager.triggerPhase2_SyncCompletion(
-          userId,
-          syncId,
-          claims?.length || 0,
-          inventory.length || 0
-        );
-        logger.info('Phase 2 orchestration triggered after sync', { userId, syncId });
-      } catch (error) {
-        // Non-blocking - orchestration failure shouldn't break sync
-        logger.warn('Phase 2 orchestration trigger failed (non-critical)', { error, userId, syncId });
+        await notificationService.createNotification({
+          type: 'sync_complete' as any,
+          user_id: userId,
+          title: 'Phase 1: Data Sync Complete',
+          message: `Synced ${orders.length} orders, ${Array.isArray(claims) ? claims.length : 0} claims, ${Array.isArray(fees) ? fees.length : 0} fees, ${inventory.length} inventory items from last 18 months`,
+          priority: 'medium' as any,
+          channel: 'in_app' as any,
+          payload: { 
+            syncId,
+            phase: 1,
+            ...summary
+          },
+          immediate: false,
+        });
+      } catch (notifError: any) {
+        logger.warn('Failed to send Phase 1 completion notification', { error: notifError.message });
       }
 
       logger.info('Amazon sync completed successfully', { userId, syncId });
