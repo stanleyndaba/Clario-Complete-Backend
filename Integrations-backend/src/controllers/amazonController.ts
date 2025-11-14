@@ -722,7 +722,10 @@ export const getAmazonInventory = async (req: Request, res: Response) => {
     res.json({
       success: true,
       inventory: result.data || [],
-      message: result.message
+      message: result.message,
+      // Include mock data indicators for frontend
+      ...(result.isMock !== undefined && { isMock: result.isMock }),
+      ...(result.mockScenario && { mockScenario: result.mockScenario })
     });
   } catch (error) {
     logger.error('Get Amazon inventory error:', error);

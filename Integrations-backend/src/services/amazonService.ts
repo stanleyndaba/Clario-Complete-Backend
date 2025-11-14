@@ -1063,6 +1063,10 @@ export class AmazonService {
       const payload = response.data?.payload || response.data;
       const summaries = payload?.inventorySummaries || (Array.isArray(payload) ? payload : []);
       
+      // Track if we're using mock data
+      let isUsingMockData = false;
+      let mockScenario: MockScenario | undefined = undefined;
+      
       // If sandbox returned empty data, use mock data generator
       if (this.isSandbox() && summaries.length === 0 && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
         logger.info('Sandbox returned empty inventory - using mock data generator', {
@@ -1070,7 +1074,7 @@ export class AmazonService {
           accountId
         });
         
-        const mockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
+        mockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
         const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
         const generator = getMockDataGenerator(mockScenario);
         // Override record count if needed
@@ -1079,6 +1083,7 @@ export class AmazonService {
         }
         const mockResponse = generator.generateInventory();
         summaries.push(...(mockResponse.payload?.inventorySummaries || []));
+        isUsingMockData = true;
         
         logger.info(`Generated ${summaries.length} mock inventory items from generator`, {
           scenario: mockScenario,
@@ -1090,10 +1095,10 @@ export class AmazonService {
         itemCount: summaries.length,
         accountId,
         isSandbox: this.isSandbox(),
-        dataType: summaries.length > 0 && summaries[0]?.isMock ? 'MOCK_GENERATED' : 'SANDBOX_TEST_DATA',
+        dataType: isUsingMockData ? 'MOCK_GENERATED' : 'SANDBOX_TEST_DATA',
         note: summaries.length === 0 
           ? 'Sandbox returned empty inventory and mock generator disabled' 
-          : summaries[0]?.isMock
+          : isUsingMockData
           ? 'Using mock data generator for sandbox testing'
           : 'Sandbox test inventory data retrieved successfully'
       });
@@ -1110,8 +1115,7 @@ export class AmazonService {
         reserved: item.inventoryDetails?.reservedQuantity || item.reserved || 0,
         damaged: item.inventoryDetails?.damagedQuantity || item.damaged || 0,
         lastUpdated: item.lastUpdatedTime || item.lastUpdated || new Date().toISOString(),
-        isMock: item.isMock || (summaries.length > 0 && summaries[0]?.isMock ? true : undefined),
-        mockScenario: item.mockScenario || (summaries.length > 0 && summaries[0]?.isMock ? (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week' : undefined)
+        ...(isUsingMockData && { isMock: true, mockScenario: mockScenario })
       }));
 
       return { 
@@ -1120,9 +1124,12 @@ export class AmazonService {
         message: `Fetched ${inventory.length} inventory items from SP-API SANDBOX (test data)`,
         fromApi: true,  // Flag to indicate this is from SP-API (sandbox test data, not mock)
         isSandbox: this.isSandbox(),
-        dataType: 'SANDBOX_TEST_DATA',
+        dataType: isUsingMockData ? 'MOCK_GENERATED' : 'SANDBOX_TEST_DATA',
+        ...(isUsingMockData && { isMock: true, mockScenario: mockScenario }),
         note: inventory.length === 0 
           ? 'Sandbox returned empty inventory - this is normal for testing' 
+          : isUsingMockData
+          ? 'Mock data generated for sandbox testing'
           : 'Sandbox test inventory data retrieved successfully'
       };
     } catch (error: any) {

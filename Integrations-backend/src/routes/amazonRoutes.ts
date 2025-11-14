@@ -74,7 +74,7 @@ router.get('/claims', async (req: Request, res: Response) => {
         source: 'live_mode'
       });
       
-      // Return response with claims data
+      // Return response with claims data (include isMock and mockScenario if present)
       res.status(200).json({
         success: true,
         claims: claimsResult.data || [],
@@ -85,7 +85,10 @@ router.get('/claims', async (req: Request, res: Response) => {
         userId: String(userId),
         timestamp: new Date().toISOString(),
         responseTime: `${elapsedTime}s`,
-        claimCount: claimsResult.data?.length || 0
+        claimCount: claimsResult.data?.length || 0,
+        // Include mock data indicators for frontend
+        ...(claimsResult.isMock !== undefined && { isMock: claimsResult.isMock }),
+        ...(claimsResult.mockScenario && { mockScenario: claimsResult.mockScenario })
       });
     } catch (spapiError: any) {
       // Handle SP-API errors gracefully
