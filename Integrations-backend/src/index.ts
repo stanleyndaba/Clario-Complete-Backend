@@ -58,6 +58,7 @@ import evidenceIngestionWorker from './workers/evidenceIngestionWorker';
 import documentParsingWorker from './workers/documentParsingWorker';
 import evidenceMatchingWorker from './workers/evidenceMatchingWorker';
 import refundFilingWorker from './workers/refundFilingWorker';
+import recoveriesWorker from './workers/recoveriesWorker';
 
 const app = express();
 const server = createServer(app);
@@ -330,6 +331,14 @@ server.listen(PORT, '0.0.0.0', () => {
         logger.info('Refund filing worker initialized');
       } else {
         logger.info('Refund filing worker disabled (ENABLE_REFUND_FILING_WORKER=false)');
+      }
+
+      // Start Recoveries Worker (if enabled)
+      if (process.env.ENABLE_RECOVERIES_WORKER !== 'false') {
+        recoveriesWorker.start();
+        logger.info('Recoveries worker initialized');
+      } else {
+        logger.info('Recoveries worker disabled (ENABLE_RECOVERIES_WORKER=false)');
       }
       
       // Start detection job processor (processes detection jobs from queue)

@@ -468,13 +468,30 @@ class RefundFilingWorker {
       };
 
       const newStatus = statusMap[statusResult.status] || 'auto_submitted';
+      const previousStatus = await this.getCurrentStatus(disputeId);
+
+      const { data: disputeCase } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('seller_id, recovery_status')
+        .eq('id', disputeId)
+        .single();
+
+      const updates: any = {
+        status: newStatus,
+        updated_at: new Date().toISOString()
+      };
+
+      // 🎯 AGENT 8 INTEGRATION: Mark for recovery detection when approved
+      if (newStatus === 'approved' && previousStatus !== 'approved') {
+        updates.recovery_status = 'pending';
+        logger.info('📝 [REFUND FILING] Case approved, marked for recovery detection by Agent 8', {
+          disputeId
+        });
+      }
 
       const { error } = await supabaseAdmin
         .from('dispute_cases')
-        .update({
-          status: newStatus,
-          updated_at: new Date().toISOString()
-        })
+        .update(updates)
         .eq('id', disputeId);
 
       if (error) {
@@ -496,10 +513,53 @@ class RefundFilingWorker {
           disputeId,
           status: statusResult.status
         });
+
+        // Trigger recovery detection immediately if approved (non-blocking)
+        if (newStatus === 'approved' && disputeCase?.seller_id) {
+          this.triggerRecoveryDetection(disputeId, disputeCase.seller_id).catch((error: any) => {
+            logger.warn('⚠️ [REFUND FILING] Failed to trigger recovery detection (non-critical)', {
+              disputeId,
+              error: error.message
+            });
+          });
+        }
       }
 
     } catch (error: any) {
       logger.error('❌ [REFUND FILING] Error updating case status', {
+        disputeId,
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * Get current status of dispute case
+   */
+  private async getCurrentStatus(disputeId: string): Promise<string | null> {
+    try {
+      const { data } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('status')
+        .eq('id', disputeId)
+        .single();
+
+      return data?.status || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Trigger recovery detection for approved case (Agent 8)
+   */
+  private async triggerRecoveryDetection(disputeId: string, userId: string): Promise<void> {
+    try {
+      const { default: recoveriesWorker } = await import('./recoveriesWorker');
+      await recoveriesWorker.processRecoveryForCase(disputeId, userId);
+    } catch (error: any) {
+      // Non-critical - recovery worker will pick it up in next run
+      logger.debug('⚠️ [REFUND FILING] Recovery detection triggered (will retry in next run)', {
         disputeId,
         error: error.message
       });

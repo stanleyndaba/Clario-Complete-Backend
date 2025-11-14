@@ -38,6 +38,7 @@
     "test:agent5": "ts-node scripts/test-agent5-document-parsing.ts",
     "test:agent6": "ts-node scripts/test-agent6-evidence-matching.ts",
     "test:agent7": "ts-node scripts/test-agent7-refund-filing.ts",
+    "test:agent8": "ts-node scripts/test-agent8-recoveries.ts",
     "test:e2e-4-5-6": "ts-node scripts/test-e2e-agents-4-5-6.ts"
   },
   "keywords": [
