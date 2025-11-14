@@ -505,13 +505,63 @@ export class OutlookIngestionService {
         return null;
       }
 
-      // Store document content if available
+      // Store document content in Supabase Storage if available
       if (attachment.content) {
-        logger.info('📦 [OUTLOOK INGESTION] Document content available for storage', {
-          documentId: document.id,
-          filename: attachment.filename,
-          size: attachment.content.length
-        });
+        try {
+          const bucketName = 'evidence-documents';
+          const filePath = `${userId}/${document.id}/${attachment.filename}`;
+
+          const { data: uploadData, error: uploadError } = await supabase.storage
+            .from(bucketName)
+            .upload(filePath, attachment.content, {
+              contentType: attachment.contentType,
+              upsert: false
+            });
+
+          if (uploadError) {
+            if (uploadError.message?.includes('Bucket not found') || uploadError.message?.includes('not found')) {
+              logger.warn('⚠️ [OUTLOOK INGESTION] Storage bucket not found - file not stored', {
+                bucket: bucketName,
+                documentId: document.id
+              });
+            } else {
+              logger.warn('⚠️ [OUTLOOK INGESTION] Failed to upload file to storage', {
+                error: uploadError.message,
+                documentId: document.id
+              });
+            }
+          } else {
+            const { data: urlData } = supabase.storage
+              .from(bucketName)
+              .getPublicUrl(filePath);
+
+            await supabase
+              .from('evidence_documents')
+              .update({
+                file_url: urlData?.publicUrl || filePath,
+                storage_path: filePath,
+                metadata: {
+                  ...documentData.metadata,
+                  has_content: true,
+                  content_size: attachment.content.length,
+                  storage_path: filePath,
+                  storage_bucket: bucketName
+                }
+              })
+              .eq('id', document.id);
+
+            logger.info('✅ [OUTLOOK INGESTION] File stored in Supabase Storage', {
+              documentId: document.id,
+              filename: attachment.filename,
+              path: filePath
+            });
+          }
+        } catch (storageError: any) {
+          logger.warn('⚠️ [OUTLOOK INGESTION] Error storing file content', {
+            error: storageError?.message,
+            documentId: document.id
+          });
+        }
       }
 
       return document.id;

@@ -383,33 +383,64 @@ export class GmailIngestionService {
       }
 
       // Store document content in Supabase Storage (if content is available)
-      // Note: Storage bucket needs to be created in Supabase dashboard
-      // For now, we'll store metadata and handle storage separately
       if (attachment.content) {
         try {
-          // TODO: Create 'evidence-documents' bucket in Supabase Storage if it doesn't exist
-          // For now, we'll just log that content is available
-          logger.info('📦 [GMAIL INGESTION] Document content available for storage', {
-            documentId: document.id,
-            filename: attachment.filename,
-            size: attachment.content.length,
-            note: 'Storage bucket configuration needed'
-          });
+          const bucketName = 'evidence-documents';
+          const filePath = `${userId}/${document.id}/${attachment.filename}`;
 
-          // Update document metadata to indicate content is available
-          await supabase
-            .from('evidence_documents')
-            .update({
-              metadata: {
-                ...documentData.metadata,
-                has_content: true,
-                content_size: attachment.content.length,
-                storage_note: 'Content available but not stored in bucket yet'
-              }
-            })
-            .eq('id', document.id);
+          const { data: uploadData, error: uploadError } = await supabase.storage
+            .from(bucketName)
+            .upload(filePath, attachment.content, {
+              contentType: attachment.contentType,
+              upsert: false
+            });
+
+          if (uploadError) {
+            // If bucket doesn't exist, log warning but continue
+            if (uploadError.message?.includes('Bucket not found') || uploadError.message?.includes('not found')) {
+              logger.warn('⚠️ [GMAIL INGESTION] Storage bucket not found - file not stored', {
+                bucket: bucketName,
+                documentId: document.id,
+                note: 'Bucket must be created manually in Supabase dashboard'
+              });
+            } else {
+              logger.warn('⚠️ [GMAIL INGESTION] Failed to upload file to storage', {
+                error: uploadError.message,
+                documentId: document.id,
+                filename: attachment.filename
+              });
+            }
+          } else {
+            // Get storage URL
+            const { data: urlData } = supabase.storage
+              .from(bucketName)
+              .getPublicUrl(filePath);
+
+            // Update document with storage path
+            await supabase
+              .from('evidence_documents')
+              .update({
+                file_url: urlData?.publicUrl || filePath,
+                storage_path: filePath,
+                metadata: {
+                  ...documentData.metadata,
+                  has_content: true,
+                  content_size: attachment.content.length,
+                  storage_path: filePath,
+                  storage_bucket: bucketName
+                }
+              })
+              .eq('id', document.id);
+
+            logger.info('✅ [GMAIL INGESTION] File stored in Supabase Storage', {
+              documentId: document.id,
+              filename: attachment.filename,
+              path: filePath,
+              size: attachment.content.length
+            });
+          }
         } catch (storageError: any) {
-          logger.warn('⚠️ [GMAIL INGESTION] Error handling document content', {
+          logger.warn('⚠️ [GMAIL INGESTION] Error storing file content', {
             error: storageError?.message,
             documentId: document.id
           });
