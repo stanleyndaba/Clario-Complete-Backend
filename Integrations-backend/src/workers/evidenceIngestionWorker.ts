@@ -6,7 +6,7 @@
 
 import cron from 'node-cron';
 import logger from '../utils/logger';
-import { supabase } from '../database/supabaseClient';
+import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import { unifiedIngestionService } from '../services/unifiedIngestionService';
 import { gmailIngestionService } from '../services/gmailIngestionService';
 import { outlookIngestionService } from '../services/outlookIngestionService';
@@ -88,8 +88,11 @@ class StorageBucketHelper {
     }
 
     try {
+      // Use admin client for storage operations (requires service role key)
+      const storageClient = supabaseAdmin || supabase;
+      
       // Check if bucket exists by trying to list it
-      const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+      const { data: buckets, error: listError } = await storageClient.storage.listBuckets();
       
       if (listError) {
         logger.warn('⚠️ [STORAGE] Could not list buckets (may need service role key)', {
@@ -104,7 +107,7 @@ class StorageBucketHelper {
       
       if (!bucketExists) {
         // Try to create bucket (requires service role key)
-        const { data: newBucket, error: createError } = await supabase.storage.createBucket(
+        const { data: newBucket, error: createError } = await storageClient.storage.createBucket(
           this.bucketName,
           {
             public: false,
@@ -159,7 +162,10 @@ class StorageBucketHelper {
 
       const filePath = `${userId}/${documentId}/${filename}`;
 
-      const { data, error } = await supabase.storage
+      // Use admin client for storage uploads (requires service role key)
+      const storageClient = supabaseAdmin || supabase;
+      
+      const { data, error } = await storageClient.storage
         .from(this.bucketName)
         .upload(filePath, content, {
           contentType,

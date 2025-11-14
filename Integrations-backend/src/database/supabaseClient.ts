@@ -4,9 +4,11 @@ import logger from '../utils/logger';
 
 const supabaseUrl = config.SUPABASE_URL;
 const supabaseAnonKey = config.SUPABASE_ANON_KEY;
+const supabaseServiceRoleKey = config.SUPABASE_SERVICE_ROLE_KEY;
 
 // Create a demo client if Supabase config is missing
 let supabase: SupabaseClient | any;
+let supabaseAdmin: SupabaseClient | any; // Service role client for admin operations
 
 if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
   logger.warn('Using demo Supabase client - no real database connection');
@@ -58,6 +60,17 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
 } else {
   supabase = createClient(supabaseUrl, supabaseAnonKey);
   
+  // Create admin client with service role key for storage/admin operations
+  if (supabaseServiceRoleKey) {
+    supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    });
+    logger.info('Supabase admin client created (for storage operations)');
+  }
+  
   // Test connection on startup
   supabase.auth.getSession().then(({ data, error }: { data: any; error: any }) => {
     if (error) {
@@ -68,7 +81,7 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
   });
 }
 
-export { supabase };
+export { supabase, supabaseAdmin };
 
 // Database types
 export interface TokenRecord {

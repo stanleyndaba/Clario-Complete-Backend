@@ -30,7 +30,8 @@
     "test:phase1-e2e": "ts-node src/scripts/testPhase1EndToEnd.ts",
     "test:bypass-flow": "ts-node src/scripts/testBypassFlow.ts",
     "test:sync-endpoint": "ts-node src/scripts/testSyncEndpoint.ts",
-    "test:endpoints-mock": "ts-node src/scripts/testEndpointsWithMockData.ts"
+    "test:endpoints-mock": "ts-node src/scripts/testEndpointsWithMockData.ts",
+    "test:evidence-ingestion-stress": "ts-node scripts/stress-test-evidence-ingestion-worker.ts"
   },
   "keywords": [
     "integrations",
