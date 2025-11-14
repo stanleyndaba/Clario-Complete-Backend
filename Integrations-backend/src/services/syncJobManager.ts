@@ -102,6 +102,38 @@ class SyncJobManager {
       claimsDetected: 0
     };
 
+    // CREATE sync_progress record in database (not just update)
+    try {
+      const { error: insertError } = await supabase
+        .from('sync_progress')
+        .insert({
+          sync_id: syncId,
+          user_id: userId,
+          status: 'running',
+          progress: 0,
+          current_step: 'Sync starting...',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          metadata: {
+            ordersProcessed: 0,
+            totalOrders: 0,
+            claimsDetected: 0,
+            startedAt: syncStatus.startedAt
+          }
+        });
+
+      if (insertError) {
+        logger.warn(`Could not create sync_progress record (may already exist):`, insertError);
+        // Try to update instead if record exists
+        await this.updateSyncStatusInDatabase(syncId, userId, syncStatus);
+      } else {
+        logger.info(`Created sync_progress record for sync ${syncId}`, { userId, syncId });
+      }
+    } catch (error: any) {
+      logger.error(`Error creating sync_progress record:`, error);
+      // Continue anyway - sync can still run
+    }
+
     // Create cancel function
     let cancelled = false;
     const cancelFn = () => {
@@ -301,6 +333,17 @@ class SyncJobManager {
       syncStatus.claimsDetected = claimsDetected;
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
+      
+      // CRITICAL: Update database with final counts
+      await this.updateSyncStatusInDatabase(syncId, userId, {
+        status: 'completed',
+        progress: 100,
+        message: syncStatus.message,
+        ordersProcessed: ordersProcessed,
+        totalOrders: totalOrders,
+        claimsDetected: claimsDetected,
+        completedAt: syncStatus.completedAt
+      });
 
       // Remove from running jobs after a delay
       setTimeout(() => {
