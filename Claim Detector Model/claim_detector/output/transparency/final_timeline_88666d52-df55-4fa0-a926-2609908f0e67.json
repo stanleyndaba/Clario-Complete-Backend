@@ -1,0 +1,70 @@
+{
+  "claim_id": "88666d52-df55-4fa0-a926-2609908f0e67",
+  "amazon_case_id": "AMZ-1763140831-8329",
+  "current_status": "REIMBURSED",
+  "timeline": [
+    {
+      "event": "FILED",
+      "timestamp": "2025-11-14T19:20:31.517742",
+      "amazon_case_id": "AMZ-1763140831-8329",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "IN_REVIEW",
+      "timestamp": "2025-11-17T19:20:31.517736",
+      "amazon_case_id": "AMZ-1763140831-8329",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "APPROVED",
+      "timestamp": "2025-11-20T19:20:31.517736",
+      "amazon_case_id": "AMZ-1763140831-8329",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      },
+      "amount": 58.54
+    },
+    {
+      "event": "REIMBURSED",
+      "timestamp": "2025-11-22T19:20:31.517736",
+      "amount": 58.54,
+      "expected_amount": 58.54,
+      "is_partial": false,
+      "payment_percentage": 100.0,
+      "delay_days": 2,
+      "metadata": {
+        "claim_id": "88666d52-df55-4fa0-a926-2609908f0e67",
+        "amazon_case_id": "AMZ-1763140831-8329",
+        "reimbursement_method": "wire_transfer",
+        "transaction_id": "TXN-88666d52-1671"
+      }
+    }
+  ],
+  "reconciliation": {
+    "expected_amount": 58.54,
+    "actual_amount": 58.54,
+    "discrepancy": 0.0,
+    "status": "reconciled",
+    "reconciled_at": "2025-11-14T19:20:31.724333"
+  },
+  "metadata": {
+    "claim_type": "damaged",
+    "marketplace": "CA",
+    "amount": 58.54,
+    "quantity": 1,
+    "filed_at": "2025-11-14T19:20:31.517736",
+    "approved_at": "2025-11-20T19:20:31.517736",
+    "reimbursed_at": "2025-11-14T19:20:31.724333",
+    "total_timeline_events": 4,
+    "processing_timestamp": "2025-11-14T19:20:31.724716"
+  },
+  "processing_timestamp": "2025-11-14T19:20:31.724726",
+  "agent_version": "1.0.0"
+}

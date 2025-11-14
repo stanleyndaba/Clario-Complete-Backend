@@ -1,0 +1,169 @@
+{
+  "claim_id": "eef9cf84-a782-4a7a-addd-902ca0ef1b6e",
+  "claim_metadata": {
+    "sku": "SKU-0158",
+    "asin": "B081182864",
+    "order_id": "181-1633429-7447920",
+    "amount": 282.33,
+    "quantity": 5,
+    "claim_type": "lost",
+    "marketplace": "US",
+    "fulfillment_center": "FBA2",
+    "order_date": "2024-03-31T00:00:00Z",
+    "claim_date": "2024-04-02 00:00:00+00:00"
+  },
+  "evidence_documents": [
+    {
+      "document_id": "INV-eef9cf84-a782-4a7a-addd-902ca0ef1b6e",
+      "document_type": "invoice",
+      "metadata": {
+        "supplier_name": "Global Supplies Inc",
+        "invoice_number": "INV--7447920-20240326",
+        "invoice_date": "2024-03-26",
+        "order_id": "181-1633429-7447920",
+        "order_date": "2024-03-31",
+        "sku": "SKU-0158",
+        "asin": "B081182864",
+        "quantity": 5,
+        "unit_price": 56.47,
+        "total_amount": 282.33,
+        "currency": "USD",
+        "po_number": "PO-447920",
+        "file_type": "pdf",
+        "file_size_mb": 1.1,
+        "created_at": "2024-03-26T00:00:00+00:00"
+      },
+      "parsed_metadata": {
+        "supplier_name": "Global Supplies Inc",
+        "invoice_number": "INV--7447920-20240326",
+        "invoice_date": "2024-03-26",
+        "total_amount": 282.33,
+        "currency": "USD",
+        "line_items": [
+          {
+            "sku": "SKU-0158",
+            "asin": "B081182864",
+            "description": "Product for order 181-1633429-7447920",
+            "quantity": 5,
+            "unit_price": 56.47,
+            "total": 282.33
+          }
+        ],
+        "po_number": "PO-447920",
+        "payment_terms": "Net 30"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.95,
+      "extracted_text": "INVOICE\n\nFrom: Global Supplies Inc\nInvoice Number: INV--7447920-20240326\nInvoice Date: 03/26/2024\nPurchase Order: PO-447920\n\nBill To:\nAmazon FBA Seller\nOrder ID: 181-1633429-7447920\n\nLine Items:\nQuantity: 5\nSKU: SKU-0158\nASIN: B081182864\nDescription: Product for order 181-1633429-7447920\nUnit Price: $56.47\nTotal: $282.33\n\nSubtotal: $282.33\nTax: $22.59\nShipping: $14.45\nGrand Total: $319.37\n\nPayment Terms: Net 30\nCurrency: USD\n\nThank you for your business!"
+    },
+    {
+      "document_id": "RCP-eef9cf84-a782-4a7a-addd-902ca0ef1b6e",
+      "document_type": "receipt",
+      "metadata": {
+        "supplier_name": "Global Supplies Inc",
+        "receipt_number": "RCP--7447920-20240328",
+        "receipt_date": "2024-03-28",
+        "order_id": "181-1633429-7447920",
+        "amount": 282.33,
+        "currency": "USD",
+        "file_type": "pdf",
+        "file_size_mb": 0.66
+      },
+      "parsed_metadata": {
+        "supplier_name": "Global Supplies Inc",
+        "receipt_number": "RCP--7447920-20240328",
+        "receipt_date": "2024-03-28",
+        "amount": 282.33,
+        "order_id": "181-1633429-7447920"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.92,
+      "extracted_text": "RECEIPT\n\nReceipt Number: RCP--7447920-20240328\nDate: 03/28/2024\nOrder ID: 181-1633429-7447920\n\nVendor: Global Supplies Inc\nSKU: SKU-0158\n\nAmount Paid: $282.33\nPayment Method: Wire Transfer\nTransaction ID: TXN-29-7447920\n\nThank you!"
+    },
+    {
+      "document_id": "SHIP-eef9cf84-a782-4a7a-addd-902ca0ef1b6e",
+      "document_type": "shipping_log",
+      "metadata": {
+        "carrier": "FedEx",
+        "tracking_number": "1Z--1633429-7447920",
+        "ship_date": "2024-03-22",
+        "delivery_date": "2024-03-29",
+        "order_id": "181-1633429-7447920",
+        "sku": "SKU-0158",
+        "quantity": 5,
+        "fulfillment_center": "FBA2",
+        "file_type": "pdf",
+        "file_size_mb": 1.72
+      },
+      "parsed_metadata": {
+        "carrier": "FedEx",
+        "tracking_number": "1Z--1633429-7447920",
+        "ship_date": "2024-03-22",
+        "delivery_date": "2024-03-29",
+        "order_id": "181-1633429-7447920",
+        "sku": "SKU-0158",
+        "quantity": 5
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.9,
+      "extracted_text": "SHIPPING MANIFEST\n\nCarrier: FedEx\nTracking Number: 1Z--1633429-7447920\nShip Date: 03/22/2024\nExpected Delivery: 03/29/2024\n\nShip To:\nAmazon FBA\nFulfillment Center: FBA2\nOrder ID: 181-1633429-7447920\n\nItems Shipped:\nSKU: SKU-0158\nQuantity: 5\nWeight: 12.5 lbs\nDimensions: 12x8x6 in\n\nStatus: Delivered\nDelivery Confirmation: 03/29/2024 00:00"
+    }
+  ],
+  "match_results": [
+    {
+      "document_id": "RCP-eef9cf84-a782-4a7a-addd-902ca0ef1b6e",
+      "document_type": "receipt",
+      "match_score": 0.95,
+      "matched_fields": [
+        "order_id"
+      ],
+      "reasoning": "Exact Order ID match",
+      "confidence": 0.95
+    },
+    {
+      "document_id": "SHIP-eef9cf84-a782-4a7a-addd-902ca0ef1b6e",
+      "document_type": "shipping_log",
+      "match_score": 0.95,
+      "matched_fields": [
+        "sku",
+        "order_id"
+      ],
+      "reasoning": "Exact SKU match; Exact Order ID match",
+      "confidence": 0.95
+    },
+    {
+      "document_id": "INV-eef9cf84-a782-4a7a-addd-902ca0ef1b6e",
+      "document_type": "invoice",
+      "match_score": 0.8,
+      "matched_fields": [
+        "amount"
+      ],
+      "reasoning": "Amount match (ratio: 1.00)",
+      "confidence": 0.8
+    }
+  ],
+  "best_match": {
+    "document_id": "RCP-eef9cf84-a782-4a7a-addd-902ca0ef1b6e",
+    "document_type": "receipt",
+    "match_score": 0.95,
+    "matched_fields": [
+      "order_id"
+    ],
+    "reasoning": "Exact Order ID match",
+    "confidence": 0.95
+  },
+  "evidence_bundle": {
+    "total_evidence_count": 3,
+    "required_evidence_count": 2,
+    "optional_evidence_count": 1,
+    "validation_score": 0.061111111111111116,
+    "missing_required": [
+      "tracking_proof"
+    ],
+    "bundle_status": "incomplete"
+  },
+  "action": "auto_submit",
+  "confidence": 0.95,
+  "processing_timestamp": "2025-11-14T19:20:31.372259",
+  "agent_version": "1.0.0"
+}

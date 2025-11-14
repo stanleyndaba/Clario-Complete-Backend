@@ -1,0 +1,137 @@
+{
+  "claim_id": "8fe23b09-c0cf-4e60-9141-a8426285efc0",
+  "claim_metadata": {
+    "sku": "SKU-0194",
+    "asin": "B049349722",
+    "order_id": "376-7929728-4733840",
+    "amount": 27.25,
+    "quantity": 1,
+    "claim_type": "damaged",
+    "marketplace": "CA",
+    "fulfillment_center": "FBA4",
+    "order_date": "2024-02-03T00:00:00Z",
+    "claim_date": "2024-02-26 00:00:00+00:00"
+  },
+  "evidence_documents": [
+    {
+      "document_id": "INV-8fe23b09-c0cf-4e60-9141-a8426285efc0",
+      "document_type": "invoice",
+      "metadata": {
+        "supplier_name": "Direct Source Manufacturing",
+        "invoice_number": "INV--4733840-20240202",
+        "invoice_date": "2024-02-02",
+        "order_id": "376-7929728-4733840",
+        "order_date": "2024-02-03",
+        "sku": "SKU-0194",
+        "asin": "B049349722",
+        "quantity": 1,
+        "unit_price": 27.25,
+        "total_amount": 27.25,
+        "currency": "USD",
+        "po_number": "PO-733840",
+        "file_type": "pdf",
+        "file_size_mb": 1.9,
+        "created_at": "2024-02-02T00:00:00+00:00"
+      },
+      "parsed_metadata": {
+        "supplier_name": "Direct Source Manufacturing",
+        "invoice_number": "INV--4733840-20240202",
+        "invoice_date": "2024-02-02",
+        "total_amount": 27.25,
+        "currency": "USD",
+        "line_items": [
+          {
+            "sku": "SKU-0194",
+            "asin": "B049349722",
+            "description": "Product for order 376-7929728-4733840",
+            "quantity": 1,
+            "unit_price": 27.25,
+            "total": 27.25
+          }
+        ],
+        "po_number": "PO-733840",
+        "payment_terms": "Net 30"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.95,
+      "extracted_text": "INVOICE\n\nFrom: Direct Source Manufacturing\nInvoice Number: INV--4733840-20240202\nInvoice Date: 02/02/2024\nPurchase Order: PO-733840\n\nBill To:\nAmazon FBA Seller\nOrder ID: 376-7929728-4733840\n\nLine Items:\nQuantity: 1\nSKU: SKU-0194\nASIN: B049349722\nDescription: Product for order 376-7929728-4733840\nUnit Price: $27.25\nTotal: $27.25\n\nSubtotal: $27.25\nTax: $2.18\nShipping: $14.32\nGrand Total: $43.75\n\nPayment Terms: Net 30\nCurrency: USD\n\nThank you for your business!"
+    },
+    {
+      "document_id": "SHIP-8fe23b09-c0cf-4e60-9141-a8426285efc0",
+      "document_type": "shipping_log",
+      "metadata": {
+        "carrier": "UPS",
+        "tracking_number": "1Z--7929728-4733840",
+        "ship_date": "2024-01-29",
+        "delivery_date": "2024-01-31",
+        "order_id": "376-7929728-4733840",
+        "sku": "SKU-0194",
+        "quantity": 1,
+        "fulfillment_center": "FBA4",
+        "file_type": "pdf",
+        "file_size_mb": 1.69
+      },
+      "parsed_metadata": {
+        "carrier": "UPS",
+        "tracking_number": "1Z--7929728-4733840",
+        "ship_date": "2024-01-29",
+        "delivery_date": "2024-01-31",
+        "order_id": "376-7929728-4733840",
+        "sku": "SKU-0194",
+        "quantity": 1
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.9,
+      "extracted_text": "SHIPPING MANIFEST\n\nCarrier: UPS\nTracking Number: 1Z--7929728-4733840\nShip Date: 01/29/2024\nExpected Delivery: 01/31/2024\n\nShip To:\nAmazon FBA\nFulfillment Center: FBA4\nOrder ID: 376-7929728-4733840\n\nItems Shipped:\nSKU: SKU-0194\nQuantity: 1\nWeight: 2.5 lbs\nDimensions: 12x8x6 in\n\nStatus: Delivered\nDelivery Confirmation: 01/31/2024 00:00"
+    }
+  ],
+  "match_results": [
+    {
+      "document_id": "SHIP-8fe23b09-c0cf-4e60-9141-a8426285efc0",
+      "document_type": "shipping_log",
+      "match_score": 0.95,
+      "matched_fields": [
+        "sku",
+        "order_id"
+      ],
+      "reasoning": "Exact SKU match; Exact Order ID match",
+      "confidence": 0.95
+    },
+    {
+      "document_id": "INV-8fe23b09-c0cf-4e60-9141-a8426285efc0",
+      "document_type": "invoice",
+      "match_score": 0.8,
+      "matched_fields": [
+        "amount"
+      ],
+      "reasoning": "Amount match (ratio: 1.00)",
+      "confidence": 0.8
+    }
+  ],
+  "best_match": {
+    "document_id": "SHIP-8fe23b09-c0cf-4e60-9141-a8426285efc0",
+    "document_type": "shipping_log",
+    "match_score": 0.95,
+    "matched_fields": [
+      "sku",
+      "order_id"
+    ],
+    "reasoning": "Exact SKU match; Exact Order ID match",
+    "confidence": 0.95
+  },
+  "evidence_bundle": {
+    "total_evidence_count": 2,
+    "required_evidence_count": 1,
+    "optional_evidence_count": 1,
+    "validation_score": 0.09166666666666667,
+    "missing_required": [
+      "damage_report",
+      "photos"
+    ],
+    "bundle_status": "incomplete"
+  },
+  "action": "auto_submit",
+  "confidence": 0.95,
+  "processing_timestamp": "2025-11-14T19:20:31.345720",
+  "agent_version": "1.0.0"
+}

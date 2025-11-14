@@ -1,0 +1,43 @@
+{
+  "claim_id": "47267499-1832-471b-b985-8299dfbe7099",
+  "amazon_case_id": "AMZ-1763140831-8944",
+  "status": "APPROVED",
+  "filed_at": "2025-11-14T19:20:31.529347",
+  "amount": 199.22,
+  "quantity": 2,
+  "claim_type": "lost",
+  "marketplace": "UK",
+  "metadata": {
+    "sku": "SKU-0111",
+    "asin": "B081182864",
+    "order_id": "195-6669869-9098979",
+    "fulfillment_center": "FBA3",
+    "evidence_confidence": 0.95,
+    "evidence_action": "auto_submit",
+    "filing_success": true,
+    "filing_timestamp": "2025-11-14T19:20:31.529336",
+    "processing_time_ms": 283
+  },
+  "status_history": [
+    {
+      "status": "FILED",
+      "timestamp": "2025-11-14T19:20:31.529351",
+      "amazon_case_id": "AMZ-1763140831-8944"
+    },
+    {
+      "status": "IN_REVIEW",
+      "timestamp": "2025-11-19T19:20:31.529347",
+      "amazon_case_id": "AMZ-1763140831-8944"
+    },
+    {
+      "status": "APPROVED",
+      "timestamp": "2025-11-21T19:20:31.529347",
+      "amazon_case_id": "AMZ-1763140831-8944"
+    }
+  ],
+  "processing_timestamp": "2025-11-14T19:20:31.529353",
+  "agent_version": "1.0.0",
+  "in_review_at": "2025-11-19T19:20:31.529347",
+  "decided_at": "2025-11-21T19:20:31.529347",
+  "approved_at": "2025-11-21T19:20:31.529347"
+}

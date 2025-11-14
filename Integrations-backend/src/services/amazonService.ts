@@ -1090,7 +1090,7 @@ export class AmazonService {
           accountId
         });
       }
-
+      
       logger.info(`Successfully fetched ${summaries.length} inventory items from SP-API SANDBOX`, {
         itemCount: summaries.length,
         accountId,
@@ -1833,18 +1833,18 @@ export class AmazonService {
         }
         
         if (error.response?.status === 404 || error.response?.status === 400) {
-          logger.info('Sandbox returned empty/error response - returning empty orders (normal for sandbox)', {
-            status: error.response?.status,
-            userId
-          });
-          return {
-            success: true,
-            data: [],
-            message: 'Sandbox returned no orders data (normal for testing)',
-            fromApi: true,
-            isSandbox: true,
-            dataType: 'SANDBOX_TEST_DATA'
-          };
+        logger.info('Sandbox returned empty/error response - returning empty orders (normal for sandbox)', {
+          status: error.response?.status,
+          userId
+        });
+        return {
+          success: true,
+          data: [],
+          message: 'Sandbox returned no orders data (normal for testing)',
+          fromApi: true,
+          isSandbox: true,
+          dataType: 'SANDBOX_TEST_DATA'
+        };
         }
       }
 

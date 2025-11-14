@@ -1,0 +1,170 @@
+{
+  "claim_id": "008ee641-2e12-4253-8613-7f1d9238d568",
+  "claim_metadata": {
+    "sku": "SKU-0039",
+    "asin": "B081182864",
+    "order_id": "356-8480659-1314820",
+    "amount": 136.2,
+    "quantity": 1,
+    "claim_type": "damaged",
+    "marketplace": "DE",
+    "fulfillment_center": "FBA4",
+    "order_date": "2024-02-05T00:00:00Z",
+    "claim_date": "2024-02-09 00:00:00+00:00"
+  },
+  "evidence_documents": [
+    {
+      "document_id": "INV-008ee641-2e12-4253-8613-7f1d9238d568",
+      "document_type": "invoice",
+      "metadata": {
+        "supplier_name": "Quality Goods Supply",
+        "invoice_number": "INV--1314820-20240130",
+        "invoice_date": "2024-01-30",
+        "order_id": "356-8480659-1314820",
+        "order_date": "2024-02-05",
+        "sku": "SKU-0039",
+        "asin": "B081182864",
+        "quantity": 1,
+        "unit_price": 136.2,
+        "total_amount": 136.2,
+        "currency": "USD",
+        "po_number": "PO-314820",
+        "file_type": "pdf",
+        "file_size_mb": 0.71,
+        "created_at": "2024-01-30T00:00:00+00:00"
+      },
+      "parsed_metadata": {
+        "supplier_name": "Quality Goods Supply",
+        "invoice_number": "INV--1314820-20240130",
+        "invoice_date": "2024-01-30",
+        "total_amount": 136.2,
+        "currency": "USD",
+        "line_items": [
+          {
+            "sku": "SKU-0039",
+            "asin": "B081182864",
+            "description": "Product for order 356-8480659-1314820",
+            "quantity": 1,
+            "unit_price": 136.2,
+            "total": 136.2
+          }
+        ],
+        "po_number": "PO-314820",
+        "payment_terms": "Net 30"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.95,
+      "extracted_text": "INVOICE\n\nFrom: Quality Goods Supply\nInvoice Number: INV--1314820-20240130\nInvoice Date: 01/30/2024\nPurchase Order: PO-314820\n\nBill To:\nAmazon FBA Seller\nOrder ID: 356-8480659-1314820\n\nLine Items:\nQuantity: 1\nSKU: SKU-0039\nASIN: B081182864\nDescription: Product for order 356-8480659-1314820\nUnit Price: $136.20\nTotal: $136.20\n\nSubtotal: $136.20\nTax: $10.90\nShipping: $9.97\nGrand Total: $157.07\n\nPayment Terms: Net 30\nCurrency: USD\n\nThank you for your business!"
+    },
+    {
+      "document_id": "RCP-008ee641-2e12-4253-8613-7f1d9238d568",
+      "document_type": "receipt",
+      "metadata": {
+        "supplier_name": "Quality Goods Supply",
+        "receipt_number": "RCP--1314820-20240202",
+        "receipt_date": "2024-02-02",
+        "order_id": "356-8480659-1314820",
+        "amount": 136.2,
+        "currency": "USD",
+        "file_type": "pdf",
+        "file_size_mb": 0.43
+      },
+      "parsed_metadata": {
+        "supplier_name": "Quality Goods Supply",
+        "receipt_number": "RCP--1314820-20240202",
+        "receipt_date": "2024-02-02",
+        "amount": 136.2,
+        "order_id": "356-8480659-1314820"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.92,
+      "extracted_text": "RECEIPT\n\nReceipt Number: RCP--1314820-20240202\nDate: 02/02/2024\nOrder ID: 356-8480659-1314820\n\nVendor: Quality Goods Supply\nSKU: SKU-0039\n\nAmount Paid: $136.20\nPayment Method: Wire Transfer\nTransaction ID: TXN-59-1314820\n\nThank you!"
+    },
+    {
+      "document_id": "SHIP-008ee641-2e12-4253-8613-7f1d9238d568",
+      "document_type": "shipping_log",
+      "metadata": {
+        "carrier": "UPS",
+        "tracking_number": "1Z--8480659-1314820",
+        "ship_date": "2024-01-26",
+        "delivery_date": "2024-02-04",
+        "order_id": "356-8480659-1314820",
+        "sku": "SKU-0039",
+        "quantity": 1,
+        "fulfillment_center": "FBA4",
+        "file_type": "pdf",
+        "file_size_mb": 0.96
+      },
+      "parsed_metadata": {
+        "carrier": "UPS",
+        "tracking_number": "1Z--8480659-1314820",
+        "ship_date": "2024-01-26",
+        "delivery_date": "2024-02-04",
+        "order_id": "356-8480659-1314820",
+        "sku": "SKU-0039",
+        "quantity": 1
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.9,
+      "extracted_text": "SHIPPING MANIFEST\n\nCarrier: UPS\nTracking Number: 1Z--8480659-1314820\nShip Date: 01/26/2024\nExpected Delivery: 02/04/2024\n\nShip To:\nAmazon FBA\nFulfillment Center: FBA4\nOrder ID: 356-8480659-1314820\n\nItems Shipped:\nSKU: SKU-0039\nQuantity: 1\nWeight: 2.5 lbs\nDimensions: 12x8x6 in\n\nStatus: Delivered\nDelivery Confirmation: 02/04/2024 00:00"
+    }
+  ],
+  "match_results": [
+    {
+      "document_id": "RCP-008ee641-2e12-4253-8613-7f1d9238d568",
+      "document_type": "receipt",
+      "match_score": 0.95,
+      "matched_fields": [
+        "order_id"
+      ],
+      "reasoning": "Exact Order ID match",
+      "confidence": 0.95
+    },
+    {
+      "document_id": "SHIP-008ee641-2e12-4253-8613-7f1d9238d568",
+      "document_type": "shipping_log",
+      "match_score": 0.95,
+      "matched_fields": [
+        "sku",
+        "order_id"
+      ],
+      "reasoning": "Exact SKU match; Exact Order ID match",
+      "confidence": 0.95
+    },
+    {
+      "document_id": "INV-008ee641-2e12-4253-8613-7f1d9238d568",
+      "document_type": "invoice",
+      "match_score": 0.8,
+      "matched_fields": [
+        "amount"
+      ],
+      "reasoning": "Amount match (ratio: 1.00)",
+      "confidence": 0.8
+    }
+  ],
+  "best_match": {
+    "document_id": "RCP-008ee641-2e12-4253-8613-7f1d9238d568",
+    "document_type": "receipt",
+    "match_score": 0.95,
+    "matched_fields": [
+      "order_id"
+    ],
+    "reasoning": "Exact Order ID match",
+    "confidence": 0.95
+  },
+  "evidence_bundle": {
+    "total_evidence_count": 3,
+    "required_evidence_count": 1,
+    "optional_evidence_count": 2,
+    "validation_score": 0.061111111111111116,
+    "missing_required": [
+      "damage_report",
+      "photos"
+    ],
+    "bundle_status": "incomplete"
+  },
+  "action": "auto_submit",
+  "confidence": 0.95,
+  "processing_timestamp": "2025-11-14T19:20:31.340992",
+  "agent_version": "1.0.0"
+}

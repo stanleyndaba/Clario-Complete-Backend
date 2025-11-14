@@ -1,0 +1,56 @@
+{
+  "claim_id": "ae77f0c0-dbd2-4119-a59c-792aae9fa60c",
+  "amazon_case_id": null,
+  "current_status": "DENIED",
+  "timeline": [
+    {
+      "event": "FILED",
+      "timestamp": "2025-11-14T19:20:31.524383",
+      "amazon_case_id": null,
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "IN_REVIEW",
+      "timestamp": "2025-11-16T19:20:31.524379",
+      "amazon_case_id": null,
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "DENIED",
+      "timestamp": "2025-11-20T19:20:31.524379",
+      "amazon_case_id": null,
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    }
+  ],
+  "reconciliation": {
+    "expected_amount": 44.92,
+    "actual_amount": 0,
+    "discrepancy": 44.92,
+    "status": "discrepancy",
+    "reconciled_at": null,
+    "discrepancy_type": "underpaid",
+    "discrepancy_percentage": 100.0
+  },
+  "metadata": {
+    "claim_type": "overcharge",
+    "marketplace": "US",
+    "amount": 44.92,
+    "quantity": 3,
+    "filed_at": "2025-11-14T19:20:31.524379",
+    "approved_at": null,
+    "reimbursed_at": null,
+    "total_timeline_events": 3,
+    "processing_timestamp": "2025-11-14T19:20:31.744825"
+  },
+  "processing_timestamp": "2025-11-14T19:20:31.744841",
+  "agent_version": "1.0.0"
+}

@@ -1,0 +1,72 @@
+{
+  "claim_id": "c63e46d0-2ace-4b7a-91c3-0f731584836d",
+  "amazon_case_id": "AMZ-1763140831-2184",
+  "current_status": "APPROVED",
+  "timeline": [
+    {
+      "event": "FILED",
+      "timestamp": "2025-11-14T19:20:31.524980",
+      "amazon_case_id": "AMZ-1763140831-2184",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "IN_REVIEW",
+      "timestamp": "2025-11-18T19:20:31.524976",
+      "amazon_case_id": "AMZ-1763140831-2184",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "APPROVED",
+      "timestamp": "2025-11-22T19:20:31.524976",
+      "amazon_case_id": "AMZ-1763140831-2184",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      },
+      "amount": 21.13
+    },
+    {
+      "event": "REIMBURSED",
+      "timestamp": "2025-11-28T19:20:31.524976",
+      "amount": 17.33,
+      "expected_amount": 21.13,
+      "is_partial": true,
+      "payment_percentage": 82.0,
+      "delay_days": 6,
+      "metadata": {
+        "claim_id": "c63e46d0-2ace-4b7a-91c3-0f731584836d",
+        "amazon_case_id": "AMZ-1763140831-2184",
+        "reimbursement_method": "wire_transfer",
+        "transaction_id": "TXN-c63e46d0-7816"
+      }
+    }
+  ],
+  "reconciliation": {
+    "expected_amount": 21.13,
+    "actual_amount": 17.33,
+    "discrepancy": 3.8000000000000007,
+    "status": "discrepancy",
+    "reconciled_at": "2025-11-14T19:20:31.751450",
+    "discrepancy_type": "underpaid",
+    "discrepancy_percentage": 17.9839091339328
+  },
+  "metadata": {
+    "claim_type": "overcharge",
+    "marketplace": "DE",
+    "amount": 21.13,
+    "quantity": 5,
+    "filed_at": "2025-11-14T19:20:31.524976",
+    "approved_at": "2025-11-22T19:20:31.524976",
+    "reimbursed_at": "2025-11-14T19:20:31.751450",
+    "total_timeline_events": 4,
+    "processing_timestamp": "2025-11-14T19:20:31.754105"
+  },
+  "processing_timestamp": "2025-11-14T19:20:31.754126",
+  "agent_version": "1.0.0"
+}

@@ -405,33 +405,47 @@ export class EvidenceIngestionWorker {
     try {
       logger.info(`👤 [EVIDENCE WORKER] Processing user: ${userId}`);
 
-      // Get connected sources for this user (try user_id first, fallback to seller_id)
-      let { data: sources, error } = await supabase
+      // Use admin client to bypass RLS for source queries
+      const client = supabaseAdmin || supabase;
+      
+      // Get connected sources for this user (try seller_id first, fallback to user_id)
+      let { data: sources, error } = await client
         .from('evidence_sources')
         .select('id, provider, last_synced_at, metadata')
-        .eq('user_id', userId)
+        .eq('seller_id', userId)
         .eq('status', 'connected')
         .in('provider', ['gmail', 'outlook', 'gdrive', 'dropbox']);
 
-      // If user_id column doesn't exist, try seller_id
-      if (error && error.message?.includes('column') && error.message?.includes('user_id')) {
-        const retry = await supabase
+      // If seller_id column doesn't exist or no results, try user_id
+      if ((error && error.message?.includes('column') && error.message?.includes('seller_id')) || (!error && (!sources || sources.length === 0))) {
+        const retry = await client
           .from('evidence_sources')
           .select('id, provider, last_synced_at, metadata')
-          .eq('seller_id', userId)
+          .eq('user_id', userId)
           .eq('status', 'connected')
           .in('provider', ['gmail', 'outlook', 'gdrive', 'dropbox']);
-        sources = retry.data;
-        error = retry.error;
+        if (retry.data && retry.data.length > 0) {
+          sources = retry.data;
+          error = retry.error;
+        }
       }
 
-      if (error || !sources || sources.length === 0) {
-        logger.debug(`No connected sources for user ${userId}`);
+      if (error) {
+        logger.warn(`⚠️ [EVIDENCE WORKER] Error fetching sources for user ${userId}`, {
+          error: error.message,
+          errorCode: error.code
+        });
+        return stats;
+      }
+
+      if (!sources || sources.length === 0) {
+        logger.debug(`ℹ️ [EVIDENCE WORKER] No connected sources for user ${userId}`);
         return stats;
       }
 
       logger.info(`📦 [EVIDENCE WORKER] Found ${sources.length} connected sources for user ${userId}`, {
-        providers: sources.map(s => s.provider)
+        providers: sources.map(s => s.provider),
+        sourceIds: sources.map(s => s.id)
       });
 
       // Process each source
@@ -443,27 +457,46 @@ export class EvidenceIngestionWorker {
           // Wait for rate limit
           await this.rateLimiter.waitForRateLimit(source.provider);
 
-          // Ingest from this source with retry
-          const sourceStats = await retryWithBackoff(async () => {
-            return await this.ingestFromSource(userId, source);
-          }, 3, 1000);
-
-          stats.ingested += sourceStats.ingested;
-          stats.skipped += sourceStats.skipped;
-          stats.failed += sourceStats.failed;
-          stats.errors.push(...sourceStats.errors);
-
-          // Update last_synced_at
-          await this.updateLastSyncedAt(source.id);
-
+          // Ingest from this source with retry (max 3 retries = 4 total attempts)
+          let sourceStats: IngestionStats;
+          
+          try {
+            sourceStats = await retryWithBackoff(async () => {
+              return await this.ingestFromSource(userId, source);
+            }, 3, 1000);
+            
+            stats.ingested += sourceStats.ingested;
+            stats.skipped += sourceStats.skipped;
+            stats.failed += sourceStats.failed;
+            stats.errors.push(...sourceStats.errors);
+            
+            // Update last_synced_at after successful ingestion
+            await this.updateLastSyncedAt(source.id);
+          } catch (error: any) {
+            // Retry exhausted - log error
+            stats.failed++;
+            const errorMsg = `[${source.provider}] ${error.message}`;
+            stats.errors.push(errorMsg);
+            
+            // Log error with retry count (retryWithBackoff will have attempted 4 times, 3 retries)
+            await this.logError(userId, source.provider, source.id, error, 3);
+            
+            logger.error(`❌ [EVIDENCE WORKER] Failed to ingest from ${source.provider} for user ${userId} after retries`, {
+              error: error.message,
+              provider: source.provider,
+              userId,
+              retries: 3
+            });
+            
+            // Still update last_synced_at even on failure (to track last attempt)
+            await this.updateLastSyncedAt(source.id);
+          }
         } catch (error: any) {
+          // Outer catch for unexpected errors
           stats.failed++;
           const errorMsg = `[${source.provider}] ${error.message}`;
           stats.errors.push(errorMsg);
-          
-          await this.logError(userId, source.provider, source.id, error);
-          
-          logger.error(`❌ [EVIDENCE WORKER] Failed to ingest from ${source.provider} for user ${userId}`, {
+          logger.error(`❌ [EVIDENCE WORKER] Unexpected error processing source ${source.provider}`, {
             error: error.message,
             provider: source.provider,
             userId
@@ -499,6 +532,16 @@ export class EvidenceIngestionWorker {
 
     try {
       logger.info(`📥 [EVIDENCE WORKER] Ingesting from ${source.provider} for user ${userId}`);
+
+      // Check for simulate_failure flag (for testing retry logic)
+      if (source.metadata?.simulate_failure === true) {
+        logger.warn('🧪 [EVIDENCE WORKER] Simulating failure for testing retry logic', {
+          provider: source.provider,
+          userId,
+          sourceId: source.id
+        });
+        throw new Error(`Simulated failure for testing retry logic (provider: ${source.provider})`);
+      }
 
       // Build query for incremental sync (only fetch new documents)
       const query = source.last_synced_at
@@ -684,33 +727,40 @@ export class EvidenceIngestionWorker {
    */
   private async updateLastSyncedAt(sourceId: string): Promise<void> {
     try {
-      // Check if last_synced_at column exists, if not, update metadata instead
-      const { error } = await supabase
+      const now = new Date().toISOString();
+      
+      // Use admin client to bypass RLS if needed
+      const client = supabaseAdmin || supabase;
+      
+      // Try to update last_synced_at column directly
+      const { data: updateData, error } = await client
         .from('evidence_sources')
         .update({
-          last_synced_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+          last_synced_at: now,
+          updated_at: now
         })
-        .eq('id', sourceId);
+        .eq('id', sourceId)
+        .select('last_synced_at')
+        .single();
 
-      // If column doesn't exist, update metadata instead
-      if (error && error.message?.includes('column') && error.message?.includes('last_synced_at')) {
+      // If column doesn't exist or update failed, try updating metadata instead
+      if (error && (error.message?.includes('column') || error.message?.includes('last_synced_at'))) {
         // Get current metadata
-        const { data: source } = await supabase
+        const { data: source } = await client
           .from('evidence_sources')
           .select('metadata')
           .eq('id', sourceId)
           .single();
 
         if (source) {
-          const { error: updateError } = await supabase
+          const { error: updateError } = await client
             .from('evidence_sources')
             .update({
               metadata: {
                 ...(source.metadata || {}),
-                last_synced_at: new Date().toISOString()
+                last_synced_at: now
               },
-              updated_at: new Date().toISOString()
+              updated_at: now
             })
             .eq('id', sourceId);
 
@@ -719,11 +769,25 @@ export class EvidenceIngestionWorker {
               error: updateError.message,
               sourceId
             });
+          } else {
+            logger.debug('✅ [EVIDENCE WORKER] Updated last_synced_at in metadata', { sourceId });
           }
         }
       } else if (error) {
         logger.warn('⚠️ [EVIDENCE WORKER] Failed to update last_synced_at', {
           error: error.message,
+          errorCode: error.code,
+          errorDetails: error.details,
+          sourceId
+        });
+      } else if (updateData) {
+        logger.info('✅ [EVIDENCE WORKER] Updated last_synced_at', {
+          sourceId,
+          last_synced_at: updateData.last_synced_at
+        });
+      } else {
+        // No error but no data returned - might be a silent failure
+        logger.warn('⚠️ [EVIDENCE WORKER] Update completed but no data returned', {
           sourceId
         });
       }
@@ -746,7 +810,10 @@ export class EvidenceIngestionWorker {
     retryCount: number = 0
   ): Promise<void> {
     try {
-      const { error: insertError } = await supabase
+      // Use admin client to bypass RLS for error logging
+      const client = supabaseAdmin || supabase;
+      
+      const { error: insertError } = await client
         .from('evidence_ingestion_errors')
         .insert({
           user_id: userId,
@@ -760,13 +827,24 @@ export class EvidenceIngestionWorker {
           metadata: {
             timestamp: new Date().toISOString(),
             provider,
-            source_id: sourceId
+            source_id: sourceId,
+            user_id: userId
           }
         });
 
       if (insertError) {
         logger.warn('⚠️ [EVIDENCE WORKER] Failed to log error', {
-          error: insertError.message
+          error: insertError.message,
+          code: insertError.code,
+          details: insertError.details
+        });
+      } else {
+        logger.info('📝 [EVIDENCE WORKER] Logged ingestion error', {
+          userId,
+          provider,
+          sourceId,
+          errorType: error.name || 'UnknownError',
+          retryCount
         });
       }
     } catch (logError: any) {

@@ -1,0 +1,70 @@
+{
+  "claim_id": "f3b52577-bee2-4705-8c10-46fcefeb4d5e",
+  "amazon_case_id": "AMZ-1763140831-9533",
+  "current_status": "REIMBURSED",
+  "timeline": [
+    {
+      "event": "FILED",
+      "timestamp": "2025-11-14T19:20:31.508270",
+      "amazon_case_id": "AMZ-1763140831-9533",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "IN_REVIEW",
+      "timestamp": "2025-11-17T19:20:31.508265",
+      "amazon_case_id": "AMZ-1763140831-9533",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "APPROVED",
+      "timestamp": "2025-11-19T19:20:31.508265",
+      "amazon_case_id": "AMZ-1763140831-9533",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      },
+      "amount": 31.8
+    },
+    {
+      "event": "REIMBURSED",
+      "timestamp": "2025-11-24T19:20:31.508265",
+      "amount": 31.8,
+      "expected_amount": 31.8,
+      "is_partial": false,
+      "payment_percentage": 100.0,
+      "delay_days": 5,
+      "metadata": {
+        "claim_id": "f3b52577-bee2-4705-8c10-46fcefeb4d5e",
+        "amazon_case_id": "AMZ-1763140831-9533",
+        "reimbursement_method": "wire_transfer",
+        "transaction_id": "TXN-f3b52577-0467"
+      }
+    }
+  ],
+  "reconciliation": {
+    "expected_amount": 31.8,
+    "actual_amount": 31.8,
+    "discrepancy": 0.0,
+    "status": "reconciled",
+    "reconciled_at": "2025-11-14T19:20:31.677293"
+  },
+  "metadata": {
+    "claim_type": "lost",
+    "marketplace": "US",
+    "amount": 31.8,
+    "quantity": 2,
+    "filed_at": "2025-11-14T19:20:31.508265",
+    "approved_at": "2025-11-19T19:20:31.508265",
+    "reimbursed_at": "2025-11-14T19:20:31.677293",
+    "total_timeline_events": 4,
+    "processing_timestamp": "2025-11-14T19:20:31.677559"
+  },
+  "processing_timestamp": "2025-11-14T19:20:31.677942",
+  "agent_version": "1.0.0"
+}

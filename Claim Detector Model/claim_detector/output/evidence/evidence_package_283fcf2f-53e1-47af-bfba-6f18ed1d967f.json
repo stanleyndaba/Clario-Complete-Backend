@@ -1,0 +1,96 @@
+{
+  "claim_id": "283fcf2f-53e1-47af-bfba-6f18ed1d967f",
+  "claim_metadata": {
+    "sku": "SKU-0146",
+    "asin": "B090048665",
+    "order_id": "433-1627092-8732776",
+    "amount": 49.3,
+    "quantity": 4,
+    "claim_type": "overcharge",
+    "marketplace": "DE",
+    "fulfillment_center": "FBA3",
+    "order_date": "2024-04-27T00:00:00Z",
+    "claim_date": "2024-04-30 00:00:00+00:00"
+  },
+  "evidence_documents": [
+    {
+      "document_id": "INV-283fcf2f-53e1-47af-bfba-6f18ed1d967f",
+      "document_type": "invoice",
+      "metadata": {
+        "supplier_name": "Wholesale Distributors LLC",
+        "invoice_number": "INV--8732776-20240422",
+        "invoice_date": "2024-04-22",
+        "order_id": "433-1627092-8732776",
+        "order_date": "2024-04-27",
+        "sku": "SKU-0146",
+        "asin": "B090048665",
+        "quantity": 4,
+        "unit_price": 12.32,
+        "total_amount": 49.3,
+        "currency": "USD",
+        "po_number": "PO-732776",
+        "file_type": "pdf",
+        "file_size_mb": 2.46,
+        "created_at": "2024-04-22T00:00:00+00:00"
+      },
+      "parsed_metadata": {
+        "supplier_name": "Wholesale Distributors LLC",
+        "invoice_number": "INV--8732776-20240422",
+        "invoice_date": "2024-04-22",
+        "total_amount": 49.3,
+        "currency": "USD",
+        "line_items": [
+          {
+            "sku": "SKU-0146",
+            "asin": "B090048665",
+            "description": "Product for order 433-1627092-8732776",
+            "quantity": 4,
+            "unit_price": 12.32,
+            "total": 49.3
+          }
+        ],
+        "po_number": "PO-732776",
+        "payment_terms": "Net 30"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.95,
+      "extracted_text": "INVOICE\n\nFrom: Wholesale Distributors LLC\nInvoice Number: INV--8732776-20240422\nInvoice Date: 04/22/2024\nPurchase Order: PO-732776\n\nBill To:\nAmazon FBA Seller\nOrder ID: 433-1627092-8732776\n\nLine Items:\nQuantity: 4\nSKU: SKU-0146\nASIN: B090048665\nDescription: Product for order 433-1627092-8732776\nUnit Price: $12.32\nTotal: $49.30\n\nSubtotal: $49.30\nTax: $3.94\nShipping: $10.44\nGrand Total: $63.68\n\nPayment Terms: Net 30\nCurrency: USD\n\nThank you for your business!"
+    }
+  ],
+  "match_results": [
+    {
+      "document_id": "INV-283fcf2f-53e1-47af-bfba-6f18ed1d967f",
+      "document_type": "invoice",
+      "match_score": 0.8,
+      "matched_fields": [
+        "amount"
+      ],
+      "reasoning": "Amount match (ratio: 1.00)",
+      "confidence": 0.8
+    }
+  ],
+  "best_match": {
+    "document_id": "INV-283fcf2f-53e1-47af-bfba-6f18ed1d967f",
+    "document_type": "invoice",
+    "match_score": 0.8,
+    "matched_fields": [
+      "amount"
+    ],
+    "reasoning": "Amount match (ratio: 1.00)",
+    "confidence": 0.8
+  },
+  "evidence_bundle": {
+    "total_evidence_count": 1,
+    "required_evidence_count": 1,
+    "optional_evidence_count": 0,
+    "validation_score": 0.18333333333333335,
+    "missing_required": [
+      "receipt"
+    ],
+    "bundle_status": "incomplete"
+  },
+  "action": "smart_prompt",
+  "confidence": 0.8,
+  "processing_timestamp": "2025-11-14T19:20:31.393397",
+  "agent_version": "1.0.0"
+}

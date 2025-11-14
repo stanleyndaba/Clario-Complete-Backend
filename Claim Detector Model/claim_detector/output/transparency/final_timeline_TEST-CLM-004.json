@@ -1,0 +1,56 @@
+{
+  "claim_id": "TEST-CLM-004",
+  "amazon_case_id": "AMZ-TEST-CLM-004",
+  "current_status": "DENIED",
+  "timeline": [
+    {
+      "event": "FILED",
+      "timestamp": "2025-11-14T10:00:00Z",
+      "amazon_case_id": "AMZ-TEST-CLM-004",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "IN_REVIEW",
+      "timestamp": "2025-11-16T10:00:00Z",
+      "amazon_case_id": "AMZ-TEST-CLM-004",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "DENIED",
+      "timestamp": "2025-11-18T10:00:00Z",
+      "amazon_case_id": "AMZ-TEST-CLM-004",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    }
+  ],
+  "reconciliation": {
+    "expected_amount": 150.0,
+    "actual_amount": 0,
+    "discrepancy": 150.0,
+    "status": "discrepancy",
+    "reconciled_at": null,
+    "discrepancy_type": "underpaid",
+    "discrepancy_percentage": 100.0
+  },
+  "metadata": {
+    "claim_type": "lost",
+    "marketplace": "US",
+    "amount": 150.0,
+    "quantity": 2,
+    "filed_at": "2025-11-14T10:00:00Z",
+    "approved_at": null,
+    "reimbursed_at": null,
+    "total_timeline_events": 3,
+    "processing_timestamp": "2025-11-14T18:38:37.289445"
+  },
+  "processing_timestamp": "2025-11-14T18:38:37.289463",
+  "agent_version": "1.0.0"
+}

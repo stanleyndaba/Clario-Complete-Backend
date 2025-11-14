@@ -1,0 +1,43 @@
+{
+  "claim_id": "b38e267e-4150-4f3b-920e-e04dc96bc144",
+  "amazon_case_id": null,
+  "status": "DENIED",
+  "filed_at": "2025-11-14T19:20:31.525596",
+  "amount": 7.73,
+  "quantity": 4,
+  "claim_type": "overcharge",
+  "marketplace": "CA",
+  "metadata": {
+    "sku": "SKU-0110",
+    "asin": "B060929647",
+    "order_id": "609-4700592-2058811",
+    "fulfillment_center": "FBA1",
+    "evidence_confidence": 0.8,
+    "evidence_action": "smart_prompt",
+    "filing_success": false,
+    "filing_timestamp": "2025-11-14T19:20:31.525585",
+    "processing_time_ms": 572
+  },
+  "status_history": [
+    {
+      "status": "FILED",
+      "timestamp": "2025-11-14T19:20:31.525601",
+      "amazon_case_id": null
+    },
+    {
+      "status": "IN_REVIEW",
+      "timestamp": "2025-11-18T19:20:31.525596",
+      "amazon_case_id": null
+    },
+    {
+      "status": "DENIED",
+      "timestamp": "2025-11-22T19:20:31.525596",
+      "amazon_case_id": null
+    }
+  ],
+  "processing_timestamp": "2025-11-14T19:20:31.525604",
+  "agent_version": "1.0.0",
+  "in_review_at": "2025-11-18T19:20:31.525596",
+  "decided_at": "2025-11-22T19:20:31.525596",
+  "denied_at": "2025-11-22T19:20:31.525596"
+}

@@ -1,0 +1,70 @@
+{
+  "claim_id": "1c0b513a-cc08-45e6-b293-6bc93b73820b",
+  "amazon_case_id": "AMZ-1763140831-9508",
+  "current_status": "REIMBURSED",
+  "timeline": [
+    {
+      "event": "FILED",
+      "timestamp": "2025-11-14T19:20:31.507663",
+      "amazon_case_id": "AMZ-1763140831-9508",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "IN_REVIEW",
+      "timestamp": "2025-11-19T19:20:31.507659",
+      "amazon_case_id": "AMZ-1763140831-9508",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "APPROVED",
+      "timestamp": "2025-11-23T19:20:31.507659",
+      "amazon_case_id": "AMZ-1763140831-9508",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      },
+      "amount": 61.34
+    },
+    {
+      "event": "REIMBURSED",
+      "timestamp": "2025-11-24T19:20:31.507659",
+      "amount": 61.34,
+      "expected_amount": 61.34,
+      "is_partial": false,
+      "payment_percentage": 100.0,
+      "delay_days": 1,
+      "metadata": {
+        "claim_id": "1c0b513a-cc08-45e6-b293-6bc93b73820b",
+        "amazon_case_id": "AMZ-1763140831-9508",
+        "reimbursement_method": "wire_transfer",
+        "transaction_id": "TXN-1c0b513a-9508"
+      }
+    }
+  ],
+  "reconciliation": {
+    "expected_amount": 61.34,
+    "actual_amount": 61.34,
+    "discrepancy": 0.0,
+    "status": "reconciled",
+    "reconciled_at": "2025-11-14T19:20:31.675670"
+  },
+  "metadata": {
+    "claim_type": "other",
+    "marketplace": "US",
+    "amount": 61.34,
+    "quantity": 2,
+    "filed_at": "2025-11-14T19:20:31.507659",
+    "approved_at": "2025-11-23T19:20:31.507659",
+    "reimbursed_at": "2025-11-14T19:20:31.675670",
+    "total_timeline_events": 4,
+    "processing_timestamp": "2025-11-14T19:20:31.675988"
+  },
+  "processing_timestamp": "2025-11-14T19:20:31.675998",
+  "agent_version": "1.0.0"
+}

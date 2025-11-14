@@ -1,0 +1,43 @@
+{
+  "claim_id": "8fe23b09-c0cf-4e60-9141-a8426285efc0",
+  "amazon_case_id": "AMZ-1763140831-3817",
+  "status": "APPROVED",
+  "filed_at": "2025-11-14T19:20:31.520742",
+  "amount": 27.25,
+  "quantity": 1,
+  "claim_type": "damaged",
+  "marketplace": "CA",
+  "metadata": {
+    "sku": "SKU-0194",
+    "asin": "B049349722",
+    "order_id": "376-7929728-4733840",
+    "fulfillment_center": "FBA4",
+    "evidence_confidence": 0.95,
+    "evidence_action": "auto_submit",
+    "filing_success": true,
+    "filing_timestamp": "2025-11-14T19:20:31.520723",
+    "processing_time_ms": 320
+  },
+  "status_history": [
+    {
+      "status": "FILED",
+      "timestamp": "2025-11-14T19:20:31.520748",
+      "amazon_case_id": "AMZ-1763140831-3817"
+    },
+    {
+      "status": "IN_REVIEW",
+      "timestamp": "2025-11-16T19:20:31.520742",
+      "amazon_case_id": "AMZ-1763140831-3817"
+    },
+    {
+      "status": "APPROVED",
+      "timestamp": "2025-11-20T19:20:31.520742",
+      "amazon_case_id": "AMZ-1763140831-3817"
+    }
+  ],
+  "processing_timestamp": "2025-11-14T19:20:31.520751",
+  "agent_version": "1.0.0",
+  "in_review_at": "2025-11-16T19:20:31.520742",
+  "decided_at": "2025-11-20T19:20:31.520742",
+  "approved_at": "2025-11-20T19:20:31.520742"
+}

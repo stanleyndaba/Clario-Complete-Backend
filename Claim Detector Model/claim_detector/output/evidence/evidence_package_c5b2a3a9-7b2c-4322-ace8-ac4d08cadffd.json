@@ -1,0 +1,128 @@
+{
+  "claim_id": "c5b2a3a9-7b2c-4322-ace8-ac4d08cadffd",
+  "claim_metadata": {
+    "sku": "SKU-0020",
+    "asin": "B014308421",
+    "order_id": "233-8990200-4603484",
+    "amount": 69.76,
+    "quantity": 5,
+    "claim_type": "other",
+    "marketplace": "DE",
+    "fulfillment_center": "FBA4",
+    "order_date": "2024-03-24T00:00:00Z",
+    "claim_date": "2024-03-27 00:00:00+00:00"
+  },
+  "evidence_documents": [
+    {
+      "document_id": "INV-c5b2a3a9-7b2c-4322-ace8-ac4d08cadffd",
+      "document_type": "invoice",
+      "metadata": {
+        "supplier_name": "Bulk Import Export Ltd",
+        "invoice_number": "INV--4603484-20240317",
+        "invoice_date": "2024-03-17",
+        "order_id": "233-8990200-4603484",
+        "order_date": "2024-03-24",
+        "sku": "SKU-0020",
+        "asin": "B014308421",
+        "quantity": 5,
+        "unit_price": 13.95,
+        "total_amount": 69.76,
+        "currency": "USD",
+        "po_number": "PO-603484",
+        "file_type": "pdf",
+        "file_size_mb": 2.04,
+        "created_at": "2024-03-17T00:00:00+00:00"
+      },
+      "parsed_metadata": {
+        "supplier_name": "Bulk Import Export Ltd",
+        "invoice_number": "INV--4603484-20240317",
+        "invoice_date": "2024-03-17",
+        "total_amount": 69.76,
+        "currency": "USD",
+        "line_items": [
+          {
+            "sku": "SKU-0020",
+            "asin": "B014308421",
+            "description": "Product for order 233-8990200-4603484",
+            "quantity": 5,
+            "unit_price": 13.95,
+            "total": 69.76
+          }
+        ],
+        "po_number": "PO-603484",
+        "payment_terms": "Net 30"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.95,
+      "extracted_text": "INVOICE\n\nFrom: Bulk Import Export Ltd\nInvoice Number: INV--4603484-20240317\nInvoice Date: 03/17/2024\nPurchase Order: PO-603484\n\nBill To:\nAmazon FBA Seller\nOrder ID: 233-8990200-4603484\n\nLine Items:\nQuantity: 5\nSKU: SKU-0020\nASIN: B014308421\nDescription: Product for order 233-8990200-4603484\nUnit Price: $13.95\nTotal: $69.76\n\nSubtotal: $69.76\nTax: $5.58\nShipping: $8.38\nGrand Total: $83.72\n\nPayment Terms: Net 30\nCurrency: USD\n\nThank you for your business!"
+    },
+    {
+      "document_id": "RCP-c5b2a3a9-7b2c-4322-ace8-ac4d08cadffd",
+      "document_type": "receipt",
+      "metadata": {
+        "supplier_name": "Bulk Import Export Ltd",
+        "receipt_number": "RCP--4603484-20240323",
+        "receipt_date": "2024-03-23",
+        "order_id": "233-8990200-4603484",
+        "amount": 69.76,
+        "currency": "USD",
+        "file_type": "pdf",
+        "file_size_mb": 1.4
+      },
+      "parsed_metadata": {
+        "supplier_name": "Bulk Import Export Ltd",
+        "receipt_number": "RCP--4603484-20240323",
+        "receipt_date": "2024-03-23",
+        "amount": 69.76,
+        "order_id": "233-8990200-4603484"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.92,
+      "extracted_text": "RECEIPT\n\nReceipt Number: RCP--4603484-20240323\nDate: 03/23/2024\nOrder ID: 233-8990200-4603484\n\nVendor: Bulk Import Export Ltd\nSKU: SKU-0020\n\nAmount Paid: $69.76\nPayment Method: Wire Transfer\nTransaction ID: TXN-00-4603484\n\nThank you!"
+    }
+  ],
+  "match_results": [
+    {
+      "document_id": "RCP-c5b2a3a9-7b2c-4322-ace8-ac4d08cadffd",
+      "document_type": "receipt",
+      "match_score": 0.95,
+      "matched_fields": [
+        "order_id"
+      ],
+      "reasoning": "Exact Order ID match",
+      "confidence": 0.95
+    },
+    {
+      "document_id": "INV-c5b2a3a9-7b2c-4322-ace8-ac4d08cadffd",
+      "document_type": "invoice",
+      "match_score": 0.8,
+      "matched_fields": [
+        "amount"
+      ],
+      "reasoning": "Amount match (ratio: 1.00)",
+      "confidence": 0.8
+    }
+  ],
+  "best_match": {
+    "document_id": "RCP-c5b2a3a9-7b2c-4322-ace8-ac4d08cadffd",
+    "document_type": "receipt",
+    "match_score": 0.95,
+    "matched_fields": [
+      "order_id"
+    ],
+    "reasoning": "Exact Order ID match",
+    "confidence": 0.95
+  },
+  "evidence_bundle": {
+    "total_evidence_count": 2,
+    "required_evidence_count": 1,
+    "optional_evidence_count": 1,
+    "validation_score": 0.09166666666666667,
+    "missing_required": [],
+    "bundle_status": "pending"
+  },
+  "action": "auto_submit",
+  "confidence": 0.95,
+  "processing_timestamp": "2025-11-14T19:20:31.363022",
+  "agent_version": "1.0.0"
+}

@@ -1,0 +1,94 @@
+{
+  "claim_id": "4dcef386-c1a9-42b0-9cf0-3c9efc7d5829",
+  "claim_metadata": {
+    "sku": "SKU-0176",
+    "asin": "B091734598",
+    "order_id": "233-4324120-7720647",
+    "amount": 1.74,
+    "quantity": 1,
+    "claim_type": "other",
+    "marketplace": "DE",
+    "fulfillment_center": "FBA2",
+    "order_date": "2024-03-04T00:00:00Z",
+    "claim_date": "2024-04-13 00:00:00+00:00"
+  },
+  "evidence_documents": [
+    {
+      "document_id": "INV-4dcef386-c1a9-42b0-9cf0-3c9efc7d5829",
+      "document_type": "invoice",
+      "metadata": {
+        "supplier_name": "Direct Source Manufacturing",
+        "invoice_number": "INV--7720647-20240303",
+        "invoice_date": "2024-03-03",
+        "order_id": "233-4324120-7720647",
+        "order_date": "2024-03-04",
+        "sku": "SKU-0176",
+        "asin": "B091734598",
+        "quantity": 1,
+        "unit_price": 1.74,
+        "total_amount": 1.74,
+        "currency": "USD",
+        "po_number": "PO-720647",
+        "file_type": "pdf",
+        "file_size_mb": 1.55,
+        "created_at": "2024-03-03T00:00:00+00:00"
+      },
+      "parsed_metadata": {
+        "supplier_name": "Direct Source Manufacturing",
+        "invoice_number": "INV--7720647-20240303",
+        "invoice_date": "2024-03-03",
+        "total_amount": 1.74,
+        "currency": "USD",
+        "line_items": [
+          {
+            "sku": "SKU-0176",
+            "asin": "B091734598",
+            "description": "Product for order 233-4324120-7720647",
+            "quantity": 1,
+            "unit_price": 1.74,
+            "total": 1.74
+          }
+        ],
+        "po_number": "PO-720647",
+        "payment_terms": "Net 30"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.95,
+      "extracted_text": "INVOICE\n\nFrom: Direct Source Manufacturing\nInvoice Number: INV--7720647-20240303\nInvoice Date: 03/03/2024\nPurchase Order: PO-720647\n\nBill To:\nAmazon FBA Seller\nOrder ID: 233-4324120-7720647\n\nLine Items:\nQuantity: 1\nSKU: SKU-0176\nASIN: B091734598\nDescription: Product for order 233-4324120-7720647\nUnit Price: $1.74\nTotal: $1.74\n\nSubtotal: $1.74\nTax: $0.14\nShipping: $3.88\nGrand Total: $5.76\n\nPayment Terms: Net 30\nCurrency: USD\n\nThank you for your business!"
+    }
+  ],
+  "match_results": [
+    {
+      "document_id": "INV-4dcef386-c1a9-42b0-9cf0-3c9efc7d5829",
+      "document_type": "invoice",
+      "match_score": 0.8,
+      "matched_fields": [
+        "amount"
+      ],
+      "reasoning": "Amount match (ratio: 1.00)",
+      "confidence": 0.8
+    }
+  ],
+  "best_match": {
+    "document_id": "INV-4dcef386-c1a9-42b0-9cf0-3c9efc7d5829",
+    "document_type": "invoice",
+    "match_score": 0.8,
+    "matched_fields": [
+      "amount"
+    ],
+    "reasoning": "Amount match (ratio: 1.00)",
+    "confidence": 0.8
+  },
+  "evidence_bundle": {
+    "total_evidence_count": 1,
+    "required_evidence_count": 1,
+    "optional_evidence_count": 0,
+    "validation_score": 0.18333333333333335,
+    "missing_required": [],
+    "bundle_status": "pending"
+  },
+  "action": "smart_prompt",
+  "confidence": 0.8,
+  "processing_timestamp": "2025-11-14T19:20:31.379337",
+  "agent_version": "1.0.0"
+}

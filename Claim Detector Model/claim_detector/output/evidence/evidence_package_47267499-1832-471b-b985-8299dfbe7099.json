@@ -1,0 +1,169 @@
+{
+  "claim_id": "47267499-1832-471b-b985-8299dfbe7099",
+  "claim_metadata": {
+    "sku": "SKU-0111",
+    "asin": "B081182864",
+    "order_id": "195-6669869-9098979",
+    "amount": 199.22,
+    "quantity": 2,
+    "claim_type": "lost",
+    "marketplace": "UK",
+    "fulfillment_center": "FBA3",
+    "order_date": "2024-03-17T00:00:00Z",
+    "claim_date": "2024-03-31 00:00:00+00:00"
+  },
+  "evidence_documents": [
+    {
+      "document_id": "INV-47267499-1832-471b-b985-8299dfbe7099",
+      "document_type": "invoice",
+      "metadata": {
+        "supplier_name": "International Trading Group",
+        "invoice_number": "INV--9098979-20240314",
+        "invoice_date": "2024-03-14",
+        "order_id": "195-6669869-9098979",
+        "order_date": "2024-03-17",
+        "sku": "SKU-0111",
+        "asin": "B081182864",
+        "quantity": 2,
+        "unit_price": 99.61,
+        "total_amount": 199.22,
+        "currency": "USD",
+        "po_number": "PO-098979",
+        "file_type": "pdf",
+        "file_size_mb": 0.58,
+        "created_at": "2024-03-14T00:00:00+00:00"
+      },
+      "parsed_metadata": {
+        "supplier_name": "International Trading Group",
+        "invoice_number": "INV--9098979-20240314",
+        "invoice_date": "2024-03-14",
+        "total_amount": 199.22,
+        "currency": "USD",
+        "line_items": [
+          {
+            "sku": "SKU-0111",
+            "asin": "B081182864",
+            "description": "Product for order 195-6669869-9098979",
+            "quantity": 2,
+            "unit_price": 99.61,
+            "total": 199.22
+          }
+        ],
+        "po_number": "PO-098979",
+        "payment_terms": "Net 30"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.95,
+      "extracted_text": "INVOICE\n\nFrom: International Trading Group\nInvoice Number: INV--9098979-20240314\nInvoice Date: 03/14/2024\nPurchase Order: PO-098979\n\nBill To:\nAmazon FBA Seller\nOrder ID: 195-6669869-9098979\n\nLine Items:\nQuantity: 2\nSKU: SKU-0111\nASIN: B081182864\nDescription: Product for order 195-6669869-9098979\nUnit Price: $99.61\nTotal: $199.22\n\nSubtotal: $199.22\nTax: $15.94\nShipping: $6.51\nGrand Total: $221.67\n\nPayment Terms: Net 30\nCurrency: USD\n\nThank you for your business!"
+    },
+    {
+      "document_id": "RCP-47267499-1832-471b-b985-8299dfbe7099",
+      "document_type": "receipt",
+      "metadata": {
+        "supplier_name": "International Trading Group",
+        "receipt_number": "RCP--9098979-20240315",
+        "receipt_date": "2024-03-15",
+        "order_id": "195-6669869-9098979",
+        "amount": 199.22,
+        "currency": "USD",
+        "file_type": "pdf",
+        "file_size_mb": 0.35
+      },
+      "parsed_metadata": {
+        "supplier_name": "International Trading Group",
+        "receipt_number": "RCP--9098979-20240315",
+        "receipt_date": "2024-03-15",
+        "amount": 199.22,
+        "order_id": "195-6669869-9098979"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.92,
+      "extracted_text": "RECEIPT\n\nReceipt Number: RCP--9098979-20240315\nDate: 03/15/2024\nOrder ID: 195-6669869-9098979\n\nVendor: International Trading Group\nSKU: SKU-0111\n\nAmount Paid: $199.22\nPayment Method: Wire Transfer\nTransaction ID: TXN-69-9098979\n\nThank you!"
+    },
+    {
+      "document_id": "SHIP-47267499-1832-471b-b985-8299dfbe7099",
+      "document_type": "shipping_log",
+      "metadata": {
+        "carrier": "DHL",
+        "tracking_number": "1Z--6669869-9098979",
+        "ship_date": "2024-03-10",
+        "delivery_date": "2024-03-16",
+        "order_id": "195-6669869-9098979",
+        "sku": "SKU-0111",
+        "quantity": 2,
+        "fulfillment_center": "FBA3",
+        "file_type": "pdf",
+        "file_size_mb": 0.88
+      },
+      "parsed_metadata": {
+        "carrier": "DHL",
+        "tracking_number": "1Z--6669869-9098979",
+        "ship_date": "2024-03-10",
+        "delivery_date": "2024-03-16",
+        "order_id": "195-6669869-9098979",
+        "sku": "SKU-0111",
+        "quantity": 2
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.9,
+      "extracted_text": "SHIPPING MANIFEST\n\nCarrier: DHL\nTracking Number: 1Z--6669869-9098979\nShip Date: 03/10/2024\nExpected Delivery: 03/16/2024\n\nShip To:\nAmazon FBA\nFulfillment Center: FBA3\nOrder ID: 195-6669869-9098979\n\nItems Shipped:\nSKU: SKU-0111\nQuantity: 2\nWeight: 5.0 lbs\nDimensions: 12x8x6 in\n\nStatus: Delivered\nDelivery Confirmation: 03/16/2024 00:00"
+    }
+  ],
+  "match_results": [
+    {
+      "document_id": "RCP-47267499-1832-471b-b985-8299dfbe7099",
+      "document_type": "receipt",
+      "match_score": 0.95,
+      "matched_fields": [
+        "order_id"
+      ],
+      "reasoning": "Exact Order ID match",
+      "confidence": 0.95
+    },
+    {
+      "document_id": "SHIP-47267499-1832-471b-b985-8299dfbe7099",
+      "document_type": "shipping_log",
+      "match_score": 0.95,
+      "matched_fields": [
+        "sku",
+        "order_id"
+      ],
+      "reasoning": "Exact SKU match; Exact Order ID match",
+      "confidence": 0.95
+    },
+    {
+      "document_id": "INV-47267499-1832-471b-b985-8299dfbe7099",
+      "document_type": "invoice",
+      "match_score": 0.8,
+      "matched_fields": [
+        "amount"
+      ],
+      "reasoning": "Amount match (ratio: 1.00)",
+      "confidence": 0.8
+    }
+  ],
+  "best_match": {
+    "document_id": "RCP-47267499-1832-471b-b985-8299dfbe7099",
+    "document_type": "receipt",
+    "match_score": 0.95,
+    "matched_fields": [
+      "order_id"
+    ],
+    "reasoning": "Exact Order ID match",
+    "confidence": 0.95
+  },
+  "evidence_bundle": {
+    "total_evidence_count": 3,
+    "required_evidence_count": 2,
+    "optional_evidence_count": 1,
+    "validation_score": 0.061111111111111116,
+    "missing_required": [
+      "tracking_proof"
+    ],
+    "bundle_status": "incomplete"
+  },
+  "action": "auto_submit",
+  "confidence": 0.95,
+  "processing_timestamp": "2025-11-14T19:20:31.368943",
+  "agent_version": "1.0.0"
+}

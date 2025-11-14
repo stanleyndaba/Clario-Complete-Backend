@@ -18,7 +18,9 @@
     "security:check": "bash ../scripts/security-check.sh",
     "audit": "npm audit --audit-level=moderate",
     "audit:fix": "npm audit fix",
-    "db:migrate": "psql -d $DATABASE_URL -f migrations/005_add_dispute_system.sql",
+    "db:migrate": "ts-node scripts/run-migrations.ts",
+    "db:migrate:generate": "ts-node scripts/run-migrations-supabase.ts",
+    "db:migrate:single": "psql -d $DATABASE_URL -f migrations/005_add_dispute_system.sql",
     "db:seed": "ts-node scripts/seed.ts",
     "worker:detection": "ts-node src/services/enhancedDetectionService.ts",
     "worker:dispute": "ts-node src/services/disputeService.ts",
@@ -31,7 +33,8 @@
     "test:bypass-flow": "ts-node src/scripts/testBypassFlow.ts",
     "test:sync-endpoint": "ts-node src/scripts/testSyncEndpoint.ts",
     "test:endpoints-mock": "ts-node src/scripts/testEndpointsWithMockData.ts",
-    "test:evidence-ingestion-stress": "ts-node scripts/stress-test-evidence-ingestion-worker.ts"
+    "test:evidence-ingestion-stress": "ts-node scripts/stress-test-evidence-ingestion-worker.ts",
+    "test:supabase-verify": "ts-node scripts/verify-supabase-admin-connection.ts"
   },
   "keywords": [
     "integrations",

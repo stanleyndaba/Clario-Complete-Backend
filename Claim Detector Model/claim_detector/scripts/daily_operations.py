@@ -187,6 +187,90 @@ def check_alerts(metrics):
     
     return alerts
 
+def export_claims_to_evidence_agent(predictions_df: pd.DataFrame, 
+                                     output_dir: Path = None,
+                                     confidence_threshold: float = 0.50):
+    """
+    Export claims to Evidence Agent
+    
+    Args:
+        predictions_df: DataFrame with predictions, probabilities, and claim data
+        output_dir: Directory to export files (default: project_root/exports)
+        confidence_threshold: Minimum confidence for claimable claims (default: 0.50)
+    
+    Returns:
+        dict with export paths and counts
+    """
+    import numpy as np
+    
+    if output_dir is None:
+        output_dir = project_root / 'exports'
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Ensure predictions_df has required columns
+    if 'model_prediction' not in predictions_df.columns:
+        logger.error("predictions_df must have 'model_prediction' column")
+        return None
+    
+    if 'confidence' not in predictions_df.columns:
+        # Calculate confidence from probabilities if available
+        if 'probabilities' in predictions_df.columns:
+            probs = predictions_df['probabilities']
+            if isinstance(probs.iloc[0], (list, np.ndarray)):
+                predictions_df['confidence'] = probs.apply(lambda x: max(x) if isinstance(x, (list, np.ndarray)) else x)
+            else:
+                predictions_df['confidence'] = probs
+        else:
+            logger.warning("No confidence column found, using default confidence=0.95")
+            predictions_df['confidence'] = 0.95
+    
+    # Split into claimable and non-claimable
+    claimable_df = predictions_df[
+        (predictions_df['model_prediction'] == 1) & 
+        (predictions_df['confidence'] >= confidence_threshold)
+    ].copy()
+    
+    non_claimable_df = predictions_df[
+        (predictions_df['model_prediction'] == 0) | 
+        (predictions_df['confidence'] < confidence_threshold)
+    ].copy()
+    
+    # Export claimable claims CSV
+    claimable_path = output_dir / 'claimable_claims.csv'
+    claimable_df.to_csv(claimable_path, index=False)
+    logger.info(f"Exported {len(claimable_df)} claimable claims to {claimable_path}")
+    
+    # Export non-claimable claims CSV
+    non_claimable_path = output_dir / 'non_claimable_claims.csv'
+    non_claimable_df.to_csv(non_claimable_path, index=False)
+    logger.info(f"Exported {len(non_claimable_df)} non-claimable claims to {non_claimable_path}")
+    
+    # Export evidence queue JSON
+    evidence_queue_path = output_dir / 'evidence_queue.json'
+    evidence_queue = {
+        "export_timestamp": datetime.now().isoformat(),
+        "total_claims": len(claimable_df),
+        "filters_applied": {
+            "confidence_threshold": confidence_threshold,
+            "model_prediction": 1
+        },
+        "claims": claimable_df.to_dict('records')
+    }
+    
+    with open(evidence_queue_path, 'w', encoding='utf-8') as f:
+        json.dump(evidence_queue, f, indent=2, default=str)
+    
+    logger.info(f"Exported evidence queue to {evidence_queue_path}")
+    
+    return {
+        'claimable_path': str(claimable_path),
+        'non_claimable_path': str(non_claimable_path),
+        'evidence_queue_path': str(evidence_queue_path),
+        'claimable_count': len(claimable_df),
+        'non_claimable_count': len(non_claimable_df),
+        'total_count': len(predictions_df)
+    }
+
 def main():
     """Main daily operations function"""
     logger.info("="*80)

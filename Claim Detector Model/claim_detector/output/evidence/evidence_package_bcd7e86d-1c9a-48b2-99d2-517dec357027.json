@@ -1,0 +1,128 @@
+{
+  "claim_id": "bcd7e86d-1c9a-48b2-99d2-517dec357027",
+  "claim_metadata": {
+    "sku": "SKU-0030",
+    "asin": "B020570592",
+    "order_id": "828-3751363-3072728",
+    "amount": 58.15,
+    "quantity": 4,
+    "claim_type": "other",
+    "marketplace": "CA",
+    "fulfillment_center": "FBA4",
+    "order_date": "2024-04-02T00:00:00Z",
+    "claim_date": "2024-04-08 00:00:00+00:00"
+  },
+  "evidence_documents": [
+    {
+      "document_id": "INV-bcd7e86d-1c9a-48b2-99d2-517dec357027",
+      "document_type": "invoice",
+      "metadata": {
+        "supplier_name": "Wholesale Distributors LLC",
+        "invoice_number": "INV--3072728-20240331",
+        "invoice_date": "2024-03-31",
+        "order_id": "828-3751363-3072728",
+        "order_date": "2024-04-02",
+        "sku": "SKU-0030",
+        "asin": "B020570592",
+        "quantity": 4,
+        "unit_price": 14.54,
+        "total_amount": 58.15,
+        "currency": "USD",
+        "po_number": "PO-072728",
+        "file_type": "pdf",
+        "file_size_mb": 2.19,
+        "created_at": "2024-03-31T00:00:00+00:00"
+      },
+      "parsed_metadata": {
+        "supplier_name": "Wholesale Distributors LLC",
+        "invoice_number": "INV--3072728-20240331",
+        "invoice_date": "2024-03-31",
+        "total_amount": 58.15,
+        "currency": "USD",
+        "line_items": [
+          {
+            "sku": "SKU-0030",
+            "asin": "B020570592",
+            "description": "Product for order 828-3751363-3072728",
+            "quantity": 4,
+            "unit_price": 14.54,
+            "total": 58.15
+          }
+        ],
+        "po_number": "PO-072728",
+        "payment_terms": "Net 30"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.95,
+      "extracted_text": "INVOICE\n\nFrom: Wholesale Distributors LLC\nInvoice Number: INV--3072728-20240331\nInvoice Date: 03/31/2024\nPurchase Order: PO-072728\n\nBill To:\nAmazon FBA Seller\nOrder ID: 828-3751363-3072728\n\nLine Items:\nQuantity: 4\nSKU: SKU-0030\nASIN: B020570592\nDescription: Product for order 828-3751363-3072728\nUnit Price: $14.54\nTotal: $58.15\n\nSubtotal: $58.15\nTax: $4.65\nShipping: $1.28\nGrand Total: $64.08\n\nPayment Terms: Net 30\nCurrency: USD\n\nThank you for your business!"
+    },
+    {
+      "document_id": "RCP-bcd7e86d-1c9a-48b2-99d2-517dec357027",
+      "document_type": "receipt",
+      "metadata": {
+        "supplier_name": "Wholesale Distributors LLC",
+        "receipt_number": "RCP--3072728-20240401",
+        "receipt_date": "2024-04-01",
+        "order_id": "828-3751363-3072728",
+        "amount": 58.15,
+        "currency": "USD",
+        "file_type": "pdf",
+        "file_size_mb": 1.32
+      },
+      "parsed_metadata": {
+        "supplier_name": "Wholesale Distributors LLC",
+        "receipt_number": "RCP--3072728-20240401",
+        "receipt_date": "2024-04-01",
+        "amount": 58.15,
+        "order_id": "828-3751363-3072728"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.92,
+      "extracted_text": "RECEIPT\n\nReceipt Number: RCP--3072728-20240401\nDate: 04/01/2024\nOrder ID: 828-3751363-3072728\n\nVendor: Wholesale Distributors LLC\nSKU: SKU-0030\n\nAmount Paid: $58.15\nPayment Method: Wire Transfer\nTransaction ID: TXN-63-3072728\n\nThank you!"
+    }
+  ],
+  "match_results": [
+    {
+      "document_id": "RCP-bcd7e86d-1c9a-48b2-99d2-517dec357027",
+      "document_type": "receipt",
+      "match_score": 0.95,
+      "matched_fields": [
+        "order_id"
+      ],
+      "reasoning": "Exact Order ID match",
+      "confidence": 0.95
+    },
+    {
+      "document_id": "INV-bcd7e86d-1c9a-48b2-99d2-517dec357027",
+      "document_type": "invoice",
+      "match_score": 0.8,
+      "matched_fields": [
+        "amount"
+      ],
+      "reasoning": "Amount match (ratio: 1.00)",
+      "confidence": 0.8
+    }
+  ],
+  "best_match": {
+    "document_id": "RCP-bcd7e86d-1c9a-48b2-99d2-517dec357027",
+    "document_type": "receipt",
+    "match_score": 0.95,
+    "matched_fields": [
+      "order_id"
+    ],
+    "reasoning": "Exact Order ID match",
+    "confidence": 0.95
+  },
+  "evidence_bundle": {
+    "total_evidence_count": 2,
+    "required_evidence_count": 1,
+    "optional_evidence_count": 1,
+    "validation_score": 0.09166666666666667,
+    "missing_required": [],
+    "bundle_status": "pending"
+  },
+  "action": "auto_submit",
+  "confidence": 0.95,
+  "processing_timestamp": "2025-11-14T19:20:31.376212",
+  "agent_version": "1.0.0"
+}

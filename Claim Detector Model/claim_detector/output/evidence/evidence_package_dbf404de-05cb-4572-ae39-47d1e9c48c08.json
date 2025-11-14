@@ -1,0 +1,94 @@
+{
+  "claim_id": "dbf404de-05cb-4572-ae39-47d1e9c48c08",
+  "claim_metadata": {
+    "sku": "SKU-0147",
+    "asin": "B038538251",
+    "order_id": "394-5448564-1797443",
+    "amount": 46.26,
+    "quantity": 2,
+    "claim_type": "other",
+    "marketplace": "UK",
+    "fulfillment_center": "FBA1",
+    "order_date": "2024-03-18T00:00:00Z",
+    "claim_date": "2024-03-31 00:00:00+00:00"
+  },
+  "evidence_documents": [
+    {
+      "document_id": "INV-dbf404de-05cb-4572-ae39-47d1e9c48c08",
+      "document_type": "invoice",
+      "metadata": {
+        "supplier_name": "Premium Products Co",
+        "invoice_number": "INV--1797443-20240312",
+        "invoice_date": "2024-03-12",
+        "order_id": "394-5448564-1797443",
+        "order_date": "2024-03-18",
+        "sku": "SKU-0147",
+        "asin": "B038538251",
+        "quantity": 2,
+        "unit_price": 23.13,
+        "total_amount": 46.26,
+        "currency": "USD",
+        "po_number": "PO-797443",
+        "file_type": "pdf",
+        "file_size_mb": 0.8,
+        "created_at": "2024-03-12T00:00:00+00:00"
+      },
+      "parsed_metadata": {
+        "supplier_name": "Premium Products Co",
+        "invoice_number": "INV--1797443-20240312",
+        "invoice_date": "2024-03-12",
+        "total_amount": 46.26,
+        "currency": "USD",
+        "line_items": [
+          {
+            "sku": "SKU-0147",
+            "asin": "B038538251",
+            "description": "Product for order 394-5448564-1797443",
+            "quantity": 2,
+            "unit_price": 23.13,
+            "total": 46.26
+          }
+        ],
+        "po_number": "PO-797443",
+        "payment_terms": "Net 30"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.95,
+      "extracted_text": "INVOICE\n\nFrom: Premium Products Co\nInvoice Number: INV--1797443-20240312\nInvoice Date: 03/12/2024\nPurchase Order: PO-797443\n\nBill To:\nAmazon FBA Seller\nOrder ID: 394-5448564-1797443\n\nLine Items:\nQuantity: 2\nSKU: SKU-0147\nASIN: B038538251\nDescription: Product for order 394-5448564-1797443\nUnit Price: $23.13\nTotal: $46.26\n\nSubtotal: $46.26\nTax: $3.70\nShipping: $14.37\nGrand Total: $64.33\n\nPayment Terms: Net 30\nCurrency: USD\n\nThank you for your business!"
+    }
+  ],
+  "match_results": [
+    {
+      "document_id": "INV-dbf404de-05cb-4572-ae39-47d1e9c48c08",
+      "document_type": "invoice",
+      "match_score": 0.8,
+      "matched_fields": [
+        "amount"
+      ],
+      "reasoning": "Amount match (ratio: 1.00)",
+      "confidence": 0.8
+    }
+  ],
+  "best_match": {
+    "document_id": "INV-dbf404de-05cb-4572-ae39-47d1e9c48c08",
+    "document_type": "invoice",
+    "match_score": 0.8,
+    "matched_fields": [
+      "amount"
+    ],
+    "reasoning": "Amount match (ratio: 1.00)",
+    "confidence": 0.8
+  },
+  "evidence_bundle": {
+    "total_evidence_count": 1,
+    "required_evidence_count": 1,
+    "optional_evidence_count": 0,
+    "validation_score": 0.18333333333333335,
+    "missing_required": [],
+    "bundle_status": "pending"
+  },
+  "action": "smart_prompt",
+  "confidence": 0.8,
+  "processing_timestamp": "2025-11-14T19:20:31.370406",
+  "agent_version": "1.0.0"
+}

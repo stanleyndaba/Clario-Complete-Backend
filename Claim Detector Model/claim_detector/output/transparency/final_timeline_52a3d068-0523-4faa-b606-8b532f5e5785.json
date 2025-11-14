@@ -1,0 +1,70 @@
+{
+  "claim_id": "52a3d068-0523-4faa-b606-8b532f5e5785",
+  "amazon_case_id": "AMZ-1763140831-0613",
+  "current_status": "REIMBURSED",
+  "timeline": [
+    {
+      "event": "FILED",
+      "timestamp": "2025-11-14T19:20:31.505710",
+      "amazon_case_id": "AMZ-1763140831-0613",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "IN_REVIEW",
+      "timestamp": "2025-11-16T19:20:31.505705",
+      "amazon_case_id": "AMZ-1763140831-0613",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "APPROVED",
+      "timestamp": "2025-11-19T19:20:31.505705",
+      "amazon_case_id": "AMZ-1763140831-0613",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      },
+      "amount": 232.57
+    },
+    {
+      "event": "REIMBURSED",
+      "timestamp": "2025-11-20T19:20:31.505705",
+      "amount": 232.57,
+      "expected_amount": 232.57,
+      "is_partial": false,
+      "payment_percentage": 100.0,
+      "delay_days": 1,
+      "metadata": {
+        "claim_id": "52a3d068-0523-4faa-b606-8b532f5e5785",
+        "amazon_case_id": "AMZ-1763140831-0613",
+        "reimbursement_method": "wire_transfer",
+        "transaction_id": "TXN-52a3d068-9387"
+      }
+    }
+  ],
+  "reconciliation": {
+    "expected_amount": 232.57,
+    "actual_amount": 232.57,
+    "discrepancy": 0.0,
+    "status": "reconciled",
+    "reconciled_at": "2025-11-14T19:20:31.659341"
+  },
+  "metadata": {
+    "claim_type": "damaged",
+    "marketplace": "DE",
+    "amount": 232.57,
+    "quantity": 3,
+    "filed_at": "2025-11-14T19:20:31.505705",
+    "approved_at": "2025-11-19T19:20:31.505705",
+    "reimbursed_at": "2025-11-14T19:20:31.659341",
+    "total_timeline_events": 4,
+    "processing_timestamp": "2025-11-14T19:20:31.659660"
+  },
+  "processing_timestamp": "2025-11-14T19:20:31.659669",
+  "agent_version": "1.0.0"
+}

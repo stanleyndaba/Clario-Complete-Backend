@@ -9,7 +9,8 @@
  * - Incremental sync
  */
 
-import { supabase } from '../src/database/supabaseClient';
+import 'dotenv/config';
+import { supabase, supabaseAdmin } from '../src/database/supabaseClient';
 import evidenceIngestionWorker from '../src/workers/evidenceIngestionWorker';
 import logger from '../src/utils/logger';
 import { v4 as uuidv4 } from 'uuid';
@@ -79,11 +80,12 @@ class EvidenceIngestionWorkerStressTest {
       const selectedProviders = providers.slice(0, numSources);
 
       for (const provider of selectedProviders) {
-        const insertResult = await supabase
+        // Use admin client to bypass RLS for test data
+        const client = supabaseAdmin || supabase;
+        const insertResult = await client
           .from('evidence_sources')
           .insert({
             seller_id: userId,
-            user_id: userId, // Support both columns
             provider,
             status: 'connected',
             display_name: `${provider} - ${userId}`,
@@ -101,7 +103,14 @@ class EvidenceIngestionWorkerStressTest {
         const { data, error } = insertResult;
         
         if (error) {
-          logger.error(`Failed to create test source: ${error.message}`);
+          logger.error(`Failed to create test source: ${error.message || JSON.stringify(error)}`, { 
+            error, 
+            provider, 
+            userId,
+            code: error.code,
+            details: error.details,
+            hint: error.hint
+          });
           continue;
         }
 
@@ -239,12 +248,12 @@ class EvidenceIngestionWorkerStressTest {
       
       // Create multiple Gmail sources for this user to test rate limiting
       const gmailSourceIds: string[] = [];
+      const client = supabaseAdmin || supabase;
       for (let i = 0; i < 5; i++) {
-        const insertResult = await supabase
+        const insertResult = await client
           .from('evidence_sources')
           .insert({
             seller_id: testUser,
-            user_id: testUser,
             provider: 'gmail',
             status: 'connected',
             display_name: `Gmail Source ${i}`,
@@ -319,11 +328,11 @@ class EvidenceIngestionWorkerStressTest {
     try {
       // Create a test user with a source that will fail
       const testUser = `retry-test-user-${uuidv4()}`;
-      const insertResult = await supabase
+      const adminClient = supabaseAdmin || supabase;
+      const insertResult = await adminClient
         .from('evidence_sources')
         .insert({
           seller_id: testUser,
-          user_id: testUser,
           provider: 'gmail',
           status: 'connected',
           display_name: 'Retry Test Source',
@@ -361,8 +370,8 @@ class EvidenceIngestionWorkerStressTest {
       }
       const ingestionDuration = Date.now() - ingestionStart;
 
-      // Check error logs
-      const { data: errorLogs } = await supabase
+      // Check error logs (use admin client to bypass RLS)
+      const { data: errorLogs } = await adminClient
         .from('evidence_ingestion_errors')
         .select('*')
         .eq('user_id', testUser)
@@ -376,13 +385,13 @@ class EvidenceIngestionWorkerStressTest {
 
       // Cleanup
       if (source.id) {
-        await supabase
+        await adminClient
           .from('evidence_sources')
           .delete()
           .eq('id', source.id);
       }
 
-      await supabase
+      await adminClient
         .from('evidence_ingestion_errors')
         .delete()
         .eq('user_id', testUser);
@@ -424,8 +433,11 @@ class EvidenceIngestionWorkerStressTest {
     logger.info(`🧪 [STRESS TEST] Running: ${testName}`);
 
     try {
+      // Use admin client for storage operations
+      const storageClient = supabaseAdmin || supabase;
+      
       // Check if storage bucket exists
-      const { data: buckets, error: bucketError } = await supabase.storage.listBuckets();
+      const { data: buckets, error: bucketError } = await storageClient.storage.listBuckets();
       
       if (bucketError) {
         errors.push(`Cannot list buckets: ${bucketError.message}`);
@@ -433,8 +445,8 @@ class EvidenceIngestionWorkerStressTest {
 
       const bucketExists = buckets?.some(b => b.name === 'evidence-documents');
 
-      // Check for documents with storage_path
-      const { data: documents, error: docError } = await supabase
+      // Check for documents with storage_path (use admin client to bypass RLS)
+      const { data: documents, error: docError } = await storageClient
         .from('evidence_documents')
         .select('id, storage_path, file_url')
         .not('storage_path', 'is', null)
@@ -487,11 +499,11 @@ class EvidenceIngestionWorkerStressTest {
     try {
       // Create a test user with invalid source
       const testUser = `error-log-test-user-${uuidv4()}`;
-      const insertResult = await supabase
+      const errorTestClient = supabaseAdmin || supabase;
+      const insertResult = await errorTestClient
         .from('evidence_sources')
         .insert({
           seller_id: testUser,
-          user_id: testUser,
           provider: 'outlook',
           status: 'connected',
           display_name: 'Error Log Test Source',
@@ -520,8 +532,8 @@ class EvidenceIngestionWorkerStressTest {
       // Wait a bit for error logging
       await new Promise(resolve => setTimeout(resolve, 2000));
 
-      // Check error logs
-      const { data: errorLogs, error: logError } = await supabase
+      // Check error logs (use admin client to bypass RLS)
+      const { data: errorLogs, error: logError } = await errorTestClient
         .from('evidence_ingestion_errors')
         .select('*')
         .eq('user_id', testUser)
@@ -539,12 +551,12 @@ class EvidenceIngestionWorkerStressTest {
       ) || [];
 
       // Cleanup
-      await supabase
+      await errorTestClient
         .from('evidence_sources')
         .delete()
         .eq('id', source.id);
 
-      await supabase
+      await errorTestClient
         .from('evidence_ingestion_errors')
         .delete()
         .eq('user_id', testUser);
@@ -592,12 +604,12 @@ class EvidenceIngestionWorkerStressTest {
       // Create a test user with a source that has last_synced_at
       const testUser = `incremental-sync-test-user-${uuidv4()}`;
       const lastSyncTime = new Date(Date.now() - 3600000); // 1 hour ago
+      const syncTestClient = supabaseAdmin || supabase;
       
-      const insertResult = await supabase
+      const insertResult = await syncTestClient
         .from('evidence_sources')
         .insert({
           seller_id: testUser,
-          user_id: testUser,
           provider: 'gdrive',
           status: 'connected',
           display_name: 'Incremental Sync Test Source',
@@ -616,8 +628,8 @@ class EvidenceIngestionWorkerStressTest {
         throw new Error('Failed to create test source');
       }
 
-      // Get initial last_synced_at
-      const { data: sourceBefore } = await supabase
+      // Get initial last_synced_at (use admin client)
+      const { data: sourceBefore } = await syncTestClient
         .from('evidence_sources')
         .select('last_synced_at')
         .eq('id', source.id)
@@ -631,8 +643,8 @@ class EvidenceIngestionWorkerStressTest {
       // Wait a bit for last_synced_at update
       await new Promise(resolve => setTimeout(resolve, 1000));
 
-      // Check updated last_synced_at
-      const { data: sourceAfter } = await supabase
+      // Check updated last_synced_at (use admin client)
+      const { data: sourceAfter } = await syncTestClient
         .from('evidence_sources')
         .select('last_synced_at')
         .eq('id', source.id)
@@ -644,7 +656,7 @@ class EvidenceIngestionWorkerStressTest {
       const syncUpdated = afterSync && new Date(afterSync) > new Date(beforeSync || 0);
 
       // Cleanup
-      await supabase
+      await syncTestClient
         .from('evidence_sources')
         .delete()
         .eq('id', source.id);

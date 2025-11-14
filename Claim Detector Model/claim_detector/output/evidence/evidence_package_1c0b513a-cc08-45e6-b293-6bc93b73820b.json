@@ -1,0 +1,128 @@
+{
+  "claim_id": "1c0b513a-cc08-45e6-b293-6bc93b73820b",
+  "claim_metadata": {
+    "sku": "SKU-0077",
+    "asin": "B094374605",
+    "order_id": "361-6048065-2514149",
+    "amount": 61.34,
+    "quantity": 2,
+    "claim_type": "other",
+    "marketplace": "US",
+    "fulfillment_center": "FBA3",
+    "order_date": "2024-01-09T00:00:00Z",
+    "claim_date": "2024-01-25 00:00:00+00:00"
+  },
+  "evidence_documents": [
+    {
+      "document_id": "INV-1c0b513a-cc08-45e6-b293-6bc93b73820b",
+      "document_type": "invoice",
+      "metadata": {
+        "supplier_name": "Premium Products Co",
+        "invoice_number": "INV--2514149-20240102",
+        "invoice_date": "2024-01-02",
+        "order_id": "361-6048065-2514149",
+        "order_date": "2024-01-09",
+        "sku": "SKU-0077",
+        "asin": "B094374605",
+        "quantity": 2,
+        "unit_price": 30.67,
+        "total_amount": 61.34,
+        "currency": "USD",
+        "po_number": "PO-514149",
+        "file_type": "pdf",
+        "file_size_mb": 1.36,
+        "created_at": "2024-01-02T00:00:00+00:00"
+      },
+      "parsed_metadata": {
+        "supplier_name": "Premium Products Co",
+        "invoice_number": "INV--2514149-20240102",
+        "invoice_date": "2024-01-02",
+        "total_amount": 61.34,
+        "currency": "USD",
+        "line_items": [
+          {
+            "sku": "SKU-0077",
+            "asin": "B094374605",
+            "description": "Product for order 361-6048065-2514149",
+            "quantity": 2,
+            "unit_price": 30.67,
+            "total": 61.34
+          }
+        ],
+        "po_number": "PO-514149",
+        "payment_terms": "Net 30"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.95,
+      "extracted_text": "INVOICE\n\nFrom: Premium Products Co\nInvoice Number: INV--2514149-20240102\nInvoice Date: 01/02/2024\nPurchase Order: PO-514149\n\nBill To:\nAmazon FBA Seller\nOrder ID: 361-6048065-2514149\n\nLine Items:\nQuantity: 2\nSKU: SKU-0077\nASIN: B094374605\nDescription: Product for order 361-6048065-2514149\nUnit Price: $30.67\nTotal: $61.34\n\nSubtotal: $61.34\nTax: $4.91\nShipping: $9.47\nGrand Total: $75.72\n\nPayment Terms: Net 30\nCurrency: USD\n\nThank you for your business!"
+    },
+    {
+      "document_id": "RCP-1c0b513a-cc08-45e6-b293-6bc93b73820b",
+      "document_type": "receipt",
+      "metadata": {
+        "supplier_name": "Premium Products Co",
+        "receipt_number": "RCP--2514149-20240107",
+        "receipt_date": "2024-01-07",
+        "order_id": "361-6048065-2514149",
+        "amount": 61.34,
+        "currency": "USD",
+        "file_type": "pdf",
+        "file_size_mb": 0.9
+      },
+      "parsed_metadata": {
+        "supplier_name": "Premium Products Co",
+        "receipt_number": "RCP--2514149-20240107",
+        "receipt_date": "2024-01-07",
+        "amount": 61.34,
+        "order_id": "361-6048065-2514149"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.92,
+      "extracted_text": "RECEIPT\n\nReceipt Number: RCP--2514149-20240107\nDate: 01/07/2024\nOrder ID: 361-6048065-2514149\n\nVendor: Premium Products Co\nSKU: SKU-0077\n\nAmount Paid: $61.34\nPayment Method: Wire Transfer\nTransaction ID: TXN-65-2514149\n\nThank you!"
+    }
+  ],
+  "match_results": [
+    {
+      "document_id": "RCP-1c0b513a-cc08-45e6-b293-6bc93b73820b",
+      "document_type": "receipt",
+      "match_score": 0.95,
+      "matched_fields": [
+        "order_id"
+      ],
+      "reasoning": "Exact Order ID match",
+      "confidence": 0.95
+    },
+    {
+      "document_id": "INV-1c0b513a-cc08-45e6-b293-6bc93b73820b",
+      "document_type": "invoice",
+      "match_score": 0.8,
+      "matched_fields": [
+        "amount"
+      ],
+      "reasoning": "Amount match (ratio: 1.00)",
+      "confidence": 0.8
+    }
+  ],
+  "best_match": {
+    "document_id": "RCP-1c0b513a-cc08-45e6-b293-6bc93b73820b",
+    "document_type": "receipt",
+    "match_score": 0.95,
+    "matched_fields": [
+      "order_id"
+    ],
+    "reasoning": "Exact Order ID match",
+    "confidence": 0.95
+  },
+  "evidence_bundle": {
+    "total_evidence_count": 2,
+    "required_evidence_count": 1,
+    "optional_evidence_count": 1,
+    "validation_score": 0.09166666666666667,
+    "missing_required": [],
+    "bundle_status": "pending"
+  },
+  "action": "auto_submit",
+  "confidence": 0.95,
+  "processing_timestamp": "2025-11-14T19:20:31.334718",
+  "agent_version": "1.0.0"
+}

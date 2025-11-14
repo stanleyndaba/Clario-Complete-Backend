@@ -1,0 +1,70 @@
+{
+  "claim_id": "395589f7-e20c-4cd7-a2f3-dc112a7176c1",
+  "amazon_case_id": "AMZ-1763140831-6000",
+  "current_status": "REIMBURSED",
+  "timeline": [
+    {
+      "event": "FILED",
+      "timestamp": "2025-11-14T19:20:31.545046",
+      "amazon_case_id": "AMZ-1763140831-6000",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "IN_REVIEW",
+      "timestamp": "2025-11-16T19:20:31.545042",
+      "amazon_case_id": "AMZ-1763140831-6000",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      }
+    },
+    {
+      "event": "APPROVED",
+      "timestamp": "2025-11-19T19:20:31.545042",
+      "amazon_case_id": "AMZ-1763140831-6000",
+      "metadata": {
+        "source": "filing_agent",
+        "status_history_entry": true
+      },
+      "amount": 269.06
+    },
+    {
+      "event": "REIMBURSED",
+      "timestamp": "2025-11-26T19:20:31.545042",
+      "amount": 269.06,
+      "expected_amount": 269.06,
+      "is_partial": false,
+      "payment_percentage": 100.0,
+      "delay_days": 7,
+      "metadata": {
+        "claim_id": "395589f7-e20c-4cd7-a2f3-dc112a7176c1",
+        "amazon_case_id": "AMZ-1763140831-6000",
+        "reimbursement_method": "wire_transfer",
+        "transaction_id": "TXN-395589f7-4000"
+      }
+    }
+  ],
+  "reconciliation": {
+    "expected_amount": 269.06,
+    "actual_amount": 269.06,
+    "discrepancy": 0.0,
+    "status": "reconciled",
+    "reconciled_at": "2025-11-14T19:20:31.875947"
+  },
+  "metadata": {
+    "claim_type": "lost",
+    "marketplace": "UK",
+    "amount": 269.06,
+    "quantity": 5,
+    "filed_at": "2025-11-14T19:20:31.545042",
+    "approved_at": "2025-11-19T19:20:31.545042",
+    "reimbursed_at": "2025-11-14T19:20:31.875947",
+    "total_timeline_events": 4,
+    "processing_timestamp": "2025-11-14T19:20:31.876798"
+  },
+  "processing_timestamp": "2025-11-14T19:20:31.876814",
+  "agent_version": "1.0.0"
+}

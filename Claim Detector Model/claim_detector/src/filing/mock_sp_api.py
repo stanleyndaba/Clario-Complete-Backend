@@ -133,3 +133,8 @@ class MockSPAPIAdapter:
         """Check if SP-API is available (always True for mock)"""
         return True
 
+
+
+
+
+

@@ -1,0 +1,169 @@
+{
+  "claim_id": "TEST-CLM-001",
+  "claim_metadata": {
+    "sku": "SKU-001",
+    "asin": "B012345678",
+    "order_id": "123-4567890-1234567",
+    "amount": 150.0,
+    "quantity": 2,
+    "claim_type": "lost",
+    "marketplace": "US",
+    "fulfillment_center": "FBA1",
+    "order_date": "2024-01-15T00:00:00Z",
+    "claim_date": "2024-01-20T00:00:00Z"
+  },
+  "evidence_documents": [
+    {
+      "document_id": "INV-TEST-CLM-001",
+      "document_type": "invoice",
+      "metadata": {
+        "supplier_name": "Quality Goods Supply",
+        "invoice_number": "INV--1234567-20240108",
+        "invoice_date": "2024-01-08",
+        "order_id": "123-4567890-1234567",
+        "order_date": "2024-01-15",
+        "sku": "SKU-001",
+        "asin": "B012345678",
+        "quantity": 2,
+        "unit_price": 75.0,
+        "total_amount": 150.0,
+        "currency": "USD",
+        "po_number": "PO-234567",
+        "file_type": "pdf",
+        "file_size_mb": 0.71,
+        "created_at": "2024-01-08T00:00:00+00:00"
+      },
+      "parsed_metadata": {
+        "supplier_name": "Quality Goods Supply",
+        "invoice_number": "INV--1234567-20240108",
+        "invoice_date": "2024-01-08",
+        "total_amount": 150.0,
+        "currency": "USD",
+        "line_items": [
+          {
+            "sku": "SKU-001",
+            "asin": "B012345678",
+            "description": "Product for order 123-4567890-1234567",
+            "quantity": 2,
+            "unit_price": 75.0,
+            "total": 150.0
+          }
+        ],
+        "po_number": "PO-234567",
+        "payment_terms": "Net 30"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.95,
+      "extracted_text": "INVOICE\n\nFrom: Quality Goods Supply\nInvoice Number: INV--1234567-20240108\nInvoice Date: 01/08/2024\nPurchase Order: PO-234567\n\nBill To:\nAmazon FBA Seller\nOrder ID: 123-4567890-1234567\n\nLine Items:\nQuantity: 2\nSKU: SKU-001\nASIN: B012345678\nDescription: Product for order 123-4567890-1234567\nUnit Price: $75.00\nTotal: $150.00\n\nSubtotal: $150.00\nTax: $12.00\nShipping: $10.00\nGrand Total: $172.00\n\nPayment Terms: Net 30\nCurrency: USD\n\nThank you for your business!"
+    },
+    {
+      "document_id": "RCP-TEST-CLM-001",
+      "document_type": "receipt",
+      "metadata": {
+        "supplier_name": "Quality Goods Supply",
+        "receipt_number": "RCP--1234567-20240114",
+        "receipt_date": "2024-01-14",
+        "order_id": "123-4567890-1234567",
+        "amount": 150.0,
+        "currency": "USD",
+        "file_type": "pdf",
+        "file_size_mb": 1.25
+      },
+      "parsed_metadata": {
+        "supplier_name": "Quality Goods Supply",
+        "receipt_number": "RCP--1234567-20240114",
+        "receipt_date": "2024-01-14",
+        "amount": 150.0,
+        "order_id": "123-4567890-1234567"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.92,
+      "extracted_text": "RECEIPT\n\nReceipt Number: RCP--1234567-20240114\nDate: 01/14/2024\nOrder ID: 123-4567890-1234567\n\nVendor: Quality Goods Supply\nSKU: SKU-001\n\nAmount Paid: $150.00\nPayment Method: Wire Transfer\nTransaction ID: TXN-90-1234567\n\nThank you!"
+    },
+    {
+      "document_id": "SHIP-TEST-CLM-001",
+      "document_type": "shipping_log",
+      "metadata": {
+        "carrier": "USPS",
+        "tracking_number": "1Z--4567890-1234567",
+        "ship_date": "2024-01-10",
+        "delivery_date": "2024-01-13",
+        "order_id": "123-4567890-1234567",
+        "sku": "SKU-001",
+        "quantity": 2,
+        "fulfillment_center": "FBA1",
+        "file_type": "pdf",
+        "file_size_mb": 1.49
+      },
+      "parsed_metadata": {
+        "carrier": "USPS",
+        "tracking_number": "1Z--4567890-1234567",
+        "ship_date": "2024-01-10",
+        "delivery_date": "2024-01-13",
+        "order_id": "123-4567890-1234567",
+        "sku": "SKU-001",
+        "quantity": 2
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.9,
+      "extracted_text": "SHIPPING MANIFEST\n\nCarrier: USPS\nTracking Number: 1Z--4567890-1234567\nShip Date: 01/10/2024\nExpected Delivery: 01/13/2024\n\nShip To:\nAmazon FBA\nFulfillment Center: FBA1\nOrder ID: 123-4567890-1234567\n\nItems Shipped:\nSKU: SKU-001\nQuantity: 2\nWeight: 5.0 lbs\nDimensions: 12x8x6 in\n\nStatus: Delivered\nDelivery Confirmation: 01/13/2024 00:00"
+    }
+  ],
+  "match_results": [
+    {
+      "document_id": "RCP-TEST-CLM-001",
+      "document_type": "receipt",
+      "match_score": 0.95,
+      "matched_fields": [
+        "order_id"
+      ],
+      "reasoning": "Exact Order ID match",
+      "confidence": 0.95
+    },
+    {
+      "document_id": "SHIP-TEST-CLM-001",
+      "document_type": "shipping_log",
+      "match_score": 0.95,
+      "matched_fields": [
+        "sku",
+        "order_id"
+      ],
+      "reasoning": "Exact SKU match; Exact Order ID match",
+      "confidence": 0.95
+    },
+    {
+      "document_id": "INV-TEST-CLM-001",
+      "document_type": "invoice",
+      "match_score": 0.8,
+      "matched_fields": [
+        "amount"
+      ],
+      "reasoning": "Amount match (ratio: 1.00)",
+      "confidence": 0.8
+    }
+  ],
+  "best_match": {
+    "document_id": "RCP-TEST-CLM-001",
+    "document_type": "receipt",
+    "match_score": 0.95,
+    "matched_fields": [
+      "order_id"
+    ],
+    "reasoning": "Exact Order ID match",
+    "confidence": 0.95
+  },
+  "evidence_bundle": {
+    "total_evidence_count": 3,
+    "required_evidence_count": 2,
+    "optional_evidence_count": 1,
+    "validation_score": 0.061111111111111116,
+    "missing_required": [
+      "tracking_proof"
+    ],
+    "bundle_status": "incomplete"
+  },
+  "action": "auto_submit",
+  "confidence": 0.95,
+  "processing_timestamp": "2025-11-14T17:43:47.993573",
+  "agent_version": "1.0.0"
+}

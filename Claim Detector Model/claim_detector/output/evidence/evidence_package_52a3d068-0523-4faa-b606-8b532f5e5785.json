@@ -1,0 +1,170 @@
+{
+  "claim_id": "52a3d068-0523-4faa-b606-8b532f5e5785",
+  "claim_metadata": {
+    "sku": "SKU-0080",
+    "asin": "B030514014",
+    "order_id": "605-4643811-6736345",
+    "amount": 232.57,
+    "quantity": 3,
+    "claim_type": "damaged",
+    "marketplace": "DE",
+    "fulfillment_center": "FBA1",
+    "order_date": "2024-01-09T00:00:00Z",
+    "claim_date": "2024-01-12 00:00:00+00:00"
+  },
+  "evidence_documents": [
+    {
+      "document_id": "INV-52a3d068-0523-4faa-b606-8b532f5e5785",
+      "document_type": "invoice",
+      "metadata": {
+        "supplier_name": "Direct Source Manufacturing",
+        "invoice_number": "INV--6736345-20240104",
+        "invoice_date": "2024-01-04",
+        "order_id": "605-4643811-6736345",
+        "order_date": "2024-01-09",
+        "sku": "SKU-0080",
+        "asin": "B030514014",
+        "quantity": 3,
+        "unit_price": 77.52,
+        "total_amount": 232.57,
+        "currency": "USD",
+        "po_number": "PO-736345",
+        "file_type": "pdf",
+        "file_size_mb": 2.26,
+        "created_at": "2024-01-04T00:00:00+00:00"
+      },
+      "parsed_metadata": {
+        "supplier_name": "Direct Source Manufacturing",
+        "invoice_number": "INV--6736345-20240104",
+        "invoice_date": "2024-01-04",
+        "total_amount": 232.57,
+        "currency": "USD",
+        "line_items": [
+          {
+            "sku": "SKU-0080",
+            "asin": "B030514014",
+            "description": "Product for order 605-4643811-6736345",
+            "quantity": 3,
+            "unit_price": 77.52,
+            "total": 232.57
+          }
+        ],
+        "po_number": "PO-736345",
+        "payment_terms": "Net 30"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.95,
+      "extracted_text": "INVOICE\n\nFrom: Direct Source Manufacturing\nInvoice Number: INV--6736345-20240104\nInvoice Date: 01/04/2024\nPurchase Order: PO-736345\n\nBill To:\nAmazon FBA Seller\nOrder ID: 605-4643811-6736345\n\nLine Items:\nQuantity: 3\nSKU: SKU-0080\nASIN: B030514014\nDescription: Product for order 605-4643811-6736345\nUnit Price: $77.52\nTotal: $232.57\n\nSubtotal: $232.57\nTax: $18.61\nShipping: $11.87\nGrand Total: $263.05\n\nPayment Terms: Net 30\nCurrency: USD\n\nThank you for your business!"
+    },
+    {
+      "document_id": "RCP-52a3d068-0523-4faa-b606-8b532f5e5785",
+      "document_type": "receipt",
+      "metadata": {
+        "supplier_name": "Direct Source Manufacturing",
+        "receipt_number": "RCP--6736345-20240106",
+        "receipt_date": "2024-01-06",
+        "order_id": "605-4643811-6736345",
+        "amount": 232.57,
+        "currency": "USD",
+        "file_type": "pdf",
+        "file_size_mb": 1.36
+      },
+      "parsed_metadata": {
+        "supplier_name": "Direct Source Manufacturing",
+        "receipt_number": "RCP--6736345-20240106",
+        "receipt_date": "2024-01-06",
+        "amount": 232.57,
+        "order_id": "605-4643811-6736345"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.92,
+      "extracted_text": "RECEIPT\n\nReceipt Number: RCP--6736345-20240106\nDate: 01/06/2024\nOrder ID: 605-4643811-6736345\n\nVendor: Direct Source Manufacturing\nSKU: SKU-0080\n\nAmount Paid: $232.57\nPayment Method: Wire Transfer\nTransaction ID: TXN-11-6736345\n\nThank you!"
+    },
+    {
+      "document_id": "SHIP-52a3d068-0523-4faa-b606-8b532f5e5785",
+      "document_type": "shipping_log",
+      "metadata": {
+        "carrier": "UPS",
+        "tracking_number": "1Z--4643811-6736345",
+        "ship_date": "2023-12-31",
+        "delivery_date": "2024-01-08",
+        "order_id": "605-4643811-6736345",
+        "sku": "SKU-0080",
+        "quantity": 3,
+        "fulfillment_center": "FBA1",
+        "file_type": "pdf",
+        "file_size_mb": 0.54
+      },
+      "parsed_metadata": {
+        "carrier": "UPS",
+        "tracking_number": "1Z--4643811-6736345",
+        "ship_date": "2023-12-31",
+        "delivery_date": "2024-01-08",
+        "order_id": "605-4643811-6736345",
+        "sku": "SKU-0080",
+        "quantity": 3
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.9,
+      "extracted_text": "SHIPPING MANIFEST\n\nCarrier: UPS\nTracking Number: 1Z--4643811-6736345\nShip Date: 12/31/2023\nExpected Delivery: 01/08/2024\n\nShip To:\nAmazon FBA\nFulfillment Center: FBA1\nOrder ID: 605-4643811-6736345\n\nItems Shipped:\nSKU: SKU-0080\nQuantity: 3\nWeight: 7.5 lbs\nDimensions: 12x8x6 in\n\nStatus: Delivered\nDelivery Confirmation: 01/08/2024 00:00"
+    }
+  ],
+  "match_results": [
+    {
+      "document_id": "RCP-52a3d068-0523-4faa-b606-8b532f5e5785",
+      "document_type": "receipt",
+      "match_score": 0.95,
+      "matched_fields": [
+        "order_id"
+      ],
+      "reasoning": "Exact Order ID match",
+      "confidence": 0.95
+    },
+    {
+      "document_id": "SHIP-52a3d068-0523-4faa-b606-8b532f5e5785",
+      "document_type": "shipping_log",
+      "match_score": 0.95,
+      "matched_fields": [
+        "sku",
+        "order_id"
+      ],
+      "reasoning": "Exact SKU match; Exact Order ID match",
+      "confidence": 0.95
+    },
+    {
+      "document_id": "INV-52a3d068-0523-4faa-b606-8b532f5e5785",
+      "document_type": "invoice",
+      "match_score": 0.8,
+      "matched_fields": [
+        "amount"
+      ],
+      "reasoning": "Amount match (ratio: 1.00)",
+      "confidence": 0.8
+    }
+  ],
+  "best_match": {
+    "document_id": "RCP-52a3d068-0523-4faa-b606-8b532f5e5785",
+    "document_type": "receipt",
+    "match_score": 0.95,
+    "matched_fields": [
+      "order_id"
+    ],
+    "reasoning": "Exact Order ID match",
+    "confidence": 0.95
+  },
+  "evidence_bundle": {
+    "total_evidence_count": 3,
+    "required_evidence_count": 1,
+    "optional_evidence_count": 2,
+    "validation_score": 0.061111111111111116,
+    "missing_required": [
+      "damage_report",
+      "photos"
+    ],
+    "bundle_status": "incomplete"
+  },
+  "action": "auto_submit",
+  "confidence": 0.95,
+  "processing_timestamp": "2025-11-14T19:20:31.327299",
+  "agent_version": "1.0.0"
+}

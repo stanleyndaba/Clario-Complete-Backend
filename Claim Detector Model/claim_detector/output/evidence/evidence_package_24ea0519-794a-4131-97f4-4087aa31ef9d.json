@@ -1,0 +1,94 @@
+{
+  "claim_id": "24ea0519-794a-4131-97f4-4087aa31ef9d",
+  "claim_metadata": {
+    "sku": "SKU-0089",
+    "asin": "B022201654",
+    "order_id": "328-9663280-7808902",
+    "amount": 35.19,
+    "quantity": 4,
+    "claim_type": "other",
+    "marketplace": "UK",
+    "fulfillment_center": "FBA2",
+    "order_date": "2024-03-20T00:00:00Z",
+    "claim_date": "2024-03-26 00:00:00+00:00"
+  },
+  "evidence_documents": [
+    {
+      "document_id": "INV-24ea0519-794a-4131-97f4-4087aa31ef9d",
+      "document_type": "invoice",
+      "metadata": {
+        "supplier_name": "Premium Products Co",
+        "invoice_number": "INV--7808902-20240313",
+        "invoice_date": "2024-03-13",
+        "order_id": "328-9663280-7808902",
+        "order_date": "2024-03-20",
+        "sku": "SKU-0089",
+        "asin": "B022201654",
+        "quantity": 4,
+        "unit_price": 8.8,
+        "total_amount": 35.19,
+        "currency": "USD",
+        "po_number": "PO-808902",
+        "file_type": "pdf",
+        "file_size_mb": 2.14,
+        "created_at": "2024-03-13T00:00:00+00:00"
+      },
+      "parsed_metadata": {
+        "supplier_name": "Premium Products Co",
+        "invoice_number": "INV--7808902-20240313",
+        "invoice_date": "2024-03-13",
+        "total_amount": 35.19,
+        "currency": "USD",
+        "line_items": [
+          {
+            "sku": "SKU-0089",
+            "asin": "B022201654",
+            "description": "Product for order 328-9663280-7808902",
+            "quantity": 4,
+            "unit_price": 8.8,
+            "total": 35.19
+          }
+        ],
+        "po_number": "PO-808902",
+        "payment_terms": "Net 30"
+      },
+      "parsing_method": "mock_generator",
+      "parsing_confidence": 0.95,
+      "extracted_text": "INVOICE\n\nFrom: Premium Products Co\nInvoice Number: INV--7808902-20240313\nInvoice Date: 03/13/2024\nPurchase Order: PO-808902\n\nBill To:\nAmazon FBA Seller\nOrder ID: 328-9663280-7808902\n\nLine Items:\nQuantity: 4\nSKU: SKU-0089\nASIN: B022201654\nDescription: Product for order 328-9663280-7808902\nUnit Price: $8.80\nTotal: $35.19\n\nSubtotal: $35.19\nTax: $2.82\nShipping: $0.10\nGrand Total: $38.11\n\nPayment Terms: Net 30\nCurrency: USD\n\nThank you for your business!"
+    }
+  ],
+  "match_results": [
+    {
+      "document_id": "INV-24ea0519-794a-4131-97f4-4087aa31ef9d",
+      "document_type": "invoice",
+      "match_score": 0.8,
+      "matched_fields": [
+        "amount"
+      ],
+      "reasoning": "Amount match (ratio: 1.00)",
+      "confidence": 0.8
+    }
+  ],
+  "best_match": {
+    "document_id": "INV-24ea0519-794a-4131-97f4-4087aa31ef9d",
+    "document_type": "invoice",
+    "match_score": 0.8,
+    "matched_fields": [
+      "amount"
+    ],
+    "reasoning": "Amount match (ratio: 1.00)",
+    "confidence": 0.8
+  },
+  "evidence_bundle": {
+    "total_evidence_count": 1,
+    "required_evidence_count": 1,
+    "optional_evidence_count": 0,
+    "validation_score": 0.18333333333333335,
+    "missing_required": [],
+    "bundle_status": "pending"
+  },
+  "action": "smart_prompt",
+  "confidence": 0.8,
+  "processing_timestamp": "2025-11-14T19:20:31.362095",
+  "agent_version": "1.0.0"
+}
