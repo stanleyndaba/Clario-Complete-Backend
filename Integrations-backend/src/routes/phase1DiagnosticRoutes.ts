@@ -19,7 +19,19 @@ router.get('/diagnostic', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user?.id || (req as any).user?.user_id || req.query.userId as string || 'demo-user';
     
-    const diagnostic = {
+    const diagnostic: {
+      phase: number;
+      name: string;
+      timestamp: string;
+      userId: string;
+      checks: Record<string, any>;
+      overall?: {
+        status: string;
+        message: string;
+        hasData: boolean;
+        hasErrors: boolean;
+      };
+    } = {
       phase: 1,
       name: 'Data Intake & Sync Agent',
       timestamp: new Date().toISOString(),
