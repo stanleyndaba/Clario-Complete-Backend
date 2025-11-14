@@ -610,20 +610,21 @@ export const syncAmazonData = async (req: Request, res: Response) => {
     logger.info(`🔄 Starting Amazon data sync for user: ${userId}`);
     logger.info(`📡 This will fetch data from SP-API sandbox (if connected)`);
     
-    const result = await amazonService.syncData(userId);
+    // Use syncJobManager for async processing - returns immediately with syncId
+    const syncResult = await syncJobManager.startSync(userId);
     
-    logger.info(`✅ Sync completed for user ${userId}:`, {
-      claimsFound: result.claimsFound,
-      inventoryItems: result.inventoryItems,
-      recoveredAmount: result.recoveredAmount
+    logger.info(`✅ Sync job started for user ${userId}:`, {
+      syncId: syncResult.syncId,
+      status: syncResult.status
     });
     
+    // Return immediately (don't wait for sync to complete)
     res.json({
       success: true,
-      message: 'Data sync completed successfully',
-      data: result,
-      userId: userId,
-      source: 'spapi_sandbox'
+      syncId: syncResult.syncId,
+      message: 'Sync started successfully',
+      status: syncResult.status, // 'in_progress'
+      estimatedDuration: '30-60 seconds'
     });
   } catch (error: any) {
     logger.error('❌ Data sync error:', {
@@ -631,10 +632,34 @@ export const syncAmazonData = async (req: Request, res: Response) => {
       stack: error.stack,
       userId: (req as any).user?.id || 'unknown'
     });
+    
+    // Handle specific error cases
+    if (error.message.includes('already in progress')) {
+      // Extract existing syncId from error message if available
+      const syncIdMatch = error.message.match(/\(([^)]+)\)/);
+      const existingSyncId = syncIdMatch ? syncIdMatch[1] : undefined;
+      
+      return res.status(409).json({
+        success: false,
+        error: 'sync_in_progress',
+        message: error.message || 'Sync already in progress. Please wait for current sync to complete.',
+        existingSyncId: existingSyncId
+      });
+    }
+    
+    if (error.message.includes('not connected') || error.message.includes('connection not found')) {
+      return res.status(400).json({
+        success: false,
+        error: 'amazon_not_connected',
+        message: 'Amazon account not connected. Please connect your Amazon account first.'
+      });
+    }
+    
+    // Generic error - 500
     res.status(500).json({
       success: false,
-      error: 'Failed to sync data',
-      message: error.message || 'Unknown error occurred during sync'
+      error: 'internal_server_error',
+      message: error.message || 'Failed to start sync. Please try again later.'
     });
   }
 };

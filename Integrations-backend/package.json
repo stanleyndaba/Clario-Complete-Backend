@@ -28,7 +28,8 @@
     "test:mock-generator": "ts-node src/scripts/testMockDataGenerator.ts",
     "test:phase1-mock": "ts-node src/scripts/testPhase1MockIntegration.ts",
     "test:phase1-e2e": "ts-node src/scripts/testPhase1EndToEnd.ts",
-    "test:bypass-flow": "ts-node src/scripts/testBypassFlow.ts"
+    "test:bypass-flow": "ts-node src/scripts/testBypassFlow.ts",
+    "test:sync-endpoint": "ts-node src/scripts/testSyncEndpoint.ts"
   },
   "keywords": [
     "integrations",
