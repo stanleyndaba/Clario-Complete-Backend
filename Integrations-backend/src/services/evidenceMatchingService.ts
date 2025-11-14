@@ -203,6 +203,7 @@ class EvidenceMatchingService {
 
   /**
    * Handle auto-submit (confidence >= 0.85)
+   * Marks case for filing by Agent 7 (Refund Filing Worker)
    */
   private async handleAutoSubmit(userId: string, result: MatchingResult): Promise<void> {
     try {
@@ -219,7 +220,30 @@ class EvidenceMatchingService {
       // Update detection result status
       await this.updateDetectionResultStatus(result.dispute_id, 'disputed', result.final_confidence);
 
-      // Call auto-submit endpoint (if exists)
+      // 🎯 AGENT 7 INTEGRATION: Mark case for filing
+      // Agent 7 (Refund Filing Worker) will pick up cases with filing_status = 'pending'
+      const { supabaseAdmin } = await import('../database/supabaseClient');
+      const { error: updateError } = await supabaseAdmin
+        .from('dispute_cases')
+        .update({
+          filing_status: 'pending',
+          status: 'evidence_linked',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', result.dispute_id);
+
+      if (updateError) {
+        logger.error('❌ [EVIDENCE MATCHING] Failed to mark case for filing', {
+          disputeId: result.dispute_id,
+          error: updateError.message
+        });
+      } else {
+        logger.info('📝 [EVIDENCE MATCHING] Case marked for filing by Agent 7', {
+          disputeId: result.dispute_id
+        });
+      }
+
+      // Call auto-submit endpoint (if exists) - non-critical
       try {
         const endpoint = `${this.pythonApiUrl}/api/internal/evidence/auto-submit`;
         await axios.post(

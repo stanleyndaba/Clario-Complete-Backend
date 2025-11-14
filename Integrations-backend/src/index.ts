@@ -57,6 +57,7 @@ import backgroundSyncWorker from './jobs/backgroundSyncWorker';
 import evidenceIngestionWorker from './workers/evidenceIngestionWorker';
 import documentParsingWorker from './workers/documentParsingWorker';
 import evidenceMatchingWorker from './workers/evidenceMatchingWorker';
+import refundFilingWorker from './workers/refundFilingWorker';
 
 const app = express();
 const server = createServer(app);
@@ -321,6 +322,14 @@ server.listen(PORT, '0.0.0.0', () => {
         logger.info('Evidence matching worker initialized');
       } else {
         logger.info('Evidence matching worker disabled (ENABLE_EVIDENCE_MATCHING_WORKER=false)');
+      }
+
+      // Start Refund Filing Worker (if enabled)
+      if (process.env.ENABLE_REFUND_FILING_WORKER !== 'false') {
+        refundFilingWorker.start();
+        logger.info('Refund filing worker initialized');
+      } else {
+        logger.info('Refund filing worker disabled (ENABLE_REFUND_FILING_WORKER=false)');
       }
       
       // Start detection job processor (processes detection jobs from queue)

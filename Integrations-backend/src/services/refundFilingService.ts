@@ -1,0 +1,370 @@
+/**
+ * Refund Filing Service
+ * Wraps Python SP-API service for filing disputes
+ * Handles retry logic, evidence collection, and status polling
+ */
+
+import axios from 'axios';
+import logger from '../utils/logger';
+import { supabaseAdmin } from '../database/supabaseClient';
+
+export interface FilingRequest {
+  dispute_id: string;
+  user_id: string;
+  order_id: string;
+  asin?: string;
+  sku?: string;
+  claim_type: string;
+  amount_claimed: number;
+  currency: string;
+  evidence_document_ids: string[];
+  confidence_score: number;
+}
+
+export interface FilingResult {
+  success: boolean;
+  submission_id?: string;
+  amazon_case_id?: string;
+  status: 'pending' | 'submitted' | 'approved' | 'rejected' | 'failed';
+  error_message?: string;
+  retry_after?: Date;
+}
+
+export interface CaseStatus {
+  success: boolean;
+  status: 'open' | 'in_progress' | 'approved' | 'denied' | 'closed';
+  amazon_case_id?: string;
+  resolution?: string;
+  amount_approved?: number;
+  last_updated?: string;
+  error?: string;
+}
+
+class RefundFilingService {
+  private pythonApiUrl: string;
+  private maxRetries: number = 3;
+  private retryDelayMs: number = 5000; // 5 seconds base delay
+
+  constructor() {
+    this.pythonApiUrl = process.env.PYTHON_API_URL || 'http://localhost:8000';
+    this.maxRetries = parseInt(process.env.REFUND_FILING_MAX_RETRIES || '3', 10);
+    this.retryDelayMs = parseInt(process.env.REFUND_FILING_RETRY_DELAY_MS || '5000', 10);
+  }
+
+  /**
+   * File a dispute case via Python SP-API service (mock for MVP)
+   */
+  async fileDispute(request: FilingRequest): Promise<FilingResult> {
+    try {
+      logger.info('📝 [REFUND FILING] Filing dispute case', {
+        disputeId: request.dispute_id,
+        userId: request.user_id,
+        amount: request.amount_claimed,
+        confidence: request.confidence_score
+      });
+
+      // Get evidence documents
+      const evidenceDocuments = await this.getEvidenceDocuments(request.evidence_document_ids, request.user_id);
+
+      // Prepare payload for Python API
+      const payload = {
+        dispute_id: request.dispute_id,
+        user_id: request.user_id,
+        order_id: request.order_id,
+        asin: request.asin,
+        sku: request.sku,
+        claim_type: request.claim_type,
+        amount_claimed: request.amount_claimed,
+        currency: request.currency,
+        evidence_documents: evidenceDocuments,
+        confidence_score: request.confidence_score
+      };
+
+      // Call Python API (uses mock SP-API for MVP)
+      const response = await axios.post(
+        `${this.pythonApiUrl}/api/v1/disputes/submit`,
+        payload,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-User-Id': request.user_id,
+            'Authorization': process.env.PYTHON_API_KEY 
+              ? `Bearer ${process.env.PYTHON_API_KEY}` 
+              : undefined
+          },
+          timeout: 60000 // 60 seconds
+        }
+      );
+
+      if (response.data?.ok && response.data?.data) {
+        const data = response.data.data;
+        return {
+          success: true,
+          submission_id: data.submission_id,
+          amazon_case_id: data.amazon_case_id,
+          status: this.mapStatus(data.status),
+          error_message: undefined
+        };
+      } else {
+        throw new Error(`Python API returned unexpected response: ${JSON.stringify(response.data)}`);
+      }
+
+    } catch (error: any) {
+      logger.error('❌ [REFUND FILING] Failed to file dispute', {
+        disputeId: request.dispute_id,
+        userId: request.user_id,
+        error: error.message,
+        response: error.response?.data
+      });
+
+      return {
+        success: false,
+        status: 'failed',
+        error_message: error.message || 'Unknown error'
+      };
+    }
+  }
+
+  /**
+   * File dispute with retry logic
+   */
+  async fileDisputeWithRetry(request: FilingRequest, retryCount: number = 0): Promise<FilingResult> {
+    let lastError: any;
+    
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      try {
+        const result = await this.fileDispute(request);
+        
+        if (result.success) {
+          return result;
+        }
+        
+        lastError = new Error(result.error_message || 'Filing failed');
+        
+        // Don't retry if it's a non-retryable error
+        if (result.status === 'rejected' && attempt === 0) {
+          // First attempt rejected - might need stronger evidence
+          logger.warn('⚠️ [REFUND FILING] Case rejected, may need stronger evidence', {
+            disputeId: request.dispute_id,
+            attempt: attempt + 1
+          });
+        }
+        
+        if (attempt < this.maxRetries) {
+          const delay = this.retryDelayMs * Math.pow(2, attempt);
+          logger.warn(`🔄 [REFUND FILING] Retry attempt ${attempt + 1}/${this.maxRetries} after ${delay}ms`, {
+            disputeId: request.dispute_id,
+            delay
+          });
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      } catch (error: any) {
+        lastError = error;
+        
+        if (attempt < this.maxRetries) {
+          const delay = this.retryDelayMs * Math.pow(2, attempt);
+          logger.warn(`🔄 [REFUND FILING] Retry attempt ${attempt + 1}/${this.maxRetries} after ${delay}ms`, {
+            disputeId: request.dispute_id,
+            error: error.message,
+            delay
+          });
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+    
+    return {
+      success: false,
+      status: 'failed',
+      error_message: lastError?.message || 'Max retries exceeded'
+    };
+  }
+
+  /**
+   * Check case status from Amazon (via Python API)
+   */
+  async checkCaseStatus(submissionId: string, userId: string): Promise<CaseStatus> {
+    try {
+      const response = await axios.get(
+        `${this.pythonApiUrl}/api/v1/disputes/status/${submissionId}`,
+        {
+          headers: {
+            'X-User-Id': userId,
+            'Authorization': process.env.PYTHON_API_KEY 
+              ? `Bearer ${process.env.PYTHON_API_KEY}` 
+              : undefined
+          },
+          timeout: 30000
+        }
+      );
+
+      if (response.data?.ok && response.data?.data) {
+        const data = response.data.data;
+        return {
+          success: true,
+          status: this.mapCaseStatus(data.status),
+          amazon_case_id: data.amazon_case_id,
+          resolution: data.resolution,
+          amount_approved: data.amount_approved,
+          last_updated: data.last_updated
+        };
+      } else {
+        return {
+          success: false,
+          status: 'open',
+          error: `Unexpected response: ${JSON.stringify(response.data)}`
+        };
+      }
+
+    } catch (error: any) {
+      logger.error('❌ [REFUND FILING] Failed to check case status', {
+        submissionId,
+        userId,
+        error: error.message
+      });
+
+      return {
+        success: false,
+        status: 'open',
+        error: error.message || 'Unknown error'
+      };
+    }
+  }
+
+  /**
+   * Collect additional evidence for retry (stronger evidence package)
+   */
+  async collectStrongerEvidence(disputeId: string, userId: string): Promise<string[]> {
+    try {
+      logger.info('🔍 [REFUND FILING] Collecting stronger evidence for retry', {
+        disputeId,
+        userId
+      });
+
+      // Get all evidence documents linked to this dispute
+      const { data: evidenceLinks, error } = await supabaseAdmin
+        .from('dispute_evidence_links')
+        .select('evidence_document_id')
+        .eq('dispute_id', disputeId);
+
+      if (error) {
+        logger.error('❌ [REFUND FILING] Failed to get evidence links', { error: error.message });
+        return [];
+      }
+
+      const evidenceIds = (evidenceLinks || []).map(link => link.evidence_document_id);
+
+      // Also get any additional evidence documents for the same order/claim
+      const { data: disputeCase } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('order_id, asin, sku')
+        .eq('id', disputeId)
+        .single();
+
+      if (disputeCase) {
+        // Get additional evidence documents for the same order
+        const { data: additionalEvidence } = await supabaseAdmin
+          .from('evidence_documents')
+          .select('id')
+          .eq('seller_id', userId)
+          .or(`order_id.eq.${disputeCase.order_id},asin.eq.${disputeCase.asin || ''},sku.eq.${disputeCase.sku || ''}`)
+          .neq('parser_status', 'failed')
+          .limit(10);
+
+        const additionalIds = (additionalEvidence || []).map(doc => doc.id);
+        const allIds = [...new Set([...evidenceIds, ...additionalIds])];
+
+        logger.info('✅ [REFUND FILING] Collected stronger evidence', {
+          disputeId,
+          originalCount: evidenceIds.length,
+          additionalCount: additionalIds.length,
+          totalCount: allIds.length
+        });
+
+        return allIds;
+      }
+
+      return evidenceIds;
+
+    } catch (error: any) {
+      logger.error('❌ [REFUND FILING] Failed to collect stronger evidence', {
+        disputeId,
+        userId,
+        error: error.message
+      });
+      return [];
+    }
+  }
+
+  /**
+   * Get evidence documents by IDs
+   */
+  private async getEvidenceDocuments(evidenceIds: string[], userId: string): Promise<any[]> {
+    try {
+      const { data: documents, error } = await supabaseAdmin
+        .from('evidence_documents')
+        .select('id, filename, content_type, size_bytes, file_url, parsed_metadata')
+        .in('id', evidenceIds)
+        .eq('seller_id', userId);
+
+      if (error) {
+        logger.error('❌ [REFUND FILING] Failed to get evidence documents', { error: error.message });
+        return [];
+      }
+
+      return (documents || []).map(doc => ({
+        id: doc.id,
+        filename: doc.filename,
+        content_type: doc.content_type,
+        size_bytes: doc.size_bytes,
+        download_url: doc.file_url,
+        parsed_metadata: doc.parsed_metadata || {}
+      }));
+
+    } catch (error: any) {
+      logger.error('❌ [REFUND FILING] Failed to get evidence documents', { error: error.message });
+      return [];
+    }
+  }
+
+  /**
+   * Map Python API status to internal status
+   */
+  private mapStatus(status: string): 'pending' | 'submitted' | 'approved' | 'rejected' | 'failed' {
+    const statusMap: Record<string, 'pending' | 'submitted' | 'approved' | 'rejected' | 'failed'> = {
+      'pending': 'pending',
+      'submitted': 'submitted',
+      'approved': 'approved',
+      'rejected': 'rejected',
+      'denied': 'rejected',
+      'failed': 'failed',
+      'retrying': 'pending'
+    };
+    
+    return statusMap[status.toLowerCase()] || 'pending';
+  }
+
+  /**
+   * Map Python API case status to internal case status
+   */
+  private mapCaseStatus(status: string): 'open' | 'in_progress' | 'approved' | 'denied' | 'closed' {
+    const statusMap: Record<string, 'open' | 'in_progress' | 'approved' | 'denied' | 'closed'> = {
+      'open': 'open',
+      'pending': 'open',
+      'in_progress': 'in_progress',
+      'under_review': 'in_progress',
+      'approved': 'approved',
+      'rejected': 'denied',
+      'denied': 'denied',
+      'closed': 'closed',
+      'paid': 'approved'
+    };
+    
+    return statusMap[status.toLowerCase()] || 'open';
+  }
+}
+
+// Export singleton instance
+const refundFilingService = new RefundFilingService();
+export default refundFilingService;
+

@@ -1,0 +1,593 @@
+/**
+ * Refund Filing Worker
+ * Automated background worker for filing disputes via Amazon SP-API (mock for MVP)
+ * Runs every 5 minutes, files cases ready for submission, polls for status updates
+ * Handles retry logic with stronger evidence for denied cases
+ */
+
+import cron from 'node-cron';
+import logger from '../utils/logger';
+import { supabase, supabaseAdmin } from '../database/supabaseClient';
+import refundFilingService, { FilingRequest, FilingResult, CaseStatus } from '../services/refundFilingService';
+
+// Retry logic with exponential backoff
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelay: number = 2000
+): Promise<T> {
+  let lastError: any;
+  
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      lastError = error;
+      
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        logger.warn(`🔄 [REFUND FILING] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, {
+          error: error.message,
+          delay
+        });
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
+  throw lastError;
+}
+
+export interface FilingStats {
+  processed: number;
+  filed: number;
+  failed: number;
+  statusUpdated: number;
+  retried: number;
+  errors: string[];
+}
+
+class RefundFilingWorker {
+  private schedule: string = '*/5 * * * *'; // Every 5 minutes
+  private statusPollingSchedule: string = '*/10 * * * *'; // Every 10 minutes
+  private cronJob: cron.ScheduledTask | null = null;
+  private statusPollingJob: cron.ScheduledTask | null = null;
+  private isRunning: boolean = false;
+
+  /**
+   * Start the worker
+   */
+  start(): void {
+    if (this.cronJob) {
+      logger.warn('⚠️ [REFUND FILING] Worker already started');
+      return;
+    }
+
+    logger.info('🚀 [REFUND FILING] Starting Refund Filing Worker', {
+      schedule: this.schedule,
+      statusPollingSchedule: this.statusPollingSchedule
+    });
+
+    // Schedule filing job (every 5 minutes)
+    this.cronJob = cron.schedule(this.schedule, async () => {
+      if (this.isRunning) {
+        logger.debug('⏸️ [REFUND FILING] Previous run still in progress, skipping');
+        return;
+      }
+
+      this.isRunning = true;
+      try {
+        await this.runFilingForAllTenants();
+      } catch (error: any) {
+        logger.error('❌ [REFUND FILING] Error in filing job', { error: error.message });
+      } finally {
+        this.isRunning = false;
+      }
+    });
+
+    // Schedule status polling job (every 10 minutes)
+    this.statusPollingJob = cron.schedule(this.statusPollingSchedule, async () => {
+      if (this.isRunning) {
+        logger.debug('⏸️ [REFUND FILING] Previous run still in progress, skipping status polling');
+        return;
+      }
+
+      this.isRunning = true;
+      try {
+        await this.pollCaseStatuses();
+      } catch (error: any) {
+        logger.error('❌ [REFUND FILING] Error in status polling job', { error: error.message });
+      } finally {
+        this.isRunning = false;
+      }
+    });
+
+    logger.info('✅ [REFUND FILING] Worker started successfully');
+  }
+
+  /**
+   * Stop the worker
+   */
+  stop(): void {
+    if (this.cronJob) {
+      this.cronJob.stop();
+      this.cronJob = null;
+    }
+    if (this.statusPollingJob) {
+      this.statusPollingJob.stop();
+      this.statusPollingJob = null;
+    }
+    logger.info('🛑 [REFUND FILING] Worker stopped');
+  }
+
+  /**
+   * Run filing for all tenants
+   */
+  async runFilingForAllTenants(): Promise<FilingStats> {
+    const stats: FilingStats = {
+      processed: 0,
+      filed: 0,
+      failed: 0,
+      statusUpdated: 0,
+      retried: 0,
+      errors: []
+    };
+
+    try {
+      logger.info('📝 [REFUND FILING] Starting filing run for all tenants');
+
+      // Get cases ready for filing (filing_status = 'pending' or 'retrying')
+      const { data: casesToFile, error } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('id, seller_id, detection_result_id, order_id, asin, sku, case_type, claim_amount, currency, status, filing_status, retry_count')
+        .in('filing_status', ['pending', 'retrying'])
+        .or('status.eq.pending,status.eq.evidence_linked')
+        .limit(50); // Process up to 50 cases per run
+
+      if (error) {
+        logger.error('❌ [REFUND FILING] Failed to get cases to file', { error: error.message });
+        stats.errors.push(`Failed to get cases: ${error.message}`);
+        return stats;
+      }
+
+      if (!casesToFile || casesToFile.length === 0) {
+        logger.debug('ℹ️ [REFUND FILING] No cases ready for filing');
+        return stats;
+      }
+
+      logger.info(`📋 [REFUND FILING] Found ${casesToFile.length} cases ready for filing`);
+
+      // Process each case
+      for (const disputeCase of casesToFile) {
+        try {
+          stats.processed++;
+
+          // Get evidence documents for this case
+          const { data: evidenceLinks } = await supabaseAdmin
+            .from('dispute_evidence_links')
+            .select('evidence_document_id')
+            .eq('dispute_id', disputeCase.id)
+            .limit(10);
+
+          const evidenceIds = (evidenceLinks || []).map(link => link.evidence_document_id);
+
+          if (evidenceIds.length === 0) {
+            logger.warn('⚠️ [REFUND FILING] No evidence documents found for case', {
+              disputeId: disputeCase.id
+            });
+            await this.logError(disputeCase.id, disputeCase.seller_id, 'No evidence documents found');
+            stats.failed++;
+            continue;
+          }
+
+          // Get detection result for confidence score
+          const { data: detectionResult } = await supabaseAdmin
+            .from('detection_results')
+            .select('match_confidence')
+            .eq('id', disputeCase.detection_result_id)
+            .single();
+
+          const confidenceScore = detectionResult?.match_confidence || 0.85;
+
+          // Prepare filing request
+          const filingRequest: FilingRequest = {
+            dispute_id: disputeCase.id,
+            user_id: disputeCase.seller_id,
+            order_id: disputeCase.order_id,
+            asin: disputeCase.asin || undefined,
+            sku: disputeCase.sku || undefined,
+            claim_type: disputeCase.case_type,
+            amount_claimed: parseFloat(disputeCase.claim_amount?.toString() || '0'),
+            currency: disputeCase.currency || 'USD',
+            evidence_document_ids: evidenceIds,
+            confidence_score: confidenceScore
+          };
+
+          // Check if this is a retry (need stronger evidence)
+          if (disputeCase.filing_status === 'retrying' && disputeCase.retry_count > 0) {
+            logger.info('🔄 [REFUND FILING] Retrying with stronger evidence', {
+              disputeId: disputeCase.id,
+              retryCount: disputeCase.retry_count
+            });
+
+            // Collect stronger evidence
+            const strongerEvidenceIds = await refundFilingService.collectStrongerEvidence(
+              disputeCase.id,
+              disputeCase.seller_id
+            );
+
+            if (strongerEvidenceIds.length > evidenceIds.length) {
+              filingRequest.evidence_document_ids = strongerEvidenceIds;
+              stats.retried++;
+            }
+          }
+
+          // File the dispute
+          const result = await retryWithBackoff(
+            () => refundFilingService.fileDispute(filingRequest),
+            3,
+            2000
+          );
+
+          if (result.success) {
+            // Update case status
+            await this.updateCaseAfterFiling(disputeCase.id, result);
+            stats.filed++;
+          } else {
+            // Handle failure
+            await this.handleFilingFailure(disputeCase.id, disputeCase.seller_id, result, disputeCase.retry_count || 0);
+            stats.failed++;
+            stats.errors.push(`Case ${disputeCase.id}: ${result.error_message}`);
+          }
+
+        } catch (error: any) {
+          logger.error('❌ [REFUND FILING] Error processing case', {
+            disputeId: disputeCase.id,
+            error: error.message
+          });
+          await this.logError(disputeCase.id, disputeCase.seller_id, error.message);
+          stats.failed++;
+          stats.errors.push(`Case ${disputeCase.id}: ${error.message}`);
+        }
+
+        // Small delay between cases to respect rate limits
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      logger.info('✅ [REFUND FILING] Filing run completed', stats);
+      return stats;
+
+    } catch (error: any) {
+      logger.error('❌ [REFUND FILING] Fatal error in filing run', { error: error.message });
+      stats.errors.push(`Fatal error: ${error.message}`);
+      return stats;
+    }
+  }
+
+  /**
+   * Poll case statuses from Amazon
+   */
+  async pollCaseStatuses(): Promise<void> {
+    try {
+      logger.info('🔍 [REFUND FILING] Starting case status polling');
+
+      // Get cases that have been filed but not yet closed
+      const { data: filedCases, error } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('id, seller_id, filing_status')
+        .eq('filing_status', 'filed')
+        .not('status', 'in', '(approved,rejected,closed)')
+        .limit(100);
+
+      if (error) {
+        logger.error('❌ [REFUND FILING] Failed to get filed cases', { error: error.message });
+        return;
+      }
+
+      if (!filedCases || filedCases.length === 0) {
+        logger.debug('ℹ️ [REFUND FILING] No filed cases to poll');
+        return;
+      }
+
+      logger.info(`📋 [REFUND FILING] Polling status for ${filedCases.length} cases`);
+
+      // Get submission IDs for these cases
+      for (const disputeCase of filedCases) {
+        try {
+          const { data: submission } = await supabaseAdmin
+            .from('dispute_submissions')
+            .select('id, submission_id, status')
+            .eq('dispute_id', disputeCase.id)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+
+          if (!submission || !submission.submission_id) {
+            logger.debug('⚠️ [REFUND FILING] No submission ID found for case', {
+              disputeId: disputeCase.id
+            });
+            continue;
+          }
+
+          // Check status from Amazon
+          const statusResult = await refundFilingService.checkCaseStatus(
+            submission.submission_id,
+            disputeCase.seller_id
+          );
+
+          if (statusResult.success) {
+            // Update case status
+            await this.updateCaseStatus(disputeCase.id, statusResult);
+
+            // If denied, mark for retry with stronger evidence
+            if (statusResult.status === 'denied' && submission.status !== 'denied') {
+              logger.warn('⚠️ [REFUND FILING] Case denied, marking for retry', {
+                disputeId: disputeCase.id
+              });
+              await this.markForRetry(disputeCase.id, disputeCase.seller_id);
+            }
+          }
+
+        } catch (error: any) {
+          logger.error('❌ [REFUND FILING] Error polling case status', {
+            disputeId: disputeCase.id,
+            error: error.message
+          });
+        }
+
+        // Small delay between polls
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      logger.info('✅ [REFUND FILING] Status polling completed');
+
+    } catch (error: any) {
+      logger.error('❌ [REFUND FILING] Fatal error in status polling', { error: error.message });
+    }
+  }
+
+  /**
+   * Update case after successful filing
+   */
+  private async updateCaseAfterFiling(disputeId: string, result: FilingResult): Promise<void> {
+    try {
+      const updates: any = {
+        filing_status: 'filed',
+        status: 'auto_submitted',
+        updated_at: new Date().toISOString()
+      };
+
+      if (result.amazon_case_id) {
+        updates.provider_case_id = result.amazon_case_id;
+      }
+
+      const { error } = await supabaseAdmin
+        .from('dispute_cases')
+        .update(updates)
+        .eq('id', disputeId);
+
+      if (error) {
+        logger.error('❌ [REFUND FILING] Failed to update case after filing', {
+          disputeId,
+          error: error.message
+        });
+      } else {
+        // Create submission record
+        const { data: disputeCase } = await supabaseAdmin
+          .from('dispute_cases')
+          .select('seller_id')
+          .eq('id', disputeId)
+          .single();
+
+        await supabaseAdmin
+          .from('dispute_submissions')
+          .insert({
+            dispute_id: disputeId,
+            user_id: disputeCase?.seller_id,
+            submission_id: result.submission_id,
+            amazon_case_id: result.amazon_case_id,
+            status: result.status,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
+
+        logger.info('✅ [REFUND FILING] Case filed successfully', {
+          disputeId,
+          submissionId: result.submission_id,
+          amazonCaseId: result.amazon_case_id
+        });
+      }
+
+    } catch (error: any) {
+      logger.error('❌ [REFUND FILING] Error updating case after filing', {
+        disputeId,
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * Handle filing failure
+   */
+  private async handleFilingFailure(
+    disputeId: string,
+    userId: string,
+    result: FilingResult,
+    currentRetryCount: number
+  ): Promise<void> {
+    const maxRetries = 3;
+    const newRetryCount = currentRetryCount + 1;
+
+    if (newRetryCount < maxRetries) {
+      // Mark for retry
+      await supabaseAdmin
+        .from('dispute_cases')
+        .update({
+          filing_status: 'retrying',
+          retry_count: newRetryCount,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', disputeId);
+
+      logger.warn('🔄 [REFUND FILING] Marking case for retry', {
+        disputeId,
+        retryCount: newRetryCount,
+        maxRetries
+      });
+    } else {
+      // Max retries exceeded
+      await supabaseAdmin
+        .from('dispute_cases')
+        .update({
+          filing_status: 'failed',
+          retry_count: newRetryCount,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', disputeId);
+
+      logger.error('❌ [REFUND FILING] Max retries exceeded for case', {
+        disputeId,
+        retryCount: newRetryCount
+      });
+    }
+
+    await this.logError(disputeId, userId, result.error_message || 'Filing failed', newRetryCount, maxRetries);
+  }
+
+  /**
+   * Update case status from polling
+   */
+  private async updateCaseStatus(disputeId: string, statusResult: CaseStatus): Promise<void> {
+    try {
+      const statusMap: Record<string, string> = {
+        'open': 'auto_submitted',
+        'in_progress': 'auto_submitted',
+        'approved': 'approved',
+        'denied': 'rejected',
+        'closed': 'closed'
+      };
+
+      const newStatus = statusMap[statusResult.status] || 'auto_submitted';
+
+      const { error } = await supabaseAdmin
+        .from('dispute_cases')
+        .update({
+          status: newStatus,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', disputeId);
+
+      if (error) {
+        logger.error('❌ [REFUND FILING] Failed to update case status', {
+          disputeId,
+          error: error.message
+        });
+      } else {
+        // Update submission status
+        await supabaseAdmin
+          .from('dispute_submissions')
+          .update({
+            status: statusResult.status,
+            updated_at: new Date().toISOString()
+          })
+          .eq('dispute_id', disputeId);
+
+        logger.info('✅ [REFUND FILING] Case status updated', {
+          disputeId,
+          status: statusResult.status
+        });
+      }
+
+    } catch (error: any) {
+      logger.error('❌ [REFUND FILING] Error updating case status', {
+        disputeId,
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * Mark case for retry with stronger evidence
+   */
+  private async markForRetry(disputeId: string, userId: string): Promise<void> {
+    try {
+      const { data: caseData } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('retry_count')
+        .eq('id', disputeId)
+        .single();
+
+      const currentRetryCount = caseData?.retry_count || 0;
+      const maxRetries = 3;
+
+      if (currentRetryCount < maxRetries) {
+        await supabaseAdmin
+          .from('dispute_cases')
+          .update({
+            filing_status: 'retrying',
+            retry_count: currentRetryCount + 1,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', disputeId);
+
+        logger.info('🔄 [REFUND FILING] Marked case for retry with stronger evidence', {
+          disputeId,
+          retryCount: currentRetryCount + 1
+        });
+      } else {
+        logger.warn('⚠️ [REFUND FILING] Max retries exceeded, not retrying', {
+          disputeId,
+          retryCount: currentRetryCount
+        });
+      }
+
+    } catch (error: any) {
+      logger.error('❌ [REFUND FILING] Error marking case for retry', {
+        disputeId,
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * Log filing error
+   */
+  private async logError(
+    disputeId: string,
+    userId: string,
+    errorMessage: string,
+    retryCount: number = 0,
+    maxRetries: number = 3
+  ): Promise<void> {
+    try {
+      await supabaseAdmin
+        .from('refund_filing_errors')
+        .insert({
+          user_id: userId,
+          dispute_id: disputeId,
+          error_type: 'filing_error',
+          error_message: errorMessage,
+          retry_count: retryCount,
+          max_retries: maxRetries,
+          created_at: new Date().toISOString()
+        });
+
+      logger.debug('📝 [REFUND FILING] Error logged', {
+        disputeId,
+        userId,
+        errorMessage
+      });
+
+    } catch (error: any) {
+      logger.error('❌ [REFUND FILING] Failed to log error', {
+        disputeId,
+        error: error.message
+      });
+    }
+  }
+}
+
+// Export singleton instance
+const refundFilingWorker = new RefundFilingWorker();
+export default refundFilingWorker;
+
