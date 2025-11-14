@@ -229,7 +229,8 @@ export class BackgroundSyncWorker {
       });
 
       const syncStartTime = Date.now();
-      const syncId = await this.syncJob.syncUserData(userId);
+      const syncResult = await this.syncJob.syncUserData(userId);
+      const syncId = syncResult.syncId;
       const syncDuration = Date.now() - syncStartTime;
 
       logger.info(`Background sync completed for user: ${userId}`, {
@@ -324,7 +325,8 @@ export class BackgroundSyncWorker {
    */
   async triggerManualSync(userId: string): Promise<string> {
     logger.info(`Manual sync triggered for user: ${userId}`);
-    return await this.syncJob.syncUserData(userId);
+    const result = await this.syncJob.syncUserData(userId);
+    return result.syncId;
   }
 }
 

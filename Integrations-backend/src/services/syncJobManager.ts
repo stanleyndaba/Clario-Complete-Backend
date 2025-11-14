@@ -167,7 +167,9 @@ class SyncJobManager {
       this.sendProgressUpdate(userId, syncStatus);
 
       // Run the actual Amazon sync job (this fetches claims, inventory, fees)
-      const syncResultId = await this.amazonSyncJob.syncUserData(userId);
+      const syncResult = await this.amazonSyncJob.syncUserData(userId);
+      const syncResultId = syncResult.syncId;
+      const syncSummary = syncResult.summary;
       
       if (isCancelled()) {
         syncStatus.status = 'cancelled';
@@ -282,16 +284,21 @@ class SyncJobManager {
       // Get sync results from database (now includes detection results if completed)
       const syncResults = await this.getSyncResults(userId, syncId);
 
+      // Use actual counts from sync summary if available, otherwise use database counts
+      const ordersProcessed = syncSummary?.ordersCount || syncResults.ordersProcessed || 0;
+      const totalOrders = syncSummary?.ordersCount || syncResults.totalOrders || 0;
+      const claimsDetected = syncSummary?.claimsCount || syncResults.claimsDetected || 0;
+
       // Update progress: 100% - Complete (use 'completed' to match database)
       syncStatus.progress = 100;
       syncStatus.status = 'completed';
-      syncStatus.message = syncResults.claimsDetected > 0
-        ? `Sync completed successfully - ${syncResults.claimsDetected} discrepancies detected`
-        : 'Sync completed successfully';
+      syncStatus.message = claimsDetected > 0
+        ? `Sync completed successfully - ${claimsDetected} claims, ${ordersProcessed} orders synced`
+        : `Sync completed successfully - ${ordersProcessed} orders synced`;
       syncStatus.completedAt = new Date().toISOString();
-      syncStatus.ordersProcessed = syncResults.ordersProcessed || 0;
-      syncStatus.totalOrders = syncResults.totalOrders || 0;
-      syncStatus.claimsDetected = syncResults.claimsDetected || 0;
+      syncStatus.ordersProcessed = ordersProcessed;
+      syncStatus.totalOrders = totalOrders;
+      syncStatus.claimsDetected = claimsDetected;
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
 

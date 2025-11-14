@@ -55,7 +55,7 @@ export class Phase2SyncOrchestrator {
         'inventory',
         async () => {
           const result = await this.syncJob.syncUserData(userId);
-          return { count: 0, syncId: result }; // Count will be updated from logs
+          return { count: 0, syncId: result.syncId }; // Count will be updated from logs
         }
       );
       results.push(inventoryResult);

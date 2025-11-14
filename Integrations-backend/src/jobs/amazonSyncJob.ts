@@ -10,7 +10,7 @@ import detectionService from '../services/detectionService';
 export class AmazonSyncJob {
   private isRunning = false;
 
-  async syncUserData(userId: string): Promise<string> {
+  async syncUserData(userId: string): Promise<{ syncId: string; summary: { ordersCount: number; claimsCount: number; feesCount: number; inventoryCount: number; shipmentsCount: number; returnsCount: number; settlementsCount: number } }> {
     const syncId = `sync_${userId}_${Date.now()}`;
     
     try {
@@ -35,7 +35,18 @@ export class AmazonSyncJob {
           // Continue with sync using environment variables
         } else {
           logger.info('User not connected to Amazon (no database token or env vars), skipping sync', { userId, syncId });
-          return syncId;
+          return { 
+            syncId, 
+            summary: {
+              ordersCount: 0,
+              claimsCount: 0,
+              feesCount: 0,
+              inventoryCount: 0,
+              shipmentsCount: 0,
+              returnsCount: 0,
+              settlementsCount: 0
+            }
+          };
         }
       } else {
         logger.info('User has valid Amazon token, proceeding with sync', { userId, syncId });
@@ -288,7 +299,7 @@ export class AmazonSyncJob {
       }
 
       logger.info('Amazon sync completed successfully', { userId, syncId });
-      return syncId;
+      return { syncId, summary };
     } catch (error: any) {
       logger.error('Error during Amazon sync', { userId, syncId, error: error?.message });
       if (error.status === 401) {
@@ -303,7 +314,18 @@ export class AmazonSyncJob {
           immediate: true,
         });
       }
-      return syncId;
+      return { 
+        syncId, 
+        summary: {
+          ordersCount: 0,
+          claimsCount: 0,
+          feesCount: 0,
+          inventoryCount: 0,
+          shipmentsCount: 0,
+          returnsCount: 0,
+          settlementsCount: 0
+        }
+      };
     }
   }
 
