@@ -449,7 +449,7 @@ export class GmailIngestionService {
 
       // Call Python API parsing endpoint
       // Use environment variable for Python API URL, fallback to localhost
-      const pythonApiUrl = process.env.PYTHON_API_URL || process.env.API_URL || 'https://python-api-3-vb5h.onrender.com';
+      const pythonApiUrl = process.env.PYTHON_API_URL || process.env.API_URL || 'https://python-api-4-aukq.onrender.com';
       const parseEndpoint = `${pythonApiUrl}/api/v1/evidence/parse/${documentId}`;
 
       try {

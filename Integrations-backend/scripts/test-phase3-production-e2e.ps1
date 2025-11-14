@@ -50,7 +50,7 @@ if ($UserId) {
 # Test 1: Health Check
 Write-Host "1️⃣ Testing Python API Health Check..." -ForegroundColor Yellow
 try {
-    $healthResponse = Invoke-RestMethod -Uri "https://python-api-3-vb5h.onrender.com/health" -Method Get -ErrorAction Stop
+    $healthResponse = Invoke-RestMethod -Uri "https://python-api-4-aukq.onrender.com/health" -Method Get -ErrorAction Stop
     if ($healthResponse.status -eq "ok" -or $healthResponse.status -eq "healthy") {
         Write-Host "✅ Python API: healthy" -ForegroundColor Green
         $testResults.PythonAPI = $true

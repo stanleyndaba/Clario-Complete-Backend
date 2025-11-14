@@ -16,7 +16,7 @@ interface MulterFile {
 const router = express.Router();
 
 // Python backend URL - can be overridden by environment variable
-const PYTHON_API_URL = process.env.PYTHON_API_URL || process.env.VITE_PYTHON_API_URL || 'https://python-api-3-vb5h.onrender.com';
+const PYTHON_API_URL = process.env.PYTHON_API_URL || process.env.VITE_PYTHON_API_URL || 'https://python-api-4-aukq.onrender.com';
 
 // Configure multer for file uploads (memory storage)
 const storage = multer.memoryStorage();
