@@ -281,6 +281,20 @@ export class DocumentParsingWorker {
         extractionMethod: parsedData.extraction_method
       });
 
+      // 🎯 TRIGGER AGENT 6: Evidence Matching
+      // Trigger matching for this user when document parsing completes
+      try {
+        const evidenceMatchingWorker = (await import('./evidenceMatchingWorker')).default;
+        await evidenceMatchingWorker.triggerMatchingForParsedDocument(document.seller_id);
+        logger.info(`🔄 [DOCUMENT PARSING WORKER] Triggered evidence matching for user: ${document.seller_id}`);
+      } catch (error: any) {
+        // Non-blocking - matching can be triggered by scheduled worker
+        logger.debug('⚠️ [DOCUMENT PARSING WORKER] Failed to trigger evidence matching (non-critical)', {
+          error: error.message,
+          userId: document.seller_id
+        });
+      }
+
       return { success: true };
 
     } catch (error: any) {
