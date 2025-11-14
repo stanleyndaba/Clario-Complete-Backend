@@ -55,6 +55,7 @@ import websocketService from './services/websocketService';
 import detectionService from './services/detectionService';
 import backgroundSyncWorker from './jobs/backgroundSyncWorker';
 import evidenceIngestionWorker from './workers/evidenceIngestionWorker';
+import documentParsingWorker from './workers/documentParsingWorker';
 
 const app = express();
 const server = createServer(app);
@@ -300,6 +301,16 @@ server.listen(PORT, '0.0.0.0', () => {
       } else {
         logger.info('Evidence ingestion worker disabled (ENABLE_EVIDENCE_INGESTION_WORKER=false)');
       }
+
+      // Start Document Parsing Worker (if enabled)
+      if (process.env.ENABLE_DOCUMENT_PARSING_WORKER !== 'false') {
+        documentParsingWorker.start().catch((error: any) => {
+          logger.error('Failed to start document parsing worker', { error: error.message });
+        });
+        logger.info('Document parsing worker initialized');
+      } else {
+        logger.info('Document parsing worker disabled (ENABLE_DOCUMENT_PARSING_WORKER=false)');
+      }
       
       // Start detection job processor (processes detection jobs from queue)
       // This runs continuously to process detection jobs queued after sync
@@ -359,7 +370,8 @@ server.listen(PORT, '0.0.0.0', () => {
       logger.info('Background jobs started', {
         deadline_monitoring: 'started',
         detection_processor: 'started',
-        evidence_ingestion_worker: process.env.ENABLE_EVIDENCE_INGESTION_WORKER !== 'false' ? 'started' : 'disabled'
+        evidence_ingestion_worker: process.env.ENABLE_EVIDENCE_INGESTION_WORKER !== 'false' ? 'started' : 'disabled',
+        document_parsing_worker: process.env.ENABLE_DOCUMENT_PARSING_WORKER !== 'false' ? 'started' : 'disabled'
       });
     } catch (error: any) {
       logger.error('Error starting background jobs (non-blocking)', { 

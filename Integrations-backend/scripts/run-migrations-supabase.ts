@@ -19,7 +19,8 @@ const migrations = [
   '009_evidence_documents_extracted_gin.sql',
   '010_evidence_engine_extras.sql',
   '011_evidence_engine_views.sql',
-  '011_evidence_ingestion_worker.sql'
+  '011_evidence_ingestion_worker.sql',
+  '012_document_parsing_worker.sql'
 ];
 
 async function generateMigrationSQL() {
