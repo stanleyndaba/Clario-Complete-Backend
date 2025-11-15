@@ -157,6 +157,12 @@ export const getSyncStatus = async (req: Request, res: Response) => {
       estimatedCompletion: syncStatus.estimatedCompletion,
       ordersProcessed: syncStatus.ordersProcessed,
       totalOrders: syncStatus.totalOrders,
+      inventoryCount: syncStatus.inventoryCount,
+      shipmentsCount: syncStatus.shipmentsCount,
+      returnsCount: syncStatus.returnsCount,
+      settlementsCount: syncStatus.settlementsCount,
+      feesCount: syncStatus.feesCount,
+      claimsDetected: syncStatus.claimsDetected,
       completedAt: syncStatus.completedAt,
       error: syncStatus.error
     });

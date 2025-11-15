@@ -19,6 +19,11 @@ export interface SyncJobStatus {
   ordersProcessed?: number;
   totalOrders?: number;
   claimsDetected?: number;
+  inventoryCount?: number;
+  shipmentsCount?: number;
+  returnsCount?: number;
+  settlementsCount?: number;
+  feesCount?: number;
   error?: string;
 }
 
@@ -334,8 +339,14 @@ class SyncJobManager {
         ? `Sync completed successfully - ${totalItemsSynced} items synced, ${syncResults.claimsDetected} discrepancies detected`
         : `Sync completed successfully - ${totalItemsSynced} items synced`;
       syncStatus.completedAt = new Date().toISOString();
+      // Store all data type counts from Agent 2
       syncStatus.ordersProcessed = syncResult?.summary?.ordersCount || syncResults.ordersProcessed || 0;
       syncStatus.totalOrders = syncResult?.summary?.ordersCount || syncResults.totalOrders || 0;
+      syncStatus.inventoryCount = syncResult?.summary?.inventoryCount || 0;
+      syncStatus.shipmentsCount = syncResult?.summary?.shipmentsCount || 0;
+      syncStatus.returnsCount = syncResult?.summary?.returnsCount || 0;
+      syncStatus.settlementsCount = syncResult?.summary?.settlementsCount || 0;
+      syncStatus.feesCount = syncResult?.summary?.feesCount || 0;
       syncStatus.claimsDetected = syncResults.claimsDetected || 0;
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
@@ -396,6 +407,7 @@ class SyncJobManager {
         normalizedStatus = 'cancelled';
       }
 
+      const metadata = (data.metadata as any) || {};
       return {
         syncId: data.sync_id,
         userId: data.user_id,
@@ -404,10 +416,15 @@ class SyncJobManager {
         message: data.current_step || 'Unknown',
         startedAt: data.created_at,
         completedAt: data.updated_at,
-        ordersProcessed: (data.metadata as any)?.ordersProcessed || 0,
-        totalOrders: (data.metadata as any)?.totalOrders || 0,
-        claimsDetected: (data.metadata as any)?.claimsDetected || 0,
-        error: (data.metadata as any)?.error
+        ordersProcessed: metadata.ordersProcessed || 0,
+        totalOrders: metadata.totalOrders || 0,
+        inventoryCount: metadata.inventoryCount || 0,
+        shipmentsCount: metadata.shipmentsCount || 0,
+        returnsCount: metadata.returnsCount || 0,
+        settlementsCount: metadata.settlementsCount || 0,
+        feesCount: metadata.feesCount || 0,
+        claimsDetected: metadata.claimsDetected || 0,
+        error: metadata.error
       };
     } catch (error) {
       logger.error(`Error getting sync status for ${syncId}:`, error);
@@ -493,6 +510,11 @@ class SyncJobManager {
           metadata: {
             ...(updates.ordersProcessed !== undefined && { ordersProcessed: updates.ordersProcessed }),
             ...(updates.totalOrders !== undefined && { totalOrders: updates.totalOrders }),
+            ...(updates.inventoryCount !== undefined && { inventoryCount: updates.inventoryCount }),
+            ...(updates.shipmentsCount !== undefined && { shipmentsCount: updates.shipmentsCount }),
+            ...(updates.returnsCount !== undefined && { returnsCount: updates.returnsCount }),
+            ...(updates.settlementsCount !== undefined && { settlementsCount: updates.settlementsCount }),
+            ...(updates.feesCount !== undefined && { feesCount: updates.feesCount }),
             ...(updates.claimsDetected !== undefined && { claimsDetected: updates.claimsDetected }),
             ...(updates.error && { error: updates.error }),
             ...(updates.completedAt && { completedAt: updates.completedAt })
@@ -529,19 +551,27 @@ class SyncJobManager {
         return { syncs: [], total: 0 };
       }
 
-      const syncs = (data || []).map((row: any) => ({
-        syncId: row.sync_id,
-        userId: row.user_id,
-        status: row.status as any,
-        progress: row.progress || 0,
-        message: row.current_step || 'Unknown',
-        startedAt: row.created_at,
-        completedAt: row.updated_at,
-        ordersProcessed: (row.metadata as any)?.ordersProcessed || 0,
-        totalOrders: (row.metadata as any)?.totalOrders || 0,
-        claimsDetected: (row.metadata as any)?.claimsDetected || 0,
-        error: (row.metadata as any)?.error
-      }));
+      const syncs = (data || []).map((row: any) => {
+        const metadata = (row.metadata as any) || {};
+        return {
+          syncId: row.sync_id,
+          userId: row.user_id,
+          status: row.status as any,
+          progress: row.progress || 0,
+          message: row.current_step || 'Unknown',
+          startedAt: row.created_at,
+          completedAt: row.updated_at,
+          ordersProcessed: metadata.ordersProcessed || 0,
+          totalOrders: metadata.totalOrders || 0,
+          inventoryCount: metadata.inventoryCount || 0,
+          shipmentsCount: metadata.shipmentsCount || 0,
+          returnsCount: metadata.returnsCount || 0,
+          settlementsCount: metadata.settlementsCount || 0,
+          feesCount: metadata.feesCount || 0,
+          claimsDetected: metadata.claimsDetected || 0,
+          error: metadata.error
+        };
+      });
 
       return {
         syncs,
@@ -674,6 +704,7 @@ class SyncJobManager {
         return null;
       }
 
+      const metadata = (data.metadata as any) || {};
       return {
         syncId: data.sync_id,
         userId: data.user_id,
@@ -681,9 +712,14 @@ class SyncJobManager {
         progress: data.progress || 0,
         message: data.current_step || 'Unknown',
         startedAt: data.created_at,
-        ordersProcessed: (data.metadata as any)?.ordersProcessed || 0,
-        totalOrders: (data.metadata as any)?.totalOrders || 0,
-        claimsDetected: (data.metadata as any)?.claimsDetected || 0
+        ordersProcessed: metadata.ordersProcessed || 0,
+        totalOrders: metadata.totalOrders || 0,
+        inventoryCount: metadata.inventoryCount || 0,
+        shipmentsCount: metadata.shipmentsCount || 0,
+        returnsCount: metadata.returnsCount || 0,
+        settlementsCount: metadata.settlementsCount || 0,
+        feesCount: metadata.feesCount || 0,
+        claimsDetected: metadata.claimsDetected || 0
       };
     } catch (error) {
       return null;
@@ -711,6 +747,11 @@ class SyncJobManager {
           metadata: {
             ordersProcessed: syncStatus.ordersProcessed || 0,
             totalOrders: syncStatus.totalOrders || 0,
+            inventoryCount: syncStatus.inventoryCount || 0,
+            shipmentsCount: syncStatus.shipmentsCount || 0,
+            returnsCount: syncStatus.returnsCount || 0,
+            settlementsCount: syncStatus.settlementsCount || 0,
+            feesCount: syncStatus.feesCount || 0,
             claimsDetected: syncStatus.claimsDetected || 0,
             error: syncStatus.error,
             startedAt: syncStatus.startedAt,
@@ -754,6 +795,11 @@ class SyncJobManager {
       message: syncStatus.message,
       ordersProcessed: syncStatus.ordersProcessed,
       totalOrders: syncStatus.totalOrders,
+      inventoryCount: syncStatus.inventoryCount,
+      shipmentsCount: syncStatus.shipmentsCount,
+      returnsCount: syncStatus.returnsCount,
+      settlementsCount: syncStatus.settlementsCount,
+      feesCount: syncStatus.feesCount,
       claimsDetected: syncStatus.claimsDetected,
       timestamp: new Date().toISOString()
     });
