@@ -1,5 +1,5 @@
 import logger from '../utils/logger';
-import { AmazonSyncJob } from '../jobs/amazonSyncJob';
+import agent2DataSyncService from './agent2DataSyncService';
 import { supabase } from '../database/supabaseClient';
 import sseHub from '../utils/sseHub';
 import tokenManager from '../utils/tokenManager';
@@ -24,10 +24,9 @@ export interface SyncJobStatus {
 
 class SyncJobManager {
   private runningJobs: Map<string, { status: SyncJobStatus; cancel: () => void }> = new Map();
-  private readonly amazonSyncJob: AmazonSyncJob;
 
   constructor() {
-    this.amazonSyncJob = new AmazonSyncJob();
+    // Agent 2 Data Sync Service is imported and used directly
   }
 
   /**
@@ -145,11 +144,12 @@ class SyncJobManager {
     }
 
     const syncStatus = job.status;
+    let syncResult: any = null; // Store Agent 2 sync result for use throughout method
 
     try {
-      // Update progress: 10% - Starting
+      // Update progress: 10% - Starting Agent 2 sync
       syncStatus.progress = 10;
-      syncStatus.message = 'Fetching inventory data...';
+      syncStatus.message = 'Starting data sync...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
 
@@ -160,14 +160,47 @@ class SyncJobManager {
         return;
       }
 
-      // Update progress: 30% - Fetching inventory
-      syncStatus.progress = 30;
-      syncStatus.message = 'Fetching inventory from SP-API...';
+      // Update progress: 20% - Fetching orders
+      syncStatus.progress = 20;
+      syncStatus.message = 'Fetching orders from Amazon SP-API...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
 
-      // Run the actual Amazon sync job (this fetches claims, inventory, fees)
-      const syncResultId = await this.amazonSyncJob.syncUserData(userId);
+      if (isCancelled()) {
+        syncStatus.status = 'cancelled';
+        syncStatus.message = 'Sync cancelled';
+        this.updateSyncStatus(syncStatus);
+        return;
+      }
+
+      // Update progress: 40% - Running Agent 2 data sync
+      syncStatus.progress = 40;
+      syncStatus.message = 'Syncing data (orders, shipments, returns, settlements, inventory, claims)...';
+      this.updateSyncStatus(syncStatus);
+      this.sendProgressUpdate(userId, syncStatus);
+
+      // Run Agent 2 Data Sync Service (comprehensive data sync with normalization)
+      logger.info('🔄 [SYNC JOB MANAGER] Starting Agent 2 data sync', { userId, syncId });
+      syncResult = await agent2DataSyncService.syncUserData(userId);
+      
+      // Check if Agent 2 sync failed
+      if (!syncResult.success) {
+        logger.error('❌ [SYNC JOB MANAGER] Agent 2 sync failed', {
+          userId,
+          syncId,
+          errors: syncResult.errors,
+          summary: syncResult.summary
+        });
+        throw new Error(`Agent 2 sync failed: ${syncResult.errors.join(', ') || 'Unknown error'}`);
+      }
+      
+      logger.info('✅ [SYNC JOB MANAGER] Agent 2 sync completed', {
+        userId,
+        syncId,
+        success: syncResult.success,
+        summary: syncResult.summary,
+        isMock: syncResult.isMock
+      });
       
       if (isCancelled()) {
         syncStatus.status = 'cancelled';
@@ -176,9 +209,11 @@ class SyncJobManager {
         return;
       }
 
-      // Update progress: 60% - Processing data
-      syncStatus.progress = 60;
-      syncStatus.message = 'Processing sync data...';
+      // Update progress: 70% - Data normalization complete
+      syncStatus.progress = 70;
+      syncStatus.message = 'Data normalization complete. Processing results...';
+      syncStatus.ordersProcessed = syncResult.summary.ordersCount || 0;
+      syncStatus.totalOrders = syncResult.summary.ordersCount || 0;
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
 
@@ -189,9 +224,9 @@ class SyncJobManager {
         return;
       }
 
-      // Update progress: 90% - Waiting for detection to complete
-      syncStatus.progress = 90;
-      syncStatus.message = 'Waiting for discrepancy detection...';
+      // Update progress: 80% - Waiting for Agent 3 (claim detection) to complete
+      syncStatus.progress = 80;
+      syncStatus.message = 'Waiting for claim detection (Agent 3)...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
 
@@ -282,15 +317,25 @@ class SyncJobManager {
       // Get sync results from database (now includes detection results if completed)
       const syncResults = await this.getSyncResults(userId, syncId);
 
+      // Use Agent 2 sync result data if available, otherwise use database results
+      const totalItemsSynced = syncResult 
+        ? ((syncResult.summary?.ordersCount || 0) + 
+           (syncResult.summary?.shipmentsCount || 0) + 
+           (syncResult.summary?.returnsCount || 0) + 
+           (syncResult.summary?.settlementsCount || 0) + 
+           (syncResult.summary?.inventoryCount || 0) + 
+           (syncResult.summary?.claimsCount || 0))
+        : ((syncResults.ordersProcessed || 0) + (syncResults.totalOrders || 0));
+
       // Update progress: 100% - Complete (use 'completed' to match database)
       syncStatus.progress = 100;
       syncStatus.status = 'completed';
       syncStatus.message = syncResults.claimsDetected > 0
-        ? `Sync completed successfully - ${syncResults.claimsDetected} discrepancies detected`
-        : 'Sync completed successfully';
+        ? `Sync completed successfully - ${totalItemsSynced} items synced, ${syncResults.claimsDetected} discrepancies detected`
+        : `Sync completed successfully - ${totalItemsSynced} items synced`;
       syncStatus.completedAt = new Date().toISOString();
-      syncStatus.ordersProcessed = syncResults.ordersProcessed || 0;
-      syncStatus.totalOrders = syncResults.totalOrders || 0;
+      syncStatus.ordersProcessed = syncResult?.summary?.ordersCount || syncResults.ordersProcessed || 0;
+      syncStatus.totalOrders = syncResult?.summary?.ordersCount || syncResults.totalOrders || 0;
       syncStatus.claimsDetected = syncResults.claimsDetected || 0;
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
