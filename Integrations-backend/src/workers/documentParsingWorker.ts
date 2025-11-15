@@ -281,6 +281,24 @@ export class DocumentParsingWorker {
         extractionMethod: parsedData.extraction_method
       });
 
+      // 🎯 AGENT 11 INTEGRATION: Log parsing event
+      try {
+        const agentEventLogger = (await import('../services/agentEventLogger')).default;
+        const parsingStartTime = Date.now();
+        await agentEventLogger.logDocumentParsing({
+          userId: document.seller_id,
+          documentId: document.id,
+          success: true,
+          confidence: parsedData.confidence_score || 0,
+          extractionMethod: parsedData.extraction_method || 'unknown',
+          duration: Date.now() - parsingStartTime
+        });
+      } catch (logError: any) {
+        logger.warn('⚠️ [DOCUMENT PARSING WORKER] Failed to log event', {
+          error: logError.message
+        });
+      }
+
       // 🎯 AGENT 10 INTEGRATION: Notify when evidence is parsed
       try {
         const notificationHelper = (await import('../services/notificationHelper')).default;
@@ -331,6 +349,24 @@ export class DocumentParsingWorker {
         error: error.message,
         documentId: document.id
       });
+
+      // 🎯 AGENT 11 INTEGRATION: Log parsing failure
+      try {
+        const agentEventLogger = (await import('../services/agentEventLogger')).default;
+        await agentEventLogger.logDocumentParsing({
+          userId: document.seller_id,
+          documentId: document.id,
+          success: false,
+          confidence: 0,
+          extractionMethod: 'failed',
+          duration: 0,
+          error: error.message
+        });
+      } catch (logError: any) {
+        logger.warn('⚠️ [DOCUMENT PARSING WORKER] Failed to log event', {
+          error: logError.message
+        });
+      }
 
       return { success: false, error: error.message };
     }

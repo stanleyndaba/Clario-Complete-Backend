@@ -61,6 +61,7 @@ import refundFilingWorker from './workers/refundFilingWorker';
 import recoveriesWorker from './workers/recoveriesWorker';
 import billingWorker from './workers/billingWorker';
 import notificationsWorker from './workers/notificationsWorker';
+import learningWorker from './workers/learningWorker';
 
 const app = express();
 const server = createServer(app);
@@ -358,6 +359,14 @@ server.listen(PORT, '0.0.0.0', () => {
       } else {
         logger.info('Notifications worker disabled (ENABLE_NOTIFICATIONS_WORKER=false)');
       }
+
+      // Start Learning Worker (Agent 11)
+      if (process.env.ENABLE_LEARNING_WORKER !== 'false') {
+        learningWorker.start();
+        logger.info('Learning worker initialized');
+      } else {
+        logger.info('Learning worker disabled (ENABLE_LEARNING_WORKER=false)');
+      }
       
       // Start detection job processor (processes detection jobs from queue)
       // This runs continuously to process detection jobs queued after sync
@@ -419,7 +428,12 @@ server.listen(PORT, '0.0.0.0', () => {
         detection_processor: 'started',
         evidence_ingestion_worker: process.env.ENABLE_EVIDENCE_INGESTION_WORKER !== 'false' ? 'started' : 'disabled',
         document_parsing_worker: process.env.ENABLE_DOCUMENT_PARSING_WORKER !== 'false' ? 'started' : 'disabled',
-        evidence_matching_worker: process.env.ENABLE_EVIDENCE_MATCHING_WORKER !== 'false' ? 'started' : 'disabled'
+        evidence_matching_worker: process.env.ENABLE_EVIDENCE_MATCHING_WORKER !== 'false' ? 'started' : 'disabled',
+        refund_filing_worker: process.env.ENABLE_REFUND_FILING_WORKER !== 'false' ? 'started' : 'disabled',
+        recoveries_worker: process.env.ENABLE_RECOVERIES_WORKER !== 'false' ? 'started' : 'disabled',
+        billing_worker: process.env.ENABLE_BILLING_WORKER !== 'false' ? 'started' : 'disabled',
+        notifications_worker: process.env.ENABLE_NOTIFICATIONS_WORKER !== 'false' ? 'started' : 'disabled',
+        learning_worker: process.env.ENABLE_LEARNING_WORKER !== 'false' ? 'started' : 'disabled'
       });
     } catch (error: any) {
       logger.error('Error starting background jobs (non-blocking)', { 

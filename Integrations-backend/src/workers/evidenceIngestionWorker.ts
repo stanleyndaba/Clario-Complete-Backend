@@ -594,6 +594,26 @@ export class EvidenceIngestionWorker {
       stats.failed = result.errors?.length || 0;
       stats.errors = result.errors || [];
 
+      // 🎯 AGENT 11 INTEGRATION: Log ingestion event
+      try {
+        const agentEventLogger = (await import('../services/agentEventLogger')).default;
+        const ingestionStartTime = Date.now();
+        await agentEventLogger.logEvidenceIngestion({
+          userId,
+          success: stats.failed === 0,
+          documentsIngested: stats.ingested,
+          documentsSkipped: stats.skipped,
+          documentsFailed: stats.failed,
+          duration: Date.now() - ingestionStartTime,
+          provider: source.provider,
+          errors: stats.errors
+        });
+      } catch (logError: any) {
+        logger.warn('⚠️ [EVIDENCE WORKER] Failed to log event', {
+          error: logError.message
+        });
+      }
+
       // Store raw files for newly ingested documents
       if (stats.ingested > 0) {
         await this.storeRawFilesForNewDocuments(userId, source.provider);

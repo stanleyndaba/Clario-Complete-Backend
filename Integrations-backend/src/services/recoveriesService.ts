@@ -338,6 +338,25 @@ class RecoveriesService {
         status
       });
 
+      // 🎯 AGENT 11 INTEGRATION: Log recovery event
+      try {
+        const agentEventLogger = (await import('./agentEventLogger')).default;
+        await agentEventLogger.logRecovery({
+          userId,
+          disputeId: match.disputeId,
+          success: status === 'reconciled',
+          recoveryId: recovery.id,
+          expectedAmount: match.expectedAmount,
+          actualAmount: match.actualAmount,
+          reconciliationStatus: status,
+          duration: 0
+        });
+      } catch (logError: any) {
+        logger.warn('⚠️ [RECOVERIES] Failed to log event', {
+          error: logError.message
+        });
+      }
+
       // 🎯 AGENT 10 INTEGRATION: Notify when funds are deposited (reconciled)
       if (status === 'reconciled') {
         try {

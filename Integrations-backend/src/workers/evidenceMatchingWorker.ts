@@ -291,6 +291,29 @@ export class EvidenceMatchingWorker {
         held: processedStats.held
       });
 
+      // 🎯 AGENT 11 INTEGRATION: Log matching events
+      try {
+        const agentEventLogger = (await import('../services/agentEventLogger')).default;
+        const matchingStartTime = Date.now();
+        
+        for (const result of (matchingResult.results || [])) {
+          await agentEventLogger.logEvidenceMatching({
+            userId,
+            disputeId: result.dispute_id || '',
+            success: true,
+            confidence: result.final_confidence || 0,
+            action: (result.final_confidence || 0) >= 0.85 ? 'auto_submit' 
+              : (result.final_confidence || 0) >= 0.5 ? 'smart_prompt' 
+              : 'hold',
+            duration: Date.now() - matchingStartTime
+          });
+        }
+      } catch (logError: any) {
+        logger.warn('⚠️ [EVIDENCE MATCHING WORKER] Failed to log event', {
+          error: logError.message
+        });
+      }
+
       return {
         success: true,
         matches: matchingResult.matches,

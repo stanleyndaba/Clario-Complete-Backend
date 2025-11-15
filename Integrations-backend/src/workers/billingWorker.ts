@@ -290,6 +290,25 @@ class BillingWorker {
           platformFeeCents: feeCalculation.platformFeeCents
         });
 
+        // 🎯 AGENT 11 INTEGRATION: Log billing event
+        try {
+          const agentEventLogger = (await import('../services/agentEventLogger')).default;
+          await agentEventLogger.logBilling({
+            userId,
+            disputeId,
+            success: true,
+            amountRecovered: amountRecoveredCents / 100,
+            platformFee: feeCalculation.platformFeeCents / 100,
+            sellerPayout: feeCalculation.sellerPayoutCents / 100,
+            stripeTransactionId: result.stripeTransactionId,
+            duration: 0
+          });
+        } catch (logError: any) {
+          logger.warn('⚠️ [BILLING] Failed to log event', {
+            error: logError.message
+          });
+        }
+
         // 🎯 AGENT 10 INTEGRATION: Notify when funds are deposited (billing complete)
         try {
           const notificationHelper = (await import('../services/notificationHelper')).default;
@@ -346,6 +365,25 @@ class BillingWorker {
           retryCount: newRetryCount,
           error: result.error
         });
+
+        // 🎯 AGENT 11 INTEGRATION: Log billing failure
+        try {
+          const agentEventLogger = (await import('../services/agentEventLogger')).default;
+          await agentEventLogger.logBilling({
+            userId,
+            disputeId,
+            success: false,
+            amountRecovered: amountRecoveredCents / 100,
+            platformFee: feeCalculation.platformFeeCents / 100,
+            sellerPayout: feeCalculation.sellerPayoutCents / 100,
+            duration: 0,
+            error: result.error || 'Billing failed'
+          });
+        } catch (logError: any) {
+          logger.warn('⚠️ [BILLING] Failed to log event', {
+            error: logError.message
+          });
+        }
 
         return {
           success: false,

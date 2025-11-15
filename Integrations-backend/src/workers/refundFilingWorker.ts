@@ -322,8 +322,43 @@ class RefundFilingWorker {
             // If denied, mark for retry with stronger evidence
             if (statusResult.status === 'denied' && submission.status !== 'denied') {
               logger.warn('⚠️ [REFUND FILING] Case denied, marking for retry', {
-                disputeId: disputeCase.id
+                disputeId: disputeCase.id,
+                rejectionReason: statusResult.rejection_reason
               });
+
+              // 🎯 AGENT 11 INTEGRATION: Process rejection for learning
+              try {
+                const learningWorker = (await import('./learningWorker')).default;
+                await learningWorker.processRejection(
+                  disputeCase.seller_id,
+                  disputeCase.id,
+                  statusResult.rejection_reason || 'Unknown reason',
+                  statusResult.amazon_case_id
+                );
+              } catch (learnError: any) {
+                logger.warn('⚠️ [REFUND FILING] Failed to process rejection for learning', {
+                  error: learnError.message
+                });
+              }
+
+              // 🎯 AGENT 11 INTEGRATION: Log filing denial event
+              try {
+                const agentEventLogger = (await import('../services/agentEventLogger')).default;
+                await agentEventLogger.logRefundFiling({
+                  userId: disputeCase.seller_id,
+                  disputeId: disputeCase.id,
+                  success: false,
+                  status: 'denied',
+                  rejectionReason: statusResult.rejection_reason || 'Unknown reason',
+                  amazonCaseId: statusResult.amazon_case_id,
+                  duration: 0
+                });
+              } catch (logError: any) {
+                logger.warn('⚠️ [REFUND FILING] Failed to log event', {
+                  error: logError.message
+                });
+              }
+
               await this.markForRetry(disputeCase.id, disputeCase.seller_id);
             }
           }
@@ -396,6 +431,23 @@ class RefundFilingWorker {
           submissionId: result.submission_id,
           amazonCaseId: result.amazon_case_id
         });
+
+        // 🎯 AGENT 11 INTEGRATION: Log filing event
+        try {
+          const agentEventLogger = (await import('../services/agentEventLogger')).default;
+          await agentEventLogger.logRefundFiling({
+            userId: disputeCase.seller_id,
+            disputeId,
+            success: true,
+            status: 'filed',
+            amazonCaseId: result.amazon_case_id,
+            duration: 0
+          });
+        } catch (logError: any) {
+          logger.warn('⚠️ [REFUND FILING] Failed to log event', {
+            error: logError.message
+          });
+        }
 
         // 🎯 AGENT 10 INTEGRATION: Notify when case is filed
         try {
@@ -504,6 +556,23 @@ class RefundFilingWorker {
           logger.info('📝 [REFUND FILING] Case approved, marked for recovery detection by Agent 8', {
             disputeId
           });
+
+          // 🎯 AGENT 11 INTEGRATION: Log approval event
+          try {
+            const agentEventLogger = (await import('../services/agentEventLogger')).default;
+            await agentEventLogger.logRefundFiling({
+              userId: caseData?.seller_id || '',
+              disputeId,
+              success: true,
+              status: 'approved',
+              amazonCaseId: statusResult.amazon_case_id || caseData?.provider_case_id,
+              duration: 0
+            });
+          } catch (logError: any) {
+            logger.warn('⚠️ [REFUND FILING] Failed to log event', {
+              error: logError.message
+            });
+          }
 
           // 🎯 AGENT 10 INTEGRATION: Notify when refund is approved
           try {
