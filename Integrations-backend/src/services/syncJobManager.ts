@@ -596,6 +596,14 @@ class SyncJobManager {
       message?: string;
       startedAt?: string;
       completedAt?: string;
+      ordersProcessed?: number;
+      totalOrders?: number;
+      inventoryCount?: number;
+      shipmentsCount?: number;
+      returnsCount?: number;
+      settlementsCount?: number;
+      feesCount?: number;
+      claimsDetected?: number;
     } | null;
   }> {
     // Check running jobs first
@@ -609,7 +617,15 @@ class SyncJobManager {
             progress: job.status.progress,
             message: job.status.message,
             startedAt: job.status.startedAt,
-            completedAt: job.status.completedAt
+            completedAt: job.status.completedAt,
+            ordersProcessed: job.status.ordersProcessed,
+            totalOrders: job.status.totalOrders,
+            inventoryCount: job.status.inventoryCount,
+            shipmentsCount: job.status.shipmentsCount,
+            returnsCount: job.status.returnsCount,
+            settlementsCount: job.status.settlementsCount,
+            feesCount: job.status.feesCount,
+            claimsDetected: job.status.claimsDetected
           }
         };
       }
@@ -638,6 +654,7 @@ class SyncJobManager {
           .maybeSingle();
 
         if (lastSyncData) {
+          const metadata = (lastSyncData.metadata as any) || {};
           return {
             hasActiveSync: false,
             lastSync: {
@@ -646,7 +663,15 @@ class SyncJobManager {
               progress: lastSyncData.progress || 0,
               message: lastSyncData.current_step || 'Unknown',
               startedAt: lastSyncData.created_at,
-              completedAt: lastSyncData.updated_at
+              completedAt: lastSyncData.updated_at,
+              ordersProcessed: metadata.ordersProcessed || 0,
+              totalOrders: metadata.totalOrders || 0,
+              inventoryCount: metadata.inventoryCount || 0,
+              shipmentsCount: metadata.shipmentsCount || 0,
+              returnsCount: metadata.returnsCount || 0,
+              settlementsCount: metadata.settlementsCount || 0,
+              feesCount: metadata.feesCount || 0,
+              claimsDetected: metadata.claimsDetected || 0
             }
           };
         }
@@ -658,6 +683,7 @@ class SyncJobManager {
       }
 
       // Found active sync
+      const metadata = (data.metadata as any) || {};
       return {
         hasActiveSync: true,
         lastSync: {
@@ -666,7 +692,15 @@ class SyncJobManager {
           progress: data.progress || 0,
           message: data.current_step || 'Unknown',
           startedAt: data.created_at,
-          completedAt: data.updated_at
+          completedAt: data.updated_at,
+          ordersProcessed: metadata.ordersProcessed || 0,
+          totalOrders: metadata.totalOrders || 0,
+          inventoryCount: metadata.inventoryCount || 0,
+          shipmentsCount: metadata.shipmentsCount || 0,
+          returnsCount: metadata.returnsCount || 0,
+          settlementsCount: metadata.settlementsCount || 0,
+          feesCount: metadata.feesCount || 0,
+          claimsDetected: metadata.claimsDetected || 0
         }
       };
     } catch (error) {
