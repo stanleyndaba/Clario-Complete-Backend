@@ -1,3 +1,13 @@
+/**
+ * @deprecated This file is deprecated. Use tokenManager from '../utils/tokenManager' instead.
+ * The new tokens table (migration 020) uses encrypted IV+data format and is managed by tokenManager.
+ * 
+ * Migration path:
+ * 1. Use tokenManager.saveToken() and tokenManager.getToken() instead of these functions
+ * 2. Old oauth_tokens table data should be migrated to the new tokens table
+ * 3. This file will be removed in a future version
+ */
+
 import { encrypt, decrypt } from '../lib/crypto';
 import knex from 'knex';
 import logger from '../utils/logger';

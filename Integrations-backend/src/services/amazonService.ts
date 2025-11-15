@@ -1226,6 +1226,90 @@ export class AmazonService {
   }
 
   /**
+   * Get seller profile information (seller_id, marketplaces, company name)
+   * This is a convenience wrapper around getSellersInfo for OAuth callback
+   */
+  async getSellerProfile(accessToken: string): Promise<{
+    sellerId: string;
+    marketplaces: string[];
+    companyName?: string;
+    sellerName?: string;
+  }> {
+    try {
+      const sellersUrl = `${this.baseUrl}/sellers/v1/marketplaceParticipations`;
+
+      logger.info('Fetching seller profile from SP-API', {
+        baseUrl: this.baseUrl,
+        isSandbox: this.isSandbox()
+      });
+
+      const response = await axios.get(sellersUrl, {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'x-amz-access-token': accessToken,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      });
+
+      if (response.status === 200) {
+        const data = response.data;
+        const payload = data.payload || data;
+
+        // Handle different response formats
+        let participations: any[] = [];
+        
+        if (Array.isArray(payload)) {
+          participations = payload;
+        } else if (typeof payload === 'object' && payload !== null) {
+          participations = payload.marketplaceParticipations || [];
+          
+          if (participations.length === 0 && payload.marketplace) {
+            participations = [payload];
+          }
+        }
+
+        if (participations.length === 0) {
+          throw new Error('No marketplace participations found');
+        }
+
+        const first = participations[0];
+        const sellerId = first.participation?.sellerId || first.sellerId;
+        const sellerName = first.participation?.sellerName || first.storeName || first.sellerName;
+        const companyName = first.storeName || sellerName;
+
+        const marketplaces: string[] = [];
+        for (const p of participations) {
+          const mpData = p.marketplace || p;
+          if (mpData && (mpData.id || mpData.marketplaceId)) {
+            marketplaces.push(mpData.id || mpData.marketplaceId);
+          }
+        }
+
+        if (!sellerId) {
+          throw new Error('Unable to retrieve sellerId from Amazon');
+        }
+
+        return {
+          sellerId,
+          marketplaces: marketplaces.length > 0 ? marketplaces : [process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER'],
+          companyName,
+          sellerName
+        };
+      } else {
+        throw new Error(`Sellers API error: ${response.status}`);
+      }
+    } catch (error: any) {
+      logger.error('Failed to get seller profile', {
+        error: error.message,
+        status: error.response?.status,
+        data: error.response?.data
+      });
+      throw new Error(`Failed to get seller profile: ${error.response?.data?.errors?.[0]?.message || error.message}`);
+    }
+  }
+
+  /**
    * Get seller information and marketplace participations from Amazon SP-API
    * Handles both production and sandbox response formats
    */

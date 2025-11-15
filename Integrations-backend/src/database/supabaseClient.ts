@@ -84,12 +84,22 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
 export { supabase, supabaseAdmin };
 
 // Database types
+export interface EncryptedToken {
+  iv: string;
+  data: string;
+}
+
 export interface TokenRecord {
   id: string;
   user_id: string;
   provider: 'amazon' | 'gmail' | 'stripe';
-  access_token: string;
-  refresh_token: string;
+  access_token_iv?: string;
+  access_token_data?: string;
+  refresh_token_iv?: string;
+  refresh_token_data?: string;
+  // Legacy format support
+  access_token?: string | EncryptedToken;
+  refresh_token?: string | EncryptedToken;
   expires_at: string;
   created_at: string;
   updated_at: string;
@@ -107,9 +117,9 @@ export const tokenManager = {
   async saveToken(
     userId: string,
     provider: 'amazon' | 'gmail' | 'stripe',
-    accessToken: string,
-    refreshToken: string,
-    expiresAt: Date
+    accessTokenEnc: { iv: string; data: string },
+    refreshTokenEnc?: { iv: string; data: string },
+    expiresAt?: Date
   ): Promise<void> {
     try {
       if (typeof supabase.from !== 'function') {
@@ -117,14 +127,19 @@ export const tokenManager = {
         return;
       }
 
-      const { error } = await supabase
+      // Use supabaseAdmin to bypass RLS for backend operations
+      const adminClient = supabaseAdmin || supabase;
+
+      const { error } = await adminClient
         .from('tokens')
         .upsert({
           user_id: userId,
           provider,
-          access_token: accessToken,
-          refresh_token: refreshToken,
-          expires_at: expiresAt.toISOString(),
+          access_token_iv: accessTokenEnc.iv,
+          access_token_data: accessTokenEnc.data,
+          refresh_token_iv: refreshTokenEnc?.iv || null,
+          refresh_token_data: refreshTokenEnc?.data || null,
+          expires_at: expiresAt ? expiresAt.toISOString() : null,
           updated_at: new Date().toISOString()
         }, {
           onConflict: 'user_id,provider'
@@ -152,19 +167,38 @@ export const tokenManager = {
         return null;
       }
 
-      const { data, error } = await supabase
+      // Use supabaseAdmin to bypass RLS for backend operations
+      const adminClient = supabaseAdmin || supabase;
+
+      const { data, error } = await adminClient
         .from('tokens')
         .select('*')
         .eq('user_id', userId)
         .eq('provider', provider)
-        .single();
+        .maybeSingle();
 
       if (error && error.code !== 'PGRST116') { // PGRST116 is "not found"
         logger.error('Error getting token', { error, userId, provider });
         throw new Error('Failed to get token');
       }
 
-      return data;
+      if (!data) {
+        return null;
+      }
+
+      // Return in format expected by tokenManager (with IV+data fields)
+      return {
+        id: data.id,
+        user_id: data.user_id,
+        provider: data.provider,
+        access_token_iv: data.access_token_iv,
+        access_token_data: data.access_token_data,
+        refresh_token_iv: data.refresh_token_iv,
+        refresh_token_data: data.refresh_token_data,
+        expires_at: data.expires_at,
+        created_at: data.created_at,
+        updated_at: data.updated_at
+      };
     } catch (error) {
       logger.error('Error in getToken', { error, userId, provider });
       throw error;
@@ -174,9 +208,9 @@ export const tokenManager = {
   async updateToken(
     userId: string,
     provider: 'amazon' | 'gmail' | 'stripe',
-    accessToken: string,
-    refreshToken: string,
-    expiresAt: Date
+    accessTokenEnc: { iv: string; data: string },
+    refreshTokenEnc?: { iv: string; data: string },
+    expiresAt?: Date
   ): Promise<void> {
     try {
       if (typeof supabase.from !== 'function') {
@@ -184,12 +218,17 @@ export const tokenManager = {
         return;
       }
 
-      const { error } = await supabase
+      // Use supabaseAdmin to bypass RLS for backend operations
+      const adminClient = supabaseAdmin || supabase;
+
+      const { error } = await adminClient
         .from('tokens')
         .update({
-          access_token: accessToken,
-          refresh_token: refreshToken,
-          expires_at: expiresAt.toISOString(),
+          access_token_iv: accessTokenEnc.iv,
+          access_token_data: accessTokenEnc.data,
+          refresh_token_iv: refreshTokenEnc?.iv || null,
+          refresh_token_data: refreshTokenEnc?.data || null,
+          expires_at: expiresAt ? expiresAt.toISOString() : null,
           updated_at: new Date().toISOString()
         })
         .eq('user_id', userId)

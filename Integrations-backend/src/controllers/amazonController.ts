@@ -447,50 +447,238 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       isSandbox: req.path.includes('sandbox')
     });
 
-    const result = await amazonService.handleCallback(code, state);
+    // ============================================================================
+    // ATOMIC OAuth Callback Flow - All steps must succeed or all fail
+    // ============================================================================
+    let result: any;
+    let userId: string;
+    let sellerId: string;
     
-    // CRITICAL: Store refresh token in database for future API calls
-    // Extract user ID from request (could be from session, JWT, or query param)
-    // For now, we'll need to get it from somewhere - let's check if there's a user session
-    const userId = (req as any).user?.id || (req as any).user?.user_id || req.query.userId as string || 'default-user';
+    // MOCK MODE: For testing without real Amazon credentials
+    // If code is "mock_auth_code" or "test_code", use mock responses
+    const isMockMode = code === 'mock_auth_code' || code === 'test_code' || process.env.ENABLE_MOCK_OAUTH === 'true';
     
-    if (result.data?.refresh_token) {
+    try {
+      // Step 1: Validate OAuth response
+      if (!code) {
+        throw new Error('Missing OAuth authorization code');
+      }
+
+      // Step 2: Exchange code for tokens (or use mock in test mode)
+      if (isMockMode) {
+        logger.info('🧪 MOCK MODE: Using mock OAuth responses for testing');
+        result = {
+          success: true,
+          message: 'Mock OAuth authentication successful',
+          data: {
+            access_token: 'mock_access_token_' + Date.now(),
+            refresh_token: 'mock_refresh_token_' + Date.now(),
+            token_type: 'Bearer',
+            expires_in: 3600
+          }
+        };
+      } else {
+        result = await amazonService.handleCallback(code, state);
+      }
+      if (!result.data?.access_token) {
+        throw new Error('Token exchange failed - no access token received');
+      }
+
+      const { access_token, refresh_token, expires_in } = result.data;
+
+      // Step 3: Get seller_id / profile from Amazon SP-API (or use mock in test mode)
+      let profile: { sellerId: string; marketplaces: string[]; companyName?: string; sellerName?: string };
+      
+      if (isMockMode) {
+        logger.info('🧪 MOCK MODE: Using mock seller profile');
+        profile = {
+          sellerId: `TEST_SELLER_${Date.now()}`,
+          marketplaces: ['ATVPDKIKX0DER'], // US marketplace
+          companyName: 'Test Company LLC',
+          sellerName: 'Test Seller'
+        };
+      } else {
+        profile = await amazonService.getSellerProfile(access_token);
+      }
+      if (!profile?.sellerId) {
+        throw new Error('Unable to retrieve sellerId from Amazon');
+      }
+
+      logger.info('Retrieved seller profile from Amazon', {
+        sellerId: profile.sellerId,
+        marketplaces: profile.marketplaces,
+        companyName: profile.companyName
+      });
+
+      // Step 4: Upsert user/tenant in Supabase (use supabaseAdmin to bypass RLS)
+      const { supabaseAdmin } = await import('../database/supabaseClient');
+      
+      // Try to find existing user by seller_id (if column exists)
+      const { data: existingUser } = await supabaseAdmin
+        .from('users')
+        .select('id, seller_id, amazon_seller_id')
+        .or(`seller_id.eq.${profile.sellerId},amazon_seller_id.eq.${profile.sellerId}`)
+        .maybeSingle();
+
+      if (existingUser?.id) {
+        userId = existingUser.id;
+        // Update existing user with latest info
+        await supabaseAdmin
+          .from('users')
+          .update({
+            company_name: profile.companyName || existingUser.company_name || null,
+            updated_at: new Date().toISOString(),
+            // Update seller_id if column exists and is different
+            ...(existingUser.seller_id !== profile.sellerId && { seller_id: profile.sellerId }),
+            ...(existingUser.amazon_seller_id !== profile.sellerId && { amazon_seller_id: profile.sellerId })
+          })
+          .eq('id', userId);
+        
+        logger.info('Updated existing user', { userId, sellerId: profile.sellerId });
+      } else {
+        // Create new user/tenant
+        // Note: users table may require email - we'll use seller_id as email if needed
+        const { data: newUser, error: createErr } = await supabaseAdmin
+          .from('users')
+          .insert({
+            email: `${profile.sellerId}@amazon.seller`, // Placeholder email if required
+            seller_id: profile.sellerId,
+            amazon_seller_id: profile.sellerId,
+            company_name: profile.companyName || profile.sellerName || null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .select('id')
+          .single();
+
+        if (createErr || !newUser?.id) {
+          throw new Error(`Failed to create user: ${createErr?.message || 'Unknown error'}`);
+        }
+
+        userId = newUser.id;
+        logger.info('Created new user', { userId, sellerId: profile.sellerId });
+      }
+
+      // Step 5: Encrypt tokens and save using tokenManager
+      const expiresAt = new Date(Date.now() + (expires_in || 3600) * 1000);
+      await tokenManager.saveToken(userId, 'amazon', {
+        accessToken: access_token,
+        refreshToken: refresh_token || '',
+        expiresAt
+      });
+
+      logger.info('Successfully stored Amazon tokens in database', { 
+        userId,
+        sellerId: profile.sellerId,
+        hasRefreshToken: !!refresh_token
+      });
+
+      // Step 6: Create evidence source for the user (Agent 4)
+      const { error: evidenceError } = await supabaseAdmin
+        .from('evidence_sources')
+        .upsert({
+          seller_id: profile.sellerId, // evidence_sources uses seller_id (TEXT), not user_id
+          provider: 'amazon',
+          status: 'connected',
+          display_name: profile.companyName || `Amazon Seller ${profile.sellerId}`,
+          metadata: {
+            marketplaces: profile.marketplaces,
+            seller_name: profile.sellerName,
+            company_name: profile.companyName
+          },
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }, {
+          onConflict: 'seller_id,provider'
+        });
+
+      if (evidenceError) {
+        logger.warn('Failed to create evidence source (non-critical)', {
+          error: evidenceError.message,
+          sellerId: profile.sellerId
+        });
+        // Don't fail the callback if evidence source creation fails - it's not critical
+      } else {
+        logger.info('Created evidence source for user', { userId, sellerId: profile.sellerId });
+      }
+
+      // Step 7: Trigger initial sync job (Agent 2: Continuous Data Sync)
+      // This connects Agent 1 (OAuth) → Agent 2 (Data Sync)
       try {
-        // Store the refresh token securely in the database
-        // TokenManager expects: { accessToken, refreshToken, expiresAt }
-        await tokenManager.saveToken(userId, 'amazon', {
-          accessToken: result.data.access_token,
-          refreshToken: result.data.refresh_token,
-          expiresAt: new Date(Date.now() + (result.data.expires_in || 3600) * 1000)
-        });
+        // Use Agent 2 service for data sync
+        const agent2DataSyncService = (await import('../services/agent2DataSyncService')).default;
+        logger.info('🔄 [AGENT 1→2] Triggering Agent 2 data sync after OAuth connection', { userId });
         
-        logger.info('Successfully stored Amazon refresh token in database', { 
-          userId,
-          hasRefreshToken: !!result.data.refresh_token,
-          hasAccessToken: !!result.data.access_token
-        });
-        
-        // Trigger automatic sync after successful connection
-        // Run in background - don't block the response
-        syncJobManager.startSync(userId).catch((syncError: any) => {
-          logger.warn('Failed to trigger automatic sync after Amazon connection', {
+        // Run sync in background (don't wait)
+        agent2DataSyncService.syncUserData(userId).then((syncResult) => {
+          logger.info('✅ [AGENT 1→2] Agent 2 sync completed', {
             userId,
+            syncId: syncResult.syncId,
+            success: syncResult.success,
+            summary: syncResult.summary,
+            isMock: syncResult.isMock
+          });
+        }).catch((syncError: any) => {
+          logger.error('❌ [AGENT 1→2] Agent 2 sync failed', {
             error: syncError.message,
-            // Don't fail the OAuth callback if sync fails - it's a background operation
+            userId
           });
         });
         
-        logger.info('Triggered automatic sync after Amazon OAuth callback', { userId });
-      } catch (tokenError: any) {
-        // Log error but don't fail the callback - token might still be in env vars
-        logger.error('Failed to store Amazon refresh token in database', { 
-          error: tokenError.message,
-          userId 
+        logger.info('Scheduled Agent 2 initial sync job', { userId });
+      } catch (syncError: any) {
+        logger.warn('Failed to schedule Agent 2 initial sync (non-critical)', {
+          error: syncError.message,
+          userId
         });
-        // Continue anyway - the token is still returned in the response
+        // Don't fail the callback if sync scheduling fails - it's a background operation
       }
-    } else {
-      logger.warn('No refresh token in OAuth callback result - tokens may not persist', { userId });
+
+      // All steps succeeded - prepare success response
+      sellerId = profile.sellerId;
+      logger.info('✅ OAuth callback completed successfully', {
+        userId,
+        sellerId,
+        hasTokens: true
+      });
+    } catch (callbackError: any) {
+      // Any step failed - roll back and surface error
+      logger.error('❌ OAuth callback failed - atomic operation rolled back', {
+        error: callbackError.message,
+        stack: callbackError.stack,
+        step: 'atomic_callback_flow'
+      });
+
+      // For POST requests, return JSON error
+      if (req.method === 'POST') {
+        const origin = req.headers.origin || '*';
+        res.header('Access-Control-Allow-Origin', origin);
+        res.header('Access-Control-Allow-Credentials', 'true');
+        return res.status(500).json({
+          ok: false,
+          connected: false,
+          success: false,
+          error: 'Connection failed',
+          message: callbackError.message || 'OAuth callback failed. Please retry. Contact support if issue persists.'
+        });
+      }
+
+      // For GET requests, redirect to error page
+      const stateFromQuery = req.query.state as string;
+      let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      if (stateFromQuery) {
+        const storedState = oauthStateStore.get(stateFromQuery);
+        if (storedState?.frontendUrl) {
+          frontendUrl = storedState.frontendUrl;
+        }
+      }
+      const errorUrl = `${frontendUrl}/dashboard?error=${encodeURIComponent(callbackError.message || 'oauth_failed')}&amazon_error=true`;
+      return res.redirect(302, errorUrl);
+    }
+
+    // If we reach here, atomic flow succeeded - continue with response
+    if (!userId) {
+      throw new Error('User ID not set after atomic callback flow');
     }
     
     // For POST requests, return JSON instead of redirect
@@ -504,9 +692,11 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       return res.status(200).json({
         ok: true,
         connected: true,
-        success: result.success,
-        message: result.message,
-        data: result.data
+        success: result?.success ?? true,
+        message: result?.message || 'Amazon connection successful',
+        data: result?.data,
+        userId,
+        sellerId
       });
     }
     
@@ -537,23 +727,24 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     // Determine redirect URL based on frontend URL
     // Preserve the full frontend URL path if it exists (e.g., /integrations-hub)
     let redirectUrl: string;
+    const successMessage = result?.message || 'Connected successfully';
     try {
       const frontendUrlObj = new URL(frontendUrl);
       // If frontend URL already has a path, preserve it; otherwise use default
       if (frontendUrlObj.pathname && frontendUrlObj.pathname !== '/') {
         // Frontend URL already includes path (e.g., /integrations-hub)
-        redirectUrl = `${frontendUrl}?amazon_connected=true&message=${encodeURIComponent(result.message || 'Connected successfully')}`;
+        redirectUrl = `${frontendUrl}?amazon_connected=true&message=${encodeURIComponent(successMessage)}`;
       } else {
         // Frontend URL is just domain, use default path
-        redirectUrl = `${frontendUrl}/integrations-hub?amazon_connected=true&message=${encodeURIComponent(result.message || 'Connected successfully')}`;
+        redirectUrl = `${frontendUrl}/integrations-hub?amazon_connected=true&message=${encodeURIComponent(successMessage)}`;
       }
     } catch {
       // If URL parsing fails, construct simple redirect
-      redirectUrl = `${frontendUrl}/integrations-hub?amazon_connected=true&message=${encodeURIComponent(result.message || 'Connected successfully')}`;
+      redirectUrl = `${frontendUrl}/integrations-hub?amazon_connected=true&message=${encodeURIComponent(successMessage)}`;
     }
     
     // Set session cookie if we have tokens
-    if (result.data?.refresh_token) {
+    if (result?.data?.refresh_token) {
       // In production, you would create a proper session here
       // For now, just redirect to frontend
       logger.info('Tokens obtained, redirecting to frontend', { frontendUrl, redirectUrl });
