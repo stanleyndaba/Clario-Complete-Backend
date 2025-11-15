@@ -321,9 +321,10 @@ class RefundFilingWorker {
 
             // If denied, mark for retry with stronger evidence
             if (statusResult.status === 'denied' && submission.status !== 'denied') {
+              const rejectionReason = statusResult.error || statusResult.resolution || 'Unknown reason';
               logger.warn('⚠️ [REFUND FILING] Case denied, marking for retry', {
                 disputeId: disputeCase.id,
-                rejectionReason: statusResult.rejection_reason
+                rejectionReason: rejectionReason
               });
 
               // 🎯 AGENT 11 INTEGRATION: Process rejection for learning
@@ -332,7 +333,7 @@ class RefundFilingWorker {
                 await learningWorker.processRejection(
                   disputeCase.seller_id,
                   disputeCase.id,
-                  statusResult.rejection_reason || 'Unknown reason',
+                  rejectionReason,
                   statusResult.amazon_case_id
                 );
               } catch (learnError: any) {
@@ -349,7 +350,7 @@ class RefundFilingWorker {
                   disputeId: disputeCase.id,
                   success: false,
                   status: 'denied',
-                  rejectionReason: statusResult.rejection_reason || 'Unknown reason',
+                  rejectionReason: rejectionReason,
                   amazonCaseId: statusResult.amazon_case_id,
                   duration: 0
                 });
@@ -557,11 +558,18 @@ class RefundFilingWorker {
             disputeId
           });
 
+          // Fetch case data for logging and notifications
+          const { data: caseData } = await supabaseAdmin
+            .from('dispute_cases')
+            .select('seller_id, claim_amount, currency, provider_case_id')
+            .eq('id', disputeId)
+            .single();
+
           // 🎯 AGENT 11 INTEGRATION: Log approval event
           try {
             const agentEventLogger = (await import('../services/agentEventLogger')).default;
             await agentEventLogger.logRefundFiling({
-              userId: caseData?.seller_id || '',
+              userId: caseData?.seller_id || disputeCase?.seller_id || '',
               disputeId,
               success: true,
               status: 'approved',
@@ -577,11 +585,6 @@ class RefundFilingWorker {
           // 🎯 AGENT 10 INTEGRATION: Notify when refund is approved
           try {
             const notificationHelper = (await import('../services/notificationHelper')).default;
-            const { data: caseData } = await supabaseAdmin
-              .from('dispute_cases')
-              .select('seller_id, claim_amount, currency, provider_case_id')
-              .eq('id', disputeId)
-              .single();
             
             if (caseData) {
               await notificationHelper.notifyRefundApproved(caseData.seller_id, {
@@ -589,7 +592,7 @@ class RefundFilingWorker {
                 amazonCaseId: statusResult.amazon_case_id || caseData.provider_case_id,
                 claimAmount: caseData.claim_amount || 0,
                 currency: caseData.currency || 'usd',
-                approvedAmount: statusResult.amount
+                approvedAmount: statusResult.amount_approved || 0
               });
             }
           } catch (notifError: any) {

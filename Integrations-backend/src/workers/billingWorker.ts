@@ -300,7 +300,7 @@ class BillingWorker {
             amountRecovered: amountRecoveredCents / 100,
             platformFee: feeCalculation.platformFeeCents / 100,
             sellerPayout: feeCalculation.sellerPayoutCents / 100,
-            stripeTransactionId: result.stripeTransactionId,
+            stripeTransactionId: result.stripeTransactionId ? String(result.stripeTransactionId) : undefined,
             duration: 0
           });
         } catch (logError: any) {
