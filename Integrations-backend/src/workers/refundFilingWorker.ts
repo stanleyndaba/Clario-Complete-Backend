@@ -396,6 +396,23 @@ class RefundFilingWorker {
           submissionId: result.submission_id,
           amazonCaseId: result.amazon_case_id
         });
+
+        // 🎯 AGENT 10 INTEGRATION: Notify when case is filed
+        try {
+          const notificationHelper = (await import('../services/notificationHelper')).default;
+          await notificationHelper.notifyCaseFiled(disputeCase.seller_id, {
+            disputeId,
+            caseId: result.submission_id,
+            amazonCaseId: result.amazon_case_id,
+            claimAmount: disputeCase.claim_amount || 0,
+            currency: disputeCase.currency || 'usd',
+            status: 'filed'
+          });
+        } catch (notifError: any) {
+          logger.warn('⚠️ [REFUND FILING] Failed to send notification', {
+            error: notifError.message
+          });
+        }
       }
 
     } catch (error: any) {
@@ -481,13 +498,37 @@ class RefundFilingWorker {
         updated_at: new Date().toISOString()
       };
 
-      // 🎯 AGENT 8 INTEGRATION: Mark for recovery detection when approved
-      if (newStatus === 'approved' && previousStatus !== 'approved') {
-        updates.recovery_status = 'pending';
-        logger.info('📝 [REFUND FILING] Case approved, marked for recovery detection by Agent 8', {
-          disputeId
-        });
-      }
+        // 🎯 AGENT 8 INTEGRATION: Mark for recovery detection when approved
+        if (newStatus === 'approved' && previousStatus !== 'approved') {
+          updates.recovery_status = 'pending';
+          logger.info('📝 [REFUND FILING] Case approved, marked for recovery detection by Agent 8', {
+            disputeId
+          });
+
+          // 🎯 AGENT 10 INTEGRATION: Notify when refund is approved
+          try {
+            const notificationHelper = (await import('../services/notificationHelper')).default;
+            const { data: caseData } = await supabaseAdmin
+              .from('dispute_cases')
+              .select('seller_id, claim_amount, currency, provider_case_id')
+              .eq('id', disputeId)
+              .single();
+            
+            if (caseData) {
+              await notificationHelper.notifyRefundApproved(caseData.seller_id, {
+                disputeId,
+                amazonCaseId: statusResult.amazon_case_id || caseData.provider_case_id,
+                claimAmount: caseData.claim_amount || 0,
+                currency: caseData.currency || 'usd',
+                approvedAmount: statusResult.amount
+              });
+            }
+          } catch (notifError: any) {
+            logger.warn('⚠️ [REFUND FILING] Failed to send notification', {
+              error: notifError.message
+            });
+          }
+        }
 
       const { error } = await supabaseAdmin
         .from('dispute_cases')

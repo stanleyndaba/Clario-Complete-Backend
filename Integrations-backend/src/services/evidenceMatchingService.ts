@@ -241,6 +241,31 @@ class EvidenceMatchingService {
         logger.info('📝 [EVIDENCE MATCHING] Case marked for filing by Agent 7', {
           disputeId: result.dispute_id
         });
+
+        // 🎯 AGENT 10 INTEGRATION: Notify when evidence is matched
+        try {
+          const notificationHelper = (await import('../services/notificationHelper')).default;
+          const { data: disputeCase } = await supabaseAdmin
+            .from('dispute_cases')
+            .select('claim_amount, currency')
+            .eq('id', result.dispute_id)
+            .single();
+          
+          if (disputeCase) {
+            await notificationHelper.notifyEvidenceFound(userId, {
+              documentId: result.evidence_document_id,
+              source: 'unknown' as 'gmail' | 'outlook' | 'drive' | 'dropbox',
+              fileName: 'Evidence Document',
+              parsed: true,
+              matchFound: true,
+              disputeId: result.dispute_id
+            });
+          }
+        } catch (notifError: any) {
+          logger.warn('⚠️ [EVIDENCE MATCHING] Failed to send notification', {
+            error: notifError.message
+          });
+        }
       }
 
       // Call auto-submit endpoint (if exists) - non-critical

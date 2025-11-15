@@ -281,6 +281,29 @@ export class DocumentParsingWorker {
         extractionMethod: parsedData.extraction_method
       });
 
+      // 🎯 AGENT 10 INTEGRATION: Notify when evidence is parsed
+      try {
+        const notificationHelper = (await import('../services/notificationHelper')).default;
+        const { data: doc } = await supabaseAdmin
+          .from('evidence_documents')
+          .select('filename, source')
+          .eq('id', document.id)
+          .single();
+        
+        if (doc) {
+          await notificationHelper.notifyEvidenceFound(document.seller_id, {
+            documentId: document.id,
+            source: (doc.source || 'unknown') as 'gmail' | 'outlook' | 'drive' | 'dropbox',
+            fileName: doc.filename || 'Unknown',
+            parsed: true
+          });
+        }
+      } catch (notifError: any) {
+        logger.warn('⚠️ [DOCUMENT PARSING WORKER] Failed to send notification', {
+          error: notifError.message
+        });
+      }
+
       // 🎯 TRIGGER AGENT 6: Evidence Matching
       // Trigger matching for this user when document parsing completes
       try {

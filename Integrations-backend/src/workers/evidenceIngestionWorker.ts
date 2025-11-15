@@ -597,6 +597,35 @@ export class EvidenceIngestionWorker {
       // Store raw files for newly ingested documents
       if (stats.ingested > 0) {
         await this.storeRawFilesForNewDocuments(userId, source.provider);
+        
+        // 🎯 AGENT 10 INTEGRATION: Notify when evidence is found
+        try {
+          const notificationHelper = (await import('../services/notificationHelper')).default;
+          
+          // Get recently ingested documents to notify about
+          const { data: recentDocs } = await supabaseAdmin
+            .from('evidence_documents')
+            .select('id, filename, source')
+            .eq('seller_id', userId)
+            .eq('source', source.provider)
+            .order('created_at', { ascending: false })
+            .limit(stats.ingested);
+          
+          if (recentDocs && recentDocs.length > 0) {
+            for (const doc of recentDocs) {
+              await notificationHelper.notifyEvidenceFound(userId, {
+                documentId: doc.id,
+                source: source.provider as 'gmail' | 'outlook' | 'drive' | 'dropbox',
+                fileName: doc.filename || 'Unknown',
+                parsed: false
+              });
+            }
+          }
+        } catch (notifError: any) {
+          logger.warn('⚠️ [EVIDENCE WORKER] Failed to send notification', {
+            error: notifError.message
+          });
+        }
       }
 
       logger.info(`✅ [EVIDENCE WORKER] Ingested from ${source.provider} for user ${userId}`, {

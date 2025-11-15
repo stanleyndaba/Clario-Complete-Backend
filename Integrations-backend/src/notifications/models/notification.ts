@@ -24,6 +24,10 @@ export interface NotificationData {
 // Enums for type safety
 export enum NotificationType {
   CLAIM_DETECTED = 'claim_detected',
+  EVIDENCE_FOUND = 'evidence_found',
+  CASE_FILED = 'case_filed',
+  REFUND_APPROVED = 'refund_approved',
+  FUNDS_DEPOSITED = 'funds_deposited',
   INTEGRATION_COMPLETED = 'integration_completed',
   PAYMENT_PROCESSED = 'payment_processed',
   SYNC_COMPLETED = 'sync_completed',
@@ -122,7 +126,9 @@ export class Notification {
    */
   static async create(data: CreateNotificationRequest): Promise<Notification> {
     try {
-      const supabase = getSupabaseClient();
+      // Use admin client to bypass RLS (backend services need to create notifications)
+      const { supabaseAdmin } = await import('../../database/supabaseClient');
+      const supabase = supabaseAdmin || getSupabaseClient();
       
       const notificationData = {
         ...data,
@@ -157,7 +163,9 @@ export class Notification {
    */
   static async findById(id: string): Promise<Notification | null> {
     try {
-      const supabase = getSupabaseClient();
+      // Use admin client to bypass RLS (backend services need to read notifications)
+      const { supabaseAdmin } = await import('../../database/supabaseClient');
+      const supabase = supabaseAdmin || getSupabaseClient();
       
       const { data, error } = await supabase
         .from('notifications')
@@ -185,7 +193,9 @@ export class Notification {
    */
   static async findMany(filters: NotificationFilters): Promise<Notification[]> {
     try {
-      const supabase = getSupabaseClient();
+      // Use admin client to bypass RLS (backend services need to read notifications)
+      const { supabaseAdmin } = await import('../../database/supabaseClient');
+      const supabase = supabaseAdmin || getSupabaseClient();
       let query = supabase.from('notifications').select('*');
 
       // Apply filters
@@ -238,7 +248,9 @@ export class Notification {
    */
   async update(updates: UpdateNotificationRequest): Promise<Notification> {
     try {
-      const supabase = getSupabaseClient();
+      // Use admin client to bypass RLS (backend services need to update notifications)
+      const { supabaseAdmin } = await import('../../database/supabaseClient');
+      const supabase = supabaseAdmin || getSupabaseClient();
       
       const updateData = {
         ...updates,
@@ -302,7 +314,9 @@ export class Notification {
    */
   async delete(): Promise<void> {
     try {
-      const supabase = getSupabaseClient();
+      // Use admin client to bypass RLS (backend services need to delete notifications)
+      const { supabaseAdmin } = await import('../../database/supabaseClient');
+      const supabase = supabaseAdmin || getSupabaseClient();
       
       const { error } = await supabase
         .from('notifications')

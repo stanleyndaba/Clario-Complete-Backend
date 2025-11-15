@@ -338,6 +338,24 @@ class RecoveriesService {
         status
       });
 
+      // 🎯 AGENT 10 INTEGRATION: Notify when funds are deposited (reconciled)
+      if (status === 'reconciled') {
+        try {
+          const notificationHelper = (await import('../services/notificationHelper')).default;
+          await notificationHelper.notifyFundsDeposited(userId, {
+            disputeId: match.disputeId,
+            recoveryId: recovery.id,
+            amount: match.actualAmount,
+            currency: 'usd',
+            billingStatus: 'pending' // Will be updated by Agent 9
+          });
+        } catch (notifError: any) {
+          logger.warn('⚠️ [RECOVERIES] Failed to send notification', {
+            error: notifError.message
+          });
+        }
+      }
+
       return {
         success: true,
         recoveryId: recovery.id,

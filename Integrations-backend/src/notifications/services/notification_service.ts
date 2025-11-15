@@ -9,13 +9,7 @@ import Notification, {
   NotificationChannel
 } from '../models/notification';
 import { EmailService } from './delivery/email_service';
-// Temporary stub to avoid importing the broken WebSocket service during demo
-class NoopWebSocketService {
-  async sendNotification(_userId: string, _notification: any): Promise<void> {
-    // no-op for demo
-    return;
-  }
-}
+import websocketService from '../../services/websocketService';
 // Disable BullMQ worker for demo stability (avoid QueueScheduler import issues)
 class NoopNotificationWorker {
   async initialize(): Promise<void> { return; }
@@ -49,12 +43,10 @@ export interface NotificationStats {
 
 export class NotificationService {
   private emailService: EmailService;
-  private websocketService: NoopWebSocketService;
   private worker: NoopNotificationWorker;
 
   constructor() {
     this.emailService = new EmailService();
-    this.websocketService = new NoopWebSocketService();
     // Demo mode: disable BullMQ worker to avoid QueueScheduler runtime issues
     this.worker = new NoopNotificationWorker();
   }
@@ -358,7 +350,7 @@ export class NotificationService {
       if (notification.channel === NotificationChannel.IN_APP || 
           notification.channel === NotificationChannel.BOTH) {
         deliveryPromises.push(
-          this.websocketService.sendNotification(notification.user_id, notification)
+          this.deliverViaWebSocket(notification)
         );
       }
 
@@ -381,6 +373,46 @@ export class NotificationService {
       logger.error('Error delivering notification:', error);
       await notification.markAsFailed();
       throw error;
+    }
+  }
+
+  /**
+   * Deliver notification via WebSocket
+   */
+  private async deliverViaWebSocket(notification: Notification): Promise<void> {
+    try {
+      websocketService.sendNotificationToUser(notification.user_id, {
+        type: this.getNotificationType(notification.priority),
+        title: notification.title,
+        message: notification.message,
+        data: notification.payload
+      });
+
+      logger.debug('Notification sent via WebSocket', {
+        id: notification.id,
+        userId: notification.user_id
+      });
+
+    } catch (error) {
+      logger.error('Error sending notification via WebSocket:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get notification type for WebSocket
+   */
+  private getNotificationType(priority: NotificationPriority): 'info' | 'success' | 'warning' | 'error' {
+    switch (priority) {
+      case NotificationPriority.URGENT:
+      case NotificationPriority.HIGH:
+        return 'success';
+      case NotificationPriority.NORMAL:
+        return 'info';
+      case NotificationPriority.LOW:
+        return 'info';
+      default:
+        return 'info';
     }
   }
 

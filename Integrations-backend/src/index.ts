@@ -60,6 +60,7 @@ import evidenceMatchingWorker from './workers/evidenceMatchingWorker';
 import refundFilingWorker from './workers/refundFilingWorker';
 import recoveriesWorker from './workers/recoveriesWorker';
 import billingWorker from './workers/billingWorker';
+import notificationsWorker from './workers/notificationsWorker';
 
 const app = express();
 const server = createServer(app);
@@ -348,6 +349,14 @@ server.listen(PORT, '0.0.0.0', () => {
         logger.info('Billing worker initialized');
       } else {
         logger.info('Billing worker disabled (ENABLE_BILLING_WORKER=false)');
+      }
+
+      // Start Notifications Worker (if enabled)
+      if (process.env.ENABLE_NOTIFICATIONS_WORKER !== 'false') {
+        notificationsWorker.start();
+        logger.info('Notifications worker initialized');
+      } else {
+        logger.info('Notifications worker disabled (ENABLE_NOTIFICATIONS_WORKER=false)');
       }
       
       // Start detection job processor (processes detection jobs from queue)

@@ -290,6 +290,24 @@ class BillingWorker {
           platformFeeCents: feeCalculation.platformFeeCents
         });
 
+        // 🎯 AGENT 10 INTEGRATION: Notify when funds are deposited (billing complete)
+        try {
+          const notificationHelper = (await import('../services/notificationHelper')).default;
+          await notificationHelper.notifyFundsDeposited(userId, {
+            disputeId,
+            recoveryId: recoveryId || undefined,
+            amount: amountRecoveredCents / 100, // Convert cents to dollars
+            currency,
+            platformFee: feeCalculation.platformFeeCents / 100,
+            sellerPayout: feeCalculation.sellerPayoutCents / 100,
+            billingStatus: 'charged'
+          });
+        } catch (notifError: any) {
+          logger.warn('⚠️ [BILLING] Failed to send notification', {
+            error: notifError.message
+          });
+        }
+
         return {
           success: true,
           billingTransactionId: billingTransaction?.id,
