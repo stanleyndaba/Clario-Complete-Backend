@@ -42,7 +42,8 @@
     "test:agent9": "ts-node scripts/test-agent9-billing.ts",
     "test:agent10": "ts-node scripts/test-agent10-notifications.ts",
     "test:agent11": "ts-node scripts/test-agent11-learning.ts",
-    "test:e2e-4-5-6": "ts-node scripts/test-e2e-agents-4-5-6.ts"
+    "test:e2e-4-5-6": "ts-node scripts/test-e2e-agents-4-5-6.ts",
+    "test:e2e-4-11": "ts-node scripts/test-e2e-agents-4-11.ts"
   },
   "keywords": [
     "integrations",
