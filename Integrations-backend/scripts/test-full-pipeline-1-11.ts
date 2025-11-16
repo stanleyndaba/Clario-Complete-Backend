@@ -3,8 +3,8 @@
  * 
  * This script tests the complete pipeline from authentication to learning:
  * 1. Agent 1 (Zero Agent Layer): OAuth → User creation → Token storage
- * 2. Agent 2 (Data Sync): Normalized data generation
- * 3. Agent 3 (Claim Detection): Claim detection from normalized data
+ * 2. Agent 2 (Data Sync): Normalized data generation + Discovery Agent call
+ * 3. Discovery Agent (Python ML): Claim detection from normalized data (via Agent 2)
  * 4. Agent 4 (Evidence Ingestion): Evidence ingestion readiness
  * 5. Agent 5 (Document Parsing): Document parsing (simulated)
  * 6. Agent 6 (Evidence Matching): Evidence matching (simulated)
@@ -17,8 +17,8 @@
  * Run with: npm run test:full-pipeline
  */
 
+import 'dotenv/config'; // Load environment variables from .env file
 import agent2DataSyncService from '../src/services/agent2DataSyncService';
-import agent3ClaimDetectionService from '../src/services/agent3ClaimDetectionService';
 import { supabaseAdmin } from '../src/database/supabaseClient';
 import logger from '../src/utils/logger';
 import { randomUUID } from 'crypto';
@@ -53,11 +53,11 @@ class FullPipelineTest {
       // Step 1: Agent 1 (Zero Agent Layer)
       await this.testAgent1();
 
-      // Step 2: Agent 2 (Data Sync)
+      // Step 2: Agent 2 (Data Sync + Discovery Agent)
       await this.testAgent2();
 
-      // Step 3: Agent 3 (Claim Detection)
-      await this.testAgent3();
+      // Step 3: Discovery Agent (called by Agent 2)
+      await this.testDiscoveryAgent();
 
       // Step 4: Agent 4 (Evidence Ingestion)
       await this.testAgent4();
@@ -153,26 +153,36 @@ class FullPipelineTest {
     }
   }
 
-  private async testAgent3(): Promise<void> {
+  private async testDiscoveryAgent(): Promise<void> {
     const startTime = Date.now();
-    console.log('\n🔍 Step 3: Agent 3 (Claim Detection)');
+    console.log('\n🔍 Step 3: Discovery Agent (Python ML) - Called by Agent 2');
 
     try {
-      const syncResult = await agent2DataSyncService.syncUserData(TEST_USER_ID);
-      const detectionResult = await agent3ClaimDetectionService.detectClaims(
-        TEST_USER_ID,
-        syncResult.syncId,
-        syncResult.normalized
-      );
+      // Agent 2 now calls Discovery Agent directly, so we verify it worked
+      // by checking detection results in the database
+      const { data: detections } = await supabaseAdmin
+        .from('detection_results')
+        .select('*')
+        .eq('seller_id', TEST_USER_ID)
+        .order('created_at', { ascending: false })
+        .limit(10);
 
-      if (!detectionResult.success || detectionResult.summary.totalDetected === 0) {
-        throw new Error('No claims detected');
+      const detectionCount = detections?.length || 0;
+      const totalValue = detections?.reduce((sum, d) => sum + (d.estimated_value || 0), 0) || 0;
+
+      if (detectionCount === 0) {
+        throw new Error('No detection results found - Discovery Agent may not have been called');
       }
 
-      this.recordStep('Agent 3', 'Claim Detection', true, `${detectionResult.summary.totalDetected} claims detected`, Date.now() - startTime, detectionResult.summary);
-      console.log('   ✅ Claims detected:', detectionResult.summary.totalDetected);
+      this.recordStep('Discovery Agent', 'Claim Detection (Python ML)', true, `${detectionCount} claims detected ($${totalValue.toFixed(2)} total)`, Date.now() - startTime, { 
+        detectionCount, 
+        totalValue,
+        avgConfidence: detections ? (detections.reduce((sum, d) => sum + (d.confidence_score || 0), 0) / detections.length * 100).toFixed(1) + '%' : 'N/A'
+      });
+      console.log('   ✅ Discovery Agent completed:', detectionCount, 'claims detected');
+      console.log('   💰 Total value:', `$${totalValue.toFixed(2)}`);
     } catch (error: any) {
-      this.recordStep('Agent 3', 'Claim Detection', false, error.message, Date.now() - startTime);
+      this.recordStep('Discovery Agent', 'Claim Detection (Python ML)', false, error.message, Date.now() - startTime);
       console.log('   ❌ Failed:', error.message);
     }
   }

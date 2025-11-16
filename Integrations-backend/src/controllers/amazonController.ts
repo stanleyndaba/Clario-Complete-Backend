@@ -41,20 +41,26 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
     
     // Check if we already have a refresh token - if so, we can skip OAuth
     // SECURITY: Only allow bypass in non-production environments
+    // In sandbox mode with mock generator, we can bypass even without refresh token
     const existingRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
+    const canBypass = (existingRefreshToken && existingRefreshToken.trim() !== '') || 
+                      (isSandboxMode && process.env.USE_MOCK_DATA_GENERATOR !== 'false');
     
-    if (existingRefreshToken && existingRefreshToken.trim() !== '' && !isProduction) {
-      logger.info('Refresh token already exists in environment - user can skip OAuth if token is valid', {
+    if (canBypass && !isProduction) {
+      logger.info('Bypass flow available - checking if user wants to skip OAuth', {
         isSandboxMode,
+        hasRefreshToken: !!(existingRefreshToken && existingRefreshToken.trim() !== ''),
+        useMockGenerator: process.env.USE_MOCK_DATA_GENERATOR !== 'false',
         isProduction: false,
         note: 'Bypass flow only available in non-production environments'
       });
       
       // Check if user wants to skip OAuth (bypass parameter)
       // SECURITY: Only allow bypass in development/sandbox mode
+      // In sandbox mode with mock generator, bypass is always allowed (no refresh token needed)
       const bypassOAuth = (req.query.bypass === 'true' || 
                           req.query.skip_oauth === 'true' ||
-                          (isSandboxMode && req.query.force_oauth !== 'true')) && !isProduction;
+                          (isSandboxMode && process.env.USE_MOCK_DATA_GENERATOR !== 'false' && req.query.force_oauth !== 'true')) && !isProduction;
       
       if (bypassOAuth) {
         logger.info('Bypassing OAuth flow - validating existing refresh token', {
@@ -62,21 +68,28 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
           reason: isSandboxMode ? 'Sandbox mode - validating token (recommended)' : 'User requested bypass'
         });
         
-        // Get userId for token validation
-        const userId = (req as any).user?.id || (req as any).user?.user_id || req.query.userId as string || 'demo-user';
+        // Get userId for token validation (check userIdMiddleware first)
+        const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || req.query.userId as string || 'demo-user';
         
         // CRITICAL: Actually validate the connection by trying to refresh the access token
+        // In sandbox mode without refresh token, skip validation and proceed with mock generator
         let connectionValidated = false;
         let validationError: string | null = null;
         
-        try {
-          // Try to get an access token - this will validate the refresh token
-          logger.info('Validating refresh token by attempting to get access token', { userId });
-          const accessToken = await amazonService.getAccessTokenForService(userId);
-          
-          if (accessToken) {
-            logger.info('✅ Token validation successful - refresh token is valid', { userId });
-            connectionValidated = true;
+        // If no refresh token exists and we're in sandbox mode, skip validation
+        if (!existingRefreshToken && isSandboxMode && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
+          logger.info('No refresh token in sandbox mode - skipping validation, will use mock generator', { userId });
+          connectionValidated = true; // Proceed with bypass
+        } else {
+          // Try to validate if we have a refresh token
+          try {
+            // Try to get an access token - this will validate the refresh token
+            logger.info('Validating refresh token by attempting to get access token', { userId });
+            const accessToken = await amazonService.getAccessTokenForService(userId);
+            
+            if (accessToken) {
+              logger.info('✅ Token validation successful - refresh token is valid', { userId });
+              connectionValidated = true;
             
             // Optionally test SP-API connection with a simple API call
             // This ensures the connection actually works, not just that the token exists
@@ -111,6 +124,7 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
           validationError = tokenError.message;
           connectionValidated = false;
         }
+      }
         
         // If validation failed, handle based on environment
         if (!connectionValidated) {
@@ -204,21 +218,15 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
         }
         
         // Determine redirect URL based on frontend URL
-        // Preserve the full frontend URL path if it exists
+        // Frontend expects /sync-status after bypass (per AmazonConnect component)
         let redirectUrl: string;
         try {
           const frontendUrlObj = new URL(frontendUrl);
-          // If frontend URL already has a path, preserve it; otherwise use default
-          if (frontendUrlObj.pathname && frontendUrlObj.pathname !== '/') {
-            // Frontend URL already includes path (e.g., /integrations-hub)
-            redirectUrl = `${frontendUrl}?amazon_connected=true&message=${encodeURIComponent('Amazon connection verified and ready')}`;
-          } else {
-            // Frontend URL is just domain, use default path
-            redirectUrl = `${frontendUrl}/integrations-hub?amazon_connected=true&message=${encodeURIComponent('Amazon connection verified and ready')}`;
-          }
+          // Use /sync-status as the redirect path (frontend expects this)
+          redirectUrl = `${frontendUrlObj.protocol}//${frontendUrlObj.host}/sync-status?amazon_connected=true&message=${encodeURIComponent('Amazon connection verified and ready')}`;
         } catch {
           // If URL parsing fails, construct simple redirect
-          redirectUrl = `${frontendUrl}/integrations-hub?amazon_connected=true&message=${encodeURIComponent('Amazon connection verified and ready')}`;
+          redirectUrl = `${frontendUrl}/sync-status?amazon_connected=true&message=${encodeURIComponent('Amazon connection verified and ready')}`;
         }
         
         // Set CORS headers explicitly for JSON response

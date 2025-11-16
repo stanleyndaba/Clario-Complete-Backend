@@ -63,21 +63,127 @@ async function disconnectEvidenceSource(req: Request, res: Response, provider: s
 export const getIntegrationStatus = async (req: Request, res: Response) => {
   try {
     const { provider } = req.params;
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     
-    // Mock integration status
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required'
+      });
+    }
+
+    logger.info('Getting provider status', { userId, provider });
+
+    // Handle Amazon provider specifically (Agent 1)
+    if (provider === 'amazon') {
+      let connected = false;
+      let sandboxMode = false;
+      let useMockGenerator = false;
+      let lastSync: string | null = null;
+      let connectionVerified = false;
+
+      try {
+        // Check if Amazon token exists in database
+        const amazonToken = await tokenManager.getToken(userId, 'amazon');
+        
+        if (amazonToken && amazonToken.accessToken) {
+          connected = true;
+          connectionVerified = true;
+          
+          // Check sandbox mode
+          const spapiUrl = process.env.AMAZON_SPAPI_BASE_URL || '';
+          sandboxMode = spapiUrl.includes('sandbox') || process.env.NODE_ENV === 'development';
+          useMockGenerator = process.env.USE_MOCK_DATA_GENERATOR !== 'false';
+          
+          // Get last sync time
+          try {
+            const { data: lastSyncData } = await supabase
+              .from('sync_progress')
+              .select('updated_at')
+              .eq('user_id', userId)
+              .eq('status', 'completed')
+              .order('updated_at', { ascending: false })
+              .limit(1)
+              .maybeSingle();
+            
+            if (lastSyncData?.updated_at) {
+              lastSync = lastSyncData.updated_at;
+            }
+          } catch (syncError) {
+            logger.debug('Failed to get last sync time', { error: syncError });
+          }
+        } else {
+          // Check environment variables (sandbox mode)
+          const envRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
+          const envClientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
+          const envClientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET;
+          
+          if (envRefreshToken && envRefreshToken.trim() !== '' && envClientId && envClientSecret) {
+            connected = true;
+            sandboxMode = true;
+            useMockGenerator = true;
+            
+            // Try to get last sync
+            try {
+              const { data: lastSyncData } = await supabase
+                .from('sync_progress')
+                .select('updated_at')
+                .eq('user_id', userId)
+                .eq('status', 'completed')
+                .order('updated_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              
+              if (lastSyncData?.updated_at) {
+                lastSync = lastSyncData.updated_at;
+              }
+            } catch (syncError) {
+              logger.debug('Failed to get last sync time', { error: syncError });
+            }
+          }
+        }
+      } catch (error) {
+        logger.warn('Error checking Amazon connection', { error, userId });
+      }
+
+      return res.json({
+        connected,
+        sandboxMode,
+        useMockGenerator,
+        useMockData: useMockGenerator,
+        lastSync,
+        connectionVerified
+      });
+    }
+
+    // Handle other providers (Gmail, etc.)
+    if (provider === 'gmail') {
+      try {
+        const token = await tokenManager.getToken(userId, 'gmail');
+        const connected = !!(token && token.accessToken);
+        
+        return res.json({
+          connected,
+          status: connected ? 'active' : 'disconnected'
+        });
+      } catch (error) {
+        logger.warn('Error checking Gmail connection', { error, userId });
+        return res.json({
+          connected: false,
+          status: 'disconnected'
+        });
+      }
+    }
+
+    // Generic response for other providers
     res.json({
       success: true,
       provider: provider,
-      connected: true,
-      status: 'active',
-      lastSync: new Date().toISOString(),
-      data: {
-        email: provider === 'gmail' ? 'user@example.com' : undefined,
-        account: provider === 'amazon' ? 'Seller123' : undefined
-      }
+      connected: false,
+      status: 'unknown'
     });
-  } catch (error) {
-    console.error('Integration status error:', error);
+  } catch (error: any) {
+    logger.error('Integration status error', { error, provider: req.params.provider });
     res.status(500).json({
       success: false,
       error: 'Failed to get integration status'
