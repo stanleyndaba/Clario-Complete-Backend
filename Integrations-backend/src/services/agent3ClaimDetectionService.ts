@@ -260,6 +260,7 @@ export class Agent3ClaimDetectionService {
       // FIX #4: Agent 3 must send a completion signal to detection_queue
       // This allows syncJobManager to know when detection is done
       try {
+<<<<<<< HEAD
         const { error: queueError } = await supabaseAdmin
           .from('detection_queue')
           .upsert({
@@ -285,6 +286,66 @@ export class Agent3ClaimDetectionService {
           });
         } else {
           logger.info('✅ [AGENT 3] Detection completion signal sent', { userId, syncId });
+=======
+        // Check if queue entry exists, then update or insert
+        const { data: existingQueue } = await supabaseAdmin
+          .from('detection_queue')
+          .select('id')
+          .eq('seller_id', userId)
+          .eq('sync_id', syncId)
+          .maybeSingle();
+
+        if (existingQueue) {
+          // Update existing entry
+          const { error: updateError } = await supabaseAdmin
+            .from('detection_queue')
+            .update({
+              status: result.success ? 'completed' : 'failed',
+              processed_at: new Date().toISOString(),
+              payload: {
+                detectionId,
+                summary: result.summary,
+                isMock: result.isMock
+              },
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', existingQueue.id);
+
+          if (updateError) {
+            logger.warn('⚠️ [AGENT 3] Failed to update detection_queue (non-critical)', {
+              error: updateError.message,
+              userId,
+              syncId
+            });
+          } else {
+            logger.info('✅ [AGENT 3] Detection completion signal sent', { userId, syncId });
+          }
+        } else {
+          // Insert new entry
+          const { error: insertError } = await supabaseAdmin
+            .from('detection_queue')
+            .insert({
+              seller_id: userId,
+              sync_id: syncId,
+              status: result.success ? 'completed' : 'failed',
+              processed_at: new Date().toISOString(),
+              payload: {
+                detectionId,
+                summary: result.summary,
+                isMock: result.isMock
+              }
+            });
+
+          if (insertError) {
+            logger.warn('⚠️ [AGENT 3] Failed to insert detection_queue (non-critical)', {
+              error: insertError.message,
+              userId,
+              syncId
+            });
+          } else {
+            logger.info('✅ [AGENT 3] Detection completion signal sent', { userId, syncId });
+          }
+>>>>>>> 6697dd3 (CRITICAL FIX: Agent 3 reliability - Fix all 4 silent failure issues)
         }
       } catch (queueError: any) {
         logger.warn('⚠️ [AGENT 3] Failed to signal completion (non-critical)', {
