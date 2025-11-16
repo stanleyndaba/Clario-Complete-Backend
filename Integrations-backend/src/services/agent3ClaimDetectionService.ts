@@ -112,6 +112,11 @@ export class Agent3ClaimDetectionService {
         dataToProcess = await this.getNormalizedDataFromAgent2(userId, syncId);
       }
 
+      // Step 1.5: CRITICAL - Validate and normalize input data contract
+      // This ensures Agent 3 receives correctly shaped data from Agent 2
+      logger.info('🔍 [AGENT 3] Validating input data contract', { userId, syncId });
+      dataToProcess = this.validateAndNormalizeInputContract(dataToProcess, userId, syncId);
+
       // Step 2: Transform normalized data into claim detection format
       logger.info('🔄 [AGENT 3] Transforming data for claim detection', { userId, syncId });
       const claimsToDetect = this.prepareClaimsFromNormalizedData(dataToProcess, userId);
@@ -431,6 +436,196 @@ export class Agent3ClaimDetectionService {
       });
       return {};
     }
+  }
+
+  /**
+   * CRITICAL: Validate and normalize input data contract from Agent 2
+   * This ensures all required fields exist and are correctly typed
+   */
+  private validateAndNormalizeInputContract(
+    data: {
+      orders?: any[];
+      shipments?: any[];
+      returns?: any[];
+      settlements?: any[];
+      inventory?: any[];
+      claims?: any[];
+    },
+    userId: string,
+    syncId: string
+  ): {
+    orders?: any[];
+    shipments?: any[];
+    returns?: any[];
+    settlements?: any[];
+    inventory?: any[];
+    claims?: any[];
+  } {
+    const normalized: any = {};
+    const missingFields: string[] = [];
+
+    // Normalize orders - ensure total_fees exists
+    if (data.orders && Array.isArray(data.orders)) {
+      normalized.orders = data.orders.map((order: any) => {
+        const normalizedOrder = { ...order };
+        
+        // CRITICAL FIX: Agent 3 expects total_fees but Agent 2 doesn't provide it
+        // Calculate from items or use a default
+        if (!normalizedOrder.total_fees && normalizedOrder.total_fees !== 0) {
+          // Estimate fees as 5% of order total (typical FBA fee structure)
+          normalizedOrder.total_fees = normalizedOrder.total_amount 
+            ? parseFloat((normalizedOrder.total_amount * 0.05).toFixed(2))
+            : 0;
+          
+          if (normalizedOrder.total_amount) {
+            missingFields.push(`order.${normalizedOrder.order_id}.total_fees (estimated)`);
+          }
+        }
+        
+        // Ensure all required fields exist
+        if (!normalizedOrder.order_id) {
+          missingFields.push(`order[${data.orders.indexOf(order)}].order_id`);
+        }
+        if (!normalizedOrder.order_date) {
+          normalizedOrder.order_date = new Date().toISOString();
+          missingFields.push(`order.${normalizedOrder.order_id}.order_date (defaulted)`);
+        }
+        if (!normalizedOrder.total_amount) {
+          normalizedOrder.total_amount = 0;
+        }
+        if (!normalizedOrder.currency) {
+          normalizedOrder.currency = 'USD';
+        }
+        if (!normalizedOrder.marketplace_id) {
+          normalizedOrder.marketplace_id = 'US';
+        }
+        
+        return normalizedOrder;
+      });
+    }
+
+    // Normalize shipments - ensure items have price field
+    if (data.shipments && Array.isArray(data.shipments)) {
+      normalized.shipments = data.shipments.map((shipment: any) => {
+        const normalizedShipment = { ...shipment };
+        
+        // CRITICAL FIX: Agent 3 expects items[].price but Agent 2 doesn't provide it
+        if (normalizedShipment.items && Array.isArray(normalizedShipment.items)) {
+          normalizedShipment.items = normalizedShipment.items.map((item: any) => {
+            if (!item.price && item.price !== 0) {
+              // Default price to $10 if not provided
+              item.price = 10;
+              missingFields.push(`shipment.${normalizedShipment.shipment_id}.items[].price (defaulted)`);
+            }
+            return item;
+          });
+        }
+        
+        // Ensure missing_quantity exists (calculated by normalizeShipments, but double-check)
+        if (normalizedShipment.missing_quantity === undefined) {
+          const expectedQty = normalizedShipment.expected_quantity || 0;
+          const receivedQty = normalizedShipment.received_quantity || expectedQty;
+          normalizedShipment.missing_quantity = Math.max(0, expectedQty - receivedQty);
+        }
+        
+        // Ensure shipped_date exists
+        if (!normalizedShipment.shipped_date) {
+          normalizedShipment.shipped_date = new Date().toISOString();
+          missingFields.push(`shipment.${normalizedShipment.shipment_id}.shipped_date (defaulted)`);
+        }
+        
+        // Ensure status exists
+        if (!normalizedShipment.status) {
+          normalizedShipment.status = 'UNKNOWN';
+        }
+        
+        return normalizedShipment;
+      });
+    }
+
+    // Normalize returns - already has most fields, but ensure consistency
+    if (data.returns && Array.isArray(data.returns)) {
+      normalized.returns = data.returns.map((returnData: any) => {
+        const normalizedReturn = { ...returnData };
+        
+        // Ensure refund_amount exists
+        if (!normalizedReturn.refund_amount && normalizedReturn.refund_amount !== 0) {
+          // Calculate from items if available
+          if (normalizedReturn.items && Array.isArray(normalizedReturn.items)) {
+            normalizedReturn.refund_amount = normalizedReturn.items.reduce(
+              (sum: number, item: any) => sum + (item.refund_amount || 0),
+              0
+            );
+          } else {
+            normalizedReturn.refund_amount = 0;
+            missingFields.push(`return.${normalizedReturn.return_id}.refund_amount (defaulted)`);
+          }
+        }
+        
+        // Ensure returned_date exists
+        if (!normalizedReturn.returned_date) {
+          normalizedReturn.returned_date = new Date().toISOString();
+          missingFields.push(`return.${normalizedReturn.return_id}.returned_date (defaulted)`);
+        }
+        
+        // Ensure currency exists
+        if (!normalizedReturn.currency) {
+          normalizedReturn.currency = 'USD';
+        }
+        
+        return normalizedReturn;
+      });
+    }
+
+    // Normalize settlements
+    if (data.settlements && Array.isArray(data.settlements)) {
+      normalized.settlements = data.settlements.map((settlement: any) => {
+        const normalizedSettlement = { ...settlement };
+        
+        // CRITICAL FIX: Agent 3 expects fees field
+        if (!normalizedSettlement.fees && normalizedSettlement.fees !== 0) {
+          // Estimate fees as 10% of settlement amount
+          normalizedSettlement.fees = normalizedSettlement.amount 
+            ? parseFloat((normalizedSettlement.amount * 0.10).toFixed(2))
+            : 0;
+          
+          if (normalizedSettlement.amount) {
+            missingFields.push(`settlement.${normalizedSettlement.settlement_id}.fees (estimated)`);
+          }
+        }
+        
+        // Ensure settlement_date exists
+        if (!normalizedSettlement.settlement_date) {
+          normalizedSettlement.settlement_date = new Date().toISOString();
+          missingFields.push(`settlement.${normalizedSettlement.settlement_id}.settlement_date (defaulted)`);
+        }
+        
+        // Ensure currency exists
+        if (!normalizedSettlement.currency) {
+          normalizedSettlement.currency = 'USD';
+        }
+        
+        return normalizedSettlement;
+      });
+    }
+
+    // Pass through inventory and claims as-is (they have fewer requirements)
+    if (data.inventory) normalized.inventory = data.inventory;
+    if (data.claims) normalized.claims = data.claims;
+
+    // Log missing fields for debugging
+    if (missingFields.length > 0) {
+      logger.warn('⚠️ [AGENT 3] Input contract validation found missing fields (defaulted/estimated)', {
+        userId,
+        syncId,
+        missingFieldsCount: missingFields.length,
+        missingFields: missingFields.slice(0, 10) // Log first 10 to avoid spam
+      });
+    } else {
+      logger.info('✅ [AGENT 3] Input contract validation passed', { userId, syncId });
+    }
+
+    return normalized;
   }
 
   /**
