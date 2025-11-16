@@ -206,6 +206,12 @@ export const getSyncHistory = async (req: Request, res: Response) => {
         startedAt: sync.startedAt,
         completedAt: sync.completedAt,
         ordersProcessed: sync.ordersProcessed,
+        totalOrders: sync.totalOrders,
+        inventoryCount: sync.inventoryCount,
+        shipmentsCount: sync.shipmentsCount,
+        returnsCount: sync.returnsCount,
+        settlementsCount: sync.settlementsCount,
+        feesCount: sync.feesCount,
         claimsDetected: sync.claimsDetected,
         duration: sync.completedAt && sync.startedAt 
           ? Math.round((new Date(sync.completedAt).getTime() - new Date(sync.startedAt).getTime()) / 1000)
@@ -260,7 +266,7 @@ export const cancelSync = async (req: Request, res: Response) => {
     }
 
     res.json({
-      ok: true,
+      success: true,
       message: 'Sync cancelled successfully'
     });
   } catch (error: any) {
