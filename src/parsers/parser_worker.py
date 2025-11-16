@@ -258,6 +258,32 @@ class ParserWorker:
                     result.confidence,
                     document_id
                 ))
+                
+                # Save detailed results
+                cursor.execute("""
+                    INSERT INTO parser_job_results 
+                    (job_id, document_id, supplier_name, invoice_number, invoice_date,
+                     total_amount, currency, tax_amount, shipping_amount, payment_terms,
+                     po_number, raw_text, line_items, extraction_method, confidence_score,
+                     processing_time_ms)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    job_id, document_id,
+                    result.data.supplier_name if result.data else None,
+                    result.data.invoice_number if result.data else None,
+                    result.data.invoice_date if result.data else None,
+                    result.data.total_amount if result.data else None,
+                    result.data.currency if result.data else None,
+                    result.data.tax_amount if result.data else None,
+                    result.data.shipping_amount if result.data else None,
+                    result.data.payment_terms if result.data else None,
+                    result.data.po_number if result.data else None,
+                    result.data.raw_text if result.data else None,
+                    json.dumps([item.dict() for item in result.data.line_items]) if result.data and result.data.line_items else '[]',
+                    result.method,
+                    result.confidence,
+                    result.processing_time_ms
+                ))
 
     async def _trigger_evidence_matching(self, document_id: str) -> None:
         """Trigger evidence matching job for the document's owner, if available."""
@@ -284,32 +310,6 @@ class ParserWorker:
         except Exception as e:
             # Best-effort hook; log and continue
             logger.warning(f"Failed to trigger evidence matching for document {document_id}: {e}")
-                
-                # Save detailed results
-                cursor.execute("""
-                    INSERT INTO parser_job_results 
-                    (job_id, document_id, supplier_name, invoice_number, invoice_date,
-                     total_amount, currency, tax_amount, shipping_amount, payment_terms,
-                     po_number, raw_text, line_items, extraction_method, confidence_score,
-                     processing_time_ms)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    job_id, document_id,
-                    result.data.supplier_name if result.data else None,
-                    result.data.invoice_number if result.data else None,
-                    result.data.invoice_date if result.data else None,
-                    result.data.total_amount if result.data else None,
-                    result.data.currency if result.data else None,
-                    result.data.tax_amount if result.data else None,
-                    result.data.shipping_amount if result.data else None,
-                    result.data.payment_terms if result.data else None,
-                    result.data.po_number if result.data else None,
-                    result.data.raw_text if result.data else None,
-                    json.dumps([item.dict() for item in result.data.line_items]) if result.data else '[]',
-                    result.method,
-                    result.confidence,
-                    result.processing_time_ms
-                ))
     
     async def _mark_job_processing(self, job_id: str):
         """Mark job as processing"""
