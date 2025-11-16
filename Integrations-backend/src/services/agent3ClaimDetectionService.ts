@@ -116,32 +116,44 @@ export class Agent3ClaimDetectionService {
       logger.info('🔄 [AGENT 3] Transforming data for claim detection', { userId, syncId });
       const claimsToDetect = this.prepareClaimsFromNormalizedData(dataToProcess, userId);
 
-      if (claimsToDetect.length === 0) {
-        logger.info('ℹ️ [AGENT 3] No claims to detect', { userId, syncId });
-        result.duration = Date.now() - startTime;
-        return result;
-      }
-
-      logger.info('🎯 [AGENT 3] Prepared claims for detection', {
-        userId,
-        syncId,
-        claimCount: claimsToDetect.length
-      });
-
       // Step 3: Call Python Claim Detector API (or use mock if unavailable)
       const isMockMode = process.env.ENABLE_MOCK_DETECTION === 'true' || 
                          process.env.USE_MOCK_DATA_GENERATOR !== 'false';
       
       let detectionResults: any[] = [];
       
-      if (isMockMode) {
-        logger.info('🧪 [AGENT 3] Using mock detection (Python API unavailable or mock mode enabled)', {
+      // In mock mode, generate detections from normalized data even if no claims were found
+      if (isMockMode && claimsToDetect.length === 0) {
+        logger.info('🧪 [AGENT 3] No claims found in data, generating mock detections from normalized data', {
           userId,
-          syncId
+          syncId,
+          ordersCount: dataToProcess.orders?.length || 0,
+          shipmentsCount: dataToProcess.shipments?.length || 0,
+          returnsCount: dataToProcess.returns?.length || 0
         });
-        detectionResults = this.generateMockDetections(claimsToDetect, userId);
+        // Generate mock claims from the normalized data
+        const mockClaimsFromData = this.generateMockClaimsFromNormalizedData(dataToProcess, userId);
+        detectionResults = this.generateMockDetections(mockClaimsFromData, userId);
         result.isMock = true;
+      } else if (claimsToDetect.length === 0) {
+        logger.info('ℹ️ [AGENT 3] No claims to detect', { userId, syncId });
+        result.duration = Date.now() - startTime;
+        return result;
       } else {
+        logger.info('🎯 [AGENT 3] Prepared claims for detection', {
+          userId,
+          syncId,
+          claimCount: claimsToDetect.length
+        });
+        
+        if (isMockMode) {
+          logger.info('🧪 [AGENT 3] Using mock detection (Python API unavailable or mock mode enabled)', {
+            userId,
+            syncId
+          });
+          detectionResults = this.generateMockDetections(claimsToDetect, userId);
+          result.isMock = true;
+        } else {
         try {
           detectionResults = await this.callPythonDetectorAPI(claimsToDetect, userId);
         } catch (apiError: any) {
@@ -684,6 +696,154 @@ export class Agent3ClaimDetectionService {
       });
       throw error;
     }
+  }
+
+  /**
+   * Generate mock claims from normalized data when no claims are found
+   * This ensures Agent 3 always generates detections in mock mode
+   */
+  private generateMockClaimsFromNormalizedData(
+    data: {
+      orders?: any[];
+      shipments?: any[];
+      returns?: any[];
+      settlements?: any[];
+      inventory?: any[];
+      claims?: any[];
+    },
+    userId: string
+  ): any[] {
+    const mockClaims: any[] = [];
+    let claimIndex = 0;
+
+    // Generate claims from orders (fee-related)
+    if (data.orders && data.orders.length > 0) {
+      const ordersToUse = data.orders.slice(0, Math.min(25, data.orders.length));
+      for (const order of ordersToUse) {
+        mockClaims.push({
+          claim_id: `mock_claim_order_${order.order_id || order.amazon_order_id || claimIndex}_${Date.now()}`,
+          seller_id: userId,
+          order_id: order.order_id || order.amazon_order_id,
+          category: 'fee_error',
+          subcategory: 'order_fee',
+          reason_code: 'POTENTIAL_FEE_OVERCHARGE',
+          marketplace: order.marketplace_id || 'US',
+          amount: (order.total_amount || order.order_total || 100) * 0.05, // 5% of order value
+          quantity: 1,
+          order_value: order.total_amount || order.order_total || 100,
+          days_since_order: this.calculateDaysSince(order.order_date || order.purchase_date || new Date().toISOString()),
+          description: `Potential fee overcharge for order ${order.order_id || order.amazon_order_id || claimIndex}`,
+          claim_date: order.order_date || order.purchase_date || new Date().toISOString(),
+          currency: order.currency || 'USD',
+          evidence: {
+            order_id: order.order_id || order.amazon_order_id,
+            order_data: order
+          }
+        });
+        claimIndex++;
+      }
+    }
+
+    // Generate claims from shipments (lost/damaged inventory)
+    if (data.shipments && data.shipments.length > 0) {
+      const shipmentsToUse = data.shipments.slice(0, Math.min(20, data.shipments.length));
+      for (const shipment of shipmentsToUse) {
+        const estimatedValue = shipment.items?.reduce((sum: number, item: any) => {
+          return sum + ((item.quantity || 1) * (item.price || 10));
+        }, 0) || 50;
+        
+        mockClaims.push({
+          claim_id: `mock_claim_shipment_${shipment.shipment_id || claimIndex}_${Date.now()}`,
+          seller_id: userId,
+          order_id: shipment.order_id,
+          category: 'inventory_loss',
+          subcategory: 'missing_unit',
+          reason_code: 'MISSING_UNIT',
+          marketplace: shipment.marketplace_id || 'US',
+          amount: estimatedValue * 0.1, // 10% of shipment value
+          quantity: 1,
+          order_value: estimatedValue,
+          days_since_order: this.calculateDaysSince(shipment.ship_date || shipment.shipped_date || new Date().toISOString()),
+          description: `Potential missing unit in shipment ${shipment.shipment_id || claimIndex}`,
+          claim_date: shipment.ship_date || shipment.shipped_date || new Date().toISOString(),
+          currency: shipment.currency || 'USD',
+          evidence: {
+            shipment_id: shipment.shipment_id,
+            shipment_data: shipment
+          }
+        });
+        claimIndex++;
+      }
+    }
+
+    // Generate claims from returns (uncredited returns)
+    if (data.returns && data.returns.length > 0) {
+      const returnsToUse = data.returns.slice(0, Math.min(15, data.returns.length));
+      for (const returnItem of returnsToUse) {
+        mockClaims.push({
+          claim_id: `mock_claim_return_${returnItem.return_id || claimIndex}_${Date.now()}`,
+          seller_id: userId,
+          order_id: returnItem.order_id,
+          category: 'return_not_credited',
+          subcategory: 'uncredited_return',
+          reason_code: 'RETURN_NOT_CREDITED',
+          marketplace: returnItem.marketplace_id || 'US',
+          amount: (returnItem.refund_amount || 50),
+          quantity: returnItem.quantity || 1,
+          order_value: returnItem.refund_amount || 50,
+          days_since_order: this.calculateDaysSince(returnItem.return_date || returnItem.returned_date || new Date().toISOString()),
+          description: `Potential uncredited return ${returnItem.return_id || claimIndex}`,
+          claim_date: returnItem.return_date || returnItem.returned_date || new Date().toISOString(),
+          currency: returnItem.currency || 'USD',
+          evidence: {
+            return_id: returnItem.return_id,
+            return_data: returnItem
+          }
+        });
+        claimIndex++;
+      }
+    }
+
+    // If still no claims, generate some generic ones
+    if (mockClaims.length === 0) {
+      logger.warn('⚠️ [AGENT 3] No data to generate mock claims from, creating generic mock claims', {
+        userId,
+        hasOrders: !!(data.orders && data.orders.length > 0),
+        hasShipments: !!(data.shipments && data.shipments.length > 0),
+        hasReturns: !!(data.returns && data.returns.length > 0)
+      });
+      
+      // Generate 10 generic mock claims
+      for (let i = 0; i < 10; i++) {
+        mockClaims.push({
+          claim_id: `mock_claim_generic_${i}_${Date.now()}`,
+          seller_id: userId,
+          order_id: `MOCK_ORDER_${i}`,
+          category: i % 2 === 0 ? 'fee_error' : 'inventory_loss',
+          subcategory: i % 2 === 0 ? 'order_fee' : 'missing_unit',
+          reason_code: i % 2 === 0 ? 'POTENTIAL_FEE_OVERCHARGE' : 'MISSING_UNIT',
+          marketplace: 'US',
+          amount: 50 + (i * 10),
+          quantity: 1,
+          order_value: 100 + (i * 20),
+          days_since_order: 30 - i,
+          description: `Mock claim ${i + 1} for testing`,
+          claim_date: new Date(Date.now() - (i * 24 * 60 * 60 * 1000)).toISOString(),
+          currency: 'USD',
+          evidence: {
+            mock: true,
+            index: i
+          }
+        });
+      }
+    }
+
+    logger.info('🧪 [AGENT 3] Generated mock claims from normalized data', {
+      userId,
+      mockClaimsCount: mockClaims.length
+    });
+
+    return mockClaims;
   }
 
   /**
