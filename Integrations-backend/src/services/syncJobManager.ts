@@ -479,20 +479,67 @@ class SyncJobManager {
 
       const metadata = (data.metadata as any) || {};
       
-      // If metadata is missing the new fields (old sync), try to get counts from Agent 2 result
+      // If metadata is missing the new fields (old sync), try to recalculate from database
       // This handles syncs created before we added all the data type counts
       const hasNewFields = metadata.inventoryCount !== undefined || 
                            metadata.shipmentsCount !== undefined ||
                            metadata.returnsCount !== undefined;
       
-      // If old sync format and completed, log a warning (but still return the data)
+      // If old sync format and completed, try to recalculate counts from actual database records
       if (!hasNewFields && normalizedStatus === 'completed') {
-        logger.warn(`Sync ${data.sync_id} has old metadata format (missing data type counts). This sync was created before the backend fix.`, {
+        logger.warn(`Sync ${data.sync_id} has old metadata format (missing data type counts). Attempting to recalculate from database...`, {
           userId: data.user_id,
-          syncId: data.sync_id,
-          hasInventoryCount: metadata.inventoryCount !== undefined,
-          hasShipmentsCount: metadata.shipmentsCount !== undefined
+          syncId: data.sync_id
         });
+        
+        try {
+          // Recalculate counts from actual database records
+          const syncStartDate = metadata.startedAt || data.created_at;
+          const [ordersCount, inventoryCount, shipmentsCount, returnsCount, settlementsCount, feesCount, claimsCount] = await Promise.all([
+            supabase.from('orders').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).gte('created_at', syncStartDate),
+            supabase.from('inventory_items').select('id', { count: 'exact', head: true }).eq('user_id', data.user_id).gte('created_at', syncStartDate),
+            supabase.from('shipments').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).gte('created_at', syncStartDate),
+            supabase.from('returns').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).gte('created_at', syncStartDate),
+            supabase.from('settlements').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).gte('created_at', syncStartDate),
+            supabase.from('fees').select('id', { count: 'exact', head: true }).eq('user_id', data.user_id).gte('created_at', syncStartDate),
+            supabase.from('claims').select('id', { count: 'exact', head: true }).eq('user_id', data.user_id).gte('created_at', syncStartDate)
+          ]);
+          
+          // Update metadata with recalculated counts
+          const recalculatedMetadata = {
+            ...metadata,
+            ordersProcessed: ordersCount.count || metadata.ordersProcessed || 0,
+            totalOrders: ordersCount.count || metadata.totalOrders || 0,
+            inventoryCount: inventoryCount.count || 0,
+            shipmentsCount: shipmentsCount.count || 0,
+            returnsCount: returnsCount.count || 0,
+            settlementsCount: settlementsCount.count || 0,
+            feesCount: feesCount.count || 0,
+            claimsDetected: claimsCount.count || metadata.claimsDetected || 0
+          };
+          
+          // Save recalculated metadata back to database (async, don't wait)
+          supabase.from('sync_progress')
+            .update({ metadata: recalculatedMetadata })
+            .eq('sync_id', data.sync_id)
+            .eq('user_id', data.user_id)
+            .then(() => {
+              logger.info(`✅ Recalculated and updated metadata for sync ${data.sync_id}`, {
+                userId: data.user_id,
+                syncId: data.sync_id,
+                recalculatedCounts: recalculatedMetadata
+              });
+            })
+            .catch((err) => {
+              logger.error(`Failed to update recalculated metadata for sync ${data.sync_id}:`, err);
+            });
+          
+          // Use recalculated metadata for this response
+          Object.assign(metadata, recalculatedMetadata);
+        } catch (recalcError: any) {
+          logger.error(`Failed to recalculate counts for sync ${data.sync_id}:`, recalcError);
+          // Continue with old metadata if recalculation fails
+        }
       }
       
       return {
