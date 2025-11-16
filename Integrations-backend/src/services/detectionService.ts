@@ -1209,8 +1209,10 @@ export class DetectionService {
   ): Promise<DetectionResultRecord[]> {
     try {
       // Use supabaseAdmin to bypass RLS (Agent 3 stores with supabaseAdmin)
-      const { supabaseAdmin } = await import('../database/supabaseClient');
-      let query = supabaseAdmin
+      // Fall back to supabase if supabaseAdmin is not available
+      const { supabaseAdmin, supabase: supabaseClient } = await import('../database/supabaseClient');
+      const client = supabaseAdmin || supabaseClient;
+      let query = client
         .from('detection_results')
         .select('*')
         .eq('seller_id', sellerId)
@@ -1271,8 +1273,10 @@ export class DetectionService {
   }> {
     try {
       // Use supabaseAdmin to bypass RLS (Agent 3 stores with supabaseAdmin)
-      const { supabaseAdmin } = await import('../database/supabaseClient');
-      const { data, error } = await supabaseAdmin
+      // Fall back to supabase if supabaseAdmin is not available
+      const { supabaseAdmin, supabase: supabaseClient } = await import('../database/supabaseClient');
+      const client = supabaseAdmin || supabaseClient;
+      const { data, error } = await client
         .from('detection_results')
         .select('anomaly_type, confidence_score, status')
         .eq('seller_id', sellerId);
@@ -1376,8 +1380,10 @@ export class DetectionService {
   }> {
     try {
       // Use supabaseAdmin to bypass RLS (Agent 3 stores with supabaseAdmin)
-      const { supabaseAdmin } = await import('../database/supabaseClient');
-      const { data, error } = await supabaseAdmin
+      // Fall back to supabase if supabaseAdmin is not available
+      const { supabaseAdmin, supabase: supabaseClient } = await import('../database/supabaseClient');
+      const client = supabaseAdmin || supabaseClient;
+      const { data, error } = await client
         .from('detection_results')
         .select('anomaly_type, severity, estimated_value, days_remaining, expired, confidence_score')
         .eq('seller_id', sellerId);
@@ -1457,8 +1463,10 @@ export class DetectionService {
       for (const sellerId of uniqueSellerIds) {
         // Get claims expiring in 7 days or less
         // Use supabaseAdmin to bypass RLS (Agent 3 stores with supabaseAdmin)
-        const { supabaseAdmin } = await import('../database/supabaseClient');
-        const { data: expiringClaims, error } = await supabaseAdmin
+        // Fall back to supabase if supabaseAdmin is not available
+        const { supabaseAdmin, supabase: supabaseClient } = await import('../database/supabaseClient');
+        const client = supabaseAdmin || supabaseClient;
+        const { data: expiringClaims, error } = await client
           .from('detection_results')
           .select('*')
           .eq('seller_id', sellerId)
@@ -1538,8 +1546,10 @@ export class DetectionService {
   async getClaimsApproachingDeadline(sellerId: string, daysThreshold: number = 7): Promise<DetectionResultRecord[]> {
     try {
       // Use supabaseAdmin to bypass RLS (Agent 3 stores with supabaseAdmin)
-      const { supabaseAdmin } = await import('../database/supabaseClient');
-      const { data, error } = await supabaseAdmin
+      // Fall back to supabase if supabaseAdmin is not available
+      const { supabaseAdmin, supabase: supabaseClient } = await import('../database/supabaseClient');
+      const client = supabaseAdmin || supabaseClient;
+      const { data, error } = await client
         .from('detection_results')
         .select('*')
         .eq('seller_id', sellerId)
