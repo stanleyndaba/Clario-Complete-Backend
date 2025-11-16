@@ -503,7 +503,8 @@ class SyncJobManager {
             supabase.from('returns').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).gte('created_at', syncStartDate),
             supabase.from('settlements').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).gte('created_at', syncStartDate),
             supabase.from('fees').select('id', { count: 'exact', head: true }).eq('user_id', data.user_id).gte('created_at', syncStartDate),
-            supabase.from('claims').select('id', { count: 'exact', head: true }).eq('user_id', data.user_id).gte('created_at', syncStartDate)
+            // Agent 3 stores claims in detection_results table, not claims table
+            supabase.from('detection_results').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).eq('sync_id', data.sync_id)
           ]);
           
           // Update metadata with recalculated counts
@@ -1006,16 +1007,16 @@ class SyncJobManager {
       const [ordersCount, claimsCount] = await Promise.all([
         // Count orders processed in this sync (if we track this)
         supabase
-          .from('claims')
+          .from('orders')
           .select('id', { count: 'exact', head: true })
-          .eq('user_id', userId)
+          .eq('seller_id', userId)
           .gte('created_at', metadata.startedAt || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
-        // Count claims detected in this sync
+        // Count claims detected in this sync (Agent 3 stores in detection_results table)
         supabase
-          .from('claims')
+          .from('detection_results')
           .select('id', { count: 'exact', head: true })
-          .eq('user_id', userId)
-          .gte('created_at', metadata.startedAt || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+          .eq('seller_id', userId)
+          .eq('sync_id', syncId)
       ]);
 
       return {
