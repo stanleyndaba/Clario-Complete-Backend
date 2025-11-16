@@ -345,6 +345,28 @@ class SyncJobManager {
            (syncResult.summary?.inventoryCount || 0) + 
            (syncResult.summary?.claimsCount || 0))
         : ((syncResults.ordersProcessed || 0) + (syncResults.totalOrders || 0));
+      
+      // Debug logging to trace where "48 items" comes from
+      logger.info('🔍 [SYNC JOB MANAGER] Calculating totalItemsSynced', {
+        userId,
+        syncId,
+        hasSyncResult: !!syncResult,
+        hasSummary: !!(syncResult?.summary),
+        agent2Counts: syncResult?.summary ? {
+          ordersCount: syncResult.summary.ordersCount || 0,
+          shipmentsCount: syncResult.summary.shipmentsCount || 0,
+          returnsCount: syncResult.summary.returnsCount || 0,
+          settlementsCount: syncResult.summary.settlementsCount || 0,
+          inventoryCount: syncResult.summary.inventoryCount || 0,
+          claimsCount: syncResult.summary.claimsCount || 0,
+          feesCount: syncResult.summary.feesCount || 0
+        } : null,
+        databaseCounts: !syncResult ? {
+          ordersProcessed: syncResults.ordersProcessed || 0,
+          totalOrders: syncResults.totalOrders || 0
+        } : null,
+        calculatedTotal: totalItemsSynced
+      });
 
       // Update progress: 100% - Complete (use 'completed' to match database)
       syncStatus.progress = 100;
