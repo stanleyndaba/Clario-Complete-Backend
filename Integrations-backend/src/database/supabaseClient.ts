@@ -58,6 +58,21 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
     })
   } as any;
 } else {
+  // Validate URL before creating client
+  if (!supabaseUrl || typeof supabaseUrl !== 'string' || !supabaseUrl.startsWith('http')) {
+    logger.error('Invalid SUPABASE_URL - must be a valid HTTP/HTTPS URL', { 
+      url: supabaseUrl ? 'present but invalid' : 'missing' 
+    });
+    throw new Error('SUPABASE_URL must be a valid HTTP or HTTPS URL. Please set it in environment variables.');
+  }
+  
+  if (!supabaseAnonKey || typeof supabaseAnonKey !== 'string') {
+    logger.error('Invalid SUPABASE_ANON_KEY - must be a non-empty string', { 
+      key: supabaseAnonKey ? 'present but invalid' : 'missing' 
+    });
+    throw new Error('SUPABASE_ANON_KEY must be set in environment variables.');
+  }
+  
   supabase = createClient(supabaseUrl, supabaseAnonKey);
   
   // Create admin client with service role key for storage/admin operations
@@ -69,6 +84,8 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
       }
     });
     logger.info('Supabase admin client created (for storage operations)');
+  } else {
+    logger.warn('SUPABASE_SERVICE_ROLE_KEY not set - admin operations may be limited');
   }
   
   // Test connection on startup
