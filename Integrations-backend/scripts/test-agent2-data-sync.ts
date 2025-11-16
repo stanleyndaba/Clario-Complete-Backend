@@ -11,6 +11,7 @@
  * Run with: npm run test:agent2
  */
 
+import 'dotenv/config'; // Load environment variables from .env file
 import agent2DataSyncService from '../src/services/agent2DataSyncService';
 import { supabaseAdmin } from '../src/database/supabaseClient';
 import logger from '../src/utils/logger';

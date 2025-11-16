@@ -4,7 +4,7 @@
  * Purpose:
  * - Receives raw FBA data from Agent 1 (OAuth credentials)
  * - Normalizes, validates, and enriches the data
- * - Prepares structured datasets for Agent 3 (Claim Detection)
+ * - Calls Discovery Agent (Python ML) for claim detection
  * - Handles mock data generation for sandbox mode
  * - Logs events to agent_events table
  * 
@@ -13,7 +13,7 @@
  * 2. Data Normalization - converts Amazon raw JSON to internal schema
  * 3. Event Logging - logs to agent_events table
  * 4. Error Handling & Retries - handles API failures gracefully
- * 5. Integration with Agent 3 - makes normalized data available
+ * 5. Discovery Agent Integration - calls Python ML API for predictions
  */
 
 import logger from '../utils/logger';
@@ -26,6 +26,7 @@ import { ReturnsService } from './returnsService';
 import { SettlementsService } from './settlementsService';
 import { MockDataGenerator, MockScenario } from './mockDataGenerator';
 import agentEventLogger from './agentEventLogger';
+import axios from 'axios';
 
 export interface SyncResult {
   success: boolean;
@@ -59,6 +60,7 @@ export class Agent2DataSyncService {
   private shipmentsService: ShipmentsService;
   private returnsService: ReturnsService;
   private settlementsService: SettlementsService;
+  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-4-aukq.onrender.com';
 
   constructor() {
     this.ordersService = new OrdersService();
@@ -275,37 +277,30 @@ export class Agent2DataSyncService {
         errorsCount: errors.length
       });
 
-      // Step 7: Trigger Agent 3 (Claim Detection) after successful sync
-      // FIX #1: Agent 3 must NOT run silently - we await it and propagate errors
+      // Step 7: Call Discovery Agent (Python ML) directly - Agent 3 removed
       if (result.success && result.summary.ordersCount + result.summary.shipmentsCount + result.summary.returnsCount > 0) {
         try {
-          const agent3ClaimDetectionService = (await import('./agent3ClaimDetectionService')).default;
-          logger.info('🔍 [AGENT 2→3] Triggering Agent 3 claim detection', { userId, syncId });
+          logger.info('🔍 [AGENT 2] Calling Discovery Agent (Python ML)', { userId, syncId });
           
-          // CRITICAL FIX: Await Agent 3 execution - no silent failures
-          const detectionResult = await agent3ClaimDetectionService.detectClaims(userId, syncId, result.normalized);
+          const detectionId = `detection_${userId}_${Date.now()}`;
+          const detectionResult = await this.callDiscoveryAgent(userId, syncId, detectionId, result.normalized);
           
-          if (!detectionResult.success) {
-            throw new Error(`Agent 3 detection failed: ${detectionResult.errors.join(', ')}`);
-          }
-          
-          logger.info('✅ [AGENT 2→3] Agent 3 detection completed', {
+          logger.info('✅ [AGENT 2] Discovery Agent completed', {
             userId,
             syncId,
-            detectionId: detectionResult.detectionId,
-            totalDetected: detectionResult.summary.totalDetected,
-            isMock: detectionResult.isMock
+            detectionId,
+            totalDetected: detectionResult.totalDetected
           });
         } catch (detectionError: any) {
           // CRITICAL: Propagate error - don't swallow it
-          logger.error('❌ [AGENT 2→3] Agent 3 detection failed', {
+          logger.error('❌ [AGENT 2] Discovery Agent failed', {
             error: detectionError.message,
             stack: detectionError.stack,
             userId,
             syncId
           });
           // Add error to result but don't fail entire sync - let syncJobManager handle it
-          errors.push(`Agent 3 detection failed: ${detectionError.message}`);
+          errors.push(`Discovery Agent failed: ${detectionError.message}`);
         }
       }
 
@@ -746,6 +741,500 @@ export class Agent2DataSyncService {
    */
   private randomDate(start: Date, end: Date): Date {
     return new Date(start.getTime() + Math.random() * (end.getTime() - start.getTime()));
+  }
+
+  /**
+   * Call Discovery Agent (Python ML) - Replaces Agent 3
+   * This orchestrates: data transformation → Discovery Agent API → storage → completion signal
+   */
+  private async callDiscoveryAgent(
+    userId: string,
+    syncId: string,
+    detectionId: string,
+    normalizedData: {
+      orders?: any[];
+      shipments?: any[];
+      returns?: any[];
+      settlements?: any[];
+      inventory?: any[];
+      claims?: any[];
+    }
+  ): Promise<{ totalDetected: number }> {
+    // Step 1: Validate and normalize input contract
+    const validatedData = this.validateAndNormalizeInputContract(normalizedData, userId, syncId);
+
+    // Step 2: Transform normalized data into Discovery Agent claim format
+    const claimsToDetect = this.prepareClaimsFromNormalizedData(validatedData, userId);
+
+    if (claimsToDetect.length === 0) {
+      logger.info('ℹ️ [AGENT 2] No claims to detect', { userId, syncId });
+      await this.signalDetectionCompletion(userId, syncId, detectionId, { totalDetected: 0 }, true);
+      return { totalDetected: 0 };
+    }
+
+    // Step 3: Call Discovery Agent API
+    logger.info('🎯 [AGENT 2] Calling Discovery Agent API', {
+      userId,
+      syncId,
+      claimCount: claimsToDetect.length,
+      apiUrl: `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`
+    });
+
+    let predictions: any[];
+    try {
+      const response = await axios.post(
+        `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
+        { claims: claimsToDetect },
+        {
+          timeout: 60000,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
+
+      predictions = response.data?.predictions || [];
+      if (!Array.isArray(predictions)) {
+        throw new Error(`Discovery Agent returned invalid format: expected array, got ${typeof predictions}`);
+      }
+    } catch (apiError: any) {
+      logger.error('❌ [AGENT 2] Discovery Agent API failed', {
+        error: apiError.message,
+        status: apiError.response?.status,
+        userId,
+        syncId
+      });
+      await this.signalDetectionCompletion(userId, syncId, detectionId, { totalDetected: 0 }, false);
+      throw new Error(`Discovery Agent API failed: ${apiError.message}`);
+    }
+
+    // Step 4: Transform predictions to detection results format
+    const detectionResults = predictions
+      .filter((p: any) => p.claimable) // Only store claimable predictions
+      .map((prediction: any) => {
+        const claim = claimsToDetect.find(c => c.claim_id === prediction.claim_id);
+        return {
+          claim_id: prediction.claim_id,
+          seller_id: userId,
+          anomaly_type: this.mapCategoryToAnomalyType(claim?.category, claim?.subcategory),
+          severity: this.mapConfidenceToSeverity(prediction.probability || prediction.confidence || 0.5),
+          estimated_value: claim?.amount || 0,
+          currency: claim?.currency || 'USD',
+          confidence_score: prediction.probability || prediction.confidence || 0.5,
+          evidence: claim?.evidence || {},
+          related_event_ids: [claim?.order_id].filter(Boolean),
+          discovery_date: new Date(claim?.claim_date || Date.now()),
+          deadline_date: this.calculateDeadline(new Date(claim?.claim_date || Date.now())),
+          days_remaining: this.calculateDaysRemaining(new Date(claim?.claim_date || Date.now()))
+        };
+      });
+
+    // Step 5: Store detection results
+    if (detectionResults.length > 0) {
+      await this.storeDetectionResults(detectionResults, userId, syncId);
+    }
+
+    // Step 6: Signal completion
+    await this.signalDetectionCompletion(userId, syncId, detectionId, { totalDetected: detectionResults.length }, true);
+
+    return { totalDetected: detectionResults.length };
+  }
+
+  /**
+   * Validate and normalize input data contract (from Agent 3)
+   */
+  private validateAndNormalizeInputContract(
+    data: {
+      orders?: any[];
+      shipments?: any[];
+      returns?: any[];
+      settlements?: any[];
+      inventory?: any[];
+      claims?: any[];
+    },
+    userId: string,
+    syncId: string
+  ): typeof data {
+    const normalized: any = {};
+
+    // Normalize orders
+    if (data.orders && Array.isArray(data.orders)) {
+      normalized.orders = data.orders.map((order: any) => {
+        const normalizedOrder = { ...order };
+        if (!normalizedOrder.total_fees && normalizedOrder.total_fees !== 0) {
+          normalizedOrder.total_fees = normalizedOrder.total_amount 
+            ? parseFloat((normalizedOrder.total_amount * 0.05).toFixed(2))
+            : 0;
+        }
+        if (!normalizedOrder.order_date) normalizedOrder.order_date = new Date().toISOString();
+        if (!normalizedOrder.currency) normalizedOrder.currency = 'USD';
+        if (!normalizedOrder.marketplace_id) normalizedOrder.marketplace_id = 'US';
+        return normalizedOrder;
+      });
+    }
+
+    // Normalize shipments
+    if (data.shipments && Array.isArray(data.shipments)) {
+      normalized.shipments = data.shipments.map((shipment: any) => {
+        const normalizedShipment = { ...shipment };
+        if (normalizedShipment.items && Array.isArray(normalizedShipment.items)) {
+          normalizedShipment.items = normalizedShipment.items.map((item: any) => {
+            if (!item.price && item.price !== 0) item.price = 10;
+            return item;
+          });
+        }
+        if (normalizedShipment.missing_quantity === undefined) {
+          const expectedQty = normalizedShipment.expected_quantity || 0;
+          const receivedQty = normalizedShipment.received_quantity || expectedQty;
+          normalizedShipment.missing_quantity = Math.max(0, expectedQty - receivedQty);
+        }
+        if (!normalizedShipment.shipped_date) normalizedShipment.shipped_date = new Date().toISOString();
+        if (!normalizedShipment.status) normalizedShipment.status = 'UNKNOWN';
+        return normalizedShipment;
+      });
+    }
+
+    // Normalize returns
+    if (data.returns && Array.isArray(data.returns)) {
+      normalized.returns = data.returns.map((returnData: any) => {
+        const normalizedReturn = { ...returnData };
+        if (!normalizedReturn.refund_amount && normalizedReturn.refund_amount !== 0) {
+          normalizedReturn.refund_amount = normalizedReturn.items?.reduce(
+            (sum: number, item: any) => sum + (item.refund_amount || 0),
+            0
+          ) || 0;
+        }
+        if (!normalizedReturn.returned_date) normalizedReturn.returned_date = new Date().toISOString();
+        if (!normalizedReturn.currency) normalizedReturn.currency = 'USD';
+        return normalizedReturn;
+      });
+    }
+
+    // Normalize settlements
+    if (data.settlements && Array.isArray(data.settlements)) {
+      normalized.settlements = data.settlements.map((settlement: any) => {
+        const normalizedSettlement = { ...settlement };
+        if (!normalizedSettlement.fees && normalizedSettlement.fees !== 0) {
+          normalizedSettlement.fees = normalizedSettlement.amount 
+            ? parseFloat((normalizedSettlement.amount * 0.10).toFixed(2))
+            : 0;
+        }
+        if (!normalizedSettlement.settlement_date) normalizedSettlement.settlement_date = new Date().toISOString();
+        if (!normalizedSettlement.currency) normalizedSettlement.currency = 'USD';
+        return normalizedSettlement;
+      });
+    }
+
+    if (data.inventory) normalized.inventory = data.inventory;
+    if (data.claims) normalized.claims = data.claims;
+
+    return normalized;
+  }
+
+  /**
+   * Transform normalized data into Discovery Agent claim format (from Agent 3)
+   */
+  private prepareClaimsFromNormalizedData(
+    data: {
+      orders?: any[];
+      shipments?: any[];
+      returns?: any[];
+      settlements?: any[];
+      inventory?: any[];
+      claims?: any[];
+    },
+    userId: string
+  ): any[] {
+    const claims: any[] = [];
+
+    // Process orders
+    if (data.orders) {
+      for (const order of data.orders) {
+        if (order.total_fees && order.total_fees > 0) {
+          const daysSinceOrder = this.calculateDaysSince(order.order_date);
+          claims.push({
+            claim_id: `claim_order_${order.order_id}_${Date.now()}`,
+            seller_id: userId,
+            order_id: order.order_id,
+            category: 'fee_error',
+            subcategory: 'order_fee',
+            reason_code: 'POTENTIAL_FEE_OVERCHARGE',
+            marketplace: order.marketplace_id || 'US',
+            fulfillment_center: order.fulfillment_center || 'DEFAULT', // Required by Discovery Agent
+            amount: order.total_fees,
+            quantity: 1,
+            order_value: order.total_amount || 0,
+            shipping_cost: order.shipping_cost || 0, // Required by Discovery Agent
+            days_since_order: daysSinceOrder,
+            days_since_delivery: Math.max(0, daysSinceOrder - 3), // Estimate delivery 3 days after order
+            description: `Potential fee overcharge for order ${order.order_id}`,
+            reason: 'POTENTIAL_FEE_OVERCHARGE', // Required by Discovery Agent
+            notes: '',
+            claim_date: order.order_date || new Date().toISOString()
+          });
+        }
+      }
+    }
+
+    // Process shipments
+    if (data.shipments) {
+      for (const shipment of data.shipments) {
+        if (shipment.missing_quantity && shipment.missing_quantity > 0) {
+          const estimatedValue = shipment.items?.reduce((sum: number, item: any) => {
+            return sum + (item.quantity * (item.price || 10));
+          }, 0) || shipment.missing_quantity * 10;
+          const daysSinceShipped = this.calculateDaysSince(shipment.shipped_date);
+          const reasonCode = shipment.status === 'lost' ? 'LOST_SHIPMENT' : 'DAMAGED_INVENTORY';
+
+          claims.push({
+            claim_id: `claim_shipment_${shipment.shipment_id}_${Date.now()}`,
+            seller_id: userId,
+            order_id: shipment.order_id,
+            category: 'inventory_loss',
+            subcategory: shipment.status === 'lost' ? 'lost_shipment' : 'damaged_goods',
+            reason_code: reasonCode,
+            marketplace: 'US',
+            fulfillment_center: shipment.fulfillment_center || 'DEFAULT', // Required by Discovery Agent
+            amount: estimatedValue,
+            quantity: shipment.missing_quantity,
+            order_value: estimatedValue,
+            shipping_cost: shipment.shipping_cost || estimatedValue * 0.1, // Estimate 10% of value
+            days_since_order: daysSinceShipped,
+            days_since_delivery: Math.max(0, daysSinceShipped - 1), // Estimate delivery 1 day after shipped
+            description: `Missing ${shipment.missing_quantity} unit(s) from shipment ${shipment.shipment_id}`,
+            reason: reasonCode, // Required by Discovery Agent
+            notes: '',
+            claim_date: shipment.shipped_date || new Date().toISOString()
+          });
+        }
+      }
+    }
+
+    // Process returns
+    if (data.returns) {
+      for (const returnData of data.returns) {
+        if (returnData.refund_amount && returnData.refund_amount > 0) {
+          const daysSinceReturn = this.calculateDaysSince(returnData.returned_date);
+          claims.push({
+            claim_id: `claim_return_${returnData.return_id}_${Date.now()}`,
+            seller_id: userId,
+            order_id: returnData.order_id,
+            category: 'return_discrepancy',
+            subcategory: 'refund_mismatch',
+            reason_code: 'POTENTIAL_REFUND_DISCREPANCY',
+            marketplace: 'US',
+            fulfillment_center: returnData.fulfillment_center || 'DEFAULT', // Required by Discovery Agent
+            amount: returnData.refund_amount,
+            quantity: returnData.items?.reduce((sum: number, item: any) => sum + item.quantity, 0) || 1,
+            order_value: returnData.refund_amount,
+            shipping_cost: 0, // Returns typically don't have shipping cost
+            days_since_order: daysSinceReturn,
+            days_since_delivery: daysSinceReturn, // Assume return date is close to delivery
+            description: `Potential refund discrepancy for return ${returnData.return_id}`,
+            reason: 'POTENTIAL_REFUND_DISCREPANCY', // Required by Discovery Agent
+            notes: '',
+            claim_date: returnData.returned_date || new Date().toISOString()
+          });
+        }
+      }
+    }
+
+    // Process settlements
+    if (data.settlements) {
+      for (const settlement of data.settlements) {
+        if (settlement.fees && settlement.fees > 0) {
+          const daysSinceSettlement = this.calculateDaysSince(settlement.settlement_date);
+          claims.push({
+            claim_id: `claim_settlement_${settlement.settlement_id}_${Date.now()}`,
+            seller_id: userId,
+            order_id: settlement.order_id,
+            category: 'fee_error',
+            subcategory: 'settlement_fee',
+            reason_code: 'POTENTIAL_SETTLEMENT_FEE_DISCREPANCY',
+            marketplace: 'US',
+            fulfillment_center: 'DEFAULT', // Settlements don't have fulfillment center
+            amount: settlement.fees,
+            quantity: 1,
+            order_value: settlement.amount || 0,
+            shipping_cost: 0, // Settlements don't have shipping cost
+            days_since_order: daysSinceSettlement,
+            days_since_delivery: daysSinceSettlement, // Use settlement date as proxy
+            description: `Potential fee discrepancy in settlement ${settlement.settlement_id}`,
+            reason: 'POTENTIAL_SETTLEMENT_FEE_DISCREPANCY', // Required by Discovery Agent
+            notes: '',
+            claim_date: settlement.settlement_date || new Date().toISOString()
+          });
+        }
+      }
+    }
+
+    return claims;
+  }
+
+  /**
+   * Store detection results in database (from Agent 3)
+   */
+  private async storeDetectionResults(
+    detections: any[],
+    userId: string,
+    syncId: string
+  ): Promise<void> {
+    // Handle demo mode (no real database)
+    if (!supabaseAdmin || typeof supabaseAdmin.from !== 'function') {
+      logger.warn('⚠️ [AGENT 2] No database client available (demo mode), skipping storage', {
+        userId,
+        syncId,
+        detectionsCount: detections.length
+      });
+      return; // Don't throw - allow detection to complete in demo mode
+    }
+
+    const records = detections.map(detection => ({
+      seller_id: userId,
+      sync_id: syncId,
+      anomaly_type: detection.anomaly_type,
+      severity: detection.severity,
+      estimated_value: detection.estimated_value,
+      currency: detection.currency,
+      confidence_score: detection.confidence_score,
+      evidence: detection.evidence,
+      related_event_ids: detection.related_event_ids || [],
+      discovery_date: detection.discovery_date ? new Date(detection.discovery_date).toISOString() : new Date().toISOString(),
+      deadline_date: detection.deadline_date ? new Date(detection.deadline_date).toISOString() : null,
+      days_remaining: detection.days_remaining,
+      expired: detection.days_remaining !== null && detection.days_remaining === 0,
+      expiration_alert_sent: false,
+      status: 'pending',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }));
+
+    const { error } = await supabaseAdmin.from('detection_results').insert(records);
+
+    if (error) {
+      logger.error('❌ [AGENT 2] Failed to store detection results', {
+        error: error.message,
+        userId,
+        syncId
+      });
+      throw new Error(`Failed to store detection results: ${error.message}`);
+    }
+
+    logger.info('✅ [AGENT 2] Detection results stored', {
+      userId,
+      syncId,
+      count: records.length
+    });
+  }
+
+  /**
+   * Signal detection completion to detection_queue (from Agent 3)
+   */
+  private async signalDetectionCompletion(
+    userId: string,
+    syncId: string,
+    detectionId: string,
+    summary: { totalDetected: number },
+    isSuccess: boolean
+  ): Promise<void> {
+    // Handle demo mode (no real database)
+    if (!supabaseAdmin || typeof supabaseAdmin.from !== 'function') {
+      logger.warn('⚠️ [AGENT 2] No database client available (demo mode), skipping completion signal', {
+        userId,
+        syncId
+      });
+      return;
+    }
+
+    try {
+      const { data: existingQueue } = await supabaseAdmin
+        .from('detection_queue')
+        .select('id')
+        .eq('seller_id', userId)
+        .eq('sync_id', syncId)
+        .maybeSingle();
+
+      if (existingQueue) {
+        await supabaseAdmin
+          .from('detection_queue')
+          .update({
+            status: isSuccess ? 'completed' : 'failed',
+            processed_at: new Date().toISOString(),
+            payload: { detectionId, summary },
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', existingQueue.id);
+      } else {
+        await supabaseAdmin
+          .from('detection_queue')
+          .insert({
+            seller_id: userId,
+            sync_id: syncId,
+            status: isSuccess ? 'completed' : 'failed',
+            processed_at: new Date().toISOString(),
+            payload: { detectionId, summary }
+          });
+      }
+    } catch (error: any) {
+      logger.warn('⚠️ [AGENT 2] Failed to signal completion (non-critical)', {
+        error: error.message,
+        userId,
+        syncId
+      });
+    }
+  }
+
+  /**
+   * Helper: Map category to anomaly type (from Agent 3)
+   */
+  private mapCategoryToAnomalyType(category?: string, subcategory?: string): string {
+    const mapping: Record<string, string> = {
+      'fee_error': 'incorrect_fee',
+      'inventory_loss': 'missing_unit',
+      'damaged_goods': 'damaged_stock',
+      'return_discrepancy': 'missing_unit',
+      'lost_shipment': 'missing_unit',
+      'overcharge': 'overcharge',
+      'duplicate': 'duplicate_charge'
+    };
+    return mapping[subcategory || category || ''] || 'missing_unit';
+  }
+
+  /**
+   * Helper: Map confidence to severity (from Agent 3)
+   */
+  private mapConfidenceToSeverity(confidence: number): 'low' | 'medium' | 'high' | 'critical' {
+    if (confidence >= 0.85) return 'critical';
+    if (confidence >= 0.70) return 'high';
+    if (confidence >= 0.50) return 'medium';
+    return 'low';
+  }
+
+  /**
+   * Helper: Calculate days since date (from Agent 3)
+   */
+  private calculateDaysSince(dateString?: string): number {
+    if (!dateString) return 0;
+    const date = new Date(dateString);
+    const now = new Date();
+    return Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
+  }
+
+  /**
+   * Helper: Calculate 60-day deadline (from Agent 3)
+   */
+  private calculateDeadline(discoveryDate: Date): Date {
+    const deadline = new Date(discoveryDate);
+    deadline.setDate(deadline.getDate() + 60);
+    return deadline;
+  }
+
+  /**
+   * Helper: Calculate days remaining until deadline (from Agent 3)
+   */
+  private calculateDaysRemaining(discoveryDate: Date): number {
+    const deadline = this.calculateDeadline(discoveryDate);
+    const now = new Date();
+    const daysRemaining = Math.ceil((deadline.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    return Math.max(0, daysRemaining);
   }
 }
 

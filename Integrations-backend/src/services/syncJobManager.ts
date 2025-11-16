@@ -243,17 +243,17 @@ class SyncJobManager {
         return;
       }
 
-      // Update progress: 80% - Waiting for Agent 3 (claim detection) to complete
+      // Update progress: 80% - Waiting for Discovery Agent (claim detection) to complete
       syncStatus.progress = 80;
-      syncStatus.message = 'Waiting for claim detection (Agent 3)...';
+      syncStatus.message = 'Waiting for claim detection (Discovery Agent)...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
 
       // FIX #3: Wait for detection to complete with proper timeout
-      // Agent 3 is now awaited in Agent 2, but we still check for results as a safety net
+      // Discovery Agent is called directly by Agent 2, but we still check for results as a safety net
       let detectionCompleted = false;
       let detectionAttempts = 0;
-      const maxDetectionWaitTime = 30000; // FIX #3: Reduced to 30 seconds (Agent 3 should be fast)
+      const maxDetectionWaitTime = 30000; // Reduced to 30 seconds (Discovery Agent should be fast)
       const detectionPollInterval = 1000; // Poll every 1 second for faster response
       const maxDetectionAttempts = Math.floor(maxDetectionWaitTime / detectionPollInterval);
 
@@ -322,7 +322,7 @@ class SyncJobManager {
       }
 
       // FIX #3: If detection didn't complete, log warning but don't fail sync
-      // Agent 3 is now awaited in Agent 2, so this should rarely happen
+      // Discovery Agent is called directly by Agent 2, so this should rarely happen
       if (!detectionCompleted) {
         logger.warn('⚠️ [SYNC JOB MANAGER] Detection did not complete within timeout', {
           userId,
@@ -331,7 +331,7 @@ class SyncJobManager {
           maxAttempts: maxDetectionAttempts,
           timeoutSeconds: maxDetectionWaitTime / 1000
         });
-        // Don't fail sync - Agent 3 errors are already handled in Agent 2
+        // Don't fail sync - Discovery Agent errors are already handled in Agent 2
         // But update status to indicate detection may be incomplete
         syncStatus.message = 'Sync completed (detection may still be processing)';
       }
@@ -512,7 +512,7 @@ class SyncJobManager {
             supabase.from('returns').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).gte('created_at', syncStartDate),
             supabase.from('settlements').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).gte('created_at', syncStartDate),
             supabase.from('fees').select('id', { count: 'exact', head: true }).eq('user_id', data.user_id).gte('created_at', syncStartDate),
-            // Agent 3 stores claims in detection_results table, not claims table
+            // Discovery Agent stores claims in detection_results table, not claims table
             supabase.from('detection_results').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).eq('sync_id', data.sync_id)
           ]);
           
@@ -1020,7 +1020,7 @@ class SyncJobManager {
           .select('id', { count: 'exact', head: true })
           .eq('seller_id', userId)
           .gte('created_at', metadata.startedAt || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
-        // Count claims detected in this sync (Agent 3 stores in detection_results table)
+        // Count claims detected in this sync (Discovery Agent stores in detection_results table)
         supabase
           .from('detection_results')
           .select('id', { count: 'exact', head: true })

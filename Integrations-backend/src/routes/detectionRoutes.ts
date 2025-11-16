@@ -206,55 +206,6 @@ router.put('/:id/status', async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// POST /api/detections/test-agent3
-// Direct test endpoint for Agent 3 (bypasses Agent 2)
-router.post('/test-agent3', async (req: AuthenticatedRequest, res) => {
-  try {
-    const userId = (req as any).userId || req.user?.id as string;
-    if (!userId) {
-      return res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'User ID is required' } });
-    }
-
-    const { syncId } = (req as any).body || {};
-    const testSyncId = syncId || `test_sync_${userId}_${Date.now()}`;
-
-    // Import Agent 3 service
-    const agent3ClaimDetectionService = (await import('../services/agent3ClaimDetectionService')).default;
-
-    // Call Agent 3 directly with empty normalized data (it will generate mock detections)
-    const result = await agent3ClaimDetectionService.detectClaims(userId, testSyncId, {
-      orders: [],
-      shipments: [],
-      returns: [],
-      settlements: [],
-      inventory: [],
-      claims: []
-    });
-
-    return res.json({
-      success: true,
-      message: 'Agent 3 test completed',
-      result: {
-        detectionId: result.detectionId,
-        totalDetected: result.summary.totalDetected,
-        isMock: result.isMock,
-        duration: result.duration,
-        errors: result.errors,
-        summary: result.summary
-      }
-    });
-  } catch (error: any) {
-    return res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: error?.message || 'Internal error',
-        stack: process.env.NODE_ENV === 'development' ? error?.stack : undefined
-      }
-    });
-  }
-});
-
 export default router;
 
 
