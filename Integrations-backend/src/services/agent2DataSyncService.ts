@@ -468,7 +468,8 @@ export class Agent2DataSyncService {
     endDate: Date,
     scenario: MockScenario
   ): Promise<{ success: boolean; data: any[]; message: string }> {
-    const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 10;
+    // Use 75 as default to match amazonService.ts and backend logs
+    const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
     const generator = new MockDataGenerator({
       scenario,
       recordCount,
@@ -523,7 +524,8 @@ export class Agent2DataSyncService {
     endDate: Date,
     scenario: MockScenario
   ): Promise<{ success: boolean; data: any[]; message: string }> {
-    const recordCount = Math.floor((process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 10) * 0.7);
+    // Use 75 as base default to match orders
+    const recordCount = Math.floor((process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75) * 0.7);
     const shipments: any[] = [];
 
     for (let i = 0; i < recordCount; i++) {
@@ -564,7 +566,8 @@ export class Agent2DataSyncService {
     endDate: Date,
     scenario: MockScenario
   ): Promise<{ success: boolean; data: any[]; message: string }> {
-    const recordCount = Math.floor((process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 10) * 0.5);
+    // Use 75 as base default to match orders
+    const recordCount = Math.floor((process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75) * 0.5);
     const returns: any[] = [];
 
     for (let i = 0; i < recordCount; i++) {
@@ -608,7 +611,8 @@ export class Agent2DataSyncService {
     endDate: Date,
     scenario: MockScenario
   ): Promise<{ success: boolean; data: any[]; message: string }> {
-    const recordCount = Math.floor((process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 10) * 0.6);
+    // Use 75 as base default to match orders
+    const recordCount = Math.floor((process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75) * 0.6);
     const settlements: any[] = [];
 
     for (let i = 0; i < recordCount; i++) {
@@ -649,7 +653,8 @@ export class Agent2DataSyncService {
     userId: string,
     scenario: MockScenario
   ): Promise<{ success: boolean; data: any[]; message: string }> {
-    const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 20;
+    // Use same default as orders (75) for consistency
+    const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
     const inventory: any[] = [];
 
     for (let i = 0; i < recordCount; i++) {
@@ -683,7 +688,7 @@ export class Agent2DataSyncService {
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     const generator = new MockDataGenerator({
       scenario,
-      recordCount: process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 10,
+      recordCount: process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75,
       startDate,
       endDate
     });
