@@ -217,8 +217,14 @@ class SyncJobManager {
       // Update progress: 70% - Data normalization complete
       syncStatus.progress = 70;
       syncStatus.message = 'Data normalization complete. Processing results...';
+      // Store all data type counts from Agent 2 at this point
       syncStatus.ordersProcessed = syncResult.summary.ordersCount || 0;
       syncStatus.totalOrders = syncResult.summary.ordersCount || 0;
+      syncStatus.inventoryCount = syncResult.summary.inventoryCount || 0;
+      syncStatus.shipmentsCount = syncResult.summary.shipmentsCount || 0;
+      syncStatus.returnsCount = syncResult.summary.returnsCount || 0;
+      syncStatus.settlementsCount = syncResult.summary.settlementsCount || 0;
+      syncStatus.feesCount = syncResult.summary.feesCount || 0;
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
 
@@ -339,14 +345,32 @@ class SyncJobManager {
         ? `Sync completed successfully - ${totalItemsSynced} items synced, ${syncResults.claimsDetected} discrepancies detected`
         : `Sync completed successfully - ${totalItemsSynced} items synced`;
       syncStatus.completedAt = new Date().toISOString();
-      // Store all data type counts from Agent 2
-      syncStatus.ordersProcessed = syncResult?.summary?.ordersCount || syncResults.ordersProcessed || 0;
-      syncStatus.totalOrders = syncResult?.summary?.ordersCount || syncResults.totalOrders || 0;
-      syncStatus.inventoryCount = syncResult?.summary?.inventoryCount || 0;
-      syncStatus.shipmentsCount = syncResult?.summary?.shipmentsCount || 0;
-      syncStatus.returnsCount = syncResult?.summary?.returnsCount || 0;
-      syncStatus.settlementsCount = syncResult?.summary?.settlementsCount || 0;
-      syncStatus.feesCount = syncResult?.summary?.feesCount || 0;
+      // Store all data type counts from Agent 2 - ALWAYS use Agent 2 result, never fall back to database
+      // The database might have old/incomplete data from previous updates
+      if (syncResult && syncResult.summary) {
+        syncStatus.ordersProcessed = syncResult.summary.ordersCount || 0;
+        syncStatus.totalOrders = syncResult.summary.ordersCount || 0;
+        syncStatus.inventoryCount = syncResult.summary.inventoryCount || 0;
+        syncStatus.shipmentsCount = syncResult.summary.shipmentsCount || 0;
+        syncStatus.returnsCount = syncResult.summary.returnsCount || 0;
+        syncStatus.settlementsCount = syncResult.summary.settlementsCount || 0;
+        syncStatus.feesCount = syncResult.summary.feesCount || 0;
+      } else {
+        // Only use database results if Agent 2 result is not available (shouldn't happen)
+        logger.warn('Agent 2 sync result not available, using database results (may be incomplete)', {
+          userId,
+          syncId,
+          hasSyncResult: !!syncResult,
+          hasSummary: !!(syncResult?.summary)
+        });
+        syncStatus.ordersProcessed = syncResults.ordersProcessed || 0;
+        syncStatus.totalOrders = syncResults.totalOrders || 0;
+        syncStatus.inventoryCount = 0;
+        syncStatus.shipmentsCount = 0;
+        syncStatus.returnsCount = 0;
+        syncStatus.settlementsCount = 0;
+        syncStatus.feesCount = 0;
+      }
       syncStatus.claimsDetected = syncResults.claimsDetected || 0;
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
