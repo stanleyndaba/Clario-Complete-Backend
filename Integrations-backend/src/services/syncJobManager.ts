@@ -337,13 +337,14 @@ class SyncJobManager {
       const syncResults = await this.getSyncResults(userId, syncId);
 
       // Use Agent 2 sync result data if available, otherwise use database results
+      // NOTE: Claims are NOT included - they're detected FROM the data, not synced data
       const totalItemsSynced = syncResult 
         ? ((syncResult.summary?.ordersCount || 0) + 
            (syncResult.summary?.shipmentsCount || 0) + 
            (syncResult.summary?.returnsCount || 0) + 
            (syncResult.summary?.settlementsCount || 0) + 
            (syncResult.summary?.inventoryCount || 0) + 
-           (syncResult.summary?.claimsCount || 0))
+           (syncResult.summary?.feesCount || 0))
         : ((syncResults.ordersProcessed || 0) + (syncResults.totalOrders || 0));
       
       // Debug logging to trace where "48 items" comes from
@@ -358,8 +359,8 @@ class SyncJobManager {
           returnsCount: syncResult.summary.returnsCount || 0,
           settlementsCount: syncResult.summary.settlementsCount || 0,
           inventoryCount: syncResult.summary.inventoryCount || 0,
-          claimsCount: syncResult.summary.claimsCount || 0,
-          feesCount: syncResult.summary.feesCount || 0
+          feesCount: syncResult.summary.feesCount || 0,
+          claimsCount: syncResult.summary.claimsCount || 0  // Note: claims are detected, not synced
         } : null,
         databaseCounts: !syncResult ? {
           ordersProcessed: syncResults.ordersProcessed || 0,
