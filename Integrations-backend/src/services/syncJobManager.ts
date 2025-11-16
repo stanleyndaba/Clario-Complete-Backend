@@ -408,6 +408,23 @@ class SyncJobManager {
       }
 
       const metadata = (data.metadata as any) || {};
+      
+      // If metadata is missing the new fields (old sync), try to get counts from Agent 2 result
+      // This handles syncs created before we added all the data type counts
+      const hasNewFields = metadata.inventoryCount !== undefined || 
+                           metadata.shipmentsCount !== undefined ||
+                           metadata.returnsCount !== undefined;
+      
+      // If old sync format and completed, log a warning (but still return the data)
+      if (!hasNewFields && normalizedStatus === 'completed') {
+        logger.warn(`Sync ${data.sync_id} has old metadata format (missing data type counts). This sync was created before the backend fix.`, {
+          userId: data.user_id,
+          syncId: data.sync_id,
+          hasInventoryCount: metadata.inventoryCount !== undefined,
+          hasShipmentsCount: metadata.shipmentsCount !== undefined
+        });
+      }
+      
       return {
         syncId: data.sync_id,
         userId: data.user_id,
