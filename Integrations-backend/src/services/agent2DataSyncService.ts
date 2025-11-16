@@ -276,33 +276,36 @@ export class Agent2DataSyncService {
       });
 
       // Step 7: Trigger Agent 3 (Claim Detection) after successful sync
+      // FIX #1: Agent 3 must NOT run silently - we await it and propagate errors
       if (result.success && result.summary.ordersCount + result.summary.shipmentsCount + result.summary.returnsCount > 0) {
         try {
           const agent3ClaimDetectionService = (await import('./agent3ClaimDetectionService')).default;
           logger.info('🔍 [AGENT 2→3] Triggering Agent 3 claim detection', { userId, syncId });
           
-          // Run detection in background (don't wait)
-          agent3ClaimDetectionService.detectClaims(userId, syncId, result.normalized).then((detectionResult) => {
-            logger.info('✅ [AGENT 2→3] Agent 3 detection completed', {
-              userId,
-              syncId,
-              detectionId: detectionResult.detectionId,
-              totalDetected: detectionResult.summary.totalDetected,
-              isMock: detectionResult.isMock
-            });
-          }).catch((detectionError: any) => {
-            logger.error('❌ [AGENT 2→3] Agent 3 detection failed', {
-              error: detectionError.message,
-              userId,
-              syncId
-            });
+          // CRITICAL FIX: Await Agent 3 execution - no silent failures
+          const detectionResult = await agent3ClaimDetectionService.detectClaims(userId, syncId, result.normalized);
+          
+          if (!detectionResult.success) {
+            throw new Error(`Agent 3 detection failed: ${detectionResult.errors.join(', ')}`);
+          }
+          
+          logger.info('✅ [AGENT 2→3] Agent 3 detection completed', {
+            userId,
+            syncId,
+            detectionId: detectionResult.detectionId,
+            totalDetected: detectionResult.summary.totalDetected,
+            isMock: detectionResult.isMock
           });
-        } catch (importError: any) {
-          logger.warn('⚠️ [AGENT 2→3] Failed to trigger Agent 3 (non-critical)', {
-            error: importError.message,
+        } catch (detectionError: any) {
+          // CRITICAL: Propagate error - don't swallow it
+          logger.error('❌ [AGENT 2→3] Agent 3 detection failed', {
+            error: detectionError.message,
+            stack: detectionError.stack,
             userId,
             syncId
           });
+          // Add error to result but don't fail entire sync - let syncJobManager handle it
+          errors.push(`Agent 3 detection failed: ${detectionError.message}`);
         }
       }
 

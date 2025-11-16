@@ -249,12 +249,12 @@ class SyncJobManager {
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
 
-      // Wait for detection to process (detection runs asynchronously via Redis queue)
-      // Poll detection_queue to see if detection has started/completed
+      // FIX #3: Wait for detection to complete with proper timeout
+      // Agent 3 is now awaited in Agent 2, but we still check for results as a safety net
       let detectionCompleted = false;
       let detectionAttempts = 0;
-      const maxDetectionWaitTime = 60000; // Wait up to 60 seconds for detection
-      const detectionPollInterval = 2000; // Poll every 2 seconds
+      const maxDetectionWaitTime = 30000; // FIX #3: Reduced to 30 seconds (Agent 3 should be fast)
+      const detectionPollInterval = 1000; // Poll every 1 second for faster response
       const maxDetectionAttempts = Math.floor(maxDetectionWaitTime / detectionPollInterval);
 
       while (!detectionCompleted && detectionAttempts < maxDetectionAttempts) {
@@ -321,13 +321,19 @@ class SyncJobManager {
         }
       }
 
+      // FIX #3: If detection didn't complete, log warning but don't fail sync
+      // Agent 3 is now awaited in Agent 2, so this should rarely happen
       if (!detectionCompleted) {
-        logger.warn('Detection did not complete within timeout, continuing with sync completion', {
+        logger.warn('⚠️ [SYNC JOB MANAGER] Detection did not complete within timeout', {
           userId,
           syncId,
           detectionAttempts,
-          maxAttempts: maxDetectionAttempts
+          maxAttempts: maxDetectionAttempts,
+          timeoutSeconds: maxDetectionWaitTime / 1000
         });
+        // Don't fail sync - Agent 3 errors are already handled in Agent 2
+        // But update status to indicate detection may be incomplete
+        syncStatus.message = 'Sync completed (detection may still be processing)';
       }
 
       // Update progress: 95% - Finalizing

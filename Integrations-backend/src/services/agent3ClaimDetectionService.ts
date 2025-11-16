@@ -210,22 +210,13 @@ export class Agent3ClaimDetectionService {
       result.success = errors.length === 0;
 
       // Step 5: Store detection results in database
-      try {
-        await this.storeDetectionResults(detectionResults, userId, syncId);
-        logger.info('✅ [AGENT 3] Detection results stored', {
-          userId,
-          syncId,
-          count: detectionResults.length
-        });
-      } catch (storeError: any) {
-        const errorMsg = `Failed to store detection results: ${storeError.message}`;
-        errors.push(errorMsg);
-        logger.error('❌ [AGENT 3] Failed to store detection results', {
-          error: storeError.message,
-          userId,
-          syncId
-        });
-      }
+      // FIX #2: Storage failures MUST fail Agent 3 - don't catch and continue
+      await this.storeDetectionResults(detectionResults, userId, syncId);
+      logger.info('✅ [AGENT 3] Detection results stored', {
+        userId,
+        syncId,
+        count: detectionResults.length
+      });
 
       // Step 6: Log event to agent_events table
       try {
@@ -265,6 +256,43 @@ export class Agent3ClaimDetectionService {
         duration: result.duration,
         errorsCount: errors.length
       });
+
+      // FIX #4: Agent 3 must send a completion signal to detection_queue
+      // This allows syncJobManager to know when detection is done
+      try {
+        const { error: queueError } = await supabaseAdmin
+          .from('detection_queue')
+          .upsert({
+            seller_id: userId,
+            sync_id: syncId,
+            status: result.success ? 'completed' : 'failed',
+            processed_at: new Date().toISOString(),
+            payload: {
+              detectionId,
+              summary: result.summary,
+              isMock: result.isMock
+            },
+            updated_at: new Date().toISOString()
+          }, {
+            onConflict: 'seller_id,sync_id'
+          });
+
+        if (queueError) {
+          logger.warn('⚠️ [AGENT 3] Failed to update detection_queue (non-critical)', {
+            error: queueError.message,
+            userId,
+            syncId
+          });
+        } else {
+          logger.info('✅ [AGENT 3] Detection completion signal sent', { userId, syncId });
+        }
+      } catch (queueError: any) {
+        logger.warn('⚠️ [AGENT 3] Failed to signal completion (non-critical)', {
+          error: queueError.message,
+          userId,
+          syncId
+        });
+      }
 
       // Step 7: Trigger Agent 4 (Evidence Ingestion) after successful detection
       // Note: Agent 4 runs on a schedule, but we can trigger it manually for new claims
@@ -695,8 +723,18 @@ export class Agent3ClaimDetectionService {
         .from('detection_results')
         .insert(records);
 
+      // FIX #2: Database writes MUST throw errors - don't suppress failures
       if (error) {
-        throw new Error(`Failed to store detection results: ${error.message}`);
+        const errorMsg = `Failed to store detection results: ${error.message}`;
+        logger.error('❌ [AGENT 3] Database write failed', {
+          error: error.message,
+          errorCode: error.code,
+          userId,
+          syncId,
+          recordsCount: records.length,
+          stack: error.stack
+        });
+        throw new Error(errorMsg);
       }
 
       logger.info('✅ [AGENT 3] Detection results stored', {
@@ -711,8 +749,8 @@ export class Agent3ClaimDetectionService {
         syncId,
         stack: error.stack
       });
-      // Don't throw - allow detection to complete even if storage fails
-      // The detection results are still returned in the response
+      // FIX #2: Re-throw error - storage failures must propagate
+      throw error;
     }
   }
 
