@@ -260,33 +260,6 @@ export class Agent3ClaimDetectionService {
       // FIX #4: Agent 3 must send a completion signal to detection_queue
       // This allows syncJobManager to know when detection is done
       try {
-<<<<<<< HEAD
-        const { error: queueError } = await supabaseAdmin
-          .from('detection_queue')
-          .upsert({
-            seller_id: userId,
-            sync_id: syncId,
-            status: result.success ? 'completed' : 'failed',
-            processed_at: new Date().toISOString(),
-            payload: {
-              detectionId,
-              summary: result.summary,
-              isMock: result.isMock
-            },
-            updated_at: new Date().toISOString()
-          }, {
-            onConflict: 'seller_id,sync_id'
-          });
-
-        if (queueError) {
-          logger.warn('⚠️ [AGENT 3] Failed to update detection_queue (non-critical)', {
-            error: queueError.message,
-            userId,
-            syncId
-          });
-        } else {
-          logger.info('✅ [AGENT 3] Detection completion signal sent', { userId, syncId });
-=======
         // Check if queue entry exists, then update or insert
         const { data: existingQueue } = await supabaseAdmin
           .from('detection_queue')
@@ -345,7 +318,6 @@ export class Agent3ClaimDetectionService {
           } else {
             logger.info('✅ [AGENT 3] Detection completion signal sent', { userId, syncId });
           }
->>>>>>> 6697dd3 (CRITICAL FIX: Agent 3 reliability - Fix all 4 silent failure issues)
         }
       } catch (queueError: any) {
         logger.warn('⚠️ [AGENT 3] Failed to signal completion (non-critical)', {
