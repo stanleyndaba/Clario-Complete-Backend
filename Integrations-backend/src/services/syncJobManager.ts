@@ -299,21 +299,24 @@ class SyncJobManager {
 
         // Also check if we have detection results (detection might have completed but queue status not updated)
         if (!detectionCompleted) {
-          const { data: detectionResults } = await supabase
+          const { count: detectionResultsCount } = await supabase
             .from('detection_results')
             .select('id', { count: 'exact', head: true })
             .eq('seller_id', userId)
             .eq('sync_id', syncId);
 
-          if (detectionResults && detectionResults.length > 0) {
+          if (detectionResultsCount && detectionResultsCount > 0) {
             // We have detection results, detection has completed
             detectionCompleted = true;
             logger.info('Detection results found, detection completed', { 
               userId, 
               syncId, 
-              resultsCount: detectionResults.length,
+              resultsCount: detectionResultsCount,
               detectionAttempts 
             });
+            // Update sync metadata with claims count immediately
+            syncStatus.claimsDetected = detectionResultsCount;
+            this.updateSyncStatus(syncStatus);
           }
         }
       }
