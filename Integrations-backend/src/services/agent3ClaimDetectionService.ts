@@ -118,22 +118,33 @@ export class Agent3ClaimDetectionService {
 
       // Step 3: Call Python Claim Detector API (or use mock if unavailable)
       const isMockMode = process.env.ENABLE_MOCK_DETECTION === 'true' || 
-                         process.env.USE_MOCK_DATA_GENERATOR !== 'false';
+                         process.env.USE_MOCK_DATA_GENERATOR !== 'false' ||
+                         !process.env.AMAZON_SPAPI_CLIENT_ID; // If no real Amazon credentials, use mock
       
       let detectionResults: any[] = [];
       
-      // In mock mode, generate detections from normalized data even if no claims were found
-      if (isMockMode && claimsToDetect.length === 0) {
-        logger.info('🧪 [AGENT 3] No claims found in data, generating mock detections from normalized data', {
-          userId,
-          syncId,
-          ordersCount: dataToProcess.orders?.length || 0,
-          shipmentsCount: dataToProcess.shipments?.length || 0,
-          returnsCount: dataToProcess.returns?.length || 0
-        });
-        // Generate mock claims from the normalized data
-        const mockClaimsFromData = this.generateMockClaimsFromNormalizedData(dataToProcess, userId);
-        detectionResults = this.generateMockDetections(mockClaimsFromData, userId);
+      // In mock mode, ALWAYS generate detections (even if no data or claims found)
+      // This ensures we always have something to show on the frontend
+      if (isMockMode) {
+        if (claimsToDetect.length === 0) {
+          logger.info('🧪 [AGENT 3] No claims found in data, generating mock detections', {
+            userId,
+            syncId,
+            ordersCount: dataToProcess.orders?.length || 0,
+            shipmentsCount: dataToProcess.shipments?.length || 0,
+            returnsCount: dataToProcess.returns?.length || 0
+          });
+          // Generate mock claims from the normalized data (or empty data)
+          const mockClaimsFromData = this.generateMockClaimsFromNormalizedData(dataToProcess, userId);
+          detectionResults = this.generateMockDetections(mockClaimsFromData, userId);
+        } else {
+          logger.info('🧪 [AGENT 3] Using mock detection (Python API unavailable or mock mode enabled)', {
+            userId,
+            syncId,
+            claimCount: claimsToDetect.length
+          });
+          detectionResults = this.generateMockDetections(claimsToDetect, userId);
+        }
         result.isMock = true;
       } else if (claimsToDetect.length === 0) {
         logger.info('ℹ️ [AGENT 3] No claims to detect', { userId, syncId });
@@ -146,26 +157,17 @@ export class Agent3ClaimDetectionService {
           claimCount: claimsToDetect.length
         });
         
-        if (isMockMode) {
-          logger.info('🧪 [AGENT 3] Using mock detection (Python API unavailable or mock mode enabled)', {
+        try {
+          detectionResults = await this.callPythonDetectorAPI(claimsToDetect, userId);
+        } catch (apiError: any) {
+          logger.warn('⚠️ [AGENT 3] Python API failed, falling back to mock detection', {
+            error: apiError.message,
             userId,
             syncId
           });
           detectionResults = this.generateMockDetections(claimsToDetect, userId);
           result.isMock = true;
-        } else {
-          try {
-            detectionResults = await this.callPythonDetectorAPI(claimsToDetect, userId);
-          } catch (apiError: any) {
-            logger.warn('⚠️ [AGENT 3] Python API failed, falling back to mock detection', {
-              error: apiError.message,
-              userId,
-              syncId
-            });
-            detectionResults = this.generateMockDetections(claimsToDetect, userId);
-            result.isMock = true;
-            errors.push(`Python API unavailable: ${apiError.message}`);
-          }
+          errors.push(`Python API unavailable: ${apiError.message}`);
         }
       }
 
@@ -656,6 +658,19 @@ export class Agent3ClaimDetectionService {
     syncId: string
   ): Promise<void> {
     try {
+      // Use supabaseAdmin if available, otherwise fallback to supabase
+      const { supabaseAdmin, supabase } = await import('../database/supabaseClient');
+      const dbClient = supabaseAdmin || supabase;
+      
+      if (!dbClient || typeof dbClient.from !== 'function') {
+        logger.warn('⚠️ [AGENT 3] No database client available, skipping storage', {
+          userId,
+          syncId,
+          detectionsCount: detections.length
+        });
+        return; // Don't throw - allow detection to complete even if storage fails
+      }
+
       const records = detections.map(detection => ({
         seller_id: userId,
         sync_id: syncId,
@@ -676,7 +691,7 @@ export class Agent3ClaimDetectionService {
         updated_at: new Date().toISOString()
       }));
 
-      const { error } = await supabaseAdmin
+      const { error } = await dbClient
         .from('detection_results')
         .insert(records);
 
@@ -693,9 +708,11 @@ export class Agent3ClaimDetectionService {
       logger.error('❌ [AGENT 3] Failed to store detection results', {
         error: error.message,
         userId,
-        syncId
+        syncId,
+        stack: error.stack
       });
-      throw error;
+      // Don't throw - allow detection to complete even if storage fails
+      // The detection results are still returned in the response
     }
   }
 
