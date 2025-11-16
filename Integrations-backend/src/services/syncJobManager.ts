@@ -199,12 +199,20 @@ class SyncJobManager {
         throw new Error(`Agent 2 sync failed: ${syncResult.errors.join(', ') || 'Unknown error'}`);
       }
       
+      // Log Agent 2 summary in detail to debug wrong counts
       logger.info('✅ [SYNC JOB MANAGER] Agent 2 sync completed', {
         userId,
         syncId,
         success: syncResult.success,
         summary: syncResult.summary,
-        isMock: syncResult.isMock
+        isMock: syncResult.isMock,
+        ordersCount: syncResult.summary?.ordersCount,
+        inventoryCount: syncResult.summary?.inventoryCount,
+        shipmentsCount: syncResult.summary?.shipmentsCount,
+        returnsCount: syncResult.summary?.returnsCount,
+        settlementsCount: syncResult.summary?.settlementsCount,
+        feesCount: syncResult.summary?.feesCount,
+        claimsCount: syncResult.summary?.claimsCount
       });
       
       if (isCancelled()) {
@@ -355,13 +363,29 @@ class SyncJobManager {
         syncStatus.returnsCount = syncResult.summary.returnsCount || 0;
         syncStatus.settlementsCount = syncResult.summary.settlementsCount || 0;
         syncStatus.feesCount = syncResult.summary.feesCount || 0;
+        
+        // Log what we're saving to debug wrong counts
+        logger.info('💾 [SYNC JOB MANAGER] Saving sync completion with Agent 2 counts', {
+          userId,
+          syncId,
+          ordersProcessed: syncStatus.ordersProcessed,
+          totalOrders: syncStatus.totalOrders,
+          inventoryCount: syncStatus.inventoryCount,
+          shipmentsCount: syncStatus.shipmentsCount,
+          returnsCount: syncStatus.returnsCount,
+          settlementsCount: syncStatus.settlementsCount,
+          feesCount: syncStatus.feesCount,
+          totalItemsSynced
+        });
       } else {
         // Only use database results if Agent 2 result is not available (shouldn't happen)
-        logger.warn('Agent 2 sync result not available, using database results (may be incomplete)', {
+        logger.warn('⚠️ [SYNC JOB MANAGER] Agent 2 sync result not available, using database results (may be incomplete)', {
           userId,
           syncId,
           hasSyncResult: !!syncResult,
-          hasSummary: !!(syncResult?.summary)
+          hasSummary: !!(syncResult?.summary),
+          databaseOrdersProcessed: syncResults.ordersProcessed,
+          databaseTotalOrders: syncResults.totalOrders
         });
         syncStatus.ordersProcessed = syncResults.ordersProcessed || 0;
         syncStatus.totalOrders = syncResults.totalOrders || 0;
