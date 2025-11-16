@@ -154,17 +154,18 @@ export class Agent3ClaimDetectionService {
           detectionResults = this.generateMockDetections(claimsToDetect, userId);
           result.isMock = true;
         } else {
-        try {
-          detectionResults = await this.callPythonDetectorAPI(claimsToDetect, userId);
-        } catch (apiError: any) {
-          logger.warn('⚠️ [AGENT 3] Python API failed, falling back to mock detection', {
-            error: apiError.message,
-            userId,
-            syncId
-          });
-          detectionResults = this.generateMockDetections(claimsToDetect, userId);
-          result.isMock = true;
-          errors.push(`Python API unavailable: ${apiError.message}`);
+          try {
+            detectionResults = await this.callPythonDetectorAPI(claimsToDetect, userId);
+          } catch (apiError: any) {
+            logger.warn('⚠️ [AGENT 3] Python API failed, falling back to mock detection', {
+              error: apiError.message,
+              userId,
+              syncId
+            });
+            detectionResults = this.generateMockDetections(claimsToDetect, userId);
+            result.isMock = true;
+            errors.push(`Python API unavailable: ${apiError.message}`);
+          }
         }
       }
 
