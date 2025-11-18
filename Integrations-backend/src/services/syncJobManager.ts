@@ -562,8 +562,35 @@ class SyncJobManager {
         }
       }
       
-      // Get actual claims count from database (metadata may be stale)
-      const syncResults = await this.getSyncResults(data.user_id, data.sync_id);
+      // Use metadata.claimsDetected (should be updated when detection completes)
+      // Fallback to database query only if metadata is missing or 0 (for backwards compatibility)
+      let claimsDetected = metadata.claimsDetected || 0;
+      
+      // If metadata shows 0 but sync is completed, verify with database query (metadata might be stale)
+      if (claimsDetected === 0 && normalizedStatus === 'completed') {
+        const syncResults = await this.getSyncResults(data.user_id, data.sync_id);
+        if (syncResults.claimsDetected > 0) {
+          claimsDetected = syncResults.claimsDetected;
+          // Update metadata for future requests (async, don't wait)
+          supabase.from('sync_progress')
+            .update({ 
+              metadata: { ...metadata, claimsDetected },
+              updated_at: new Date().toISOString()
+            })
+            .eq('sync_id', data.sync_id)
+            .eq('user_id', data.user_id)
+            .then(() => {
+              logger.info('✅ Updated stale metadata.claimsDetected from database', {
+                userId: data.user_id,
+                syncId: data.sync_id,
+                claimsDetected
+              });
+            })
+            .catch((err) => {
+              logger.warn('Failed to update stale metadata', { error: err });
+            });
+        }
+      }
       
       return {
         syncId: data.sync_id,
@@ -580,7 +607,7 @@ class SyncJobManager {
         returnsCount: metadata.returnsCount || 0,
         settlementsCount: metadata.settlementsCount || 0,
         feesCount: metadata.feesCount || 0,
-        claimsDetected: syncResults.claimsDetected, // Use actual database count, not metadata
+        claimsDetected, // Use metadata (fast), fallback to database if stale
         error: metadata.error
       };
     } catch (error) {

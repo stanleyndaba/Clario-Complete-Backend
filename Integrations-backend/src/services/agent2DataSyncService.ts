@@ -998,6 +998,44 @@ export class Agent2DataSyncService {
       true
     );
 
+    // Step 7: Update sync_progress metadata with claimsDetected count
+    // This ensures metadata is always up-to-date for fast API responses
+    try {
+      const { data: existingSync } = await supabaseAdmin
+        .from('sync_progress')
+        .select('metadata')
+        .eq('sync_id', storageSyncId)
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (existingSync) {
+        const metadata = (existingSync.metadata as any) || {};
+        metadata.claimsDetected = detectionResults.length;
+        
+        await supabaseAdmin
+          .from('sync_progress')
+          .update({
+            metadata,
+            updated_at: new Date().toISOString()
+          })
+          .eq('sync_id', storageSyncId)
+          .eq('user_id', userId);
+
+        logger.info('✅ [AGENT 2] Updated sync_progress metadata with claimsDetected', {
+          userId,
+          syncId: storageSyncId,
+          claimsDetected: detectionResults.length
+        });
+      }
+    } catch (metadataError: any) {
+      logger.warn('⚠️ [AGENT 2] Failed to update sync_progress metadata (non-critical)', {
+        error: metadataError.message,
+        userId,
+        syncId: storageSyncId
+      });
+      // Don't throw - detection results are already stored, metadata update is just for performance
+    }
+
     return { totalDetected: detectionResults.length };
   }
 
