@@ -790,7 +790,50 @@ export class Agent2DataSyncService {
       return { totalDetected: 0 };
     }
 
-    // Step 3: Call Discovery Agent API
+    // Step 3: Create detection_queue entry BEFORE calling API (so syncJobManager can track it)
+    try {
+      const { data: existingQueue } = await supabaseAdmin
+        .from('detection_queue')
+        .select('id')
+        .eq('seller_id', userId)
+        .eq('sync_id', storageSyncId)
+        .maybeSingle();
+
+      if (!existingQueue) {
+        // Create initial detection_queue entry with 'processing' status
+        await supabaseAdmin
+          .from('detection_queue')
+          .insert({
+            seller_id: userId,
+            sync_id: storageSyncId,
+            status: 'processing',
+            priority: 1,
+            payload: { detectionId, claimCount: claimsToDetect.length },
+            updated_at: new Date().toISOString()
+          });
+        logger.info('📝 [AGENT 2] Created detection_queue entry', { userId, syncId: storageSyncId });
+      } else {
+        // Update existing entry to 'processing'
+        await supabaseAdmin
+          .from('detection_queue')
+          .update({
+            status: 'processing',
+            payload: { detectionId, claimCount: claimsToDetect.length },
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', existingQueue.id);
+        logger.info('📝 [AGENT 2] Updated detection_queue entry to processing', { userId, syncId: storageSyncId });
+      }
+    } catch (queueError: any) {
+      logger.warn('⚠️ [AGENT 2] Failed to create/update detection_queue (non-critical)', {
+        error: queueError.message,
+        userId,
+        syncId: storageSyncId
+      });
+      // Continue anyway - we'll still call the API
+    }
+
+    // Step 4: Call Discovery Agent API
     logger.info('🎯 [AGENT 2] Calling Discovery Agent API', {
       userId,
       syncId,
@@ -804,6 +847,7 @@ export class Agent2DataSyncService {
     console.log('[AGENT 2] Python API URL:', this.pythonApiUrl);
     console.log('[AGENT 2] Claims to detect:', claimsToDetect.length);
     console.log('[AGENT 2] Sync ID:', syncId);
+    console.log('[AGENT 2] Storage Sync ID:', storageSyncId);
     console.log('[AGENT 2] User ID:', userId);
 
     let predictions: any[];
