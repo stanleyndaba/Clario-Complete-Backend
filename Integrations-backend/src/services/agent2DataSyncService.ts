@@ -1137,32 +1137,42 @@ export class Agent2DataSyncService {
       }
     }
 
-    // Process shipments
+    // Process shipments - generate claims for all shipments (not just those with missing_quantity)
     if (data.shipments) {
       for (const shipment of data.shipments) {
-        if (shipment.missing_quantity && shipment.missing_quantity > 0) {
+        // Generate claim if missing_quantity exists OR if shipment has items (potential discrepancy)
+        const hasMissingQuantity = shipment.missing_quantity && shipment.missing_quantity > 0;
+        const hasItems = shipment.items && shipment.items.length > 0;
+        
+        if (hasMissingQuantity || hasItems) {
           const estimatedValue = shipment.items?.reduce((sum: number, item: any) => {
             return sum + (item.quantity * (item.price || 10));
-          }, 0) || shipment.missing_quantity * 10;
+          }, 0) || (shipment.missing_quantity || 1) * 10;
           const daysSinceShipped = this.calculateDaysSince(shipment.shipped_date);
-          const reasonCode = shipment.status === 'lost' ? 'LOST_SHIPMENT' : 'DAMAGED_INVENTORY';
+          const reasonCode = shipment.status === 'lost' ? 'LOST_SHIPMENT' : 
+                            shipment.status === 'damaged' ? 'DAMAGED_INVENTORY' : 
+                            'INVENTORY_DISCREPANCY';
 
           claims.push({
             claim_id: `claim_shipment_${shipment.shipment_id}_${Date.now()}`,
             seller_id: userId,
-            order_id: shipment.order_id,
+            order_id: shipment.order_id || shipment.shipment_id,
             category: 'inventory_loss',
-            subcategory: shipment.status === 'lost' ? 'lost_shipment' : 'damaged_goods',
+            subcategory: shipment.status === 'lost' ? 'lost_shipment' : 
+                        shipment.status === 'damaged' ? 'damaged_goods' : 
+                        'inventory_discrepancy',
             reason_code: reasonCode,
             marketplace: 'US',
             fulfillment_center: shipment.fulfillment_center || 'DEFAULT', // Required by Discovery Agent
             amount: estimatedValue,
-            quantity: shipment.missing_quantity,
+            quantity: shipment.missing_quantity || shipment.items?.reduce((sum: number, item: any) => sum + item.quantity, 0) || 1,
             order_value: estimatedValue,
             shipping_cost: shipment.shipping_cost || estimatedValue * 0.1, // Estimate 10% of value
             days_since_order: daysSinceShipped,
             days_since_delivery: Math.max(0, daysSinceShipped - 1), // Estimate delivery 1 day after shipped
-            description: `Missing ${shipment.missing_quantity} unit(s) from shipment ${shipment.shipment_id}`,
+            description: hasMissingQuantity 
+              ? `Missing ${shipment.missing_quantity} unit(s) from shipment ${shipment.shipment_id}`
+              : `Potential inventory discrepancy in shipment ${shipment.shipment_id}`,
             reason: reasonCode, // Required by Discovery Agent
             notes: '',
             claim_date: shipment.shipped_date || new Date().toISOString()
@@ -1171,27 +1181,38 @@ export class Agent2DataSyncService {
       }
     }
 
-    // Process returns
+    // Process returns - generate claims for all returns (not just those with refund_amount)
     if (data.returns) {
       for (const returnData of data.returns) {
-        if (returnData.refund_amount && returnData.refund_amount > 0) {
+        // Generate claim if refund_amount exists OR if return has items (potential discrepancy)
+        const hasRefundAmount = returnData.refund_amount && returnData.refund_amount > 0;
+        const hasItems = returnData.items && returnData.items.length > 0;
+        
+        if (hasRefundAmount || hasItems) {
+          const estimatedValue = returnData.refund_amount || 
+                                returnData.items?.reduce((sum: number, item: any) => {
+                                  return sum + (item.quantity * (item.price || 10));
+                                }, 0) || 10;
           const daysSinceReturn = this.calculateDaysSince(returnData.returned_date);
+          
           claims.push({
             claim_id: `claim_return_${returnData.return_id}_${Date.now()}`,
             seller_id: userId,
-            order_id: returnData.order_id,
+            order_id: returnData.order_id || returnData.return_id,
             category: 'return_discrepancy',
             subcategory: 'refund_mismatch',
             reason_code: 'POTENTIAL_REFUND_DISCREPANCY',
             marketplace: 'US',
             fulfillment_center: returnData.fulfillment_center || 'DEFAULT', // Required by Discovery Agent
-            amount: returnData.refund_amount,
+            amount: estimatedValue,
             quantity: returnData.items?.reduce((sum: number, item: any) => sum + item.quantity, 0) || 1,
-            order_value: returnData.refund_amount,
+            order_value: estimatedValue,
             shipping_cost: 0, // Returns typically don't have shipping cost
             days_since_order: daysSinceReturn,
             days_since_delivery: daysSinceReturn, // Assume return date is close to delivery
-            description: `Potential refund discrepancy for return ${returnData.return_id}`,
+            description: hasRefundAmount 
+              ? `Potential refund discrepancy for return ${returnData.return_id}`
+              : `Potential return discrepancy for ${returnData.return_id}`,
             reason: 'POTENTIAL_REFUND_DISCREPANCY', // Required by Discovery Agent
             notes: '',
             claim_date: returnData.returned_date || new Date().toISOString()
@@ -1200,27 +1221,35 @@ export class Agent2DataSyncService {
       }
     }
 
-    // Process settlements
+    // Process settlements - generate claims for all settlements (not just those with fees)
     if (data.settlements) {
       for (const settlement of data.settlements) {
-        if (settlement.fees && settlement.fees > 0) {
+        // Generate claim if fees exist OR if settlement has amount (potential discrepancy)
+        const hasFees = settlement.fees && settlement.fees > 0;
+        const hasAmount = settlement.amount && settlement.amount > 0;
+        
+        if (hasFees || hasAmount) {
+          const estimatedValue = settlement.fees || settlement.amount * 0.1; // Estimate 10% as potential fee discrepancy
           const daysSinceSettlement = this.calculateDaysSince(settlement.settlement_date);
+          
           claims.push({
             claim_id: `claim_settlement_${settlement.settlement_id}_${Date.now()}`,
             seller_id: userId,
-            order_id: settlement.order_id,
+            order_id: settlement.order_id || settlement.settlement_id,
             category: 'fee_error',
             subcategory: 'settlement_fee',
             reason_code: 'POTENTIAL_SETTLEMENT_FEE_DISCREPANCY',
             marketplace: 'US',
             fulfillment_center: 'DEFAULT', // Settlements don't have fulfillment center
-            amount: settlement.fees,
+            amount: estimatedValue,
             quantity: 1,
-            order_value: settlement.amount || 0,
+            order_value: settlement.amount || estimatedValue,
             shipping_cost: 0, // Settlements don't have shipping cost
             days_since_order: daysSinceSettlement,
             days_since_delivery: daysSinceSettlement, // Use settlement date as proxy
-            description: `Potential fee discrepancy in settlement ${settlement.settlement_id}`,
+            description: hasFees 
+              ? `Potential fee discrepancy in settlement ${settlement.settlement_id}`
+              : `Potential settlement discrepancy for ${settlement.settlement_id}`,
             reason: 'POTENTIAL_SETTLEMENT_FEE_DISCREPANCY', // Required by Discovery Agent
             notes: '',
             claim_date: settlement.settlement_date || new Date().toISOString()
