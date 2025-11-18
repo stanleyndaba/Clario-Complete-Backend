@@ -1,6 +1,6 @@
 import logger from '../utils/logger';
 import agent2DataSyncService from './agent2DataSyncService';
-import { supabase } from '../database/supabaseClient';
+import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import sseHub from '../utils/sseHub';
 import tokenManager from '../utils/tokenManager';
 
@@ -1112,7 +1112,8 @@ class SyncJobManager {
           .eq('seller_id', userId)
           .gte('created_at', metadata.startedAt || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
         // Count claims detected in this sync (Discovery Agent stores in detection_results table)
-        supabase
+        // Use supabaseAdmin to bypass RLS policies (needed to get accurate count)
+        supabaseAdmin
           .from('detection_results')
           .select('id', { count: 'exact', head: true })
           .eq('seller_id', userId)

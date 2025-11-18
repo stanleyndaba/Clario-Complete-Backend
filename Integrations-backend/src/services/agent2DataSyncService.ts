@@ -996,6 +996,7 @@ export class Agent2DataSyncService {
       if (batchIndex < totalBatches - 1) {
         await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay between batches
       }
+      } // Close for loop
     } catch (batchProcessingError: any) {
       // If batch processing fails, ensure we signal completion with error
       logger.error('❌ [AGENT 2] Batch processing failed with unhandled error', {
