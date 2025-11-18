@@ -948,6 +948,16 @@ export class Agent2DataSyncService {
       console.error('[AGENT 2] HTTP status:', apiError.response?.status);
       console.error('[AGENT 2] Python API URL:', this.pythonApiUrl);
       console.error('[AGENT 2] Claims sent:', claimsToDetect.length);
+      
+      // Log sample claim to help debug format issues
+      if (claimsToDetect.length > 0) {
+        console.error('[AGENT 2] Sample claim format:', JSON.stringify(claimsToDetect[0], null, 2));
+      }
+      
+      // Log full error response if available
+      if (apiError.response?.data) {
+        console.error('[AGENT 2] Python API error response:', JSON.stringify(apiError.response.data, null, 2));
+      }
 
       await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, false);
       throw new Error(`Discovery Agent API failed: ${apiError.message}`);
