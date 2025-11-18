@@ -41,6 +41,8 @@
     "test:a1-a2": "ts-node scripts/test-a1-to-a2-flow.ts",
     "test:discovery-agent": "ts-node scripts/test-discovery-agent-integration.ts",
     "test:supabase-service-role": "ts-node scripts/test-supabase-service-role.ts",
+    "test:e2e-claims": "ts-node scripts/test-e2e-claims-detection.ts",
+    "debug:storage-flow": "ts-node scripts/debug-storage-flow.ts",
     "test:agent3": "ts-node scripts/test-agent3-claim-detection.ts",
     "test:agent1-4": "ts-node scripts/test-agent1-to-4-pipeline.ts",
     "verify:agents-5-11": "ts-node scripts/verify-agents-5-11.ts",
