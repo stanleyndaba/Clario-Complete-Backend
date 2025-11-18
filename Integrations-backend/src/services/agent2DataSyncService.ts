@@ -875,8 +875,9 @@ export class Agent2DataSyncService {
       console.warn('[AGENT 2] Python API health check failed, but continuing:', healthError.message);
     }
 
-    // Process each batch
-    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+    // Process each batch - wrap in try-catch to ensure completion is signaled on error
+    try {
+      for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
       const batchStart = batchIndex * MAX_CLAIMS_PER_BATCH;
       const batchEnd = Math.min(batchStart + MAX_CLAIMS_PER_BATCH, allClaimsToDetect.length);
       const batchClaims = allClaimsToDetect.slice(batchStart, batchEnd);
@@ -995,6 +996,29 @@ export class Agent2DataSyncService {
       if (batchIndex < totalBatches - 1) {
         await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay between batches
       }
+    } catch (batchProcessingError: any) {
+      // If batch processing fails, ensure we signal completion with error
+      logger.error('❌ [AGENT 2] Batch processing failed with unhandled error', {
+        error: batchProcessingError.message,
+        stack: batchProcessingError.stack,
+        userId,
+        syncId,
+        storageSyncId,
+        totalBatches,
+        batchesProcessed: allPredictions.length
+      });
+      console.error('[AGENT 2] Batch processing error:', batchProcessingError);
+      
+      // Signal completion with failed status
+      await this.signalDetectionCompletion(
+        userId,
+        storageSyncId,
+        detectionId,
+        { totalDetected: allPredictions.length },
+        false
+      );
+      
+      throw new Error(`Batch processing failed: ${batchProcessingError.message}`);
     }
 
     logger.info('✅ [AGENT 2] All batches processed', {
