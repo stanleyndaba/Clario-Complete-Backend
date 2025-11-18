@@ -807,25 +807,74 @@ export class Agent2DataSyncService {
     console.log('[AGENT 2] User ID:', userId);
 
     let predictions: any[];
-    try {
-      const response = await axios.post(
-        `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
-        { claims: claimsToDetect },
-        {
-          timeout: 60000,
-          headers: { 'Content-Type': 'application/json' }
+    
+    // Retry logic for transient errors (502, 503, 504)
+    const maxRetries = 3;
+    const retryDelay = 2000; // 2 seconds base delay
+    let lastError: any = null;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`[AGENT 2] Discovery Agent API call attempt ${attempt}/${maxRetries}`);
+        
+        // Check Python API health before calling (on first attempt)
+        if (attempt === 1) {
+          try {
+            const healthCheck = await axios.get(`${this.pythonApiUrl}/health`, { timeout: 5000 });
+            console.log('[AGENT 2] Python API health check:', healthCheck.data);
+          } catch (healthError: any) {
+            console.warn('[AGENT 2] Python API health check failed, but continuing:', healthError.message);
+          }
         }
-      );
+        
+        const response = await axios.post(
+          `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
+          { claims: claimsToDetect },
+          {
+            timeout: 90000, // Increased to 90 seconds
+            headers: { 'Content-Type': 'application/json' }
+          }
+        );
 
-      predictions = response.data?.predictions || [];
-      console.log('[AGENT 2] Discovery Agent API response received');
-      console.log('[AGENT 2] Predictions count:', predictions.length);
-      console.log('[AGENT 2] Response status:', response.status);
-      
-      if (!Array.isArray(predictions)) {
-        console.error('[AGENT 2] Invalid response format:', typeof predictions, response.data);
-        throw new Error(`Discovery Agent returned invalid format: expected array, got ${typeof predictions}`);
+        predictions = response.data?.predictions || [];
+        console.log('[AGENT 2] Discovery Agent API response received');
+        console.log('[AGENT 2] Predictions count:', predictions.length);
+        console.log('[AGENT 2] Response status:', response.status);
+        
+        if (!Array.isArray(predictions)) {
+          console.error('[AGENT 2] Invalid response format:', typeof predictions, response.data);
+          throw new Error(`Discovery Agent returned invalid format: expected array, got ${typeof predictions}`);
+        }
+        
+        // Success - break out of retry loop
+        break;
+      } catch (apiError: any) {
+        lastError = apiError;
+        const status = apiError.response?.status;
+        const isRetryable = status === 502 || status === 503 || status === 504 || 
+                           apiError.code === 'ECONNABORTED' || apiError.code === 'ETIMEDOUT' ||
+                           apiError.code === 'ECONNREFUSED';
+        
+        if (isRetryable && attempt < maxRetries) {
+          const delay = retryDelay * attempt; // Exponential backoff: 2s, 4s, 6s
+          console.warn(`[AGENT 2] Discovery Agent API failed (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms...`, {
+            status,
+            error: apiError.message,
+            code: apiError.code
+          });
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue; // Retry
+        } else {
+          // Not retryable or out of retries - throw error
+          throw apiError;
+        }
       }
+    }
+    
+    // If we get here without predictions, it means all retries failed
+    if (!predictions) {
+      throw lastError || new Error('Discovery Agent API failed after all retries');
+    }
     } catch (apiError: any) {
       // Enhanced error logging with full details
       const errorDetails = {
