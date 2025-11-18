@@ -775,22 +775,9 @@ export class Agent2DataSyncService {
     const validatedData = this.validateAndNormalizeInputContract(normalizedData, userId, syncId);
 
     // Step 2: Transform normalized data into Discovery Agent claim format
-    let claimsToDetect = this.prepareClaimsFromNormalizedData(validatedData, userId);
-    
-    // TEMPORARY: Limit batch size to debug 502 errors (Python API might be crashing on large batches)
-    // TODO: Remove this limit once Python API can handle large batches
-    const MAX_CLAIMS_PER_BATCH = 50;
-    if (claimsToDetect.length > MAX_CLAIMS_PER_BATCH) {
-      logger.warn('⚠️ [AGENT 2] Limiting claims batch size for Python API', {
-        originalCount: claimsToDetect.length,
-        limitedCount: MAX_CLAIMS_PER_BATCH,
-        userId,
-        syncId
-      });
-      claimsToDetect = claimsToDetect.slice(0, MAX_CLAIMS_PER_BATCH);
-    }
+    const allClaimsToDetect = this.prepareClaimsFromNormalizedData(validatedData, userId);
 
-    if (claimsToDetect.length === 0) {
+    if (allClaimsToDetect.length === 0) {
       logger.info('ℹ️ [AGENT 2] No claims to detect', { userId, syncId, storageSyncId });
       console.log('[AGENT 2] No claims to detect - skipping Discovery Agent call');
       console.log('[AGENT 2] Normalized data summary:', {
@@ -802,6 +789,20 @@ export class Agent2DataSyncService {
       await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, true);
       return { totalDetected: 0 };
     }
+
+    // Process claims in batches to avoid Python API crashes on large batches
+    const MAX_CLAIMS_PER_BATCH = 50;
+    const totalBatches = Math.ceil(allClaimsToDetect.length / MAX_CLAIMS_PER_BATCH);
+    
+    logger.info('🎯 [AGENT 2] Processing claims in batches', {
+      userId,
+      syncId,
+      totalClaims: allClaimsToDetect.length,
+      batchSize: MAX_CLAIMS_PER_BATCH,
+      totalBatches
+    });
+    
+    console.log(`[AGENT 2] Processing ${allClaimsToDetect.length} claims in ${totalBatches} batches of ${MAX_CLAIMS_PER_BATCH}`);
 
     // Step 3: Create detection_queue entry BEFORE calling API (so syncJobManager can track it)
     try {
@@ -821,21 +822,31 @@ export class Agent2DataSyncService {
             sync_id: storageSyncId,
             status: 'processing',
             priority: 1,
-            payload: { detectionId, claimCount: claimsToDetect.length },
+            payload: { detectionId, claimCount: allClaimsToDetect.length, totalBatches },
             updated_at: new Date().toISOString()
           });
-        logger.info('📝 [AGENT 2] Created detection_queue entry', { userId, syncId: storageSyncId });
+        logger.info('📝 [AGENT 2] Created detection_queue entry', { 
+          userId, 
+          syncId: storageSyncId,
+          totalClaims: allClaimsToDetect.length,
+          totalBatches
+        });
       } else {
         // Update existing entry to 'processing'
         await supabaseAdmin
           .from('detection_queue')
           .update({
             status: 'processing',
-            payload: { detectionId, claimCount: claimsToDetect.length },
+            payload: { detectionId, claimCount: allClaimsToDetect.length, totalBatches },
             updated_at: new Date().toISOString()
           })
           .eq('id', existingQueue.id);
-        logger.info('📝 [AGENT 2] Updated detection_queue entry to processing', { userId, syncId: storageSyncId });
+        logger.info('📝 [AGENT 2] Updated detection_queue entry to processing', { 
+          userId, 
+          syncId: storageSyncId,
+          totalClaims: allClaimsToDetect.length,
+          totalBatches
+        });
       }
     } catch (queueError: any) {
       logger.warn('⚠️ [AGENT 2] Failed to create/update detection_queue (non-critical)', {
@@ -846,68 +857,73 @@ export class Agent2DataSyncService {
       // Continue anyway - we'll still call the API
     }
 
-    // Step 4: Call Discovery Agent API
-    logger.info('🎯 [AGENT 2] Calling Discovery Agent API', {
-      userId,
-      syncId,
-      storageSyncId,
-      claimCount: claimsToDetect.length,
-      apiUrl: `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`
-    });
+    // Step 4: Process all claims in batches
+    const allPredictions: any[] = [];
+    const maxRetries = 3;
+    const retryDelay = 2000; // 2 seconds base delay
     
-    // Console log for Render visibility
-    console.log('[AGENT 2] Calling Discovery Agent API');
     console.log('[AGENT 2] Python API URL:', this.pythonApiUrl);
-    console.log('[AGENT 2] Claims to detect:', claimsToDetect.length);
     console.log('[AGENT 2] Sync ID:', syncId);
     console.log('[AGENT 2] Storage Sync ID:', storageSyncId);
     console.log('[AGENT 2] User ID:', userId);
 
-    let predictions: any[];
-    
+    // Check Python API health before processing batches
     try {
-      // Retry logic for transient errors (502, 503, 504)
-      const maxRetries = 3;
-      const retryDelay = 2000; // 2 seconds base delay
-      let lastError: any = null;
+      const healthCheck = await axios.get(`${this.pythonApiUrl}/health`, { timeout: 5000 });
+      console.log('[AGENT 2] Python API health check:', healthCheck.data);
+    } catch (healthError: any) {
+      console.warn('[AGENT 2] Python API health check failed, but continuing:', healthError.message);
+    }
+
+    // Process each batch
+    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      const batchStart = batchIndex * MAX_CLAIMS_PER_BATCH;
+      const batchEnd = Math.min(batchStart + MAX_CLAIMS_PER_BATCH, allClaimsToDetect.length);
+      const batchClaims = allClaimsToDetect.slice(batchStart, batchEnd);
       
+      logger.info(`🔄 [AGENT 2] Processing batch ${batchIndex + 1}/${totalBatches}`, {
+        userId,
+        syncId,
+        batchIndex: batchIndex + 1,
+        totalBatches,
+        batchSize: batchClaims.length,
+        batchStart,
+        batchEnd
+      });
+      
+      console.log(`[AGENT 2] Processing batch ${batchIndex + 1}/${totalBatches} (claims ${batchStart + 1}-${batchEnd} of ${allClaimsToDetect.length})`);
+
+      let batchPredictions: any[] = [];
+      let batchSuccess = false;
+      let lastBatchError: any = null;
+
+      // Retry logic for this batch
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-          console.log(`[AGENT 2] Discovery Agent API call attempt ${attempt}/${maxRetries}`);
-          
-          // Check Python API health before calling (on first attempt)
-          if (attempt === 1) {
-            try {
-              const healthCheck = await axios.get(`${this.pythonApiUrl}/health`, { timeout: 5000 });
-              console.log('[AGENT 2] Python API health check:', healthCheck.data);
-            } catch (healthError: any) {
-              console.warn('[AGENT 2] Python API health check failed, but continuing:', healthError.message);
-            }
-          }
+          console.log(`[AGENT 2] Batch ${batchIndex + 1} - API call attempt ${attempt}/${maxRetries}`);
           
           const response = await axios.post(
             `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
-            { claims: claimsToDetect },
+            { claims: batchClaims },
             {
-              timeout: 90000, // Increased to 90 seconds
+              timeout: 90000, // 90 seconds timeout
               headers: { 'Content-Type': 'application/json' }
             }
           );
 
-          predictions = response.data?.predictions || [];
-          console.log('[AGENT 2] Discovery Agent API response received');
-          console.log('[AGENT 2] Predictions count:', predictions.length);
-          console.log('[AGENT 2] Response status:', response.status);
+          batchPredictions = response.data?.predictions || [];
+          console.log(`[AGENT 2] Batch ${batchIndex + 1} - API response received`);
+          console.log(`[AGENT 2] Batch ${batchIndex + 1} - Predictions count:`, batchPredictions.length);
           
-          if (!Array.isArray(predictions)) {
-            console.error('[AGENT 2] Invalid response format:', typeof predictions, response.data);
-            throw new Error(`Discovery Agent returned invalid format: expected array, got ${typeof predictions}`);
+          if (!Array.isArray(batchPredictions)) {
+            console.error(`[AGENT 2] Batch ${batchIndex + 1} - Invalid response format:`, typeof batchPredictions, response.data);
+            throw new Error(`Discovery Agent returned invalid format: expected array, got ${typeof batchPredictions}`);
           }
           
-          // Success - break out of retry loop
-          break;
+          batchSuccess = true;
+          break; // Success - break out of retry loop
         } catch (apiError: any) {
-          lastError = apiError;
+          lastBatchError = apiError;
           const status = apiError.response?.status;
           const isRetryable = status === 502 || status === 503 || status === 504 || 
                              apiError.code === 'ECONNABORTED' || apiError.code === 'ETIMEDOUT' ||
@@ -915,7 +931,7 @@ export class Agent2DataSyncService {
           
           if (isRetryable && attempt < maxRetries) {
             const delay = retryDelay * attempt; // Exponential backoff: 2s, 4s, 6s
-            console.warn(`[AGENT 2] Discovery Agent API failed (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms...`, {
+            console.warn(`[AGENT 2] Batch ${batchIndex + 1} - API failed (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms...`, {
               status,
               error: apiError.message,
               code: apiError.code
@@ -928,59 +944,74 @@ export class Agent2DataSyncService {
           }
         }
       }
-      
-      // If we get here without predictions, it means all retries failed
-      if (!predictions) {
-        throw lastError || new Error('Discovery Agent API failed after all retries');
-      }
-    } catch (apiError: any) {
-      // Enhanced error logging with full details
-      const errorDetails = {
-        error: apiError.message,
-        errorCode: apiError.code,
-        status: apiError.response?.status,
-        statusText: apiError.response?.statusText,
-        responseData: apiError.response?.data,
-        url: `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
-        userId,
-        syncId,
-        storageSyncId,
-        claimCount: claimsToDetect.length,
-        timeout: apiError.code === 'ECONNABORTED' || apiError.code === 'ETIMEDOUT',
-        connectionError: apiError.code === 'ECONNREFUSED' || apiError.code === 'ENOTFOUND',
-        stack: apiError.stack
-      };
 
-      // Log to structured logger
-      logger.error('❌ [AGENT 2] Discovery Agent API failed', errorDetails);
-      
-      // Also log to console for Render logs visibility
-      console.error('[AGENT 2] Discovery Agent API FAILED:', JSON.stringify(errorDetails, null, 2));
-      console.error('[AGENT 2] Error message:', apiError.message);
-      console.error('[AGENT 2] Error code:', apiError.code);
-      console.error('[AGENT 2] HTTP status:', apiError.response?.status);
-      console.error('[AGENT 2] Python API URL:', this.pythonApiUrl);
-      console.error('[AGENT 2] Claims sent:', claimsToDetect.length);
-      
-      // Log sample claim to help debug format issues
-      if (claimsToDetect.length > 0) {
-        console.error('[AGENT 2] Sample claim format:', JSON.stringify(claimsToDetect[0], null, 2));
-      }
-      
-      // Log full error response if available
-      if (apiError.response?.data) {
-        console.error('[AGENT 2] Python API error response:', JSON.stringify(apiError.response.data, null, 2));
+      if (!batchSuccess) {
+        // Enhanced error logging for failed batch
+        const errorDetails = {
+          error: lastBatchError?.message,
+          errorCode: lastBatchError?.code,
+          status: lastBatchError?.response?.status,
+          statusText: lastBatchError?.response?.statusText,
+          responseData: lastBatchError?.response?.data,
+          url: `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
+          userId,
+          syncId,
+          storageSyncId,
+          batchIndex: batchIndex + 1,
+          totalBatches,
+          batchClaimCount: batchClaims.length,
+          timeout: lastBatchError?.code === 'ECONNABORTED' || lastBatchError?.code === 'ETIMEDOUT',
+          connectionError: lastBatchError?.code === 'ECONNREFUSED' || lastBatchError?.code === 'ENOTFOUND'
+        };
+
+        logger.error(`❌ [AGENT 2] Batch ${batchIndex + 1} failed after all retries`, errorDetails);
+        console.error(`[AGENT 2] Batch ${batchIndex + 1} FAILED:`, JSON.stringify(errorDetails, null, 2));
+        
+        if (batchClaims.length > 0) {
+          console.error(`[AGENT 2] Batch ${batchIndex + 1} - Sample claim format:`, JSON.stringify(batchClaims[0], null, 2));
+        }
+
+        // If this is the first batch and it fails, fail the entire operation
+        // Otherwise, log error but continue with other batches
+        if (batchIndex === 0) {
+          await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, false);
+          throw new Error(`Discovery Agent API failed on first batch: ${lastBatchError?.message}`);
+        } else {
+          logger.warn(`⚠️ [AGENT 2] Batch ${batchIndex + 1} failed, but continuing with remaining batches`, {
+            userId,
+            syncId,
+            batchIndex: batchIndex + 1
+          });
+          console.warn(`[AGENT 2] Batch ${batchIndex + 1} failed, skipping this batch and continuing...`);
+          continue; // Skip this batch and continue with next
+        }
       }
 
-      await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, false);
-      throw new Error(`Discovery Agent API failed: ${apiError.message}`);
+      // Add batch predictions to accumulated results
+      allPredictions.push(...batchPredictions);
+      console.log(`[AGENT 2] Batch ${batchIndex + 1} completed: ${batchPredictions.length} predictions (total so far: ${allPredictions.length})`);
+      
+      // Small delay between batches to avoid overwhelming the API
+      if (batchIndex < totalBatches - 1) {
+        await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay between batches
+      }
     }
 
-    // Step 4: Transform predictions to detection results format
-    const detectionResults = predictions
+    logger.info('✅ [AGENT 2] All batches processed', {
+      userId,
+      syncId,
+      totalClaims: allClaimsToDetect.length,
+      totalPredictions: allPredictions.length,
+      totalBatches
+    });
+    
+    console.log(`[AGENT 2] All ${totalBatches} batches completed: ${allPredictions.length} total predictions from ${allClaimsToDetect.length} claims`);
+
+    // Step 5: Transform predictions to detection results format
+    const detectionResults = allPredictions
       .filter((p: any) => p.claimable) // Only store claimable predictions
       .map((prediction: any) => {
-        const claim = claimsToDetect.find(c => c.claim_id === prediction.claim_id);
+        const claim = allClaimsToDetect.find(c => c.claim_id === prediction.claim_id);
         return {
           claim_id: prediction.claim_id,
           seller_id: userId,
@@ -997,12 +1028,12 @@ export class Agent2DataSyncService {
         };
       });
 
-    // Step 5: Store detection results
+    // Step 6: Store detection results
     if (detectionResults.length > 0) {
       await this.storeDetectionResults(detectionResults, userId, storageSyncId);
     }
 
-    // Step 6: Signal completion
+    // Step 7: Signal completion
     await this.signalDetectionCompletion(
       userId,
       storageSyncId,
@@ -1011,7 +1042,7 @@ export class Agent2DataSyncService {
       true
     );
 
-    // Step 7: Update sync_progress metadata with claimsDetected count
+    // Step 8: Update sync_progress metadata with claimsDetected count
     // This ensures metadata is always up-to-date for fast API responses
     try {
       const { data: existingSync } = await supabaseAdmin
