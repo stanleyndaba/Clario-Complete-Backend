@@ -562,19 +562,15 @@ class SyncJobManager {
         }
       }
       
-      // Use metadata.claimsDetected (should be updated when detection completes)
-      // Fallback to database query only if metadata is missing or 0 (for backwards compatibility)
+      // ALWAYS query database directly for completed/failed syncs (most reliable)
+      // For running syncs, use metadata for speed, but verify with database if metadata shows 0
       let claimsDetected = metadata.claimsDetected || 0;
       
-      // If metadata shows 0, ALWAYS verify with database query (metadata might be stale or not updated yet)
-      // This ensures we never return 0 when there are actually claims detected
-      // Check for completed/failed status OR if progress is >= 80% (detection phase)
-      if (claimsDetected === 0 && (
-        normalizedStatus === 'completed' || 
-        normalizedStatus === 'failed' || 
-        (data.progress && data.progress >= 80)
-      )) {
-        logger.info('🔍 [SYNC JOB MANAGER] Metadata shows 0 claims, checking database for accuracy', {
+      // For completed/failed syncs, ALWAYS use database query (source of truth)
+      // For running syncs with progress >= 80%, check database if metadata shows 0
+      if (normalizedStatus === 'completed' || normalizedStatus === 'failed') {
+        // Always query database for completed syncs - don't trust metadata
+        logger.info('🔍 [SYNC JOB MANAGER] Querying database for claimsDetected (completed sync)', {
           userId: data.user_id,
           syncId: data.sync_id,
           status: normalizedStatus,
@@ -582,16 +578,17 @@ class SyncJobManager {
         });
         
         const syncResults = await this.getSyncResults(data.user_id, data.sync_id);
-        if (syncResults.claimsDetected > 0) {
-          claimsDetected = syncResults.claimsDetected;
-          logger.info('✅ [SYNC JOB MANAGER] Found claims in database, updating metadata', {
-            userId: data.user_id,
-            syncId: data.sync_id,
-            databaseCount: syncResults.claimsDetected,
-            previousMetadataCount: metadata.claimsDetected
-          });
-          
-          // Update metadata for future requests (async, don't wait)
+        claimsDetected = syncResults.claimsDetected;
+        
+        logger.info('✅ [SYNC JOB MANAGER] Got claimsDetected from database', {
+          userId: data.user_id,
+          syncId: data.sync_id,
+          databaseCount: syncResults.claimsDetected,
+          previousMetadataCount: metadata.claimsDetected
+        });
+        
+        // Update metadata for future requests if it was wrong (async, don't wait)
+        if (metadata.claimsDetected !== claimsDetected) {
           supabase.from('sync_progress')
             .update({ 
               metadata: { ...metadata, claimsDetected },
@@ -609,10 +606,23 @@ class SyncJobManager {
             .catch((err) => {
               logger.warn('Failed to update stale metadata', { error: err });
             });
-        } else {
-          logger.info('ℹ️ [SYNC JOB MANAGER] Database also shows 0 claims, metadata is accurate', {
+        }
+      } else if (claimsDetected === 0 && (data.progress && data.progress >= 80)) {
+        // For running syncs in detection phase, check database if metadata shows 0
+        logger.info('🔍 [SYNC JOB MANAGER] Metadata shows 0 claims during detection phase, checking database', {
+          userId: data.user_id,
+          syncId: data.sync_id,
+          progress: data.progress,
+          metadataClaimsDetected: metadata.claimsDetected
+        });
+        
+        const syncResults = await this.getSyncResults(data.user_id, data.sync_id);
+        if (syncResults.claimsDetected > 0) {
+          claimsDetected = syncResults.claimsDetected;
+          logger.info('✅ [SYNC JOB MANAGER] Found claims in database during detection phase', {
             userId: data.user_id,
-            syncId: data.sync_id
+            syncId: data.sync_id,
+            databaseCount: syncResults.claimsDetected
           });
         }
       }
