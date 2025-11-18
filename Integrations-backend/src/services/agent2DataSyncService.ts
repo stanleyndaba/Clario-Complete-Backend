@@ -779,6 +779,13 @@ export class Agent2DataSyncService {
 
     if (claimsToDetect.length === 0) {
       logger.info('ℹ️ [AGENT 2] No claims to detect', { userId, syncId, storageSyncId });
+      console.log('[AGENT 2] No claims to detect - skipping Discovery Agent call');
+      console.log('[AGENT 2] Normalized data summary:', {
+        ordersCount: validatedData.orders?.length || 0,
+        shipmentsCount: validatedData.shipments?.length || 0,
+        returnsCount: validatedData.returns?.length || 0,
+        settlementsCount: validatedData.settlements?.length || 0
+      });
       await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, true);
       return { totalDetected: 0 };
     }
@@ -791,6 +798,13 @@ export class Agent2DataSyncService {
       claimCount: claimsToDetect.length,
       apiUrl: `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`
     });
+    
+    // Console log for Render visibility
+    console.log('[AGENT 2] Calling Discovery Agent API');
+    console.log('[AGENT 2] Python API URL:', this.pythonApiUrl);
+    console.log('[AGENT 2] Claims to detect:', claimsToDetect.length);
+    console.log('[AGENT 2] Sync ID:', syncId);
+    console.log('[AGENT 2] User ID:', userId);
 
     let predictions: any[];
     try {
@@ -804,17 +818,43 @@ export class Agent2DataSyncService {
       );
 
       predictions = response.data?.predictions || [];
+      console.log('[AGENT 2] Discovery Agent API response received');
+      console.log('[AGENT 2] Predictions count:', predictions.length);
+      console.log('[AGENT 2] Response status:', response.status);
+      
       if (!Array.isArray(predictions)) {
+        console.error('[AGENT 2] Invalid response format:', typeof predictions, response.data);
         throw new Error(`Discovery Agent returned invalid format: expected array, got ${typeof predictions}`);
       }
     } catch (apiError: any) {
-      logger.error('❌ [AGENT 2] Discovery Agent API failed', {
+      // Enhanced error logging with full details
+      const errorDetails = {
         error: apiError.message,
+        errorCode: apiError.code,
         status: apiError.response?.status,
+        statusText: apiError.response?.statusText,
+        responseData: apiError.response?.data,
+        url: `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
         userId,
         syncId,
-        storageSyncId
-      });
+        storageSyncId,
+        claimCount: claimsToDetect.length,
+        timeout: apiError.code === 'ECONNABORTED' || apiError.code === 'ETIMEDOUT',
+        connectionError: apiError.code === 'ECONNREFUSED' || apiError.code === 'ENOTFOUND',
+        stack: apiError.stack
+      };
+
+      // Log to structured logger
+      logger.error('❌ [AGENT 2] Discovery Agent API failed', errorDetails);
+      
+      // Also log to console for Render logs visibility
+      console.error('[AGENT 2] Discovery Agent API FAILED:', JSON.stringify(errorDetails, null, 2));
+      console.error('[AGENT 2] Error message:', apiError.message);
+      console.error('[AGENT 2] Error code:', apiError.code);
+      console.error('[AGENT 2] HTTP status:', apiError.response?.status);
+      console.error('[AGENT 2] Python API URL:', this.pythonApiUrl);
+      console.error('[AGENT 2] Claims sent:', claimsToDetect.length);
+
       await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, false);
       throw new Error(`Discovery Agent API failed: ${apiError.message}`);
     }
