@@ -775,7 +775,20 @@ export class Agent2DataSyncService {
     const validatedData = this.validateAndNormalizeInputContract(normalizedData, userId, syncId);
 
     // Step 2: Transform normalized data into Discovery Agent claim format
-    const claimsToDetect = this.prepareClaimsFromNormalizedData(validatedData, userId);
+    let claimsToDetect = this.prepareClaimsFromNormalizedData(validatedData, userId);
+    
+    // TEMPORARY: Limit batch size to debug 502 errors (Python API might be crashing on large batches)
+    // TODO: Remove this limit once Python API can handle large batches
+    const MAX_CLAIMS_PER_BATCH = 50;
+    if (claimsToDetect.length > MAX_CLAIMS_PER_BATCH) {
+      logger.warn('⚠️ [AGENT 2] Limiting claims batch size for Python API', {
+        originalCount: claimsToDetect.length,
+        limitedCount: MAX_CLAIMS_PER_BATCH,
+        userId,
+        syncId
+      });
+      claimsToDetect = claimsToDetect.slice(0, MAX_CLAIMS_PER_BATCH);
+    }
 
     if (claimsToDetect.length === 0) {
       logger.info('ℹ️ [AGENT 2] No claims to detect', { userId, syncId, storageSyncId });
