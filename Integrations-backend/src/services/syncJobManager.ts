@@ -186,7 +186,7 @@ class SyncJobManager {
 
       // Run Agent 2 Data Sync Service (comprehensive data sync with normalization)
       logger.info('🔄 [SYNC JOB MANAGER] Starting Agent 2 data sync', { userId, syncId });
-      syncResult = await agent2DataSyncService.syncUserData(userId);
+      syncResult = await agent2DataSyncService.syncUserData(userId, undefined, undefined, syncId);
       
       // Check if Agent 2 sync failed
       if (!syncResult.success) {

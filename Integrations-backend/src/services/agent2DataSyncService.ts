@@ -60,7 +60,7 @@ export class Agent2DataSyncService {
   private shipmentsService: ShipmentsService;
   private returnsService: ReturnsService;
   private settlementsService: SettlementsService;
-  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-4-aukq.onrender.com';
+  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-5.onrender.com';
 
   constructor() {
     this.ordersService = new OrdersService();
@@ -75,9 +75,11 @@ export class Agent2DataSyncService {
   async syncUserData(
     userId: string,
     startDate?: Date,
-    endDate?: Date
+    endDate?: Date,
+    parentSyncId?: string
   ): Promise<SyncResult> {
     const syncId = `agent2_sync_${userId}_${Date.now()}`;
+    const detectionSyncId = parentSyncId || syncId;
     const startTime = Date.now();
     const errors: string[] = [];
 
@@ -283,7 +285,13 @@ export class Agent2DataSyncService {
           logger.info('🔍 [AGENT 2] Calling Discovery Agent (Python ML)', { userId, syncId });
           
           const detectionId = `detection_${userId}_${Date.now()}`;
-          const detectionResult = await this.callDiscoveryAgent(userId, syncId, detectionId, result.normalized);
+          const detectionResult = await this.callDiscoveryAgent(
+            userId,
+            syncId,
+            detectionId,
+            result.normalized,
+            detectionSyncId
+          );
           
           logger.info('✅ [AGENT 2] Discovery Agent completed', {
             userId,
@@ -758,8 +766,11 @@ export class Agent2DataSyncService {
       settlements?: any[];
       inventory?: any[];
       claims?: any[];
-    }
+    },
+    parentSyncId?: string
   ): Promise<{ totalDetected: number }> {
+    const storageSyncId = parentSyncId || syncId;
+
     // Step 1: Validate and normalize input contract
     const validatedData = this.validateAndNormalizeInputContract(normalizedData, userId, syncId);
 
@@ -767,8 +778,8 @@ export class Agent2DataSyncService {
     const claimsToDetect = this.prepareClaimsFromNormalizedData(validatedData, userId);
 
     if (claimsToDetect.length === 0) {
-      logger.info('ℹ️ [AGENT 2] No claims to detect', { userId, syncId });
-      await this.signalDetectionCompletion(userId, syncId, detectionId, { totalDetected: 0 }, true);
+      logger.info('ℹ️ [AGENT 2] No claims to detect', { userId, syncId, storageSyncId });
+      await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, true);
       return { totalDetected: 0 };
     }
 
@@ -776,6 +787,7 @@ export class Agent2DataSyncService {
     logger.info('🎯 [AGENT 2] Calling Discovery Agent API', {
       userId,
       syncId,
+      storageSyncId,
       claimCount: claimsToDetect.length,
       apiUrl: `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`
     });
@@ -800,9 +812,10 @@ export class Agent2DataSyncService {
         error: apiError.message,
         status: apiError.response?.status,
         userId,
-        syncId
+        syncId,
+        storageSyncId
       });
-      await this.signalDetectionCompletion(userId, syncId, detectionId, { totalDetected: 0 }, false);
+      await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, false);
       throw new Error(`Discovery Agent API failed: ${apiError.message}`);
     }
 
@@ -829,11 +842,17 @@ export class Agent2DataSyncService {
 
     // Step 5: Store detection results
     if (detectionResults.length > 0) {
-      await this.storeDetectionResults(detectionResults, userId, syncId);
+      await this.storeDetectionResults(detectionResults, userId, storageSyncId);
     }
 
     // Step 6: Signal completion
-    await this.signalDetectionCompletion(userId, syncId, detectionId, { totalDetected: detectionResults.length }, true);
+    await this.signalDetectionCompletion(
+      userId,
+      storageSyncId,
+      detectionId,
+      { totalDetected: detectionResults.length },
+      true
+    );
 
     return { totalDetected: detectionResults.length };
   }
