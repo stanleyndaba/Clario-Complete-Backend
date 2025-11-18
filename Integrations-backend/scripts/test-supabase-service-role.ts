@@ -25,7 +25,7 @@ async function assertAdminClient() {
 
 async function upsertSyncProgress(syncId: string) {
   const now = new Date().toISOString();
-  const { error } = await supabaseAdmin
+  const { error, status, statusText } = await supabaseAdmin
     .from('sync_progress')
     .upsert(
       {
@@ -47,7 +47,10 @@ async function upsertSyncProgress(syncId: string) {
     );
 
   if (error) {
-    throw new Error(`Failed to upsert sync_progress (service role might be missing write perms): ${error.message}`);
+    console.error('   ❌ sync_progress upsert error:', JSON.stringify(error, null, 2), { status, statusText });
+    throw new Error(
+      `Failed to upsert sync_progress (service role might be missing write perms): ${error.message || JSON.stringify(error)}`
+    );
   }
 }
 
@@ -82,7 +85,10 @@ async function insertDetectionResult(syncId: string) {
     .select('id');
 
   if (error) {
-    throw new Error(`Failed to insert into detection_results (service role may lack insert privileges): ${error.message}`);
+    console.error('   ❌ detection_results insert error:', error);
+    throw new Error(
+      `Failed to insert into detection_results (service role may lack insert privileges): ${error.message || JSON.stringify(error)}`
+    );
   }
 
   return data?.[0]?.id as string | undefined;
@@ -95,7 +101,10 @@ async function verifyDetectionPersisted(syncId: string) {
     .eq('sync_id', syncId);
 
   if (error) {
-    throw new Error(`Failed to read detection_results (service role may lack read privileges): ${error.message}`);
+    console.error('   ❌ detection_results read error:', error);
+    throw new Error(
+      `Failed to read detection_results (service role may lack read privileges): ${error.message || JSON.stringify(error)}`
+    );
   }
 
   if (!data || data.length === 0) {
