@@ -562,6 +562,9 @@ class SyncJobManager {
         }
       }
       
+      // Get actual claims count from database (metadata may be stale)
+      const syncResults = await this.getSyncResults(data.user_id, data.sync_id);
+      
       return {
         syncId: data.sync_id,
         userId: data.user_id,
@@ -577,7 +580,7 @@ class SyncJobManager {
         returnsCount: metadata.returnsCount || 0,
         settlementsCount: metadata.settlementsCount || 0,
         feesCount: metadata.feesCount || 0,
-        claimsDetected: metadata.claimsDetected || 0,
+        claimsDetected: syncResults.claimsDetected, // Use actual database count, not metadata
         error: metadata.error
       };
     } catch (error) {
