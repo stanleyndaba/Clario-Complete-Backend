@@ -106,6 +106,7 @@ app.use(cors({
       'https://opside-complete-frontend-4poy2f2lh-mvelo-ndabas-projects.vercel.app',
       'https://opside-complete-frontend-kqvxrzg4s-mvelo-ndabas-projects.vercel.app',
       'https://opside-complete-frontend-nwcors9h1-mvelo-ndabas-projects.vercel.app',
+      'https://opside-complete-frontend-6t3yn3p2y-mvelo-ndabas-projects.vercel.app', // New frontend deployment
       'https://clario-refunds-frontend.onrender.com',
       'https://opside-complete-frontend.onrender.com',
       'http://localhost:8080',
@@ -116,14 +117,14 @@ app.use(cors({
     // Allow all Vercel preview deployments and onrender.com domains (pattern matching)
     // This handles changing frontend domains automatically
     // Check for vercel.app, onrender.com, or vercel.com domains
-    const isVercelApp = origin.includes('vercel.app');
+    const isVercelApp = origin.includes('vercel.app') || origin.includes('vercel.com');
     const isOnRender = origin.includes('onrender.com');
-    const isVercelCom = origin.includes('vercel.com');
     
-    if (isVercelApp || isOnRender || isVercelCom) {
+    if (isVercelApp || isOnRender) {
       logger.info('CORS: Allowing dynamic domain', { 
         origin, 
-        type: isVercelApp ? 'vercel.app' : isOnRender ? 'onrender.com' : 'vercel.com' 
+        type: isVercelApp ? 'vercel' : 'onrender',
+        matched: true
       });
       return callback(null, true);
     }
@@ -258,7 +259,7 @@ app.use('/api/v1/inventory-sync', consolidatedInventorySyncRoutes);
 
 // Proxy routes to Python backend (recoveries, documents, metrics)
 // IMPORTANT: These must be registered after all other routes to avoid conflicts
-// These proxy requests to python-api-4-aukq.onrender.com
+// These proxy requests to python-api-5.onrender.com
 app.use('/', proxyRoutes);
 
 // Error handling middleware

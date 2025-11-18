@@ -187,27 +187,65 @@ router.use('/auth/callback', validateRedirectMiddleware({
   validateState: true, // Validate state on callback
 }));
 
+// Helper function to validate CORS origin
+function isValidOrigin(origin: string | undefined): boolean {
+  if (!origin) return false;
+  
+  // Allow all Vercel and Render domains
+  const isVercelApp = origin.includes('vercel.app') || origin.includes('vercel.com');
+  const isOnRender = origin.includes('onrender.com');
+  
+  if (isVercelApp || isOnRender) return true;
+  
+  // Check exact matches
+  const allowedOrigins = [
+    'https://opside-complete-frontend-4poy2f2lh-mvelo-ndabas-projects.vercel.app',
+    'https://opside-complete-frontend-kqvxrzg4s-mvelo-ndabas-projects.vercel.app',
+    'https://opside-complete-frontend-nwcors9h1-mvelo-ndabas-projects.vercel.app',
+    'https://opside-complete-frontend-6t3yn3p2y-mvelo-ndabas-projects.vercel.app',
+    'https://clario-refunds-frontend.onrender.com',
+    'https://opside-complete-frontend.onrender.com',
+    'http://localhost:8080',
+    'http://localhost:5173',
+    'http://localhost:3000'
+  ];
+  
+  return allowedOrigins.includes(origin);
+}
+
 // CORS preflight handler for auth endpoints
 router.options('/auth', (req, res) => {
   const origin = req.headers.origin;
   logger.debug('CORS preflight for /auth', { origin });
-  res.header('Access-Control-Allow-Origin', origin || '*');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Frontend-URL, Origin, Referer');
-  res.header('Access-Control-Max-Age', '86400');
-  res.status(204).send();
+  
+  if (origin && isValidOrigin(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Frontend-URL, Origin, Referer');
+    res.header('Access-Control-Max-Age', '86400');
+    res.status(204).send();
+  } else {
+    logger.warn('CORS preflight rejected for /auth', { origin });
+    res.status(403).json({ error: 'CORS: Origin not allowed' });
+  }
 });
 
 router.options('/auth/start', (req, res) => {
   const origin = req.headers.origin;
   logger.debug('CORS preflight for /auth/start', { origin });
-  res.header('Access-Control-Allow-Origin', origin || '*');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Frontend-URL, Origin, Referer');
-  res.header('Access-Control-Max-Age', '86400');
-  res.status(204).send();
+  
+  if (origin && isValidOrigin(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Frontend-URL, Origin, Referer');
+    res.header('Access-Control-Max-Age', '86400');
+    res.status(204).send();
+  } else {
+    logger.warn('CORS preflight rejected for /auth/start', { origin });
+    res.status(403).json({ error: 'CORS: Origin not allowed' });
+  }
 });
 
 // OAuth routes (with security middleware applied above)
@@ -224,12 +262,18 @@ router.options('/sandbox/callback', (req, res) => {
   // Handle CORS preflight for sandbox callback
   const origin = req.headers.origin;
   logger.debug('CORS preflight for /sandbox/callback', { origin });
-  res.header('Access-Control-Allow-Origin', origin || '*');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Frontend-URL, Origin, Referer');
-  res.header('Access-Control-Max-Age', '86400');
-  res.status(204).send();
+  
+  if (origin && isValidOrigin(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Frontend-URL, Origin, Referer');
+    res.header('Access-Control-Max-Age', '86400');
+    res.status(204).send();
+  } else {
+    logger.warn('CORS preflight rejected for /sandbox/callback', { origin });
+    res.status(403).json({ error: 'CORS: Origin not allowed' });
+  }
 });
 router.post('/sync', wrap(syncAmazonData));
 router.get('/inventory', wrap(getAmazonInventory));
