@@ -427,7 +427,16 @@ class SyncJobManager {
         syncStatus.settlementsCount = 0;
         syncStatus.feesCount = 0;
       }
+      
+      // Always use database count for claimsDetected (most accurate)
       syncStatus.claimsDetected = syncResults.claimsDetected || 0;
+      logger.info('💾 [SYNC JOB MANAGER] Setting claimsDetected before final save', {
+        userId,
+        syncId,
+        claimsDetected: syncStatus.claimsDetected,
+        fromSyncResults: syncResults.claimsDetected
+      });
+      
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
 
@@ -913,6 +922,29 @@ class SyncJobManager {
       // Normalize status to database format (status is already in correct format)
       const dbStatus: string = syncStatus.status;
 
+      const metadataToSave = {
+        ordersProcessed: syncStatus.ordersProcessed || 0,
+        totalOrders: syncStatus.totalOrders || 0,
+        inventoryCount: syncStatus.inventoryCount || 0,
+        shipmentsCount: syncStatus.shipmentsCount || 0,
+        returnsCount: syncStatus.returnsCount || 0,
+        settlementsCount: syncStatus.settlementsCount || 0,
+        feesCount: syncStatus.feesCount || 0,
+        claimsDetected: syncStatus.claimsDetected || 0,
+        error: syncStatus.error,
+        startedAt: syncStatus.startedAt,
+        completedAt: syncStatus.completedAt
+      };
+
+      logger.info('💾 [SYNC JOB MANAGER] Saving sync to database', {
+        userId: syncStatus.userId,
+        syncId: syncStatus.syncId,
+        status: dbStatus,
+        progress: syncStatus.progress,
+        claimsDetected: metadataToSave.claimsDetected,
+        syncStatusClaimsDetected: syncStatus.claimsDetected
+      });
+
       const { error } = await supabase
         .from('sync_progress')
         .upsert({
@@ -923,19 +955,7 @@ class SyncJobManager {
           current_step: syncStatus.message,
           status: dbStatus,
           progress: syncStatus.progress,
-          metadata: {
-            ordersProcessed: syncStatus.ordersProcessed || 0,
-            totalOrders: syncStatus.totalOrders || 0,
-            inventoryCount: syncStatus.inventoryCount || 0,
-            shipmentsCount: syncStatus.shipmentsCount || 0,
-            returnsCount: syncStatus.returnsCount || 0,
-            settlementsCount: syncStatus.settlementsCount || 0,
-            feesCount: syncStatus.feesCount || 0,
-            claimsDetected: syncStatus.claimsDetected || 0,
-            error: syncStatus.error,
-            startedAt: syncStatus.startedAt,
-            completedAt: syncStatus.completedAt
-          },
+          metadata: metadataToSave,
           updated_at: new Date().toISOString()
         }, {
           onConflict: 'sync_id'
@@ -943,6 +963,12 @@ class SyncJobManager {
 
       if (error) {
         logger.error(`Error saving sync to database:`, error);
+      } else {
+        logger.info('✅ [SYNC JOB MANAGER] Successfully saved sync to database', {
+          userId: syncStatus.userId,
+          syncId: syncStatus.syncId,
+          claimsDetected: metadataToSave.claimsDetected
+        });
       }
     } catch (error) {
       logger.error(`Error in saveSyncToDatabase:`, error);
@@ -1028,10 +1054,21 @@ class SyncJobManager {
           .eq('sync_id', syncId)
       ]);
 
+      // Always use actual database count for claimsDetected (metadata may be stale)
+      const actualClaimsDetected = (claimsCount.count ?? 0) as number;
+      
+      logger.info('🔍 [SYNC JOB MANAGER] getSyncResults query results', {
+        userId,
+        syncId,
+        metadataClaimsDetected: metadata.claimsDetected,
+        databaseClaimsCount: actualClaimsDetected,
+        usingDatabaseCount: actualClaimsDetected > 0
+      });
+      
       return {
         ordersProcessed: metadata.ordersProcessed || ordersCount.count || 0,
         totalOrders: metadata.totalOrders || ordersCount.count || 0,
-        claimsDetected: metadata.claimsDetected || claimsCount.count || 0
+        claimsDetected: actualClaimsDetected
       };
     } catch (error) {
       logger.error(`Error getting sync results for ${syncId}:`, error);
