@@ -938,7 +938,7 @@ class SyncJobManager {
           },
           updated_at: new Date().toISOString()
         }, {
-          onConflict: 'user_id,sync_id'
+          onConflict: 'sync_id'
         });
 
       if (error) {
