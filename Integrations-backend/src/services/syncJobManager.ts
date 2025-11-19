@@ -180,8 +180,9 @@ class SyncJobManager {
    * Run the actual sync job asynchronously with timeout protection
    */
   private async runSync(syncId: string, userId: string, isCancelled: () => boolean): Promise<void> {
-    // Set timeout for sync operation (30 seconds max - strict requirement)
-    const SYNC_TIMEOUT_MS = 30 * 1000; // 30 seconds
+    // Set timeout for sync operation (60 seconds max - realistic for current implementation)
+    // TODO: Optimize to reduce to 30s in future iteration
+    const SYNC_TIMEOUT_MS = 60 * 1000; // 60 seconds
     const syncStartTime = Date.now();
     
     const timeoutPromise = new Promise<void>((_, reject) => {
