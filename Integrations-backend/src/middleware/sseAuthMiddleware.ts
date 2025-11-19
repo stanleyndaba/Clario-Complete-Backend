@@ -77,17 +77,25 @@ export const authenticateSSE = (
       });
       
       // Set demo user for unauthenticated connections
+      // IMPORTANT: This userId must match the userId used in sync operations
       req.user = {
         id: 'demo-user',
         email: 'demo@example.com'
       };
       
+      logger.info('🔍 [SSE AUTH] Using demo-user for unauthenticated connection', {
+        url: (req as any).url,
+        note: 'Sync operations must also use "demo-user" for SSE events to work'
+      });
+      
       // Send demo mode event
       res.write(`event: connected\ndata: ${JSON.stringify({
         status: 'ok',
         mode: 'demo',
+        user_id: 'demo-user',
         message: 'Connected in demo mode (no authentication)',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        warning: 'Sync operations must use userId="demo-user" for SSE events to be received'
       })}\n\n`);
       
       // Continue to next middleware (don't close connection)
@@ -124,10 +132,12 @@ export const authenticateSSE = (
         role: decoded.role
       };
       
-      logger.info('SSE authentication successful', {
+      logger.info('✅ [SSE AUTH] SSE authentication successful', {
         user_id: userId,
+        email: email,
         url: (req as any).url,
-        ip: (req as any).ip
+        ip: (req as any).ip,
+        note: 'Sync operations must use the same userId for SSE events to work'
       });
 
       // Send authentication success event

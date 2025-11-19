@@ -55,20 +55,29 @@ router.get('/status', (req: AuthenticatedSSERequest, res) => {
     return;
   }
 
-  logger.info('SSE status connection established', {
+  logger.info('✅ [SSE ROUTES] SSE status connection established', {
     user_id: userId,
-    url: (req as any).url
+    url: (req as any).url,
+    connectedUsers: sseHub.getConnectedUsers(),
+    totalConnections: sseHub.getConnectionCount(userId)
   });
 
   // Send initial connection event
   sendSSEEvent(res, 'connected', {
     status: 'ok',
     timestamp: new Date().toISOString(),
-    user_id: userId
+    user_id: userId,
+    message: 'SSE connection established successfully'
   });
 
   // Register connection in hub so events can be sent to this user
   sseHub.addConnection(userId, res);
+  
+  logger.info('✅ [SSE ROUTES] Connection registered in SSE hub', {
+    user_id: userId,
+    connectionCount: sseHub.getConnectionCount(userId),
+    allConnectedUsers: sseHub.getConnectedUsers()
+  });
 
   // Set up heartbeat interval to keep connection alive
   const heartbeatInterval = setInterval(() => {
@@ -256,6 +265,44 @@ router.get('/financial-events', (req: AuthenticatedSSERequest, res) => {
     });
     clearInterval(heartbeatInterval);
     if (userId) sseHub.removeConnection(userId, res);
+  });
+});
+
+/**
+ * @route GET /api/sse/connection-status
+ * @desc Check SSE connection status for debugging
+ * @access Private (JWT required)
+ */
+router.get('/connection-status', (req: AuthenticatedSSERequest, res) => {
+  const userId = req.user?.id;
+  
+  if (!userId) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized'
+    });
+  }
+
+  const hasConnection = sseHub.hasConnection(userId);
+  const connectionCount = sseHub.getConnectionCount(userId);
+  const allConnectedUsers = sseHub.getConnectedUsers();
+
+  logger.info('🔍 [SSE ROUTES] Connection status check', {
+    user_id: userId,
+    hasConnection,
+    connectionCount,
+    allConnectedUsers
+  });
+
+  res.json({
+    success: true,
+    user_id: userId,
+    hasConnection,
+    connectionCount,
+    allConnectedUsers,
+    message: hasConnection 
+      ? `User ${userId} has ${connectionCount} active SSE connection(s)`
+      : `User ${userId} has no active SSE connections. Make sure to connect to /api/sse/status first.`
   });
 });
 

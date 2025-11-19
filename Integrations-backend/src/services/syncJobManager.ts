@@ -299,60 +299,45 @@ class SyncJobManager {
         return;
       }
 
-      // Update progress: 80% - Discovery Agent is called by Agent 2, we just check quickly
+      // Update progress: 80% - Skip detection wait entirely, proceed to completion
+      // CRITICAL OPTIMIZATION: Detection runs async in Agent 2, we don't wait for it
+      // This ensures sync completes within 30 seconds
       syncStatus.progress = 80;
-      syncStatus.message = 'Checking claim detection status...';
+      syncStatus.message = 'Finalizing sync (detection running in background)...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
 
-      // OPTIMIZATION: Don't wait long for detection - Agent 2 calls it directly
-      // We do a quick check (max 3 seconds) and then proceed to completion
-      // Detection can continue in background, we'll get results on next sync
-      let detectionCompleted = false;
-      let detectionAttempts = 0;
-      const maxDetectionWaitTime = 3000; // Only wait 3 seconds - detection should be fast or can continue async
-      const detectionPollInterval = 500; // Poll every 500ms
-      const maxDetectionAttempts = Math.floor(maxDetectionWaitTime / detectionPollInterval);
+      // Do a single quick check for detection results (non-blocking)
+      // If results exist, use them; if not, detection continues in background
+      try {
+        const { count: detectionResultsCount } = await supabase
+          .from('detection_results')
+          .select('id', { count: 'exact', head: true })
+          .eq('seller_id', userId)
+          .eq('sync_id', syncId)
+          .limit(1);
 
-      // Quick check for detection results (non-blocking after 3s)
-      while (!detectionCompleted && detectionAttempts < maxDetectionAttempts) {
-        await new Promise(resolve => setTimeout(resolve, detectionPollInterval));
-        detectionAttempts++;
-
-        // Quick check for detection results (most reliable indicator)
-        try {
-          const { count: detectionResultsCount } = await supabase
-            .from('detection_results')
-            .select('id', { count: 'exact', head: true })
-            .eq('seller_id', userId)
-            .eq('sync_id', syncId);
-
-          if (detectionResultsCount && detectionResultsCount > 0) {
-            detectionCompleted = true;
-            syncStatus.claimsDetected = detectionResultsCount;
-            logger.info('✅ [SYNC JOB MANAGER] Detection results found quickly', { 
-              userId, 
-              syncId, 
-              resultsCount: detectionResultsCount,
-              detectionAttempts 
-            });
-            this.updateSyncStatus(syncStatus);
-            break; // Exit immediately when found
-          }
-        } catch (error: any) {
-          // Ignore errors, just continue
+        if (detectionResultsCount && detectionResultsCount > 0) {
+          syncStatus.claimsDetected = detectionResultsCount;
+          logger.info('✅ [SYNC JOB MANAGER] Detection results found', { 
+            userId, 
+            syncId, 
+            resultsCount: detectionResultsCount
+          });
+          this.updateSyncStatus(syncStatus);
+        } else {
+          logger.info('ℹ️ [SYNC JOB MANAGER] Detection still processing in background', {
+            userId,
+            syncId,
+            note: 'Sync completing immediately - detection continues async, results available on next sync'
+          });
         }
+      } catch (error: any) {
+        logger.debug('Detection check error (non-critical)', { error: error.message, userId, syncId });
+        // Ignore errors - proceed to completion
       }
 
-      // If detection didn't complete quickly, that's OK - it can continue in background
-      if (!detectionCompleted) {
-        logger.info('ℹ️ [SYNC JOB MANAGER] Detection still processing (will continue in background)', {
-          userId,
-          syncId,
-          note: 'Sync completing - detection can finish async, results available on next sync'
-        });
-        // Don't wait - proceed to completion immediately
-      }
+      // Immediately proceed to completion - don't wait for detection
 
       // Update progress: 95% - Finalizing
       syncStatus.progress = 95;
