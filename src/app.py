@@ -16,7 +16,7 @@ except Exception:
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse, Response
 from fastapi.exceptions import RequestValidationError
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -376,136 +376,129 @@ def cors_debug():
 # ------------------------------------------------------------
 
 # Amazon SP-API Aliases
+def _build_sandbox_session_token(user_data: dict) -> str:
+    """Generate a sandbox session token with multiple fallbacks."""
+    import secrets
+    from datetime import datetime, timedelta
+    try:
+        import jwt  # Prefer PyJWT if available
+    except Exception as e:  # pragma: no cover - fallback path
+        logger.warning(f"PyJWT unavailable, using random sandbox token: {e}")
+        return secrets.token_urlsafe(32)
+    
+    now = datetime.utcnow()
+    exp = now + timedelta(days=7)
+    payload = {
+        "user_id": user_data.get("user_id", "sandbox-user"),
+        "email": user_data.get("email", "sandbox@example.com"),
+        "name": user_data.get("name", "Sandbox User"),
+        "amazon_seller_id": user_data.get("amazon_seller_id", "SANDBOX"),
+        "exp": int(exp.timestamp()),
+        "iat": int(now.timestamp()),
+        "sandbox": True,
+    }
+    
+    try:
+        return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"JWT encode failed, using random sandbox token: {e}")
+        return secrets.token_urlsafe(32)
+
+
+def _persist_sandbox_user(user_data: dict) -> None:
+    """Best-effort sandbox user persistence that never raises."""
+    try:
+        from .common import db as db_module
+    except Exception as import_err:  # pragma: no cover
+        logger.debug(f"DB module unavailable in sandbox callback: {import_err}")
+        return
+    
+    db_client = getattr(db_module, "db", None)
+    if not db_client:
+        return
+    
+    try:
+        db_client.upsert_user_profile(
+            seller_id=user_data.get("amazon_seller_id", "SANDBOX"),
+            company_name=user_data.get("name", "Sandbox Company"),
+            marketplaces=["ATVPDKIKX0DER"],
+        )
+    except Exception as db_err:
+        logger.debug(f"Sandbox DB upsert skipped: {db_err}")
+
+
+def _apply_sandbox_cors(response: JSONResponse | RedirectResponse | Response, origin: str) -> None:
+    """Apply strict CORS headers to sandbox responses."""
+    if origin in all_allowed_origins or any(o in origin for o in ["vercel.app", "onrender.com"]):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+
+
 @app.options("/api/v1/integrations/amazon/sandbox/callback")
 @app.get("/api/v1/integrations/amazon/sandbox/callback")
 @app.post("/api/v1/integrations/amazon/sandbox/callback")
 async def amazon_sandbox_callback(request: Request):
-    """Handle sandbox Amazon OAuth callback with CORS headers - accepts POST with JSON body"""
+    """Handle sandbox Amazon OAuth callback with resilient fallbacks."""
     from fastapi.responses import JSONResponse, Response
     from .api.auth_sandbox import MOCK_USERS
-    from .common import db as db_module
-    import jwt
-    from datetime import datetime, timedelta
-    
-    # Handle OPTIONS preflight request
-    if request.method == "OPTIONS":
-        origin = request.headers.get("Origin", "*")
-        if origin in all_allowed_origins or any(o in origin for o in ["vercel.app", "onrender.com"]):
-            response = Response(status_code=204)
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With"
-            response.headers["Access-Control-Max-Age"] = "3600"
-            return response
-    
-    # Handle POST request with JSON body
-    if request.method == "POST":
-        try:
-            body = await request.json()
-            state = body.get("state", "")
-            
-            # Create or retrieve sandbox user
-            user_data = MOCK_USERS["sandbox-user"]
-            user_id = user_data["user_id"]
-            
-            # Ensure sandbox user exists in database
-            try:
-                db_module.db.upsert_user_profile(
-                    seller_id=user_data["amazon_seller_id"],
-                    company_name=user_data.get("name", "Sandbox Company"),
-                    marketplaces=["ATVPDKIKX0DER"]  # US marketplace
-                )
-            except Exception as e:
-                logger.warning(f"Database upsert failed (sandbox mode): {e}")
-                # Continue even if database fails - sandbox mode is forgiving
-            
-            # Generate JWT token with proper payload
-            now = datetime.utcnow()
-            payload = {
-                "user_id": user_id,
-                "email": user_data.get("email", "sandbox@example.com"),
-                "name": user_data.get("name", "Sandbox User"),
-                "amazon_seller_id": user_data.get("amazon_seller_id", "SANDBOX"),
-                "exp": int((now + timedelta(days=7)).timestamp()),
-                "iat": int(now.timestamp())
-            }
-            session_token = jwt.encode(payload, settings.JWT_SECRET, algorithm="HS256")
-            
-            # Create response
-            origin = request.headers.get("Origin", "*")
-            response = JSONResponse(
-                content={
-                    "ok": True,
-                    "connected": True
-                }
-            )
-            
-            # Set session cookie with correct configuration
-            response.set_cookie(
-                key="session_token",
-                value=session_token,
-                httponly=True,
-                secure=settings.ENV == "production",  # Secure only in production
-                samesite="none",
-                max_age=604800,  # 7 days
-                path="/"
-            )
-            
-            # Set CORS headers explicitly
-            if origin in all_allowed_origins or any(o in origin for o in ["vercel.app", "onrender.com"]):
-                response.headers["Access-Control-Allow-Origin"] = origin
-                response.headers["Access-Control-Allow-Credentials"] = "true"
-            
-            logger.info(f"Sandbox session established for user {user_id}")
-            return response
-            
-        except Exception as e:
-            logger.error(f"Sandbox callback error: {e}")
-            origin = request.headers.get("Origin", "*")
-            error_response = JSONResponse(
-                status_code=400,
-                content={"ok": False, "error": "Invalid request", "message": str(e)}
-            )
-            if origin in all_allowed_origins or any(o in origin for o in ["vercel.app", "onrender.com"]):
-                error_response.headers["Access-Control-Allow-Origin"] = origin
-                error_response.headers["Access-Control-Allow-Credentials"] = "true"
-            return error_response
-    
-    # Handle GET request (backward compatibility)
-    # Create proper session token for sandbox user
-    user_data = MOCK_USERS["sandbox-user"]
-    session_token = jwt.encode(
-        {"user_id": user_data["user_id"], "exp": datetime.utcnow() + timedelta(days=7)}, 
-        settings.JWT_SECRET, 
-        algorithm="HS256"
-    )
     
     origin = request.headers.get("Origin", "*")
-    response = JSONResponse(
-        content={
-            "user": user_data,
-            "access_token": session_token,
-            "message": "Sandbox login successful"
-        }
-    )
     
-    # Set session cookie
-    response.set_cookie(
-        key="session_token",
-        value=session_token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        max_age=7*24*3600,
-    )
+    # Handle OPTIONS preflight request immediately
+    if request.method == "OPTIONS":
+        response = Response(status_code=204)
+        _apply_sandbox_cors(response, origin)
+        response.headers.update({
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
+            "Access-Control-Max-Age": "3600",
+        })
+        return response
     
-    # Set CORS headers explicitly
-    if origin in all_allowed_origins or any(o in origin for o in ["vercel.app", "onrender.com"]):
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
+    user_data = MOCK_USERS["sandbox-user"]
+    _persist_sandbox_user(user_data)
     
-    return response
+    try:
+        if request.method == "POST":
+            # Parse JSON body but never fail the handshake
+            try:
+                await request.json()
+            except Exception as parse_err:
+                logger.debug(f"Sandbox callback body parsing skipped: {parse_err}")
+            
+            session_token = _build_sandbox_session_token(user_data)
+            response = JSONResponse(content={"ok": True, "connected": True})
+        else:
+            # Backward-compatible GET response
+            session_token = _build_sandbox_session_token(user_data)
+            response = JSONResponse(
+                content={
+                    "user": user_data,
+                    "access_token": session_token,
+                    "message": "Sandbox login successful",
+                }
+            )
+        
+        response.set_cookie(
+            key="session_token",
+            value=session_token,
+            httponly=True,
+            secure=settings.ENV == "production",
+            samesite="none",
+            max_age=7 * 24 * 3600,
+            path="/",
+        )
+        _apply_sandbox_cors(response, origin)
+        return response
+    
+    except Exception as e:
+        logger.error(f"Sandbox callback error: {e}", exc_info=True)
+        error_response = JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": "sandbox_callback_failed", "message": "Sandbox auth temporarily unavailable"},
+        )
+        _apply_sandbox_cors(error_response, origin)
+        return error_response
 
 @app.get("/api/v1/integrations/amazon/recoveries")
 async def amazon_recoveries_summary(request: Request, user: dict = Depends(get_current_user)):
