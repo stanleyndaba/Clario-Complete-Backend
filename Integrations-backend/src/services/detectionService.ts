@@ -141,6 +141,24 @@ export class DetectionService {
       // Update job status to processing
       await this.updateJobStatus(job.seller_id, job.sync_id, 'processing');
 
+      // 🎯 AGENT 3: Send SSE event for detection started
+      try {
+        const sseHub = (await import('../utils/sseHub')).default;
+        sseHub.sendEvent(job.seller_id, 'message', {
+          type: 'detection',
+          status: 'started',
+          data: {
+            syncId: job.sync_id,
+            message: 'Claim detection started',
+            timestamp: new Date().toISOString()
+          },
+          timestamp: new Date().toISOString()
+        });
+        logger.debug('✅ [AGENT 3] SSE event sent for detection started', { seller_id: job.seller_id, sync_id: job.sync_id });
+      } catch (sseError: any) {
+        logger.warn('⚠️ [AGENT 3] Failed to send SSE event for detection started', { error: sseError.message });
+      }
+
       // Run detection algorithms
       const results = await this.runDetectionAlgorithms(job);
 
@@ -240,6 +258,35 @@ export class DetectionService {
         });
       }
 
+      // 🎯 AGENT 3: Send SSE event for detection completed
+      try {
+        const sseHub = (await import('../utils/sseHub')).default;
+        const highConfidenceCount = results.filter(r => r.confidence_score >= 0.85).length;
+        const mediumConfidenceCount = results.filter(r => r.confidence_score >= 0.50 && r.confidence_score < 0.85).length;
+        const lowConfidenceCount = results.filter(r => r.confidence_score < 0.50).length;
+        const totalValue = results.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
+        
+        sseHub.sendEvent(job.seller_id, 'message', {
+          type: 'detection',
+          status: 'completed',
+          data: {
+            syncId: job.sync_id,
+            totalDetected: results.length,
+            count: results.length,
+            highConfidence: highConfidenceCount,
+            mediumConfidence: mediumConfidenceCount,
+            lowConfidence: lowConfidenceCount,
+            totalValue: totalValue,
+            message: `${results.length} claim${results.length !== 1 ? 's' : ''} detected`,
+            timestamp: new Date().toISOString()
+          },
+          timestamp: new Date().toISOString()
+        });
+        logger.debug('✅ [AGENT 3] SSE event sent for detection completed', { seller_id: job.seller_id, sync_id: job.sync_id, results_count: results.length });
+      } catch (sseError: any) {
+        logger.warn('⚠️ [AGENT 3] Failed to send SSE event for detection completed', { error: sseError.message });
+      }
+
       logger.info('Detection job processed successfully', {
         seller_id: job.seller_id,
         sync_id: job.sync_id,
@@ -250,6 +297,26 @@ export class DetectionService {
       
       // Update job status to failed
       await this.updateJobStatus(job.seller_id, job.sync_id, 'failed', error instanceof Error ? error.message : 'Unknown error');
+
+      // 🎯 AGENT 3: Send SSE event for detection failed
+      try {
+        const sseHub = (await import('../utils/sseHub')).default;
+        sseHub.sendEvent(job.seller_id, 'message', {
+          type: 'detection',
+          status: 'failed',
+          data: {
+            syncId: job.sync_id,
+            error: error instanceof Error ? error.message : 'Unknown error',
+            message: `Detection failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            timestamp: new Date().toISOString()
+          },
+          timestamp: new Date().toISOString()
+        });
+        logger.debug('✅ [AGENT 3] SSE event sent for detection failed', { seller_id: job.seller_id, sync_id: job.sync_id });
+      } catch (sseError: any) {
+        logger.warn('⚠️ [AGENT 3] Failed to send SSE event for detection failed', { error: sseError.message });
+      }
+
       throw error;
     }
   }

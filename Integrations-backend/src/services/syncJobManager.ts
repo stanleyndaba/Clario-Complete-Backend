@@ -121,7 +121,24 @@ class SyncJobManager {
     // Save to database
     await this.saveSyncToDatabase(syncStatus);
 
-    // Send initial SSE event
+    // 🎯 AGENT 2: Send SSE event for sync started
+    try {
+      sseHub.sendEvent(userId, 'message', {
+        type: 'sync',
+        status: 'started',
+        data: {
+          syncId: syncId,
+          message: 'Data sync started',
+          timestamp: new Date().toISOString()
+        },
+        timestamp: new Date().toISOString()
+      });
+      logger.debug('✅ [AGENT 2] SSE event sent for sync started', { userId, syncId });
+    } catch (sseError: any) {
+      logger.warn('⚠️ [AGENT 2] Failed to send SSE event for sync started', { error: sseError.message });
+    }
+
+    // Send initial SSE event (progress update)
     this.sendProgressUpdate(userId, syncStatus);
 
     // Start async sync (don't await)
@@ -440,6 +457,31 @@ class SyncJobManager {
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
 
+      // 🎯 AGENT 2: Send SSE event for sync completed
+      try {
+        sseHub.sendEvent(userId, 'message', {
+          type: 'sync',
+          status: 'completed',
+          data: {
+            syncId: syncId,
+            ordersProcessed: syncStatus.ordersProcessed || 0,
+            totalOrders: syncStatus.totalOrders || 0,
+            inventoryCount: syncStatus.inventoryCount || 0,
+            shipmentsCount: syncStatus.shipmentsCount || 0,
+            returnsCount: syncStatus.returnsCount || 0,
+            settlementsCount: syncStatus.settlementsCount || 0,
+            feesCount: syncStatus.feesCount || 0,
+            claimsDetected: syncStatus.claimsDetected || 0,
+            message: syncStatus.message,
+            timestamp: new Date().toISOString()
+          },
+          timestamp: new Date().toISOString()
+        });
+        logger.debug('✅ [AGENT 2] SSE event sent for sync completed', { userId, syncId });
+      } catch (sseError: any) {
+        logger.warn('⚠️ [AGENT 2] Failed to send SSE event for sync completed', { error: sseError.message });
+      }
+
       // Remove from running jobs after a delay
       setTimeout(() => {
         this.runningJobs.delete(syncId);
@@ -453,6 +495,25 @@ class SyncJobManager {
       syncStatus.completedAt = new Date().toISOString();
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
+
+      // 🎯 AGENT 2: Send SSE event for sync failed
+      try {
+        sseHub.sendEvent(userId, 'message', {
+          type: 'sync',
+          status: 'failed',
+          data: {
+            syncId: syncId,
+            error: error.message,
+            message: `Sync failed: ${error.message}`,
+            timestamp: new Date().toISOString()
+          },
+          timestamp: new Date().toISOString()
+        });
+        logger.debug('✅ [AGENT 2] SSE event sent for sync failed', { userId, syncId });
+      } catch (sseError: any) {
+        logger.warn('⚠️ [AGENT 2] Failed to send SSE event for sync failed', { error: sseError.message });
+      }
+
       throw error;
     }
   }

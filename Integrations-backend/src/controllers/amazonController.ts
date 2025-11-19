@@ -649,6 +649,24 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         sellerId,
         hasTokens: true
       });
+
+      // 🎯 AGENT 1: Send SSE event for OAuth completion
+      try {
+        const sseHub = (await import('../utils/sseHub')).default;
+        sseHub.sendEvent(userId, 'message', {
+          type: 'sync',
+          status: 'started',
+          data: {
+            message: 'Amazon connection successful. Starting data sync...',
+            sellerId: sellerId,
+            companyName: profile.companyName || profile.sellerName
+          },
+          timestamp: new Date().toISOString()
+        });
+        logger.debug('✅ [AGENT 1] SSE event sent for OAuth completion', { userId });
+      } catch (sseError: any) {
+        logger.warn('⚠️ [AGENT 1] Failed to send SSE event for OAuth completion', { error: sseError.message });
+      }
     } catch (callbackError: any) {
       // Any step failed - roll back and surface error
       logger.error('❌ OAuth callback failed - atomic operation rolled back', {
