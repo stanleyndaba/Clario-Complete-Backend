@@ -279,37 +279,47 @@ export class Agent2DataSyncService {
         errorsCount: errors.length
       });
 
-      // Step 7: Call Discovery Agent (Python ML) directly - Agent 3 removed
+      // Step 7: Call Discovery Agent (Python ML) asynchronously - don't block sync completion
+      // OPTIMIZATION: Detection runs in background to meet 30s sync timeout requirement
       if (result.success && result.summary.ordersCount + result.summary.shipmentsCount + result.summary.returnsCount > 0) {
-        try {
-          logger.info('🔍 [AGENT 2] Calling Discovery Agent (Python ML)', { userId, syncId });
-          
-          const detectionId = `detection_${userId}_${Date.now()}`;
-          const detectionResult = await this.callDiscoveryAgent(
-            userId,
-            syncId,
-            detectionId,
-            result.normalized,
-            detectionSyncId
-          );
-          
-          logger.info('✅ [AGENT 2] Discovery Agent completed', {
-            userId,
-            syncId,
-            detectionId,
-            totalDetected: detectionResult.totalDetected
-          });
-        } catch (detectionError: any) {
-          // CRITICAL: Propagate error - don't swallow it
-          logger.error('❌ [AGENT 2] Discovery Agent failed', {
-            error: detectionError.message,
-            stack: detectionError.stack,
-            userId,
-            syncId
-          });
-          // Add error to result but don't fail entire sync - let syncJobManager handle it
-          errors.push(`Discovery Agent failed: ${detectionError.message}`);
-        }
+        // Start detection asynchronously - don't await it
+        const detectionPromise = (async () => {
+          try {
+            logger.info('🔍 [AGENT 2] Starting Discovery Agent (Python ML) - async background', { userId, syncId });
+            
+            const detectionId = `detection_${userId}_${Date.now()}`;
+            const detectionResult = await this.callDiscoveryAgent(
+              userId,
+              syncId,
+              detectionId,
+              result.normalized,
+              detectionSyncId
+            );
+            
+            logger.info('✅ [AGENT 2] Discovery Agent completed (async)', {
+              userId,
+              syncId,
+              detectionId,
+              totalDetected: detectionResult?.totalDetected || 0
+            });
+          } catch (detectionError: any) {
+            logger.error('❌ [AGENT 2] Discovery Agent failed (async)', {
+              error: detectionError.message,
+              stack: detectionError.stack,
+              userId,
+              syncId
+            });
+            // Don't fail sync - detection errors are logged but sync continues
+          }
+        })();
+        
+        // Don't await - let detection run in background
+        // Sync completes immediately, detection continues async
+        logger.info('🚀 [AGENT 2] Discovery Agent started asynchronously (non-blocking)', { 
+          userId, 
+          syncId,
+          note: 'Sync will complete immediately, detection continues in background'
+        });
       }
 
       return result;

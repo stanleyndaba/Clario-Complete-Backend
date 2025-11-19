@@ -121,22 +121,42 @@ class SyncJobManager {
     // Save to database
     await this.saveSyncToDatabase(syncStatus);
 
-    // 🎯 AGENT 2: Send SSE event for sync started
-    try {
-      sseHub.sendEvent(userId, 'message', {
-        type: 'sync',
-        status: 'started',
-        data: {
-          syncId: syncId,
-          message: 'Data sync started',
-          timestamp: new Date().toISOString()
-        },
-        timestamp: new Date().toISOString()
+    // 🎯 AGENT 2: Send SSE event for sync started with connection verification
+    logger.info('🔍 [SYNC JOB MANAGER] Checking SSE connection before sending sync.started event', {
+      userId,
+      syncId,
+      hasConnection: sseHub.hasConnection(userId),
+      connectionCount: sseHub.getConnectionCount(userId),
+      connectedUsers: sseHub.getConnectedUsers()
+    });
+
+    const sseStarted = sseHub.sendEvent(userId, 'sync.started', {
+      type: 'sync',
+      status: 'started',
+      syncId: syncId,
+      message: 'Data sync started',
+      timestamp: new Date().toISOString()
+    });
+
+    if (!sseStarted) {
+      logger.warn('⚠️ [SYNC JOB MANAGER] No SSE connection found for sync.started event', {
+        userId,
+        syncId,
+        connectedUsers: sseHub.getConnectedUsers(),
+        suggestion: 'Frontend may not have SSE connection open, or user ID mismatch'
       });
-      logger.debug('✅ [AGENT 2] SSE event sent for sync started', { userId, syncId });
-    } catch (sseError: any) {
-      logger.warn('⚠️ [AGENT 2] Failed to send SSE event for sync started', { error: sseError.message });
+    } else {
+      logger.info('✅ [SYNC JOB MANAGER] SSE event sync.started sent successfully', { userId, syncId });
     }
+
+    // Also send as 'message' event for backward compatibility
+    sseHub.sendEvent(userId, 'message', {
+      type: 'sync',
+      status: 'started',
+      syncId: syncId,
+      message: 'Data sync started',
+      timestamp: new Date().toISOString()
+    });
 
     // Send initial SSE event (progress update)
     this.sendProgressUpdate(userId, syncStatus);
@@ -157,9 +177,18 @@ class SyncJobManager {
   }
 
   /**
-   * Run the actual sync job asynchronously
+   * Run the actual sync job asynchronously with timeout protection
    */
   private async runSync(syncId: string, userId: string, isCancelled: () => boolean): Promise<void> {
+    // Set timeout for sync operation (30 seconds max - strict requirement)
+    const SYNC_TIMEOUT_MS = 30 * 1000; // 30 seconds
+    const syncStartTime = Date.now();
+    
+    const timeoutPromise = new Promise<void>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`Sync timeout after ${SYNC_TIMEOUT_MS / 1000} seconds`));
+      }, SYNC_TIMEOUT_MS);
+    });
     const job = this.runningJobs.get(syncId);
     if (!job) {
       throw new Error(`Sync job ${syncId} not found`);
@@ -168,7 +197,9 @@ class SyncJobManager {
     const syncStatus = job.status;
     let syncResult: any = null; // Store Agent 2 sync result for use throughout method
 
-    try {
+    // Wrap sync execution with timeout
+    const syncExecution = async (): Promise<void> => {
+      try {
       // Update progress: 10% - Starting Agent 2 sync
       syncStatus.progress = 10;
       syncStatus.message = 'Starting data sync...';
@@ -202,8 +233,16 @@ class SyncJobManager {
       this.sendProgressUpdate(userId, syncStatus);
 
       // Run Agent 2 Data Sync Service (comprehensive data sync with normalization)
+      // CRITICAL: This must complete quickly to meet 30s timeout
       logger.info('🔄 [SYNC JOB MANAGER] Starting Agent 2 data sync', { userId, syncId });
+      const agent2StartTime = Date.now();
       syncResult = await agent2DataSyncService.syncUserData(userId, undefined, undefined, syncId);
+      const agent2Duration = Date.now() - agent2StartTime;
+      logger.info('⏱️ [SYNC JOB MANAGER] Agent 2 sync duration', { 
+        userId, 
+        syncId, 
+        duration: `${agent2Duration}ms (${(agent2Duration / 1000).toFixed(2)}s)` 
+      });
       
       // Check if Agent 2 sync failed
       if (!syncResult.success) {
@@ -260,62 +299,28 @@ class SyncJobManager {
         return;
       }
 
-      // Update progress: 80% - Waiting for Discovery Agent (claim detection) to complete
+      // Update progress: 80% - Discovery Agent is called by Agent 2, we just check quickly
       syncStatus.progress = 80;
-      syncStatus.message = 'Waiting for claim detection (Discovery Agent)...';
+      syncStatus.message = 'Checking claim detection status...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
 
-      // FIX #3: Wait for detection to complete with proper timeout
-      // Discovery Agent is called directly by Agent 2, but we still check for results as a safety net
+      // OPTIMIZATION: Don't wait long for detection - Agent 2 calls it directly
+      // We do a quick check (max 3 seconds) and then proceed to completion
+      // Detection can continue in background, we'll get results on next sync
       let detectionCompleted = false;
       let detectionAttempts = 0;
-      const maxDetectionWaitTime = 30000; // Reduced to 30 seconds (Discovery Agent should be fast)
-      const detectionPollInterval = 1000; // Poll every 1 second for faster response
+      const maxDetectionWaitTime = 3000; // Only wait 3 seconds - detection should be fast or can continue async
+      const detectionPollInterval = 500; // Poll every 500ms
       const maxDetectionAttempts = Math.floor(maxDetectionWaitTime / detectionPollInterval);
 
+      // Quick check for detection results (non-blocking after 3s)
       while (!detectionCompleted && detectionAttempts < maxDetectionAttempts) {
         await new Promise(resolve => setTimeout(resolve, detectionPollInterval));
         detectionAttempts++;
 
-        // Check if detection job has completed
+        // Quick check for detection results (most reliable indicator)
         try {
-          const { data: detectionJob, error } = await supabase
-            .from('detection_queue')
-            .select('status, processed_at')
-            .eq('seller_id', userId)
-            .eq('sync_id', syncId)
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
-
-          if (!error && detectionJob) {
-            if (detectionJob.status === 'completed') {
-              detectionCompleted = true;
-              logger.info('Detection completed for sync', { userId, syncId, detectionAttempts });
-            } else if (detectionJob.status === 'failed') {
-              // Detection failed, but continue with sync completion
-              logger.warn('Detection failed for sync, continuing with sync completion', { userId, syncId });
-              detectionCompleted = true;
-            } else if (detectionJob.status === 'processing') {
-              // Detection is in progress, continue waiting
-              logger.debug('Detection in progress, waiting...', { userId, syncId, detectionAttempts });
-            }
-          } else if (error) {
-            // Error querying detection queue, might not have started yet
-            logger.debug('Detection queue query error (might not have started yet)', { 
-              userId, 
-              syncId, 
-              error: error.message,
-              detectionAttempts 
-            });
-          }
-        } catch (error: any) {
-          logger.warn('Error checking detection status', { error: error.message, userId, syncId });
-        }
-
-        // Also check if we have detection results (detection might have completed but queue status not updated)
-        if (!detectionCompleted) {
           const { count: detectionResultsCount } = await supabase
             .from('detection_results')
             .select('id', { count: 'exact', head: true })
@@ -323,34 +328,30 @@ class SyncJobManager {
             .eq('sync_id', syncId);
 
           if (detectionResultsCount && detectionResultsCount > 0) {
-            // We have detection results, detection has completed
             detectionCompleted = true;
-            logger.info('Detection results found, detection completed', { 
+            syncStatus.claimsDetected = detectionResultsCount;
+            logger.info('✅ [SYNC JOB MANAGER] Detection results found quickly', { 
               userId, 
               syncId, 
               resultsCount: detectionResultsCount,
               detectionAttempts 
             });
-            // Update sync metadata with claims count immediately
-            syncStatus.claimsDetected = detectionResultsCount;
             this.updateSyncStatus(syncStatus);
+            break; // Exit immediately when found
           }
+        } catch (error: any) {
+          // Ignore errors, just continue
         }
       }
 
-      // FIX #3: If detection didn't complete, log warning but don't fail sync
-      // Discovery Agent is called directly by Agent 2, so this should rarely happen
+      // If detection didn't complete quickly, that's OK - it can continue in background
       if (!detectionCompleted) {
-        logger.warn('⚠️ [SYNC JOB MANAGER] Detection did not complete within timeout', {
+        logger.info('ℹ️ [SYNC JOB MANAGER] Detection still processing (will continue in background)', {
           userId,
           syncId,
-          detectionAttempts,
-          maxAttempts: maxDetectionAttempts,
-          timeoutSeconds: maxDetectionWaitTime / 1000
+          note: 'Sync completing - detection can finish async, results available on next sync'
         });
-        // Don't fail sync - Discovery Agent errors are already handled in Agent 2
-        // But update status to indicate detection may be incomplete
-        syncStatus.message = 'Sync completed (detection may still be processing)';
+        // Don't wait - proceed to completion immediately
       }
 
       // Update progress: 95% - Finalizing
@@ -457,30 +458,58 @@ class SyncJobManager {
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
 
-      // 🎯 AGENT 2: Send SSE event for sync completed
-      try {
-        sseHub.sendEvent(userId, 'message', {
-          type: 'sync',
-          status: 'completed',
-          data: {
-            syncId: syncId,
-            ordersProcessed: syncStatus.ordersProcessed || 0,
-            totalOrders: syncStatus.totalOrders || 0,
-            inventoryCount: syncStatus.inventoryCount || 0,
-            shipmentsCount: syncStatus.shipmentsCount || 0,
-            returnsCount: syncStatus.returnsCount || 0,
-            settlementsCount: syncStatus.settlementsCount || 0,
-            feesCount: syncStatus.feesCount || 0,
-            claimsDetected: syncStatus.claimsDetected || 0,
-            message: syncStatus.message,
-            timestamp: new Date().toISOString()
-          },
-          timestamp: new Date().toISOString()
+      // 🎯 AGENT 2: Send SSE event for sync completed with connection verification
+      logger.info('🔍 [SYNC JOB MANAGER] Checking SSE connection before sending sync.completed event', {
+        userId,
+        syncId,
+        hasConnection: sseHub.hasConnection(userId),
+        connectionCount: sseHub.getConnectionCount(userId),
+        connectedUsers: sseHub.getConnectedUsers()
+      });
+
+      const sseCompleted = sseHub.sendEvent(userId, 'sync.completed', {
+        type: 'sync',
+        status: 'completed',
+        syncId: syncId,
+        ordersProcessed: syncStatus.ordersProcessed || 0,
+        totalOrders: syncStatus.totalOrders || 0,
+        inventoryCount: syncStatus.inventoryCount || 0,
+        shipmentsCount: syncStatus.shipmentsCount || 0,
+        returnsCount: syncStatus.returnsCount || 0,
+        settlementsCount: syncStatus.settlementsCount || 0,
+        feesCount: syncStatus.feesCount || 0,
+        claimsDetected: syncStatus.claimsDetected || 0,
+        message: syncStatus.message,
+        timestamp: new Date().toISOString()
+      });
+
+      if (!sseCompleted) {
+        logger.warn('⚠️ [SYNC JOB MANAGER] No SSE connection found for sync.completed event', {
+          userId,
+          syncId,
+          connectedUsers: sseHub.getConnectedUsers(),
+          suggestion: 'Frontend may not have SSE connection open, or user ID mismatch'
         });
-        logger.debug('✅ [AGENT 2] SSE event sent for sync completed', { userId, syncId });
-      } catch (sseError: any) {
-        logger.warn('⚠️ [AGENT 2] Failed to send SSE event for sync completed', { error: sseError.message });
+      } else {
+        logger.info('✅ [SYNC JOB MANAGER] SSE event sync.completed sent successfully', { userId, syncId });
       }
+
+      // Also send as 'message' event for backward compatibility
+      sseHub.sendEvent(userId, 'message', {
+        type: 'sync',
+        status: 'completed',
+        syncId: syncId,
+        ordersProcessed: syncStatus.ordersProcessed || 0,
+        totalOrders: syncStatus.totalOrders || 0,
+        inventoryCount: syncStatus.inventoryCount || 0,
+        shipmentsCount: syncStatus.shipmentsCount || 0,
+        returnsCount: syncStatus.returnsCount || 0,
+        settlementsCount: syncStatus.settlementsCount || 0,
+        feesCount: syncStatus.feesCount || 0,
+        claimsDetected: syncStatus.claimsDetected || 0,
+        message: syncStatus.message,
+        timestamp: new Date().toISOString()
+      });
 
       // Remove from running jobs after a delay
       setTimeout(() => {
@@ -496,25 +525,83 @@ class SyncJobManager {
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
 
-      // 🎯 AGENT 2: Send SSE event for sync failed
-      try {
-        sseHub.sendEvent(userId, 'message', {
-          type: 'sync',
-          status: 'failed',
-          data: {
-            syncId: syncId,
-            error: error.message,
-            message: `Sync failed: ${error.message}`,
-            timestamp: new Date().toISOString()
-          },
-          timestamp: new Date().toISOString()
+      // 🎯 AGENT 2: Send SSE event for sync failed with connection verification
+      logger.info('🔍 [SYNC JOB MANAGER] Checking SSE connection before sending sync.failed event', {
+        userId,
+        syncId,
+        hasConnection: sseHub.hasConnection(userId),
+        connectionCount: sseHub.getConnectionCount(userId),
+        error: error.message
+      });
+
+      const sseFailed = sseHub.sendEvent(userId, 'sync.failed', {
+        type: 'sync',
+        status: 'failed',
+        syncId: syncId,
+        error: error.message,
+        message: `Sync failed: ${error.message}`,
+        timestamp: new Date().toISOString()
+      });
+
+      if (!sseFailed) {
+        logger.warn('⚠️ [SYNC JOB MANAGER] No SSE connection found for sync.failed event', {
+          userId,
+          syncId,
+          connectedUsers: sseHub.getConnectedUsers(),
+          error: error.message
         });
-        logger.debug('✅ [AGENT 2] SSE event sent for sync failed', { userId, syncId });
-      } catch (sseError: any) {
-        logger.warn('⚠️ [AGENT 2] Failed to send SSE event for sync failed', { error: sseError.message });
+      } else {
+        logger.info('✅ [SYNC JOB MANAGER] SSE event sync.failed sent successfully', { userId, syncId });
       }
 
+      // Also send as 'message' event for backward compatibility
+      sseHub.sendEvent(userId, 'message', {
+        type: 'sync',
+        status: 'failed',
+        syncId: syncId,
+        error: error.message,
+        message: `Sync failed: ${error.message}`,
+        timestamp: new Date().toISOString()
+      });
+
       throw error;
+    }
+    };
+
+    // Race between sync execution and timeout
+    try {
+      await Promise.race([syncExecution(), timeoutPromise]);
+    } catch (error: any) {
+      // Check if it's a timeout error
+      if (error.message && error.message.includes('timeout')) {
+        logger.error(`⏱️ [SYNC JOB MANAGER] Sync timeout after ${SYNC_TIMEOUT_MS / 1000} seconds`, {
+          userId,
+          syncId,
+          duration: Date.now() - syncStartTime
+        });
+        
+        syncStatus.status = 'failed';
+        syncStatus.error = `Sync timeout after ${SYNC_TIMEOUT_MS / 1000} seconds`;
+        syncStatus.message = `Sync failed: Timeout after ${SYNC_TIMEOUT_MS / 1000} seconds`;
+        syncStatus.completedAt = new Date().toISOString();
+        this.updateSyncStatus(syncStatus);
+        this.sendProgressUpdate(userId, syncStatus);
+
+        // Send SSE timeout event
+        sseHub.sendEvent(userId, 'sync.failed', {
+          type: 'sync',
+          status: 'failed',
+          syncId: syncId,
+          error: syncStatus.error,
+          message: syncStatus.message,
+          timestamp: new Date().toISOString()
+        });
+
+        throw error;
+      } else {
+        // Re-throw other errors
+        throw error;
+      }
     }
   }
 
@@ -1116,10 +1203,23 @@ class SyncJobManager {
   }
 
   /**
-   * Send progress update via SSE
+   * Send progress update via SSE with connection verification
    */
   private sendProgressUpdate(userId: string, syncStatus: SyncJobStatus): void {
-    sseHub.sendEvent(userId, 'sync_progress', {
+    // Only log connection status for important progress updates (every 20%)
+    const shouldLog = syncStatus.progress % 20 === 0 || syncStatus.progress === 100;
+    
+    if (shouldLog) {
+      logger.debug('🔍 [SYNC JOB MANAGER] Sending progress update', {
+        userId,
+        syncId: syncStatus.syncId,
+        progress: syncStatus.progress,
+        hasConnection: sseHub.hasConnection(userId),
+        connectionCount: sseHub.getConnectionCount(userId)
+      });
+    }
+
+    const sent = sseHub.sendEvent(userId, 'sync_progress', {
       syncId: syncStatus.syncId,
       status: syncStatus.status,
       progress: syncStatus.progress,
@@ -1134,6 +1234,15 @@ class SyncJobManager {
       claimsDetected: syncStatus.claimsDetected,
       timestamp: new Date().toISOString()
     });
+
+    if (!sent && shouldLog) {
+      logger.warn('⚠️ [SYNC JOB MANAGER] Progress update not sent - no SSE connection', {
+        userId,
+        syncId: syncStatus.syncId,
+        progress: syncStatus.progress,
+        connectedUsers: sseHub.getConnectedUsers()
+      });
+    }
   }
 
   /**
