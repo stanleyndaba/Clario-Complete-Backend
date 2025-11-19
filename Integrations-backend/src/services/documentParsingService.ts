@@ -59,7 +59,7 @@ class DocumentParsingService {
     this.pythonApiUrl = 
       process.env.PYTHON_API_URL || 
       process.env.API_URL || 
-      'https://python-api-4-aukq.onrender.com';
+      'https://python-api-5.onrender.com';
     
     logger.info('📄 [DOCUMENT PARSING] Service initialized', {
       pythonApiUrl: this.pythonApiUrl

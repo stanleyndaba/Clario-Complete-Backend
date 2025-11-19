@@ -47,7 +47,7 @@ export interface DetectionResultRecord {
 
 export class DetectionService {
   private readonly queueName = 'detection_queue';
-  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-4-aukq.onrender.com';
+  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-5.onrender.com';
 
   /**
    * Enqueue a detection job after sync completion
@@ -1736,7 +1736,7 @@ export class DetectionService {
     results: DetectionResult[]
   ): Promise<void> {
     try {
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-4-aukq.onrender.com';
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-5.onrender.com';
       
       // Transform detection results to claims format for evidence matching
       const claims = results.map((result, index) => ({
@@ -1788,7 +1788,7 @@ export class DetectionService {
     results: DetectionResult[]
   ): Promise<void> {
     try {
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-4-aukq.onrender.com';
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-5.onrender.com';
       
       // Transform results to claims format
       const claims = results.map((result, index) => ({

@@ -103,7 +103,7 @@ async function testDocumentParsingService() {
     logTest('Service: Initialization', true);
 
     // Test Python API URL configuration
-    const pythonApiUrl = process.env.PYTHON_API_URL || process.env.API_URL || 'https://python-api-4-aukq.onrender.com';
+    const pythonApiUrl = process.env.PYTHON_API_URL || process.env.API_URL || 'https://python-api-5.onrender.com';
     logTest('Service: Python API URL configured', true, undefined, { pythonApiUrl });
 
     // Note: We can't test actual API calls without a real document ID

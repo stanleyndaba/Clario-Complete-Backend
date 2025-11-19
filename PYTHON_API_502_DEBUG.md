@@ -87,3 +87,19 @@ Limit the number of claims sent to Python API to see if it's a size issue:
 const claimsToDetect = this.prepareClaimsFromNormalizedData(validatedData, userId).slice(0, 20);
 ```
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

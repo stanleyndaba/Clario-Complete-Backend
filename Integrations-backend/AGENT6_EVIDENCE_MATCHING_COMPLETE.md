@@ -167,8 +167,8 @@ Agent 6 (Matching) → matches claims to documents → routes by confidence
 ENABLE_EVIDENCE_MATCHING_WORKER=true  # Default: true
 
 # Python API URL (for matching service)
-PYTHON_API_URL=https://python-api-4-aukq.onrender.com
-API_URL=https://python-api-4-aukq.onrender.com  # Fallback
+PYTHON_API_URL=https://python-api-5.onrender.com
+API_URL=https://python-api-5.onrender.com  # Fallback
 
 # Python API authentication (optional)
 PYTHON_API_KEY=your-api-key-here

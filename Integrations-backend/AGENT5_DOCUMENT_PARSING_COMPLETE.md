@@ -160,8 +160,8 @@ Agent 4 (Ingestion) → evidence_documents (pending) → Agent 5 (Parsing) → p
 ENABLE_DOCUMENT_PARSING_WORKER=true  # Default: true
 
 # Python API URL (for parsing service)
-PYTHON_API_URL=https://python-api-4-aukq.onrender.com
-API_URL=https://python-api-4-aukq.onrender.com  # Fallback
+PYTHON_API_URL=https://python-api-5.onrender.com
+API_URL=https://python-api-5.onrender.com  # Fallback
 
 # Python API authentication (optional)
 PYTHON_API_KEY=your-api-key-here

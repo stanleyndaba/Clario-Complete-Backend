@@ -9,7 +9,7 @@
 
 ### 1. **Python Backend URL** ✅
 - **Problem**: Node.js backend was trying to connect to old Python URL
-- **Fix**: Updated all references from `python-api-3-vb5h.onrender.com` → `python-api-4-aukq.onrender.com`
+- **Fix**: Updated all references from `python-api-3-vb5h.onrender.com` → `python-api-5.onrender.com`
 - **Result**: 502 errors should be fixed (once Python backend is running)
 
 ### 2. **Sync Page Not Showing Data** ✅
@@ -43,7 +43,7 @@
 
 ### Step 1: Check Python Backend
 - Go to Render Dashboard
-- Find service: `opside-python-api` (or `python-api-4-aukq`)
+- Find service: `opside-python-api` (or `python-api-5`)
 - Is it **Live** or **Build Failed**?
 
 ### Step 2: Test Sync

@@ -331,7 +331,7 @@ Add to `.env`:
 ENABLE_LEARNING_WORKER=true
 
 # Python API (for learning endpoints)
-PYTHON_API_URL=https://python-api-4-aukq.onrender.com
+PYTHON_API_URL=https://python-api-5.onrender.com
 PYTHON_API_KEY=your-api-key-here  # Optional
 ```
 

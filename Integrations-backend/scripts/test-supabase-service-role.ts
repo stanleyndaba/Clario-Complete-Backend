@@ -9,6 +9,7 @@
  *   SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY must be set (same as backend).
  */
 
+import 'dotenv/config';
 import { supabaseAdmin } from '../src/database/supabaseClient';
 
 const TEST_USER_ID = process.env.TEST_USER_ID || `service-role-test-${Date.now()}`;

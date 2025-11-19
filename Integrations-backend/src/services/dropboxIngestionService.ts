@@ -524,7 +524,7 @@ export class DropboxIngestionService {
    */
   private async triggerParsingPipeline(documentId: string, userId: string): Promise<void> {
     try {
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-4-aukq.onrender.com';
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-5.onrender.com';
       
       await axios.post(
         `${pythonApiUrl}/api/documents/${documentId}/parse`,
