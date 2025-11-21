@@ -81,16 +81,20 @@ async function checkDashboardNumbers() {
     console.log(`   Failed: ${syncs.rows[0].failed}`);
     
     // Check if data is from mock or real
-    const mockCheck = await client.query(`
-      SELECT 
-        COUNT(*) FILTER (WHERE is_sandbox = true OR metadata->>'is_mock' = 'true') as mock_count,
-        COUNT(*) FILTER (WHERE is_sandbox = false AND (metadata->>'is_mock' IS NULL OR metadata->>'is_mock' = 'false')) as real_count
-      FROM detection_queue
-    `);
-    
-    console.log('\n🔍 Data Source Check:');
-    console.log(`   Mock/Sandbox: ${mockCheck.rows[0].mock_count || 0}`);
-    console.log(`   Real Data: ${mockCheck.rows[0].real_count || 0}`);
+    try {
+      const mockCheck = await client.query(`
+        SELECT 
+          COUNT(*) FILTER (WHERE metadata->>'is_mock' = 'true') as mock_count,
+          COUNT(*) FILTER (WHERE metadata->>'is_mock' = 'false') as real_count
+        FROM detection_queue
+      `);
+      
+      console.log('\n🔍 Data Source Check:');
+      console.log(`   Mock/Sandbox: ${mockCheck.rows[0].mock_count || 0}`);
+      console.log(`   Real Data: ${mockCheck.rows[0].real_count || 0}`);
+    } catch {
+      console.log('\n🔍 Data Source Check: (skipped - column unavailable)');
+    }
     
     // Sample some detection results
     const samples = await client.query(`
