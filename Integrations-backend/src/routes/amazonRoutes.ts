@@ -556,12 +556,13 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
 // Get upcoming payments from filed/approved claims
 router.get('/upcoming-payments', wrap(async (req: Request, res: Response) => {
   const userId = (req as any).userId || (req as any)?.user?.id || (req as any)?.user?.user_id || 'demo-user';
+  const dbClient = supabaseAdmin || supabase;
   
   logger.info('📊 [UPCOMING PAYMENTS] Getting upcoming payments', { userId });
   
   try {
     // Query dispute_cases for filed/approved claims with expected payout dates
-    const { data: disputeCases, error } = await supabase
+    const { data: disputeCases, error } = await dbClient
       .from('dispute_cases')
       .select('id, seller_id, claim_amount, currency, status, expected_payout_date, created_at, dispute_type')
       .eq('seller_id', userId)
