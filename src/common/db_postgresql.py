@@ -238,6 +238,19 @@ class DatabaseManager:
         ]
         for pattern, replacement in replacements:
             sql_text = re.sub(pattern, replacement, sql_text, flags=re.IGNORECASE)
+
+        # Ensure users table has stripe columns to match production schema
+        if 'CREATE TABLE users' in sql_text:
+            if 'stripe_customer_id' not in sql_text:
+                sql_text = sql_text.replace(
+                    'company_name TEXT,',
+                    'company_name TEXT,\n                        stripe_customer_id TEXT,\n                        stripe_account_id TEXT,'
+                )
+            if 'stripe_account_id' not in sql_text:
+                sql_text = sql_text.replace(
+                    'company_name TEXT,',
+                    'company_name TEXT,\n                        stripe_account_id TEXT,'
+                )
         return sql_text
     
     @contextmanager
