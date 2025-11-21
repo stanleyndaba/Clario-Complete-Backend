@@ -17,6 +17,37 @@ BEGIN
   END IF;
 END $$;
 
+-- Ensure evidence_documents has filename, file_size, mime_type
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'evidence_documents'
+      AND column_name = 'filename'
+  ) THEN
+    ALTER TABLE evidence_documents
+      ADD COLUMN filename TEXT;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'evidence_documents'
+      AND column_name = 'file_size'
+  ) THEN
+    ALTER TABLE evidence_documents
+      ADD COLUMN file_size BIGINT;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'evidence_documents'
+      AND column_name = 'mime_type'
+  ) THEN
+    ALTER TABLE evidence_documents
+      ADD COLUMN mime_type TEXT;
+  END IF;
+END $$;
+
 -- Add storage_path to evidence_documents if it doesn't exist
 DO $$ 
 BEGIN
@@ -50,6 +81,8 @@ CREATE TABLE IF NOT EXISTS evidence_ingestion_errors (
   resolved BOOLEAN DEFAULT FALSE
 );
 
+
+
 -- Indexes for error table
 CREATE INDEX IF NOT EXISTS idx_evidence_ingestion_errors_user 
 ON evidence_ingestion_errors(user_id, created_at DESC);
@@ -64,7 +97,18 @@ WHERE resolved = FALSE;
 -- RLS for error table
 ALTER TABLE evidence_ingestion_errors ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY evidence_ingestion_errors_owner_select 
-ON evidence_ingestion_errors FOR SELECT 
-USING (auth.uid()::text = user_id);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'evidence_ingestion_errors'
+      AND policyname = 'evidence_ingestion_errors_owner_select'
+  ) THEN
+    CREATE POLICY evidence_ingestion_errors_owner_select
+    ON evidence_ingestion_errors
+    FOR SELECT
+    USING (auth.uid()::text = user_id);
+  END IF;
+END $$;
 
