@@ -23,6 +23,17 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_name = 'evidence_documents'
+      AND column_name = 'user_id'
+  ) THEN
+    ALTER TABLE evidence_documents
+      ADD COLUMN user_id UUID REFERENCES users(id) ON DELETE CASCADE;
+    CREATE INDEX IF NOT EXISTS idx_evidence_documents_user_id
+      ON evidence_documents(user_id);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'evidence_documents'
       AND column_name = 'filename'
   ) THEN
     ALTER TABLE evidence_documents
