@@ -995,66 +995,130 @@ class SyncJobManager {
         .limit(1)
         .maybeSingle();
 
-      if (error || !data) {
-        // No active sync, get last sync (completed or failed)
-        const { data: lastSyncData } = await supabase
-          .from('sync_progress')
-          .select('*')
-          .eq('user_id', userId)
-          .in('status', ['completed', 'failed', 'cancelled'])
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
+      if (!error && data) {
+        const metadata = (data.metadata as any) || {};
+        const normalizedStatus = data.status === 'in_progress' ? 'running' : data.status;
+        let claimsDetected = metadata.claimsDetected || 0;
 
-        if (lastSyncData) {
-          const metadata = (lastSyncData.metadata as any) || {};
-          return {
-            hasActiveSync: false,
-            lastSync: {
-              syncId: lastSyncData.sync_id,
-              status: lastSyncData.status === 'complete' ? 'completed' : lastSyncData.status,
-              progress: lastSyncData.progress || 0,
-              message: lastSyncData.current_step || 'Unknown',
-              startedAt: lastSyncData.created_at,
-              completedAt: lastSyncData.updated_at,
-              ordersProcessed: metadata.ordersProcessed || 0,
-              totalOrders: metadata.totalOrders || 0,
-              inventoryCount: metadata.inventoryCount || 0,
-              shipmentsCount: metadata.shipmentsCount || 0,
-              returnsCount: metadata.returnsCount || 0,
-              settlementsCount: metadata.settlementsCount || 0,
-              feesCount: metadata.feesCount || 0,
-              claimsDetected: metadata.claimsDetected || 0
+        if (claimsDetected === 0 && (data.progress || 0) >= 80) {
+          try {
+            const syncResults = await this.getSyncResults(userId, data.sync_id);
+            if (syncResults.claimsDetected > 0) {
+              claimsDetected = syncResults.claimsDetected;
             }
-          };
+          } catch (refreshError: any) {
+            logger.warn('⚠️ [SYNC STATUS] Unable to refresh claimsDetected for active sync', {
+              userId,
+              syncId: data.sync_id,
+              error: refreshError?.message || refreshError
+            });
+          }
+        }
+
+        return {
+          hasActiveSync: true,
+          lastSync: {
+            syncId: data.sync_id,
+            status: normalizedStatus,
+            progress: data.progress || 0,
+            message: data.current_step || 'Unknown',
+            startedAt: data.created_at,
+            completedAt: data.updated_at,
+            ordersProcessed: metadata.ordersProcessed || 0,
+            totalOrders: metadata.totalOrders || 0,
+            inventoryCount: metadata.inventoryCount || 0,
+            shipmentsCount: metadata.shipmentsCount || 0,
+            returnsCount: metadata.returnsCount || 0,
+            settlementsCount: metadata.settlementsCount || 0,
+            feesCount: metadata.feesCount || 0,
+            claimsDetected
+          }
+        };
+      }
+
+      // No active sync, get last sync (completed or failed)
+      const { data: lastSyncData } = await supabase
+        .from('sync_progress')
+        .select('*')
+        .eq('user_id', userId)
+        .in('status', ['completed', 'failed', 'cancelled', 'complete'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (lastSyncData) {
+        const metadata = (lastSyncData.metadata as any) || {};
+        const normalizedStatus = lastSyncData.status === 'complete' ? 'completed' : lastSyncData.status;
+        const baseProgress = lastSyncData.progress || 0;
+        const progress = normalizedStatus === 'completed' && baseProgress < 100 ? 100 : baseProgress;
+        let claimsDetected = metadata.claimsDetected || 0;
+
+        if (
+          normalizedStatus === 'completed' ||
+          normalizedStatus === 'failed' ||
+          normalizedStatus === 'cancelled' ||
+          (progress >= 80 && claimsDetected === 0)
+        ) {
+          try {
+            const syncResults = await this.getSyncResults(userId, lastSyncData.sync_id);
+            claimsDetected = syncResults.claimsDetected;
+
+            if (metadata.claimsDetected !== claimsDetected) {
+              supabase.from('sync_progress')
+                .update({
+                  metadata: { ...metadata, claimsDetected },
+                  updated_at: new Date().toISOString()
+                })
+                .eq('sync_id', lastSyncData.sync_id)
+                .eq('user_id', userId)
+                .then(() => {
+                  logger.info('✅ [SYNC STATUS] Backfilled claimsDetected in metadata', {
+                    userId,
+                    syncId: lastSyncData.sync_id,
+                    claimsDetected
+                  });
+                })
+                .catch((updateError) => {
+                  logger.warn('⚠️ [SYNC STATUS] Failed to backfill claimsDetected metadata', {
+                    error: updateError?.message || updateError,
+                    userId,
+                    syncId: lastSyncData.sync_id
+                  });
+                });
+            }
+          } catch (refreshError: any) {
+            logger.warn('⚠️ [SYNC STATUS] Unable to refresh claimsDetected for completed sync', {
+              userId,
+              syncId: lastSyncData.sync_id,
+              error: refreshError?.message || refreshError
+            });
+          }
         }
 
         return {
           hasActiveSync: false,
-          lastSync: null
+          lastSync: {
+            syncId: lastSyncData.sync_id,
+            status: normalizedStatus,
+            progress,
+            message: lastSyncData.current_step || 'Unknown',
+            startedAt: lastSyncData.created_at,
+            completedAt: lastSyncData.updated_at,
+            ordersProcessed: metadata.ordersProcessed || 0,
+            totalOrders: metadata.totalOrders || 0,
+            inventoryCount: metadata.inventoryCount || 0,
+            shipmentsCount: metadata.shipmentsCount || 0,
+            returnsCount: metadata.returnsCount || 0,
+            settlementsCount: metadata.settlementsCount || 0,
+            feesCount: metadata.feesCount || 0,
+            claimsDetected
+          }
         };
       }
 
-      // Found active sync
-      const metadata = (data.metadata as any) || {};
       return {
-        hasActiveSync: true,
-        lastSync: {
-          syncId: data.sync_id,
-          status: data.status === 'in_progress' ? 'running' : data.status,
-          progress: data.progress || 0,
-          message: data.current_step || 'Unknown',
-          startedAt: data.created_at,
-          completedAt: data.updated_at,
-          ordersProcessed: metadata.ordersProcessed || 0,
-          totalOrders: metadata.totalOrders || 0,
-          inventoryCount: metadata.inventoryCount || 0,
-          shipmentsCount: metadata.shipmentsCount || 0,
-          returnsCount: metadata.returnsCount || 0,
-          settlementsCount: metadata.settlementsCount || 0,
-          feesCount: metadata.feesCount || 0,
-          claimsDetected: metadata.claimsDetected || 0
-        }
+        hasActiveSync: false,
+        lastSync: null
       };
     } catch (error) {
       logger.error(`Error getting active sync status for ${userId}:`, error);
