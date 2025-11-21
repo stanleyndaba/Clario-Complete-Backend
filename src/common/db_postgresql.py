@@ -244,13 +244,20 @@ class DatabaseManager:
             if 'stripe_customer_id' not in sql_text:
                 sql_text = sql_text.replace(
                     'company_name TEXT,',
-                    'company_name TEXT,\n                        stripe_customer_id TEXT,\n                        stripe_account_id TEXT,'
+                    'company_name TEXT,\n                        stripe_customer_id TEXT,'
                 )
             if 'stripe_account_id' not in sql_text:
                 sql_text = sql_text.replace(
-                    'company_name TEXT,',
-                    'company_name TEXT,\n                        stripe_account_id TEXT,'
+                    'stripe_customer_id TEXT,',
+                    'stripe_customer_id TEXT,\n                        stripe_account_id TEXT,'
                 )
+
+        sql_text += """
+            ALTER TABLE IF EXISTS users
+                ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
+            ALTER TABLE IF EXISTS users
+                ADD COLUMN IF NOT EXISTS stripe_account_id TEXT;
+        """
         return sql_text
     
     @contextmanager
