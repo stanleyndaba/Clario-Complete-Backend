@@ -5,6 +5,7 @@ Supports both PostgreSQL and SQLite with automatic fallback
 
 import json
 import asyncio
+import re
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from src.common.schemas import ClaimDetection, ValidationResult, FilingResult, ClaimPacket
@@ -212,7 +213,7 @@ class DatabaseManager:
                     if name in applied:
                         continue
                     with open(filepath, 'r') as f:
-                        sql_text = f.read()
+                        sql_text = self._adapt_sql_for_postgresql(f.read())
                     try:
                         cursor.execute(sql_text)
                         cursor.execute(
@@ -224,6 +225,20 @@ class DatabaseManager:
                         conn.rollback()
                         raise
                 conn.commit()
+    
+    @staticmethod
+    def _adapt_sql_for_postgresql(sql_text: str) -> str:
+        """Convert SQLite-centric SQL into PostgreSQL-friendly syntax."""
+        replacements = [
+            (r'INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT', 'BIGSERIAL PRIMARY KEY'),
+            (r'\bDATETIME\b', 'TIMESTAMPTZ'),
+            (r'\bREAL\b', 'DOUBLE PRECISION'),
+            (r'\bJSON\b', 'JSONB'),
+            (r'CURRENT_TIMESTAMP', 'NOW()')
+        ]
+        for pattern, replacement in replacements:
+            sql_text = re.sub(pattern, replacement, sql_text, flags=re.IGNORECASE)
+        return sql_text
     
     @contextmanager
     def _connection(self):
