@@ -26,6 +26,7 @@ import { ReturnsService } from './returnsService';
 import { SettlementsService } from './settlementsService';
 import { MockDataGenerator, MockScenario } from './mockDataGenerator';
 import agentEventLogger from './agentEventLogger';
+import { upsertDisputesAndRecoveriesFromDetections } from './disputeBackfillService';
 import axios from 'axios';
 
 export interface SyncResult {
@@ -1416,7 +1417,10 @@ export class Agent2DataSyncService {
       updated_at: new Date().toISOString()
     }));
 
-    const { error } = await supabaseAdmin.from('detection_results').insert(records);
+    const { data: insertedDetections, error } = await supabaseAdmin
+      .from('detection_results')
+      .insert(records)
+      .select('id, seller_id, estimated_value, currency, severity, confidence_score, anomaly_type, created_at, sync_id');
 
     if (error) {
       logger.error('❌ [AGENT 2] Failed to store detection results', {
@@ -1432,6 +1436,16 @@ export class Agent2DataSyncService {
       syncId,
       count: records.length
     });
+
+    try {
+      await upsertDisputesAndRecoveriesFromDetections(insertedDetections || []);
+    } catch (backfillError: any) {
+      logger.error('⚠️ [AGENT 2] Failed to backfill dispute/recovery records', {
+        error: backfillError?.message || backfillError,
+        userId,
+        syncId
+      });
+    }
   }
 
   /**

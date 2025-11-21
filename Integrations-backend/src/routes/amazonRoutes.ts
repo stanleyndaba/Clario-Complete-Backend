@@ -10,7 +10,7 @@ import {
 } from '../controllers/amazonController';
 import amazonService from '../services/amazonService';
 import { syncJobManager } from '../services/syncJobManager';
-import { supabase } from '../database/supabaseClient';
+import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import { authRateLimiter } from '../security/rateLimiter';
 import { validateRedirectMiddleware } from '../security/validateRedirect';
 
@@ -311,11 +311,94 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
   });
   
   try {
+    const dbClient = supabaseAdmin || supabase;
     
-    // STEP 1: Try to get claims from DATABASE first (where sync saves them)
+    // STEP 0: Prefer recoveries table (Agent 8)
     try {
-      logger.info(`Checking database for synced claims`, { userId });
-      const { data: dbClaims, error: dbError } = await supabase
+      const { data: recoveryRows, error: recoveryError } = await dbClient
+        .from('recoveries')
+        .select('id, user_id, expected_amount, actual_amount, reconciliation_status, payout_date, created_at')
+        .eq('user_id', userId);
+
+      if (recoveryError) {
+        logger.warn('Error querying recoveries table', { error: recoveryError.message, userId });
+      } else if (recoveryRows && recoveryRows.length > 0) {
+        const recoveryTotals = recoveryRows.reduce(
+          (acc, row) => {
+            const amount = Number(row.actual_amount ?? row.expected_amount ?? 0);
+            acc.total += amount;
+            if ((row.reconciliation_status || '').toLowerCase() === 'reconciled') {
+              acc.reconciled += 1;
+            } else {
+              acc.pending += 1;
+            }
+            return acc;
+          },
+          { total: 0, reconciled: 0, pending: 0 }
+        );
+
+        return res.json({
+          totalAmount: Number(recoveryTotals.total.toFixed(2)),
+          currency: 'USD',
+          claimCount: recoveryRows.length,
+          recoveredCount: recoveryTotals.reconciled,
+          pendingCount: recoveryTotals.pending,
+          source: 'recoveries',
+          dataSource: isSandbox ? 'mock_recoveries' : 'live_recoveries',
+          message: recoveryTotals.reconciled
+            ? `${recoveryTotals.reconciled} recoveries reconciled`
+            : 'Recoveries pending reconciliation'
+        });
+      }
+    } catch (recoveryCheckError: any) {
+      logger.warn('Failed to read recoveries table', { error: recoveryCheckError.message, userId });
+    }
+    
+    // STEP 1: Use dispute_cases (Agent 7 pipeline)
+    try {
+      const { data: disputeCases, error: disputeError } = await dbClient
+        .from('dispute_cases')
+        .select('status, claim_amount, actual_payout_amount, currency')
+        .eq('seller_id', userId);
+
+      if (disputeError) {
+        logger.warn('Error querying dispute_cases', { error: disputeError.message, userId });
+      } else if (disputeCases && disputeCases.length > 0) {
+        const disputeTotals = disputeCases.reduce(
+          (acc, dispute) => {
+            const claimAmount = Number(dispute.claim_amount ?? 0);
+            const payoutAmount = Number(dispute.actual_payout_amount ?? 0);
+            if ((dispute.status || '').toLowerCase() === 'approved') {
+              acc.approvedTotal += payoutAmount || claimAmount;
+              acc.approvedCount += 1;
+            }
+            acc.total += payoutAmount || claimAmount;
+            return acc;
+          },
+          { total: 0, approvedTotal: 0, approvedCount: 0 }
+        );
+
+        return res.json({
+          totalAmount: Number(disputeTotals.total.toFixed(2)),
+          currency: disputeCases[0].currency || 'USD',
+          claimCount: disputeCases.length,
+          recoveredCount: disputeTotals.approvedCount,
+          pendingCount: disputeCases.length - disputeTotals.approvedCount,
+          source: 'dispute_cases',
+          dataSource: 'agent7_pipeline',
+          message: disputeTotals.approvedCount
+            ? `${disputeTotals.approvedCount} claims approved`
+            : 'Claims submitted - awaiting approval'
+        });
+      }
+    } catch (disputeCheckError: any) {
+      logger.warn('Failed to read dispute_cases', { error: disputeCheckError.message, userId });
+    }
+    
+    // STEP 2: Legacy claims table fallback
+    try {
+      logger.info(`Checking legacy claims table`, { userId });
+      const { data: dbClaims, error: dbError } = await dbClient
         .from('claims')
         .select('*')
         .eq('user_id', userId)
@@ -323,37 +406,36 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
         .order('created_at', { ascending: false });
       
       if (dbError) {
-        logger.warn('Error querying database for claims', { error: dbError.message, userId });
+        logger.warn('Error querying legacy claims table', { error: dbError.message, userId });
       } else if (dbClaims && dbClaims.length > 0) {
-        // Calculate totals from database claims
         const totalAmount = dbClaims
           .filter((claim: any) => claim.status === 'approved' || claim.status === 'completed')
           .reduce((sum: number, claim: any) => sum + (parseFloat(claim.amount) || 0), 0);
         const claimCount = dbClaims.length;
         
-        logger.info(`Found ${claimCount} claims in DATABASE, total approved: $${totalAmount}`, {
+        logger.info(`Found ${claimCount} legacy claims, total approved: $${totalAmount}`, {
           userId,
-          source: 'database',
+          source: 'legacy_claims',
           claimCount,
           totalAmount
         });
         
         return res.json({
-          totalAmount: totalAmount,
+          totalAmount,
           currency: 'USD',
-          claimCount: claimCount,
-          source: 'database',
+          claimCount,
+          source: 'legacy_claims',
           dataSource: 'synced_from_spapi_sandbox',
           message: `Found ${claimCount} claims from synced data`
         });
       } else {
-        logger.info('No claims found in database', { userId, dbClaimCount: dbClaims?.length || 0 });
+        logger.info('No claims found in legacy table', { userId, dbClaimCount: dbClaims?.length || 0 });
       }
     } catch (dbQueryError: any) {
-      logger.warn('Error querying database for claims', { error: dbQueryError.message, userId });
+      logger.warn('Error querying legacy claims', { error: dbQueryError.message, userId });
     }
     
-    // STEP 2: If no database claims, try fetching from API directly (for real-time data)
+    // STEP 3: If no database claims, try fetching from API directly (for real-time data)
     try {
       logger.info(`No database claims found - attempting to fetch from SP-API`, { userId });
       const claimsResult = await amazonService.fetchClaims(userId);
@@ -369,7 +451,6 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
       });
       
       if (Array.isArray(claims) && claims.length > 0) {
-        // Calculate totals from API claims
         const totalAmount = claims
           .filter((claim: any) => claim.status === 'approved')
           .reduce((sum: number, claim: any) => sum + (parseFloat(claim.amount) || 0), 0);
@@ -384,9 +465,9 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
         });
         
         return res.json({
-          totalAmount: totalAmount,
+          totalAmount,
           currency: 'USD',
-          claimCount: claimCount,
+          claimCount,
           source: 'api',
           dataSource: claimsResult.isSandbox ? 'spapi_sandbox' : 'spapi_production',
           message: `Found ${claimCount} claims from API`
@@ -408,44 +489,33 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
         stack: error.stack,
         userId
       });
-      // Fall through to trigger sync
     }
     
-    // If no claims found, trigger a sync automatically (if not already running)
-    // This ensures data is synced when user connects Amazon
+    // Trigger sync in the background if no data was returned
     try {
-      // Check if there's already a sync in progress by checking sync history
-      // We'll attempt to start sync - it will check internally if one is already running
-      logger.info('No claims found - attempting to trigger automatic sync', { userId });
-      
-      // Trigger sync in background - don't block the response
-      // syncJobManager.startSync will check if sync is already in progress
+      logger.info('No recoveries found - attempting to trigger automatic sync', { userId });
       syncJobManager.startSync(userId).then((result) => {
         logger.info('Successfully triggered automatic sync from recoveries endpoint', { 
           userId, 
           syncId: result.syncId 
         });
       }).catch((syncError: any) => {
-        // If sync is already in progress, that's OK - just log it
         if (syncError.message && syncError.message.includes('already in progress')) {
           logger.info('Sync already in progress, skipping automatic trigger', { userId });
         } else {
           logger.warn('Failed to trigger automatic sync from recoveries endpoint', {
             userId,
-            error: syncError.message,
-            // Don't fail the recoveries endpoint if sync fails
+            error: syncError.message
           });
         }
       });
     } catch (syncTriggerError: any) {
-      // Log but don't fail - sync trigger is optional
       logger.warn('Error triggering sync from recoveries endpoint', {
         userId,
         error: syncTriggerError.message
       });
     }
     
-    // Return zeros with message (include source field for consistency)
     logger.info('No claims found, returning zeros - sync may be in progress', {
       userId,
       isSandbox,
@@ -460,7 +530,7 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
       message: 'No data found. Syncing your Amazon account... Please refresh in a few moments.',
       needsSync: true,
       syncTriggered: true,
-      isSandbox: isSandbox
+      isSandbox
     });
   } catch (error: any) {
     // Log error but still return a valid response (never return 500 for empty data)

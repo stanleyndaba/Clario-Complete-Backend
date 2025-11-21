@@ -53,7 +53,7 @@ async function checkDashboardNumbers() {
         COUNT(*) FILTER (WHERE status = 'approved') as approved,
         COUNT(*) FILTER (WHERE status = 'pending') as pending,
         COUNT(*) FILTER (WHERE status = 'rejected') as rejected,
-        SUM(amount) FILTER (WHERE status = 'approved') as approved_amount
+        SUM(claim_amount) FILTER (WHERE status = 'approved') as approved_amount
       FROM dispute_cases
     `);
     
