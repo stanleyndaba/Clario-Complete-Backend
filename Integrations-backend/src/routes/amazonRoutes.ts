@@ -482,4 +482,67 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
   }
 }));
 
+// GET /api/v1/integrations/amazon/upcoming-payments
+// Get upcoming payments from filed/approved claims
+router.get('/upcoming-payments', wrap(async (req: Request, res: Response) => {
+  const userId = (req as any).userId || (req as any)?.user?.id || (req as any)?.user?.user_id || 'demo-user';
+  
+  logger.info('📊 [UPCOMING PAYMENTS] Getting upcoming payments', { userId });
+  
+  try {
+    // Query dispute_cases for filed/approved claims with expected payout dates
+    const { data: disputeCases, error } = await supabase
+      .from('dispute_cases')
+      .select('id, seller_id, claim_amount, currency, status, expected_payout_date, created_at, dispute_type')
+      .eq('seller_id', userId)
+      .in('status', ['filed', 'approved', 'pending'])
+      .not('expected_payout_date', 'is', null)
+      .order('expected_payout_date', { ascending: true });
+    
+    if (error) {
+      logger.error('❌ [UPCOMING PAYMENTS] Failed to fetch dispute cases', { error: error.message, userId });
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to fetch upcoming payments',
+        recoveries: [] 
+      });
+    }
+    
+    // Transform to match frontend expected format
+    const recoveries = (disputeCases || []).map((dc: any) => ({
+      id: dc.id,
+      claim_id: dc.id,
+      type: dc.dispute_type || 'unknown',
+      status: dc.status,
+      amount: parseFloat(dc.claim_amount?.toString() || '0'),
+      currency: dc.currency || 'USD',
+      created_at: dc.created_at,
+      expected_payout_date: dc.expected_payout_date,
+      // Map to frontend field names
+      guaranteedAmount: parseFloat(dc.claim_amount?.toString() || '0'),
+      expectedPayoutDate: dc.expected_payout_date,
+      created: dc.created_at
+    }));
+    
+    logger.info('✅ [UPCOMING PAYMENTS] Found upcoming payments', { 
+      userId, 
+      count: recoveries.length 
+    });
+    
+    return res.json({
+      success: true,
+      recoveries: recoveries,
+      total: recoveries.length
+    });
+    
+  } catch (error: any) {
+    logger.error('❌ [UPCOMING PAYMENTS] Error', { error: error.message, userId });
+    return res.status(500).json({ 
+      success: false, 
+      error: 'Internal server error',
+      recoveries: [] 
+    });
+  }
+}));
+
 export default router;
