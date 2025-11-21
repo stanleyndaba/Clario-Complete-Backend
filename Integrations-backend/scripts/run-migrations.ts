@@ -19,7 +19,8 @@ const migrations = [
   '009_evidence_documents_extracted_gin.sql',
   '010_evidence_engine_extras.sql',
   '011_evidence_engine_views.sql',
-  '011_evidence_ingestion_worker.sql'
+  '011_evidence_ingestion_worker.sql',
+  '024_add_expected_payout_date_to_disputes.sql'
 ];
 
 async function runMigrationsViaSupabase(sql: string): Promise<boolean> {

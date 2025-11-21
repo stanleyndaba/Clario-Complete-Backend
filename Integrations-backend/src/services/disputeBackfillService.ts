@@ -70,6 +70,12 @@ const toIsoOrNull = (value?: string | null) => {
   }
 };
 
+const addDays = (isoDate: string, days: number) => {
+  const date = new Date(isoDate);
+  date.setDate(date.getDate() + days);
+  return date.toISOString();
+};
+
 export async function upsertDisputesAndRecoveriesFromDetections(
   detections: DetectionForDispute[]
 ): Promise<void> {
@@ -84,11 +90,17 @@ export async function upsertDisputesAndRecoveriesFromDetections(
   const disputePayload = detections.map((detection, index) => {
     const claimAmount = Number(detection.estimated_value ?? 0);
     const status = deriveCaseStatus(detection);
-    const submissionDate =
-      status === 'pending' ? null : toIsoOrNull(detection.created_at) || nowIso;
+    const detectionIso = toIsoOrNull(detection.created_at) || nowIso;
+    const submissionDate = status === 'pending' ? null : detectionIso;
     const isApproved = status === 'approved';
     const resolutionDate = isApproved ? submissionDate : null;
     const actualPayout = isApproved ? claimAmount : null;
+    const expectedPayoutDate = (() => {
+      if (isApproved && resolutionDate) return resolutionDate;
+      const baseDate = submissionDate || detectionIso;
+      const leadDays = status === 'submitted' ? 5 : 10;
+      return addDays(baseDate || nowIso, leadDays);
+    })();
 
     return {
       seller_id: detection.seller_id,
@@ -102,10 +114,11 @@ export async function upsertDisputesAndRecoveriesFromDetections(
       submission_date: submissionDate,
       resolution_date: resolutionDate,
       resolution_amount: actualPayout,
+      expected_payout_date: expectedPayoutDate,
       recovery_status: isApproved ? 'reconciled' : 'pending',
       actual_payout_amount: actualPayout,
       reconciled_at: isApproved ? resolutionDate : null,
-      created_at: toIsoOrNull(detection.created_at) || nowIso,
+      created_at: detectionIso,
       updated_at: nowIso
     };
   });
