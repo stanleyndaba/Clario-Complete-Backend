@@ -106,6 +106,19 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
     UNIQUE(user_id, provider)
 );
 
+-- Compatibility: ensure Supabase default schema includes required user columns
+ALTER TABLE IF EXISTS users
+    ADD COLUMN IF NOT EXISTS amazon_seller_id VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS company_name VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS linked_marketplaces JSONB NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS stripe_account_id VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS last_sync_attempt_at TIMESTAMP WITH TIME ZONE,
+    ADD COLUMN IF NOT EXISTS last_sync_completed_at TIMESTAMP WITH TIME ZONE,
+    ADD COLUMN IF NOT EXISTS last_sync_job_id VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS last_login TIMESTAMP WITH TIME ZONE DEFAULT NOW();
+
 -- Create indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_claims_status ON claims(status);
 CREATE INDEX IF NOT EXISTS idx_claims_type ON claims(claim_type);
@@ -143,4 +156,3 @@ COMMENT ON TABLE filings IS 'Amazon case filings and their status';
 COMMENT ON TABLE users IS 'User profiles and authentication data';
 COMMENT ON TABLE oauth_tokens IS 'Encrypted OAuth refresh tokens';
 COMMENT ON TABLE idempotency_keys IS 'Idempotency keys to prevent duplicate processing';
-

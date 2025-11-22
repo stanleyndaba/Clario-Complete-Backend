@@ -98,6 +98,110 @@ CREATE TABLE IF NOT EXISTS evidence_matches (
     UNIQUE(claim_id, document_id)
 );
 
+-- Compatibility: existing Supabase tables were provisioned with seller_id instead of user_id.
+-- Ensure the user_id columns exist before we attempt to index them so migrations stay idempotent.
+ALTER TABLE IF EXISTS evidence_sources
+    ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE;
+
+-- Compatibility: ensure legacy evidence_sources tables include the expected columns.
+ALTER TABLE IF EXISTS evidence_sources
+    ADD COLUMN IF NOT EXISTS provider evidence_provider NOT NULL DEFAULT 'gmail';
+ALTER TABLE IF EXISTS evidence_sources
+    ADD COLUMN IF NOT EXISTS account_email VARCHAR(255) NOT NULL DEFAULT 'unknown@placeholder.invalid';
+ALTER TABLE IF EXISTS evidence_sources
+    ADD COLUMN IF NOT EXISTS status evidence_source_status NOT NULL DEFAULT 'connected';
+ALTER TABLE IF EXISTS evidence_sources
+    ADD COLUMN IF NOT EXISTS encrypted_access_token TEXT NOT NULL DEFAULT '';
+ALTER TABLE IF EXISTS evidence_sources
+    ADD COLUMN IF NOT EXISTS encrypted_refresh_token TEXT;
+ALTER TABLE IF EXISTS evidence_sources
+    ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE IF EXISTS evidence_sources
+    ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE IF EXISTS evidence_sources
+    ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE IF EXISTS evidence_sources
+    ADD COLUMN IF NOT EXISTS last_sync_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE IF EXISTS evidence_sources
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();
+ALTER TABLE IF EXISTS evidence_sources
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();
+ALTER TABLE IF EXISTS evidence_sources
+    ALTER COLUMN provider DROP DEFAULT;
+ALTER TABLE IF EXISTS evidence_sources
+    ALTER COLUMN encrypted_access_token DROP DEFAULT;
+
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS provider evidence_provider NOT NULL DEFAULT 'gmail';
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS external_id VARCHAR(500) NOT NULL DEFAULT uuid_generate_v4()::text;
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS filename VARCHAR(500) NOT NULL DEFAULT 'legacy-document';
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS size_bytes BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS content_type VARCHAR(100) NOT NULL DEFAULT 'application/octet-stream';
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS processing_status document_processing_status NOT NULL DEFAULT 'pending';
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS extracted_data JSONB;
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS modified_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS sender VARCHAR(255);
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS subject TEXT;
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS message_id VARCHAR(500);
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS folder_path TEXT;
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS download_url TEXT;
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS thumbnail_url TEXT;
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS ocr_text TEXT;
+ALTER TABLE IF EXISTS evidence_documents
+    ADD COLUMN IF NOT EXISTS processed_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE IF EXISTS evidence_documents
+    ALTER COLUMN provider DROP DEFAULT;
+ALTER TABLE IF EXISTS evidence_documents
+    ALTER COLUMN external_id DROP DEFAULT;
+ALTER TABLE IF EXISTS evidence_documents
+    ALTER COLUMN filename DROP DEFAULT;
+ALTER TABLE IF EXISTS evidence_documents
+    ALTER COLUMN size_bytes DROP DEFAULT;
+ALTER TABLE IF EXISTS evidence_documents
+    ALTER COLUMN content_type DROP DEFAULT;
+
+ALTER TABLE IF EXISTS evidence_ingestion_jobs
+    ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE IF EXISTS evidence_ingestion_jobs
+    ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'pending';
+ALTER TABLE IF EXISTS evidence_ingestion_jobs
+    ADD COLUMN IF NOT EXISTS started_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();
+ALTER TABLE IF EXISTS evidence_ingestion_jobs
+    ADD COLUMN IF NOT EXISTS documents_found INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE IF EXISTS evidence_ingestion_jobs
+    ADD COLUMN IF NOT EXISTS documents_processed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE IF EXISTS evidence_ingestion_jobs
+    ADD COLUMN IF NOT EXISTS errors JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE IF EXISTS evidence_ingestion_jobs
+    ADD COLUMN IF NOT EXISTS progress INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE IF EXISTS evidence_ingestion_jobs
+    ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE IF EXISTS evidence_matches
+    ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE;
+
 -- Create indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_evidence_sources_user_id ON evidence_sources(user_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_sources_provider ON evidence_sources(provider);
