@@ -35,7 +35,7 @@ from .api.recoveries import router as recoveries_router
 from .api.evidence import router as evidence_router
 # from .api.evidence_sources import router as evidence_sources_router
 from .api.parser import router as parser_router
-# from .api.evidence_matching import router as evidence_matching_router
+from .api.evidence_matching import router as evidence_matching_router
 # from .api.zero_effort_evidence import router as zero_effort_evidence_router
 # from .api.metrics import router as metrics_router
 from .api.sync import router as sync_router
@@ -296,6 +296,7 @@ app.include_router(detections_router, tags=["detections"])
 app.include_router(recoveries_router, tags=["recoveries"])
 app.include_router(evidence_router, tags=["evidence"])
 app.include_router(parser_router, tags=["parser"])  # Document parsing endpoints
+app.include_router(evidence_matching_router, tags=["evidence-matching"])
 app.include_router(sync_router, tags=["sync"])
 app.include_router(integrations_router, tags=["integrations"])
 
