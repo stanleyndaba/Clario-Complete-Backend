@@ -7,6 +7,7 @@
 import axios from 'axios';
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
+import { buildPythonServiceAuthHeader } from '../utils/pythonServiceAuth';
 
 export interface FilingRequest {
   dispute_id: string;
@@ -51,6 +52,20 @@ class RefundFilingService {
     this.retryDelayMs = parseInt(process.env.REFUND_FILING_RETRY_DELAY_MS || '5000', 10);
   }
 
+  private buildServiceHeaders(
+    userId: string,
+    context: string,
+    extraHeaders: Record<string, string> = {}
+  ): Record<string, string> {
+    return {
+      ...extraHeaders,
+      Authorization: buildPythonServiceAuthHeader({
+        userId,
+        metadata: { source: `refund-filing:${context}` }
+      })
+    };
+  }
+
   /**
    * File a dispute case via Python SP-API service (mock for MVP)
    */
@@ -85,13 +100,10 @@ class RefundFilingService {
         `${this.pythonApiUrl}/api/v1/disputes/submit`,
         payload,
         {
-          headers: {
+          headers: this.buildServiceHeaders(request.user_id, 'file-dispute', {
             'Content-Type': 'application/json',
-            'X-User-Id': request.user_id,
-            'Authorization': process.env.PYTHON_API_KEY 
-              ? `Bearer ${process.env.PYTHON_API_KEY}` 
-              : undefined
-          },
+            'X-User-Id': request.user_id
+          }),
           timeout: 60000 // 60 seconds
         }
       );
@@ -188,12 +200,9 @@ class RefundFilingService {
       const response = await axios.get(
         `${this.pythonApiUrl}/api/v1/disputes/status/${submissionId}`,
         {
-          headers: {
-            'X-User-Id': userId,
-            'Authorization': process.env.PYTHON_API_KEY 
-              ? `Bearer ${process.env.PYTHON_API_KEY}` 
-              : undefined
-          },
+          headers: this.buildServiceHeaders(userId, 'case-status', {
+            'X-User-Id': userId
+          }),
           timeout: 30000
         }
       );

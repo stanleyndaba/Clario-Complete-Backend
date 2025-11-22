@@ -163,8 +163,10 @@ ENABLE_DOCUMENT_PARSING_WORKER=true  # Default: true
 PYTHON_API_URL=https://python-api-5.onrender.com
 API_URL=https://python-api-5.onrender.com  # Fallback
 
-# Python API authentication (optional)
-PYTHON_API_KEY=your-api-key-here
+# Python API authentication
+PYTHON_API_JWT_SECRET=copy-of-your-fastapi-JWT_SECRET
+PYTHON_API_SERVICE_NAME=integrations-service-worker
+PYTHON_API_SERVICE_EMAIL=integrations-worker@yourdomain.com
 ```
 
 ### **Configuration**

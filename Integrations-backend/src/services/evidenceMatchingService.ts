@@ -7,6 +7,7 @@ import axios, { AxiosError } from 'axios';
 import logger from '../utils/logger';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import smartPromptService from './smartPromptService';
+import { buildPythonServiceAuthHeader } from '../utils/pythonServiceAuth';
 
 export interface MatchingResult {
   dispute_id: string;
@@ -70,6 +71,21 @@ class EvidenceMatchingService {
     });
   }
 
+  private buildServiceHeaders(
+    userId: string,
+    context: string,
+    extraHeaders: Record<string, string> = {}
+  ): Record<string, string> {
+    const headers: Record<string, string> = { ...extraHeaders };
+    headers.Authorization = buildPythonServiceAuthHeader({
+      userId,
+      metadata: {
+        source: `integrations:${context}`
+      }
+    });
+    return headers;
+  }
+
   /**
    * Run evidence matching for a user via Python API
    */
@@ -89,12 +105,9 @@ class EvidenceMatchingService {
           claims: claims || []
         },
         {
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': process.env.PYTHON_API_KEY 
-              ? `Bearer ${process.env.PYTHON_API_KEY}` 
-              : undefined
-          },
+          headers: this.buildServiceHeaders(userId, 'evidence-matching:run', {
+            'Content-Type': 'application/json'
+          }),
           timeout: 60000 // 60 seconds (matching can take time)
         }
       );
@@ -280,12 +293,9 @@ class EvidenceMatchingService {
             reasoning: result.reasoning
           },
           {
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': process.env.PYTHON_API_KEY 
-                ? `Bearer ${process.env.PYTHON_API_KEY}` 
-                : undefined
-            },
+            headers: this.buildServiceHeaders(userId, 'evidence-matching:auto-submit', {
+              'Content-Type': 'application/json'
+            }),
             timeout: 30000
           }
         );
@@ -508,11 +518,7 @@ class EvidenceMatchingService {
         endpoint,
         {
           params: { user_id: userId, days },
-          headers: {
-            'Authorization': process.env.PYTHON_API_KEY 
-              ? `Bearer ${process.env.PYTHON_API_KEY}` 
-              : undefined
-          },
+          headers: this.buildServiceHeaders(userId, 'evidence-matching:metrics'),
           timeout: 10000
         }
       );

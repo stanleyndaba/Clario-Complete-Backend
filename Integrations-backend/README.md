@@ -271,6 +271,23 @@ npm run test -- --coverage
 | `STRIPE_CLIENT_ID` | Stripe client ID | Yes |
 | `STRIPE_CLIENT_SECRET` | Stripe client secret | Yes |
 | `REDIS_URL` | Redis connection URL | No (default: redis://localhost:6379) |
+| `PYTHON_API_URL` | Base URL for the FastAPI evidence service | Yes |
+| `PYTHON_API_JWT_SECRET` | Signing secret that matches the Python API `JWT_SECRET` | Yes |
+| `PYTHON_API_JWT_TTL` | Optional override for service JWT lifetime (e.g. `5m`) | No |
+| `PYTHON_API_SERVICE_NAME` | Display name claim for generated service JWTs | No |
+
+### Internal Python API Authentication
+
+Protected FastAPI routes (evidence matching, parsing, refund filing, etc.) now require a short‑lived JWT that impersonates the target user. The Integrations backend automatically signs these tokens with `PYTHON_API_JWT_SECRET`, but you can also mint them manually for cron jobs or health checks:
+
+```bash
+python scripts/generate_service_jwt.py \
+  --user-id <uuid-from-users-table> \
+  --email user@example.com \
+  --ttl-minutes 15
+```
+
+Set the resulting token as an environment variable in whichever worker needs to call the Python API (e.g. `EVIDENCE_MATCHING_SERVICE_JWT`) and include it via `Authorization: Bearer <token>`. The secret *must* match the FastAPI `JWT_SECRET`, so keep the two services in lockstep when rotating keys.
 
 ## 🚀 Deployment
 

@@ -7,6 +7,7 @@
 import logger from '../utils/logger';
 import axios from 'axios';
 import agentEventLogger, { AgentType, EventType } from './agentEventLogger';
+import { buildPythonServiceAuthHeader } from '../utils/pythonServiceAuth';
 
 export interface RejectionData {
   userId: string;
@@ -61,6 +62,20 @@ class LearningService {
     this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-5.onrender.com';
   }
 
+  private buildServiceHeaders(
+    userId: string,
+    context: string,
+    extraHeaders: Record<string, string> = {}
+  ): Record<string, string> {
+    return {
+      ...extraHeaders,
+      Authorization: buildPythonServiceAuthHeader({
+        userId,
+        metadata: { source: `learning:${context}` }
+      })
+    };
+  }
+
   /**
    * Log rejection to Python API for learning
    */
@@ -86,12 +101,9 @@ class LearningService {
         },
         {
           timeout: 30000,
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': process.env.PYTHON_API_KEY 
-              ? `Bearer ${process.env.PYTHON_API_KEY}` 
-              : undefined
-          }
+          headers: this.buildServiceHeaders(data.userId, 'log-rejection', {
+            'Content-Type': 'application/json'
+          })
         }
       );
 
@@ -140,12 +152,9 @@ class LearningService {
         },
         {
           timeout: 300000, // 5 minutes for retraining
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': process.env.PYTHON_API_KEY 
-              ? `Bearer ${process.env.PYTHON_API_KEY}` 
-              : undefined
-          }
+          headers: this.buildServiceHeaders(userId, 'retrain', {
+            'Content-Type': 'application/json'
+          })
         }
       );
 
@@ -200,11 +209,7 @@ class LearningService {
         {
           params: { user_id: userId },
           timeout: 30000,
-          headers: {
-            'Authorization': process.env.PYTHON_API_KEY 
-              ? `Bearer ${process.env.PYTHON_API_KEY}` 
-              : undefined
-          }
+          headers: this.buildServiceHeaders(userId, 'model-performance')
         }
       );
 
@@ -425,12 +430,9 @@ class LearningService {
           },
           {
             timeout: 30000,
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': process.env.PYTHON_API_KEY 
-                ? `Bearer ${process.env.PYTHON_API_KEY}` 
-                : undefined
-            }
+            headers: this.buildServiceHeaders(userId, 'threshold-update', {
+              'Content-Type': 'application/json'
+            })
           }
         );
       } catch (error: any) {

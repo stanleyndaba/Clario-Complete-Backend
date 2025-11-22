@@ -1,6 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import logger from '../utils/logger';
 
+const UUID_REGEX =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const allowDemoUser = process.env.ALLOW_DEMO_USER === 'true';
+
 /**
  * Middleware to extract user ID from headers or cookies
  * 
@@ -39,19 +43,24 @@ export function userIdMiddleware(req: Request, res: Response, next: NextFunction
       userId = req.query.userId as string;
     }
     
-    // Priority 6: Default to 'demo-user' if no user ID found
-    // This allows the endpoint to work even without authentication (for testing)
     if (!userId) {
-      userId = 'demo-user';
-      logger.debug('No user ID found in request - using demo-user', {
-        path: req.path,
-        method: req.method,
-        headers: {
-          'x-user-id': req.headers['x-user-id'],
-          'x-forwarded-user-id': req.headers['x-forwarded-user-id'],
-          'authorization': req.headers['authorization'] ? 'present' : 'missing'
-        }
-      });
+      if (allowDemoUser) {
+        userId = 'demo-user';
+        logger.debug('Demo mode enabled - falling back to demo-user', {
+          path: req.path,
+          method: req.method
+        });
+      } else {
+        logger.warn('No user ID found in request');
+        res.status(401).json({ error: 'User authentication required' });
+        return;
+      }
+    }
+
+    if (userId !== 'demo-user' && !UUID_REGEX.test(userId)) {
+      logger.warn('Invalid user ID format (expected UUID)', { userId, path: req.path });
+      res.status(400).json({ error: 'Invalid user ID' });
+      return;
     }
     
     // Set userId on request object for use in route handlers
@@ -75,18 +84,13 @@ export function userIdMiddleware(req: Request, res: Response, next: NextFunction
               req.headers['x-forwarded-user-id'] ? 'x-forwarded-user-id-header' :
               (req as any).user?.id ? 'req.user.id' :
               req.query?.userId ? 'query-param' :
-              'default-demo-user'
+              allowDemoUser ? 'default-demo-user' : 'n/a'
     });
     
     next();
   } catch (error: any) {
-    // If middleware fails, set default and continue (don't break the request)
-    logger.warn('Error in userIdMiddleware - using default', { error: error?.message });
-    (req as any).userId = 'demo-user';
-    if (!(req as any).user) {
-      (req as any).user = { id: 'demo-user', user_id: 'demo-user' };
-    }
-    next();
+    logger.error('Error in userIdMiddleware', { error: error?.message });
+    res.status(500).json({ error: 'Failed to extract user ID' });
   }
 }
 

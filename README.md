@@ -171,6 +171,7 @@ docker-compose up -d
 - **Access Control**: Role-based access control
 - **Audit Logging**: Comprehensive audit trails
 - **API Security**: Rate limiting and authentication
+- **Service Tokens**: `scripts/generate_service_jwt.py` mints short-lived JWTs for internal jobs
 
 ## 📝 Documentation
 

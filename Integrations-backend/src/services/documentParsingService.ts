@@ -6,6 +6,7 @@
 import axios, { AxiosError } from 'axios';
 import logger from '../utils/logger';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
+import { buildPythonServiceAuthHeader } from '../utils/pythonServiceAuth';
 
 export interface ParsedDocumentData {
   supplier_name?: string;
@@ -66,6 +67,20 @@ class DocumentParsingService {
     });
   }
 
+  private buildServiceHeaders(
+    userId: string,
+    context: string,
+    extraHeaders: Record<string, string> = {}
+  ): Record<string, string> {
+    return {
+      ...extraHeaders,
+      Authorization: buildPythonServiceAuthHeader({
+        userId,
+        metadata: { source: `document-parsing:${context}` }
+      })
+    };
+  }
+
   /**
    * Trigger parsing for a document via Python API
    */
@@ -91,13 +106,10 @@ class DocumentParsingService {
             endpoint,
             {},
             {
-              headers: {
+              headers: this.buildServiceHeaders(userId, 'trigger', {
                 'X-User-Id': userId,
-                'Content-Type': 'application/json',
-                'Authorization': process.env.PYTHON_API_KEY 
-                  ? `Bearer ${process.env.PYTHON_API_KEY}` 
-                  : undefined
-              },
+                'Content-Type': 'application/json'
+              }),
               timeout: 30000 // 30 seconds
             }
           );
@@ -155,12 +167,9 @@ class DocumentParsingService {
           const response = await axios.get<{ ok: boolean; data: ParsingJobStatus }>(
             endpoint,
             {
-              headers: {
-                'X-User-Id': userId,
-                'Authorization': process.env.PYTHON_API_KEY 
-                  ? `Bearer ${process.env.PYTHON_API_KEY}` 
-                  : undefined
-              },
+              headers: this.buildServiceHeaders(userId, 'status', {
+                'X-User-Id': userId
+              }),
               timeout: 10000
             }
           );
@@ -204,12 +213,9 @@ class DocumentParsingService {
           const response = await axios.get<{ ok: boolean; data: { parsed_metadata?: ParsedDocumentData } }>(
             endpoint,
             {
-              headers: {
-                'X-User-Id': userId,
-                'Authorization': process.env.PYTHON_API_KEY 
-                  ? `Bearer ${process.env.PYTHON_API_KEY}` 
-                  : undefined
-              },
+              headers: this.buildServiceHeaders(userId, 'get-doc', {
+                'X-User-Id': userId
+              }),
               timeout: 10000
             }
           );

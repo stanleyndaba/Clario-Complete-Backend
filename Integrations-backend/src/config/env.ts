@@ -18,6 +18,7 @@ const DERIVED_ENCRYPTION_KEY = crypto
 const config = {
   NODE_ENV: process.env.NODE_ENV || 'production',
   PORT: toInt(process.env.PORT, 3001),
+  PYTHON_API_URL: process.env.PYTHON_API_URL || 'https://python-api-5.onrender.com',
 
   // Rate limiting
   RATE_LIMIT_WINDOW_MS: toInt(process.env.RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000), // 15 minutes
@@ -27,6 +28,8 @@ const config = {
   DATABASE_URL: process.env.DATABASE_URL || '',
   REDIS_URL: process.env.REDIS_URL,
   JWT_SECRET: process.env.JWT_SECRET || 'demo-secret-change-me',
+  PYTHON_API_JWT_SECRET: process.env.PYTHON_API_JWT_SECRET || process.env.JWT_SECRET || '',
+  PYTHON_API_JWT_TTL: process.env.PYTHON_API_JWT_TTL || '5m',
   ENCRYPTION_KEY: process.env.ENCRYPTION_KEY || DERIVED_ENCRYPTION_KEY,
 
   // Logging
