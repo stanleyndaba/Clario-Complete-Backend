@@ -236,7 +236,7 @@ CORS_ALLOW_ORIGINS=https://opside-complete-frontend-kqvxrzg4s-mvelo-ndabas-proje
 
 ```bash
 # Backend API URLs
-NEXT_PUBLIC_API_URL=https://clario-complete-backend-y5cd.onrender.com
+NEXT_PUBLIC_API_URL=https://opside-node-api-woco.onrender.com
 NEXT_PUBLIC_INTEGRATIONS_URL=https://your-integrations-backend.onrender.com
 NEXT_PUBLIC_REFUND_ENGINE_URL=https://your-refund-engine.onrender.com
 

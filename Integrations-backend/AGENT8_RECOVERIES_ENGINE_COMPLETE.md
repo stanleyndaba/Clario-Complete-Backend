@@ -165,7 +165,7 @@ Agent 8 (Recoveries Worker)
 ### **Environment Variables**
 ```bash
 # Python API URL (optional)
-PYTHON_API_URL=https://python-api-5.onrender.com
+PYTHON_API_URL=https://python-api-7.onrender.com
 
 # Recoveries Worker
 ENABLE_RECOVERIES_WORKER=true  # Enable/disable worker

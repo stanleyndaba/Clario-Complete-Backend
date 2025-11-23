@@ -13,7 +13,7 @@ I added a root handler for `/api/v1/integrations/amazon` that:
 
 **The frontend is calling the OLD backend URL:**
 ```
-https://clario-complete-backend-y5cd.onrender.com
+https://opside-node-api-woco.onrender.com
 ```
 
 **Should call:**

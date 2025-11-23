@@ -88,7 +88,7 @@ async function testEvidenceMatchingService() {
     logTest('Service: Initialization', true);
 
     // Test Python API URL configuration
-    const pythonApiUrl = process.env.PYTHON_API_URL || process.env.API_URL || 'https://python-api-5.onrender.com';
+    const pythonApiUrl = process.env.PYTHON_API_URL || process.env.API_URL || 'https://python-api-7.onrender.com';
     logTest('Service: Python API URL configured', true, undefined, { pythonApiUrl });
 
     // Test confidence thresholds

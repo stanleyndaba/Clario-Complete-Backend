@@ -4,7 +4,7 @@
 
 Frontend is still calling:
 ```
-https://clario-complete-backend-y5cd.onrender.com/api/v1/integrations/amazon
+https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon
 ```
 
 But should call:
@@ -32,7 +32,7 @@ https://opside-node-api.onrender.com/api/v1/integrations/amazon/auth/start
    
 3. **Verify values:**
    - Should be: `https://opside-node-api.onrender.com`
-   - NOT: `https://clario-complete-backend-y5cd.onrender.com`
+   - NOT: `https://opside-node-api-woco.onrender.com`
 
 ---
 

@@ -54,7 +54,7 @@ class EvidenceMatchingService {
     this.pythonApiUrl = 
       process.env.PYTHON_API_URL || 
       process.env.API_URL || 
-      'https://python-api-5.onrender.com';
+      'https://python-api-7.onrender.com';
     
     // Get thresholds from environment (optional)
     if (process.env.EVIDENCE_CONFIDENCE_AUTO) {

@@ -4,7 +4,7 @@
 
 Frontend error:
 ```
-Cannot connect to backend at https://clario-complete-backend-y5cd.onrender.com/api/v1/integrations/amazon
+Cannot connect to backend at https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon
 ```
 
 **This means the frontend is still using the old backend URL.**

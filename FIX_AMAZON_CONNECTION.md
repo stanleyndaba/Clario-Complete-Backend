@@ -5,14 +5,14 @@
 Frontend error:
 ```
 Clario Connection Failed
-Cannot connect to backend at https://clario-complete-backend-y5cd.onrender.com/api/v1/integrations/connectamazon
+Cannot connect to backend at https://opside-node-api-woco.onrender.com/api/v1/integrations/connectamazon
 ```
 
 ## ✅ Solution: Two Issues to Fix
 
 ### Issue 1: Frontend Using Old Backend URL ❌
 
-**Current (wrong)**: `https://clario-complete-backend-y5cd.onrender.com`  
+**Current (wrong)**: `https://opside-node-api-woco.onrender.com`  
 **Should be**: `https://opside-node-api.onrender.com`
 
 ### Issue 2: Wrong Endpoint Path ❌

@@ -38,7 +38,7 @@ async function verifyNodeAPI() {
 }
 
 async function verifyPythonAPI() {
-  const pythonAPI = 'https://python-api-5.onrender.com';
+  const pythonAPI = 'https://python-api-7.onrender.com';
   
   try {
     const response = await axios.get(`${pythonAPI}/`, { timeout: 10000 });

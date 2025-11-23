@@ -39,7 +39,7 @@ You need to update/add these variables:
 #### **Update These Variables:**
 
 1. **`NEXT_PUBLIC_API_URL`**
-   - **Current**: Probably `https://clario-complete-backend-y5cd.onrender.com` (old)
+   - **Current**: Probably `https://opside-node-api-woco.onrender.com` (old)
    - **New**: `https://opside-python-api.onrender.com`
    - **Action**: 
      - If it exists: Click the **"..."** menu → **"Edit"** → Update value → **"Save"**

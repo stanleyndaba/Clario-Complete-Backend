@@ -1,7 +1,7 @@
 // Fix CORS configuration
 const allowedOrigins = [
   'https://clario-refunds-frontend.onrender.com',
-  'https://clario-complete-backend-y5cd.onrender.com', 
+  'https://opside-node-api-woco.onrender.com', 
   'http://localhost:8080', 
   'http://localhost:5173'
 ].filter(Boolean);

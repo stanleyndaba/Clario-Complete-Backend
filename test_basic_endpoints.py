@@ -2,7 +2,7 @@ import requests
 import json
 
 # Test the basic endpoints on the deployed app
-BASE_URL = "https://clario-complete-backend-y5cd.onrender.com"
+BASE_URL = "https://opside-node-api-woco.onrender.com"
 
 def test_endpoint(endpoint, method="GET"):
     url = f"{BASE_URL}{endpoint}"

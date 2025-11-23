@@ -61,7 +61,7 @@ export class Agent2DataSyncService {
   private shipmentsService: ShipmentsService;
   private returnsService: ReturnsService;
   private settlementsService: SettlementsService;
-  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-5.onrender.com';
+  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-7.onrender.com';
 
   constructor() {
     this.ordersService = new OrdersService();

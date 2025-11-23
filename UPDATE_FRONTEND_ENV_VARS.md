@@ -106,7 +106,7 @@ After redeploy:
 Open DevTools (F12) → Console, look for:
 ```
 ✅ [API] Requesting: https://opside-node-api-woco.onrender.com/api/...
-❌ [API] Requesting: https://clario-complete-backend-y5cd.onrender.com/... (old URL)
+❌ [API] Requesting: https://opside-node-api-woco.onrender.com/... (old URL)
 ```
 
 ### Check 2: Network Tab

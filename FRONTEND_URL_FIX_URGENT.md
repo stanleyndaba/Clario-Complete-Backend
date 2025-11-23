@@ -4,7 +4,7 @@
 
 Your frontend is **still calling the OLD backend URL**:
 ```
-https://clario-complete-backend-y5cd.onrender.com/api/v1/integrations/amazon
+https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon
 ```
 
 **This backend is DEPRECATED** and may be down or not responding.
@@ -44,8 +44,8 @@ grep -r "connectamazon" .
 **Look for hardcoded URLs like:**
 ```javascript
 // ❌ WRONG - Remove this!
-const API_URL = 'https://clario-complete-backend-y5cd.onrender.com';
-const apiUrl = 'https://clario-complete-backend-y5cd.onrender.com';
+const API_URL = 'https://opside-node-api-woco.onrender.com';
+const apiUrl = 'https://opside-node-api-woco.onrender.com';
 ```
 
 **Should be:**
@@ -135,7 +135,7 @@ https://opside-node-api.onrender.com
 2. Click **"Connect Amazon"** button
 3. Look at the failed request:
    - **URL should be**: `https://opside-node-api.onrender.com/api/v1/integrations/amazon`
-   - **NOT**: `https://clario-complete-backend-y5cd.onrender.com/...`
+   - **NOT**: `https://opside-node-api-woco.onrender.com/...`
 
 ---
 

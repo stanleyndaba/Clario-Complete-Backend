@@ -81,7 +81,7 @@ STRIPE_INTERNAL_API_KEY=your-secret-api-key-here
 JWT_SECRET=your-jwt-secret-key-here
 
 # CORS - Add your frontend and orchestrator URLs
-ALLOWED_ORIGINS=https://your-frontend.vercel.app,https://clario-complete-backend-y5cd.onrender.com
+ALLOWED_ORIGINS=https://your-frontend.vercel.app,https://opside-node-api-woco.onrender.com
 
 # Port (Railway sets this automatically)
 PORT=${{PORT}}
@@ -181,7 +181,7 @@ REDIS_URL=${{Redis.REDIS_URL}}
 JWT_SECRET=your-jwt-secret-key-here
 
 # CORS
-ALLOWED_ORIGINS=https://your-frontend.vercel.app,https://clario-complete-backend-y5cd.onrender.com
+ALLOWED_ORIGINS=https://your-frontend.vercel.app,https://opside-node-api-woco.onrender.com
 
 # Port
 PORT=${{PORT}}
@@ -253,7 +253,7 @@ curl https://opside-cost-documentation-production.up.railway.app/health
 
 ```bash
 # Check orchestrator service status
-curl https://clario-complete-backend-y5cd.onrender.com/api/services/status
+curl https://opside-node-api-woco.onrender.com/api/services/status
 ```
 
 Expected response should show all 7 services as healthy:

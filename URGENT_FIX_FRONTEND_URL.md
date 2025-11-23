@@ -4,7 +4,7 @@
 
 Error shows frontend is calling:
 ```
-https://clario-complete-backend-y5cd.onrender.com/api/v1/integrations/amazon
+https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon
 ```
 
 This means the frontend **environment variable is NOT set or NOT being used**.

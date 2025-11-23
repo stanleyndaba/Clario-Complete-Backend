@@ -65,7 +65,7 @@ Add/Update these variables:
 
 ```bash
 # Backend API URL
-NEXT_PUBLIC_API_URL=https://clario-complete-backend-y5cd.onrender.com
+NEXT_PUBLIC_API_URL=https://opside-node-api-woco.onrender.com
 
 # Backend Integrations URL  
 NEXT_PUBLIC_INTEGRATIONS_URL=https://your-integrations-backend-url.onrender.com
@@ -102,7 +102,7 @@ NEXT_PUBLIC_DEBUG_MODE=true
 
 Test the backend endpoint:
 ```bash
-curl https://clario-complete-backend-y5cd.onrender.com/api/v1/integrations/amazon/sandbox/callback
+curl https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/sandbox/callback
 ```
 
 Expected response:

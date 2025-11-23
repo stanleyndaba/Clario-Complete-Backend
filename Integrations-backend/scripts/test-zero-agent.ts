@@ -230,20 +230,37 @@ async function testZeroAgentLayer() {
           }
         }
         
-        // Try to insert (not upsert, since unique constraint might not exist)
-        // Note: evidence_sources table only allows specific providers: 'gmail','outlook','dropbox','gdrive','onedrive','s3','other'
-        // We'll use 'other' for Amazon since it's not in the list
+        // Determine which user_id to associate with the evidence source
+        let userIdForEvidence = TEST_USER_ID;
+        if (results.userCreation) {
+          const { data: createdUser } = await adminClient
+            .from('users')
+            .select('id')
+            .eq('amazon_seller_id', TEST_SELLER_ID)
+            .maybeSingle();
+          if (createdUser?.id) {
+            userIdForEvidence = createdUser.id;
+          }
+        }
+
+        // Insert a mock evidence source record with required encrypted token fields
         const { data: evidenceData, error: evidenceError } = await adminClient
           .from('evidence_sources')
           .insert({
+            user_id: userIdForEvidence,
             seller_id: TEST_SELLER_ID,
-            provider: 'other', // Use 'other' since 'amazon' is not in the allowed provider list
+            provider: 'gmail',
+            account_email: `${TEST_SELLER_ID}@evidence.test`,
             status: 'connected',
-            display_name: 'Test Amazon Seller',
+            display_name: 'Test Evidence Source',
+            encrypted_access_token: 'ENCRYPTED_ACCESS_TOKEN_PLACEHOLDER',
+            encrypted_refresh_token: 'ENCRYPTED_REFRESH_TOKEN_PLACEHOLDER',
+            token_expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
+            permissions: ['gmail.readonly'],
             metadata: {
               marketplaces: ['ATVPDKIKX0DER'],
               test: true,
-              actual_provider: 'amazon' // Store actual provider in metadata
+              actual_provider: 'amazon'
             },
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()

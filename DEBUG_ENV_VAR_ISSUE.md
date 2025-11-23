@@ -4,7 +4,7 @@
 
 **Error shows:**
 ```
-https://clario-complete-backend-y5cd.onrender.com/api/v1/integrations/amazon
+https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon
 ```
 
 But your env vars are correct. This means:
@@ -128,7 +128,7 @@ grep -r "VITE_API_BASE_URL\|NEXT_PUBLIC_INTEGRATIONS_URL" .
 
 **Check if there's a default/fallback:**
 ```javascript
-const apiUrl = process.env.VITE_API_BASE_URL || 'https://clario-complete-backend-y5cd.onrender.com';
+const apiUrl = process.env.VITE_API_BASE_URL || 'https://opside-node-api-woco.onrender.com';
 //                                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 //                                                        This is the problem!
 ```

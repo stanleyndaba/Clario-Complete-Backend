@@ -180,7 +180,7 @@ vercel_origins = [
     "https://opside-complete-frontend-kqvxrzg4s-mvelo-ndabas-projects.vercel.app",
     "https://opside-complete-frontend-nwcors9h1-mvelo-ndabas-projects.vercel.app",
     "https://opside-complete-frontend.onrender.com",
-    "https://clario-complete-backend-y5cd.onrender.com",
+    "https://opside-node-api-woco.onrender.com",
 ]
 frontend = os.getenv("FRONTEND_URL") or settings.FRONTEND_URL or "https://opside-complete-frontend.onrender.com"
 # Filter out wildcard patterns from the explicit origins list

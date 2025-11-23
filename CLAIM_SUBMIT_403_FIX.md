@@ -105,7 +105,7 @@ After deploying:
 # Should work (with auth token):
 curl -X POST \
   -H "Authorization: Bearer YOUR_TOKEN" \
-  https://clario-complete-backend-y5cd.onrender.com/api/recoveries/CLM-002/submit
+  https://opside-node-api-woco.onrender.com/api/recoveries/CLM-002/submit
 
 # Should return:
 {

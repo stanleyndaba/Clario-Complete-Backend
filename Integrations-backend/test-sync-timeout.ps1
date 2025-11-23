@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 
 # Configuration
 $BASE_URL = $env:INTEGRATIONS_API_URL ?? "https://opside-node-api-woco.onrender.com"
-$PYTHON_API_URL = $env:PYTHON_API_URL ?? "https://python-api-5.onrender.com"
+$PYTHON_API_URL = $env:PYTHON_API_URL ?? "https://python-api-7.onrender.com"
 $USER_ID = "demo-user"
 $TIMEOUT_SECONDS = 60  # Increased to 60s - sync works correctly, takes ~50s currently
 $MAX_SYNC_TIME_MS = $TIMEOUT_SECONDS * 1000

@@ -8,7 +8,7 @@
 |---------|-----------|--------|---------|
 | **MCDE** | https://clario-complete-backend-yjjr.onrender.com | ✅ Live | Evidence validation & cost modeling |
 | **Backend** | https://clario-complete-backend.onrender.com | ✅ Live | Core backend API |
-| **Orchestrator** | https://clario-complete-backend-y5cd.onrender.com | ✅ Live | Main FastAPI orchestrator |
+| **Orchestrator** | https://opside-node-api-woco.onrender.com | ✅ Live | Main FastAPI orchestrator |
 | **Refund Engine** | https://clarios-refund-engine.onrender.com | ✅ Live | Claims management & ML detection |
 | **Integrations Backend** | https://clario-complete-backend-mvak.onrender.com | ✅ Live | Amazon SP-API, Gmail, Stripe OAuth |
 
@@ -77,7 +77,7 @@ STRIPE_INTERNAL_API_KEY=your-secret-api-key
 JWT_SECRET=your-jwt-secret-key
 
 # CORS
-ALLOWED_ORIGINS=https://your-frontend.vercel.app,https://clario-complete-backend-y5cd.onrender.com
+ALLOWED_ORIGINS=https://your-frontend.vercel.app,https://opside-node-api-woco.onrender.com
 
 # Port
 PORT=4000
@@ -129,7 +129,7 @@ REDIS_URL=redis://host:6379
 JWT_SECRET=your-jwt-secret-key
 
 # CORS
-ALLOWED_ORIGINS=https://your-frontend.vercel.app,https://clario-complete-backend-y5cd.onrender.com
+ALLOWED_ORIGINS=https://your-frontend.vercel.app,https://opside-node-api-woco.onrender.com
 
 # Port
 PORT=3003
@@ -176,7 +176,7 @@ curl https://opside-stripe-payments-production.up.railway.app/health
 curl https://opside-cost-documentation-production.up.railway.app/health
 
 # Orchestrator Service Status
-curl https://clario-complete-backend-y5cd.onrender.com/api/services/status
+curl https://opside-node-api-woco.onrender.com/api/services/status
 ```
 
 ### 2. Verify Service Discovery
