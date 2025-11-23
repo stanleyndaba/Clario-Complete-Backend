@@ -36,15 +36,19 @@ export interface FeeCalculation {
 }
 
 class BillingService {
-  private stripePaymentsUrl: string;
+  private stripePaymentsUrl: string | null;
   private platformFeePercentage: number = 20; // 20% platform fee
   private minimumFeeCents: number = 50; // $0.50 minimum fee
 
   constructor() {
-    this.stripePaymentsUrl = process.env.STRIPE_PAYMENTS_URL || 'http://localhost:4000';
-    logger.info('💳 [BILLING] Billing Service initialized', {
-      stripePaymentsUrl: this.stripePaymentsUrl
-    });
+    this.stripePaymentsUrl = process.env.STRIPE_PAYMENTS_URL || null;
+    if (this.stripePaymentsUrl) {
+      logger.info('💳 [BILLING] Billing Service initialized', {
+        stripePaymentsUrl: this.stripePaymentsUrl
+      });
+    } else {
+      logger.warn('💳 [BILLING] STRIPE_PAYMENTS_URL not configured - billing service disabled until configured');
+    }
   }
 
   /**
@@ -84,6 +88,10 @@ class BillingService {
    */
   async chargeCommission(request: BillingRequest): Promise<BillingResult> {
     try {
+      if (!this.stripePaymentsUrl) {
+        throw new Error('Stripe payments service is not configured (set STRIPE_PAYMENTS_URL)');
+      }
+
       logger.info('💳 [BILLING] Charging commission', {
         disputeId: request.disputeId,
         userId: request.userId,
@@ -167,6 +175,20 @@ class BillingService {
     request: BillingRequest,
     maxRetries: number = 3
   ): Promise<BillingResult> {
+    if (!this.stripePaymentsUrl) {
+      const errorMessage = 'Stripe payments service disabled (STRIPE_PAYMENTS_URL not set)';
+      logger.info('💳 [BILLING] Skipping commission charge - Stripe not configured', {
+        disputeId: request.disputeId,
+        userId: request.userId,
+        error: errorMessage
+      });
+      return {
+        success: false,
+        status: 'disabled',
+        error: errorMessage
+      };
+    }
+
     let lastError: any;
     let lastResult: BillingResult | null = null;
 

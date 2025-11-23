@@ -281,6 +281,13 @@ class DatabaseManager:
                     conn.close()
                 except Exception:
                     pass
+
+    # Backwards compatibility: many modules still call _get_connection()
+    @contextmanager
+    def _get_connection(self):
+        """Backward-compatible alias for _connection()."""
+        with self._connection() as conn:
+            yield conn
     
     def _execute_query(self, query: str, params: tuple = (), fetch: bool = False, fetch_one: bool = False):
         """Execute query with proper connection handling"""

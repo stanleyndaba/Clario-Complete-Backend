@@ -351,12 +351,20 @@ server.listen(PORT, '0.0.0.0', () => {
         logger.info('Recoveries worker disabled (ENABLE_RECOVERIES_WORKER=false)');
       }
 
-      // Start Billing Worker (if enabled)
-      if (process.env.ENABLE_BILLING_WORKER !== 'false') {
+      // Start Billing Worker (requires Stripe payments configuration)
+      const billingWorkerEnabled = process.env.ENABLE_BILLING_WORKER !== 'false';
+      const stripePaymentsConfigured = Boolean(process.env.STRIPE_PAYMENTS_URL);
+      if (billingWorkerEnabled && stripePaymentsConfigured) {
         billingWorker.start();
         logger.info('Billing worker initialized');
       } else {
-        logger.info('Billing worker disabled (ENABLE_BILLING_WORKER=false)');
+        logger.info('Billing worker disabled', {
+          enabledEnv: billingWorkerEnabled,
+          stripePaymentsConfigured,
+          reason: billingWorkerEnabled
+            ? 'STRIPE_PAYMENTS_URL not configured'
+            : 'ENABLE_BILLING_WORKER=false'
+        });
       }
 
       // Start Notifications Worker (if enabled)
