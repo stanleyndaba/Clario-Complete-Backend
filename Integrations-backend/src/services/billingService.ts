@@ -24,7 +24,7 @@ export interface BillingResult {
   stripePaymentIntentId?: string;
   platformFeeCents?: number;
   sellerPayoutCents?: number;
-  status?: 'pending' | 'charged' | 'failed';
+  status?: 'pending' | 'charged' | 'failed' | 'disabled';
   error?: string;
 }
 
