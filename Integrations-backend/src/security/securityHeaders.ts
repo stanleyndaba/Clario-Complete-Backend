@@ -164,14 +164,24 @@ export function securityHeadersMiddleware(
 /**
  * Middleware to enforce HTTPS
  */
+export interface EnforceHttpsOptions {
+  allowLocalhost?: boolean;
+  skipPaths?: string[];
+}
+
 export function enforceHttpsMiddleware(
-  options: { allowLocalhost?: boolean } = {}
+  options: EnforceHttpsOptions = {}
 ) {
-  const { allowLocalhost = true } = options;
+  const { allowLocalhost = true, skipPaths = [] } = options;
 
   return (req: Request, res: Response, next: NextFunction) => {
     // Skip HTTPS enforcement in development
     if (process.env.NODE_ENV !== 'production') {
+      return next();
+    }
+
+    // Allow explicitly configured health/diagnostic routes to remain HTTP.
+    if (skipPaths.some((path) => req.path.startsWith(path))) {
       return next();
     }
 

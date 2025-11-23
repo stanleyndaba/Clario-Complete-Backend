@@ -66,6 +66,9 @@ import learningWorker from './workers/learningWorker';
 const app = express();
 const server = createServer(app);
 
+// Behind Render/other proxies we trust the first hop to read TLS headers
+app.set('trust proxy', 1);
+
 // Initialize WebSocket service
 websocketService.initialize(server);
 
@@ -81,7 +84,10 @@ try {
 
 // Security middleware - enforce HTTPS first
 if (process.env.NODE_ENV === 'production') {
-  app.use(enforceHttpsMiddleware({ allowLocalhost: false }));
+  app.use(enforceHttpsMiddleware({
+    allowLocalhost: false,
+    skipPaths: ['/health', '/healthz'],
+  }));
   app.use(validateTlsMiddleware());
 }
 
@@ -259,7 +265,7 @@ app.use('/api/v1/inventory-sync', consolidatedInventorySyncRoutes);
 
 // Proxy routes to Python backend (recoveries, documents, metrics)
 // IMPORTANT: These must be registered after all other routes to avoid conflicts
-// These proxy requests to python-api-5.onrender.com
+// These proxy requests to python-api-7.onrender.com
 app.use('/', proxyRoutes);
 
 // Error handling middleware
