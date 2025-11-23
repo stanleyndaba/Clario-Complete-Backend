@@ -26,6 +26,14 @@ export interface PythonServiceJwtOptions {
 
 export const isPythonServiceAuthConfigured = (): boolean => Boolean(SERVICE_JWT_SECRET);
 
+const resolveExpiresIn = (value?: string): SignOptions['expiresIn'] => {
+  if (!value) {
+    return SERVICE_JWT_TTL as SignOptions['expiresIn'];
+  }
+  const numeric = Number(value);
+  return Number.isNaN(numeric) ? (value as SignOptions['expiresIn']) : numeric;
+};
+
 export const generatePythonServiceJwt = (options: PythonServiceJwtOptions): string => {
   if (!SERVICE_JWT_SECRET) {
     throw new Error(
@@ -48,7 +56,7 @@ export const generatePythonServiceJwt = (options: PythonServiceJwtOptions): stri
 
   const signOptions: SignOptions = {
     algorithm: SERVICE_JWT_ALGORITHM,
-    expiresIn: options.expiresIn || SERVICE_JWT_TTL,
+    expiresIn: resolveExpiresIn(options.expiresIn),
     issuer: SERVICE_JWT_ISSUER
   };
 
