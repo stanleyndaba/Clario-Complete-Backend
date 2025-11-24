@@ -137,16 +137,20 @@ class RecoveriesService {
         amount: payout.amount
       });
 
-      // Try to match by amazon_case_id first (most reliable)
+      // Try to match by provider_case_id first (most reliable)
       // Check if payout has amazonCaseId or if we can extract it from metadata
       const amazonCaseId = payout.amazonCaseId || payout.metadata?.amazon_case_id || payout.metadata?.case_id;
       
       if (amazonCaseId) {
         const { data: disputeCase } = await supabaseAdmin
           .from('dispute_cases')
-          .select('id, seller_id, order_id, amazon_case_id, claim_amount, currency, status, provider_case_id')
+          .select(`
+            id, seller_id, claim_amount, currency, status, provider_case_id,
+            detection_result_id,
+            detection_results (evidence)
+          `)
           .eq('seller_id', userId)
-          .or(`provider_case_id.eq.${amazonCaseId},amazon_case_id.eq.${amazonCaseId}`)
+          .eq('provider_case_id', amazonCaseId)
           .eq('status', 'approved')
           .single();
 
@@ -155,18 +159,28 @@ class RecoveriesService {
         }
       }
 
-      // Try to match by order_id + amount (fuzzy match)
+      // Try to match by amount (fuzzy match) - order_id is in detection_results.evidence
+      // Get all approved cases and filter by order_id from evidence JSONB
       const { data: disputeCases } = await supabaseAdmin
         .from('dispute_cases')
-        .select('id, seller_id, order_id, amazon_case_id, claim_amount, currency, status, provider_case_id')
+        .select(`
+          id, seller_id, claim_amount, currency, status, provider_case_id,
+          detection_result_id,
+          detection_results (evidence)
+        `)
         .eq('seller_id', userId)
-        .eq('order_id', payout.orderId)
         .eq('status', 'approved')
-        .limit(10);
+        .limit(50);
 
-      if (disputeCases && disputeCases.length > 0) {
+      if (disputeCases && disputeCases.length > 0 && payout.orderId) {
+        // Filter by order_id from detection_results.evidence
+        const matchingCases = disputeCases.filter((dc: any) => {
+          const evidence = dc.detection_results?.evidence || {};
+          return evidence.order_id === payout.orderId;
+        });
+
         // Find best match by amount (within threshold)
-        for (const disputeCase of disputeCases) {
+        for (const disputeCase of matchingCases) {
           const expectedAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
           const actualAmount = payout.amount;
           const difference = Math.abs(expectedAmount - actualAmount);
@@ -179,31 +193,27 @@ class RecoveriesService {
       }
 
       // Try to match by SKU + date range (last resort)
-      if (payout.sku) {
-        const { data: disputeCasesBySku } = await supabaseAdmin
-          .from('dispute_cases')
-          .select('id, seller_id, order_id, amazon_case_id, claim_amount, currency, status, provider_case_id')
-          .eq('seller_id', userId)
-          .eq('status', 'approved')
-          .gte('created_at', new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString())
-          .limit(20);
+      if (payout.sku && disputeCases && disputeCases.length > 0) {
+        // Filter by SKU from detection_results.evidence
+        const matchingCases = disputeCases.filter((dc: any) => {
+          const evidence = dc.detection_results?.evidence || {};
+          return evidence.sku === payout.sku;
+        });
 
-        if (disputeCasesBySku && disputeCasesBySku.length > 0) {
-          // Find best match by amount
-          for (const disputeCase of disputeCasesBySku) {
-            const expectedAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
-            const actualAmount = payout.amount;
-            const difference = Math.abs(expectedAmount - actualAmount);
+        // Find best match by amount
+        for (const disputeCase of matchingCases) {
+          const expectedAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
+          const actualAmount = payout.amount;
+          const difference = Math.abs(expectedAmount - actualAmount);
 
-            if (difference <= Math.max(expectedAmount * 0.10, 2.00)) {
-              logger.warn('⚠️ [RECOVERIES] Fuzzy match found (by SKU + amount)', {
-                disputeId: disputeCase.id,
-                expectedAmount,
-                actualAmount,
-                difference
-              });
-              return this.createMatch(disputeCase, payout);
-            }
+          if (difference <= Math.max(expectedAmount * 0.10, 2.00)) {
+            logger.warn('⚠️ [RECOVERIES] Fuzzy match found (by SKU + amount)', {
+              disputeId: disputeCase.id,
+              expectedAmount,
+              actualAmount,
+              difference
+            });
+            return this.createMatch(disputeCase, payout);
           }
         }
       }
@@ -240,10 +250,14 @@ class RecoveriesService {
       discrepancyType = actualAmount < expectedAmount ? 'underpaid' : 'overpaid';
     }
 
+    // Extract order_id from detection_results.evidence JSONB
+    const evidence = disputeCase.detection_results?.evidence || {};
+    const orderId = evidence.order_id || '';
+
     return {
       disputeId: disputeCase.id,
-      amazonCaseId: disputeCase.provider_case_id || disputeCase.amazon_case_id,
-      orderId: disputeCase.order_id,
+      amazonCaseId: disputeCase.provider_case_id,
+      orderId: orderId,
       expectedAmount,
       actualAmount,
       discrepancy,

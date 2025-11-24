@@ -114,9 +114,22 @@ class RecoveriesWorker {
       logger.info('💰 [RECOVERIES] Starting recovery run for all tenants');
 
       // Get approved cases that need recovery detection
+      // Note: order_id comes from detection_results.evidence JSONB, not dispute_cases
       const { data: approvedCases, error } = await supabaseAdmin
         .from('dispute_cases')
-        .select('id, seller_id, order_id, amazon_case_id, claim_amount, currency, status, recovery_status, provider_case_id')
+        .select(`
+          id, 
+          seller_id, 
+          claim_amount, 
+          currency, 
+          status, 
+          recovery_status, 
+          provider_case_id,
+          detection_result_id,
+          detection_results (
+            evidence
+          )
+        `)
         .eq('status', 'approved')
         .in('recovery_status', ['pending', null]) // null means not yet processed
         .limit(50); // Process up to 50 cases per run
