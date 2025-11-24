@@ -288,17 +288,37 @@ class EvidenceMatchingEngine:
             return "no_action"
     
     async def _get_unlinked_disputes(self, user_id: str) -> List[Dict[str, Any]]:
-        """Get dispute cases that don't have evidence linked"""
+        """Get dispute cases that don't have evidence linked.
+        
+        Joins with detection_results to get order details (order_id, asin, sku)
+        from the evidence JSONB field. Uses dispute_evidence_links to check
+        if evidence has already been linked.
+        """
         with self.db._get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT id, user_id, order_id, asin, sku, dispute_type, status,
-                           amount_claimed, currency, dispute_date, order_date, metadata
-                    FROM dispute_cases 
-                    WHERE user_id = %s 
-                    AND status IN ('pending', 'evidence_linked')
-                    AND (evidence_linked_ids IS NULL OR jsonb_array_length(evidence_linked_ids) = 0)
-                    ORDER BY dispute_date DESC
+                    SELECT 
+                        dc.id, 
+                        dc.seller_id,
+                        dr.evidence->>'order_id' as order_id,
+                        dr.evidence->>'asin' as asin,
+                        dr.evidence->>'sku' as sku,
+                        dc.case_type as dispute_type,
+                        dc.status,
+                        dc.claim_amount as amount_claimed,
+                        dc.currency,
+                        dc.submission_date as dispute_date,
+                        dc.created_at as order_date,
+                        dc.evidence_attachments as metadata
+                    FROM dispute_cases dc
+                    LEFT JOIN detection_results dr ON dc.detection_result_id = dr.id
+                    WHERE dc.seller_id = %s 
+                    AND dc.status IN ('pending', 'submitted')
+                    AND NOT EXISTS (
+                        SELECT 1 FROM dispute_evidence_links del 
+                        WHERE del.dispute_case_id = dc.id
+                    )
+                    ORDER BY dc.created_at DESC
                 """, (user_id,))
                 
                 disputes = []
@@ -311,67 +331,92 @@ class EvidenceMatchingEngine:
                         'sku': row[4],
                         'dispute_type': row[5],
                         'status': row[6],
-                        'amount_claimed': row[7],
+                        'amount_claimed': float(row[7]) if row[7] else None,
                         'currency': row[8],
                         'dispute_date': row[9].isoformat() if row[9] else None,
                         'order_date': row[10].isoformat() if row[10] else None,
-                        'metadata': json.loads(row[11]) if row[11] else {}
+                        'metadata': row[11] if row[11] else {}
                     })
                 
                 return disputes
     
     async def _get_parsed_evidence_documents(self, user_id: str) -> List[Dict[str, Any]]:
-        """Get evidence documents with parsed metadata"""
+        """Get evidence documents with parsed metadata.
+        
+        Uses seller_id (not user_id) to match the actual schema.
+        Falls back to 'extracted' column if 'parsed_metadata' is empty.
+        """
         with self.db._get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT id, parsed_metadata, parser_confidence
+                    SELECT id, parsed_metadata, parser_confidence, extracted
                     FROM evidence_documents 
-                    WHERE user_id = %s 
+                    WHERE seller_id = %s 
                     AND parser_status = 'completed'
-                    AND parsed_metadata IS NOT NULL
+                    AND (parsed_metadata IS NOT NULL OR extracted IS NOT NULL)
                     ORDER BY created_at DESC
                 """, (user_id,))
                 
                 evidence_docs = []
                 for row in cursor.fetchall():
+                    # Prefer parsed_metadata, fall back to extracted
+                    parsed = row[1] if row[1] else row[3]
+                    if isinstance(parsed, str):
+                        parsed = json.loads(parsed)
                     evidence_docs.append({
                         'id': str(row[0]),
-                        'parsed_metadata': json.loads(row[1]) if row[1] else {},
-                        'parser_confidence': row[2]
+                        'parsed_metadata': parsed if parsed else {},
+                        'parser_confidence': float(row[2]) if row[2] else None
                     })
                 
                 return evidence_docs
     
     async def _create_evidence_link(self, dispute: Dict[str, Any], match: MatchResult, link_type: LinkType):
-        """Create evidence link between dispute and document"""
+        """Create evidence link between dispute and document.
+        
+        Uses the actual schema: dispute_case_id (not dispute_id),
+        relevance_score (not confidence), matched_context (not separate fields).
+        """
         link_id = str(uuid.uuid4())
         
         with self.db._get_connection() as conn:
             with conn.cursor() as cursor:
-                # Create evidence link
+                # Create evidence link using actual schema columns
                 cursor.execute("""
                     INSERT INTO dispute_evidence_links 
-                    (id, dispute_id, evidence_document_id, link_type, confidence, 
-                     match_reasoning, matched_fields)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (id, dispute_case_id, evidence_document_id, relevance_score, matched_context)
+                    VALUES (%s, %s, %s, %s, %s)
                 """, (
                     link_id, dispute['id'], match.evidence_document_id,
-                    link_type.value, match.final_confidence, match.reasoning,
-                    json.dumps(match.matched_fields)
+                    match.final_confidence,
+                    json.dumps({
+                        'link_type': link_type.value,
+                        'match_reasoning': match.reasoning,
+                        'matched_fields': match.matched_fields,
+                        'rule_score': match.rule_score,
+                        'ml_score': match.ml_score,
+                        'match_type': match.match_type,
+                        'action_taken': match.action_taken
+                    })
                 ))
                 
-                # Update dispute evidence linked IDs
+                # Update dispute evidence_attachments to track linked evidence
                 cursor.execute("""
                     UPDATE dispute_cases 
-                    SET evidence_linked_ids = COALESCE(evidence_linked_ids, '[]'::jsonb) || %s::jsonb
+                    SET evidence_attachments = COALESCE(evidence_attachments, '{}'::jsonb) || 
+                        jsonb_build_object('linked_evidence_ids', 
+                            COALESCE((evidence_attachments->>'linked_evidence_ids')::jsonb, '[]'::jsonb) || %s::jsonb
+                        ),
+                        updated_at = NOW()
                     WHERE id = %s
                 """, (json.dumps([match.evidence_document_id]), dispute['id']))
     
     async def _create_smart_prompt(self, dispute: Dict[str, Any], match: MatchResult):
-        """Create smart prompt for ambiguous match"""
+        """Create smart prompt for ambiguous match.
+        
+        Uses the actual schema: seller_id, related_dispute_id, prompt_type, metadata.
+        """
         prompt_id = str(uuid.uuid4())
-        expires_at = datetime.utcnow() + timedelta(days=7)
         
         # Generate question and options based on match type
         question, options = self._generate_smart_prompt_content(dispute, match)
@@ -380,11 +425,22 @@ class EvidenceMatchingEngine:
             with conn.cursor() as cursor:
                 cursor.execute("""
                     INSERT INTO smart_prompts 
-                    (id, dispute_id, evidence_document_id, question, options, expires_at)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    (id, seller_id, related_dispute_id, prompt_type, question, options, status, metadata)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
-                    prompt_id, dispute['id'], match.evidence_document_id,
-                    question, json.dumps(options), expires_at
+                    prompt_id, 
+                    dispute['user_id'],  # seller_id
+                    dispute['id'],       # related_dispute_id
+                    'evidence_selection',
+                    question, 
+                    json.dumps(options),
+                    'open',
+                    json.dumps({
+                        'evidence_document_id': match.evidence_document_id,
+                        'match_confidence': match.final_confidence,
+                        'match_type': match.match_type,
+                        'reasoning': match.reasoning
+                    })
                 ))
     
     def _generate_smart_prompt_content(self, dispute: Dict[str, Any], match: MatchResult) -> Tuple[str, List[Dict[str, Any]]]:
@@ -414,12 +470,32 @@ class EvidenceMatchingEngine:
         return question, options
     
     async def _update_dispute_status(self, dispute_id: str, status: str, confidence: float):
-        """Update dispute case status"""
+        """Update dispute case status.
+        
+        Maps internal statuses to actual schema statuses:
+        - 'auto_submitted' -> 'submitted'
+        - 'smart_prompt_sent' -> 'pending' (keeps pending until user responds)
+        - 'pending' -> 'pending'
+        
+        Stores match_confidence in provider_response JSONB since there's no dedicated column.
+        """
+        # Map internal statuses to schema-valid statuses
+        status_map = {
+            'auto_submitted': 'submitted',
+            'smart_prompt_sent': 'pending',
+            'pending': 'pending',
+            'evidence_linked': 'pending'
+        }
+        actual_status = status_map.get(status, 'pending')
+        
         with self.db._get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
                     UPDATE dispute_cases 
-                    SET status = %s, match_confidence = %s, updated_at = NOW()
+                    SET status = %s, 
+                        provider_response = COALESCE(provider_response, '{}'::jsonb) || 
+                            jsonb_build_object('match_confidence', %s, 'match_status', %s),
+                        updated_at = NOW()
                     WHERE id = %s
-                """, (status, confidence, dispute_id))
+                """, (actual_status, confidence, status, dispute_id))
 
