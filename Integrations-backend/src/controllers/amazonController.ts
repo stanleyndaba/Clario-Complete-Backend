@@ -5,6 +5,7 @@ import tokenManager from '../utils/tokenManager';
 import { diagnoseSandboxConnection } from '../utils/sandboxDiagnostics';
 import oauthStateStore from '../utils/oauthStateStore';
 import { syncJobManager } from '../services/syncJobManager';
+import billingService from '../services/billingService';
 
 export const startAmazonOAuth = async (req: Request, res: Response) => {
   try {
@@ -520,16 +521,20 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
 
       // Step 4: Upsert user/tenant in Supabase (use supabaseAdmin to bypass RLS)
       const { supabaseAdmin } = await import('../database/supabaseClient');
+      let userEmail: string | null = null;
+      let stripeCustomerId: number | null = null;
       
       // Try to find existing user by seller_id (if column exists)
       const { data: existingUser } = await supabaseAdmin
         .from('users')
-        .select('id, seller_id, amazon_seller_id')
+        .select('id, seller_id, amazon_seller_id, company_name, email, stripe_customer_id')
         .or(`seller_id.eq.${profile.sellerId},amazon_seller_id.eq.${profile.sellerId}`)
         .maybeSingle();
 
       if (existingUser?.id) {
         userId = existingUser.id;
+        userEmail = existingUser.email || `${profile.sellerId}@amazon.seller`;
+        stripeCustomerId = existingUser.stripe_customer_id || null;
         // Update existing user with latest info
         await supabaseAdmin
           .from('users')
@@ -546,17 +551,18 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       } else {
         // Create new user/tenant
         // Note: users table may require email - we'll use seller_id as email if needed
+        const placeholderEmail = `${profile.sellerId}@amazon.seller`;
         const { data: newUser, error: createErr } = await supabaseAdmin
           .from('users')
           .insert({
-            email: `${profile.sellerId}@amazon.seller`, // Placeholder email if required
+            email: placeholderEmail,
             seller_id: profile.sellerId,
             amazon_seller_id: profile.sellerId,
             company_name: profile.companyName || profile.sellerName || null,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
           })
-          .select('id')
+          .select('id, email')
           .single();
 
         if (createErr || !newUser?.id) {
@@ -564,7 +570,38 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         }
 
         userId = newUser.id;
+        userEmail = newUser.email || placeholderEmail;
         logger.info('Created new user', { userId, sellerId: profile.sellerId });
+      }
+
+      // Step 4b: Ensure Stripe customer mapping exists (Agent 1 → Agent 9 bridge)
+      if (!stripeCustomerId) {
+        try {
+          const emailForStripe = userEmail || `${profile.sellerId}@amazon.seller`;
+          const mappedStripeId = await billingService.getOrCreateStripeCustomerId(
+            userId,
+            emailForStripe
+          );
+
+          await supabaseAdmin
+            .from('users')
+            .update({
+              stripe_customer_id: mappedStripeId,
+              email: emailForStripe // Ensure email is stored for future lookups
+            })
+            .eq('id', userId);
+
+          stripeCustomerId = mappedStripeId;
+          logger.info('🔗 [AGENT 1] Stripe customer mapping created', {
+            userId,
+            stripeCustomerId
+          });
+        } catch (mapError: any) {
+          logger.warn('⚠️ [AGENT 1] Failed to map user to Stripe customer ID', {
+            userId,
+            error: mapError.message
+          });
+        }
       }
 
       // Step 5: Encrypt tokens and save using tokenManager

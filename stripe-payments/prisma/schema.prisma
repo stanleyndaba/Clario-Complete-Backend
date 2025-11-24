@@ -62,8 +62,8 @@ model StripeTransaction {
 /// Maps a local user to a Stripe Customer
 model StripeCustomer {
   id               Int      @id @default(autoincrement())
-  userId           Int      @unique
-  stripeCustomerId String   @unique
+  externalUserId   String   @unique
+  stripeCustomerId String?  @unique
   email            String
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt

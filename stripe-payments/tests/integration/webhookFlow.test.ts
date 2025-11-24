@@ -222,7 +222,7 @@ describe('Webhook Flow Integration Tests', () => {
       // Create customer mapping
       await prisma.stripeCustomer.create({
         data: {
-          userId: 1,
+          externalUserId: 'legacy-user-1',
           stripeCustomerId: 'cus_test_123',
           email: 'user@example.com',
         },

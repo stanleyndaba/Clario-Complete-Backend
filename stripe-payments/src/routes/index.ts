@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { CheckoutController, connectAccountValidation, chargeCommissionValidation } from '@/controllers/checkoutController';
 import { WebhookController } from '@/controllers/webhookController';
 import { PayoutController, reconcileTransactionValidation, handleClawbackValidation, retryFailedTransactionValidation, cleanupOldDataValidation } from '@/controllers/payoutController';
+import { CustomerController } from '@/controllers/customerController';
 import { verifyStripeWebhook, checkWebhookIdempotency, logWebhookEvent, validateWebhookEventType, stripeRawBody } from '@/middlewares/verifyStripeWebhook';
 import { validateIdempotencyKeyMiddleware } from '@/utils/idempotency';
 import { authenticateJWT, requireAdmin } from '@/middlewares/auth';
@@ -38,6 +39,7 @@ apiV1Router.post('/stripe/get-or-create-customer', authenticateJWT, async (req, 
 });
 apiV1Router.post('/stripe/create-subscription', authenticateJWT, CheckoutController.createSubscription);
 apiV1Router.post('/stripe/cancel-subscription', authenticateJWT, CheckoutController.cancelSubscription);
+apiV1Router.post('/stripe/customer-map', authenticateJWT, CustomerController.mapCustomer);
 
 // Commission charging (called by refund-engine)
 apiV1Router.post('/stripe/charge-commission', authenticateJWT, validateIdempotencyKeyMiddleware, chargeCommissionValidation, CheckoutController.chargeCommission);

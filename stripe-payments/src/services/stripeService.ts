@@ -210,22 +210,28 @@ export class StripeService {
   static async createCustomer(userId: number, email: string, name?: string): Promise<string> {
     try {
       // Reuse existing mapping if present
-      const existing = await prisma.stripeCustomer.findUnique({ where: { userId } });
-      if (existing) return existing.stripeCustomerId;
+      const mapping = await prisma.stripeCustomer.findUnique({ where: { id: userId } });
+      if (!mapping) {
+        throw new Error('Stripe customer mapping not found. Ensure /stripe/customer-map has been called.');
+      }
+
+      if (mapping.stripeCustomerId) {
+        return mapping.stripeCustomerId;
+      }
 
       const customer = await stripe.customers.create({
         email,
         name,
         metadata: {
-          userId: userId.toString(),
+          externalUserId: mapping.externalUserId,
         },
       });
 
-      await prisma.stripeCustomer.create({
+      await prisma.stripeCustomer.update({
+        where: { id: userId },
         data: {
-          userId,
           stripeCustomerId: customer.id,
-          email: email,
+          email,
         },
       });
 

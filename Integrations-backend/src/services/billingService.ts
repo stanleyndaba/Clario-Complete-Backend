@@ -6,7 +6,7 @@
 
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
-import axios from 'axios';
+import axios, { AxiosResponse } from 'axios';
 
 export interface BillingRequest {
   disputeId: string;
@@ -33,6 +33,11 @@ export interface FeeCalculation {
   platformFeeCents: number;
   sellerPayoutCents: number;
   currency: string;
+}
+
+interface CustomerMapResponse {
+  stripeCustomerId: number;
+  isNew: boolean;
 }
 
 class BillingService {
@@ -94,9 +99,36 @@ class BillingService {
 
       logger.info('💳 [BILLING] Charging commission', {
         disputeId: request.disputeId,
-        userId: request.userId,
         amountRecoveredCents: request.amountRecoveredCents
       });
+
+      // Fetch seller record to obtain the deterministic Stripe customer ID
+      const { supabaseAdmin } = await import('../database/supabaseClient');
+      const { data: sellerRecord, error: sellerError } = await supabaseAdmin
+        .from('users')
+        .select('id, stripe_customer_id, seller_id, amazon_seller_id, email')
+        .eq('seller_id', request.userId)
+        .single();
+
+      if (sellerError) {
+        throw new Error(`Unable to load seller record: ${sellerError.message}`);
+      }
+
+      const stripeCustomerIdInt = sellerRecord?.stripe_customer_id;
+
+      if (!stripeCustomerIdInt) {
+        logger.warn('⚠️ [BILLING] Stripe customer ID missing for seller - skipping charge', {
+          disputeId: request.disputeId,
+          sellerId: sellerRecord?.seller_id,
+          amazonSellerId: sellerRecord?.amazon_seller_id
+        });
+        // Optional: update dispute status to pending_reconnect here
+        return {
+          success: false,
+          status: 'failed',
+          error: 'Stripe customer ID missing - user must reconnect billing'
+        };
+      }
 
       // Calculate fees
       const feeCalculation = this.calculateFees(
@@ -112,8 +144,7 @@ class BillingService {
       const response = await axios.post(
         `${this.stripePaymentsUrl}/api/v1/stripe/charge-commission`,
         {
-          userId: parseInt(request.userId, 10),
-          claimId: request.disputeId, // Note: Stripe API expects claimId as number, but we pass disputeId as string
+          userId: stripeCustomerIdInt,
           amountRecoveredCents: request.amountRecoveredCents,
           currency: request.currency || 'usd',
           idempotencyKey,
@@ -165,6 +196,36 @@ class BillingService {
         status: 'failed',
         error: error.message || 'Failed to charge commission'
       };
+    }
+  }
+
+  /**
+   * Retrieve or create the integer Stripe customer ID for a given Supabase user UUID.
+   */
+  async getOrCreateStripeCustomerId(externalUserId: string, email: string): Promise<number> {
+    if (!this.stripePaymentsUrl) {
+      throw new Error('Stripe payments service is not configured (set STRIPE_PAYMENTS_URL)');
+    }
+
+    try {
+      const response: AxiosResponse<CustomerMapResponse> = await axios.post(
+        `${this.stripePaymentsUrl}/api/v1/stripe/customer-map`,
+        { externalUserId, email },
+        { timeout: 15000 }
+      );
+
+      if (!response.data?.stripeCustomerId) {
+        throw new Error('Stripe customer mapping response did not include an ID');
+      }
+
+      return response.data.stripeCustomerId;
+    } catch (error: any) {
+      logger.error('❌ [BILLING] Failed to map user to Stripe customer ID', {
+        externalUserId,
+        error: error?.message,
+        response: error?.response?.data
+      });
+      throw new Error('Failed to map user ID for billing integration');
     }
   }
 
