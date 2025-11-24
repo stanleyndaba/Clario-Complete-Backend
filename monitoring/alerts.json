@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Clario Monitoring Alerts Configuration",
+  "description": "Alert rules for Clario backend services",
+  "version": "1.0.0",
+  
+  "alerts": [
+    {
+      "id": "high_error_rate",
+      "name": "High Error Rate",
+      "description": "5xx error rate exceeds 5% over 5 minutes",
+      "severity": "critical",
+      "condition": {
+        "metric": "http_requests_5xx",
+        "operator": "greater_than",
+        "threshold": 0.05,
+        "window_minutes": 5,
+        "comparison": "rate_vs_total"
+      },
+      "actions": ["slack", "email"],
+      "cooldown_minutes": 15
+    },
+    {
+      "id": "api_latency_high",
+      "name": "High API Latency",
+      "description": "P95 latency exceeds 5 seconds",
+      "severity": "warning",
+      "condition": {
+        "metric": "http_request_duration_ms",
+        "operator": "greater_than",
+        "threshold": 5000,
+        "percentile": 95,
+        "window_minutes": 5
+      },
+      "actions": ["slack"],
+      "cooldown_minutes": 10
+    },
+    {
+      "id": "database_connection_failed",
+      "name": "Database Connection Failed",
+      "description": "Database health check failing",
+      "severity": "critical",
+      "condition": {
+        "metric": "health_check_database",
+        "operator": "equals",
+        "value": "fail",
+        "consecutive_failures": 3
+      },
+      "actions": ["slack", "email", "pagerduty"],
+      "cooldown_minutes": 5
+    },
+    {
+      "id": "spapi_rate_limited",
+      "name": "Amazon SP-API Rate Limited",
+      "description": "Consecutive rate limit errors from Amazon SP-API",
+      "severity": "warning",
+      "condition": {
+        "metric": "spapi_rate_limit_count",
+        "operator": "greater_than",
+        "threshold": 10,
+        "window_minutes": 5
+      },
+      "actions": ["slack"],
+      "cooldown_minutes": 30
+    },
+    {
+      "id": "memory_usage_high",
+      "name": "High Memory Usage",
+      "description": "Memory usage exceeds 85%",
+      "severity": "warning",
+      "condition": {
+        "metric": "memory_usage_percent",
+        "operator": "greater_than",
+        "threshold": 85,
+        "window_minutes": 5
+      },
+      "actions": ["slack"],
+      "cooldown_minutes": 15
+    },
+    {
+      "id": "service_unhealthy",
+      "name": "Service Unhealthy",
+      "description": "Health check returning unhealthy status",
+      "severity": "critical",
+      "condition": {
+        "metric": "health_status",
+        "operator": "equals",
+        "value": "unhealthy",
+        "consecutive_failures": 2
+      },
+      "actions": ["slack", "email"],
+      "cooldown_minutes": 5
+    },
+    {
+      "id": "oauth_token_refresh_failed",
+      "name": "OAuth Token Refresh Failed",
+      "description": "Failed to refresh OAuth tokens",
+      "severity": "high",
+      "condition": {
+        "metric": "oauth_token_refresh_failures",
+        "operator": "greater_than",
+        "threshold": 3,
+        "window_minutes": 10
+      },
+      "actions": ["slack", "email"],
+      "cooldown_minutes": 30
+    },
+    {
+      "id": "claim_detection_failed",
+      "name": "Claim Detection Pipeline Failed",
+      "description": "Agent 3 claim detection failures",
+      "severity": "high",
+      "condition": {
+        "metric": "agent3_detection_failures",
+        "operator": "greater_than",
+        "threshold": 5,
+        "window_minutes": 15
+      },
+      "actions": ["slack"],
+      "cooldown_minutes": 30
+    },
+    {
+      "id": "stripe_webhook_failed",
+      "name": "Stripe Webhook Processing Failed",
+      "description": "Stripe webhook handlers failing",
+      "severity": "critical",
+      "condition": {
+        "metric": "stripe_webhook_failures",
+        "operator": "greater_than",
+        "threshold": 3,
+        "window_minutes": 10
+      },
+      "actions": ["slack", "email"],
+      "cooldown_minutes": 15
+    },
+    {
+      "id": "queue_backlog",
+      "name": "Job Queue Backlog",
+      "description": "Job queue has too many pending jobs",
+      "severity": "warning",
+      "condition": {
+        "metric": "queue_pending_jobs",
+        "operator": "greater_than",
+        "threshold": 100,
+        "window_minutes": 10
+      },
+      "actions": ["slack"],
+      "cooldown_minutes": 30
+    }
+  ],
+  
+  "notification_channels": {
+    "slack": {
+      "webhook_url": "${SLACK_WEBHOOK_URL}",
+      "channel": "#clario-alerts",
+      "username": "Clario Monitor",
+      "icon_emoji": ":robot_face:"
+    },
+    "email": {
+      "recipients": ["${ALERT_EMAIL}"],
+      "from": "alerts@clario.app",
+      "subject_prefix": "[Clario Alert]"
+    },
+    "pagerduty": {
+      "integration_key": "${PAGERDUTY_KEY}",
+      "severity_mapping": {
+        "critical": "critical",
+        "high": "error",
+        "warning": "warning"
+      }
+    }
+  },
+  
+  "health_check_config": {
+    "interval_seconds": 30,
+    "timeout_seconds": 10,
+    "endpoints": [
+      {
+        "name": "node_api",
+        "url": "${NODE_API_URL}/health",
+        "expected_status": 200
+      },
+      {
+        "name": "python_api",
+        "url": "${PYTHON_API_URL}/health",
+        "expected_status": 200
+      },
+      {
+        "name": "node_api_detailed",
+        "url": "${NODE_API_URL}/health/detailed",
+        "expected_status": 200
+      }
+    ]
+  },
+  
+  "metrics_config": {
+    "collection_interval_seconds": 60,
+    "retention_days": 30,
+    "aggregation_windows": ["1m", "5m", "1h", "1d"]
+  }
+}
+

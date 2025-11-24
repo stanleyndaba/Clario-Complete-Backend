@@ -52,6 +52,10 @@ from .services.service_directory import service_directory
 
 logger = logging.getLogger(__name__)
 
+# Initialize error tracking
+from .common.errors import initialize_sentry
+initialize_sentry()
+
 # Simplified lifespan for debugging
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -132,7 +136,26 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     """Return clean error responses for unhandled exceptions (no stack traces)"""
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    from .common.errors import AppError, log_error, capture_exception
+    
+    # Log with structured context
+    log_error(
+        exc,
+        request_path=str(request.url.path),
+        user_id=getattr(request.state, 'user_id', None)
+    )
+    
+    # If it's our custom AppError, use its response format
+    if isinstance(exc, AppError):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=exc.to_dict(),
+            headers={"Retry-After": str(exc.retry_after_ms // 1000)} if exc.retry_after_ms else None
+        )
+    
+    # For unknown errors, capture with Sentry and return generic response
+    capture_exception(exc, {"path": str(request.url), "method": request.method})
+    
     return JSONResponse(
         status_code=500,
         content={

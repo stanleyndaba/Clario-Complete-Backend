@@ -9,6 +9,7 @@ import { createServer } from 'http';
 import config from './config/env';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './utils/errorHandler';
+import { initializeMonitoring, requestMetricsMiddleware, captureException } from './utils/monitoring';
 
 // Import security utilities (must be imported first)
 import { securityHeadersMiddleware, enforceHttpsMiddleware, validateTlsMiddleware } from './security/securityHeaders';
@@ -68,6 +69,14 @@ const server = createServer(app);
 
 // Behind Render/other proxies we trust the first hop to read TLS headers
 app.set('trust proxy', 1);
+
+// Initialize monitoring (Sentry, metrics) - do this early
+initializeMonitoring().catch((err) => {
+  logger.warn('Monitoring initialization failed (non-critical)', { error: err.message });
+});
+
+// Add request metrics middleware (must be early in the pipeline)
+app.use(requestMetricsMiddleware);
 
 // Initialize WebSocket service
 websocketService.initialize(server);

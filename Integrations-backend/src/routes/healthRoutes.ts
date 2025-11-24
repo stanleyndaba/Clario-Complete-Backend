@@ -8,6 +8,7 @@ import { Router, Request, Response } from 'express';
 import { supabase } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import amazonService from '../services/amazonService';
+import { metrics, performHealthCheck } from '../utils/monitoring';
 
 const router = Router();
 
@@ -170,6 +171,57 @@ router.get('/live', (req: Request, res: Response) => {
     status: 'alive',
     timestamp: new Date().toISOString(),
   });
+});
+
+/**
+ * Metrics endpoint for monitoring
+ * GET /metrics
+ */
+router.get('/metrics', async (req: Request, res: Response) => {
+  try {
+    const metricsData = metrics.getSummary();
+    const healthData = await performHealthCheck();
+    
+    res.status(200).json({
+      timestamp: new Date().toISOString(),
+      health: healthData,
+      metrics: metricsData,
+      system: {
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        cpuUsage: process.cpuUsage(),
+        nodeVersion: process.version,
+        platform: process.platform,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Failed to collect metrics', { error: error.message });
+    res.status(500).json({
+      error: 'Failed to collect metrics',
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * Detailed health check with all service statuses
+ * GET /health/detailed
+ */
+router.get('/health/detailed', async (req: Request, res: Response) => {
+  try {
+    const healthData = await performHealthCheck();
+    const statusCode = healthData.status === 'healthy' ? 200 : 
+                       healthData.status === 'degraded' ? 200 : 503;
+    
+    res.status(statusCode).json(healthData);
+  } catch (error: any) {
+    logger.error('Detailed health check failed', { error: error.message });
+    res.status(503).json({
+      status: 'unhealthy',
+      error: error.message,
+      timestamp: new Date().toISOString(),
+    });
+  }
 });
 
 export default router;
