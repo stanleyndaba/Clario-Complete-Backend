@@ -11,7 +11,17 @@ const PUBLIC_PATHS = [
   '/healthz',
   '/',
   '/api/status',
-  '/api/metrics/track'
+  '/api/metrics/track',
+  '/favicon.ico',
+  '/robots.txt'
+];
+
+// Path prefixes that should skip user ID extraction
+const PUBLIC_PATH_PREFIXES = [
+  '/api/auth',        // Auth endpoints handle their own authentication
+  '/api/amazon/callback', // OAuth callbacks
+  '/api/v1/integrations/amazon/auth', // Amazon OAuth
+  '/api/v1/integrations/gmail/auth',  // Gmail OAuth
 ];
 
 /**
@@ -34,7 +44,12 @@ export function userIdMiddleware(req: Request, res: Response, next: NextFunction
       req.path === path || req.path.startsWith(path + '/')
     );
     
-    if (isPublicPath) {
+    // Also skip for public path prefixes (auth endpoints, OAuth callbacks)
+    const isPublicPrefix = PUBLIC_PATH_PREFIXES.some(prefix =>
+      req.path.startsWith(prefix)
+    );
+    
+    if (isPublicPath || isPublicPrefix) {
       return next();
     }
     // Priority 1: X-User-Id header (set by Python API)
@@ -68,7 +83,12 @@ export function userIdMiddleware(req: Request, res: Response, next: NextFunction
           method: req.method
         });
       } else {
-        logger.warn('No user ID found in request');
+        // Log with path context for debugging
+        logger.warn('No user ID found in request', {
+          path: req.path,
+          method: req.method,
+          ip: req.ip
+        });
         res.status(401).json({ error: 'User authentication required' });
         return;
       }
