@@ -5,6 +5,15 @@ const UUID_REGEX =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const allowDemoUser = process.env.ALLOW_DEMO_USER === 'true';
 
+// Paths that should skip user ID extraction (public endpoints)
+const PUBLIC_PATHS = [
+  '/health',
+  '/healthz',
+  '/',
+  '/api/status',
+  '/api/metrics/track'
+];
+
 /**
  * Middleware to extract user ID from headers or cookies
  * 
@@ -20,6 +29,14 @@ const allowDemoUser = process.env.ALLOW_DEMO_USER === 'true';
  */
 export function userIdMiddleware(req: Request, res: Response, next: NextFunction): void {
   try {
+    // Skip user ID extraction for public paths (health checks, status, etc.)
+    const isPublicPath = PUBLIC_PATHS.some(path => 
+      req.path === path || req.path.startsWith(path + '/')
+    );
+    
+    if (isPublicPath) {
+      return next();
+    }
     // Priority 1: X-User-Id header (set by Python API)
     let userId: string | undefined = req.headers['x-user-id'] as string;
     
