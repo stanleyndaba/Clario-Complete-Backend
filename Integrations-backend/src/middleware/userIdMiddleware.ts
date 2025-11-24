@@ -3,7 +3,12 @@ import logger from '../utils/logger';
 
 const UUID_REGEX =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-const allowDemoUser = process.env.ALLOW_DEMO_USER === 'true';
+
+// Allow demo user in sandbox/development mode or when explicitly enabled
+const isSandboxOrDev = process.env.NODE_ENV !== 'production' || 
+                       process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') ||
+                       process.env.USE_MOCK_DATA_GENERATOR === 'true';
+const allowDemoUser = process.env.ALLOW_DEMO_USER === 'true' || isSandboxOrDev;
 
 // Paths that should skip user ID extraction (public endpoints)
 const PUBLIC_PATHS = [
@@ -39,14 +44,17 @@ const PUBLIC_PATH_PREFIXES = [
  */
 export function userIdMiddleware(req: Request, res: Response, next: NextFunction): void {
   try {
+    // Use originalUrl for path matching (req.path strips mount path in subrouters)
+    const fullPath = req.originalUrl?.split('?')[0] || req.path;
+    
     // Skip user ID extraction for public paths (health checks, status, etc.)
     const isPublicPath = PUBLIC_PATHS.some(path => 
-      req.path === path || req.path.startsWith(path + '/')
+      fullPath === path || fullPath.startsWith(path + '/')
     );
     
     // Also skip for public path prefixes (auth endpoints, OAuth callbacks)
     const isPublicPrefix = PUBLIC_PATH_PREFIXES.some(prefix =>
-      req.path.startsWith(prefix)
+      fullPath.startsWith(prefix)
     );
     
     if (isPublicPath || isPublicPrefix) {
