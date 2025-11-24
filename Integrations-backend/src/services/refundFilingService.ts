@@ -254,7 +254,7 @@ class RefundFilingService {
       const { data: evidenceLinks, error } = await supabaseAdmin
         .from('dispute_evidence_links')
         .select('evidence_document_id')
-        .eq('dispute_id', disputeId);
+        .eq('dispute_case_id', disputeId);
 
       if (error) {
         logger.error('❌ [REFUND FILING] Failed to get evidence links', { error: error.message });
@@ -264,23 +264,48 @@ class RefundFilingService {
       const evidenceIds = (evidenceLinks || []).map(link => link.evidence_document_id);
 
       // Also get any additional evidence documents for the same order/claim
+      // Note: order_id, asin, sku come from detection_results.evidence JSONB, not dispute_cases
       const { data: disputeCase } = await supabaseAdmin
         .from('dispute_cases')
-        .select('order_id, asin, sku')
+        .select(`
+          detection_result_id,
+          detection_results!inner (
+            evidence
+          )
+        `)
         .eq('id', disputeId)
         .single();
 
       if (disputeCase) {
-        // Get additional evidence documents for the same order
+        // Extract order details from detection_results.evidence JSONB
+        const detectionEvidence = (disputeCase as any).detection_results?.evidence || {};
+        const orderId = detectionEvidence.order_id || '';
+        const asin = detectionEvidence.asin || '';
+        const sku = detectionEvidence.sku || '';
+
+        // Get additional evidence documents that might match the same order
+        // Note: evidence_documents doesn't have order_id column, so we search in extracted/parsed_metadata
         const { data: additionalEvidence } = await supabaseAdmin
           .from('evidence_documents')
-          .select('id')
+          .select('id, extracted, parsed_metadata')
           .eq('seller_id', userId)
-          .or(`order_id.eq.${disputeCase.order_id},asin.eq.${disputeCase.asin || ''},sku.eq.${disputeCase.sku || ''}`)
           .neq('parser_status', 'failed')
-          .limit(10);
+          .limit(20);
 
-        const additionalIds = (additionalEvidence || []).map(doc => doc.id);
+        // Filter evidence that matches order details
+        const matchingEvidence = (additionalEvidence || []).filter(doc => {
+          const extracted = doc.extracted || {};
+          const parsed = doc.parsed_metadata || {};
+          const items = extracted.items || parsed.line_items || [];
+          
+          // Check if any item matches our order details
+          return items.some((item: any) => 
+            item.sku === sku || item.asin === asin || item.order_id === orderId
+          ) || extracted.order_id === orderId || parsed.invoice_number === orderId;
+        });
+
+        const additionalIds = matchingEvidence.map(doc => doc.id);
+
         const allIds = [...new Set([...evidenceIds, ...additionalIds])];
 
         logger.info('✅ [REFUND FILING] Collected stronger evidence', {

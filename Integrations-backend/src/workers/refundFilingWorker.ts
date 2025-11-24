@@ -137,11 +137,25 @@ class RefundFilingWorker {
       logger.info('📝 [REFUND FILING] Starting filing run for all tenants');
 
       // Get cases ready for filing (filing_status = 'pending' or 'retrying')
+      // Note: order_id, asin, sku come from detection_results.evidence JSONB, not dispute_cases
       const { data: casesToFile, error } = await supabaseAdmin
         .from('dispute_cases')
-        .select('id, seller_id, detection_result_id, order_id, asin, sku, case_type, claim_amount, currency, status, filing_status, retry_count')
+        .select(`
+          id, 
+          seller_id, 
+          detection_result_id, 
+          case_type, 
+          claim_amount, 
+          currency, 
+          status, 
+          filing_status, 
+          retry_count,
+          detection_results!inner (
+            evidence
+          )
+        `)
         .in('filing_status', ['pending', 'retrying'])
-        .or('status.eq.pending,status.eq.evidence_linked')
+        .or('status.eq.pending,status.eq.submitted')
         .limit(50); // Process up to 50 cases per run
 
       if (error) {
@@ -166,7 +180,7 @@ class RefundFilingWorker {
           const { data: evidenceLinks } = await supabaseAdmin
             .from('dispute_evidence_links')
             .select('evidence_document_id')
-            .eq('dispute_id', disputeCase.id)
+            .eq('dispute_case_id', disputeCase.id)
             .limit(10);
 
           const evidenceIds = (evidenceLinks || []).map(link => link.evidence_document_id);
@@ -179,6 +193,12 @@ class RefundFilingWorker {
             stats.failed++;
             continue;
           }
+
+          // Extract order details from detection_results.evidence JSONB
+          const detectionEvidence = (disputeCase as any).detection_results?.evidence || {};
+          const orderId = detectionEvidence.order_id || '';
+          const asin = detectionEvidence.asin || undefined;
+          const sku = detectionEvidence.sku || undefined;
 
           // Get detection result for confidence score
           const { data: detectionResult } = await supabaseAdmin
@@ -193,9 +213,9 @@ class RefundFilingWorker {
           const filingRequest: FilingRequest = {
             dispute_id: disputeCase.id,
             user_id: disputeCase.seller_id,
-            order_id: disputeCase.order_id,
-            asin: disputeCase.asin || undefined,
-            sku: disputeCase.sku || undefined,
+            order_id: orderId,
+            asin: asin,
+            sku: sku,
             claim_type: disputeCase.case_type,
             amount_claimed: parseFloat(disputeCase.claim_amount?.toString() || '0'),
             currency: disputeCase.currency || 'USD',
