@@ -408,10 +408,10 @@ async function main() {
     // Test 3: Agent 2 Data Sync (includes Agent 3 call)
     const syncOk = await testAgent2DataSync();
 
-    // Give Agent 3 (Python API) time to process
+    // Give Agent 3 (Python API) time to process - need longer wait for async batches
     if (syncOk) {
-      logger.info('Waiting 5 seconds for Agent 3 to process...');
-      await new Promise(resolve => setTimeout(resolve, 5000));
+      logger.info('Waiting 15 seconds for Agent 3 to process all batches...');
+      await new Promise(resolve => setTimeout(resolve, 15000));
     }
 
     // Test 4: Check Agent 3 results
