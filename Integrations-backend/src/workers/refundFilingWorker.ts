@@ -137,6 +137,7 @@ class RefundFilingWorker {
       logger.info('📝 [REFUND FILING] Starting filing run for all tenants');
 
       // Get cases ready for filing (filing_status = 'pending' or 'retrying')
+      // Only get cases that have evidence documents linked (via dispute_evidence_links)
       // Note: order_id, asin, sku come from detection_results.evidence JSONB, not dispute_cases
       const { data: casesToFile, error } = await supabaseAdmin
         .from('dispute_cases')
@@ -152,6 +153,9 @@ class RefundFilingWorker {
           retry_count,
           detection_results!inner (
             evidence
+          ),
+          dispute_evidence_links!inner (
+            evidence_document_id
           )
         `)
         .in('filing_status', ['pending', 'retrying'])
@@ -159,38 +163,37 @@ class RefundFilingWorker {
         .limit(50); // Process up to 50 cases per run
 
       if (error) {
+        // If the error is about no rows, that's fine - just means no cases with evidence
+        if (error.message?.includes('0 rows') || error.code === 'PGRST116') {
+          logger.debug('ℹ️ [REFUND FILING] No cases with evidence ready for filing');
+          return stats;
+        }
         logger.error('❌ [REFUND FILING] Failed to get cases to file', { error: error.message });
         stats.errors.push(`Failed to get cases: ${error.message}`);
         return stats;
       }
 
       if (!casesToFile || casesToFile.length === 0) {
-        logger.debug('ℹ️ [REFUND FILING] No cases ready for filing');
+        logger.debug('ℹ️ [REFUND FILING] No cases with evidence ready for filing');
         return stats;
       }
 
-      logger.info(`📋 [REFUND FILING] Found ${casesToFile.length} cases ready for filing`);
+      logger.info(`📋 [REFUND FILING] Found ${casesToFile.length} cases with evidence ready for filing`);
 
       // Process each case
       for (const disputeCase of casesToFile) {
         try {
           stats.processed++;
 
-          // Get evidence documents for this case
-          const { data: evidenceLinks } = await supabaseAdmin
-            .from('dispute_evidence_links')
-            .select('evidence_document_id')
-            .eq('dispute_case_id', disputeCase.id)
-            .limit(10);
+          // Evidence documents are already joined - extract from the query result
+          const evidenceLinksFromQuery = (disputeCase as any).dispute_evidence_links || [];
+          const evidenceIds = evidenceLinksFromQuery.map((link: any) => link.evidence_document_id);
 
-          const evidenceIds = (evidenceLinks || []).map(link => link.evidence_document_id);
-
+          // Double-check we have evidence (should always be true due to !inner join)
           if (evidenceIds.length === 0) {
-            logger.warn('⚠️ [REFUND FILING] No evidence documents found for case', {
+            logger.debug('ℹ️ [REFUND FILING] Skipping case without evidence', {
               disputeId: disputeCase.id
             });
-            await this.logError(disputeCase.id, disputeCase.seller_id, 'No evidence documents found');
-            stats.failed++;
             continue;
           }
 
