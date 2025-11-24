@@ -137,6 +137,7 @@ class EvidenceMatchingService {
 
   /**
    * Run matching with retry logic
+   * Handles 429 (rate limit) errors with longer backoff
    */
   async runMatchingWithRetry(
     userId: string,
@@ -150,12 +151,34 @@ class EvidenceMatchingService {
         return await this.runMatchingForUser(userId, claims);
       } catch (error: any) {
         lastError = error;
+        const statusCode = error.response?.status;
 
+        // Check if it's a rate limit error (429)
+        if (statusCode === 429) {
+          // Get retry-after header or use longer default (30 seconds)
+          const retryAfter = error.response?.headers?.['retry-after'];
+          const delay = retryAfter ? parseInt(retryAfter) * 1000 : 30000;
+          
+          logger.warn(`⏳ [EVIDENCE MATCHING] Rate limited (429), waiting ${delay}ms before retry`, {
+            userId,
+            attempt: attempt + 1,
+            maxRetries,
+            retryAfter
+          });
+          
+          if (attempt < maxRetries) {
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+        }
+
+        // For other errors, use standard exponential backoff
         if (attempt < maxRetries) {
           const delay = this.baseDelay * Math.pow(2, attempt);
           logger.warn(`🔄 [EVIDENCE MATCHING] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, {
             userId,
             error: error.message,
+            statusCode,
             delay
           });
           await new Promise(resolve => setTimeout(resolve, delay));

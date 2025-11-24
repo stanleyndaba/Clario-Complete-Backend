@@ -11,6 +11,7 @@ import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import evidenceMatchingService, { ClaimData, MatchingResult } from '../services/evidenceMatchingService';
 
 // Retry logic with exponential backoff
+// Handles 429 (rate limit) errors with longer delays
 async function retryWithBackoff<T>(
   fn: () => Promise<T>,
   maxRetries: number = 3,
@@ -23,11 +24,32 @@ async function retryWithBackoff<T>(
       return await fn();
     } catch (error: any) {
       lastError = error;
+      const statusCode = error.response?.status;
       
+      // Handle rate limit (429) with longer delay
+      if (statusCode === 429) {
+        const retryAfter = error.response?.headers?.['retry-after'];
+        const delay = retryAfter ? parseInt(retryAfter) * 1000 : 30000; // Default 30s for rate limits
+        
+        logger.warn(`⏳ [EVIDENCE MATCHING WORKER] Rate limited (429), waiting ${delay}ms`, {
+          error: error.message,
+          attempt: attempt + 1,
+          maxRetries,
+          delay
+        });
+        
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+      }
+      
+      // Standard exponential backoff for other errors
       if (attempt < maxRetries) {
         const delay = baseDelay * Math.pow(2, attempt);
-        logger.warn(`🔄 [EVIDENCE MATCHING] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, {
+        logger.warn(`🔄 [EVIDENCE MATCHING WORKER] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, {
           error: error.message,
+          statusCode,
           delay
         });
         await new Promise(resolve => setTimeout(resolve, delay));
@@ -146,9 +168,10 @@ export class EvidenceMatchingWorker {
       for (let i = 0; i < activeUsers.length; i++) {
         const userId = activeUsers[i];
         
-        // Stagger processing to avoid rate limits
+        // Stagger processing to avoid rate limits (5 seconds between users)
+        // This helps prevent 429 errors from the Python API
         if (i > 0) {
-          await new Promise(resolve => setTimeout(resolve, 2000)); // 2 seconds between users
+          await new Promise(resolve => setTimeout(resolve, 5000)); // 5 seconds between users
         }
 
         try {
