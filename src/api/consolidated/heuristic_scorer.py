@@ -17,6 +17,7 @@ class HeuristicScorer:
     
     # Reason code weights (higher = more claimable)
     REASON_CODE_WEIGHTS = {
+        # Lowercase variants
         'lost_inventory': 0.85,
         'damaged_inventory': 0.80,
         'fee_overcharge': 0.90,
@@ -30,11 +31,23 @@ class HeuristicScorer:
         'counterfeit_item': 0.20,
         'inventory_adjustment': 0.75,
         'processing_error': 0.65,
+        'inventory_discrepancy': 0.80,
+        'refund_mismatch': 0.75,
+        'lost_shipment': 0.85,
+        # Uppercase variants (from Node.js Agent 2)
         'INCORRECT_FEE': 0.90,
         'DAMAGED_INVENTORY': 0.80,
         'MISSING_UNIT': 0.85,
         'DUPLICATE_CHARGE': 0.95,
-        'OVERCHARGE': 0.90
+        'OVERCHARGE': 0.90,
+        'POTENTIAL_FEE_OVERCHARGE': 0.85,
+        'INVENTORY_DISCREPANCY': 0.80,
+        'POTENTIAL_REFUND_DISCREPANCY': 0.75,
+        'LOST_SHIPMENT': 0.85,
+        'SETTLEMENT_FEE_ERROR': 0.80,
+        'SETTLEMENT_DISCREPANCY': 0.75,
+        'FEE_OVERCHARGE': 0.90,
+        'MISSING_REIMBURSEMENT': 0.85
     }
     
     # Category weights
@@ -45,13 +58,18 @@ class HeuristicScorer:
         'overcharge': 0.90,
         'duplicate': 0.95,
         'missing_unit': 0.85,
-        'adjustment': 0.70
+        'adjustment': 0.70,
+        'return_discrepancy': 0.75,
+        'settlement_error': 0.80,
+        'settlement_discrepancy': 0.75
     }
     
     # High-confidence keywords
     HIGH_CONFIDENCE_KEYWORDS = [
         'lost', 'damaged', 'missing', 'overcharge', 'duplicate', 'error',
-        'incorrect', 'wrong', 'fault', 'defect', 'broken', 'destroyed'
+        'incorrect', 'wrong', 'fault', 'defect', 'broken', 'destroyed',
+        'discrepancy', 'potential', 'fee', 'refund', 'inventory', 'shipment',
+        'settlement', 'reimbursement', 'claim', 'adjustment'
     ]
     
     # Low-confidence keywords
@@ -62,17 +80,20 @@ class HeuristicScorer:
     def calculate_probability(self, claim: Dict[str, Any]) -> float:
         """Calculate claim probability using heuristic scoring"""
         try:
-            base_score = 0.5  # Start with 50% base probability
+            base_score = 0.55  # Start with 55% base probability (slightly above threshold)
             
-            # 1. Reason code scoring
-            reason_code = claim.get('reason_code', '').upper()
-            reason_weight = self.REASON_CODE_WEIGHTS.get(reason_code, 0.5)
-            base_score = (base_score + reason_weight) / 2
+            # 1. Reason code scoring - check both uppercase and lowercase
+            reason_code = claim.get('reason_code', '')
+            reason_weight = self.REASON_CODE_WEIGHTS.get(reason_code.upper(), 
+                           self.REASON_CODE_WEIGHTS.get(reason_code.lower(), 0.5))
+            # Use weighted average that favors higher scores
+            base_score = (base_score * 0.4 + reason_weight * 0.6)
             
             # 2. Category scoring
             category = claim.get('category', '').lower()
             category_weight = self.CATEGORY_WEIGHTS.get(category, 0.5)
-            base_score = (base_score + category_weight) / 2
+            # Use weighted average that favors higher scores
+            base_score = (base_score * 0.5 + category_weight * 0.5)
             
             # 3. Recency scoring (days since order/delivery)
             days_since_order = claim.get('days_since_order', 365)

@@ -94,8 +94,8 @@ export class PayoutJobQueue {
       },
       {
         connection: redis,
-        removeOnComplete: 100,
-        removeOnFail: 50,
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 50 },
       }
     );
 
@@ -114,8 +114,8 @@ export class PayoutJobQueue {
       },
       {
         connection: redis,
-        removeOnComplete: 100,
-        removeOnFail: 50,
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 50 },
       }
     );
 
@@ -134,8 +134,8 @@ export class PayoutJobQueue {
       },
       {
         connection: redis,
-        removeOnComplete: 100,
-        removeOnFail: 50,
+        removeOnComplete: { age: 3600 },
+        removeOnFail: { count: 50 },
       }
     );
 
@@ -154,6 +154,11 @@ export class PayoutJobQueue {
 
     // Failed job handling
     payoutWorker.on('failed', async (job, error) => {
+      if (!job) {
+        console.error('Payout job failed but no job reference was provided:', error);
+        return;
+      }
+
       console.error(`Job ${job.id} failed:`, error);
       
       const retryCount = job.data.data?.retryCount || 0;

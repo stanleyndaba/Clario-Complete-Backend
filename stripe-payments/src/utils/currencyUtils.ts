@@ -1,4 +1,5 @@
 import { FEE_CONFIG, SUPPORTED_CURRENCIES, SupportedCurrency } from '@/config/stripeConfig';
+export type { SupportedCurrency } from '@/config/stripeConfig';
 
 /**
  * Currency utilities for safe money calculations

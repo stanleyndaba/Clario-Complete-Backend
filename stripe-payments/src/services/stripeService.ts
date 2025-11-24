@@ -53,7 +53,7 @@ export interface StripeAccountInfo {
   chargesEnabled: boolean;
   payoutsEnabled: boolean;
   detailsSubmitted: boolean;
-  capabilities: Record<string, string>;
+  capabilities: Stripe.Account.Capabilities | null;
 }
 
 /**
@@ -168,9 +168,10 @@ export class StripeService {
         },
       };
 
-      const transfer = await stripe.transfers.create(transferData, {
+      const transferResponse = await stripe.transfers.create(transferData, {
         idempotencyKey: metadata?.idempotencyKey,
       });
+      const transfer = transferResponse as Stripe.Transfer;
 
       // Log the transfer creation
       await TransactionLogger.logTransaction({
@@ -192,7 +193,7 @@ export class StripeService {
           transferId: transfer.id,
           amount: amountCents,
           currency,
-          status: transfer.status,
+          status: (transfer as any).status ?? 'unknown',
         },
       };
     } catch (error) {
@@ -323,7 +324,7 @@ export class StripeService {
    */
   static async createConnectAccount(userId: number, email: string, country: string): Promise<StripeAccountInfo> {
     try {
-      const account = await stripe.accounts.create({
+      const accountResponse = await stripe.accounts.create({
         type: 'express',
         country,
         email,
@@ -335,14 +336,15 @@ export class StripeService {
           userId: userId.toString(),
         },
       });
+      const account = accountResponse as Stripe.Account;
 
       return {
         id: account.id,
-        status: account.status,
+        status: (account as any).status ?? 'unknown',
         chargesEnabled: account.charges_enabled || false,
         payoutsEnabled: account.payouts_enabled || false,
         detailsSubmitted: account.details_submitted || false,
-        capabilities: account.capabilities || {},
+        capabilities: account.capabilities || null,
       };
     } catch (error) {
       console.error('Error creating Connect account:', error);
@@ -355,15 +357,16 @@ export class StripeService {
    */
   static async getAccountInfo(accountId: string): Promise<StripeAccountInfo> {
     try {
-      const account = await stripe.accounts.retrieve(accountId);
+      const accountResponse = await stripe.accounts.retrieve(accountId);
+      const account = accountResponse as Stripe.Account;
 
       return {
         id: account.id,
-        status: account.status,
+        status: (account as any).status ?? 'unknown',
         chargesEnabled: account.charges_enabled || false,
         payoutsEnabled: account.payouts_enabled || false,
         detailsSubmitted: account.details_submitted || false,
-        capabilities: account.capabilities || {},
+        capabilities: account.capabilities || null,
       };
     } catch (error) {
       console.error('Error retrieving account:', error);

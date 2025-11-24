@@ -15,7 +15,7 @@ export const STRIPE_CONFIG = {
   API_VERSION: config.STRIPE_API_VERSION,
   PLATFORM_FEE_PERCENTAGE: config.PLATFORM_FEE_PERCENTAGE,
   PRICE_ID: config.STRIPE_PRICE_ID,
-  LIVE_MODE: config.STRIPE_LIVE_MODE === 'true',
+  LIVE_MODE: config.STRIPE_LIVE_MODE,
 } as const;
 
 // Stripe Connect configuration

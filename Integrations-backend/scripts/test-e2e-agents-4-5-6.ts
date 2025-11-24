@@ -49,7 +49,12 @@ async function setupTestData() {
         provider: 'gmail',
         status: 'connected',
         display_name: 'E2E Test Source',
-        metadata: { test: true }
+        account_email: `${testUserId}@e2e.test`,
+        encrypted_access_token: 'ENCRYPTED_ACCESS_TOKEN_PLACEHOLDER',
+        encrypted_refresh_token: 'ENCRYPTED_REFRESH_TOKEN_PLACEHOLDER',
+        token_expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
+        permissions: ['gmail.readonly'],
+        metadata: { test: true, created_by: 'agent-6-e2e' }
       })
       .select('id')
       .single();
@@ -98,12 +103,19 @@ async function setupTestData() {
       .insert({
         seller_id: testUserId,
         source_id: source.id,
+        provider: 'gmail',
+        external_id: `test-doc-${Date.now()}`,
         doc_type: 'invoice',
         supplier_name: 'Test Supplier',
         invoice_number: 'INV-TEST-123',
         document_date: new Date().toISOString(),
         currency: 'USD',
         total_amount: 100.50,
+        size_bytes: 102400,
+        filename: 'test-invoice.pdf',
+        mime_type: 'application/pdf',
+        content_type: 'application/pdf',
+        storage_path: `${testUserId}/${Date.now()}/test-invoice.pdf`,
         file_url: 'https://example.com/test-invoice.pdf',
         raw_text: 'Invoice Number: INV-TEST-123\nSKU: TEST-SKU-123\nASIN: B01234567\nOrder ID: TEST-ORDER-123\nTotal: $100.50',
         extracted: {
