@@ -54,6 +54,15 @@ export interface SyncResult {
   duration: number; // ms
   isMock: boolean;
   mockScenario?: MockScenario;
+  // Detection results from Agent 3 (Discovery Agent)
+  detectionResult?: {
+    totalDetected: number;
+    detectionId?: string;
+    completed: boolean;
+    error?: string;
+    skipped?: boolean;
+    reason?: string;
+  };
 }
 
 export class Agent2DataSyncService {
@@ -285,47 +294,57 @@ export class Agent2DataSyncService {
         errorsCount: errors.length
       });
 
-      // Step 7: Call Discovery Agent (Python ML) asynchronously - don't block sync completion
-      // OPTIMIZATION: Detection runs in background to meet 30s sync timeout requirement
+      // Step 7: Call Discovery Agent (Python ML) - NOW BLOCKING to show results immediately
+      // Changed from async to blocking so detection results appear in sync status
       if (result.success && result.summary.ordersCount + result.summary.shipmentsCount + result.summary.returnsCount > 0) {
-        // Start detection asynchronously - don't await it
-        const detectionPromise = (async () => {
-          try {
-            logger.info('🔍 [AGENT 2] Starting Discovery Agent (Python ML) - async background', { userId, syncId });
-            
-            const detectionId = `detection_${userId}_${Date.now()}`;
-            const detectionResult = await this.callDiscoveryAgent(
-              userId,
-              syncId,
-              detectionId,
-              result.normalized,
-              detectionSyncId
-            );
-            
-            logger.info('✅ [AGENT 2] Discovery Agent completed (async)', {
-              userId,
-              syncId,
-              detectionId,
-              totalDetected: detectionResult?.totalDetected || 0
-            });
-          } catch (detectionError: any) {
-            logger.error('❌ [AGENT 2] Discovery Agent failed (async)', {
-              error: detectionError.message,
-              stack: detectionError.stack,
-              userId,
-              syncId
-            });
-            // Don't fail sync - detection errors are logged but sync continues
-          }
-        })();
-        
-        // Don't await - let detection run in background
-        // Sync completes immediately, detection continues async
-        logger.info('🚀 [AGENT 2] Discovery Agent started asynchronously (non-blocking)', { 
-          userId, 
-          syncId,
-          note: 'Sync will complete immediately, detection continues in background'
-        });
+        try {
+          logger.info('🔍 [AGENT 2] Starting Discovery Agent (Python ML) - BLOCKING', { userId, syncId });
+          
+          const detectionId = `detection_${userId}_${Date.now()}`;
+          const detectionResult = await this.callDiscoveryAgent(
+            userId,
+            syncId,
+            detectionId,
+            result.normalized,
+            detectionSyncId
+          );
+          
+          // Add detection results to the sync result
+          result.detectionResult = {
+            totalDetected: detectionResult?.totalDetected || 0,
+            detectionId,
+            completed: true
+          };
+          
+          logger.info('✅ [AGENT 2] Discovery Agent completed (blocking)', {
+            userId,
+            syncId,
+            detectionId,
+            totalDetected: detectionResult?.totalDetected || 0
+          });
+        } catch (detectionError: any) {
+          logger.error('❌ [AGENT 2] Discovery Agent failed', {
+            error: detectionError.message,
+            stack: detectionError.stack,
+            userId,
+            syncId
+          });
+          // Still mark detection as attempted but failed
+          result.detectionResult = {
+            totalDetected: 0,
+            error: detectionError.message,
+            completed: false
+          };
+          // Don't fail the overall sync - detection errors are logged but sync continues
+        }
+      } else {
+        // No data to detect
+        result.detectionResult = {
+          totalDetected: 0,
+          completed: true,
+          skipped: true,
+          reason: 'No data to analyze'
+        };
       }
 
       return result;

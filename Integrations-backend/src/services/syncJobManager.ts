@@ -5,7 +5,7 @@ import sseHub from '../utils/sseHub';
 import tokenManager from '../utils/tokenManager';
 
 // Standardized status values - use database values consistently
-export type SyncStatus = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type SyncStatus = 'idle' | 'running' | 'detecting' | 'completed' | 'failed' | 'cancelled';
 
 export interface SyncJobStatus {
   syncId: string;
@@ -401,53 +401,88 @@ class SyncJobManager {
         return;
       }
 
-      // Update progress: 80% - Skip detection wait entirely, proceed to completion
-      // CRITICAL OPTIMIZATION: Detection runs async in Agent 2, we don't wait for it
-      // This ensures sync completes within 30 seconds
+      // Update progress: 80% - DETECTION PHASE (now blocking)
+      // Agent 2 now runs detection as part of the sync, so we have results immediately
       syncStatus.progress = 80;
-      syncStatus.message = 'Finalizing sync (detection running in background)...';
+      syncStatus.status = 'detecting'; // New status phase!
+      syncStatus.message = 'Analyzing data for potential recoveries...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
+      this.sendLogEvent(userId, syncId, { type: 'progress', category: 'detection', message: '🔍 Running AI-powered discrepancy detection...' });
 
-      // Do a single quick check for detection results (non-blocking)
-      // If results exist, use them; if not, detection continues in background
-      this.sendLogEvent(userId, syncId, { type: 'progress', category: 'detection', message: 'Running AI detection for potential claims...' });
-      try {
-        const { count: detectionResultsCount } = await supabase
-          .from('detection_results')
-          .select('id', { count: 'exact', head: true })
-          .eq('seller_id', userId)
-          .eq('sync_id', syncId)
-          .limit(1);
-
-        if (detectionResultsCount && detectionResultsCount > 0) {
-          syncStatus.claimsDetected = detectionResultsCount;
-          logger.info('✅ [SYNC JOB MANAGER] Detection results found', { 
+      // Get detection results from Agent 2 (now included in syncResult)
+      const detectionResult = syncResult?.detectionResult;
+      
+      if (detectionResult && detectionResult.completed) {
+        if (detectionResult.totalDetected > 0) {
+          syncStatus.claimsDetected = detectionResult.totalDetected;
+          // Calculate estimated value (~$48 avg per claim)
+          const estimatedValue = detectionResult.totalDetected * 48;
+          const formattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(estimatedValue);
+          
+          logger.info('✅ [SYNC JOB MANAGER] Detection completed with results', { 
             userId, 
             syncId, 
-            resultsCount: detectionResultsCount
+            totalDetected: detectionResult.totalDetected,
+            estimatedValue
           });
-          this.updateSyncStatus(syncStatus);
+          
           this.sendLogEvent(userId, syncId, { 
             type: 'success', 
-            category: 'claims', 
-            message: `✓ Claims detected: ${detectionResultsCount.toLocaleString()} potential recoveries found`,
-            count: detectionResultsCount
+            category: 'detection', 
+            message: `✓ ${detectionResult.totalDetected.toLocaleString()} potential recoveries identified (${formattedValue} estimated value)`,
+            count: detectionResult.totalDetected
           });
-        } else {
-          logger.info('ℹ️ [SYNC JOB MANAGER] Detection still processing in background', {
+        } else if (detectionResult.skipped) {
+          logger.info('ℹ️ [SYNC JOB MANAGER] Detection skipped', {
             userId,
             syncId,
-            note: 'Sync completing immediately - detection continues async, results available on next sync'
+            reason: detectionResult.reason
           });
-          this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Detection running in background - results will update automatically' });
+          this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: `Detection skipped: ${detectionResult.reason || 'No data to analyze'}` });
+        } else {
+          logger.info('ℹ️ [SYNC JOB MANAGER] Detection completed - no discrepancies found', {
+            userId,
+            syncId
+          });
+          this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: '✓ Detection complete - no discrepancies found in this sync' });
         }
-      } catch (error: any) {
-        logger.debug('Detection check error (non-critical)', { error: error.message, userId, syncId });
-        // Ignore errors - proceed to completion
+      } else if (detectionResult && detectionResult.error) {
+        logger.warn('⚠️ [SYNC JOB MANAGER] Detection failed', {
+          userId,
+          syncId,
+          error: detectionResult.error
+        });
+        this.sendLogEvent(userId, syncId, { type: 'warning', category: 'detection', message: `Detection encountered an issue: ${detectionResult.error}` });
+      } else {
+        // Fallback: Check database for detection results
+        try {
+          const { count: detectionResultsCount } = await supabase
+            .from('detection_results')
+            .select('id', { count: 'exact', head: true })
+            .eq('seller_id', userId)
+            .eq('sync_id', syncId)
+            .limit(1);
+
+          if (detectionResultsCount && detectionResultsCount > 0) {
+            syncStatus.claimsDetected = detectionResultsCount;
+            this.sendLogEvent(userId, syncId, { 
+              type: 'success', 
+              category: 'detection', 
+              message: `✓ ${detectionResultsCount.toLocaleString()} potential recoveries found`,
+              count: detectionResultsCount
+            });
+          } else {
+            this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: '✓ Detection complete - no discrepancies in this data' });
+          }
+        } catch (error: any) {
+          logger.debug('Detection check error (non-critical)', { error: error.message, userId, syncId });
+        }
       }
 
-      // Immediately proceed to completion - don't wait for detection
+      // Update status back to completing
+      syncStatus.status = 'running';
+      this.updateSyncStatus(syncStatus);
 
       // Update progress: 95% - Finalizing
       syncStatus.progress = 95;
@@ -739,6 +774,8 @@ class SyncJobManager {
       let normalizedStatus: SyncStatus = 'idle';
       if (data.status === 'running' || data.status === 'in_progress') {
         normalizedStatus = 'running';
+      } else if (data.status === 'detecting') {
+        normalizedStatus = 'detecting';
       } else if (data.status === 'completed' || data.status === 'complete') {
         normalizedStatus = 'completed';
       } else if (data.status === 'failed') {
@@ -941,8 +978,8 @@ class SyncJobManager {
         return false;
       }
 
-      // Only cancel if it's actually running
-      if (data.status === 'running' || data.status === 'in_progress') {
+      // Only cancel if it's actually running or detecting
+      if (data.status === 'running' || data.status === 'in_progress' || data.status === 'detecting') {
         await this.updateSyncStatusInDatabase(syncId, userId, {
           status: 'cancelled',
           message: 'Sync cancelled by user',
@@ -971,6 +1008,7 @@ class SyncJobManager {
         .from('sync_progress')
         .update({
           status: updates.status === 'running' ? 'running' :
+                  updates.status === 'detecting' ? 'detecting' :
                   updates.status === 'completed' ? 'completed' :
                   updates.status === 'failed' ? 'failed' :
                   updates.status === 'cancelled' ? 'cancelled' : 'running',
