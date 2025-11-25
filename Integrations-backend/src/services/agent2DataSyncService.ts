@@ -62,6 +62,7 @@ export class Agent2DataSyncService {
   private returnsService: ReturnsService;
   private settlementsService: SettlementsService;
   private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-7.onrender.com';
+  private readonly buildVersion = 'v2025.11.25.fix-agent3'; // Build marker for deployment verification
 
   constructor() {
     this.ordersService = new OrdersService();
@@ -84,9 +85,13 @@ export class Agent2DataSyncService {
     const startTime = Date.now();
     const errors: string[] = [];
 
+    // Build version marker for deployment verification
+    console.log(`[AGENT 2] Build: ${this.buildVersion} - Starting sync for ${userId}`);
+    
     logger.info('🔄 [AGENT 2] Starting data sync', {
       userId,
       syncId,
+      buildVersion: this.buildVersion,
       startDate: startDate?.toISOString(),
       endDate: endDate?.toISOString()
     });
