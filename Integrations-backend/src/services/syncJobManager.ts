@@ -177,6 +177,34 @@ class SyncJobManager {
   }
 
   /**
+   * Send a log event via SSE for frontend log display
+   */
+  private sendLogEvent(userId: string, syncId: string, log: {
+    type: 'info' | 'success' | 'warning' | 'error' | 'progress';
+    category: 'orders' | 'inventory' | 'shipments' | 'returns' | 'settlements' | 'fees' | 'claims' | 'detection' | 'system';
+    message: string;
+    count?: number;
+  }): void {
+    sseHub.sendEvent(userId, 'sync.log', {
+      type: 'log',
+      syncId,
+      log: {
+        ...log,
+        timestamp: new Date().toISOString()
+      }
+    });
+    // Also send as 'message' for backward compatibility
+    sseHub.sendEvent(userId, 'message', {
+      type: 'log',
+      syncId,
+      log: {
+        ...log,
+        timestamp: new Date().toISOString()
+      }
+    });
+  }
+
+  /**
    * Run the actual sync job asynchronously with timeout protection
    */
   private async runSync(syncId: string, userId: string, isCancelled: () => boolean): Promise<void> {
@@ -206,6 +234,7 @@ class SyncJobManager {
       syncStatus.message = 'Starting data sync...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
+      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Initializing Amazon SP-API connection...' });
 
       if (isCancelled()) {
         syncStatus.status = 'cancelled';
@@ -219,6 +248,7 @@ class SyncJobManager {
       syncStatus.message = 'Fetching orders from Amazon SP-API...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
+      this.sendLogEvent(userId, syncId, { type: 'progress', category: 'orders', message: 'Syncing orders from Amazon SP-API...' });
 
       if (isCancelled()) {
         syncStatus.status = 'cancelled';
@@ -232,6 +262,7 @@ class SyncJobManager {
       syncStatus.message = 'Syncing data (orders, shipments, returns, settlements, inventory, claims)...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
+      this.sendLogEvent(userId, syncId, { type: 'progress', category: 'inventory', message: 'Syncing inventory levels...' });
 
       // Run Agent 2 Data Sync Service (comprehensive data sync with normalization)
       // CRITICAL: This must complete quickly to meet 30s timeout
@@ -292,6 +323,76 @@ class SyncJobManager {
       syncStatus.feesCount = syncResult.summary.feesCount || 0;
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
+      
+      // Send completion log events for each data type that was synced
+      if (syncStatus.ordersProcessed && syncStatus.ordersProcessed > 0) {
+        this.sendLogEvent(userId, syncId, { 
+          type: 'success', 
+          category: 'orders', 
+          message: `✓ Orders synced: ${syncStatus.ordersProcessed.toLocaleString()} orders processed`,
+          count: syncStatus.ordersProcessed
+        });
+      }
+      if (syncStatus.inventoryCount && syncStatus.inventoryCount > 0) {
+        this.sendLogEvent(userId, syncId, { 
+          type: 'success', 
+          category: 'inventory', 
+          message: `✓ Inventory synced: ${syncStatus.inventoryCount.toLocaleString()} items`,
+          count: syncStatus.inventoryCount
+        });
+      }
+      if (syncStatus.shipmentsCount && syncStatus.shipmentsCount > 0) {
+        this.sendLogEvent(userId, syncId, { 
+          type: 'progress', 
+          category: 'shipments', 
+          message: 'Syncing inbound shipments...'
+        });
+        this.sendLogEvent(userId, syncId, { 
+          type: 'success', 
+          category: 'shipments', 
+          message: `✓ Shipments synced: ${syncStatus.shipmentsCount.toLocaleString()} shipments`,
+          count: syncStatus.shipmentsCount
+        });
+      }
+      if (syncStatus.returnsCount && syncStatus.returnsCount > 0) {
+        this.sendLogEvent(userId, syncId, { 
+          type: 'progress', 
+          category: 'returns', 
+          message: 'Syncing customer returns...'
+        });
+        this.sendLogEvent(userId, syncId, { 
+          type: 'success', 
+          category: 'returns', 
+          message: `✓ Returns synced: ${syncStatus.returnsCount.toLocaleString()} returns`,
+          count: syncStatus.returnsCount
+        });
+      }
+      if (syncStatus.settlementsCount && syncStatus.settlementsCount > 0) {
+        this.sendLogEvent(userId, syncId, { 
+          type: 'progress', 
+          category: 'settlements', 
+          message: 'Syncing settlement reports...'
+        });
+        this.sendLogEvent(userId, syncId, { 
+          type: 'success', 
+          category: 'settlements', 
+          message: `✓ Settlements synced: ${syncStatus.settlementsCount.toLocaleString()} settlements`,
+          count: syncStatus.settlementsCount
+        });
+      }
+      if (syncStatus.feesCount && syncStatus.feesCount > 0) {
+        this.sendLogEvent(userId, syncId, { 
+          type: 'progress', 
+          category: 'fees', 
+          message: 'Syncing FBA fees...'
+        });
+        this.sendLogEvent(userId, syncId, { 
+          type: 'success', 
+          category: 'fees', 
+          message: `✓ Fees synced: ${syncStatus.feesCount.toLocaleString()} fee records`,
+          count: syncStatus.feesCount
+        });
+      }
 
       if (isCancelled()) {
         syncStatus.status = 'cancelled';
@@ -310,6 +411,7 @@ class SyncJobManager {
 
       // Do a single quick check for detection results (non-blocking)
       // If results exist, use them; if not, detection continues in background
+      this.sendLogEvent(userId, syncId, { type: 'progress', category: 'detection', message: 'Running AI detection for potential claims...' });
       try {
         const { count: detectionResultsCount } = await supabase
           .from('detection_results')
@@ -326,12 +428,19 @@ class SyncJobManager {
             resultsCount: detectionResultsCount
           });
           this.updateSyncStatus(syncStatus);
+          this.sendLogEvent(userId, syncId, { 
+            type: 'success', 
+            category: 'claims', 
+            message: `✓ Claims detected: ${detectionResultsCount.toLocaleString()} potential recoveries found`,
+            count: detectionResultsCount
+          });
         } else {
           logger.info('ℹ️ [SYNC JOB MANAGER] Detection still processing in background', {
             userId,
             syncId,
             note: 'Sync completing immediately - detection continues async, results available on next sync'
           });
+          this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Detection running in background - results will update automatically' });
         }
       } catch (error: any) {
         logger.debug('Detection check error (non-critical)', { error: error.message, userId, syncId });
@@ -345,6 +454,7 @@ class SyncJobManager {
       syncStatus.message = 'Finalizing sync...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
+      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Finalizing sync and preparing results...' });
 
       // Get sync results from database (now includes detection results if completed)
       const syncResults = await this.getSyncResults(userId, syncId);
@@ -443,6 +553,13 @@ class SyncJobManager {
       
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
+      
+      // Send final completion log
+      this.sendLogEvent(userId, syncId, { 
+        type: 'success', 
+        category: 'system', 
+        message: `Sync completed successfully - ${totalItemsSynced.toLocaleString()} items synced${syncStatus.claimsDetected > 0 ? `, ${syncStatus.claimsDetected} claims detected` : ''}`
+      });
 
       // 🎯 AGENT 2: Send SSE event for sync completed with connection verification
       logger.info('🔍 [SYNC JOB MANAGER] Checking SSE connection before sending sync.completed event', {
