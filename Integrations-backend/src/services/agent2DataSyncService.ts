@@ -788,6 +788,30 @@ export class Agent2DataSyncService {
     // Step 2: Transform normalized data into Discovery Agent claim format
     const allClaimsToDetect = this.prepareClaimsFromNormalizedData(validatedData, userId);
 
+    logger.info('📊 [AGENT 2] Claims prepared for Discovery Agent', {
+      userId,
+      syncId,
+      storageSyncId,
+      totalClaims: allClaimsToDetect.length,
+      ordersCount: validatedData.orders?.length || 0,
+      shipmentsCount: validatedData.shipments?.length || 0,
+      returnsCount: validatedData.returns?.length || 0,
+      settlementsCount: validatedData.settlements?.length || 0
+    });
+
+    console.log('[AGENT 2] Claims prepared for Discovery Agent:');
+    console.log(`  - Total claims: ${allClaimsToDetect.length}`);
+    console.log(`  - From ${validatedData.orders?.length || 0} orders, ${validatedData.shipments?.length || 0} shipments, ${validatedData.returns?.length || 0} returns, ${validatedData.settlements?.length || 0} settlements`);
+    
+    if (allClaimsToDetect.length > 0) {
+      console.log(`[AGENT 2] Sample claim:`, {
+        claim_id: allClaimsToDetect[0].claim_id,
+        category: allClaimsToDetect[0].category,
+        amount: allClaimsToDetect[0].amount,
+        reason: allClaimsToDetect[0].reason
+      });
+    }
+
     if (allClaimsToDetect.length === 0) {
       logger.info('ℹ️ [AGENT 2] No claims to detect', { userId, syncId, storageSyncId });
       console.log('[AGENT 2] No claims to detect - skipping Discovery Agent call');
@@ -1001,7 +1025,22 @@ export class Agent2DataSyncService {
 
       // Add batch predictions to accumulated results
       allPredictions.push(...batchPredictions);
-      console.log(`[AGENT 2] Batch ${batchIndex + 1} completed: ${batchPredictions.length} predictions (total so far: ${allPredictions.length})`);
+      
+      // Log prediction details for debugging
+      const claimableCount = batchPredictions.filter((p: any) => p.claimable).length;
+      const nonClaimableCount = batchPredictions.length - claimableCount;
+      console.log(`[AGENT 2] Batch ${batchIndex + 1} completed: ${batchPredictions.length} predictions (${claimableCount} claimable, ${nonClaimableCount} non-claimable) - Total so far: ${allPredictions.length}`);
+      
+      // Log sample prediction for debugging
+      if (batchPredictions.length > 0) {
+        const samplePrediction = batchPredictions[0];
+        console.log(`[AGENT 2] Sample prediction from batch ${batchIndex + 1}:`, {
+          claim_id: samplePrediction.claim_id,
+          claimable: samplePrediction.claimable,
+          probability: samplePrediction.probability || samplePrediction.confidence,
+          hasReason: !!samplePrediction.reason
+        });
+      }
       
       // Small delay between batches to avoid overwhelming the API
       if (batchIndex < totalBatches - 1) {
@@ -1033,15 +1072,46 @@ export class Agent2DataSyncService {
       throw new Error(`Batch processing failed: ${batchProcessingError.message}`);
     }
 
+    // Log detailed statistics before filtering
+    const claimablePredictions = allPredictions.filter((p: any) => p.claimable);
+    const nonClaimablePredictions = allPredictions.filter((p: any) => !p.claimable);
+    
     logger.info('✅ [AGENT 2] All batches processed', {
       userId,
       syncId,
       totalClaims: allClaimsToDetect.length,
       totalPredictions: allPredictions.length,
+      claimablePredictions: claimablePredictions.length,
+      nonClaimablePredictions: nonClaimablePredictions.length,
       totalBatches
     });
     
-    console.log(`[AGENT 2] All ${totalBatches} batches completed: ${allPredictions.length} total predictions from ${allClaimsToDetect.length} claims`);
+    console.log(`[AGENT 2] All ${totalBatches} batches completed:`);
+    console.log(`  - Total predictions: ${allPredictions.length}`);
+    console.log(`  - Claimable: ${claimablePredictions.length}`);
+    console.log(`  - Non-claimable: ${nonClaimablePredictions.length}`);
+    console.log(`  - From ${allClaimsToDetect.length} total claims sent to Agent 3`);
+    
+    // Log sample predictions for debugging
+    if (allPredictions.length > 0) {
+      const sampleClaimable = claimablePredictions[0];
+      const sampleNonClaimable = nonClaimablePredictions[0];
+      
+      if (sampleClaimable) {
+        console.log(`[AGENT 2] Sample claimable prediction:`, {
+          claim_id: sampleClaimable.claim_id,
+          claimable: sampleClaimable.claimable,
+          probability: sampleClaimable.probability || sampleClaimable.confidence
+        });
+      }
+      if (sampleNonClaimable) {
+        console.log(`[AGENT 2] Sample non-claimable prediction:`, {
+          claim_id: sampleNonClaimable.claim_id,
+          claimable: sampleNonClaimable.claimable,
+          probability: sampleNonClaimable.probability || sampleNonClaimable.confidence
+        });
+      }
+    }
 
     // Step 5: Transform predictions to detection results format
     const detectionResults = allPredictions
