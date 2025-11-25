@@ -12,6 +12,7 @@ export interface ShipmentItem {
   sku: string;
   asin: string;
   quantity: number;
+  price?: number; // Unit price for value calculation
 }
 
 export interface NormalizedShipment {
@@ -121,10 +122,11 @@ export class ShipmentsService {
       const items: ShipmentItem[] = (shipment.Items || shipment.items || []).map((item: any) => ({
         sku: item.SellerSKU || item.sku || '',
         asin: item.ASIN || item.asin || '',
-        quantity: item.QuantityShipped || item.quantity || 0
+        quantity: item.QuantityShipped || item.quantity || 0,
+        price: parseFloat(item.ItemPrice?.Amount || item.ItemPrice || item.price || '0') || undefined
       }));
 
-      const expectedQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
+      const expectedQuantity = shipment.QuantityShipped || items.reduce((sum, item) => sum + item.quantity, 0);
       const receivedQuantity = shipment.QuantityReceived || shipment.received_quantity || expectedQuantity;
       const missingQuantity = Math.max(0, expectedQuantity - receivedQuantity);
 

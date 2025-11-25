@@ -545,19 +545,31 @@ export class Agent2DataSyncService {
     const recordCount = Math.floor((process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75) * 0.7);
     const shipments: any[] = [];
 
+    // Determine how many shipments should have issues (missing quantity)
+    const issueRate = scenario === 'with_issues' ? 0.4 : scenario === 'high_volume' ? 0.2 : 0.15;
+
     for (let i = 0; i < recordCount; i++) {
       const shippedDate = this.randomDate(startDate, endDate);
       const receivedDate = new Date(shippedDate.getTime() + Math.random() * 7 * 24 * 60 * 60 * 1000);
+      
+      const quantityShipped = Math.floor(Math.random() * 10) + 1;
+      const hasIssue = Math.random() < issueRate;
+      // For issues, reduce received quantity to create missing_quantity
+      const quantityReceived = hasIssue ? Math.max(0, quantityShipped - Math.floor(Math.random() * 3) - 1) : quantityShipped;
+      const itemPrice = parseFloat((Math.random() * 50 + 10).toFixed(2)); // $10-60 per item
       
       shipments.push({
         ShipmentId: `SHIP-${Date.now()}-${i}`,
         ShippedDate: shippedDate.toISOString(),
         ReceivedDate: receivedDate.toISOString(),
-        Status: ['RECEIVED', 'IN_TRANSIT', 'CHECKED_IN'][Math.floor(Math.random() * 3)],
+        Status: hasIssue ? 'CHECKED_IN' : ['RECEIVED', 'IN_TRANSIT', 'CHECKED_IN'][Math.floor(Math.random() * 3)],
+        QuantityShipped: quantityShipped,
+        QuantityReceived: quantityReceived,
         Items: [{
           SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
           ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
-          QuantityShipped: Math.floor(Math.random() * 10) + 1
+          QuantityShipped: quantityShipped,
+          ItemPrice: itemPrice // Add price for value calculation
         }],
         FulfillmentCenterId: `FBA${Math.floor(Math.random() * 5) + 1}`,
         isMock: true,
@@ -632,23 +644,31 @@ export class Agent2DataSyncService {
     const recordCount = Math.floor((process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75) * 0.6);
     const settlements: any[] = [];
 
+    // Determine how many settlements should have fee discrepancies
+    const issueRate = scenario === 'with_issues' ? 0.4 : scenario === 'high_volume' ? 0.2 : 0.15;
+
     for (let i = 0; i < recordCount; i++) {
       const settlementDate = this.randomDate(startDate, endDate);
+      const hasIssue = Math.random() < issueRate;
+      
+      const amount = parseFloat((Math.random() * 1000 + 100).toFixed(2));
+      // For issues, generate higher fees (potential overcharge)
+      const fees = hasIssue 
+        ? parseFloat((amount * (0.2 + Math.random() * 0.1)).toFixed(2)) // 20-30% fee (high - potential overcharge)
+        : parseFloat((amount * 0.15).toFixed(2)); // 15% fee (normal)
       
       settlements.push({
         SettlementId: `SETTLE-${Date.now()}-${i}`,
-        SettlementDate: settlementDate.toISOString(),
-        TotalAmount: {
-          Amount: (Math.random() * 1000 + 100).toFixed(2),
-          CurrencyCode: 'USD'
+        settlement_date: settlementDate.toISOString(),
+        amount: amount,
+        fees: fees,
+        currency: 'USD',
+        transaction_type: hasIssue ? 'fee_adjustment' : 'fee',
+        fee_breakdown: {
+          fba_fulfillment: parseFloat((fees * 0.6).toFixed(2)),
+          referral: parseFloat((fees * 0.3).toFixed(2)),
+          closing: parseFloat((fees * 0.1).toFixed(2))
         },
-        FeeList: [{
-          FeeType: ['FBA_FULFILLMENT', 'REFERRAL', 'CLOSING'][Math.floor(Math.random() * 3)],
-          FeeAmount: {
-            Amount: (Math.random() * 50 + 5).toFixed(2),
-            CurrencyCode: 'USD'
-          }
-        }],
         isMock: true,
         mockScenario: scenario
       });

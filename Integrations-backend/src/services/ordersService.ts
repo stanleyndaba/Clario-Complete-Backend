@@ -193,6 +193,13 @@ export class OrdersService {
       const orderDate = order.PurchaseDate || order.order_date || order.CreatedDate;
       const shipmentDate = order.EarliestShipDate || order.shipment_date || order.ShipServiceLevelCategory;
 
+      // Calculate total_amount from OrderTotal or sum of items
+      let totalAmount = parseFloat(order.OrderTotal?.Amount || order.total_amount || '0');
+      if (totalAmount === 0 && items.length > 0) {
+        // Calculate from items if OrderTotal is missing (common in mock data)
+        totalAmount = items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      }
+
       return {
         order_id: order.AmazonOrderId || order.order_id || order.OrderId || '',
         seller_id: order.SellerId || order.seller_id,
@@ -203,7 +210,7 @@ export class OrdersService {
         items,
         quantities,
         status: order.OrderStatus || order.status || 'Pending',
-        total_amount: parseFloat(order.OrderTotal?.Amount || order.total_amount || '0'),
+        total_amount: totalAmount,
         currency: order.OrderTotal?.CurrencyCode || order.currency || 'USD',
         metadata: {
           orderType: order.OrderType || order.order_type,
