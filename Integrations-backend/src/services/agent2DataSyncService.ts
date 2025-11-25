@@ -1106,6 +1106,42 @@ export class Agent2DataSyncService {
           syncId: storageSyncId,
           claimsDetected: detectionResults.length
         });
+
+        // Step 9: Send SSE event to notify frontend of updated claimsDetected
+        // This is critical because sync completes before detection finishes
+        try {
+          const sseHub = (await import('../utils/sseHub')).default;
+          sseHub.sendEvent(userId, 'detection.completed', {
+            type: 'detection',
+            status: 'completed',
+            syncId: storageSyncId,
+            claimsDetected: detectionResults.length,
+            message: `Detection complete: ${detectionResults.length} claims detected`,
+            timestamp: new Date().toISOString()
+          });
+          
+          // Also send as 'message' event for backward compatibility
+          sseHub.sendEvent(userId, 'message', {
+            type: 'detection',
+            status: 'completed',
+            syncId: storageSyncId,
+            claimsDetected: detectionResults.length,
+            message: `Detection complete: ${detectionResults.length} claims detected`,
+            timestamp: new Date().toISOString()
+          });
+          
+          logger.info('✅ [AGENT 2] Sent SSE event for detection completion', {
+            userId,
+            syncId: storageSyncId,
+            claimsDetected: detectionResults.length
+          });
+        } catch (sseError: any) {
+          logger.warn('⚠️ [AGENT 2] Failed to send SSE event for detection completion (non-critical)', {
+            error: sseError.message,
+            userId,
+            syncId: storageSyncId
+          });
+        }
       }
     } catch (metadataError: any) {
       logger.warn('⚠️ [AGENT 2] Failed to update sync_progress metadata (non-critical)', {
