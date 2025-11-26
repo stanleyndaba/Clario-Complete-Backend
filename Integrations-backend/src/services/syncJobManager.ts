@@ -234,8 +234,8 @@ class SyncJobManager {
       syncStatus.message = 'Establishing secure connection...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Connecting to Amazon SP-API Secure Tunnel... [CONNECTED]' });
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Authenticating seller credentials... [VERIFIED]' });
+      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Connecting to data source...' });
+      this.sendLogEvent(userId, syncId, { type: 'success', category: 'system', message: 'Connection established' });
 
       if (isCancelled()) {
         syncStatus.status = 'cancelled';
@@ -249,8 +249,7 @@ class SyncJobManager {
       syncStatus.message = 'Accessing seller ledger...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Requesting access to Seller Central ledger (18 months)...' });
-      this.sendLogEvent(userId, syncId, { type: 'progress', category: 'orders', message: 'Scanning Order Transaction History...' });
+      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Requesting seller data (18-month window)...' });
 
       if (isCancelled()) {
         syncStatus.status = 'cancelled';
@@ -264,8 +263,7 @@ class SyncJobManager {
       syncStatus.message = 'Agent 2 Active: Cross-referencing FBA data...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Agent 2 Active: Initializing data normalization engine...' });
-      this.sendLogEvent(userId, syncId, { type: 'progress', category: 'inventory', message: 'Cross-referencing FBA Inventory Records...' });
+      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Processing FBA data...' });
 
       // Run Agent 2 Data Sync Service (comprehensive data sync with normalization)
       // CRITICAL: This must complete quickly to meet 30s timeout
@@ -327,12 +325,12 @@ class SyncJobManager {
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
       
-      // Send completion log events for each data type that was synced - VALUE LANGUAGE
+      // Send completion log events for each data type - only log what was actually synced
       if (syncStatus.ordersProcessed && syncStatus.ordersProcessed > 0) {
         this.sendLogEvent(userId, syncId, { 
           type: 'success', 
           category: 'orders', 
-          message: `✓ Order Ledger: ${syncStatus.ordersProcessed.toLocaleString()} transactions loaded`,
+          message: `Orders: ${syncStatus.ordersProcessed.toLocaleString()} loaded`,
           count: syncStatus.ordersProcessed
         });
       }
@@ -340,59 +338,39 @@ class SyncJobManager {
         this.sendLogEvent(userId, syncId, { 
           type: 'success', 
           category: 'inventory', 
-          message: `✓ Inventory Scan: ${syncStatus.inventoryCount.toLocaleString()} SKUs catalogued`,
+          message: `Inventory: ${syncStatus.inventoryCount.toLocaleString()} SKUs`,
           count: syncStatus.inventoryCount
         });
       }
       if (syncStatus.shipmentsCount && syncStatus.shipmentsCount > 0) {
         this.sendLogEvent(userId, syncId, { 
-          type: 'progress', 
-          category: 'shipments', 
-          message: 'Mapping Inbound Shipment Timeline...'
-        });
-        this.sendLogEvent(userId, syncId, { 
           type: 'success', 
           category: 'shipments', 
-          message: `✓ Shipment Map: ${syncStatus.shipmentsCount.toLocaleString()} FBA shipments traced`,
+          message: `Shipments: ${syncStatus.shipmentsCount.toLocaleString()} FBA inbound`,
           count: syncStatus.shipmentsCount
         });
       }
       if (syncStatus.returnsCount && syncStatus.returnsCount > 0) {
         this.sendLogEvent(userId, syncId, { 
-          type: 'progress', 
-          category: 'returns', 
-          message: 'Analyzing Customer Return Flow...'
-        });
-        this.sendLogEvent(userId, syncId, { 
           type: 'success', 
           category: 'returns', 
-          message: `✓ Return Analysis: ${syncStatus.returnsCount.toLocaleString()} returns indexed`,
+          message: `Returns: ${syncStatus.returnsCount.toLocaleString()} processed`,
           count: syncStatus.returnsCount
         });
       }
       if (syncStatus.settlementsCount && syncStatus.settlementsCount > 0) {
         this.sendLogEvent(userId, syncId, { 
-          type: 'progress', 
-          category: 'settlements', 
-          message: 'Auditing Settlement Reports...'
-        });
-        this.sendLogEvent(userId, syncId, { 
           type: 'success', 
           category: 'settlements', 
-          message: `✓ Settlement Audit: ${syncStatus.settlementsCount.toLocaleString()} payment cycles reviewed`,
+          message: `Settlements: ${syncStatus.settlementsCount.toLocaleString()} reports`,
           count: syncStatus.settlementsCount
         });
       }
       if (syncStatus.feesCount && syncStatus.feesCount > 0) {
         this.sendLogEvent(userId, syncId, { 
-          type: 'progress', 
-          category: 'fees', 
-          message: 'Deconstructing FBA Fee Structure...'
-        });
-        this.sendLogEvent(userId, syncId, { 
           type: 'success', 
           category: 'fees', 
-          message: `✓ Fee Analysis: ${syncStatus.feesCount.toLocaleString()} fee entries examined`,
+          message: `Fees: ${syncStatus.feesCount.toLocaleString()} entries`,
           count: syncStatus.feesCount
         });
       }
@@ -411,9 +389,7 @@ class SyncJobManager {
       syncStatus.message = 'Agent 3 Active: Scanning for discrepancies...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Agent 3 Active: Initializing Claim Detection Engine...' });
-      this.sendLogEvent(userId, syncId, { type: 'progress', category: 'detection', message: '🔍 Scanning for lost inventory, overcharges, uncredited returns...' });
-      this.sendLogEvent(userId, syncId, { type: 'progress', category: 'detection', message: 'Cross-referencing against Amazon reimbursement policies...' });
+      this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Running discrepancy analysis...' });
 
       // Get detection results from Agent 2 (now included in syncResult)
       const detectionResult = syncResult?.detectionResult;
@@ -435,13 +411,7 @@ class SyncJobManager {
           this.sendLogEvent(userId, syncId, { 
             type: 'success', 
             category: 'detection', 
-            message: `⚡ DISCREPANCIES DETECTED: ${detectionResult.totalDetected.toLocaleString()} recoverable items found`,
-            count: detectionResult.totalDetected
-          });
-          this.sendLogEvent(userId, syncId, { 
-            type: 'success', 
-            category: 'detection', 
-            message: `💰 Calculating Potential Recovery: ${formattedValue} estimated value`,
+            message: `Discrepancies: ${detectionResult.totalDetected.toLocaleString()} found (${formattedValue} est.)`,
             count: detectionResult.totalDetected
           });
         } else if (detectionResult.skipped) {
@@ -450,13 +420,13 @@ class SyncJobManager {
             syncId,
             reason: detectionResult.reason
           });
-          this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: `Analysis skipped: ${detectionResult.reason || 'Insufficient data for analysis'}` });
+          this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: `Skipped: ${detectionResult.reason || 'Insufficient data'}` });
         } else {
           logger.info('ℹ️ [SYNC JOB MANAGER] Detection completed - no discrepancies found', {
             userId,
             syncId
           });
-          this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: '✓ Full analysis complete - no discrepancies detected in current data window' });
+          this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Analysis complete - no discrepancies found' });
         }
       } else if (detectionResult && detectionResult.error) {
         logger.warn('⚠️ [SYNC JOB MANAGER] Detection failed', {
@@ -464,7 +434,7 @@ class SyncJobManager {
           syncId,
           error: detectionResult.error
         });
-        this.sendLogEvent(userId, syncId, { type: 'warning', category: 'detection', message: `Analysis engine encountered an issue: ${detectionResult.error}` });
+        this.sendLogEvent(userId, syncId, { type: 'warning', category: 'detection', message: `Analysis error: ${detectionResult.error}` });
       } else {
         // Fallback: Check database for detection results
         try {
@@ -500,8 +470,7 @@ class SyncJobManager {
       syncStatus.message = 'Compiling analysis report...';
       this.updateSyncStatus(syncStatus);
       this.sendProgressUpdate(userId, syncStatus);
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Compiling analysis report...' });
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Generating recovery recommendations...' });
+      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Finalizing...' });
 
       // Get sync results from database (now includes detection results if completed)
       const syncResults = await this.getSyncResults(userId, syncId);
@@ -605,21 +574,15 @@ class SyncJobManager {
       this.sendLogEvent(userId, syncId, { 
         type: 'success', 
         category: 'system', 
-        message: `✓ Analysis Complete: ${totalItemsSynced.toLocaleString()} records processed`
+        message: `Sync complete: ${totalItemsSynced.toLocaleString()} records`
       });
       if (syncStatus.claimsDetected > 0) {
         const finalValue = syncStatus.claimsDetected * 48;
         const finalFormattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(finalValue);
         this.sendLogEvent(userId, syncId, { 
           type: 'success', 
-          category: 'system', 
-          message: `💰 Ready for Recovery: ${finalFormattedValue} from ${syncStatus.claimsDetected} discrepancies`
-        });
-      } else {
-        this.sendLogEvent(userId, syncId, { 
-          type: 'info', 
-          category: 'system', 
-          message: 'No discrepancies detected in this analysis window. Monitoring continues.'
+          category: 'detection', 
+          message: `Recovery potential: ${finalFormattedValue} (${syncStatus.claimsDetected} items)`
         });
       }
 
