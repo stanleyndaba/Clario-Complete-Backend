@@ -73,19 +73,25 @@ export const getActiveSyncStatus = async (req: Request, res: Response) => {
     });
 
     // Extract user ID from middleware (set by userIdMiddleware)
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    // Use 'demo-user' as fallback for sandbox/development testing
+    let userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
 
-    // Allow demo-user for testing (fallback from userIdMiddleware)
-    if (!userId || userId === 'demo-user') {
-      logger.warn('⚠️ [SYNC STATUS] No user ID found, using demo-user for testing', {
-        userId: userId || 'missing',
-        path: req.path
-      });
-      // Return empty status for demo-user instead of 401
-      return res.json({
-        hasActiveSync: false,
-        lastSync: null
-      });
+    // In sandbox mode, default to 'demo-user' to query actual generated data
+    if (!userId) {
+      const isSandbox = process.env.NODE_ENV !== 'production' || 
+                        process.env.AMAZON_SANDBOX_MODE === 'true' ||
+                        process.env.USE_MOCK_DATA === 'true';
+      
+      if (isSandbox) {
+        userId = 'demo-user';
+        logger.info('ℹ️ [SYNC STATUS] Using demo-user in sandbox mode', { path: req.path });
+      } else {
+        logger.warn('⚠️ [SYNC STATUS] No user ID found in production mode', { path: req.path });
+        return res.status(401).json({
+          success: false,
+          error: 'Unauthorized - no user ID provided'
+        });
+      }
     }
 
     logger.info(`✅ [SYNC STATUS] Getting active sync status for userId: ${userId}`);
