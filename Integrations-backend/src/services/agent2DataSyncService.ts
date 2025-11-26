@@ -70,7 +70,7 @@ export class Agent2DataSyncService {
   private shipmentsService: ShipmentsService;
   private returnsService: ReturnsService;
   private settlementsService: SettlementsService;
-  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-7.onrender.com';
+  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-sc5a.onrender.com';
   private readonly buildVersion = 'v2025.11.25.fix-agent3'; // Build marker for deployment verification
 
   constructor() {

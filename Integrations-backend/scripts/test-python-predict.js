@@ -6,7 +6,7 @@ require('dotenv/config');
 const axios = require('axios');
 
 async function main() {
-  const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-7.onrender.com';
+  const pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-sc5a.onrender.com';
   const payload = {
     claims: [
       {

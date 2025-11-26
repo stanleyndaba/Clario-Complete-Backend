@@ -167,8 +167,8 @@ Agent 6 (Matching) → matches claims to documents → routes by confidence
 ENABLE_EVIDENCE_MATCHING_WORKER=true  # Default: true
 
 # Python API URL (for matching service)
-PYTHON_API_URL=https://python-api-7.onrender.com
-API_URL=https://python-api-7.onrender.com  # Fallback
+PYTHON_API_URL=https://clario-complete-backend-sc5a.onrender.com
+API_URL=https://clario-complete-backend-sc5a.onrender.com  # Fallback
 
 # Python API authentication
 PYTHON_API_JWT_SECRET=copy-of-your-fastapi-JWT_SECRET

@@ -4,7 +4,7 @@
 
 import axios from 'axios';
 
-const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://python-api-7.onrender.com';
+const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://clario-complete-backend-sc5a.onrender.com';
 
 async function testHealth() {
   console.log('\n🔍 Testing Python API Health...\n');

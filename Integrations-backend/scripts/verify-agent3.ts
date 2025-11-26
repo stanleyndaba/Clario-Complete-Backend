@@ -13,7 +13,7 @@ import axios from 'axios';
 import logger from '../src/utils/logger';
 
 const NODE_API_URL = process.env.NODE_API_URL || 'https://opside-node-api.onrender.com';
-const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://python-api-7.onrender.com';
+const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://clario-complete-backend-sc5a.onrender.com';
 const TEST_USER_ID = process.env.TEST_USER_ID || 'demo-user';
 
 interface TestResult {

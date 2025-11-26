@@ -4,7 +4,7 @@
 
 import axios from 'axios';
 
-const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://python-api-7.onrender.com';
+const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://clario-complete-backend-sc5a.onrender.com';
 
 // This is the exact format that Agent 2 sends (from prepareClaimsFromNormalizedData)
 const testClaims = [
