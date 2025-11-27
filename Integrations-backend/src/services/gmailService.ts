@@ -105,9 +105,16 @@ export class GmailService {
 
   async refreshAccessToken(userId: string): Promise<string> {
     try {
-      const tokenData = await tokenManager.getToken(userId, 'gmail');
+      const tokenStatus = await tokenManager.getTokenWithStatus(userId, 'gmail');
+      const tokenData = tokenStatus?.token;
+
       if (!tokenData) {
         throw createError('No Gmail token found', 401);
+      }
+
+      if (!tokenData.refreshToken) {
+        logger.error('No Gmail refresh token available', { userId });
+        throw createError('No Gmail refresh token available', 401);
       }
 
       const response = await axios.post(this.authUrl, {
@@ -136,12 +143,19 @@ export class GmailService {
 
   async getValidAccessToken(userId: string): Promise<string> {
     try {
-      const tokenData = await tokenManager.getToken(userId, 'gmail');
-      if (!tokenData) {
+      const tokenStatus = await tokenManager.getTokenWithStatus(userId, 'gmail');
+
+      if (!tokenStatus) {
         throw createError('No Gmail token found', 401);
       }
 
-      // Check if token is expired or will expire soon (within 5 minutes)
+      if (tokenStatus.isExpired) {
+        logger.info('Gmail token expired, attempting refresh', { userId });
+        return await this.refreshAccessToken(userId);
+      }
+
+      const tokenData = tokenStatus.token;
+      // Check if token will expire soon (within 5 minutes)
       const expiresIn = tokenData.expiresAt.getTime() - Date.now();
       if (expiresIn < 300000) { // 5 minutes
         return await this.refreshAccessToken(userId);

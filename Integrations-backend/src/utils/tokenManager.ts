@@ -9,6 +9,11 @@ export interface TokenData {
   expiresAt: Date;
 }
 
+export interface TokenWithStatus {
+  token: TokenData;
+  isExpired: boolean;
+}
+
 export interface EncryptedToken {
   iv: string;
   data: string;
@@ -89,69 +94,96 @@ export class TokenManager {
     provider: 'amazon' | 'gmail' | 'stripe'
   ): Promise<TokenData | null> {
     try {
-      const tokenRecord = await dbTokenManager.getToken(userId, provider);
-      
-      if (!tokenRecord) {
+      const tokenStatus = await this.getTokenWithStatus(userId, provider);
+
+      if (!tokenStatus) {
         return null;
       }
 
-      // Check if token is expired
-      if (await dbTokenManager.isTokenExpired(tokenRecord)) {
+      if (tokenStatus.isExpired) {
         logger.info('Token is expired', { userId, provider });
         return null;
       }
 
-      // Handle both old format (colon-separated) and new format (IV+data)
-      let decryptedAccessToken: string;
-      let decryptedRefreshToken: string;
+      return tokenStatus.token;
+    } catch (error) {
+      logger.error('Error getting token', { error, userId, provider });
+      throw error;
+    }
+  }
 
-      if (typeof tokenRecord.access_token === 'string' && tokenRecord.access_token.includes(':')) {
-        // Old format: colon-separated IV:data
-        const textParts = tokenRecord.access_token.split(':');
+  async getTokenWithStatus(
+    userId: string,
+    provider: 'amazon' | 'gmail' | 'stripe'
+  ): Promise<TokenWithStatus | null> {
+    try {
+      const tokenRecord = await dbTokenManager.getToken(userId, provider);
+
+      if (!tokenRecord) {
+        return null;
+      }
+
+      const tokenData = this.decryptTokenRecord(tokenRecord);
+      const isExpired = await dbTokenManager.isTokenExpired(tokenRecord);
+
+      return {
+        token: tokenData,
+        isExpired
+      };
+    } catch (error) {
+      logger.error('Error getting token with status', { error, userId, provider });
+      throw error;
+    }
+  }
+
+  private decryptTokenRecord(tokenRecord: TokenRecord): TokenData {
+    // Handle both old format (colon-separated) and new format (IV+data)
+    let decryptedAccessToken: string;
+    let decryptedRefreshToken: string;
+
+    if (typeof tokenRecord.access_token === 'string' && tokenRecord.access_token.includes(':')) {
+      // Old format: colon-separated IV:data
+      const textParts = tokenRecord.access_token.split(':');
+      const iv = Buffer.from(textParts.shift()!, 'hex');
+      const encrypted = textParts.join(':');
+      const decipher = crypto.createDecipheriv('aes-256-cbc', this.encryptionKey, iv);
+      let dec = decipher.update(encrypted, 'hex', 'utf8');
+      dec += decipher.final('utf8');
+      decryptedAccessToken = dec;
+    } else if (typeof tokenRecord.access_token === 'object' && tokenRecord.access_token.iv && tokenRecord.access_token.data) {
+      // New format: {iv, data}
+      decryptedAccessToken = this.decrypt(tokenRecord.access_token.iv, tokenRecord.access_token.data);
+    } else {
+      // Assume it's already in IV+data format from database
+      decryptedAccessToken = this.decrypt((tokenRecord as any).access_token_iv, (tokenRecord as any).access_token_data);
+    }
+
+    if (tokenRecord.refresh_token) {
+      if (typeof tokenRecord.refresh_token === 'string' && tokenRecord.refresh_token.includes(':')) {
+        // Old format
+        const textParts = tokenRecord.refresh_token.split(':');
         const iv = Buffer.from(textParts.shift()!, 'hex');
         const encrypted = textParts.join(':');
         const decipher = crypto.createDecipheriv('aes-256-cbc', this.encryptionKey, iv);
         let dec = decipher.update(encrypted, 'hex', 'utf8');
         dec += decipher.final('utf8');
-        decryptedAccessToken = dec;
-      } else if (typeof tokenRecord.access_token === 'object' && tokenRecord.access_token.iv && tokenRecord.access_token.data) {
-        // New format: {iv, data}
-        decryptedAccessToken = this.decrypt(tokenRecord.access_token.iv, tokenRecord.access_token.data);
+        decryptedRefreshToken = dec;
+      } else if (typeof tokenRecord.refresh_token === 'object' && tokenRecord.refresh_token.iv && tokenRecord.refresh_token.data) {
+        // New format
+        decryptedRefreshToken = this.decrypt(tokenRecord.refresh_token.iv, tokenRecord.refresh_token.data);
       } else {
         // Assume it's already in IV+data format from database
-        decryptedAccessToken = this.decrypt((tokenRecord as any).access_token_iv, (tokenRecord as any).access_token_data);
+        decryptedRefreshToken = this.decrypt((tokenRecord as any).refresh_token_iv, (tokenRecord as any).refresh_token_data);
       }
-
-      if (tokenRecord.refresh_token) {
-        if (typeof tokenRecord.refresh_token === 'string' && tokenRecord.refresh_token.includes(':')) {
-          // Old format
-          const textParts = tokenRecord.refresh_token.split(':');
-          const iv = Buffer.from(textParts.shift()!, 'hex');
-          const encrypted = textParts.join(':');
-          const decipher = crypto.createDecipheriv('aes-256-cbc', this.encryptionKey, iv);
-          let dec = decipher.update(encrypted, 'hex', 'utf8');
-          dec += decipher.final('utf8');
-          decryptedRefreshToken = dec;
-        } else if (typeof tokenRecord.refresh_token === 'object' && tokenRecord.refresh_token.iv && tokenRecord.refresh_token.data) {
-          // New format
-          decryptedRefreshToken = this.decrypt(tokenRecord.refresh_token.iv, tokenRecord.refresh_token.data);
-        } else {
-          // Assume it's already in IV+data format from database
-          decryptedRefreshToken = this.decrypt((tokenRecord as any).refresh_token_iv, (tokenRecord as any).refresh_token_data);
-        }
-      } else {
-        decryptedRefreshToken = '';
-      }
-
-      return {
-        accessToken: decryptedAccessToken,
-        refreshToken: decryptedRefreshToken,
-        expiresAt: new Date(tokenRecord.expires_at)
-      };
-    } catch (error) {
-      logger.error('Error getting token', { error, userId, provider });
-      throw error;
+    } else {
+      decryptedRefreshToken = '';
     }
+
+    return {
+      accessToken: decryptedAccessToken,
+      refreshToken: decryptedRefreshToken,
+      expiresAt: new Date(tokenRecord.expires_at)
+    };
   }
 
   async refreshToken(
@@ -197,8 +229,8 @@ export class TokenManager {
   ): Promise<boolean> {
     try {
       // First check database
-      const token = await this.getToken(userId, provider);
-      if (token !== null) {
+      const tokenStatus = await this.getTokenWithStatus(userId, provider);
+      if (tokenStatus && !tokenStatus.isExpired) {
         return true;
       }
       
