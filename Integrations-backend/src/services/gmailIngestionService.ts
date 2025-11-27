@@ -90,30 +90,8 @@ export class GmailIngestionService {
             continue;
           }
 
-          // Extract attachments from email or use mock payloads
-          let attachments: GmailDocument[] = [];
-          const mockAttachments = (email as any).mockAttachments;
-
-          if (mockAttachments?.length) {
-            attachments = mockAttachments.map((mockAttachment: any) => ({
-              id: mockAttachment.id,
-              emailId: email.id,
-              subject: email.subject,
-              from: email.from,
-              date: email.date,
-              filename: mockAttachment.filename,
-              contentType: mockAttachment.contentType || 'application/pdf',
-              size: mockAttachment.size || 0,
-              content: mockAttachment.contentBase64
-                ? Buffer.from(mockAttachment.contentBase64, 'base64')
-                : undefined,
-              downloadUrl: mockAttachment.contentBase64
-                ? `data:${mockAttachment.contentType};base64,${mockAttachment.contentBase64}`
-                : undefined
-            }));
-          } else {
-            attachments = await this.extractAttachmentsFromEmail(userId, email.id);
-          }
+          // Extract attachments from email
+          const attachments = await this.extractAttachmentsFromEmail(userId, email.id);
 
           if (attachments.length === 0) {
             logger.debug('⏭️ [GMAIL INGESTION] No attachments found in email', {
@@ -210,16 +188,7 @@ export class GmailIngestionService {
     emailId: string
   ): Promise<GmailDocument[]> {
     try {
-      const accessToken = await this.gmailService.getValidAccessToken(userId);
-      const baseUrl = 'https://gmail.googleapis.com/gmail/v1/users/me';
-
-      // Get full email message
-      const messageResponse = await axios.get(`${baseUrl}/messages/${emailId}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-        params: { format: 'full' }
-      });
-
-      const message = messageResponse.data;
+      const message = await this.gmailService.fetchMessage(userId, emailId, 'full');
       const attachments: GmailDocument[] = [];
 
       // Recursively extract attachments from message parts
@@ -263,15 +232,10 @@ export class GmailIngestionService {
       // Download attachment content for each attachment
       for (const attachment of attachments) {
         try {
-          const attachmentResponse = await axios.get(
-            `${baseUrl}/messages/${emailId}/attachments/${attachment.id}`,
-            {
-              headers: { Authorization: `Bearer ${accessToken}` }
-            }
-          );
+          const attachmentResponse = await this.gmailService.fetchAttachment(userId, emailId, attachment.id);
 
           // Gmail API returns base64-encoded data in response.data.data
-          const base64Data = attachmentResponse.data.data;
+          const base64Data = attachmentResponse.data;
           if (base64Data) {
             // Decode base64 to buffer
             attachment.content = Buffer.from(base64Data, 'base64');

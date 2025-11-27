@@ -18,14 +18,6 @@ export interface GmailEmail {
   labels: string[];
   isRead: boolean;
   hasAttachments: boolean;
-  isMock?: boolean;
-  mockAttachments?: Array<{
-    id: string;
-    filename: string;
-    contentType: string;
-    size: number;
-    contentBase64?: string;
-  }>;
 }
 
 export interface GmailOAuthResponse {
@@ -203,27 +195,28 @@ export class GmailService {
     maxResults: number = 10
   ): Promise<GmailEmail[]> {
     try {
-      const accessToken = await this.getValidAccessToken(userId);
-      
-      // REAL Gmail API implementation for evidence ingestion
-      const response = await axios.get(`${this.baseUrl}/messages`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-        params: { 
-          maxResults,
-          q: query,
-          includeSpamTrash: false
-        }
-      });
+      const response = await this.requestWithToken(userId, (accessToken) =>
+        axios.get(`${this.baseUrl}/messages`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          params: { 
+            maxResults,
+            q: query,
+            includeSpamTrash: false
+          }
+        })
+      );
 
       const messages = response.data.messages || [];
       const emails: GmailEmail[] = [];
 
       for (const message of messages.slice(0, maxResults)) {
         try {
-          const messageDetail = await axios.get(`${this.baseUrl}/messages/${message.id}`, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-            params: { format: 'metadata' }
-          });
+          const messageDetail = await this.requestWithToken(userId, (accessToken) =>
+            axios.get(`${this.baseUrl}/messages/${message.id}`, {
+              headers: { Authorization: `Bearer ${accessToken}` },
+              params: { format: 'metadata' }
+            })
+          );
 
           const emailData = messageDetail.data;
           const headers = emailData.payload.headers || [];
@@ -253,68 +246,35 @@ export class GmailService {
       return emails;
     } catch (error) {
       logger.error('Error fetching Gmail emails', { error, userId });
-
-      if (config.USE_MOCK_DATA_GENERATOR !== false) {
-        logger.warn('⚠️ [GMAIL] Falling back to mock Gmail data for ingestion', { userId });
-        return this.generateMockEmails();
-      }
-
       throw createError('Failed to fetch Gmail emails', 500);
     }
   }
 
-  private generateMockEmails(): GmailEmail[] {
-    const now = new Date();
-    const mockContent = (text: string) => Buffer.from(text).toString('base64');
+  async fetchMessage(
+    userId: string,
+    messageId: string,
+    format: 'metadata' | 'full' = 'metadata'
+  ): Promise<GmailMessageResponse> {
+    const response = await this.requestWithToken(userId, (accessToken) =>
+      axios.get(`${this.baseUrl}/messages/${messageId}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        params: { format }
+      })
+    );
+    return response.data;
+  }
 
-    return [
-      {
-        id: 'mock-email-1',
-        threadId: 'mock-thread-1',
-        subject: 'Amazon FBA Shipment Reconciliation – 6 units flagged',
-        from: 'fba-reconciliations@amazon.com',
-        to: ['seller@clario-demo.com'],
-        snippet: 'Attached: shipment reconciliation form with inbound variance noted.',
-        body: 'Mock Gmail data payload',
-        date: now.toISOString(),
-        labels: ['INBOX', 'IMPORTANT'],
-        isRead: false,
-        hasAttachments: true,
-        isMock: true,
-        mockAttachments: [
-          {
-            id: 'mock-attachment-1',
-            filename: 'Shipment_Reconciliation_FBA15X.pdf',
-            contentType: 'application/pdf',
-            size: 24512,
-            contentBase64: mockContent('Mock shipment reconciliation PDF content')
-          }
-        ]
-      },
-      {
-        id: 'mock-email-2',
-        threadId: 'mock-thread-2',
-        subject: 'Invoice: Amazon Refund Investigation Pack',
-        from: 'seller-support@amazon.com',
-        to: ['seller@clario-demo.com'],
-        snippet: 'Attached: invoice and manifest for refund packet.',
-        body: 'Mock Gmail data payload',
-        date: new Date(now.getTime() - 1000 * 60 * 60 * 12).toISOString(),
-        labels: ['INBOX'],
-        isRead: true,
-        hasAttachments: true,
-        isMock: true,
-        mockAttachments: [
-          {
-            id: 'mock-attachment-2',
-            filename: 'Refund_Packet_Invoice_209.pdf',
-            contentType: 'application/pdf',
-            size: 18976,
-            contentBase64: mockContent('Mock refund packet invoice content')
-          }
-        ]
-      }
-    ];
+  async fetchAttachment(
+    userId: string,
+    messageId: string,
+    attachmentId: string
+  ): Promise<{ data?: string }> {
+    const response = await this.requestWithToken(userId, (accessToken) =>
+      axios.get(`${this.baseUrl}/messages/${messageId}/attachments/${attachmentId}`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      })
+    );
+    return response.data;
   }
 
   // STUB FUNCTION: Search emails by criteria
@@ -353,6 +313,39 @@ export class GmailService {
       logger.error('Error searching Gmail emails', { error, userId });
       throw createError('Failed to search Gmail emails', 500);
     }
+  }
+
+  private async requestWithToken<T>(
+    userId: string,
+    request: (accessToken: string) => Promise<T>
+  ): Promise<T> {
+    let accessToken = await this.getValidAccessToken(userId);
+    try {
+      return await request(accessToken);
+    } catch (error: any) {
+      if (this.shouldRetryWithRefresh(error)) {
+        logger.warn('Gmail request unauthorized, refreshing token', {
+          userId,
+          status: error?.response?.status
+        });
+        accessToken = await this.refreshAccessToken(userId);
+        return await request(accessToken);
+      }
+      throw error;
+    }
+  }
+
+  private shouldRetryWithRefresh(error: any): boolean {
+    const status = error?.response?.status;
+    if (status === 401) {
+      return true;
+    }
+    if (status === 403) {
+      const data = error?.response?.data;
+      const message = data?.error_description || data?.error || data?.message;
+      return message ? String(message).toLowerCase().includes('invalid') : true;
+    }
+    return false;
   }
 
   async disconnect(userId: string): Promise<void> {
