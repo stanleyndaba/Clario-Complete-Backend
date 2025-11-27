@@ -18,6 +18,14 @@ export interface GmailEmail {
   labels: string[];
   isRead: boolean;
   hasAttachments: boolean;
+  isMock?: boolean;
+  mockAttachments?: Array<{
+    id: string;
+    filename: string;
+    contentType: string;
+    size: number;
+    contentBase64?: string;
+  }>;
 }
 
 export interface GmailOAuthResponse {
@@ -245,8 +253,68 @@ export class GmailService {
       return emails;
     } catch (error) {
       logger.error('Error fetching Gmail emails', { error, userId });
+
+      if (config.USE_MOCK_DATA_GENERATOR !== false) {
+        logger.warn('⚠️ [GMAIL] Falling back to mock Gmail data for ingestion', { userId });
+        return this.generateMockEmails();
+      }
+
       throw createError('Failed to fetch Gmail emails', 500);
     }
+  }
+
+  private generateMockEmails(): GmailEmail[] {
+    const now = new Date();
+    const mockContent = (text: string) => Buffer.from(text).toString('base64');
+
+    return [
+      {
+        id: 'mock-email-1',
+        threadId: 'mock-thread-1',
+        subject: 'Amazon FBA Shipment Reconciliation – 6 units flagged',
+        from: 'fba-reconciliations@amazon.com',
+        to: ['seller@clario-demo.com'],
+        snippet: 'Attached: shipment reconciliation form with inbound variance noted.',
+        body: 'Mock Gmail data payload',
+        date: now.toISOString(),
+        labels: ['INBOX', 'IMPORTANT'],
+        isRead: false,
+        hasAttachments: true,
+        isMock: true,
+        mockAttachments: [
+          {
+            id: 'mock-attachment-1',
+            filename: 'Shipment_Reconciliation_FBA15X.pdf',
+            contentType: 'application/pdf',
+            size: 24512,
+            contentBase64: mockContent('Mock shipment reconciliation PDF content')
+          }
+        ]
+      },
+      {
+        id: 'mock-email-2',
+        threadId: 'mock-thread-2',
+        subject: 'Invoice: Amazon Refund Investigation Pack',
+        from: 'seller-support@amazon.com',
+        to: ['seller@clario-demo.com'],
+        snippet: 'Attached: invoice and manifest for refund packet.',
+        body: 'Mock Gmail data payload',
+        date: new Date(now.getTime() - 1000 * 60 * 60 * 12).toISOString(),
+        labels: ['INBOX'],
+        isRead: true,
+        hasAttachments: true,
+        isMock: true,
+        mockAttachments: [
+          {
+            id: 'mock-attachment-2',
+            filename: 'Refund_Packet_Invoice_209.pdf',
+            contentType: 'application/pdf',
+            size: 18976,
+            contentBase64: mockContent('Mock refund packet invoice content')
+          }
+        ]
+      }
+    ];
   }
 
   // STUB FUNCTION: Search emails by criteria

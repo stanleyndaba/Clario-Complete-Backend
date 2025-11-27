@@ -90,8 +90,30 @@ export class GmailIngestionService {
             continue;
           }
 
-          // Extract attachments from email
-          const attachments = await this.extractAttachmentsFromEmail(userId, email.id);
+          // Extract attachments from email or use mock payloads
+          let attachments: GmailDocument[] = [];
+          const mockAttachments = (email as any).mockAttachments;
+
+          if (mockAttachments?.length) {
+            attachments = mockAttachments.map((mockAttachment: any) => ({
+              id: mockAttachment.id,
+              emailId: email.id,
+              subject: email.subject,
+              from: email.from,
+              date: email.date,
+              filename: mockAttachment.filename,
+              contentType: mockAttachment.contentType || 'application/pdf',
+              size: mockAttachment.size || 0,
+              content: mockAttachment.contentBase64
+                ? Buffer.from(mockAttachment.contentBase64, 'base64')
+                : undefined,
+              downloadUrl: mockAttachment.contentBase64
+                ? `data:${mockAttachment.contentType};base64,${mockAttachment.contentBase64}`
+                : undefined
+            }));
+          } else {
+            attachments = await this.extractAttachmentsFromEmail(userId, email.id);
+          }
 
           if (attachments.length === 0) {
             logger.debug('⏭️ [GMAIL INGESTION] No attachments found in email', {
