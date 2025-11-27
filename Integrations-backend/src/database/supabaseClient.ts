@@ -87,6 +87,12 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
   } else {
     logger.warn('SUPABASE_SERVICE_ROLE_KEY not set - admin operations may be limited');
   }
+
+  // Prefer admin client for backend operations when available (bypass RLS)
+  if (supabaseAdmin) {
+    supabase = supabaseAdmin;
+    logger.info('Using Supabase admin client for backend operations');
+  }
   
   // Test connection on startup
   supabase.auth.getSession().then(({ data, error }: { data: any; error: any }) => {
