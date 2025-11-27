@@ -129,6 +129,21 @@ export interface User {
   updated_at: string;
 }
 
+// Helper function to convert non-UUID user IDs to deterministic UUIDs
+// This is needed because the tokens table requires UUID format
+function convertUserIdToUuid(userId: string): string {
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  
+  if (uuidRegex.test(userId)) {
+    return userId;
+  }
+  
+  // Generate a deterministic UUID v5-style hash from the userId
+  const crypto = require('crypto');
+  const hash = crypto.createHash('sha256').update(`clario-user-${userId}`).digest('hex');
+  return `${hash.substring(0, 8)}-${hash.substring(8, 12)}-4${hash.substring(13, 16)}-a${hash.substring(17, 20)}-${hash.substring(20, 32)}`;
+}
+
 // Database operations
 export const tokenManager = {
   async saveToken(
@@ -147,10 +162,17 @@ export const tokenManager = {
       // Use supabaseAdmin to bypass RLS for backend operations
       const adminClient = supabaseAdmin || supabase;
 
+      // Convert non-UUID user IDs to a consistent UUID format
+      // The tokens table requires a UUID, so we need to handle demo-user and other non-UUID IDs
+      const dbUserId = convertUserIdToUuid(userId);
+      if (dbUserId !== userId) {
+        logger.info('Converted non-UUID userId to deterministic UUID', { originalUserId: userId, dbUserId, provider });
+      }
+
       const { error } = await adminClient
         .from('tokens')
         .upsert({
-          user_id: userId,
+          user_id: dbUserId,
           provider,
           access_token_iv: accessTokenEnc.iv,
           access_token_data: accessTokenEnc.data,
@@ -163,11 +185,11 @@ export const tokenManager = {
         });
 
       if (error) {
-        logger.error('Error saving token', { error, userId, provider });
+        logger.error('Error saving token', { error, userId, dbUserId, provider });
         throw new Error('Failed to save token');
       }
 
-      logger.info('Token saved successfully', { userId, provider });
+      logger.info('Token saved successfully', { userId, dbUserId, provider });
     } catch (error) {
       logger.error('Error in saveToken', { error, userId, provider });
       throw error;
@@ -187,10 +209,13 @@ export const tokenManager = {
       // Use supabaseAdmin to bypass RLS for backend operations
       const adminClient = supabaseAdmin || supabase;
 
+      // Convert non-UUID user IDs to the same deterministic UUID format used in saveToken
+      const dbUserId = convertUserIdToUuid(userId);
+
       const { data, error } = await adminClient
         .from('tokens')
         .select('*')
-        .eq('user_id', userId)
+        .eq('user_id', dbUserId)
         .eq('provider', provider)
         .maybeSingle();
 
@@ -238,6 +263,9 @@ export const tokenManager = {
       // Use supabaseAdmin to bypass RLS for backend operations
       const adminClient = supabaseAdmin || supabase;
 
+      // Convert non-UUID user IDs to deterministic UUID
+      const dbUserId = convertUserIdToUuid(userId);
+
       const { error } = await adminClient
         .from('tokens')
         .update({
@@ -248,7 +276,7 @@ export const tokenManager = {
           expires_at: expiresAt ? expiresAt.toISOString() : null,
           updated_at: new Date().toISOString()
         })
-        .eq('user_id', userId)
+        .eq('user_id', dbUserId)
         .eq('provider', provider);
 
       if (error) {
@@ -273,10 +301,13 @@ export const tokenManager = {
         return;
       }
 
+      // Convert non-UUID user IDs to deterministic UUID
+      const dbUserId = convertUserIdToUuid(userId);
+
       const { error } = await supabase
         .from('tokens')
         .delete()
-        .eq('user_id', userId)
+        .eq('user_id', dbUserId)
         .eq('provider', provider);
 
       if (error) {
