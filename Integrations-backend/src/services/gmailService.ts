@@ -49,6 +49,7 @@ export interface GmailMessageResponse {
     body: {
       data?: string;
       size?: number;
+      attachmentId?: string;
     };
     parts?: any[];
   };
