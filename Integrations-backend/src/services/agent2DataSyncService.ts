@@ -28,6 +28,7 @@ import { MockDataGenerator, MockScenario } from './mockDataGenerator';
 import agentEventLogger from './agentEventLogger';
 import { upsertDisputesAndRecoveriesFromDetections } from './disputeBackfillService';
 import axios from 'axios';
+import sseHub from '../utils/sseHub';
 
 export interface SyncResult {
   success: boolean;
@@ -72,12 +73,45 @@ export class Agent2DataSyncService {
   private settlementsService: SettlementsService;
   private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-sc5a.onrender.com';
   private readonly buildVersion = 'v2025.11.25.fix-agent3'; // Build marker for deployment verification
+  private readonly BATCH_SIZE = 1000; // Process 1000 records per batch for large datasets
 
   constructor() {
     this.ordersService = new OrdersService();
     this.shipmentsService = new ShipmentsService();
     this.returnsService = new ReturnsService();
     this.settlementsService = new SettlementsService();
+  }
+
+  /**
+   * Send sync log event via SSE for real-time frontend updates
+   */
+  private sendSyncLog(
+    userId: string,
+    syncId: string,
+    log: {
+      type: 'info' | 'success' | 'warning' | 'error' | 'progress';
+      category: 'orders' | 'inventory' | 'shipments' | 'returns' | 'settlements' | 'fees' | 'claims' | 'detection' | 'system';
+      message: string;
+      count?: number;
+    }
+  ): void {
+    sseHub.sendEvent(userId, 'sync.log', {
+      type: 'log',
+      syncId,
+      log: {
+        ...log,
+        timestamp: new Date().toISOString()
+      }
+    });
+    // Also send as 'message' for backward compatibility
+    sseHub.sendEvent(userId, 'message', {
+      type: 'log',
+      syncId,
+      log: {
+        ...log,
+        timestamp: new Date().toISOString()
+      }
+    });
   }
 
   /**
@@ -152,10 +186,37 @@ export class Agent2DataSyncService {
     try {
       // 1. Sync Orders
       try {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'orders',
+          message: 'Assessing order data from seller ledger...'
+        });
         logger.info('📦 [AGENT 2] Fetching orders...', { userId, syncId });
-        const ordersResult = await this.syncOrders(userId, syncStartDate, syncEndDate, isMockMode, mockScenario);
+        
+        const ordersResult = await this.syncOrders(userId, syncStartDate, syncEndDate, isMockMode, mockScenario, syncId);
         result.normalized.orders = ordersResult.data || [];
         result.summary.ordersCount = result.normalized.orders.length;
+        
+        if (result.summary.ordersCount > 0) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'success',
+            category: 'orders',
+            message: `[FOUND] ${result.summary.ordersCount.toLocaleString()} orders in ledger`,
+            count: result.summary.ordersCount
+          });
+          this.sendSyncLog(userId, syncId, {
+            type: 'info',
+            category: 'orders',
+            message: 'Normalizing order data structure...'
+          });
+        } else {
+          this.sendSyncLog(userId, syncId, {
+            type: 'info',
+            category: 'orders',
+            message: 'No orders found in the specified date range'
+          });
+        }
+        
         logger.info('✅ [AGENT 2] Orders synced', {
           userId,
           syncId,
@@ -164,15 +225,47 @@ export class Agent2DataSyncService {
       } catch (error: any) {
         const errorMsg = `Failed to sync orders: ${error.message}`;
         errors.push(errorMsg);
+        this.sendSyncLog(userId, syncId, {
+          type: 'error',
+          category: 'orders',
+          message: `[ERROR] Failed to sync orders: ${error.message}`
+        });
         logger.error('❌ [AGENT 2] Orders sync failed', { userId, syncId, error: error.message });
       }
 
       // 2. Sync Shipments
       try {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'shipments',
+          message: 'Assessing shipment data from fulfillment centers...'
+        });
         logger.info('🚚 [AGENT 2] Fetching shipments...', { userId, syncId });
-        const shipmentsResult = await this.syncShipments(userId, syncStartDate, syncEndDate, isMockMode, mockScenario);
+        
+        const shipmentsResult = await this.syncShipments(userId, syncStartDate, syncEndDate, isMockMode, mockScenario, syncId);
         result.normalized.shipments = shipmentsResult.data || [];
         result.summary.shipmentsCount = result.normalized.shipments.length;
+        
+        if (result.summary.shipmentsCount > 0) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'success',
+            category: 'shipments',
+            message: `[FOUND] ${result.summary.shipmentsCount.toLocaleString()} shipments to fulfillment centers`,
+            count: result.summary.shipmentsCount
+          });
+          this.sendSyncLog(userId, syncId, {
+            type: 'info',
+            category: 'shipments',
+            message: 'Verifying received quantities match shipped quantities...'
+          });
+        } else {
+          this.sendSyncLog(userId, syncId, {
+            type: 'info',
+            category: 'shipments',
+            message: 'No shipments found in the specified date range'
+          });
+        }
+        
         logger.info('✅ [AGENT 2] Shipments synced', {
           userId,
           syncId,
@@ -181,15 +274,47 @@ export class Agent2DataSyncService {
       } catch (error: any) {
         const errorMsg = `Failed to sync shipments: ${error.message}`;
         errors.push(errorMsg);
+        this.sendSyncLog(userId, syncId, {
+          type: 'error',
+          category: 'shipments',
+          message: `[ERROR] Failed to sync shipments: ${error.message}`
+        });
         logger.error('❌ [AGENT 2] Shipments sync failed', { userId, syncId, error: error.message });
       }
 
       // 3. Sync Returns
       try {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'returns',
+          message: 'Assessing customer return data...'
+        });
         logger.info('↩️ [AGENT 2] Fetching returns...', { userId, syncId });
-        const returnsResult = await this.syncReturns(userId, syncStartDate, syncEndDate, isMockMode, mockScenario);
+        
+        const returnsResult = await this.syncReturns(userId, syncStartDate, syncEndDate, isMockMode, mockScenario, syncId);
         result.normalized.returns = returnsResult.data || [];
         result.summary.returnsCount = result.normalized.returns.length;
+        
+        if (result.summary.returnsCount > 0) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'success',
+            category: 'returns',
+            message: `[FOUND] ${result.summary.returnsCount.toLocaleString()} customer returns processed`,
+            count: result.summary.returnsCount
+          });
+          this.sendSyncLog(userId, syncId, {
+            type: 'info',
+            category: 'returns',
+            message: 'Checking if returns were properly credited to seller account...'
+          });
+        } else {
+          this.sendSyncLog(userId, syncId, {
+            type: 'info',
+            category: 'returns',
+            message: 'No returns found in the specified date range'
+          });
+        }
+        
         logger.info('✅ [AGENT 2] Returns synced', {
           userId,
           syncId,
@@ -198,15 +323,47 @@ export class Agent2DataSyncService {
       } catch (error: any) {
         const errorMsg = `Failed to sync returns: ${error.message}`;
         errors.push(errorMsg);
+        this.sendSyncLog(userId, syncId, {
+          type: 'error',
+          category: 'returns',
+          message: `[ERROR] Failed to sync returns: ${error.message}`
+        });
         logger.error('❌ [AGENT 2] Returns sync failed', { userId, syncId, error: error.message });
       }
 
       // 4. Sync Settlements
       try {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'settlements',
+          message: 'Assessing settlement periods and payout data...'
+        });
         logger.info('💰 [AGENT 2] Fetching settlements...', { userId, syncId });
-        const settlementsResult = await this.syncSettlements(userId, syncStartDate, syncEndDate, isMockMode, mockScenario);
+        
+        const settlementsResult = await this.syncSettlements(userId, syncStartDate, syncEndDate, isMockMode, mockScenario, syncId);
         result.normalized.settlements = settlementsResult.data || [];
         result.summary.settlementsCount = result.normalized.settlements.length;
+        
+        if (result.summary.settlementsCount > 0) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'success',
+            category: 'settlements',
+            message: `[FOUND] ${result.summary.settlementsCount.toLocaleString()} settlement periods`,
+            count: result.summary.settlementsCount
+          });
+          this.sendSyncLog(userId, syncId, {
+            type: 'info',
+            category: 'settlements',
+            message: 'Reconciling payouts with expected amounts...'
+          });
+        } else {
+          this.sendSyncLog(userId, syncId, {
+            type: 'info',
+            category: 'settlements',
+            message: 'No settlements found in the specified date range'
+          });
+        }
+        
         logger.info('✅ [AGENT 2] Settlements synced', {
           userId,
           syncId,
@@ -215,15 +372,47 @@ export class Agent2DataSyncService {
       } catch (error: any) {
         const errorMsg = `Failed to sync settlements: ${error.message}`;
         errors.push(errorMsg);
+        this.sendSyncLog(userId, syncId, {
+          type: 'error',
+          category: 'settlements',
+          message: `[ERROR] Failed to sync settlements: ${error.message}`
+        });
         logger.error('❌ [AGENT 2] Settlements sync failed', { userId, syncId, error: error.message });
       }
 
       // 5. Sync Inventory
       try {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'inventory',
+          message: 'Assessing inventory data from warehouse...'
+        });
         logger.info('📊 [AGENT 2] Fetching inventory...', { userId, syncId });
-        const inventoryResult = await this.syncInventory(userId, isMockMode, mockScenario);
+        
+        const inventoryResult = await this.syncInventory(userId, isMockMode, mockScenario, syncId);
         result.normalized.inventory = inventoryResult.data || [];
         result.summary.inventoryCount = result.normalized.inventory.length;
+        
+        if (result.summary.inventoryCount > 0) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'success',
+            category: 'inventory',
+            message: `[FOUND] ${result.summary.inventoryCount.toLocaleString()} active SKUs in warehouse`,
+            count: result.summary.inventoryCount
+          });
+          this.sendSyncLog(userId, syncId, {
+            type: 'info',
+            category: 'inventory',
+            message: 'Checking unit counts against inbound shipments...'
+          });
+        } else {
+          this.sendSyncLog(userId, syncId, {
+            type: 'info',
+            category: 'inventory',
+            message: 'No inventory items found'
+          });
+        }
+        
         logger.info('✅ [AGENT 2] Inventory synced', {
           userId,
           syncId,
@@ -232,15 +421,47 @@ export class Agent2DataSyncService {
       } catch (error: any) {
         const errorMsg = `Failed to sync inventory: ${error.message}`;
         errors.push(errorMsg);
+        this.sendSyncLog(userId, syncId, {
+          type: 'error',
+          category: 'inventory',
+          message: `[ERROR] Failed to sync inventory: ${error.message}`
+        });
         logger.error('❌ [AGENT 2] Inventory sync failed', { userId, syncId, error: error.message });
       }
 
       // 6. Sync Claims (from financial events)
       try {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'claims',
+          message: 'Assessing financial events for claim opportunities...'
+        });
         logger.info('🎯 [AGENT 2] Fetching claims...', { userId, syncId });
-        const claimsResult = await this.syncClaims(userId, syncStartDate, syncEndDate, isMockMode, mockScenario);
+        
+        const claimsResult = await this.syncClaims(userId, syncStartDate, syncEndDate, isMockMode, mockScenario, syncId);
         result.normalized.claims = claimsResult.data || [];
         result.summary.claimsCount = result.normalized.claims.length;
+        
+        if (result.summary.claimsCount > 0) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'success',
+            category: 'claims',
+            message: `[FOUND] ${result.summary.claimsCount.toLocaleString()} potential claim opportunities`,
+            count: result.summary.claimsCount
+          });
+          this.sendSyncLog(userId, syncId, {
+            type: 'info',
+            category: 'claims',
+            message: 'Analyzing claim data for refund eligibility...'
+          });
+        } else {
+          this.sendSyncLog(userId, syncId, {
+            type: 'info',
+            category: 'claims',
+            message: 'No claim opportunities found in financial events'
+          });
+        }
+        
         logger.info('✅ [AGENT 2] Claims synced', {
           userId,
           syncId,
@@ -249,6 +470,11 @@ export class Agent2DataSyncService {
       } catch (error: any) {
         const errorMsg = `Failed to sync claims: ${error.message}`;
         errors.push(errorMsg);
+        this.sendSyncLog(userId, syncId, {
+          type: 'error',
+          category: 'claims',
+          message: `[ERROR] Failed to sync claims: ${error.message}`
+        });
         logger.error('❌ [AGENT 2] Claims sync failed', { userId, syncId, error: error.message });
       }
 
@@ -389,83 +615,88 @@ export class Agent2DataSyncService {
   }
 
   /**
-   * Sync Orders with mock fallback
+   * Sync Orders with mock fallback and batch processing
    */
   private async syncOrders(
     userId: string,
     startDate: Date,
     endDate: Date,
     isMockMode: boolean,
-    mockScenario: MockScenario
+    mockScenario: MockScenario,
+    syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     if (isMockMode) {
-      return this.generateMockOrders(userId, startDate, endDate, mockScenario);
+      return this.generateMockOrders(userId, startDate, endDate, mockScenario, syncId);
     }
 
     return await this.ordersService.fetchOrders(userId, startDate, endDate);
   }
 
   /**
-   * Sync Shipments with mock fallback
+   * Sync Shipments with mock fallback and batch processing
    */
   private async syncShipments(
     userId: string,
     startDate: Date,
     endDate: Date,
     isMockMode: boolean,
-    mockScenario: MockScenario
+    mockScenario: MockScenario,
+    syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     if (isMockMode) {
-      return this.generateMockShipments(userId, startDate, endDate, mockScenario);
+      return this.generateMockShipments(userId, startDate, endDate, mockScenario, syncId);
     }
 
     return await this.shipmentsService.fetchShipments(userId, startDate, endDate);
   }
 
   /**
-   * Sync Returns with mock fallback
+   * Sync Returns with mock fallback and batch processing
    */
   private async syncReturns(
     userId: string,
     startDate: Date,
     endDate: Date,
     isMockMode: boolean,
-    mockScenario: MockScenario
+    mockScenario: MockScenario,
+    syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     if (isMockMode) {
-      return this.generateMockReturns(userId, startDate, endDate, mockScenario);
+      return this.generateMockReturns(userId, startDate, endDate, mockScenario, syncId);
     }
 
     return await this.returnsService.fetchReturns(userId, startDate, endDate);
   }
 
   /**
-   * Sync Settlements with mock fallback
+   * Sync Settlements with mock fallback and batch processing
    */
   private async syncSettlements(
     userId: string,
     startDate: Date,
     endDate: Date,
     isMockMode: boolean,
-    mockScenario: MockScenario
+    mockScenario: MockScenario,
+    syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     if (isMockMode) {
-      return this.generateMockSettlements(userId, startDate, endDate, mockScenario);
+      return this.generateMockSettlements(userId, startDate, endDate, mockScenario, syncId);
     }
 
     return await this.settlementsService.fetchSettlements(userId, startDate, endDate);
   }
 
   /**
-   * Sync Inventory with mock fallback
+   * Sync Inventory with mock fallback and batch processing
    */
   private async syncInventory(
     userId: string,
     isMockMode: boolean,
-    mockScenario: MockScenario
+    mockScenario: MockScenario,
+    syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     if (isMockMode) {
-      return this.generateMockInventory(userId, mockScenario);
+      return this.generateMockInventory(userId, mockScenario, syncId);
     }
 
     const inventoryResult = await amazonService.fetchInventory(userId);
@@ -478,17 +709,18 @@ export class Agent2DataSyncService {
   }
 
   /**
-   * Sync Claims with mock fallback
+   * Sync Claims with mock fallback and batch processing
    */
   private async syncClaims(
     userId: string,
     startDate: Date,
     endDate: Date,
     isMockMode: boolean,
-    mockScenario: MockScenario
+    mockScenario: MockScenario,
+    syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     if (isMockMode) {
-      return this.generateMockClaims(userId, startDate, endDate, mockScenario);
+      return this.generateMockClaims(userId, startDate, endDate, mockScenario, syncId);
     }
 
     const claimsResult = await amazonService.fetchClaims(userId, startDate, endDate);
@@ -501,13 +733,14 @@ export class Agent2DataSyncService {
   }
 
   /**
-   * Generate mock orders
+   * Generate mock orders with batch processing for large datasets
    */
   private async generateMockOrders(
     userId: string,
     startDate: Date,
     endDate: Date,
-    scenario: MockScenario
+    scenario: MockScenario,
+    syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // Use 75 as default to match amazonService.ts and backend logs
     const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
@@ -518,36 +751,99 @@ export class Agent2DataSyncService {
       endDate
     });
 
-    const orders: any[] = [];
+    const allOrders: any[] = [];
     const daysDiff = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+    
+    // Batch processing for large datasets (1000+ records)
+    const needsBatching = recordCount > this.BATCH_SIZE;
+    const totalBatches = needsBatching ? Math.ceil(recordCount / this.BATCH_SIZE) : 1;
 
-    for (let i = 0; i < recordCount; i++) {
-      const orderDate = this.randomDate(startDate, endDate);
-      const orderId = `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`;
-      
-      orders.push({
-        AmazonOrderId: orderId,
-        PurchaseDate: orderDate.toISOString(),
-        OrderStatus: ['Shipped', 'Pending', 'Canceled'][Math.floor(Math.random() * 3)],
-        FulfillmentChannel: ['Amazon', 'Merchant'][Math.floor(Math.random() * 2)],
-        OrderItems: [{
-          SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
-          ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
-          QuantityOrdered: Math.floor(Math.random() * 5) + 1,
-          ItemPrice: {
-            Amount: (Math.random() * 100 + 10).toFixed(2),
-            CurrencyCode: 'USD'
-          },
-          Title: `Product ${i + 1}`
-        }],
-        MarketplaceId: 'ATVPDKIKX0DER',
-        isMock: true,
-        mockScenario: scenario
-      });
+    if (syncId) {
+      if (needsBatching) {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'orders',
+          message: `Processing ${recordCount.toLocaleString()} orders in ${totalBatches} batches...`
+        });
+      } else {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'orders',
+          message: `Processing ${recordCount.toLocaleString()} orders...`
+        });
+      }
     }
 
-    // Normalize orders
-    const normalized = this.ordersService.normalizeOrders(orders, userId);
+    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      const batchStart = batchIndex * this.BATCH_SIZE;
+      const batchEnd = Math.min(batchStart + this.BATCH_SIZE, recordCount);
+      const batchSize = batchEnd - batchStart;
+
+      if (syncId && needsBatching) {
+        this.sendSyncLog(userId, syncId, {
+          type: 'progress',
+          category: 'orders',
+          message: `Processing batch ${batchIndex + 1}/${totalBatches} (${batchStart + 1}-${batchEnd} of ${recordCount.toLocaleString()})...`
+        });
+      }
+
+      const batchOrders: any[] = [];
+      for (let i = batchStart; i < batchEnd; i++) {
+        const orderDate = this.randomDate(startDate, endDate);
+        const orderId = `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`;
+        
+        batchOrders.push({
+          AmazonOrderId: orderId,
+          PurchaseDate: orderDate.toISOString(),
+          OrderStatus: ['Shipped', 'Pending', 'Canceled'][Math.floor(Math.random() * 3)],
+          FulfillmentChannel: ['Amazon', 'Merchant'][Math.floor(Math.random() * 2)],
+          OrderItems: [{
+            SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
+            ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
+            QuantityOrdered: Math.floor(Math.random() * 5) + 1,
+            ItemPrice: {
+              Amount: (Math.random() * 100 + 10).toFixed(2),
+              CurrencyCode: 'USD'
+            },
+            Title: `Product ${i + 1}`
+          }],
+          MarketplaceId: 'ATVPDKIKX0DER',
+          isMock: true,
+          mockScenario: scenario
+        });
+      }
+
+      allOrders.push(...batchOrders);
+
+      // Small delay between batches to avoid overwhelming the system
+      if (needsBatching && batchIndex < totalBatches - 1) {
+        await new Promise(resolve => setTimeout(resolve, 10)); // 10ms delay
+      }
+    }
+
+    // Normalize orders in batches if needed
+    let normalized: any[] = [];
+    if (allOrders.length > this.BATCH_SIZE) {
+      // Normalize in batches to avoid memory issues
+      const normalizeBatches = Math.ceil(allOrders.length / this.BATCH_SIZE);
+      for (let i = 0; i < normalizeBatches; i++) {
+        const batchStart = i * this.BATCH_SIZE;
+        const batchEnd = Math.min(batchStart + this.BATCH_SIZE, allOrders.length);
+        const batch = allOrders.slice(batchStart, batchEnd);
+        const normalizedBatch = this.ordersService.normalizeOrders(batch, userId);
+        normalized.push(...normalizedBatch);
+      }
+    } else {
+      normalized = this.ordersService.normalizeOrders(allOrders, userId);
+    }
+
+    if (syncId) {
+      this.sendSyncLog(userId, syncId, {
+        type: 'success',
+        category: 'orders',
+        message: `[COMPLETE] Generated and normalized ${normalized.length.toLocaleString()} orders`
+      });
+    }
 
     return {
       success: true,
@@ -557,22 +853,56 @@ export class Agent2DataSyncService {
   }
 
   /**
-   * Generate mock shipments
+   * Generate mock shipments with batch processing
    */
   private async generateMockShipments(
     userId: string,
     startDate: Date,
     endDate: Date,
-    scenario: MockScenario
+    scenario: MockScenario,
+    syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // Use 75 as base default to match orders
     const recordCount = Math.floor((process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75) * 0.7);
-    const shipments: any[] = [];
+    const allShipments: any[] = [];
 
     // Determine how many shipments should have issues (missing quantity)
     const issueRate = scenario === 'with_issues' ? 0.4 : scenario === 'high_volume' ? 0.2 : 0.15;
 
-    for (let i = 0; i < recordCount; i++) {
+    // Batch processing for large datasets
+    const needsBatching = recordCount > this.BATCH_SIZE;
+    const totalBatches = needsBatching ? Math.ceil(recordCount / this.BATCH_SIZE) : 1;
+
+    if (syncId) {
+      if (needsBatching) {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'shipments',
+          message: `Processing ${recordCount.toLocaleString()} shipments in ${totalBatches} batches...`
+        });
+      } else {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'shipments',
+          message: `Processing ${recordCount.toLocaleString()} shipments...`
+        });
+      }
+    }
+
+    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      const batchStart = batchIndex * this.BATCH_SIZE;
+      const batchEnd = Math.min(batchStart + this.BATCH_SIZE, recordCount);
+
+      if (syncId && needsBatching) {
+        this.sendSyncLog(userId, syncId, {
+          type: 'progress',
+          category: 'shipments',
+          message: `Processing batch ${batchIndex + 1}/${totalBatches} (${batchStart + 1}-${batchEnd} of ${recordCount.toLocaleString()})...`
+        });
+      }
+
+      const batchShipments: any[] = [];
+      for (let i = batchStart; i < batchEnd; i++) {
       const shippedDate = this.randomDate(startDate, endDate);
       const receivedDate = new Date(shippedDate.getTime() + Math.random() * 7 * 24 * 60 * 60 * 1000);
       
@@ -582,7 +912,7 @@ export class Agent2DataSyncService {
       const quantityReceived = hasIssue ? Math.max(0, quantityShipped - Math.floor(Math.random() * 3) - 1) : quantityShipped;
       const itemPrice = parseFloat((Math.random() * 50 + 10).toFixed(2)); // $10-60 per item
       
-      shipments.push({
+      batchShipments.push({
         ShipmentId: `SHIP-${Date.now()}-${i}`,
         ShippedDate: shippedDate.toISOString(),
         ReceivedDate: receivedDate.toISOString(),
@@ -599,9 +929,38 @@ export class Agent2DataSyncService {
         isMock: true,
         mockScenario: scenario
       });
+      }
+
+      allShipments.push(...batchShipments);
+
+      // Small delay between batches
+      if (needsBatching && batchIndex < totalBatches - 1) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
     }
 
-    const normalized = this.shipmentsService.normalizeShipments(shipments, userId);
+    // Normalize in batches if needed
+    let normalized: any[] = [];
+    if (allShipments.length > this.BATCH_SIZE) {
+      const normalizeBatches = Math.ceil(allShipments.length / this.BATCH_SIZE);
+      for (let i = 0; i < normalizeBatches; i++) {
+        const batchStart = i * this.BATCH_SIZE;
+        const batchEnd = Math.min(batchStart + this.BATCH_SIZE, allShipments.length);
+        const batch = allShipments.slice(batchStart, batchEnd);
+        const normalizedBatch = this.shipmentsService.normalizeShipments(batch, userId);
+        normalized.push(...normalizedBatch);
+      }
+    } else {
+      normalized = this.shipmentsService.normalizeShipments(allShipments, userId);
+    }
+
+    if (syncId) {
+      this.sendSyncLog(userId, syncId, {
+        type: 'success',
+        category: 'shipments',
+        message: `[COMPLETE] Generated and normalized ${normalized.length.toLocaleString()} shipments`
+      });
+    }
 
     return {
       success: true,
@@ -611,42 +970,105 @@ export class Agent2DataSyncService {
   }
 
   /**
-   * Generate mock returns
+   * Generate mock returns with batch processing
    */
   private async generateMockReturns(
     userId: string,
     startDate: Date,
     endDate: Date,
-    scenario: MockScenario
+    scenario: MockScenario,
+    syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // Use 75 as base default to match orders
     const recordCount = Math.floor((process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75) * 0.5);
-    const returns: any[] = [];
+    const allReturns: any[] = [];
 
-    for (let i = 0; i < recordCount; i++) {
-      const returnDate = this.randomDate(startDate, endDate);
-      
-      returns.push({
-        ReturnId: `RET-${Date.now()}-${i}`,
-        AmazonOrderId: `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`,
-        ReturnedDate: returnDate.toISOString(),
-        ReturnStatus: ['APPROVED', 'PENDING', 'DENIED'][Math.floor(Math.random() * 3)],
-        ReturnReason: ['Defective', 'Wrong Item', 'Not as Described', 'Customer Changed Mind'][Math.floor(Math.random() * 4)],
-        Items: [{
-          SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
-          ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
-          QuantityReturned: Math.floor(Math.random() * 3) + 1,
-          RefundAmount: {
-            Amount: (Math.random() * 50 + 10).toFixed(2),
-            CurrencyCode: 'USD'
-          }
-        }],
-        isMock: true,
-        mockScenario: scenario
-      });
+    // Batch processing for large datasets
+    const needsBatching = recordCount > this.BATCH_SIZE;
+    const totalBatches = needsBatching ? Math.ceil(recordCount / this.BATCH_SIZE) : 1;
+
+    if (syncId) {
+      if (needsBatching) {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'returns',
+          message: `Processing ${recordCount.toLocaleString()} returns in ${totalBatches} batches...`
+        });
+      } else {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'returns',
+          message: `Processing ${recordCount.toLocaleString()} returns...`
+        });
+      }
     }
 
-    const normalized = this.returnsService.normalizeReturns(returns, userId);
+    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      const batchStart = batchIndex * this.BATCH_SIZE;
+      const batchEnd = Math.min(batchStart + this.BATCH_SIZE, recordCount);
+
+      if (syncId && needsBatching) {
+        this.sendSyncLog(userId, syncId, {
+          type: 'progress',
+          category: 'returns',
+          message: `Processing batch ${batchIndex + 1}/${totalBatches} (${batchStart + 1}-${batchEnd} of ${recordCount.toLocaleString()})...`
+        });
+      }
+
+      const batchReturns: any[] = [];
+      for (let i = batchStart; i < batchEnd; i++) {
+        const returnDate = this.randomDate(startDate, endDate);
+        
+        batchReturns.push({
+          ReturnId: `RET-${Date.now()}-${i}`,
+          AmazonOrderId: `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`,
+          ReturnedDate: returnDate.toISOString(),
+          ReturnStatus: ['APPROVED', 'PENDING', 'DENIED'][Math.floor(Math.random() * 3)],
+          ReturnReason: ['Defective', 'Wrong Item', 'Not as Described', 'Customer Changed Mind'][Math.floor(Math.random() * 4)],
+          Items: [{
+            SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
+            ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
+            QuantityReturned: Math.floor(Math.random() * 3) + 1,
+            RefundAmount: {
+              Amount: (Math.random() * 50 + 10).toFixed(2),
+              CurrencyCode: 'USD'
+            }
+          }],
+          isMock: true,
+          mockScenario: scenario
+        });
+      }
+
+      allReturns.push(...batchReturns);
+
+      // Small delay between batches
+      if (needsBatching && batchIndex < totalBatches - 1) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    }
+
+    // Normalize in batches if needed
+    let normalized: any[] = [];
+    if (allReturns.length > this.BATCH_SIZE) {
+      const normalizeBatches = Math.ceil(allReturns.length / this.BATCH_SIZE);
+      for (let i = 0; i < normalizeBatches; i++) {
+        const batchStart = i * this.BATCH_SIZE;
+        const batchEnd = Math.min(batchStart + this.BATCH_SIZE, allReturns.length);
+        const batch = allReturns.slice(batchStart, batchEnd);
+        const normalizedBatch = this.returnsService.normalizeReturns(batch, userId);
+        normalized.push(...normalizedBatch);
+      }
+    } else {
+      normalized = this.returnsService.normalizeReturns(allReturns, userId);
+    }
+
+    if (syncId) {
+      this.sendSyncLog(userId, syncId, {
+        type: 'success',
+        category: 'returns',
+        message: `[COMPLETE] Generated and normalized ${normalized.length.toLocaleString()} returns`
+      });
+    }
 
     return {
       success: true,
@@ -656,22 +1078,56 @@ export class Agent2DataSyncService {
   }
 
   /**
-   * Generate mock settlements
+   * Generate mock settlements with batch processing
    */
   private async generateMockSettlements(
     userId: string,
     startDate: Date,
     endDate: Date,
-    scenario: MockScenario
+    scenario: MockScenario,
+    syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // Use 75 as base default to match orders
     const recordCount = Math.floor((process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75) * 0.6);
-    const settlements: any[] = [];
+    const allSettlements: any[] = [];
 
     // Determine how many settlements should have fee discrepancies
     const issueRate = scenario === 'with_issues' ? 0.4 : scenario === 'high_volume' ? 0.2 : 0.15;
 
-    for (let i = 0; i < recordCount; i++) {
+    // Batch processing for large datasets
+    const needsBatching = recordCount > this.BATCH_SIZE;
+    const totalBatches = needsBatching ? Math.ceil(recordCount / this.BATCH_SIZE) : 1;
+
+    if (syncId) {
+      if (needsBatching) {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'settlements',
+          message: `Processing ${recordCount.toLocaleString()} settlements in ${totalBatches} batches...`
+        });
+      } else {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'settlements',
+          message: `Processing ${recordCount.toLocaleString()} settlements...`
+        });
+      }
+    }
+
+    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      const batchStart = batchIndex * this.BATCH_SIZE;
+      const batchEnd = Math.min(batchStart + this.BATCH_SIZE, recordCount);
+
+      if (syncId && needsBatching) {
+        this.sendSyncLog(userId, syncId, {
+          type: 'progress',
+          category: 'settlements',
+          message: `Processing batch ${batchIndex + 1}/${totalBatches} (${batchStart + 1}-${batchEnd} of ${recordCount.toLocaleString()})...`
+        });
+      }
+
+      const batchSettlements: any[] = [];
+      for (let i = batchStart; i < batchEnd; i++) {
       const settlementDate = this.randomDate(startDate, endDate);
       const hasIssue = Math.random() < issueRate;
       
@@ -681,7 +1137,7 @@ export class Agent2DataSyncService {
         ? parseFloat((amount * (0.2 + Math.random() * 0.1)).toFixed(2)) // 20-30% fee (high - potential overcharge)
         : parseFloat((amount * 0.15).toFixed(2)); // 15% fee (normal)
       
-      settlements.push({
+      batchSettlements.push({
         SettlementId: `SETTLE-${Date.now()}-${i}`,
         settlement_date: settlementDate.toISOString(),
         amount: amount,
@@ -696,9 +1152,38 @@ export class Agent2DataSyncService {
         isMock: true,
         mockScenario: scenario
       });
+      }
+
+      allSettlements.push(...batchSettlements);
+
+      // Small delay between batches
+      if (needsBatching && batchIndex < totalBatches - 1) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
     }
 
-    const normalized = this.settlementsService.normalizeSettlements(settlements, userId);
+    // Normalize in batches if needed
+    let normalized: any[] = [];
+    if (allSettlements.length > this.BATCH_SIZE) {
+      const normalizeBatches = Math.ceil(allSettlements.length / this.BATCH_SIZE);
+      for (let i = 0; i < normalizeBatches; i++) {
+        const batchStart = i * this.BATCH_SIZE;
+        const batchEnd = Math.min(batchStart + this.BATCH_SIZE, allSettlements.length);
+        const batch = allSettlements.slice(batchStart, batchEnd);
+        const normalizedBatch = this.settlementsService.normalizeSettlements(batch, userId);
+        normalized.push(...normalizedBatch);
+      }
+    } else {
+      normalized = this.settlementsService.normalizeSettlements(allSettlements, userId);
+    }
+
+    if (syncId) {
+      this.sendSyncLog(userId, syncId, {
+        type: 'success',
+        category: 'settlements',
+        message: `[COMPLETE] Generated and normalized ${normalized.length.toLocaleString()} settlements`
+      });
+    }
 
     return {
       success: true,
@@ -708,18 +1193,52 @@ export class Agent2DataSyncService {
   }
 
   /**
-   * Generate mock inventory
+   * Generate mock inventory with batch processing
    */
   private async generateMockInventory(
     userId: string,
-    scenario: MockScenario
+    scenario: MockScenario,
+    syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // Use same default as orders (75) for consistency
     const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
-    const inventory: any[] = [];
+    const allInventory: any[] = [];
 
-    for (let i = 0; i < recordCount; i++) {
-      inventory.push({
+    // Batch processing for large datasets
+    const needsBatching = recordCount > this.BATCH_SIZE;
+    const totalBatches = needsBatching ? Math.ceil(recordCount / this.BATCH_SIZE) : 1;
+
+    if (syncId) {
+      if (needsBatching) {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'inventory',
+          message: `Processing ${recordCount.toLocaleString()} inventory items in ${totalBatches} batches...`
+        });
+      } else {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'inventory',
+          message: `Processing ${recordCount.toLocaleString()} inventory items...`
+        });
+      }
+    }
+
+    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      const batchStart = batchIndex * this.BATCH_SIZE;
+      const batchEnd = Math.min(batchStart + this.BATCH_SIZE, recordCount);
+
+      if (syncId && needsBatching) {
+        this.sendSyncLog(userId, syncId, {
+          type: 'progress',
+          category: 'inventory',
+          message: `Processing batch ${batchIndex + 1}/${totalBatches} (${batchStart + 1}-${batchEnd} of ${recordCount.toLocaleString()})...`
+        });
+      }
+
+      const batchInventory: any[] = [];
+      for (let i = batchStart; i < batchEnd; i++) {
+        batchInventory.push({
         SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
         ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
         FulfillableQuantity: Math.floor(Math.random() * 100) + 1,
@@ -729,23 +1248,40 @@ export class Agent2DataSyncService {
         isMock: true,
         mockScenario: scenario
       });
+      }
+
+      allInventory.push(...batchInventory);
+
+      // Small delay between batches
+      if (needsBatching && batchIndex < totalBatches - 1) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    }
+
+    if (syncId) {
+      this.sendSyncLog(userId, syncId, {
+        type: 'success',
+        category: 'inventory',
+        message: `[COMPLETE] Generated ${allInventory.length.toLocaleString()} inventory items`
+      });
     }
 
     return {
       success: true,
-      data: inventory,
-      message: `Generated ${inventory.length} mock inventory items (scenario: ${scenario})`
+      data: allInventory,
+      message: `Generated ${allInventory.length} mock inventory items (scenario: ${scenario})`
     };
   }
 
   /**
-   * Generate mock claims
+   * Generate mock claims with batch processing
    */
   private async generateMockClaims(
     userId: string,
     startDate: Date,
     endDate: Date,
-    scenario: MockScenario
+    scenario: MockScenario,
+    syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     const generator = new MockDataGenerator({
       scenario,
@@ -755,13 +1291,52 @@ export class Agent2DataSyncService {
     });
 
     const financialEvents = generator.generateFinancialEvents();
-    const claims: any[] = [];
+    const allClaims: any[] = [];
 
     // Extract reimbursements
     const reimbursements = financialEvents.payload?.FinancialEvents?.FBALiquidationEventList || [];
-    for (const reimbursement of reimbursements) {
-      claims.push({
-        id: reimbursement.OriginalRemovalOrderId || `RMB-${Date.now()}`,
+    const totalRecords = reimbursements.length + (financialEvents.payload?.FinancialEvents?.AdjustmentEventList || []).length;
+    
+    // Batch processing for large datasets
+    const needsBatching = totalRecords > this.BATCH_SIZE;
+    const totalBatches = needsBatching ? Math.ceil(totalRecords / this.BATCH_SIZE) : 1;
+
+    if (syncId) {
+      if (needsBatching) {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'claims',
+          message: `Processing ${totalRecords.toLocaleString()} financial events in ${totalBatches} batches...`
+        });
+      } else {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'claims',
+          message: `Processing ${totalRecords.toLocaleString()} financial events...`
+        });
+      }
+    }
+
+    let processedCount = 0;
+    let batchIndex = 0;
+
+    // Process reimbursements
+    for (let i = 0; i < reimbursements.length; i++) {
+      if (needsBatching && i > 0 && i % this.BATCH_SIZE === 0) {
+        batchIndex++;
+        if (syncId) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'progress',
+            category: 'claims',
+            message: `Processing batch ${batchIndex}/${totalBatches} (${processedCount + 1}-${Math.min(processedCount + this.BATCH_SIZE, totalRecords)} of ${totalRecords.toLocaleString()})...`
+          });
+        }
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+
+      const reimbursement = reimbursements[i];
+      allClaims.push({
+        id: reimbursement.OriginalRemovalOrderId || `RMB-${Date.now()}-${i}`,
         orderId: reimbursement.OriginalRemovalOrderId,
         amount: parseFloat(reimbursement.LiquidationProceedsAmount?.CurrencyAmount || '0'),
         status: 'approved',
@@ -771,15 +1346,29 @@ export class Agent2DataSyncService {
         isMock: true,
         mockScenario: scenario
       });
+      processedCount++;
     }
 
     // Extract adjustments
     const adjustments = financialEvents.payload?.FinancialEvents?.AdjustmentEventList || [];
-    for (const adjustment of adjustments) {
+    for (let i = 0; i < adjustments.length; i++) {
+      if (needsBatching && processedCount > 0 && processedCount % this.BATCH_SIZE === 0) {
+        batchIndex++;
+        if (syncId) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'progress',
+            category: 'claims',
+            message: `Processing batch ${batchIndex}/${totalBatches} (${processedCount + 1}-${Math.min(processedCount + this.BATCH_SIZE, totalRecords)} of ${totalRecords.toLocaleString()})...`
+          });
+        }
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+
+      const adjustment = adjustments[i];
       const amount = parseFloat(adjustment.AdjustmentAmount?.CurrencyAmount || '0');
       if (amount > 0) {
-        claims.push({
-          id: adjustment.AdjustmentEventId || `ADJ-${Date.now()}`,
+        allClaims.push({
+          id: adjustment.AdjustmentEventId || `ADJ-${Date.now()}-${i}`,
           orderId: adjustment.AmazonOrderId || adjustment.AdjustmentEventId,
           amount: amount,
           status: 'approved',
@@ -789,13 +1378,22 @@ export class Agent2DataSyncService {
           isMock: true,
           mockScenario: scenario
         });
+        processedCount++;
       }
+    }
+
+    if (syncId) {
+      this.sendSyncLog(userId, syncId, {
+        type: 'success',
+        category: 'claims',
+        message: `[COMPLETE] Generated ${allClaims.length.toLocaleString()} claims from financial events`
+      });
     }
 
     return {
       success: true,
-      data: claims,
-      message: `Generated ${claims.length} mock claims (scenario: ${scenario})`
+      data: allClaims,
+      message: `Generated ${allClaims.length} mock claims (scenario: ${scenario})`
     };
   }
 
@@ -870,7 +1468,8 @@ export class Agent2DataSyncService {
     }
 
     // Process claims in batches to avoid Python API crashes on large batches
-    const MAX_CLAIMS_PER_BATCH = 50;
+    // Use same batch size as data sync (1000) for consistency
+    const MAX_CLAIMS_PER_BATCH = this.BATCH_SIZE; // 1000 claims per batch
     const totalBatches = Math.ceil(allClaimsToDetect.length / MAX_CLAIMS_PER_BATCH);
     
     logger.info('🎯 [AGENT 2] Processing claims in batches', {
@@ -882,6 +1481,27 @@ export class Agent2DataSyncService {
     });
     
     console.log(`[AGENT 2] Processing ${allClaimsToDetect.length} claims in ${totalBatches} batches of ${MAX_CLAIMS_PER_BATCH}`);
+    
+    // Send sync log for claim detection start
+    this.sendSyncLog(userId, syncId, {
+      type: 'info',
+      category: 'detection',
+      message: `Assessing ${allClaimsToDetect.length.toLocaleString()} claims for refund opportunities...`
+    });
+    
+    if (totalBatches > 1) {
+      this.sendSyncLog(userId, syncId, {
+        type: 'info',
+        category: 'detection',
+        message: `Processing ${allClaimsToDetect.length.toLocaleString()} claims in ${totalBatches} batches...`
+      });
+    } else {
+      this.sendSyncLog(userId, syncId, {
+        type: 'info',
+        category: 'detection',
+        message: `Processing ${allClaimsToDetect.length.toLocaleString()} claims...`
+      });
+    }
 
     // Step 3: Create detection_queue entry BEFORE calling API (so syncJobManager can track it)
     try {
@@ -972,6 +1592,15 @@ export class Agent2DataSyncService {
       });
       
       console.log(`[AGENT 2] Processing batch ${batchIndex + 1}/${totalBatches} (claims ${batchStart + 1}-${batchEnd} of ${allClaimsToDetect.length})`);
+      
+      // Send sync log for batch progress (only if multiple batches)
+      if (totalBatches > 1) {
+        this.sendSyncLog(userId, syncId, {
+          type: 'progress',
+          category: 'detection',
+          message: `Processing batch ${batchIndex + 1}/${totalBatches} (${batchStart + 1}-${batchEnd} of ${allClaimsToDetect.length.toLocaleString()})...`
+        });
+      }
 
       let batchPredictions: any[] = [];
       let batchSuccess = false;
@@ -1054,9 +1683,19 @@ export class Agent2DataSyncService {
         // If this is the first batch and it fails, fail the entire operation
         // Otherwise, log error but continue with other batches
         if (batchIndex === 0) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'error',
+            category: 'detection',
+            message: `[ERROR] Detection failed on first batch: ${lastBatchError?.message}`
+          });
           await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, false);
           throw new Error(`Discovery Agent API failed on first batch: ${lastBatchError?.message}`);
         } else {
+          this.sendSyncLog(userId, syncId, {
+            type: 'warning',
+            category: 'detection',
+            message: `[WARNING] Batch ${batchIndex + 1} failed, continuing with remaining batches...`
+          });
           logger.warn(`⚠️ [AGENT 2] Batch ${batchIndex + 1} failed, but continuing with remaining batches`, {
             userId,
             syncId,
@@ -1074,6 +1713,15 @@ export class Agent2DataSyncService {
       const claimableCount = batchPredictions.filter((p: any) => p.claimable).length;
       const nonClaimableCount = batchPredictions.length - claimableCount;
       console.log(`[AGENT 2] Batch ${batchIndex + 1} completed: ${batchPredictions.length} predictions (${claimableCount} claimable, ${nonClaimableCount} non-claimable) - Total so far: ${allPredictions.length}`);
+      
+      // Send sync log for batch completion (only if multiple batches)
+      if (totalBatches > 1 && batchIndex < totalBatches - 1) {
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'detection',
+          message: `Batch ${batchIndex + 1}/${totalBatches} complete: ${claimableCount} claimable opportunities found`
+        });
+      }
       
       // Log sample prediction for debugging
       if (batchPredictions.length > 0) {
@@ -1116,6 +1764,13 @@ export class Agent2DataSyncService {
       throw new Error(`Batch processing failed: ${batchProcessingError.message}`);
     }
 
+    // Send sync log for detection analysis
+    this.sendSyncLog(userId, syncId, {
+      type: 'info',
+      category: 'detection',
+      message: `Analyzing ${allPredictions.length.toLocaleString()} predictions for claimable opportunities...`
+    });
+    
     // Log detailed statistics before filtering
     const claimablePredictions = allPredictions.filter((p: any) => p.claimable);
     const nonClaimablePredictions = allPredictions.filter((p: any) => !p.claimable);
@@ -1180,10 +1835,30 @@ export class Agent2DataSyncService {
 
     // Step 6: Store detection results
     if (detectionResults.length > 0) {
+      this.sendSyncLog(userId, syncId, {
+        type: 'info',
+        category: 'detection',
+        message: `Storing ${detectionResults.length.toLocaleString()} claimable opportunities...`
+      });
       await this.storeDetectionResults(detectionResults, userId, storageSyncId);
     }
 
     // Step 7: Signal completion
+    if (detectionResults.length > 0) {
+      this.sendSyncLog(userId, syncId, {
+        type: 'success',
+        category: 'detection',
+        message: `[COMPLETE] Detected ${detectionResults.length.toLocaleString()} claimable opportunities`,
+        count: detectionResults.length
+      });
+    } else {
+      this.sendSyncLog(userId, syncId, {
+        type: 'info',
+        category: 'detection',
+        message: 'No claimable opportunities detected in this batch'
+      });
+    }
+    
     await this.signalDetectionCompletion(
       userId,
       storageSyncId,

@@ -48,6 +48,13 @@ class EvidenceMatchingService {
   private baseDelay: number = 2000; // 2 seconds
   private autoSubmitThreshold: number = 0.85;
   private smartPromptThreshold: number = 0.5;
+  private readonly BATCH_SIZE = 1000; // Process 1000 claims per batch for large datasets
+  private syncLogCallback?: (log: {
+    type: 'info' | 'success' | 'warning' | 'error' | 'progress';
+    category: 'matching';
+    message: string;
+    count?: number;
+  }) => void;
 
   constructor() {
     // Get Python API URL from environment
@@ -69,6 +76,27 @@ class EvidenceMatchingService {
       autoSubmitThreshold: this.autoSubmitThreshold,
       smartPromptThreshold: this.smartPromptThreshold
     });
+  }
+
+  /**
+   * Set sync log callback for real-time progress updates
+   */
+  setSyncLogCallback(callback: (log: {
+    type: 'info' | 'success' | 'warning' | 'error' | 'progress';
+    category: 'matching';
+    message: string;
+    count?: number;
+  }) => void): void {
+    this.syncLogCallback = callback;
+  }
+
+  /**
+   * Send sync log message if callback is set
+   */
+  private sendSyncLog(type: 'info' | 'success' | 'warning' | 'error' | 'progress', message: string, count?: number): void {
+    if (this.syncLogCallback) {
+      this.syncLogCallback({ type, category: 'matching', message, count });
+    }
   }
 
   private buildServiceHeaders(
@@ -136,7 +164,7 @@ class EvidenceMatchingService {
   }
 
   /**
-   * Run matching with retry logic
+   * Run matching with retry logic and batch processing for large datasets
    * Handles 429 (rate limit) errors with longer backoff
    */
   async runMatchingWithRetry(
@@ -144,53 +172,117 @@ class EvidenceMatchingService {
     claims?: ClaimData[],
     maxRetries: number = 3
   ): Promise<MatchingJobResponse> {
-    let lastError: any;
+    if (!claims || claims.length === 0) {
+      return { matches: 0, auto_submits: 0, smart_prompts: 0, results: [] };
+    }
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        return await this.runMatchingForUser(userId, claims);
-      } catch (error: any) {
-        lastError = error;
-        const statusCode = error.response?.status;
+    // Batch processing for large datasets
+    const needsBatching = claims.length > this.BATCH_SIZE;
+    const totalBatches = needsBatching ? Math.ceil(claims.length / this.BATCH_SIZE) : 1;
 
-        // Check if it's a rate limit error (429)
-        if (statusCode === 429) {
-          // Get retry-after header or use longer default (30 seconds)
-          const retryAfter = error.response?.headers?.['retry-after'];
-          const delay = retryAfter ? parseInt(retryAfter) * 1000 : 30000;
-          
-          logger.warn(`⏳ [EVIDENCE MATCHING] Rate limited (429), waiting ${delay}ms before retry`, {
-            userId,
-            attempt: attempt + 1,
-            maxRetries,
-            retryAfter
-          });
-          
+    this.sendSyncLog('info', `Assessing ${claims.length.toLocaleString()} claims for evidence matching...`);
+    
+    if (needsBatching) {
+      this.sendSyncLog('info', `Processing ${claims.length.toLocaleString()} claims in ${totalBatches} batches...`);
+    } else {
+      this.sendSyncLog('info', `Processing ${claims.length.toLocaleString()} claims...`);
+    }
+
+    const allResults: MatchingResult[] = [];
+    let totalMatches = 0;
+    let totalAutoSubmits = 0;
+    let totalSmartPrompts = 0;
+
+    // Process claims in batches
+    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      const batchStart = batchIndex * this.BATCH_SIZE;
+      const batchEnd = Math.min(batchStart + this.BATCH_SIZE, claims.length);
+      const batchClaims = claims.slice(batchStart, batchEnd);
+
+      if (needsBatching) {
+        this.sendSyncLog('progress', `Processing batch ${batchIndex + 1}/${totalBatches} (${batchStart + 1}-${batchEnd} of ${claims.length.toLocaleString()})...`);
+      }
+
+      let lastError: any;
+      let batchResult: MatchingJobResponse | null = null;
+
+      // Retry logic for this batch
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          batchResult = await this.runMatchingForUser(userId, batchClaims);
+          break; // Success - break out of retry loop
+        } catch (error: any) {
+          lastError = error;
+          const statusCode = error.response?.status;
+
+          // Check if it's a rate limit error (429)
+          if (statusCode === 429) {
+            const retryAfter = error.response?.headers?.['retry-after'];
+            const delay = retryAfter ? parseInt(retryAfter) * 1000 : 30000;
+            
+            logger.warn(`⏳ [EVIDENCE MATCHING] Rate limited (429), waiting ${delay}ms before retry`, {
+              userId,
+              attempt: attempt + 1,
+              maxRetries,
+              retryAfter,
+              batchIndex: batchIndex + 1
+            });
+            
+            if (attempt < maxRetries) {
+              await new Promise(resolve => setTimeout(resolve, delay));
+              continue;
+            }
+          }
+
+          // For other errors, use standard exponential backoff
           if (attempt < maxRetries) {
+            const delay = this.baseDelay * Math.pow(2, attempt);
+            logger.warn(`🔄 [EVIDENCE MATCHING] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, {
+              userId,
+              error: error.message,
+              statusCode,
+              delay,
+              batchIndex: batchIndex + 1
+            });
             await new Promise(resolve => setTimeout(resolve, delay));
-            continue;
           }
         }
+      }
 
-        // For other errors, use standard exponential backoff
-        if (attempt < maxRetries) {
-          const delay = this.baseDelay * Math.pow(2, attempt);
-          logger.warn(`🔄 [EVIDENCE MATCHING] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, {
-            userId,
-            error: error.message,
-            statusCode,
-            delay
-          });
-          await new Promise(resolve => setTimeout(resolve, delay));
-        }
+      if (!batchResult) {
+        this.sendSyncLog('error', `Batch ${batchIndex + 1} failed after all retries: ${lastError?.message}`);
+        logger.error('❌ [EVIDENCE MATCHING] Batch failed after all retries', {
+          userId,
+          batchIndex: batchIndex + 1,
+          error: lastError?.message
+        });
+        // Continue with next batch instead of failing completely
+        continue;
+      }
+
+      // Accumulate results
+      if (batchResult.results) {
+        allResults.push(...batchResult.results);
+      }
+      totalMatches += batchResult.matches || 0;
+      totalAutoSubmits += batchResult.auto_submits || 0;
+      totalSmartPrompts += batchResult.smart_prompts || 0;
+
+      if (needsBatching && batchIndex < totalBatches - 1) {
+        this.sendSyncLog('info', `Batch ${batchIndex + 1}/${totalBatches} complete: ${batchResult.matches || 0} matches found`);
+        // Small delay between batches
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
 
-    logger.error('❌ [EVIDENCE MATCHING] All retry attempts exhausted', {
-      userId,
-      error: lastError?.message
-    });
-    throw lastError;
+    this.sendSyncLog('success', `[COMPLETE] Matched evidence for ${totalMatches.toLocaleString()} claims (${totalAutoSubmits} auto-submitted, ${totalSmartPrompts} smart prompts)`);
+
+    return {
+      matches: totalMatches,
+      auto_submits: totalAutoSubmits,
+      smart_prompts: totalSmartPrompts,
+      results: allResults
+    };
   }
 
   /**

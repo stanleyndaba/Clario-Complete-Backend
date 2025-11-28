@@ -9,6 +9,7 @@ import cron from 'node-cron';
 import logger from '../utils/logger';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import evidenceMatchingService, { ClaimData, MatchingResult } from '../services/evidenceMatchingService';
+import sseHub from '../utils/sseHub';
 
 // Retry logic with exponential backoff
 // Handles 429 (rate limit) errors with longer delays
@@ -296,7 +297,28 @@ export class EvidenceMatchingWorker {
 
       logger.info(`📋 [EVIDENCE MATCHING WORKER] Found ${claims.length} pending claims for user ${userId}`);
 
-      // Run matching via Python API
+      // Set up sync log callback for real-time updates
+      evidenceMatchingService.setSyncLogCallback((log) => {
+        sseHub.sendEvent(userId, 'sync.log', {
+          type: 'log',
+          syncId: `matching_${userId}_${Date.now()}`,
+          log: {
+            ...log,
+            timestamp: new Date().toISOString()
+          }
+        });
+        // Also send as 'message' for backward compatibility
+        sseHub.sendEvent(userId, 'message', {
+          type: 'log',
+          syncId: `matching_${userId}_${Date.now()}`,
+          log: {
+            ...log,
+            timestamp: new Date().toISOString()
+          }
+        });
+      });
+
+      // Run matching via Python API (with batch processing)
       const matchingResult = await retryWithBackoff(async () => {
         return await evidenceMatchingService.runMatchingWithRetry(userId, claims, 2);
       }, 1, 2000);
