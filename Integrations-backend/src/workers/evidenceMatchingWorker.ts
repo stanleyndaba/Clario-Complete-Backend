@@ -314,6 +314,46 @@ export class EvidenceMatchingWorker {
         held: processedStats.held
       });
 
+      // 🎯 Send SSE event for matching completion
+      try {
+        const sseHub = (await import('../utils/sseHub')).default;
+        const matchingEventData = {
+          type: 'matching',
+          status: 'completed',
+          userId,
+          matches: matchingResult.matches || 0,
+          autoSubmitted: processedStats.autoSubmitted || 0,
+          smartPromptsCreated: processedStats.smartPromptsCreated || 0,
+          held: processedStats.held || 0,
+          results: (matchingResult.results || []).map((r: any) => ({
+            claim_id: r.dispute_id,
+            document_id: r.evidence_document_id,
+            confidence_score: r.final_confidence,
+            match_type: r.match_type,
+            action_taken: (r.final_confidence || 0) >= 0.85 ? 'auto_submit' 
+              : (r.final_confidence || 0) >= 0.5 ? 'smart_prompt' 
+              : 'no_action'
+          })),
+          message: `Evidence matching completed: ${matchingResult.matches || 0} matches found`,
+          timestamp: new Date().toISOString()
+        };
+        
+        // Send as specific event name
+        sseHub.sendEvent(userId, 'matching_completed', matchingEventData);
+        
+        // Also send as 'message' event for backward compatibility
+        sseHub.sendEvent(userId, 'message', matchingEventData);
+        
+        logger.info('✅ [EVIDENCE MATCHING WORKER] Sent SSE event for matching completion', {
+          userId,
+          matches: matchingResult.matches
+        });
+      } catch (sseError: any) {
+        logger.warn('⚠️ [EVIDENCE MATCHING WORKER] Failed to send SSE event (non-critical)', {
+          error: sseError.message
+        });
+      }
+
       // 🎯 AGENT 11 INTEGRATION: Log matching events
       try {
         const agentEventLogger = (await import('../services/agentEventLogger')).default;

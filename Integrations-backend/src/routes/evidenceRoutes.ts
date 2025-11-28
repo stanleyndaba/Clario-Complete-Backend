@@ -1495,6 +1495,254 @@ router.delete('/sources/:id', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /api/evidence/matching/results
+ * Get evidence matching results for the current user
+ */
+router.get('/matching/results', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    const limit = parseInt(req.query.limit as string) || 100;
+    const offset = parseInt(req.query.offset as string) || 0;
+
+    logger.info('🔍 [EVIDENCE] Fetching matching results', {
+      userId,
+      limit,
+      offset
+    });
+
+    // Get matching results from dispute_evidence_links
+    // Join with detection_results to get claim info and evidence_documents to get document info
+    const client = supabaseAdmin || supabase;
+
+    // First, get all detection_results (claims) for this user
+    const { data: claims, error: claimsError } = await client
+      .from('detection_results')
+      .select('id')
+      .eq('seller_id', userId);
+
+    if (claimsError) {
+      logger.error('❌ [EVIDENCE] Error fetching claims', {
+        error: claimsError.message,
+        userId
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch claims',
+        message: claimsError.message
+      });
+    }
+
+    const claimIds = claims?.map(c => c.id) || [];
+
+    if (claimIds.length === 0) {
+      return res.json({
+        success: true,
+        results: [],
+        total: 0
+      });
+    }
+
+    // Get matching results
+    const { data: links, error: linksError } = await client
+      .from('dispute_evidence_links')
+      .select(`
+        id,
+        dispute_case_id,
+        evidence_document_id,
+        relevance_score,
+        matched_context,
+        created_at
+      `)
+      .in('dispute_case_id', claimIds)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (linksError) {
+      logger.error('❌ [EVIDENCE] Error fetching matching results', {
+        error: linksError.message,
+        userId
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch matching results',
+        message: linksError.message
+      });
+    }
+
+    // Get total count
+    const { count, error: countError } = await client
+      .from('dispute_evidence_links')
+      .select('*', { count: 'exact', head: true })
+      .in('dispute_case_id', claimIds);
+
+    // Transform results
+    const results = (links || []).map((link: any) => {
+      const context = link.matched_context || {};
+      return {
+        id: link.id,
+        claim_id: link.dispute_case_id,
+        document_id: link.evidence_document_id,
+        confidence_score: link.relevance_score || 0,
+        match_type: context.match_type || 'unknown',
+        action_taken: (link.relevance_score || 0) >= 0.85 ? 'auto_submit'
+          : (link.relevance_score || 0) >= 0.5 ? 'smart_prompt'
+          : 'no_action',
+        matched_fields: context.matched_fields || [],
+        reasoning: context.reasoning || '',
+        created_at: link.created_at
+      };
+    });
+
+    logger.info('✅ [EVIDENCE] Matching results fetched', {
+      userId,
+      count: results.length,
+      total: count || 0
+    });
+
+    res.json({
+      success: true,
+      results,
+      total: count || 0,
+      limit,
+      offset
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in matching results endpoint', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch matching results',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * GET /api/evidence/matching/results/by-document/:documentId
+ * Get matching results for a specific document
+ */
+router.get('/matching/results/by-document/:documentId', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const { documentId } = req.params;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    logger.info('🔍 [EVIDENCE] Fetching matching results for document', {
+      userId,
+      documentId
+    });
+
+    const client = supabaseAdmin || supabase;
+
+    // Verify document belongs to user
+    const { data: doc, error: docError } = await client
+      .from('evidence_documents')
+      .select('id, seller_id')
+      .eq('id', documentId)
+      .single();
+
+    if (docError || !doc) {
+      return res.status(404).json({
+        success: false,
+        error: 'Document not found'
+      });
+    }
+
+    if (doc.seller_id !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden'
+      });
+    }
+
+    // Get matching results for this document
+    const { data: links, error: linksError } = await client
+      .from('dispute_evidence_links')
+      .select(`
+        id,
+        dispute_case_id,
+        evidence_document_id,
+        relevance_score,
+        matched_context,
+        created_at
+      `)
+      .eq('evidence_document_id', documentId)
+      .order('created_at', { ascending: false });
+
+    if (linksError) {
+      logger.error('❌ [EVIDENCE] Error fetching document matching results', {
+        error: linksError.message,
+        userId,
+        documentId
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch matching results',
+        message: linksError.message
+      });
+    }
+
+    // Transform results
+    const results = (links || []).map((link: any) => {
+      const context = link.matched_context || {};
+      return {
+        id: link.id,
+        claim_id: link.dispute_case_id,
+        document_id: link.evidence_document_id,
+        confidence_score: link.relevance_score || 0,
+        match_type: context.match_type || 'unknown',
+        action_taken: (link.relevance_score || 0) >= 0.85 ? 'auto_submit'
+          : (link.relevance_score || 0) >= 0.5 ? 'smart_prompt'
+          : 'no_action',
+        matched_fields: context.matched_fields || [],
+        reasoning: context.reasoning || '',
+        created_at: link.created_at
+      };
+    });
+
+    logger.info('✅ [EVIDENCE] Document matching results fetched', {
+      userId,
+      documentId,
+      count: results.length
+    });
+
+    res.json({
+      success: true,
+      results,
+      document_id: documentId
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in document matching results endpoint', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch document matching results',
+      message: error?.message || String(error)
+    });
+  }
+});
+
 export default router;
 
 
