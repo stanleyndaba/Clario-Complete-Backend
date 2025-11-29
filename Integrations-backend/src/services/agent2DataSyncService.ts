@@ -902,7 +902,7 @@ export class Agent2DataSyncService {
 
     const allOrders: any[] = [];
     const daysDiff = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
-    
+
     // Batch processing for large datasets (1000+ records)
     const needsBatching = recordCount > this.BATCH_SIZE;
     const totalBatches = needsBatching ? Math.ceil(recordCount / this.BATCH_SIZE) : 1;
@@ -938,29 +938,29 @@ export class Agent2DataSyncService {
 
       const batchOrders: any[] = [];
       for (let i = batchStart; i < batchEnd; i++) {
-        const orderDate = this.randomDate(startDate, endDate);
-        const orderId = `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`;
-        
+      const orderDate = this.randomDate(startDate, endDate);
+      const orderId = `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`;
+      
         batchOrders.push({
-          AmazonOrderId: orderId,
-          PurchaseDate: orderDate.toISOString(),
-          OrderStatus: ['Shipped', 'Pending', 'Canceled'][Math.floor(Math.random() * 3)],
-          FulfillmentChannel: ['Amazon', 'Merchant'][Math.floor(Math.random() * 2)],
-          OrderItems: [{
-            SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
-            ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
-            QuantityOrdered: Math.floor(Math.random() * 5) + 1,
-            ItemPrice: {
-              Amount: (Math.random() * 100 + 10).toFixed(2),
-              CurrencyCode: 'USD'
-            },
-            Title: `Product ${i + 1}`
-          }],
-          MarketplaceId: 'ATVPDKIKX0DER',
-          isMock: true,
-          mockScenario: scenario
-        });
-      }
+        AmazonOrderId: orderId,
+        PurchaseDate: orderDate.toISOString(),
+        OrderStatus: ['Shipped', 'Pending', 'Canceled'][Math.floor(Math.random() * 3)],
+        FulfillmentChannel: ['Amazon', 'Merchant'][Math.floor(Math.random() * 2)],
+        OrderItems: [{
+          SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
+          ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
+          QuantityOrdered: Math.floor(Math.random() * 5) + 1,
+          ItemPrice: {
+            Amount: (Math.random() * 100 + 10).toFixed(2),
+            CurrencyCode: 'USD'
+          },
+          Title: `Product ${i + 1}`
+        }],
+        MarketplaceId: 'ATVPDKIKX0DER',
+        isMock: true,
+        mockScenario: scenario
+      });
+    }
 
       allOrders.push(...batchOrders);
 
@@ -1078,7 +1078,7 @@ export class Agent2DataSyncService {
         isMock: true,
         mockScenario: scenario
       });
-      }
+    }
 
       allShipments.push(...batchShipments);
 
@@ -1166,27 +1166,27 @@ export class Agent2DataSyncService {
 
       const batchReturns: any[] = [];
       for (let i = batchStart; i < batchEnd; i++) {
-        const returnDate = this.randomDate(startDate, endDate);
-        
+      const returnDate = this.randomDate(startDate, endDate);
+      
         batchReturns.push({
-          ReturnId: `RET-${Date.now()}-${i}`,
-          AmazonOrderId: `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`,
-          ReturnedDate: returnDate.toISOString(),
-          ReturnStatus: ['APPROVED', 'PENDING', 'DENIED'][Math.floor(Math.random() * 3)],
-          ReturnReason: ['Defective', 'Wrong Item', 'Not as Described', 'Customer Changed Mind'][Math.floor(Math.random() * 4)],
-          Items: [{
-            SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
-            ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
-            QuantityReturned: Math.floor(Math.random() * 3) + 1,
-            RefundAmount: {
-              Amount: (Math.random() * 50 + 10).toFixed(2),
-              CurrencyCode: 'USD'
-            }
-          }],
-          isMock: true,
-          mockScenario: scenario
-        });
-      }
+        ReturnId: `RET-${Date.now()}-${i}`,
+        AmazonOrderId: `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`,
+        ReturnedDate: returnDate.toISOString(),
+        ReturnStatus: ['APPROVED', 'PENDING', 'DENIED'][Math.floor(Math.random() * 3)],
+        ReturnReason: ['Defective', 'Wrong Item', 'Not as Described', 'Customer Changed Mind'][Math.floor(Math.random() * 4)],
+        Items: [{
+          SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
+          ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
+          QuantityReturned: Math.floor(Math.random() * 3) + 1,
+          RefundAmount: {
+            Amount: (Math.random() * 50 + 10).toFixed(2),
+            CurrencyCode: 'USD'
+          }
+        }],
+        isMock: true,
+        mockScenario: scenario
+      });
+    }
 
       allReturns.push(...batchReturns);
 
@@ -1301,7 +1301,7 @@ export class Agent2DataSyncService {
         isMock: true,
         mockScenario: scenario
       });
-      }
+    }
 
       allSettlements.push(...batchSettlements);
 
@@ -1919,7 +1919,7 @@ export class Agent2DataSyncService {
       category: 'detection',
       message: `Analyzing ${allPredictions.length.toLocaleString()} predictions for claimable opportunities...`
     });
-    
+
     // Log detailed statistics before filtering
     const claimablePredictions = allPredictions.filter((p: any) => p.claimable);
     const nonClaimablePredictions = allPredictions.filter((p: any) => !p.claimable);
