@@ -627,21 +627,30 @@ export class Agent2DataSyncService {
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // First, try to read from database (imported data)
+    // Check without date filter first - if imported data exists, use it regardless of date range
     try {
       const { data: dbOrders, error } = await supabaseAdmin
         .from('orders')
         .select('*')
         .eq('seller_id', userId)
-        .gte('order_date', startDate.toISOString())
-        .lte('order_date', endDate.toISOString())
-        .order('order_date', { ascending: false });
+        .order('order_date', { ascending: false })
+        .limit(50000); // Limit to prevent memory issues, but high enough for 50K dataset
 
       if (!error && dbOrders && dbOrders.length > 0) {
         logger.info(`📦 [AGENT 2] Found ${dbOrders.length} orders in database (imported data)`, { userId });
+        // Filter by date range if needed, but use all data if within reasonable range
+        const filteredOrders = dbOrders.filter((order: any) => {
+          const orderDate = new Date(order.order_date);
+          return orderDate >= startDate && orderDate <= endDate;
+        });
+        
+        // If filtered results are empty but we have data, use all data (date range might be wrong)
+        const ordersToUse = filteredOrders.length > 0 ? filteredOrders : dbOrders;
+        
         return {
           success: true,
-          data: dbOrders,
-          message: `Found ${dbOrders.length} orders from imported data`
+          data: ordersToUse,
+          message: `Found ${ordersToUse.length} orders from imported data${filteredOrders.length === 0 && dbOrders.length > 0 ? ' (using all imported data, date range adjusted)' : ''}`
         };
       }
     } catch (dbError: any) {
@@ -669,21 +678,29 @@ export class Agent2DataSyncService {
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // First, try to read from database (imported data)
+    // Check without date filter first - if imported data exists, use it regardless of date range
     try {
       const { data: dbShipments, error } = await supabaseAdmin
         .from('shipments')
         .select('*')
         .eq('seller_id', userId)
-        .gte('shipped_date', startDate.toISOString())
-        .lte('shipped_date', endDate.toISOString())
-        .order('shipped_date', { ascending: false });
+        .order('shipped_date', { ascending: false })
+        .limit(50000);
 
       if (!error && dbShipments && dbShipments.length > 0) {
         logger.info(`🚚 [AGENT 2] Found ${dbShipments.length} shipments in database (imported data)`, { userId });
+        // Filter by date range if needed, but use all data if within reasonable range
+        const filteredShipments = dbShipments.filter((shipment: any) => {
+          const shippedDate = new Date(shipment.shipped_date);
+          return shippedDate >= startDate && shippedDate <= endDate;
+        });
+        
+        const shipmentsToUse = filteredShipments.length > 0 ? filteredShipments : dbShipments;
+        
         return {
           success: true,
-          data: dbShipments,
-          message: `Found ${dbShipments.length} shipments from imported data`
+          data: shipmentsToUse,
+          message: `Found ${shipmentsToUse.length} shipments from imported data${filteredShipments.length === 0 && dbShipments.length > 0 ? ' (using all imported data, date range adjusted)' : ''}`
         };
       }
     } catch (dbError: any) {
@@ -711,21 +728,28 @@ export class Agent2DataSyncService {
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // First, try to read from database (imported data)
+    // Check without date filter first - if imported data exists, use it regardless of date range
     try {
       const { data: dbReturns, error } = await supabaseAdmin
         .from('returns')
         .select('*')
         .eq('seller_id', userId)
-        .gte('returned_date', startDate.toISOString())
-        .lte('returned_date', endDate.toISOString())
-        .order('returned_date', { ascending: false });
+        .order('returned_date', { ascending: false })
+        .limit(50000);
 
       if (!error && dbReturns && dbReturns.length > 0) {
         logger.info(`↩️ [AGENT 2] Found ${dbReturns.length} returns in database (imported data)`, { userId });
+        const filteredReturns = dbReturns.filter((returnData: any) => {
+          const returnedDate = new Date(returnData.returned_date);
+          return returnedDate >= startDate && returnedDate <= endDate;
+        });
+        
+        const returnsToUse = filteredReturns.length > 0 ? filteredReturns : dbReturns;
+        
         return {
           success: true,
-          data: dbReturns,
-          message: `Found ${dbReturns.length} returns from imported data`
+          data: returnsToUse,
+          message: `Found ${returnsToUse.length} returns from imported data${filteredReturns.length === 0 && dbReturns.length > 0 ? ' (using all imported data, date range adjusted)' : ''}`
         };
       }
     } catch (dbError: any) {
@@ -753,21 +777,28 @@ export class Agent2DataSyncService {
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // First, try to read from database (imported data)
+    // Check without date filter first - if imported data exists, use it regardless of date range
     try {
       const { data: dbSettlements, error } = await supabaseAdmin
         .from('settlements')
         .select('*')
         .eq('seller_id', userId)
-        .gte('settlement_date', startDate.toISOString())
-        .lte('settlement_date', endDate.toISOString())
-        .order('settlement_date', { ascending: false });
+        .order('settlement_date', { ascending: false })
+        .limit(50000);
 
       if (!error && dbSettlements && dbSettlements.length > 0) {
         logger.info(`💰 [AGENT 2] Found ${dbSettlements.length} settlements in database (imported data)`, { userId });
+        const filteredSettlements = dbSettlements.filter((settlement: any) => {
+          const settlementDate = new Date(settlement.settlement_date);
+          return settlementDate >= startDate && settlementDate <= endDate;
+        });
+        
+        const settlementsToUse = filteredSettlements.length > 0 ? filteredSettlements : dbSettlements;
+        
         return {
           success: true,
-          data: dbSettlements,
-          message: `Found ${dbSettlements.length} settlements from imported data`
+          data: settlementsToUse,
+          message: `Found ${settlementsToUse.length} settlements from imported data${filteredSettlements.length === 0 && dbSettlements.length > 0 ? ' (using all imported data, date range adjusted)' : ''}`
         };
       }
     } catch (dbError: any) {
