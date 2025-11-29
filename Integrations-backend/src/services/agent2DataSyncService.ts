@@ -616,6 +616,7 @@ export class Agent2DataSyncService {
 
   /**
    * Sync Orders with mock fallback and batch processing
+   * First checks database for imported data, then falls back to mock generation
    */
   private async syncOrders(
     userId: string,
@@ -625,6 +626,29 @@ export class Agent2DataSyncService {
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
+    // First, try to read from database (imported data)
+    try {
+      const { data: dbOrders, error } = await supabaseAdmin
+        .from('orders')
+        .select('*')
+        .eq('seller_id', userId)
+        .gte('order_date', startDate.toISOString())
+        .lte('order_date', endDate.toISOString())
+        .order('order_date', { ascending: false });
+
+      if (!error && dbOrders && dbOrders.length > 0) {
+        logger.info(`📦 [AGENT 2] Found ${dbOrders.length} orders in database (imported data)`, { userId });
+        return {
+          success: true,
+          data: dbOrders,
+          message: `Found ${dbOrders.length} orders from imported data`
+        };
+      }
+    } catch (dbError: any) {
+      logger.warn('⚠️ [AGENT 2] Error reading orders from database, falling back to mock', { error: dbError.message });
+    }
+
+    // If no imported data found, use mock generation or real API
     if (isMockMode) {
       return this.generateMockOrders(userId, startDate, endDate, mockScenario, syncId);
     }
@@ -634,6 +658,7 @@ export class Agent2DataSyncService {
 
   /**
    * Sync Shipments with mock fallback and batch processing
+   * First checks database for imported data, then falls back to mock generation
    */
   private async syncShipments(
     userId: string,
@@ -643,6 +668,29 @@ export class Agent2DataSyncService {
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
+    // First, try to read from database (imported data)
+    try {
+      const { data: dbShipments, error } = await supabaseAdmin
+        .from('shipments')
+        .select('*')
+        .eq('seller_id', userId)
+        .gte('shipped_date', startDate.toISOString())
+        .lte('shipped_date', endDate.toISOString())
+        .order('shipped_date', { ascending: false });
+
+      if (!error && dbShipments && dbShipments.length > 0) {
+        logger.info(`🚚 [AGENT 2] Found ${dbShipments.length} shipments in database (imported data)`, { userId });
+        return {
+          success: true,
+          data: dbShipments,
+          message: `Found ${dbShipments.length} shipments from imported data`
+        };
+      }
+    } catch (dbError: any) {
+      logger.warn('⚠️ [AGENT 2] Error reading shipments from database, falling back to mock', { error: dbError.message });
+    }
+
+    // If no imported data found, use mock generation or real API
     if (isMockMode) {
       return this.generateMockShipments(userId, startDate, endDate, mockScenario, syncId);
     }
@@ -652,6 +700,7 @@ export class Agent2DataSyncService {
 
   /**
    * Sync Returns with mock fallback and batch processing
+   * First checks database for imported data, then falls back to mock generation
    */
   private async syncReturns(
     userId: string,
@@ -661,6 +710,29 @@ export class Agent2DataSyncService {
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
+    // First, try to read from database (imported data)
+    try {
+      const { data: dbReturns, error } = await supabaseAdmin
+        .from('returns')
+        .select('*')
+        .eq('seller_id', userId)
+        .gte('returned_date', startDate.toISOString())
+        .lte('returned_date', endDate.toISOString())
+        .order('returned_date', { ascending: false });
+
+      if (!error && dbReturns && dbReturns.length > 0) {
+        logger.info(`↩️ [AGENT 2] Found ${dbReturns.length} returns in database (imported data)`, { userId });
+        return {
+          success: true,
+          data: dbReturns,
+          message: `Found ${dbReturns.length} returns from imported data`
+        };
+      }
+    } catch (dbError: any) {
+      logger.warn('⚠️ [AGENT 2] Error reading returns from database, falling back to mock', { error: dbError.message });
+    }
+
+    // If no imported data found, use mock generation or real API
     if (isMockMode) {
       return this.generateMockReturns(userId, startDate, endDate, mockScenario, syncId);
     }
@@ -670,6 +742,7 @@ export class Agent2DataSyncService {
 
   /**
    * Sync Settlements with mock fallback and batch processing
+   * First checks database for imported data, then falls back to mock generation
    */
   private async syncSettlements(
     userId: string,
@@ -679,6 +752,29 @@ export class Agent2DataSyncService {
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
+    // First, try to read from database (imported data)
+    try {
+      const { data: dbSettlements, error } = await supabaseAdmin
+        .from('settlements')
+        .select('*')
+        .eq('seller_id', userId)
+        .gte('settlement_date', startDate.toISOString())
+        .lte('settlement_date', endDate.toISOString())
+        .order('settlement_date', { ascending: false });
+
+      if (!error && dbSettlements && dbSettlements.length > 0) {
+        logger.info(`💰 [AGENT 2] Found ${dbSettlements.length} settlements in database (imported data)`, { userId });
+        return {
+          success: true,
+          data: dbSettlements,
+          message: `Found ${dbSettlements.length} settlements from imported data`
+        };
+      }
+    } catch (dbError: any) {
+      logger.warn('⚠️ [AGENT 2] Error reading settlements from database, falling back to mock', { error: dbError.message });
+    }
+
+    // If no imported data found, use mock generation or real API
     if (isMockMode) {
       return this.generateMockSettlements(userId, startDate, endDate, mockScenario, syncId);
     }
@@ -688,6 +784,7 @@ export class Agent2DataSyncService {
 
   /**
    * Sync Inventory with mock fallback and batch processing
+   * First checks database for imported data, then falls back to mock generation
    */
   private async syncInventory(
     userId: string,
@@ -695,6 +792,27 @@ export class Agent2DataSyncService {
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
+    // First, try to read from database (imported data)
+    try {
+      const { data: dbInventory, error } = await supabaseAdmin
+        .from('inventory')
+        .select('*')
+        .eq('seller_id', userId)
+        .order('last_updated', { ascending: false });
+
+      if (!error && dbInventory && dbInventory.length > 0) {
+        logger.info(`📦 [AGENT 2] Found ${dbInventory.length} inventory records in database (imported data)`, { userId });
+        return {
+          success: true,
+          data: dbInventory,
+          message: `Found ${dbInventory.length} inventory records from imported data`
+        };
+      }
+    } catch (dbError: any) {
+      logger.warn('⚠️ [AGENT 2] Error reading inventory from database, falling back to mock', { error: dbError.message });
+    }
+
+    // If no imported data found, use mock generation or real API
     if (isMockMode) {
       return this.generateMockInventory(userId, mockScenario, syncId);
     }
