@@ -1,12 +1,12 @@
 /**
  * Mock Data Generator for Amazon SP-API
  * Generates realistic SP-API responses programmatically for testing
- * Supports 3 test scenarios: normal_week, high_volume, with_issues
+ * Supports 4 test scenarios: normal_week, high_volume, with_issues, realistic
  */
 
 import logger from '../utils/logger';
 
-export type MockScenario = 'normal_week' | 'high_volume' | 'with_issues';
+export type MockScenario = 'normal_week' | 'high_volume' | 'with_issues' | 'realistic';
 
 interface MockDataGeneratorOptions {
   scenario: MockScenario;
@@ -40,8 +40,6 @@ export class MockDataGenerator {
       OrderEventList: [] as any[]
     };
 
-    const daysDiff = Math.ceil((this.endDate.getTime() - this.startDate.getTime()) / (1000 * 60 * 60 * 24));
-    
     // Determine event distribution based on scenario
     let adjustmentCount = 0;
     let liquidationCount = 0;
@@ -67,20 +65,44 @@ export class MockDataGenerator {
         feeCount = Math.floor(this.recordCount * 0.2);
         orderCount = Math.floor(this.recordCount * 0.1);
         break;
+      case 'realistic':
+        // 15% global anomaly rate target
+        adjustmentCount = Math.floor(this.recordCount * 0.15);
+        liquidationCount = Math.floor(this.recordCount * 0.10);
+        feeCount = Math.floor(this.recordCount * 0.40);
+        orderCount = Math.floor(this.recordCount * 0.35);
+        break;
     }
 
     // Generate Adjustment Events (reimbursements, reversals, etc.)
     for (let i = 0; i < adjustmentCount; i++) {
       const date = this.randomDate(this.startDate, this.endDate);
-      const amount = this.scenario === 'with_issues' 
+      const amount = this.scenario === 'with_issues'
         ? this.randomAmount(10, 500) // Higher amounts for issues
         : this.randomAmount(5, 200);
-      
+
+      // Realistic scenario: Add subtle anomalies
+      let description = 'Standard inventory adjustment';
+      let adjustmentType = this.randomAdjustmentType();
+
+      if (this.scenario === 'realistic') {
+        const rand = Math.random();
+        if (rand < 0.05) {
+          // 5% chance of late reimbursement (simulated by date manipulation in post-processing or here if we tracked state)
+          description = 'Late inventory reimbursement';
+        } else if (rand < 0.10) {
+          // 5% chance of partial reimbursement logic (handled in amount)
+          // We'll simulate this by creating a mismatch in the order generation side or here
+        }
+      } else if (this.scenario === 'with_issues') {
+        description = 'Inventory adjustment - potential claim opportunity';
+      }
+
       events.AdjustmentEventList.push({
         AdjustmentEventId: `ADJ-${Date.now()}-${i}`,
-        AdjustmentType: this.randomAdjustmentType(),
+        AdjustmentType: adjustmentType,
         AdjustmentAmount: {
-          CurrencyAmount: this.scenario === 'with_issues' && Math.random() > 0.5
+          CurrencyAmount: (this.scenario === 'with_issues' || (this.scenario === 'realistic' && Math.random() > 0.8)) && Math.random() > 0.5
             ? -Math.abs(amount) // Negative for reversals
             : amount,
           CurrencyCode: 'USD'
@@ -90,9 +112,7 @@ export class MockDataGenerator {
         SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
         ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
         Quantity: Math.floor(Math.random() * 5) + 1,
-        Description: this.scenario === 'with_issues' 
-          ? 'Inventory adjustment - potential claim opportunity'
-          : 'Standard inventory adjustment',
+        Description: description,
         FulfillmentCenterId: `FBA${Math.floor(Math.random() * 5) + 1}`,
         Marketplace: ['US', 'CA', 'MX', 'GB', 'DE', 'FR', 'IT', 'ES'][Math.floor(Math.random() * 8)]
       });
@@ -122,7 +142,17 @@ export class MockDataGenerator {
     for (let i = 0; i < feeCount; i++) {
       const date = this.randomDate(this.startDate, this.endDate);
       const orderId = `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`;
-      
+
+      // Realistic: Commission rounding errors or storage fee mismatches
+      let feeAmount = this.randomAmount(1, 50);
+      let feeDescription = '';
+
+      if (this.scenario === 'realistic' && Math.random() < 0.05) {
+        // 5% chance of commission rounding error (e.g. $10.00 item, 15% fee should be $1.50, but charged $1.53)
+        feeAmount += (Math.random() * 0.04 + 0.01); // Add $0.01 - $0.05
+        feeDescription = 'Commission fee';
+      }
+
       events.ServiceFeeEventList.push({
         AmazonOrderId: orderId,
         SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
@@ -132,13 +162,13 @@ export class MockDataGenerator {
           {
             FeeType: ['SERVICE_FEE', 'REFERRAL_FEE', 'FBA_FULFILLMENT_FEE'][Math.floor(Math.random() * 3)],
             FeeAmount: {
-              CurrencyAmount: this.randomAmount(1, 50),
+              CurrencyAmount: feeAmount,
               CurrencyCode: 'USD'
             }
           }
         ],
-        ...(this.scenario === 'with_issues' && Math.random() > 0.7 ? {
-          FeeDescription: 'Potential fee overcharge - review required'
+        ...((this.scenario === 'with_issues' && Math.random() > 0.7) || (this.scenario === 'realistic' && feeDescription) ? {
+          FeeDescription: feeDescription || 'Potential fee overcharge - review required'
         } : {})
       });
     }
@@ -147,7 +177,7 @@ export class MockDataGenerator {
     for (let i = 0; i < orderCount; i++) {
       const date = this.randomDate(this.startDate, this.endDate);
       const orderId = `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`;
-      
+
       events.OrderEventList.push({
         AmazonOrderId: orderId,
         PostedDate: date.toISOString(),
@@ -167,7 +197,7 @@ export class MockDataGenerator {
             }
           }
         ],
-        ...(this.scenario === 'with_issues' && Math.random() > 0.7 ? {
+        ...((this.scenario === 'with_issues' && Math.random() > 0.7) ? {
           OrderChargeAdjustmentList: [
             {
               ChargeType: 'Principal',
@@ -201,10 +231,10 @@ export class MockDataGenerator {
    */
   generateInventory(): any {
     const summaries: any[] = [];
-    
+
     // Generate SKUs
-    const skuCount = this.scenario === 'high_volume' 
-      ? this.recordCount 
+    const skuCount = this.scenario === 'high_volume'
+      ? this.recordCount
       : Math.floor(this.recordCount * 0.8);
 
     for (let i = 0; i < skuCount; i++) {
@@ -237,6 +267,20 @@ export class MockDataGenerator {
           damagedQuantity = Math.floor(Math.random() * 20); // More damaged items
           unfulfillableQuantity = Math.floor(Math.random() * 15); // More unfulfillable
           break;
+        case 'realistic':
+          availableQuantity = Math.floor(Math.random() * 80);
+          reservedQuantity = Math.floor(Math.random() * 15);
+          // Realistic: Small missing quantities (1 unit) mixed with later restock events
+          damagedQuantity = Math.random() < 0.10 ? Math.floor(Math.random() * 3) + 1 : 0; // 10% chance of damage
+          unfulfillableQuantity = Math.random() < 0.05 ? Math.floor(Math.random() * 2) + 1 : 0; // 5% chance of unfulfillable
+          break;
+      }
+
+      // Realistic: Create "hard-to-decide" records by masking fields
+      let fulfillmentCenterId = `FBA${Math.floor(Math.random() * 5) + 1}`;
+      if (this.scenario === 'realistic' && Math.random() < 0.08) {
+        // 8% chance to mask fulfillment center (simulates missing data)
+        fulfillmentCenterId = '';
       }
 
       summaries.push({
@@ -251,7 +295,8 @@ export class MockDataGenerator {
           unfulfillableQuantity: unfulfillableQuantity
         },
         lastUpdatedTime: this.randomDate(this.startDate, this.endDate).toISOString(),
-        ...(this.scenario === 'with_issues' && Math.random() > 0.7 ? {
+        // Add discrepancy flag for internal tracking/testing
+        ...((this.scenario === 'with_issues' && Math.random() > 0.7) || (this.scenario === 'realistic' && Math.random() < 0.03) ? {
           discrepancy: true,
           expectedQuantity: availableQuantity + reservedQuantity + damagedQuantity + unfulfillableQuantity + Math.floor(Math.random() * 10)
         } : {})
@@ -273,14 +318,18 @@ export class MockDataGenerator {
    */
   generateOrders(): any {
     const orders: any[] = [];
-    
-    const daysDiff = Math.ceil((this.endDate.getTime() - this.startDate.getTime()) / (1000 * 60 * 60 * 24));
-    
+
     for (let i = 0; i < this.recordCount; i++) {
       const purchaseDate = this.randomDate(this.startDate, this.endDate);
-      const orderId = `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`;
+      let orderId = `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`;
+
+      // Realistic: Introduce noise in order_id formatting for 1-2%
+      if (this.scenario === 'realistic' && Math.random() < 0.015) {
+        orderId = orderId.replace(/-/g, ''); // Remove dashes
+      }
+
       const itemCount = Math.floor(Math.random() * 5) + 1;
-      
+
       const orderItems: any[] = [];
       let orderTotal = 0;
 
@@ -288,7 +337,7 @@ export class MockDataGenerator {
       for (let j = 0; j < itemCount; j++) {
         const itemPrice = this.randomAmount(10, 200);
         orderTotal += itemPrice;
-        
+
         orderItems.push({
           SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
           ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
@@ -308,6 +357,11 @@ export class MockDataGenerator {
         if (rand > 0.8) orderStatus = 'Canceled';
         else if (rand > 0.6) orderStatus = 'Pending';
         else if (rand > 0.4) orderStatus = 'Unshipped';
+      } else if (this.scenario === 'realistic') {
+        const rand = Math.random();
+        if (rand > 0.95) orderStatus = 'Pending';
+        else if (rand > 0.92) orderStatus = 'Unshipped';
+        else if (rand > 0.88) orderStatus = 'Canceled';
       } else {
         const rand = Math.random();
         if (rand > 0.9) orderStatus = 'Pending';
@@ -316,6 +370,9 @@ export class MockDataGenerator {
 
       const earliestShipDate = new Date(purchaseDate);
       earliestShipDate.setDate(earliestShipDate.getDate() + Math.floor(Math.random() * 3));
+
+      // Realistic: Mask optional fields
+      const maskField = this.scenario === 'realistic' && Math.random() < 0.08;
 
       orders.push({
         AmazonOrderId: orderId,
@@ -337,7 +394,11 @@ export class MockDataGenerator {
         IsPrime: Math.random() > 0.5,
         IsBusinessOrder: Math.random() > 0.8,
         OrderItems: orderItems,
-        ...(this.scenario === 'with_issues' && Math.random() > 0.7 ? {
+        ...(maskField ? {} : {
+          // Optional fields that might be masked
+          FulfillmentSupplySourceId: `fs-${Math.random().toString(36).substring(7)}`
+        }),
+        ...((this.scenario === 'with_issues' && Math.random() > 0.7) ? {
           IsReplacementOrder: true,
           ReplacedOrderId: `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`
         } : {})
@@ -351,6 +412,127 @@ export class MockDataGenerator {
         Orders: orders
       }
     };
+  }
+
+  /**
+   * Generate Shipments Data
+   * Returns: { payload: { shipments: [...] } }
+   */
+  generateShipments(orders: any[]): any {
+    const shipments: any[] = [];
+
+    for (const order of orders) {
+      if (order.OrderStatus === 'Shipped') {
+        const shipmentId = `SH-${order.AmazonOrderId.replace('112-', '')}`;
+        const shippedDate = order.EarliestShipDate;
+
+        // Realistic: Create missing quantity issues
+        let missingQuantity = 0;
+        if (this.scenario === 'realistic' && Math.random() < 0.03) {
+          // 3% chance of missing quantity
+          missingQuantity = 1;
+        } else if (this.scenario === 'with_issues' && Math.random() < 0.1) {
+          missingQuantity = Math.floor(Math.random() * 2) + 1;
+        }
+
+        shipments.push({
+          shipment_id: shipmentId,
+          order_id: order.AmazonOrderId,
+          fulfillment_center: `FBA${Math.floor(Math.random() * 5) + 1}`,
+          status: 'SHIPPED',
+          shipped_date: shippedDate,
+          shipping_cost: parseFloat((Math.random() * 10 + 5).toFixed(2)),
+          currency: 'USD',
+          items: order.OrderItems.map((item: any) => ({
+            sku: item.SellerSKU,
+            quantity: item.QuantityOrdered,
+            price: item.ItemPrice.Amount
+          })),
+          missing_quantity: missingQuantity,
+          expected_quantity: order.OrderItems.reduce((sum: number, item: any) => sum + item.QuantityOrdered, 0)
+        });
+      }
+    }
+
+    logger.info(`Generated ${shipments.length} shipments for scenario: ${this.scenario}`);
+    return { payload: { shipments } };
+  }
+
+  /**
+   * Generate Returns Data
+   * Returns: { payload: { returns: [...] } }
+   */
+  generateReturns(orders: any[]): any {
+    const returns: any[] = [];
+
+    // Return rate: 5% normal, 15% with_issues/realistic
+    const returnRate = (this.scenario === 'with_issues' || this.scenario === 'realistic') ? 0.15 : 0.05;
+
+    for (const order of orders) {
+      if (order.OrderStatus === 'Shipped' && Math.random() < returnRate) {
+        const returnId = `RET-${order.AmazonOrderId.replace('112-', '')}`;
+        const returnDate = new Date(new Date(order.PurchaseDate).getTime() + Math.random() * 30 * 24 * 60 * 60 * 1000); // 0-30 days after purchase
+
+        // Realistic: Refund amount mismatch
+        let refundAmount = parseFloat(order.OrderTotal.Amount);
+        if (this.scenario === 'realistic' && Math.random() < 0.05) {
+          // 5% chance of partial refund (60-90% of value)
+          refundAmount = parseFloat((refundAmount * (0.6 + Math.random() * 0.3)).toFixed(2));
+        }
+
+        returns.push({
+          return_id: returnId,
+          order_id: order.AmazonOrderId,
+          status: 'COMPLETED',
+          returned_date: returnDate.toISOString(),
+          refund_amount: refundAmount,
+          currency: 'USD',
+          reason: ['Customer Return', 'Damaged', 'Defective'][Math.floor(Math.random() * 3)],
+          items: order.OrderItems.map((item: any) => ({
+            sku: item.SellerSKU,
+            quantity: item.QuantityOrdered,
+            refund_amount: item.ItemPrice.Amount
+          }))
+        });
+      }
+    }
+
+    logger.info(`Generated ${returns.length} returns for scenario: ${this.scenario}`);
+    return { payload: { returns } };
+  }
+
+  /**
+   * Generate Settlements Data
+   * Returns: { payload: { settlements: [...] } }
+   */
+  generateSettlements(): any {
+    const settlements: any[] = [];
+    const count = Math.floor(this.recordCount * 0.5); // Fewer settlements than orders
+
+    for (let i = 0; i < count; i++) {
+      const date = this.randomDate(this.startDate, this.endDate);
+      const amount = this.randomAmount(100, 5000);
+
+      // Realistic: Fee discrepancies
+      let fees = amount * 0.15; // 15% base
+      if (this.scenario === 'realistic' && Math.random() < 0.05) {
+        // 5% chance of fee overcharge (18-25%)
+        fees = amount * (0.18 + Math.random() * 0.07);
+      }
+
+      settlements.push({
+        settlement_id: `SET-${Date.now()}-${i}`,
+        settlement_date: date.toISOString(),
+        amount: parseFloat(amount.toFixed(2)),
+        fees: parseFloat(fees.toFixed(2)),
+        currency: 'USD',
+        transaction_type: 'Order',
+        status: 'COMPLETED'
+      });
+    }
+
+    logger.info(`Generated ${settlements.length} settlements for scenario: ${this.scenario}`);
+    return { payload: { settlements } };
   }
 
   // Helper methods
@@ -393,11 +575,10 @@ let generatorInstance: MockDataGenerator | null = null;
 export function getMockDataGenerator(scenario?: MockScenario): MockDataGenerator {
   const scenarioToUse = scenario || (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
   const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : undefined;
-  
+
   if (!generatorInstance || generatorInstance.scenario !== scenarioToUse) {
     generatorInstance = createMockDataGenerator(scenarioToUse, recordCount);
   }
-  
+
   return generatorInstance;
 }
-

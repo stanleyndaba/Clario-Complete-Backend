@@ -130,7 +130,7 @@ export class Agent2DataSyncService {
 
     // Build version marker for deployment verification
     console.log(`[AGENT 2] Build: ${this.buildVersion} - Starting sync for ${userId}`);
-    
+
     logger.info('🔄 [AGENT 2] Starting data sync', {
       userId,
       syncId,
@@ -192,11 +192,11 @@ export class Agent2DataSyncService {
           message: 'Assessing order data from seller ledger...'
         });
         logger.info('📦 [AGENT 2] Fetching orders...', { userId, syncId });
-        
+
         const ordersResult = await this.syncOrders(userId, syncStartDate, syncEndDate, isMockMode, mockScenario, syncId);
         result.normalized.orders = ordersResult.data || [];
         result.summary.ordersCount = result.normalized.orders.length;
-        
+
         if (result.summary.ordersCount > 0) {
           this.sendSyncLog(userId, syncId, {
             type: 'success',
@@ -216,7 +216,7 @@ export class Agent2DataSyncService {
             message: 'No orders found in the specified date range'
           });
         }
-        
+
         logger.info('✅ [AGENT 2] Orders synced', {
           userId,
           syncId,
@@ -241,11 +241,11 @@ export class Agent2DataSyncService {
           message: 'Assessing shipment data from fulfillment centers...'
         });
         logger.info('🚚 [AGENT 2] Fetching shipments...', { userId, syncId });
-        
+
         const shipmentsResult = await this.syncShipments(userId, syncStartDate, syncEndDate, isMockMode, mockScenario, syncId);
         result.normalized.shipments = shipmentsResult.data || [];
         result.summary.shipmentsCount = result.normalized.shipments.length;
-        
+
         if (result.summary.shipmentsCount > 0) {
           this.sendSyncLog(userId, syncId, {
             type: 'success',
@@ -265,7 +265,7 @@ export class Agent2DataSyncService {
             message: 'No shipments found in the specified date range'
           });
         }
-        
+
         logger.info('✅ [AGENT 2] Shipments synced', {
           userId,
           syncId,
@@ -290,11 +290,11 @@ export class Agent2DataSyncService {
           message: 'Assessing customer return data...'
         });
         logger.info('↩️ [AGENT 2] Fetching returns...', { userId, syncId });
-        
+
         const returnsResult = await this.syncReturns(userId, syncStartDate, syncEndDate, isMockMode, mockScenario, syncId);
         result.normalized.returns = returnsResult.data || [];
         result.summary.returnsCount = result.normalized.returns.length;
-        
+
         if (result.summary.returnsCount > 0) {
           this.sendSyncLog(userId, syncId, {
             type: 'success',
@@ -314,7 +314,7 @@ export class Agent2DataSyncService {
             message: 'No returns found in the specified date range'
           });
         }
-        
+
         logger.info('✅ [AGENT 2] Returns synced', {
           userId,
           syncId,
@@ -339,11 +339,11 @@ export class Agent2DataSyncService {
           message: 'Assessing settlement periods and payout data...'
         });
         logger.info('💰 [AGENT 2] Fetching settlements...', { userId, syncId });
-        
+
         const settlementsResult = await this.syncSettlements(userId, syncStartDate, syncEndDate, isMockMode, mockScenario, syncId);
         result.normalized.settlements = settlementsResult.data || [];
         result.summary.settlementsCount = result.normalized.settlements.length;
-        
+
         if (result.summary.settlementsCount > 0) {
           this.sendSyncLog(userId, syncId, {
             type: 'success',
@@ -363,7 +363,7 @@ export class Agent2DataSyncService {
             message: 'No settlements found in the specified date range'
           });
         }
-        
+
         logger.info('✅ [AGENT 2] Settlements synced', {
           userId,
           syncId,
@@ -388,11 +388,11 @@ export class Agent2DataSyncService {
           message: 'Assessing inventory data from warehouse...'
         });
         logger.info('📊 [AGENT 2] Fetching inventory...', { userId, syncId });
-        
+
         const inventoryResult = await this.syncInventory(userId, isMockMode, mockScenario, syncId);
         result.normalized.inventory = inventoryResult.data || [];
         result.summary.inventoryCount = result.normalized.inventory.length;
-        
+
         if (result.summary.inventoryCount > 0) {
           this.sendSyncLog(userId, syncId, {
             type: 'success',
@@ -412,7 +412,7 @@ export class Agent2DataSyncService {
             message: 'No inventory items found'
           });
         }
-        
+
         logger.info('✅ [AGENT 2] Inventory synced', {
           userId,
           syncId,
@@ -437,11 +437,11 @@ export class Agent2DataSyncService {
           message: 'Assessing financial events for claim opportunities...'
         });
         logger.info('🎯 [AGENT 2] Fetching claims...', { userId, syncId });
-        
+
         const claimsResult = await this.syncClaims(userId, syncStartDate, syncEndDate, isMockMode, mockScenario, syncId);
         result.normalized.claims = claimsResult.data || [];
         result.summary.claimsCount = result.normalized.claims.length;
-        
+
         if (result.summary.claimsCount > 0) {
           this.sendSyncLog(userId, syncId, {
             type: 'success',
@@ -461,7 +461,7 @@ export class Agent2DataSyncService {
             message: 'No claim opportunities found in financial events'
           });
         }
-        
+
         logger.info('✅ [AGENT 2] Claims synced', {
           userId,
           syncId,
@@ -503,7 +503,7 @@ export class Agent2DataSyncService {
             },
             created_at: new Date().toISOString()
           });
-        
+
         if (logError) {
           logger.warn('⚠️ [AGENT 2] Failed to log event (may need migration update)', { error: logError.message });
         }
@@ -525,7 +525,7 @@ export class Agent2DataSyncService {
       if (result.success && result.summary.ordersCount + result.summary.shipmentsCount + result.summary.returnsCount > 0) {
         try {
           logger.info('🔍 [AGENT 2] Starting Discovery Agent (Python ML) - BLOCKING', { userId, syncId });
-          
+
           const detectionId = `detection_${userId}_${Date.now()}`;
           const detectionResult = await this.callDiscoveryAgent(
             userId,
@@ -534,14 +534,14 @@ export class Agent2DataSyncService {
             result.normalized,
             detectionSyncId
           );
-          
+
           // Add detection results to the sync result
           result.detectionResult = {
             totalDetected: detectionResult?.totalDetected || 0,
             detectionId,
             completed: true
           };
-          
+
           logger.info('✅ [AGENT 2] Discovery Agent completed (blocking)', {
             userId,
             syncId,
@@ -602,7 +602,7 @@ export class Agent2DataSyncService {
             },
             created_at: new Date().toISOString()
           });
-        
+
         if (logError) {
           logger.warn('⚠️ [AGENT 2] Failed to log error event', { error: logError.message });
         }
@@ -643,10 +643,10 @@ export class Agent2DataSyncService {
           const orderDate = new Date(order.order_date);
           return orderDate >= startDate && orderDate <= endDate;
         });
-        
+
         // If filtered results are empty but we have data, use all data (date range might be wrong)
         const ordersToUse = filteredOrders.length > 0 ? filteredOrders : dbOrders;
-        
+
         return {
           success: true,
           data: ordersToUse,
@@ -694,9 +694,9 @@ export class Agent2DataSyncService {
           const shippedDate = new Date(shipment.shipped_date);
           return shippedDate >= startDate && shippedDate <= endDate;
         });
-        
+
         const shipmentsToUse = filteredShipments.length > 0 ? filteredShipments : dbShipments;
-        
+
         return {
           success: true,
           data: shipmentsToUse,
@@ -743,9 +743,9 @@ export class Agent2DataSyncService {
           const returnedDate = new Date(returnData.returned_date);
           return returnedDate >= startDate && returnedDate <= endDate;
         });
-        
+
         const returnsToUse = filteredReturns.length > 0 ? filteredReturns : dbReturns;
-        
+
         return {
           success: true,
           data: returnsToUse,
@@ -792,9 +792,9 @@ export class Agent2DataSyncService {
           const settlementDate = new Date(settlement.settlement_date);
           return settlementDate >= startDate && settlementDate <= endDate;
         });
-        
+
         const settlementsToUse = filteredSettlements.length > 0 ? filteredSettlements : dbSettlements;
-        
+
         return {
           success: true,
           data: settlementsToUse,
@@ -938,29 +938,29 @@ export class Agent2DataSyncService {
 
       const batchOrders: any[] = [];
       for (let i = batchStart; i < batchEnd; i++) {
-      const orderDate = this.randomDate(startDate, endDate);
-      const orderId = `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`;
-      
+        const orderDate = this.randomDate(startDate, endDate);
+        const orderId = `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`;
+
         batchOrders.push({
-        AmazonOrderId: orderId,
-        PurchaseDate: orderDate.toISOString(),
-        OrderStatus: ['Shipped', 'Pending', 'Canceled'][Math.floor(Math.random() * 3)],
-        FulfillmentChannel: ['Amazon', 'Merchant'][Math.floor(Math.random() * 2)],
-        OrderItems: [{
-          SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
-          ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
-          QuantityOrdered: Math.floor(Math.random() * 5) + 1,
-          ItemPrice: {
-            Amount: (Math.random() * 100 + 10).toFixed(2),
-            CurrencyCode: 'USD'
-          },
-          Title: `Product ${i + 1}`
-        }],
-        MarketplaceId: 'ATVPDKIKX0DER',
-        isMock: true,
-        mockScenario: scenario
-      });
-    }
+          AmazonOrderId: orderId,
+          PurchaseDate: orderDate.toISOString(),
+          OrderStatus: ['Shipped', 'Pending', 'Canceled'][Math.floor(Math.random() * 3)],
+          FulfillmentChannel: ['Amazon', 'Merchant'][Math.floor(Math.random() * 2)],
+          OrderItems: [{
+            SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
+            ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
+            QuantityOrdered: Math.floor(Math.random() * 5) + 1,
+            ItemPrice: {
+              Amount: (Math.random() * 100 + 10).toFixed(2),
+              CurrencyCode: 'USD'
+            },
+            Title: `Product ${i + 1}`
+          }],
+          MarketplaceId: 'ATVPDKIKX0DER',
+          isMock: true,
+          mockScenario: scenario
+        });
+      }
 
       allOrders.push(...batchOrders);
 
@@ -1052,33 +1052,33 @@ export class Agent2DataSyncService {
 
       const batchShipments: any[] = [];
       for (let i = batchStart; i < batchEnd; i++) {
-      const shippedDate = this.randomDate(startDate, endDate);
-      const receivedDate = new Date(shippedDate.getTime() + Math.random() * 7 * 24 * 60 * 60 * 1000);
-      
-      const quantityShipped = Math.floor(Math.random() * 10) + 1;
-      const hasIssue = Math.random() < issueRate;
-      // For issues, reduce received quantity to create missing_quantity
-      const quantityReceived = hasIssue ? Math.max(0, quantityShipped - Math.floor(Math.random() * 3) - 1) : quantityShipped;
-      const itemPrice = parseFloat((Math.random() * 50 + 10).toFixed(2)); // $10-60 per item
-      
-      batchShipments.push({
-        ShipmentId: `SHIP-${Date.now()}-${i}`,
-        ShippedDate: shippedDate.toISOString(),
-        ReceivedDate: receivedDate.toISOString(),
-        Status: hasIssue ? 'CHECKED_IN' : ['RECEIVED', 'IN_TRANSIT', 'CHECKED_IN'][Math.floor(Math.random() * 3)],
-        QuantityShipped: quantityShipped,
-        QuantityReceived: quantityReceived,
-        Items: [{
-          SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
-          ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
+        const shippedDate = this.randomDate(startDate, endDate);
+        const receivedDate = new Date(shippedDate.getTime() + Math.random() * 7 * 24 * 60 * 60 * 1000);
+
+        const quantityShipped = Math.floor(Math.random() * 10) + 1;
+        const hasIssue = Math.random() < issueRate;
+        // For issues, reduce received quantity to create missing_quantity
+        const quantityReceived = hasIssue ? Math.max(0, quantityShipped - Math.floor(Math.random() * 3) - 1) : quantityShipped;
+        const itemPrice = parseFloat((Math.random() * 50 + 10).toFixed(2)); // $10-60 per item
+
+        batchShipments.push({
+          ShipmentId: `SHIP-${Date.now()}-${i}`,
+          ShippedDate: shippedDate.toISOString(),
+          ReceivedDate: receivedDate.toISOString(),
+          Status: hasIssue ? 'CHECKED_IN' : ['RECEIVED', 'IN_TRANSIT', 'CHECKED_IN'][Math.floor(Math.random() * 3)],
           QuantityShipped: quantityShipped,
-          ItemPrice: itemPrice // Add price for value calculation
-        }],
-        FulfillmentCenterId: `FBA${Math.floor(Math.random() * 5) + 1}`,
-        isMock: true,
-        mockScenario: scenario
-      });
-    }
+          QuantityReceived: quantityReceived,
+          Items: [{
+            SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
+            ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
+            QuantityShipped: quantityShipped,
+            ItemPrice: itemPrice // Add price for value calculation
+          }],
+          FulfillmentCenterId: `FBA${Math.floor(Math.random() * 5) + 1}`,
+          isMock: true,
+          mockScenario: scenario
+        });
+      }
 
       allShipments.push(...batchShipments);
 
@@ -1166,27 +1166,27 @@ export class Agent2DataSyncService {
 
       const batchReturns: any[] = [];
       for (let i = batchStart; i < batchEnd; i++) {
-      const returnDate = this.randomDate(startDate, endDate);
-      
+        const returnDate = this.randomDate(startDate, endDate);
+
         batchReturns.push({
-        ReturnId: `RET-${Date.now()}-${i}`,
-        AmazonOrderId: `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`,
-        ReturnedDate: returnDate.toISOString(),
-        ReturnStatus: ['APPROVED', 'PENDING', 'DENIED'][Math.floor(Math.random() * 3)],
-        ReturnReason: ['Defective', 'Wrong Item', 'Not as Described', 'Customer Changed Mind'][Math.floor(Math.random() * 4)],
-        Items: [{
-          SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
-          ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
-          QuantityReturned: Math.floor(Math.random() * 3) + 1,
-          RefundAmount: {
-            Amount: (Math.random() * 50 + 10).toFixed(2),
-            CurrencyCode: 'USD'
-          }
-        }],
-        isMock: true,
-        mockScenario: scenario
-      });
-    }
+          ReturnId: `RET-${Date.now()}-${i}`,
+          AmazonOrderId: `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`,
+          ReturnedDate: returnDate.toISOString(),
+          ReturnStatus: ['APPROVED', 'PENDING', 'DENIED'][Math.floor(Math.random() * 3)],
+          ReturnReason: ['Defective', 'Wrong Item', 'Not as Described', 'Customer Changed Mind'][Math.floor(Math.random() * 4)],
+          Items: [{
+            SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
+            ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
+            QuantityReturned: Math.floor(Math.random() * 3) + 1,
+            RefundAmount: {
+              Amount: (Math.random() * 50 + 10).toFixed(2),
+              CurrencyCode: 'USD'
+            }
+          }],
+          isMock: true,
+          mockScenario: scenario
+        });
+      }
 
       allReturns.push(...batchReturns);
 
@@ -1277,31 +1277,31 @@ export class Agent2DataSyncService {
 
       const batchSettlements: any[] = [];
       for (let i = batchStart; i < batchEnd; i++) {
-      const settlementDate = this.randomDate(startDate, endDate);
-      const hasIssue = Math.random() < issueRate;
-      
-      const amount = parseFloat((Math.random() * 1000 + 100).toFixed(2));
-      // For issues, generate higher fees (potential overcharge)
-      const fees = hasIssue 
-        ? parseFloat((amount * (0.2 + Math.random() * 0.1)).toFixed(2)) // 20-30% fee (high - potential overcharge)
-        : parseFloat((amount * 0.15).toFixed(2)); // 15% fee (normal)
-      
-      batchSettlements.push({
-        SettlementId: `SETTLE-${Date.now()}-${i}`,
-        settlement_date: settlementDate.toISOString(),
-        amount: amount,
-        fees: fees,
-        currency: 'USD',
-        transaction_type: hasIssue ? 'fee_adjustment' : 'fee',
-        fee_breakdown: {
-          fba_fulfillment: parseFloat((fees * 0.6).toFixed(2)),
-          referral: parseFloat((fees * 0.3).toFixed(2)),
-          closing: parseFloat((fees * 0.1).toFixed(2))
-        },
-        isMock: true,
-        mockScenario: scenario
-      });
-    }
+        const settlementDate = this.randomDate(startDate, endDate);
+        const hasIssue = Math.random() < issueRate;
+
+        const amount = parseFloat((Math.random() * 1000 + 100).toFixed(2));
+        // For issues, generate higher fees (potential overcharge)
+        const fees = hasIssue
+          ? parseFloat((amount * (0.2 + Math.random() * 0.1)).toFixed(2)) // 20-30% fee (high - potential overcharge)
+          : parseFloat((amount * 0.15).toFixed(2)); // 15% fee (normal)
+
+        batchSettlements.push({
+          SettlementId: `SETTLE-${Date.now()}-${i}`,
+          settlement_date: settlementDate.toISOString(),
+          amount: amount,
+          fees: fees,
+          currency: 'USD',
+          transaction_type: hasIssue ? 'fee_adjustment' : 'fee',
+          fee_breakdown: {
+            fba_fulfillment: parseFloat((fees * 0.6).toFixed(2)),
+            referral: parseFloat((fees * 0.3).toFixed(2)),
+            closing: parseFloat((fees * 0.1).toFixed(2))
+          },
+          isMock: true,
+          mockScenario: scenario
+        });
+      }
 
       allSettlements.push(...batchSettlements);
 
@@ -1388,15 +1388,15 @@ export class Agent2DataSyncService {
       const batchInventory: any[] = [];
       for (let i = batchStart; i < batchEnd; i++) {
         batchInventory.push({
-        SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
-        ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
-        FulfillableQuantity: Math.floor(Math.random() * 100) + 1,
-        InboundQuantity: Math.floor(Math.random() * 50),
-        ReservedQuantity: Math.floor(Math.random() * 10),
-        FulfillmentCenterId: `FBA${Math.floor(Math.random() * 5) + 1}`,
-        isMock: true,
-        mockScenario: scenario
-      });
+          SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
+          ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
+          FulfillableQuantity: Math.floor(Math.random() * 100) + 1,
+          InboundQuantity: Math.floor(Math.random() * 50),
+          ReservedQuantity: Math.floor(Math.random() * 10),
+          FulfillmentCenterId: `FBA${Math.floor(Math.random() * 5) + 1}`,
+          isMock: true,
+          mockScenario: scenario
+        });
       }
 
       allInventory.push(...batchInventory);
@@ -1445,7 +1445,7 @@ export class Agent2DataSyncService {
     // Extract reimbursements
     const reimbursements = financialEvents.payload?.FinancialEvents?.FBALiquidationEventList || [];
     const totalRecords = reimbursements.length + (financialEvents.payload?.FinancialEvents?.AdjustmentEventList || []).length;
-    
+
     // Batch processing for large datasets
     const needsBatching = totalRecords > this.BATCH_SIZE;
     const totalBatches = needsBatching ? Math.ceil(totalRecords / this.BATCH_SIZE) : 1;
@@ -1554,6 +1554,85 @@ export class Agent2DataSyncService {
   }
 
   /**
+   * Simulate Discovery Agent detection (for testing/mocking)
+   * Returns probabilistic predictions based on claim characteristics
+   */
+  private simulateDetection(claims: any[]): any[] {
+    return claims.map(claim => {
+      let probability = 0;
+      let claimable = false;
+      let reason = '';
+
+      // Base probability logic based on category
+      switch (claim.category) {
+        case 'fee_error':
+          // Fee errors are usually high confidence if found
+          probability = 0.85 + (Math.random() * 0.14); // 0.85 - 0.99
+          break;
+        case 'inventory_loss':
+          // Inventory loss can be ambiguous
+          probability = 0.60 + (Math.random() * 0.35); // 0.60 - 0.95
+          break;
+        case 'return_discrepancy':
+          // Returns are often messy
+          probability = 0.50 + (Math.random() * 0.40); // 0.50 - 0.90
+          break;
+        default:
+          probability = 0.40 + (Math.random() * 0.50); // 0.40 - 0.90
+      }
+
+      // Adjust based on amount (higher amount -> slightly higher scrutiny/confidence model behavior)
+      if (claim.amount > 100) probability += 0.05;
+
+      // Cap at 0.99
+      probability = Math.min(0.99, probability);
+
+      // Determine claimable status based on probability threshold
+      // In a real model, this threshold is tuned. Here we simulate it.
+      // We want ~1-3% of total records to be claimable.
+      // Since we are processing candidates, we need a low conversion rate.
+
+      // Introduce some randomness to simulate false positives/negatives
+      // Target: ~1-3% detection rate (approx 700-2100 claims out of 70k)
+      // We process candidates, so we need a very low conversion rate.
+      const isActuallyAnomaly = Math.random() < 0.008;
+
+      if (isActuallyAnomaly) {
+        // True positive (mostly)
+        claimable = true;
+        // Ensure probability is high enough for claimable
+        probability = Math.max(probability, 0.75);
+        reason = `Simulated detection: High confidence ${claim.category} anomaly`;
+      } else {
+        // True negative (mostly)
+        claimable = false;
+        // Ensure probability is low enough for non-claimable
+        probability = Math.min(probability, 0.65);
+        reason = 'Simulated detection: Insufficient evidence';
+      }
+
+      // Occasional "ambiguous" case (high prob but not claimable, or low prob but claimable - rare)
+      if (Math.random() < 0.05) {
+        // Flip claimable status but keep probability (calibration error simulation)
+        claimable = !claimable;
+      }
+
+      return {
+        claim_id: claim.claim_id,
+        claimable: claimable,
+        probability: parseFloat(probability.toFixed(4)),
+        confidence: parseFloat(probability.toFixed(4)), // Alias for backward compatibility
+        reason: reason,
+        evidence: {
+          simulated: true,
+          original_amount: claim.amount,
+          category: claim.category
+        }
+      };
+    });
+  }
+
+  /**
    * Call Discovery Agent (Python ML) - Replaces Agent 3
    * This orchestrates: data transformation → Discovery Agent API → storage → completion signal
    */
@@ -1593,7 +1672,7 @@ export class Agent2DataSyncService {
     console.log('[AGENT 2] Claims prepared for Discovery Agent:');
     console.log(`  - Total claims: ${allClaimsToDetect.length}`);
     console.log(`  - From ${validatedData.orders?.length || 0} orders, ${validatedData.shipments?.length || 0} shipments, ${validatedData.returns?.length || 0} returns, ${validatedData.settlements?.length || 0} settlements`);
-    
+
     if (allClaimsToDetect.length > 0) {
       console.log(`[AGENT 2] Sample claim:`, {
         claim_id: allClaimsToDetect[0].claim_id,
@@ -1620,7 +1699,7 @@ export class Agent2DataSyncService {
     // Use same batch size as data sync (1000) for consistency
     const MAX_CLAIMS_PER_BATCH = this.BATCH_SIZE; // 1000 claims per batch
     const totalBatches = Math.ceil(allClaimsToDetect.length / MAX_CLAIMS_PER_BATCH);
-    
+
     logger.info('🎯 [AGENT 2] Processing claims in batches', {
       userId,
       syncId,
@@ -1628,16 +1707,16 @@ export class Agent2DataSyncService {
       batchSize: MAX_CLAIMS_PER_BATCH,
       totalBatches
     });
-    
+
     console.log(`[AGENT 2] Processing ${allClaimsToDetect.length} claims in ${totalBatches} batches of ${MAX_CLAIMS_PER_BATCH}`);
-    
+
     // Send sync log for claim detection start
     this.sendSyncLog(userId, syncId, {
       type: 'info',
       category: 'detection',
       message: `Assessing ${allClaimsToDetect.length.toLocaleString()} claims for refund opportunities...`
     });
-    
+
     if (totalBatches > 1) {
       this.sendSyncLog(userId, syncId, {
         type: 'info',
@@ -1673,8 +1752,8 @@ export class Agent2DataSyncService {
             payload: { detectionId, claimCount: allClaimsToDetect.length, totalBatches },
             updated_at: new Date().toISOString()
           });
-        logger.info('📝 [AGENT 2] Created detection_queue entry', { 
-          userId, 
+        logger.info('📝 [AGENT 2] Created detection_queue entry', {
+          userId,
           syncId: storageSyncId,
           totalClaims: allClaimsToDetect.length,
           totalBatches
@@ -1689,8 +1768,8 @@ export class Agent2DataSyncService {
             updated_at: new Date().toISOString()
           })
           .eq('id', existingQueue.id);
-        logger.info('📝 [AGENT 2] Updated detection_queue entry to processing', { 
-          userId, 
+        logger.info('📝 [AGENT 2] Updated detection_queue entry to processing', {
+          userId,
           syncId: storageSyncId,
           totalClaims: allClaimsToDetect.length,
           totalBatches
@@ -1709,7 +1788,7 @@ export class Agent2DataSyncService {
     const allPredictions: any[] = [];
     const maxRetries = 3;
     const retryDelay = 2000; // 2 seconds base delay
-    
+
     console.log('[AGENT 2] Python API URL:', this.pythonApiUrl);
     console.log('[AGENT 2] Sync ID:', syncId);
     console.log('[AGENT 2] Storage Sync ID:', storageSyncId);
@@ -1726,167 +1805,180 @@ export class Agent2DataSyncService {
     // Process each batch - wrap in try-catch to ensure completion is signaled on error
     try {
       for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
-      const batchStart = batchIndex * MAX_CLAIMS_PER_BATCH;
-      const batchEnd = Math.min(batchStart + MAX_CLAIMS_PER_BATCH, allClaimsToDetect.length);
-      const batchClaims = allClaimsToDetect.slice(batchStart, batchEnd);
-      
-      logger.info(`🔄 [AGENT 2] Processing batch ${batchIndex + 1}/${totalBatches}`, {
-        userId,
-        syncId,
-        batchIndex: batchIndex + 1,
-        totalBatches,
-        batchSize: batchClaims.length,
-        batchStart,
-        batchEnd
-      });
-      
-      console.log(`[AGENT 2] Processing batch ${batchIndex + 1}/${totalBatches} (claims ${batchStart + 1}-${batchEnd} of ${allClaimsToDetect.length})`);
-      
-      // Send sync log for batch progress (only if multiple batches)
-      if (totalBatches > 1) {
-        this.sendSyncLog(userId, syncId, {
-          type: 'progress',
-          category: 'detection',
-          message: `Processing batch ${batchIndex + 1}/${totalBatches} (${batchStart + 1}-${batchEnd} of ${allClaimsToDetect.length.toLocaleString()})...`
-        });
-      }
+        const batchStart = batchIndex * MAX_CLAIMS_PER_BATCH;
+        const batchEnd = Math.min(batchStart + MAX_CLAIMS_PER_BATCH, allClaimsToDetect.length);
+        const batchClaims = allClaimsToDetect.slice(batchStart, batchEnd);
 
-      let batchPredictions: any[] = [];
-      let batchSuccess = false;
-      let lastBatchError: any = null;
-
-      // Retry logic for this batch
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-          console.log(`[AGENT 2] Batch ${batchIndex + 1} - API call attempt ${attempt}/${maxRetries}`);
-          
-          const response = await axios.post(
-            `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
-            { claims: batchClaims },
-            {
-              timeout: 90000, // 90 seconds timeout
-              headers: { 'Content-Type': 'application/json' }
-            }
-          );
-
-          batchPredictions = response.data?.predictions || [];
-          console.log(`[AGENT 2] Batch ${batchIndex + 1} - API response received`);
-          console.log(`[AGENT 2] Batch ${batchIndex + 1} - Predictions count:`, batchPredictions.length);
-          
-          if (!Array.isArray(batchPredictions)) {
-            console.error(`[AGENT 2] Batch ${batchIndex + 1} - Invalid response format:`, typeof batchPredictions, response.data);
-            throw new Error(`Discovery Agent returned invalid format: expected array, got ${typeof batchPredictions}`);
-          }
-          
-          batchSuccess = true;
-          break; // Success - break out of retry loop
-        } catch (apiError: any) {
-          lastBatchError = apiError;
-          const status = apiError.response?.status;
-          const isRetryable = status === 502 || status === 503 || status === 504 || 
-                             apiError.code === 'ECONNABORTED' || apiError.code === 'ETIMEDOUT' ||
-                             apiError.code === 'ECONNREFUSED';
-          
-          if (isRetryable && attempt < maxRetries) {
-            const delay = retryDelay * attempt; // Exponential backoff: 2s, 4s, 6s
-            console.warn(`[AGENT 2] Batch ${batchIndex + 1} - API failed (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms...`, {
-              status,
-              error: apiError.message,
-              code: apiError.code
-            });
-            await new Promise(resolve => setTimeout(resolve, delay));
-            continue; // Retry
-          } else {
-            // Not retryable or out of retries - throw error
-            throw apiError;
-          }
-        }
-      }
-
-      if (!batchSuccess) {
-        // Enhanced error logging for failed batch
-        const errorDetails = {
-          error: lastBatchError?.message,
-          errorCode: lastBatchError?.code,
-          status: lastBatchError?.response?.status,
-          statusText: lastBatchError?.response?.statusText,
-          responseData: lastBatchError?.response?.data,
-          url: `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
+        logger.info(`🔄 [AGENT 2] Processing batch ${batchIndex + 1}/${totalBatches}`, {
           userId,
           syncId,
-          storageSyncId,
           batchIndex: batchIndex + 1,
           totalBatches,
-          batchClaimCount: batchClaims.length,
-          timeout: lastBatchError?.code === 'ECONNABORTED' || lastBatchError?.code === 'ETIMEDOUT',
-          connectionError: lastBatchError?.code === 'ECONNREFUSED' || lastBatchError?.code === 'ENOTFOUND'
-        };
+          batchSize: batchClaims.length,
+          batchStart,
+          batchEnd
+        });
 
-        logger.error(`❌ [AGENT 2] Batch ${batchIndex + 1} failed after all retries`, errorDetails);
-        console.error(`[AGENT 2] Batch ${batchIndex + 1} FAILED:`, JSON.stringify(errorDetails, null, 2));
-        
-        if (batchClaims.length > 0) {
-          console.error(`[AGENT 2] Batch ${batchIndex + 1} - Sample claim format:`, JSON.stringify(batchClaims[0], null, 2));
+        console.log(`[AGENT 2] Processing batch ${batchIndex + 1}/${totalBatches} (claims ${batchStart + 1}-${batchEnd} of ${allClaimsToDetect.length})`);
+
+        // Send sync log for batch progress (only if multiple batches)
+        if (totalBatches > 1) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'progress',
+            category: 'detection',
+            message: `Processing batch ${batchIndex + 1}/${totalBatches} (${batchStart + 1}-${batchEnd} of ${allClaimsToDetect.length.toLocaleString()})...`
+          });
         }
 
-        // If this is the first batch and it fails, fail the entire operation
-        // Otherwise, log error but continue with other batches
-        if (batchIndex === 0) {
-          this.sendSyncLog(userId, syncId, {
-            type: 'error',
-            category: 'detection',
-            message: `[ERROR] Detection failed on first batch: ${lastBatchError?.message}`
-          });
-          await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, false);
-          throw new Error(`Discovery Agent API failed on first batch: ${lastBatchError?.message}`);
-        } else {
-          this.sendSyncLog(userId, syncId, {
-            type: 'warning',
-            category: 'detection',
-            message: `[WARNING] Batch ${batchIndex + 1} failed, continuing with remaining batches...`
-          });
-          logger.warn(`⚠️ [AGENT 2] Batch ${batchIndex + 1} failed, but continuing with remaining batches`, {
+        let batchPredictions: any[] = [];
+        let batchSuccess = false;
+        let lastBatchError: any = null;
+
+        // Retry logic for this batch
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          try {
+            // Check for Mock API override
+            if (process.env.MOCK_DETECTION_API === 'true') {
+              console.log(`[AGENT 2] Batch ${batchIndex + 1} - Using MOCK detection (simulated)`);
+              // Simulate processing delay
+              await new Promise(resolve => setTimeout(resolve, 500));
+
+              batchPredictions = this.simulateDetection(batchClaims);
+
+              console.log(`[AGENT 2] Batch ${batchIndex + 1} - Mock predictions generated:`, batchPredictions.length);
+              batchSuccess = true;
+              break;
+            }
+
+            console.log(`[AGENT 2] Batch ${batchIndex + 1} - API call attempt ${attempt}/${maxRetries}`);
+
+            const response = await axios.post(
+              `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
+              { claims: batchClaims },
+              {
+                timeout: 90000, // 90 seconds timeout
+                headers: { 'Content-Type': 'application/json' }
+              }
+            );
+
+            batchPredictions = response.data?.predictions || [];
+            console.log(`[AGENT 2] Batch ${batchIndex + 1} - API response received`);
+            console.log(`[AGENT 2] Batch ${batchIndex + 1} - Predictions count:`, batchPredictions.length);
+
+            if (!Array.isArray(batchPredictions)) {
+              console.error(`[AGENT 2] Batch ${batchIndex + 1} - Invalid response format:`, typeof batchPredictions, response.data);
+              throw new Error(`Discovery Agent returned invalid format: expected array, got ${typeof batchPredictions}`);
+            }
+
+            batchSuccess = true;
+            break; // Success - break out of retry loop
+          } catch (apiError: any) {
+            lastBatchError = apiError;
+            const status = apiError.response?.status;
+            const isRetryable = status === 502 || status === 503 || status === 504 ||
+              apiError.code === 'ECONNABORTED' || apiError.code === 'ETIMEDOUT' ||
+              apiError.code === 'ECONNREFUSED';
+
+            if (isRetryable && attempt < maxRetries) {
+              const delay = retryDelay * attempt; // Exponential backoff: 2s, 4s, 6s
+              console.warn(`[AGENT 2] Batch ${batchIndex + 1} - API failed (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms...`, {
+                status,
+                error: apiError.message,
+                code: apiError.code
+              });
+              await new Promise(resolve => setTimeout(resolve, delay));
+              continue; // Retry
+            } else {
+              // Not retryable or out of retries - throw error
+              throw apiError;
+            }
+          }
+        }
+
+        if (!batchSuccess) {
+          // Enhanced error logging for failed batch
+          const errorDetails = {
+            error: lastBatchError?.message,
+            errorCode: lastBatchError?.code,
+            status: lastBatchError?.response?.status,
+            statusText: lastBatchError?.response?.statusText,
+            responseData: lastBatchError?.response?.data,
+            url: `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
             userId,
             syncId,
-            batchIndex: batchIndex + 1
-          });
-          console.warn(`[AGENT 2] Batch ${batchIndex + 1} failed, skipping this batch and continuing...`);
-          continue; // Skip this batch and continue with next
-        }
-      }
+            storageSyncId,
+            batchIndex: batchIndex + 1,
+            totalBatches,
+            batchClaimCount: batchClaims.length,
+            timeout: lastBatchError?.code === 'ECONNABORTED' || lastBatchError?.code === 'ETIMEDOUT',
+            connectionError: lastBatchError?.code === 'ECONNREFUSED' || lastBatchError?.code === 'ENOTFOUND'
+          };
 
-      // Add batch predictions to accumulated results
-      allPredictions.push(...batchPredictions);
-      
-      // Log prediction details for debugging
-      const claimableCount = batchPredictions.filter((p: any) => p.claimable).length;
-      const nonClaimableCount = batchPredictions.length - claimableCount;
-      console.log(`[AGENT 2] Batch ${batchIndex + 1} completed: ${batchPredictions.length} predictions (${claimableCount} claimable, ${nonClaimableCount} non-claimable) - Total so far: ${allPredictions.length}`);
-      
-      // Send sync log for batch completion (only if multiple batches)
-      if (totalBatches > 1 && batchIndex < totalBatches - 1) {
-        this.sendSyncLog(userId, syncId, {
-          type: 'info',
-          category: 'detection',
-          message: `Batch ${batchIndex + 1}/${totalBatches} complete: ${claimableCount} claimable opportunities found`
-        });
-      }
-      
-      // Log sample prediction for debugging
-      if (batchPredictions.length > 0) {
-        const samplePrediction = batchPredictions[0];
-        console.log(`[AGENT 2] Sample prediction from batch ${batchIndex + 1}:`, {
-          claim_id: samplePrediction.claim_id,
-          claimable: samplePrediction.claimable,
-          probability: samplePrediction.probability || samplePrediction.confidence,
-          hasReason: !!samplePrediction.reason
-        });
-      }
-      
-      // Small delay between batches to avoid overwhelming the API
-      if (batchIndex < totalBatches - 1) {
-        await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay between batches
-      }
+          logger.error(`❌ [AGENT 2] Batch ${batchIndex + 1} failed after all retries`, errorDetails);
+          console.error(`[AGENT 2] Batch ${batchIndex + 1} FAILED:`, JSON.stringify(errorDetails, null, 2));
+
+          if (batchClaims.length > 0) {
+            console.error(`[AGENT 2] Batch ${batchIndex + 1} - Sample claim format:`, JSON.stringify(batchClaims[0], null, 2));
+          }
+
+          // If this is the first batch and it fails, fail the entire operation
+          // Otherwise, log error but continue with other batches
+          if (batchIndex === 0) {
+            this.sendSyncLog(userId, syncId, {
+              type: 'error',
+              category: 'detection',
+              message: `[ERROR] Detection failed on first batch: ${lastBatchError?.message}`
+            });
+            await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, false);
+            throw new Error(`Discovery Agent API failed on first batch: ${lastBatchError?.message}`);
+          } else {
+            this.sendSyncLog(userId, syncId, {
+              type: 'warning',
+              category: 'detection',
+              message: `[WARNING] Batch ${batchIndex + 1} failed, continuing with remaining batches...`
+            });
+            logger.warn(`⚠️ [AGENT 2] Batch ${batchIndex + 1} failed, but continuing with remaining batches`, {
+              userId,
+              syncId,
+              batchIndex: batchIndex + 1
+            });
+            console.warn(`[AGENT 2] Batch ${batchIndex + 1} failed, skipping this batch and continuing...`);
+            continue; // Skip this batch and continue with next
+          }
+        }
+
+        // Add batch predictions to accumulated results
+        allPredictions.push(...batchPredictions);
+
+        // Log prediction details for debugging
+        const claimableCount = batchPredictions.filter((p: any) => p.claimable).length;
+        const nonClaimableCount = batchPredictions.length - claimableCount;
+        console.log(`[AGENT 2] Batch ${batchIndex + 1} completed: ${batchPredictions.length} predictions (${claimableCount} claimable, ${nonClaimableCount} non-claimable) - Total so far: ${allPredictions.length}`);
+
+        // Send sync log for batch completion (only if multiple batches)
+        if (totalBatches > 1 && batchIndex < totalBatches - 1) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'info',
+            category: 'detection',
+            message: `Batch ${batchIndex + 1}/${totalBatches} complete: ${claimableCount} claimable opportunities found`
+          });
+        }
+
+        // Log sample prediction for debugging
+        if (batchPredictions.length > 0) {
+          const samplePrediction = batchPredictions[0];
+          console.log(`[AGENT 2] Sample prediction from batch ${batchIndex + 1}:`, {
+            claim_id: samplePrediction.claim_id,
+            claimable: samplePrediction.claimable,
+            probability: samplePrediction.probability || samplePrediction.confidence,
+            hasReason: !!samplePrediction.reason
+          });
+        }
+
+        // Small delay between batches to avoid overwhelming the API
+        if (batchIndex < totalBatches - 1) {
+          await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay between batches
+        }
       } // Close for loop
     } catch (batchProcessingError: any) {
       // If batch processing fails, ensure we signal completion with error
@@ -1900,7 +1992,7 @@ export class Agent2DataSyncService {
         batchesProcessed: allPredictions.length
       });
       console.error('[AGENT 2] Batch processing error:', batchProcessingError);
-      
+
       // Signal completion with failed status
       await this.signalDetectionCompletion(
         userId,
@@ -1909,7 +2001,7 @@ export class Agent2DataSyncService {
         { totalDetected: allPredictions.length },
         false
       );
-      
+
       throw new Error(`Batch processing failed: ${batchProcessingError.message}`);
     }
 
@@ -1923,7 +2015,7 @@ export class Agent2DataSyncService {
     // Log detailed statistics before filtering
     const claimablePredictions = allPredictions.filter((p: any) => p.claimable);
     const nonClaimablePredictions = allPredictions.filter((p: any) => !p.claimable);
-    
+
     logger.info('✅ [AGENT 2] All batches processed', {
       userId,
       syncId,
@@ -1933,18 +2025,18 @@ export class Agent2DataSyncService {
       nonClaimablePredictions: nonClaimablePredictions.length,
       totalBatches
     });
-    
+
     console.log(`[AGENT 2] All ${totalBatches} batches completed:`);
     console.log(`  - Total predictions: ${allPredictions.length}`);
     console.log(`  - Claimable: ${claimablePredictions.length}`);
     console.log(`  - Non-claimable: ${nonClaimablePredictions.length}`);
     console.log(`  - From ${allClaimsToDetect.length} total claims sent to Agent 3`);
-    
+
     // Log sample predictions for debugging
     if (allPredictions.length > 0) {
       const sampleClaimable = claimablePredictions[0];
       const sampleNonClaimable = nonClaimablePredictions[0];
-      
+
       if (sampleClaimable) {
         console.log(`[AGENT 2] Sample claimable prediction:`, {
           claim_id: sampleClaimable.claim_id,
@@ -2007,7 +2099,7 @@ export class Agent2DataSyncService {
         message: 'No claimable opportunities detected in this batch'
       });
     }
-    
+
     await this.signalDetectionCompletion(
       userId,
       storageSyncId,
@@ -2029,7 +2121,7 @@ export class Agent2DataSyncService {
       if (existingSync) {
         const metadata = (existingSync.metadata as any) || {};
         metadata.claimsDetected = detectionResults.length;
-        
+
         await supabaseAdmin
           .from('sync_progress')
           .update({
@@ -2057,7 +2149,7 @@ export class Agent2DataSyncService {
             message: `Detection complete: ${detectionResults.length} claims detected`,
             timestamp: new Date().toISOString()
           });
-          
+
           // Also send as 'message' event for backward compatibility
           sseHub.sendEvent(userId, 'message', {
             type: 'detection',
@@ -2067,7 +2159,7 @@ export class Agent2DataSyncService {
             message: `Detection complete: ${detectionResults.length} claims detected`,
             timestamp: new Date().toISOString()
           });
-          
+
           logger.info('✅ [AGENT 2] Sent SSE event for detection completion', {
             userId,
             syncId: storageSyncId,
@@ -2115,7 +2207,7 @@ export class Agent2DataSyncService {
       normalized.orders = data.orders.map((order: any) => {
         const normalizedOrder = { ...order };
         if (!normalizedOrder.total_fees && normalizedOrder.total_fees !== 0) {
-          normalizedOrder.total_fees = normalizedOrder.total_amount 
+          normalizedOrder.total_fees = normalizedOrder.total_amount
             ? parseFloat((normalizedOrder.total_amount * 0.05).toFixed(2))
             : 0;
         }
@@ -2168,7 +2260,7 @@ export class Agent2DataSyncService {
       normalized.settlements = data.settlements.map((settlement: any) => {
         const normalizedSettlement = { ...settlement };
         if (!normalizedSettlement.fees && normalizedSettlement.fees !== 0) {
-          normalizedSettlement.fees = normalizedSettlement.amount 
+          normalizedSettlement.fees = normalizedSettlement.amount
             ? parseFloat((normalizedSettlement.amount * 0.10).toFixed(2))
             : 0;
         }
@@ -2235,24 +2327,24 @@ export class Agent2DataSyncService {
         // Generate claim if missing_quantity exists OR if shipment has items (potential discrepancy)
         const hasMissingQuantity = shipment.missing_quantity && shipment.missing_quantity > 0;
         const hasItems = shipment.items && shipment.items.length > 0;
-        
+
         if (hasMissingQuantity || hasItems) {
           const estimatedValue = shipment.items?.reduce((sum: number, item: any) => {
             return sum + (item.quantity * (item.price || 10));
           }, 0) || (shipment.missing_quantity || 1) * 10;
           const daysSinceShipped = this.calculateDaysSince(shipment.shipped_date);
-          const reasonCode = shipment.status === 'lost' ? 'LOST_SHIPMENT' : 
-                            shipment.status === 'damaged' ? 'DAMAGED_INVENTORY' : 
-                            'INVENTORY_DISCREPANCY';
+          const reasonCode = shipment.status === 'lost' ? 'LOST_SHIPMENT' :
+            shipment.status === 'damaged' ? 'DAMAGED_INVENTORY' :
+              'INVENTORY_DISCREPANCY';
 
           claims.push({
             claim_id: `claim_shipment_${shipment.shipment_id}_${Date.now()}`,
             seller_id: userId,
             order_id: shipment.order_id || shipment.shipment_id,
             category: 'inventory_loss',
-            subcategory: shipment.status === 'lost' ? 'lost_shipment' : 
-                        shipment.status === 'damaged' ? 'damaged_goods' : 
-                        'inventory_discrepancy',
+            subcategory: shipment.status === 'lost' ? 'lost_shipment' :
+              shipment.status === 'damaged' ? 'damaged_goods' :
+                'inventory_discrepancy',
             reason_code: reasonCode,
             marketplace: 'US',
             fulfillment_center: shipment.fulfillment_center || 'DEFAULT', // Required by Discovery Agent
@@ -2262,7 +2354,7 @@ export class Agent2DataSyncService {
             shipping_cost: shipment.shipping_cost || estimatedValue * 0.1, // Estimate 10% of value
             days_since_order: daysSinceShipped,
             days_since_delivery: Math.max(0, daysSinceShipped - 1), // Estimate delivery 1 day after shipped
-            description: hasMissingQuantity 
+            description: hasMissingQuantity
               ? `Missing ${shipment.missing_quantity} unit(s) from shipment ${shipment.shipment_id}`
               : `Potential inventory discrepancy in shipment ${shipment.shipment_id}`,
             reason: reasonCode, // Required by Discovery Agent
@@ -2279,14 +2371,14 @@ export class Agent2DataSyncService {
         // Generate claim if refund_amount exists OR if return has items (potential discrepancy)
         const hasRefundAmount = returnData.refund_amount && returnData.refund_amount > 0;
         const hasItems = returnData.items && returnData.items.length > 0;
-        
+
         if (hasRefundAmount || hasItems) {
-          const estimatedValue = returnData.refund_amount || 
-                                returnData.items?.reduce((sum: number, item: any) => {
-                                  return sum + (item.quantity * (item.price || 10));
-                                }, 0) || 10;
+          const estimatedValue = returnData.refund_amount ||
+            returnData.items?.reduce((sum: number, item: any) => {
+              return sum + (item.quantity * (item.price || 10));
+            }, 0) || 10;
           const daysSinceReturn = this.calculateDaysSince(returnData.returned_date);
-          
+
           claims.push({
             claim_id: `claim_return_${returnData.return_id}_${Date.now()}`,
             seller_id: userId,
@@ -2302,7 +2394,7 @@ export class Agent2DataSyncService {
             shipping_cost: 0, // Returns typically don't have shipping cost
             days_since_order: daysSinceReturn,
             days_since_delivery: daysSinceReturn, // Assume return date is close to delivery
-            description: hasRefundAmount 
+            description: hasRefundAmount
               ? `Potential refund discrepancy for return ${returnData.return_id}`
               : `Potential return discrepancy for ${returnData.return_id}`,
             reason: 'POTENTIAL_REFUND_DISCREPANCY', // Required by Discovery Agent
@@ -2319,11 +2411,11 @@ export class Agent2DataSyncService {
         // Generate claim if fees exist OR if settlement has amount (potential discrepancy)
         const hasFees = settlement.fees && settlement.fees > 0;
         const hasAmount = settlement.amount && settlement.amount > 0;
-        
+
         if (hasFees || hasAmount) {
           const estimatedValue = settlement.fees || settlement.amount * 0.1; // Estimate 10% as potential fee discrepancy
           const daysSinceSettlement = this.calculateDaysSince(settlement.settlement_date);
-          
+
           claims.push({
             claim_id: `claim_settlement_${settlement.settlement_id}_${Date.now()}`,
             seller_id: userId,
@@ -2339,7 +2431,7 @@ export class Agent2DataSyncService {
             shipping_cost: 0, // Settlements don't have shipping cost
             days_since_order: daysSinceSettlement,
             days_since_delivery: daysSinceSettlement, // Use settlement date as proxy
-            description: hasFees 
+            description: hasFees
               ? `Potential fee discrepancy in settlement ${settlement.settlement_id}`
               : `Potential settlement discrepancy for ${settlement.settlement_id}`,
             reason: 'POTENTIAL_SETTLEMENT_FEE_DISCREPANCY', // Required by Discovery Agent
