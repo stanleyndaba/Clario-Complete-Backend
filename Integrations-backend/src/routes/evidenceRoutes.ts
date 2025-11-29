@@ -10,7 +10,7 @@ import { outlookIngestionService } from '../services/outlookIngestionService';
 import { googleDriveIngestionService } from '../services/googleDriveIngestionService';
 import { dropboxIngestionService } from '../services/dropboxIngestionService';
 import { unifiedIngestionService } from '../services/unifiedIngestionService';
-import { supabase } from '../database/supabaseClient';
+import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import logger from '../utils/logger';
 
 // Type for multer file
