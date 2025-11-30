@@ -80,6 +80,8 @@ export class GmailService {
 
   async handleOAuthCallback(code: string, userId: string): Promise<void> {
     try {
+      logger.info('🔄 [GMAIL OAUTH] Handling callback', { userId });
+
       const tokenResponse = await axios.post(this.authUrl, {
         grant_type: 'authorization_code',
         code,
@@ -91,15 +93,21 @@ export class GmailService {
       const tokenData: GmailOAuthResponse = tokenResponse.data;
       const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000);
 
+      logger.info('✅ [GMAIL OAUTH] Received token from Google', {
+        userId,
+        hasRefreshToken: !!tokenData.refresh_token,
+        expiresIn: tokenData.expires_in
+      });
+
       await tokenManager.saveToken(userId, 'gmail', {
         accessToken: tokenData.access_token,
         refreshToken: tokenData.refresh_token,
         expiresAt
       });
 
-      logger.info('Gmail OAuth completed successfully', { userId });
+      logger.info('💾 [GMAIL OAUTH] Token saved to database', { userId });
     } catch (error) {
-      logger.error('Error handling Gmail OAuth callback', { error, userId });
+      logger.error('❌ [GMAIL OAUTH] Error handling callback', { error, userId });
       throw createError('Failed to complete Gmail OAuth', 500);
     }
   }
@@ -173,14 +181,14 @@ export class GmailService {
   async connectGmail(userId: string): Promise<{ success: boolean; message: string; authUrl?: string }> {
     try {
       const isConnected = await tokenManager.isTokenValid(userId, 'gmail');
-      
+
       if (isConnected) {
         const authUrl = await this.initiateOAuth(userId);
         return { success: true, authUrl: authUrl.toString(), message: 'Gmail already connected' };
       }
 
       const authUrl = await this.initiateOAuth(userId);
-      
+
       logger.info('Gmail connection initiated', { userId });
       return { success: true, authUrl: authUrl.toString(), message: 'Gmail connection initiated' };
     } catch (error) {
@@ -191,15 +199,15 @@ export class GmailService {
 
   // STUB FUNCTION: Fetch emails from Gmail
   async fetchEmails(
-    userId: string, 
-    query?: string, 
+    userId: string,
+    query?: string,
     maxResults: number = 10
   ): Promise<GmailEmail[]> {
     try {
       const response = await this.requestWithToken(userId, (accessToken) =>
         axios.get(`${this.baseUrl}/messages`, {
           headers: { Authorization: `Bearer ${accessToken}` },
-          params: { 
+          params: {
             maxResults,
             q: query,
             includeSpamTrash: false
@@ -224,7 +232,7 @@ export class GmailService {
           const subject = headers.find((h: any) => h.name === 'Subject')?.value || 'No Subject';
           const from = headers.find((h: any) => h.name === 'From')?.value || 'Unknown Sender';
           const toHeader = headers.find((h: any) => h.name === 'To')?.value || '';
-          
+
           emails.push({
             id: emailData.id,
             threadId: emailData.threadId,
@@ -286,11 +294,11 @@ export class GmailService {
   ): Promise<GmailEmail[]> {
     try {
       const accessToken = await this.getValidAccessToken(userId);
-      
+
       // TODO: Implement actual Gmail API search
       // This is a stub implementation
       logger.info('Searching Gmail emails', { userId, searchQuery, maxResults });
-      
+
       // Mock search results
       const mockSearchResults: GmailEmail[] = [
         {
@@ -361,7 +369,7 @@ export class GmailService {
 }
 
 export const gmailService = new GmailService();
-export default gmailService; 
+export default gmailService;
 
 
 
