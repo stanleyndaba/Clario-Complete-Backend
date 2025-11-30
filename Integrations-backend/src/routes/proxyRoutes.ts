@@ -34,13 +34,13 @@ function extractToken(req: Request): string | null {
   // Priority 1: Check cookie (session_token)
   const cookieToken = req.cookies?.session_token;
   if (cookieToken) return cookieToken;
-  
+
   // Priority 2: Check Authorization header
   const authHeader = req.headers['authorization'];
   if (authHeader && authHeader.startsWith('Bearer ')) {
     return authHeader.split(' ')[1];
   }
-  
+
   return null;
 }
 
@@ -49,13 +49,13 @@ function extractToken(req: Request): string | null {
  */
 async function proxyToPython(req: Request, res: Response, path: string) {
   const url = `${PYTHON_API_URL}${path}`;
-  
+
   try {
     // Forward headers (preserve auth, content-type, etc.)
     const headers: Record<string, string> = {
       'Content-Type': req.headers['content-type'] || 'application/json',
     };
-    
+
     // Extract token from cookie or Authorization header
     const token = extractToken(req);
     if (token) {
@@ -65,38 +65,47 @@ async function proxyToPython(req: Request, res: Response, path: string) {
     } else {
       logger.warn(`No token found in request for ${req.path}`);
     }
-    
+
+    // Inject X-User-Id from userIdMiddleware (guaranteed to be clean UUID)
+    if ((req as any).userId) {
+      headers['X-User-Id'] = (req as any).userId;
+      logger.debug(`Injecting X-User-Id header: ${(req as any).userId}`);
+    } else if (req.headers['x-user-id']) {
+      // Fallback to existing header if middleware didn't run
+      headers['X-User-Id'] = req.headers['x-user-id'] as string;
+    }
+
     // Also forward cookies if present (for compatibility)
     if (req.headers.cookie) {
       headers['Cookie'] = req.headers.cookie;
     }
-    
+
     logger.info(`Proxying ${req.method} ${req.path} to ${url}`, {
       hasToken: !!token,
       hasCookie: !!req.headers.cookie,
       pythonApiUrl: PYTHON_API_URL,
       queryParams: Object.keys(req.query).length > 0 ? req.query : undefined
     });
-    
+
     const config: any = {
       method: req.method,
       url,
       headers,
       timeout: 30000, // 30 second timeout
     };
-    
+
     // Forward request body for POST/PUT/PATCH
     if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
       config.data = req.body;
     }
-    
+
     // Forward query parameters
     if (Object.keys(req.query).length > 0) {
       config.params = req.query;
     }
-    
+
     const response = await axios(config);
-    
+
     // Forward response status and data
     res.status(response.status).json(response.data);
   } catch (error: any) {
@@ -110,9 +119,9 @@ async function proxyToPython(req: Request, res: Response, path: string) {
       path: req.path,
       method: req.method
     };
-    
+
     logger.error(`Proxy error for ${req.path}:`, errorDetails);
-    
+
     if (error.response) {
       // Forward error response from Python backend
       logger.error(`Python backend returned error: ${error.response.status}`, {
@@ -123,33 +132,33 @@ async function proxyToPython(req: Request, res: Response, path: string) {
       res.status(error.response.status).json(error.response.data);
     } else if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
       logger.error(`Python backend timeout`, { url, timeout: 30000 });
-      res.status(504).json({ 
-        error: 'Gateway Timeout', 
+      res.status(504).json({
+        error: 'Gateway Timeout',
         message: 'Python backend did not respond in time',
         pythonApiUrl: PYTHON_API_URL
       });
     } else if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
-      logger.error(`Cannot connect to Python backend`, { 
-        url, 
+      logger.error(`Cannot connect to Python backend`, {
+        url,
         pythonApiUrl: PYTHON_API_URL,
         errorCode: error.code,
         errorMessage: error.message
       });
-      res.status(502).json({ 
-        error: 'Bad Gateway', 
+      res.status(502).json({
+        error: 'Bad Gateway',
         message: `Failed to connect to Python backend at ${PYTHON_API_URL}`,
         pythonApiUrl: PYTHON_API_URL,
         errorCode: error.code
       });
     } else {
-      logger.error(`Unknown proxy error`, { 
+      logger.error(`Unknown proxy error`, {
         error: error.message,
         code: error.code,
         stack: error.stack,
         url
       });
-      res.status(502).json({ 
-        error: 'Bad Gateway', 
+      res.status(502).json({
+        error: 'Bad Gateway',
         message: `Failed to connect to Python backend: ${error.message}`,
         pythonApiUrl: PYTHON_API_URL,
         errorCode: error.code
@@ -181,24 +190,24 @@ router.post('/api/documents/upload', upload.any(), async (req: Request, res: Res
   try {
     const files = (req as any).files as MulterFile[];
     const claim_id = req.query.claim_id as string | undefined;
-    
+
     if (!files || files.length === 0) {
       return res.status(400).json({
         error: 'No files provided',
         message: 'Expected at least one file in the request'
       });
     }
-    
+
     logger.info(`Proxying file upload to Python API`, {
       fileCount: files.length,
       filenames: files.map(f => f.originalname),
       claim_id
     });
-    
+
     // Create FormData to forward files to Python API
     const FormData = (await import('form-data')).default;
     const formData = new FormData();
-    
+
     // Add all files with 'file' field name (singular, as expected by Python API)
     files.forEach(file => {
       formData.append('file', file.buffer, {
@@ -206,52 +215,52 @@ router.post('/api/documents/upload', upload.any(), async (req: Request, res: Res
         contentType: file.mimetype
       });
     });
-    
+
     // Add claim_id if provided
     if (claim_id) {
       formData.append('claim_id', claim_id);
     }
-    
+
     // Extract token for authentication
     const token = req.cookies?.session_token || req.headers['authorization']?.replace('Bearer ', '');
-    
+
     const headers: Record<string, string> = {
       ...formData.getHeaders()
     };
-    
+
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     }
-    
+
     // Forward X-User-Id if present
     if (req.headers['x-user-id']) {
       headers['X-User-Id'] = req.headers['x-user-id'] as string;
     }
-    
+
     const pythonUrl = `${PYTHON_API_URL}/api/documents/upload${claim_id ? `?claim_id=${claim_id}` : ''}`;
-    
+
     const response = await axios.post(pythonUrl, formData, {
       headers,
       timeout: 60000, // 60 second timeout for file uploads
       maxContentLength: Infinity,
       maxBodyLength: Infinity
     });
-    
+
     res.status(response.status).json(response.data);
   } catch (error: any) {
     logger.error(`Proxy error for file upload:`, error.message);
-    
+
     if (error.response) {
       res.status(error.response.status).json(error.response.data);
     } else if (error.code === 'ECONNABORTED') {
-      res.status(504).json({ 
-        error: 'Gateway Timeout', 
-        message: 'Python backend did not respond in time' 
+      res.status(504).json({
+        error: 'Gateway Timeout',
+        message: 'Python backend did not respond in time'
       });
     } else {
-      res.status(502).json({ 
-        error: 'Bad Gateway', 
-        message: 'Failed to connect to Python backend' 
+      res.status(502).json({
+        error: 'Bad Gateway',
+        message: 'Failed to connect to Python backend'
       });
     }
   }
@@ -273,11 +282,11 @@ router.get('/api/health/python-backend', async (req, res) => {
   try {
     const healthUrl = `${PYTHON_API_URL}/health`;
     logger.info(`Checking Python backend health at ${healthUrl}`);
-    
+
     const response = await axios.get(healthUrl, {
       timeout: 10000, // 10 second timeout for health check
     });
-    
+
     res.json({
       status: 'ok',
       pythonBackend: {
@@ -294,7 +303,7 @@ router.get('/api/health/python-backend', async (req, res) => {
       code: error.code,
       status: error.response?.status
     });
-    
+
     res.status(502).json({
       status: 'error',
       pythonBackend: {
