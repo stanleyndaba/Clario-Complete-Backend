@@ -12,7 +12,7 @@ let supabaseAdmin: SupabaseClient | any; // Service role client for admin operat
 
 if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
   logger.warn('Using demo Supabase client - no real database connection');
-  
+
   // Create a mock client that doesn't actually connect
   // This mock properly chains query methods for compatibility
   const createMockQueryBuilder = () => {
@@ -38,7 +38,7 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
     };
     return builder;
   };
-  
+
   supabase = {
     auth: {
       getSession: () => Promise.resolve({ data: { session: null }, error: null })
@@ -60,21 +60,21 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
 } else {
   // Validate URL before creating client
   if (!supabaseUrl || typeof supabaseUrl !== 'string' || !supabaseUrl.startsWith('http')) {
-    logger.error('Invalid SUPABASE_URL - must be a valid HTTP/HTTPS URL', { 
-      url: supabaseUrl ? 'present but invalid' : 'missing' 
+    logger.error('Invalid SUPABASE_URL - must be a valid HTTP/HTTPS URL', {
+      url: supabaseUrl ? 'present but invalid' : 'missing'
     });
     throw new Error('SUPABASE_URL must be a valid HTTP or HTTPS URL. Please set it in environment variables.');
   }
-  
+
   if (!supabaseAnonKey || typeof supabaseAnonKey !== 'string') {
-    logger.error('Invalid SUPABASE_ANON_KEY - must be a non-empty string', { 
-      key: supabaseAnonKey ? 'present but invalid' : 'missing' 
+    logger.error('Invalid SUPABASE_ANON_KEY - must be a non-empty string', {
+      key: supabaseAnonKey ? 'present but invalid' : 'missing'
     });
     throw new Error('SUPABASE_ANON_KEY must be set in environment variables.');
   }
-  
+
   supabase = createClient(supabaseUrl, supabaseAnonKey);
-  
+
   // Create admin client with service role key for storage/admin operations
   if (supabaseServiceRoleKey) {
     supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey, {
@@ -93,7 +93,7 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
     supabase = supabaseAdmin;
     logger.info('Using Supabase admin client for backend operations');
   }
-  
+
   // Test connection on startup
   supabase.auth.getSession().then(({ data, error }: { data: any; error: any }) => {
     if (error) {
@@ -138,16 +138,36 @@ export interface User {
 // Helper function to convert non-UUID user IDs to deterministic UUIDs
 // This is needed because the tokens table requires UUID format
 function convertUserIdToUuid(userId: string): string {
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  
-  if (uuidRegex.test(userId)) {
-    return userId;
+  // UUID regex pattern (matches standard UUID format)
+  const uuidRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+  // First, try to extract a valid UUID from the userId string
+  // This handles cases like "stress-test-user-2cdd1838-efe0-4549-a9b0-a88752846dc6"
+  const uuidMatch = userId.match(uuidRegex);
+  if (uuidMatch) {
+    // Found a valid UUID in the string - use it directly
+    const extractedUuid = uuidMatch[0];
+    if (extractedUuid !== userId) {
+      logger.debug('Extracted UUID from prefixed userId', {
+        originalUserId: userId,
+        extractedUuid
+      });
+    }
+    return extractedUuid;
   }
-  
-  // Generate a deterministic UUID v5-style hash from the userId
+
+  // No valid UUID found - generate a deterministic UUID from the userId
+  // This handles legacy cases like "demo-user", "test-user", etc.
   const crypto = require('crypto');
   const hash = crypto.createHash('sha256').update(`clario-user-${userId}`).digest('hex');
-  return `${hash.substring(0, 8)}-${hash.substring(8, 12)}-4${hash.substring(13, 16)}-a${hash.substring(17, 20)}-${hash.substring(20, 32)}`;
+  const generatedUuid = `${hash.substring(0, 8)}-${hash.substring(8, 12)}-4${hash.substring(13, 16)}-a${hash.substring(17, 20)}-${hash.substring(20, 32)}`;
+
+  logger.debug('Generated deterministic UUID for non-UUID userId', {
+    originalUserId: userId,
+    generatedUuid
+  });
+
+  return generatedUuid;
 }
 
 // Database operations
