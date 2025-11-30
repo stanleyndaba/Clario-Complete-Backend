@@ -626,18 +626,30 @@ export class Agent2DataSyncService {
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
+    // Development mode: Allow reading imported data regardless of seller_id
+    // This enables testing with imported datasets without seller_id matching
+    const useImportedData = process.env.USE_IMPORTED_DATA === 'true' &&
+      process.env.NODE_ENV !== 'production';
+
     // First, try to read from database (imported data)
     // Check without date filter first - if imported data exists, use it regardless of date range
     try {
-      const { data: dbOrders, error } = await supabaseAdmin
+      let query = supabaseAdmin
         .from('orders')
-        .select('*')
-        .eq('seller_id', userId)
+        .select('*');
+
+      // In development mode with USE_IMPORTED_DATA=true, skip seller_id filter
+      // to allow syncing any imported data. In production, always filter by seller_id.
+      if (!useImportedData) {
+        query = query.eq('seller_id', userId);
+      }
+
+      const { data: dbOrders, error } = await query
         .order('order_date', { ascending: false })
         .limit(50000); // Limit to prevent memory issues, but high enough for 50K dataset
 
       if (!error && dbOrders && dbOrders.length > 0) {
-        logger.info(`📦 [AGENT 2] Found ${dbOrders.length} orders in database (imported data)`, { userId });
+        logger.info(`📦 [AGENT 2] Found ${dbOrders.length} orders in database (imported data)${useImportedData ? ' [DEV MODE: ignoring seller_id]' : ''}`, { userId });
         // Filter by date range if needed, but use all data if within reasonable range
         const filteredOrders = dbOrders.filter((order: any) => {
           const orderDate = new Date(order.order_date);
@@ -677,19 +689,26 @@ export class Agent2DataSyncService {
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
+    // Development mode: Allow reading imported data regardless of seller_id
+    const useImportedData = process.env.USE_IMPORTED_DATA === 'true' &&
+      process.env.NODE_ENV !== 'production';
+
     // First, try to read from database (imported data)
-    // Check without date filter first - if imported data exists, use it regardless of date range
     try {
-      const { data: dbShipments, error } = await supabaseAdmin
+      let query = supabaseAdmin
         .from('shipments')
-        .select('*')
-        .eq('seller_id', userId)
+        .select('*');
+
+      if (!useImportedData) {
+        query = query.eq('seller_id', userId);
+      }
+
+      const { data: dbShipments, error } = await query
         .order('shipped_date', { ascending: false })
         .limit(50000);
 
       if (!error && dbShipments && dbShipments.length > 0) {
-        logger.info(`🚚 [AGENT 2] Found ${dbShipments.length} shipments in database (imported data)`, { userId });
-        // Filter by date range if needed, but use all data if within reasonable range
+        logger.info(`🚚 [AGENT 2] Found ${dbShipments.length} shipments in database (imported data)${useImportedData ? ' [DEV MODE]' : ''}`, { userId });
         const filteredShipments = dbShipments.filter((shipment: any) => {
           const shippedDate = new Date(shipment.shipped_date);
           return shippedDate >= startDate && shippedDate <= endDate;
@@ -727,18 +746,26 @@ export class Agent2DataSyncService {
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
+    // Development mode: Allow reading imported data regardless of seller_id
+    const useImportedData = process.env.USE_IMPORTED_DATA === 'true' &&
+      process.env.NODE_ENV !== 'production';
+
     // First, try to read from database (imported data)
-    // Check without date filter first - if imported data exists, use it regardless of date range
     try {
-      const { data: dbReturns, error } = await supabaseAdmin
+      let query = supabaseAdmin
         .from('returns')
-        .select('*')
-        .eq('seller_id', userId)
+        .select('*');
+
+      if (!useImportedData) {
+        query = query.eq('seller_id', userId);
+      }
+
+      const { data: dbReturns, error } = await query
         .order('returned_date', { ascending: false })
         .limit(50000);
 
       if (!error && dbReturns && dbReturns.length > 0) {
-        logger.info(`↩️ [AGENT 2] Found ${dbReturns.length} returns in database (imported data)`, { userId });
+        logger.info(`↩️ [AGENT 2] Found ${dbReturns.length} returns in database (imported data)${useImportedData ? ' [DEV MODE]' : ''}`, { userId });
         const filteredReturns = dbReturns.filter((returnData: any) => {
           const returnedDate = new Date(returnData.returned_date);
           return returnedDate >= startDate && returnedDate <= endDate;
@@ -776,20 +803,29 @@ export class Agent2DataSyncService {
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
+    // Development mode: Allow reading imported data regardless of seller_id
+    const useImportedData = process.env.USE_IMPORTED_DATA === 'true' &&
+      process.env.NODE_ENV !== 'production';
+
     // First, try to read from database (imported data)
     // Check without date filter first - if imported data exists, use it regardless of date range
     try {
-      const { data: dbSettlements, error } = await supabaseAdmin
+      let query = supabaseAdmin
         .from('settlements')
-        .select('*')
-        .eq('seller_id', userId)
-        .order('settlement_date', { ascending: false })
+        .select('*');
+
+      if (!useImportedData) {
+        query = query.eq('seller_id', userId);
+      }
+
+      const { data: dbSettlements, error } = await query
+        .order('settlement_start_date', { ascending: false })
         .limit(50000);
 
       if (!error && dbSettlements && dbSettlements.length > 0) {
-        logger.info(`💰 [AGENT 2] Found ${dbSettlements.length} settlements in database (imported data)`, { userId });
+        logger.info(`💰 [AGENT 2] Found ${dbSettlements.length} settlements in database (imported data)${useImportedData ? ' [DEV MODE]' : ''}`, { userId });
         const filteredSettlements = dbSettlements.filter((settlement: any) => {
-          const settlementDate = new Date(settlement.settlement_date);
+          const settlementDate = new Date(settlement.settlement_start_date);
           return settlementDate >= startDate && settlementDate <= endDate;
         });
 
@@ -823,16 +859,25 @@ export class Agent2DataSyncService {
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
+    // Development mode: Allow reading imported data regardless of seller_id
+    const useImportedData = process.env.USE_IMPORTED_DATA === 'true' &&
+      process.env.NODE_ENV !== 'production';
+
     // First, try to read from database (imported data)
     try {
-      const { data: dbInventory, error } = await supabaseAdmin
+      let query = supabaseAdmin
         .from('inventory')
-        .select('*')
-        .eq('seller_id', userId)
+        .select('*');
+
+      if (!useImportedData) {
+        query = query.eq('seller_id', userId);
+      }
+
+      const { data: dbInventory, error } = await query
         .order('last_updated', { ascending: false });
 
       if (!error && dbInventory && dbInventory.length > 0) {
-        logger.info(`📦 [AGENT 2] Found ${dbInventory.length} inventory records in database (imported data)`, { userId });
+        logger.info(`📦 [AGENT 2] Found ${dbInventory.length} inventory records in database (imported data)${useImportedData ? ' [DEV MODE]' : ''}`, { userId });
         return {
           success: true,
           data: dbInventory,
