@@ -691,26 +691,36 @@ export class Agent2DataSyncService {
     const useImportedData = process.env.USE_IMPORTED_DATA === 'true' &&
       process.env.NODE_ENV !== 'production';
 
-    // First, try to read from database (imported data)
-    // Check without date filter first - if imported data exists, use it regardless of date range
+    // First, try to read from database (imported/seeded data)
+    // In mock mode, we check for our seeded demo data first
     try {
       let query = supabaseAdmin
         .from('orders')
         .select('*');
 
-      // In development mode with USE_IMPORTED_DATA=true, skip seller_id filter
-      // to allow syncing any imported data. In production, always filter by seller_id.
-      if (!useImportedData) {
-        query = query.eq('seller_id', userId);
+      // If in mock mode, look for the seeded demo data specifically
+      if (isMockMode) {
+        // Use the fixed UUID we used for seeding
+        const DEMO_USER_ID = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11';
+        query = query.eq('user_id', DEMO_USER_ID);
+      } else {
+        // Normal mode: filter by actual user_id
+        if (!useImportedData) {
+          query = query.eq('user_id', userId);
+        }
       }
 
       const { data: dbOrders, error } = await query
         .order('order_date', { ascending: false })
-        .limit(50000); // Limit to prevent memory issues, but high enough for 50K dataset
+        .limit(50000);
 
       if (!error && dbOrders && dbOrders.length > 0) {
-        logger.info(`📦 [AGENT 2] Found ${dbOrders.length} orders in database (imported data)${useImportedData ? ' [DEV MODE: ignoring seller_id]' : ''}`, { userId });
-        // Filter by date range if needed, but use all data if within reasonable range
+        logger.info(`📦 [AGENT 2] Found ${dbOrders.length} orders in database (${isMockMode ? 'seeded demo data' : 'imported data'})`, { userId });
+
+        // For demo data, we might want to adjust dates to look recent if they are old
+        // But for now, let's just return them. The seeding script made them recent.
+
+        // Filter by date range if needed, but for demo data we often want to show everything
         const filteredOrders = dbOrders.filter((order: any) => {
           const orderDate = new Date(order.order_date);
           return orderDate >= startDate && orderDate <= endDate;
@@ -722,7 +732,7 @@ export class Agent2DataSyncService {
         return {
           success: true,
           data: ordersToUse,
-          message: `Found ${ordersToUse.length} orders from imported data${filteredOrders.length === 0 && dbOrders.length > 0 ? ' (using all imported data, date range adjusted)' : ''}`
+          message: `Found ${ordersToUse.length} orders from ${isMockMode ? 'seeded demo' : 'imported'} data`
         };
       }
     } catch (dbError: any) {
@@ -753,14 +763,22 @@ export class Agent2DataSyncService {
     const useImportedData = process.env.USE_IMPORTED_DATA === 'true' &&
       process.env.NODE_ENV !== 'production';
 
-    // First, try to read from database (imported data)
+    // First, try to read from database (imported/seeded data)
     try {
       let query = supabaseAdmin
         .from('shipments')
         .select('*');
 
-      if (!useImportedData) {
-        query = query.eq('seller_id', userId);
+      // If in mock mode, look for the seeded demo data specifically
+      if (isMockMode) {
+        // Use the fixed UUID we used for seeding
+        const DEMO_USER_ID = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11';
+        query = query.eq('user_id', DEMO_USER_ID);
+      } else {
+        // Normal mode: filter by actual user_id
+        if (!useImportedData) {
+          query = query.eq('user_id', userId);
+        }
       }
 
       const { data: dbShipments, error } = await query
@@ -768,10 +786,11 @@ export class Agent2DataSyncService {
         .limit(50000);
 
       if (!error && dbShipments && dbShipments.length > 0) {
-        logger.info(`🚚 [AGENT 2] Found ${dbShipments.length} shipments in database (imported data)${useImportedData ? ' [DEV MODE]' : ''}`, { userId });
+        logger.info(`📦 [AGENT 2] Found ${dbShipments.length} shipments in database (${isMockMode ? 'seeded demo data' : 'imported data'})`, { userId });
+
         const filteredShipments = dbShipments.filter((shipment: any) => {
-          const shippedDate = new Date(shipment.shipped_date);
-          return shippedDate >= startDate && shippedDate <= endDate;
+          const shipmentDate = new Date(shipment.shipped_date || shipment.created_at);
+          return shipmentDate >= startDate && shipmentDate <= endDate;
         });
 
         const shipmentsToUse = filteredShipments.length > 0 ? filteredShipments : dbShipments;
@@ -779,7 +798,7 @@ export class Agent2DataSyncService {
         return {
           success: true,
           data: shipmentsToUse,
-          message: `Found ${shipmentsToUse.length} shipments from imported data${filteredShipments.length === 0 && dbShipments.length > 0 ? ' (using all imported data, date range adjusted)' : ''}`
+          message: `Found ${shipmentsToUse.length} shipments from ${isMockMode ? 'seeded demo' : 'imported'} data`
         };
       }
     } catch (dbError: any) {
