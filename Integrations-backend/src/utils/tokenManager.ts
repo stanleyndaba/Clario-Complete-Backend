@@ -158,6 +158,7 @@ export class TokenManager {
       decryptedAccessToken = this.decrypt((tokenRecord as any).access_token_iv, (tokenRecord as any).access_token_data);
     }
 
+    // Check if we have refresh token data in any format
     if (tokenRecord.refresh_token) {
       if (typeof tokenRecord.refresh_token === 'string' && tokenRecord.refresh_token.includes(':')) {
         // Old format
@@ -175,6 +176,9 @@ export class TokenManager {
         // Assume it's already in IV+data format from database
         decryptedRefreshToken = this.decrypt((tokenRecord as any).refresh_token_iv, (tokenRecord as any).refresh_token_data);
       }
+    } else if (tokenRecord.refresh_token_iv && tokenRecord.refresh_token_data) {
+      // Database format: separate IV and data fields
+      decryptedRefreshToken = this.decrypt(tokenRecord.refresh_token_iv, tokenRecord.refresh_token_data);
     } else {
       decryptedRefreshToken = '';
     }
@@ -233,23 +237,23 @@ export class TokenManager {
       if (tokenStatus && !tokenStatus.isExpired) {
         return true;
       }
-      
+
       // If no database token, check environment variables (for sandbox/demo mode)
       if (provider === 'amazon') {
         const envRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
         const envClientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
         const envClientSecret = process.env.AMAZON_CLIENT_SECRET;
-        
+
         if (envRefreshToken && envClientId && envClientSecret) {
           logger.info('Token valid from environment variables (sandbox mode)', { userId, provider });
           return true;
         }
       }
-      
+
       return false;
     } catch (error) {
       logger.error('Error checking token validity', { error, userId, provider });
-      
+
       // On error, still check environment variables as fallback
       if (provider === 'amazon') {
         const envRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
@@ -258,7 +262,7 @@ export class TokenManager {
           return true;
         }
       }
-      
+
       return false;
     }
   }

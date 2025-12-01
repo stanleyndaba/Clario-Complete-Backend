@@ -204,6 +204,29 @@ export class GmailService {
     maxResults: number = 10
   ): Promise<GmailEmail[]> {
     try {
+      // MOCK MODE: If using a mock token, return fake data without calling API
+      const accessToken = await this.getValidAccessToken(userId);
+      if (accessToken.startsWith('mock-token-')) {
+        logger.info('🧪 [GMAIL MOCK] Returning mock emails for testing', { userId });
+
+        // Generate 1-3 mock emails
+        const mockEmails: GmailEmail[] = Array.from({ length: Math.floor(Math.random() * 3) + 1 }).map((_, i) => ({
+          id: `mock-email-${Date.now()}-${i}`,
+          threadId: `mock-thread-${Date.now()}-${i}`,
+          subject: `Amazon Invoice #${Math.floor(Math.random() * 100000)}`,
+          from: 'auto-confirm@amazon.com',
+          to: ['user@example.com'],
+          snippet: 'Your order has been shipped. View your invoice.',
+          body: 'Thank you for your order.',
+          date: new Date().toISOString(),
+          labels: ['INBOX'],
+          isRead: false,
+          hasAttachments: true
+        }));
+
+        return mockEmails;
+      }
+
       const response = await this.requestWithToken(userId, (accessToken) =>
         axios.get(`${this.baseUrl}/messages`, {
           headers: { Authorization: `Bearer ${accessToken}` },
