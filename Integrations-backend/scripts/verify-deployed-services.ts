@@ -38,7 +38,7 @@ async function verifyNodeAPI() {
 }
 
 async function verifyPythonAPI() {
-  const pythonAPI = 'https://clario-complete-backend-sc5a.onrender.com';
+  const pythonAPI = 'https://python-api-9.onrender.com';
   
   try {
     const response = await axios.get(`${pythonAPI}/`, { timeout: 10000 });

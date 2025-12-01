@@ -274,7 +274,7 @@ app.use('/api/v1/inventory-sync', consolidatedInventorySyncRoutes);
 
 // Proxy routes to Python backend (recoveries, documents, metrics)
 // IMPORTANT: These must be registered after all other routes to avoid conflicts
-// These proxy requests to clario-complete-backend-sc5a.onrender.com
+// These proxy requests to python-api-9.onrender.com
 app.use('/', proxyRoutes);
 
 // Error handling middleware

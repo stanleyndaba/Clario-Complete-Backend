@@ -14,7 +14,7 @@ import 'dotenv/config';
 import axios from 'axios';
 
 const NODE_API_URL = process.env.INTEGRATIONS_URL || 'https://opside-node-api-woco.onrender.com';
-const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://clario-complete-backend-sc5a.onrender.com';
+const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
 const TEST_USER_ID = 'test-discovery-' + Date.now();
 
 interface TestResult {

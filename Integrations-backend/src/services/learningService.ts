@@ -59,7 +59,7 @@ class LearningService {
   private pythonApiUrl: string;
 
   constructor() {
-    this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-sc5a.onrender.com';
+    this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
   }
 
   private buildServiceHeaders(

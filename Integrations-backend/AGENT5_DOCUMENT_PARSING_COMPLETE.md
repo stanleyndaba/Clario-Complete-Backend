@@ -160,8 +160,8 @@ Agent 4 (Ingestion) → evidence_documents (pending) → Agent 5 (Parsing) → p
 ENABLE_DOCUMENT_PARSING_WORKER=true  # Default: true
 
 # Python API URL (for parsing service)
-PYTHON_API_URL=https://clario-complete-backend-sc5a.onrender.com
-API_URL=https://clario-complete-backend-sc5a.onrender.com  # Fallback
+PYTHON_API_URL=https://python-api-9.onrender.com
+API_URL=https://python-api-9.onrender.com  # Fallback
 
 # Python API authentication
 PYTHON_API_JWT_SECRET=copy-of-your-fastapi-JWT_SECRET

@@ -61,7 +61,7 @@ class EvidenceMatchingService {
     this.pythonApiUrl = 
       process.env.PYTHON_API_URL || 
       process.env.API_URL || 
-      'https://clario-complete-backend-sc5a.onrender.com';
+      'https://python-api-9.onrender.com';
     
     // Get thresholds from environment (optional)
     if (process.env.EVIDENCE_CONFIDENCE_AUTO) {

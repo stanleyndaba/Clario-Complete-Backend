@@ -95,7 +95,7 @@ async function verifyEnvironmentVariables() {
 
 async function verifyAPIs() {
   const nodeAPI = process.env.INTEGRATIONS_URL || 'https://opside-node-api-woco.onrender.com';
-  const pythonAPI = process.env.PYTHON_API_URL || 'https://clario-complete-backend-sc5a.onrender.com';
+  const pythonAPI = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
   
   try {
     const nodeResponse = await axios.get(`${nodeAPI}/`, { timeout: 5000 });
