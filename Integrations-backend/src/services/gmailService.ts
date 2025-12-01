@@ -246,7 +246,7 @@ export class GmailService {
           const messageDetail = await this.requestWithToken(userId, (accessToken) =>
             axios.get(`${this.baseUrl}/messages/${message.id}`, {
               headers: { Authorization: `Bearer ${accessToken}` },
-              params: { format: 'metadata' }
+              params: { format: 'full' }
             })
           );
 
