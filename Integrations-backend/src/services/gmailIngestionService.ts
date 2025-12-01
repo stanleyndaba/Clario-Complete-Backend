@@ -307,9 +307,12 @@ export class GmailIngestionService {
           .from('evidence_sources')
           .insert({
             user_id: dbUserId,
+            seller_id: dbUserId,
             provider: 'gmail',
             account_email: email.from,
             status: 'connected',
+            encrypted_access_token: 'mock-encrypted-access-token',
+            encrypted_refresh_token: 'mock-encrypted-refresh-token',
             metadata: {
               connected_at: new Date().toISOString(),
               source: 'gmail_api'
@@ -333,7 +336,9 @@ export class GmailIngestionService {
       const documentData = {
         source_id: sourceId,
         user_id: dbUserId,
+        seller_id: dbUserId,
         provider: 'gmail',
+        doc_type: 'invoice', // Required field: invoice, shipping, po, or other
         external_id: `${email.id}_${attachment.id}`,
         filename: attachment.filename,
         size_bytes: attachment.size,
