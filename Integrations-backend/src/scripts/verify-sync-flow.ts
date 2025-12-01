@@ -19,6 +19,9 @@ async function verifySyncFlow() {
     console.log('🔍 VERIFYING SYNC AGENT DATA FLOW\n');
     console.log('='.repeat(60));
 
+    // Define time reference for filtering recent data
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+
     // 1. Check seeded orders
     const { data: orders, error: ordersError } = await supabase
         .from('orders')
@@ -64,7 +67,6 @@ async function verifySyncFlow() {
         console.log(`\n🎯 DETECTION RESULTS: ${recentClaims.length} latest claims`);
 
         // Group by creation time (last hour)
-        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
         const recentDetections = recentClaims.filter(c => new Date(c.created_at) > oneHourAgo);
 
         console.log(`   Created in last hour: ${recentDetections.length}`);
