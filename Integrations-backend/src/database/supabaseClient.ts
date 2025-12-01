@@ -137,7 +137,7 @@ export interface User {
 
 // Helper function to convert non-UUID user IDs to deterministic UUIDs
 // This is needed because the tokens table requires UUID format
-function convertUserIdToUuid(userId: string): string {
+export function convertUserIdToUuid(userId: string): string {
   // UUID regex pattern (matches standard UUID format)
   const uuidRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 

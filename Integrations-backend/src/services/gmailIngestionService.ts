@@ -6,7 +6,7 @@
 
 import logger from '../utils/logger';
 import { GmailService } from './gmailService';
-import { supabase } from '../database/supabaseClient';
+import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
 import axios from 'axios';
 
 export interface GmailIngestionResult {
@@ -62,7 +62,7 @@ export class GmailIngestionService {
       });
 
       // Default query: search for invoices, receipts, FBA reports
-      const defaultQuery = options.query || 
+      const defaultQuery = options.query ||
         'from:amazon.com OR from:amazon.co.uk OR subject:(invoice OR receipt OR "FBA" OR "reimbursement" OR "refund") has:attachment';
 
       // Fetch emails from Gmail
@@ -111,7 +111,7 @@ export class GmailIngestionService {
           for (const attachment of attachments) {
             try {
               const documentId = await this.storeEvidenceDocument(userId, email, attachment);
-              
+
               if (documentId) {
                 documentsIngested++;
                 logger.info('✅ [GMAIL INGESTION] Stored evidence document', {
@@ -270,11 +270,14 @@ export class GmailIngestionService {
     attachment: GmailDocument
   ): Promise<string | null> {
     try {
+      // Convert userId to UUID for database operations if needed
+      const dbUserId = convertUserIdToUuid(userId);
+
       // Check if document already exists
       const { data: existingDoc } = await supabase
         .from('evidence_documents')
         .select('id')
-        .eq('user_id', userId)
+        .eq('user_id', dbUserId)
         .eq('external_id', attachment.emailId)
         .eq('filename', attachment.filename)
         .maybeSingle();
@@ -292,7 +295,7 @@ export class GmailIngestionService {
       const { data: existingSource } = await supabase
         .from('evidence_sources')
         .select('id')
-        .eq('user_id', userId)
+        .eq('user_id', dbUserId)
         .eq('provider', 'gmail')
         .maybeSingle();
 
@@ -303,7 +306,7 @@ export class GmailIngestionService {
         const { data: newSource, error: sourceError } = await supabase
           .from('evidence_sources')
           .insert({
-            user_id: userId,
+            user_id: dbUserId,
             provider: 'gmail',
             account_email: email.from,
             status: 'connected',
@@ -329,7 +332,7 @@ export class GmailIngestionService {
       // Store document metadata (metadata-first ingestion)
       const documentData = {
         source_id: sourceId,
-        user_id: userId,
+        user_id: dbUserId,
         provider: 'gmail',
         external_id: `${email.id}_${attachment.id}`,
         filename: attachment.filename,
@@ -372,7 +375,7 @@ export class GmailIngestionService {
       if (attachment.content) {
         try {
           const bucketName = 'evidence-documents';
-          const filePath = `${userId}/${document.id}/${attachment.filename}`;
+          const filePath = `${dbUserId}/${document.id}/${attachment.filename}`;
 
           const { data: uploadData, error: uploadError } = await supabase.storage
             .from(bucketName)
@@ -486,7 +489,7 @@ export class GmailIngestionService {
         if (response.status === 200 || response.status === 202) {
           const jobData = response.data;
           const jobId = jobData.job_id || jobData.id;
-          
+
           logger.info('✅ [GMAIL INGESTION] Parsing pipeline triggered successfully', {
             documentId,
             userId,

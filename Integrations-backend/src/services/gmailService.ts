@@ -287,6 +287,51 @@ export class GmailService {
     messageId: string,
     format: 'metadata' | 'full' = 'metadata'
   ): Promise<GmailMessageResponse> {
+    // MOCK MODE: If using a mock email ID, return fake message with attachment
+    if (messageId.startsWith('mock-email-')) {
+      logger.info('🧪 [GMAIL MOCK] Returning mock message with attachment', { userId, messageId });
+
+      return {
+        id: messageId,
+        threadId: messageId.replace('email', 'thread'),
+        labelIds: ['INBOX'],
+        snippet: 'Your order has been shipped. View your invoice.',
+        historyId: '12345',
+        internalDate: Date.now().toString(),
+        payload: {
+          partId: '',
+          mimeType: 'multipart/mixed',
+          filename: '',
+          headers: [
+            { name: 'Subject', value: `Amazon Invoice #${Math.floor(Math.random() * 100000)}` },
+            { name: 'From', value: 'auto-confirm@amazon.com' },
+            { name: 'To', value: 'user@example.com' },
+            { name: 'Date', value: new Date().toUTCString() }
+          ],
+          body: { size: 0 },
+          parts: [
+            {
+              partId: '0',
+              mimeType: 'text/plain',
+              filename: '',
+              headers: [],
+              body: { size: 0, data: Buffer.from('Thank you for your order.').toString('base64') }
+            },
+            {
+              partId: '1',
+              mimeType: 'application/pdf',
+              filename: 'invoice.pdf',
+              headers: [],
+              body: {
+                attachmentId: `mock-attachment-${messageId}`,
+                size: 1024
+              }
+            }
+          ]
+        }
+      };
+    }
+
     const response = await this.requestWithToken(userId, (accessToken) =>
       axios.get(`${this.baseUrl}/messages/${messageId}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
