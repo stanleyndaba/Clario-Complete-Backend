@@ -23,21 +23,21 @@ class RateLimiter {
   canMakeRequest(provider: string): boolean {
     const now = Date.now();
     const key = provider;
-    
+
     if (!this.requests.has(key)) {
       this.requests.set(key, []);
     }
-    
+
     const timestamps = this.requests.get(key)!;
-    
+
     // Remove old timestamps outside the window
     const recentTimestamps = timestamps.filter(ts => now - ts < this.windowMs);
     this.requests.set(key, recentTimestamps);
-    
+
     if (recentTimestamps.length >= this.maxRequests) {
       return false;
     }
-    
+
     recentTimestamps.push(now);
     return true;
   }
@@ -56,13 +56,13 @@ async function retryWithBackoff<T>(
   baseDelay: number = 1000
 ): Promise<T> {
   let lastError: any;
-  
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
     } catch (error: any) {
       lastError = error;
-      
+
       if (attempt < maxRetries) {
         const delay = baseDelay * Math.pow(2, attempt);
         logger.warn(`Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, {
@@ -73,7 +73,7 @@ async function retryWithBackoff<T>(
       }
     }
   }
-  
+
   throw lastError;
 }
 
@@ -90,10 +90,10 @@ class StorageBucketHelper {
     try {
       // Use admin client for storage operations (requires service role key)
       const storageClient = supabaseAdmin || supabase;
-      
+
       // Check if bucket exists by trying to list it
       const { data: buckets, error: listError } = await storageClient.storage.listBuckets();
-      
+
       if (listError) {
         logger.warn('⚠️ [STORAGE] Could not list buckets (may need service role key)', {
           error: listError.message
@@ -104,7 +104,7 @@ class StorageBucketHelper {
       }
 
       const bucketExists = buckets?.some(b => b.name === this.bucketName);
-      
+
       if (!bucketExists) {
         // Try to create bucket (requires service role key)
         const { data: newBucket, error: createError } = await storageClient.storage.createBucket(
@@ -164,7 +164,7 @@ class StorageBucketHelper {
 
       // Use admin client for storage uploads (requires service role key)
       const storageClient = supabaseAdmin || supabase;
-      
+
       const { data, error } = await storageClient.storage
         .from(this.bucketName)
         .upload(filePath, content, {
@@ -280,7 +280,7 @@ export class EvidenceIngestionWorker {
    */
   private async runEvidenceIngestionForAllTenants(): Promise<void> {
     const runStartTime = Date.now();
-    
+
     try {
       logger.info('🔍 [EVIDENCE WORKER] Starting scheduled evidence ingestion', {
         timestamp: new Date().toISOString()
@@ -308,7 +308,7 @@ export class EvidenceIngestionWorker {
 
       for (let i = 0; i < userIds.length; i++) {
         const userId = userIds[i];
-        
+
         // Stagger processing to avoid rate limits
         if (i > 0) {
           await new Promise(resolve => setTimeout(resolve, 2000)); // 2 seconds between users
@@ -381,7 +381,7 @@ export class EvidenceIngestionWorker {
 
       // Extract unique user IDs (handle both user_id and seller_id)
       const userIds = [...new Set((sources || []).map((s: any) => s.user_id || s.seller_id))];
-      
+
       return userIds.filter((id: any): id is string => typeof id === 'string' && id.length > 0);
     } catch (error: any) {
       logger.error('❌ [EVIDENCE WORKER] Error getting active user IDs', {
@@ -407,7 +407,7 @@ export class EvidenceIngestionWorker {
 
       // Use admin client to bypass RLS for source queries
       const client = supabaseAdmin || supabase;
-      
+
       // Get connected sources for this user (try seller_id first, fallback to user_id)
       let { data: sources, error } = await client
         .from('evidence_sources')
@@ -459,17 +459,17 @@ export class EvidenceIngestionWorker {
 
           // Ingest from this source with retry (max 3 retries = 4 total attempts)
           let sourceStats: IngestionStats;
-          
+
           try {
             sourceStats = await retryWithBackoff(async () => {
               return await this.ingestFromSource(userId, source);
             }, 3, 1000);
-            
+
             stats.ingested += sourceStats.ingested;
             stats.skipped += sourceStats.skipped;
             stats.failed += sourceStats.failed;
             stats.errors.push(...sourceStats.errors);
-            
+
             // Update last_synced_at after successful ingestion
             await this.updateLastSyncedAt(source.id);
           } catch (error: any) {
@@ -477,17 +477,17 @@ export class EvidenceIngestionWorker {
             stats.failed++;
             const errorMsg = `[${source.provider}] ${error.message}`;
             stats.errors.push(errorMsg);
-            
+
             // Log error with retry count (retryWithBackoff will have attempted 4 times, 3 retries)
             await this.logError(userId, source.provider, source.id, error, 3);
-            
+
             logger.error(`❌ [EVIDENCE WORKER] Failed to ingest from ${source.provider} for user ${userId} after retries`, {
               error: error.message,
               provider: source.provider,
               userId,
               retries: 3
             });
-            
+
             // Still update last_synced_at even on failure (to track last attempt)
             await this.updateLastSyncedAt(source.id);
           }
@@ -552,6 +552,14 @@ export class EvidenceIngestionWorker {
 
       switch (source.provider) {
         case 'gmail':
+          // Check if user has valid Gmail token before attempting ingestion
+          const hasGmailToken = await tokenManager.isTokenValid(userId, 'gmail');
+          if (!hasGmailToken) {
+            logger.info(`⏭️ [EVIDENCE WORKER] Skipping Gmail ingestion - no valid token for user ${userId}`);
+            stats.skipped = 1;
+            break;
+          }
+
           result = await gmailIngestionService.ingestEvidenceFromGmail(userId, {
             query,
             maxResults: 50,
@@ -617,11 +625,11 @@ export class EvidenceIngestionWorker {
       // Store raw files for newly ingested documents
       if (stats.ingested > 0) {
         await this.storeRawFilesForNewDocuments(userId, source.provider);
-        
+
         // 🎯 AGENT 10 INTEGRATION: Notify when evidence is found
         try {
           const notificationHelper = (await import('../services/notificationHelper')).default;
-          
+
           // Get recently ingested documents to notify about
           const { data: recentDocs } = await supabaseAdmin
             .from('evidence_documents')
@@ -630,7 +638,7 @@ export class EvidenceIngestionWorker {
             .eq('source', source.provider)
             .order('created_at', { ascending: false })
             .limit(stats.ingested);
-          
+
           if (recentDocs && recentDocs.length > 0) {
             for (const doc of recentDocs) {
               await notificationHelper.notifyEvidenceFound(userId, {
@@ -728,7 +736,7 @@ export class EvidenceIngestionWorker {
       if (provider === 'gmail') {
         try {
           const tokenData = await tokenManager.getToken(userId, 'gmail');
-          
+
           if (!tokenData) {
             logger.debug(`No Gmail token in tokenManager for user ${userId} (may be in evidence_sources)`);
             return;
@@ -760,7 +768,7 @@ export class EvidenceIngestionWorker {
       // For other providers (outlook, gdrive, dropbox), tokens are in evidence_sources.metadata
       // The ingestion services handle token refresh internally via their getAccessToken methods
       // No action needed here - ingestion services will refresh as needed
-      
+
     } catch (error: any) {
       logger.warn(`⚠️ [EVIDENCE WORKER] Error checking token (non-critical)`, {
         error: error.message,
@@ -777,10 +785,10 @@ export class EvidenceIngestionWorker {
   private async updateLastSyncedAt(sourceId: string): Promise<void> {
     try {
       const now = new Date().toISOString();
-      
+
       // Use admin client to bypass RLS if needed
       const client = supabaseAdmin || supabase;
-      
+
       // Try to update last_synced_at column directly
       const { data: updateData, error } = await client
         .from('evidence_sources')
@@ -861,7 +869,7 @@ export class EvidenceIngestionWorker {
     try {
       // Use admin client to bypass RLS for error logging
       const client = supabaseAdmin || supabase;
-      
+
       const { error: insertError } = await client
         .from('evidence_ingestion_errors')
         .insert({
