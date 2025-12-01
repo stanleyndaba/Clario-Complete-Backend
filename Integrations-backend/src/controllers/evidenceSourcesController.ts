@@ -54,10 +54,10 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
   try {
     const { provider } = req.params;
     const redirectUri = req.query.redirect_uri as string;
-    
+
     // Support both userIdMiddleware and auth middleware
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    
+
     if (!userId) {
       return res.status(401).json({
         ok: false,
@@ -94,7 +94,7 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
 
     // Build OAuth URL based on provider
     let authUrl: string;
-    
+
     if (provider === 'gmail' || provider === 'gdrive') {
       // Google OAuth (Gmail and Google Drive)
       const scopes = OAUTH_URLS[provider].scopes.join(' ');
@@ -148,7 +148,7 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
       error: error?.message || String(error),
       provider: req.params.provider
     });
-    
+
     res.status(500).json({
       ok: false,
       error: 'Failed to initiate OAuth flow'
@@ -195,7 +195,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
     const redirectUri = `${backendUrl}/api/v1/integrations/${provider}/callback`;
 
     let tokenResponse: any;
-    
+
     try {
       if (provider === 'gmail' || provider === 'gdrive') {
         // Google OAuth token exchange
@@ -247,23 +247,31 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
       // Store token in token manager
       // Note: tokenManager currently only supports 'amazon' | 'gmail' | 'stripe'
       // For other providers, we'll store in a generic way or extend tokenManager
-      try {
-        if (provider === 'gmail') {
+      if (provider === 'gmail') {
+        try {
           await tokenManager.saveToken(userId, 'gmail', {
             accessToken: access_token,
             refreshToken: refresh_token || '',
             expiresAt: expires_in ? new Date(Date.now() + expires_in * 1000) : new Date(Date.now() + 3600 * 1000)
           });
-        } else {
-          // For other providers (outlook, gdrive, dropbox), store in evidence_sources metadata
-          // or use a generic token storage mechanism
-          // For now, we'll just store in the database metadata
-          logger.info('Token stored for provider (using database metadata)', { provider, userId });
+          logger.info('Gmail token saved successfully', { userId });
+        } catch (tokenError: any) {
+          logger.error('CRITICAL: Failed to store Gmail token', {
+            error: tokenError?.message || String(tokenError),
+            userId,
+            provider
+          });
+          // This is a critical error - without the token, Gmail won't work
+          // Return error to user instead of silently continuing
+          return res.redirect(`${frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000'}/integrations-hub?error=${encodeURIComponent('Failed to save Gmail token. Please try reconnecting.')}\u0026${provider}_connected=false`);
         }
-      } catch (tokenError) {
-        logger.warn('Failed to store token in token manager', { error: tokenError, provider });
-        // Continue - token is stored in OAuth provider, we can retrieve it later
+      } else {
+        // For other providers (outlook, gdrive, dropbox), store in evidence_sources metadata
+        // or use a generic token storage mechanism
+        // For now, we'll just store in the database metadata
+        logger.info('Token stored for provider (using database metadata)', { provider, userId });
       }
+
 
       // Get user account info (email, etc.)
       let accountEmail: string | undefined;
@@ -290,7 +298,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
 
       // Get OAuth scopes for provider
       const scopes = OAUTH_URLS[provider]?.scopes || [];
-      
+
       // Create or update evidence source in database
       try {
         const { data: existingSource } = await supabase
@@ -329,7 +337,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
             });
         }
       } catch (dbError: any) {
-        logger.error('Failed to update evidence source in database', { 
+        logger.error('Failed to update evidence source in database', {
           error: dbError?.message || String(dbError),
           provider,
           userId
@@ -345,14 +353,14 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
       // Redirect to integrations-hub instead of /auth/callback (which may not exist)
       // This route exists and shows the integrations status
       const redirectUrl = `${frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000'}/integrations-hub?${provider}_connected=true&email=${encodeURIComponent(accountEmail || '')}`;
-      
+
       logger.info('Redirecting to frontend after evidence source OAuth success', {
         userId,
         provider,
         accountEmail,
         redirectPath: '/integrations-hub'
       });
-      
+
       return res.redirect(302, redirectUrl);
     } catch (tokenError: any) {
       logger.error('Failed to exchange OAuth code for token', {
@@ -366,7 +374,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
       error: error?.message || String(error),
       provider: req.params.provider
     });
-    
+
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     return res.redirect(`${frontendUrl}/auth/callback?error=callback_error`);
   }
