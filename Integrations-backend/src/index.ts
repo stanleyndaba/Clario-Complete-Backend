@@ -116,7 +116,7 @@ app.use(cors({
       logger.debug('CORS: Allowing request with no origin', { origin: 'null' });
       return callback(null, true);
     }
-    
+
     const allowedOrigins = [
       'https://opside-complete-frontend-4poy2f2lh-mvelo-ndabas-projects.vercel.app',
       'https://opside-complete-frontend-kqvxrzg4s-mvelo-ndabas-projects.vercel.app',
@@ -128,30 +128,30 @@ app.use(cors({
       'http://localhost:5173',
       'http://localhost:3000'
     ];
-    
+
     // Allow all Vercel preview deployments and onrender.com domains (pattern matching)
     // This handles changing frontend domains automatically
     // Check for vercel.app, onrender.com, or vercel.com domains
     const isVercelApp = origin.includes('vercel.app') || origin.includes('vercel.com');
     const isOnRender = origin.includes('onrender.com');
-    
+
     if (isVercelApp || isOnRender) {
-      logger.info('CORS: Allowing dynamic domain', { 
-        origin, 
+      logger.info('CORS: Allowing dynamic domain', {
+        origin,
         type: isVercelApp ? 'vercel' : 'onrender',
         matched: true
       });
       return callback(null, true);
     }
-    
+
     // Check exact match
     if (allowedOrigins.includes(origin)) {
       logger.debug('CORS: Allowing exact match', { origin });
       return callback(null, true);
     }
-    
+
     // Log rejected origin for debugging
-    logger.warn('CORS: Rejecting origin', { 
+    logger.warn('CORS: Rejecting origin', {
       origin,
       allowedPatterns: ['vercel.app', 'onrender.com', 'vercel.com'],
       allowedOrigins: allowedOrigins.length
@@ -161,10 +161,10 @@ app.use(cors({
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: [
-    'Content-Type', 
-    'Authorization', 
-    'X-Requested-With', 
-    'X-User-Id', 
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'X-User-Id',
     'X-Forwarded-User-Id',
     'X-Frontend-URL',
     'Origin',
@@ -208,7 +208,7 @@ app.use('/', healthRoutes);
 
 // Root health check (for Render)
 app.get('/', (_, res) => {
-  res.status(200).json({ 
+  res.status(200).json({
     message: 'Opside Integrations API',
     status: 'operational',
     version: '1.0.0',
@@ -218,8 +218,8 @@ app.get('/', (_, res) => {
 
 // API status endpoint
 app.get('/api/status', (_, res) => {
-  res.json({ 
-    status: 'operational', 
+  res.json({
+    status: 'operational',
     version: '1.0.0',
     timestamp: new Date().toISOString()
   });
@@ -266,6 +266,11 @@ logger.info('Workflow routes registered at /api/v1/workflow');
 app.use('/api/evidence', evidenceRoutes);
 logger.info('Evidence routes registered at /api/evidence');
 
+// Documents routes (replaces Python proxy for documents)
+import documentsRoutes from './routes/documentsRoutes';
+app.use('/api/documents', documentsRoutes);
+logger.info('Documents routes registered at /api/documents');
+
 // Consolidated service routes (merged from separate microservices)
 app.use('/api/v1/stripe-payments', consolidatedStripeRoutes);
 app.use('/api/v1/cost-docs', consolidatedCostDocsRoutes);
@@ -286,24 +291,24 @@ const PORT = config.PORT || 3001;
 server.listen(PORT, '0.0.0.0', () => {
   console.log('Server running on port ' + PORT);
   console.log('Environment: ' + config.NODE_ENV);
-  
+
   // Log all registered routes for debugging
   logger.info('All routes registered', {
     workflow: '/api/v1/workflow',
     proxy: '/ (proxyRoutes)',
     routeCount: 'See logs above for details'
   });
-  
+
   // Initialize background jobs asynchronously (don't block server startup)
   setImmediate(() => {
     try {
       // Initialize orchestration job manager (sets up queue processors)
       OrchestrationJobManager.initialize();
       logger.info('Orchestration job manager initialized');
-      
+
       // Start background jobs (non-blocking)
       deadlineMonitoringJob.start();
-      
+
       // Start Phase 2 background sync worker (if enabled)
       if (process.env.ENABLE_BACKGROUND_SYNC !== 'false') {
         backgroundSyncWorker.start().catch((error: any) => {
@@ -391,7 +396,7 @@ server.listen(PORT, '0.0.0.0', () => {
       } else {
         logger.info('Learning worker disabled (ENABLE_LEARNING_WORKER=false)');
       }
-      
+
       // Start detection job processor (processes detection jobs from queue)
       // This runs continuously to process detection jobs queued after sync
       // Note: Will silently skip if Redis is not available (no log spam)
@@ -446,7 +451,7 @@ server.listen(PORT, '0.0.0.0', () => {
         }
       };
       startDetectionProcessor();
-      
+
       logger.info('Background jobs started', {
         deadline_monitoring: 'started',
         detection_processor: 'started',
@@ -460,7 +465,7 @@ server.listen(PORT, '0.0.0.0', () => {
         learning_worker: process.env.ENABLE_LEARNING_WORKER !== 'false' ? 'started' : 'disabled'
       });
     } catch (error: any) {
-      logger.error('Error starting background jobs (non-blocking)', { 
+      logger.error('Error starting background jobs (non-blocking)', {
         error: error?.message || String(error),
         note: 'Server will continue to run without background jobs'
       });
