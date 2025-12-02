@@ -580,7 +580,7 @@ export class DetectionService {
           `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
           { claims: claimsToDetect },
           {
-            timeout: 60000, // 60 second timeout for batch processing
+            timeout: 180000, // 180 second timeout for batch processing (3 minutes to match sync timeout)
             headers: {
               'Content-Type': 'application/json'
             }
