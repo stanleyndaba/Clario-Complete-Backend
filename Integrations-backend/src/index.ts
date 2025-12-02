@@ -60,6 +60,8 @@ import documentParsingWorker from './workers/documentParsingWorker';
 import evidenceMatchingWorker from './workers/evidenceMatchingWorker';
 import refundFilingWorker from './workers/refundFilingWorker';
 import recoveriesWorker from './workers/recoveriesWorker';
+import refundFilingWorker from './workers/refundFilingWorker';
+import recoveriesWorker from './workers/recoveriesWorker';
 import billingWorker from './workers/billingWorker';
 import notificationsWorker from './workers/notificationsWorker';
 import learningWorker from './workers/learningWorker';

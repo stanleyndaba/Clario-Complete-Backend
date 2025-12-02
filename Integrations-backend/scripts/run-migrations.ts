@@ -20,7 +20,10 @@ const migrations = [
   '010_evidence_engine_extras.sql',
   '011_evidence_engine_views.sql',
   '011_evidence_ingestion_worker.sql',
+  '012_document_parsing_worker.sql',
+  '013_evidence_matching_worker.sql',
   '014_fix_parser_jobs.sql',
+  '015_refund_filing_worker.sql',
   '024_add_expected_payout_date_to_disputes.sql'
 ];
 
