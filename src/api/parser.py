@@ -6,6 +6,7 @@ Handles document parsing requests and job management
 from fastapi import APIRouter, HTTPException, Depends, Query, BackgroundTasks, Request
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+import json
 import logging
 from src.api.auth_middleware import get_current_user, get_optional_user
 from src.api.schemas import (
