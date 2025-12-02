@@ -23,14 +23,37 @@ router.get('/', async (_req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    
+    const { supabaseAdmin } = await import('../database/supabaseClient');
+
+    const { data: dispute, error } = await supabaseAdmin
+      .from('dispute_cases')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return res.status(404).json({ success: false, message: 'Dispute case not found' });
+      }
+      throw error;
+    }
+
     res.json({
       success: true,
       dispute: {
-        id,
-        status: 'submitted',
-        amount: 0,
-        createdAt: new Date().toISOString()
+        ...dispute,
+        // Ensure camelCase for frontend compatibility if needed, or just pass snake_case
+        // Frontend likely expects camelCase based on other parts of the app
+        caseNumber: dispute.case_number,
+        claimId: dispute.claim_id,
+        createdAt: dispute.created_at,
+        updatedAt: dispute.updated_at,
+        recoveryStatus: dispute.recovery_status,
+        actualPayoutAmount: dispute.actual_payout_amount,
+        billingStatus: dispute.billing_status,
+        billingTransactionId: dispute.billing_transaction_id,
+        platformFeeCents: dispute.platform_fee_cents,
+        billedAt: dispute.billed_at
       }
     });
   } catch (error: any) {
@@ -74,7 +97,7 @@ router.post('/:id/submit', async (_req, res) => {
 router.get('/:id/audit-log', async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     // Get audit log from database
     const { supabase } = await import('../database/supabaseClient');
     const { data: auditLog, error } = await supabase
@@ -82,11 +105,11 @@ router.get('/:id/audit-log', async (req, res) => {
       .select('*')
       .eq('dispute_case_id', id)
       .order('created_at', { ascending: false });
-    
+
     if (error) {
       throw error;
     }
-    
+
     res.json({
       success: true,
       auditLog: auditLog || []
@@ -116,7 +139,7 @@ router.put('/:id/resolve', async (req, res) => {
 
     // Import dispute service
     const disputeService = (await import('../services/disputeService')).default;
-    
+
     // Create resolution object
     const resolution = {
       dispute_case_id: id,
@@ -127,7 +150,7 @@ router.put('/:id/resolve', async (req, res) => {
     };
 
     const updatedCase = await disputeService.processCaseResolution(resolution);
-    
+
     res.json({
       success: true,
       message: 'Dispute case resolved successfully',

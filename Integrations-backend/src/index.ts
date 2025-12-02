@@ -60,8 +60,6 @@ import documentParsingWorker from './workers/documentParsingWorker';
 import evidenceMatchingWorker from './workers/evidenceMatchingWorker';
 import refundFilingWorker from './workers/refundFilingWorker';
 import recoveriesWorker from './workers/recoveriesWorker';
-import refundFilingWorker from './workers/refundFilingWorker';
-import recoveriesWorker from './workers/recoveriesWorker';
 import billingWorker from './workers/billingWorker';
 import notificationsWorker from './workers/notificationsWorker';
 import learningWorker from './workers/learningWorker';
@@ -267,6 +265,10 @@ app.use('/api/v1/workflow', workflowRoutes);
 logger.info('Workflow routes registered at /api/v1/workflow');
 app.use('/api/evidence', evidenceRoutes);
 logger.info('Evidence routes registered at /api/evidence');
+
+import billingRoutes from './routes/billingRoutes';
+app.use('/api/billing', billingRoutes);
+logger.info('Billing routes registered at /api/billing');
 
 // Documents routes (replaces Python proxy for documents)
 import documentsRoutes from './routes/documentsRoutes';
