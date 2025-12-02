@@ -17,13 +17,13 @@ async function retryWithBackoff<T>(
   baseDelay: number = 2000
 ): Promise<T> {
   let lastError: any;
-  
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
     } catch (error: any) {
       lastError = error;
-      
+
       if (attempt < maxRetries) {
         const delay = baseDelay * Math.pow(2, attempt);
         logger.warn(`🔄 [DOCUMENT PARSING] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, {
@@ -34,7 +34,7 @@ async function retryWithBackoff<T>(
       }
     }
   }
-  
+
   throw lastError;
 }
 
@@ -112,7 +112,7 @@ export class DocumentParsingWorker {
    */
   private async runDocumentParsingForAllTenants(): Promise<void> {
     const runStartTime = Date.now();
-    
+
     try {
       logger.info('🔍 [DOCUMENT PARSING WORKER] Starting scheduled document parsing', {
         timestamp: new Date().toISOString()
@@ -141,7 +141,7 @@ export class DocumentParsingWorker {
 
       for (let i = 0; i < documents.length; i++) {
         const document = documents[i];
-        
+
         // Stagger processing to avoid rate limits
         if (i > 0) {
           await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second between documents
@@ -150,7 +150,7 @@ export class DocumentParsingWorker {
         try {
           const result = await this.parseDocument(document);
           stats.processed++;
-          
+
           if (result.success) {
             stats.succeeded++;
           } else {
@@ -307,7 +307,7 @@ export class DocumentParsingWorker {
           .select('filename, source')
           .eq('id', document.id)
           .single();
-        
+
         if (doc) {
           await notificationHelper.notifyEvidenceFound(document.seller_id, {
             documentId: document.id,
@@ -319,6 +319,27 @@ export class DocumentParsingWorker {
       } catch (notifError: any) {
         logger.warn('⚠️ [DOCUMENT PARSING WORKER] Failed to send notification', {
           error: notifError.message
+        });
+      }
+
+      // 🎯 SSE: Send real-time event to frontend
+      try {
+        const sseHub = (await import('../utils/sseHub')).default;
+        sseHub.sendEvent(document.seller_id, 'parsing', {
+          type: 'parsing',
+          status: 'completed',
+          document_id: document.id,
+          confidence: parsedData?.confidence_score || 0,
+          extraction_method: parsedData?.extraction_method || 'unknown',
+          timestamp: new Date().toISOString()
+        });
+        logger.debug('📡 [DOCUMENT PARSING WORKER] Sent SSE parsing completion event', {
+          documentId: document.id,
+          userId: document.seller_id
+        });
+      } catch (sseError: any) {
+        logger.warn('⚠️ [DOCUMENT PARSING WORKER] Failed to send SSE event', {
+          error: sseError.message
         });
       }
 
@@ -648,7 +669,7 @@ export class DocumentParsingWorker {
    */
   async triggerManualParsing(documentId: string, sellerId: string): Promise<{ success: boolean; error?: string }> {
     logger.info(`🔧 [DOCUMENT PARSING WORKER] Manual parsing triggered for document: ${documentId}`);
-    
+
     const document = await this.getDocumentById(documentId);
     if (!document) {
       return { success: false, error: 'Document not found' };
