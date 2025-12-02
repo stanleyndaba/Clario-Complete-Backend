@@ -306,7 +306,7 @@ async def search_documents(
                             "invoice_date": row[8],
                             "total_amount": row[9],
                             "currency": row[10],
-                            "line_items": json.loads(row[11]) if row[11] else []
+                            "line_items": json.loads(row[11]) if row[11] and isinstance(row[11], str) else (row[11] if row[11] else [])
                         } if row[6] else None
                     })
                 
@@ -355,7 +355,7 @@ async def _get_document(document_id: str, user_id: str) -> Optional[Dict[str, An
                     'filename': result[1],
                     'content_type': result[2],
                     'download_url': result[3],
-                    'metadata': json.loads(result[4]) if result[4] else {}
+                    'metadata': json.loads(result[4]) if result[4] and isinstance(result[4], str) else (result[4] if result[4] else {})
                 }
             return None
 
@@ -392,11 +392,11 @@ async def _get_document_with_parsed_data(document_id: str, user_id: str) -> Opti
                     folder_path=result[12],
                     download_url=result[13],
                     thumbnail_url=result[14],
-                    metadata=json.loads(result[15]) if result[15] else {},
+                    metadata=json.loads(result[15]) if result[15] and isinstance(result[15], str) else (result[15] if result[15] else {}),
                     processing_status=result[16],
                     ocr_text=result[17],
-                    extracted_data=json.loads(result[18]) if result[18] else None,
-                    parsed_metadata=json.loads(result[19]) if result[19] else None,
+                    extracted_data=json.loads(result[18]) if result[18] and isinstance(result[18], str) else (result[18] if result[18] else None),
+                    parsed_metadata=json.loads(result[19]) if result[19] and isinstance(result[19], str) else (result[19] if result[19] else None),
                     parser_status=ParserStatus(result[20]) if result[20] else ParserStatus.PENDING,
                     parser_confidence=result[21],
                     parser_error=result[22]
