@@ -20,6 +20,7 @@ const migrations = [
   '010_evidence_engine_extras.sql',
   '011_evidence_engine_views.sql',
   '011_evidence_ingestion_worker.sql',
+  '014_fix_parser_jobs.sql',
   '024_add_expected_payout_date_to_disputes.sql'
 ];
 
@@ -32,10 +33,10 @@ async function runMigrationsViaSupabase(sql: string): Promise<boolean> {
 
 async function runMigrations() {
   logger.info('🚀 Starting database migrations...');
-  
+
   // Try to get PostgreSQL connection string from DATABASE_URL or SUPABASE_URL
   let connectionString = process.env.DATABASE_URL;
-  
+
   if (!connectionString) {
     // Check if SUPABASE_URL is actually a PostgreSQL connection string
     const supabaseUrl = process.env.SUPABASE_URL;
@@ -49,7 +50,7 @@ async function runMigrations() {
       logger.info('💡 For migrations, you need the direct PostgreSQL connection string.');
       logger.info('💡 Get it from: Supabase Dashboard → Settings → Database → Connection String');
       logger.info('💡 Format: postgresql://postgres.[project-ref]:[password]@db.[project-ref].supabase.co:5432/postgres');
-      
+
       // Try pooler connection with different format
       if (process.env.SUPABASE_DB_PASSWORD) {
         connectionString = `postgresql://postgres.${projectRef}:${process.env.SUPABASE_DB_PASSWORD}@aws-0-eu-central-1.pooler.supabase.com:6543/postgres`;
@@ -60,7 +61,7 @@ async function runMigrations() {
       }
     }
   }
-  
+
   if (!connectionString) {
     logger.error('❌ DATABASE_URL not found in environment variables.');
     logger.info('💡 Please set DATABASE_URL with PostgreSQL connection string.');
@@ -70,7 +71,7 @@ async function runMigrations() {
   // Try direct connection first (non-pooler)
   let client: Client | null = null;
   let connected = false;
-  
+
   // Try pooler connection first
   try {
     client = new Client({ connectionString });
@@ -79,7 +80,7 @@ async function runMigrations() {
     connected = true;
   } catch (error: any) {
     logger.warn(`⚠️  Pooler connection failed: ${error.message}`);
-    
+
     // Try direct connection format
     if (connectionString.includes('pooler')) {
       const directConnection = connectionString.replace('pooler', 'direct').replace(':6543', ':5432');
@@ -94,7 +95,7 @@ async function runMigrations() {
       }
     }
   }
-  
+
   if (!connected || !client) {
     logger.error('❌ Failed to connect to database. Please verify:');
     logger.error('   1. DATABASE_URL is correct');
@@ -103,22 +104,22 @@ async function runMigrations() {
     logger.info('💡 Alternative: Run migrations via Supabase SQL Editor manually');
     process.exit(1);
   }
-  
+
   try {
     const migrationsDir = join(__dirname, '..', 'migrations');
-    
+
     for (const migrationFile of migrations) {
       try {
         logger.info(`📄 Running migration: ${migrationFile}`);
-        
+
         const migrationPath = join(migrationsDir, migrationFile);
         const sql = readFileSync(migrationPath, 'utf-8');
-        
+
         // Execute migration
         await client.query(sql);
-        
+
         logger.info(`✅ Migration ${migrationFile} completed`);
-        
+
       } catch (error: any) {
         // Check if error is "already exists" - that's okay
         if (error.message.includes('already exists') || error.message.includes('duplicate')) {
@@ -129,9 +130,9 @@ async function runMigrations() {
         }
       }
     }
-    
+
     logger.info('✅ All migrations completed successfully!');
-    
+
   } catch (error: any) {
     logger.error('❌ Error running migrations:', {
       message: error.message,
