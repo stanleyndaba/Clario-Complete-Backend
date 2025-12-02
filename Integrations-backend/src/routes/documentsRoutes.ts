@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { supabase, supabaseAdmin } from '../database/supabaseClient';
+import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -19,10 +19,10 @@ router.get('/', async (req: Request, res: Response) => {
             });
         }
 
-        // Allow demo-user for development
-        const finalUserId = userId === 'demo-user' ? 'demo-user' : userId;
+        // Convert to UUID if needed (handles 'demo-user' -> deterministic UUID)
+        const finalUserId = convertUserIdToUuid(userId);
 
-        logger.info('📂 [DOCUMENTS] Fetching documents', { userId: finalUserId });
+        logger.info('📂 [DOCUMENTS] Fetching documents', { userId, finalUserId });
 
         // Fetch documents from Supabase
         const { data: documents, error } = await supabase
@@ -84,7 +84,7 @@ router.get('/:id', async (req: Request, res: Response) => {
             .from('evidence_documents')
             .select('*')
             .eq('id', docId)
-            .eq('user_id', userId)
+            .eq('user_id', convertUserIdToUuid(userId))
             .single();
 
         if (error) {
@@ -140,7 +140,7 @@ router.get('/:id/download', async (req: Request, res: Response) => {
             .from('evidence_documents')
             .select('storage_path, filename')
             .eq('id', docId)
-            .eq('user_id', userId)
+            .eq('user_id', convertUserIdToUuid(userId))
             .single();
 
         if (dbError || !doc) {
