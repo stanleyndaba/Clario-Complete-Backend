@@ -57,11 +57,11 @@ class DocumentParsingService {
 
   constructor() {
     // Get Python API URL from environment
-    this.pythonApiUrl = 
-      process.env.PYTHON_API_URL || 
-      process.env.API_URL || 
+    this.pythonApiUrl =
+      process.env.PYTHON_API_URL ||
+      process.env.API_URL ||
       'https://python-api-9.onrender.com';
-    
+
     logger.info('📄 [DOCUMENT PARSING] Service initialized', {
       pythonApiUrl: this.pythonApiUrl
     });
@@ -99,7 +99,7 @@ class DocumentParsingService {
       ];
 
       let lastError: any;
-      
+
       for (const endpoint of endpoints) {
         try {
           const response = await axios.post<ParsingJobResponse>(
@@ -110,7 +110,7 @@ class DocumentParsingService {
                 'X-User-Id': userId,
                 'Content-Type': 'application/json'
               }),
-              timeout: 30000 // 30 seconds
+              timeout: 120000 // 120 seconds (increased for cold starts)
             }
           );
 
@@ -254,10 +254,10 @@ class DocumentParsingService {
     pollInterval: number = 5000 // 5 seconds
   ): Promise<ParsingJobStatus | null> {
     const startTime = Date.now();
-    
+
     while (Date.now() - startTime < maxWaitTime) {
       const status = await this.getJobStatus(jobId, userId);
-      
+
       if (!status) {
         await new Promise(resolve => setTimeout(resolve, pollInterval));
         continue;
@@ -293,7 +293,7 @@ class DocumentParsingService {
       try {
         // Trigger parsing
         const jobResponse = await this.triggerParsing(documentId, userId);
-        
+
         if (!jobResponse.job_id) {
           throw new Error('No job ID returned from parsing API');
         }

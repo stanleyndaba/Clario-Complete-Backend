@@ -39,7 +39,7 @@ class SyncJobManager {
    */
   async startSync(userId: string): Promise<{ syncId: string; status: string }> {
     const syncId = `sync_${userId}_${Date.now()}`;
-    
+
     // Check if user has Amazon connection (database or environment variables)
     const isConnected = await tokenManager.isTokenValid(userId, 'amazon');
     if (!isConnected) {
@@ -47,7 +47,7 @@ class SyncJobManager {
       const envRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
       const envClientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
       const envClientSecret = process.env.AMAZON_CLIENT_SECRET;
-      
+
       if (envRefreshToken && envClientId && envClientSecret) {
         logger.info('Using environment variables for sync (sandbox mode)', {
           userId,
@@ -208,11 +208,11 @@ class SyncJobManager {
    * Run the actual sync job asynchronously with timeout protection
    */
   private async runSync(syncId: string, userId: string, isCancelled: () => boolean): Promise<void> {
-    // Set timeout for sync operation (60 seconds max - realistic for current implementation)
-    // TODO: Optimize to reduce to 30s in future iteration
-    const SYNC_TIMEOUT_MS = 60 * 1000; // 60 seconds
+    // Set timeout for sync operation (180 seconds max - allows ML detection to complete)
+    // TODO: Optimize detection to reduce timeout in future iteration
+    const SYNC_TIMEOUT_MS = 180 * 1000; // 180 seconds (3 minutes)
     const syncStartTime = Date.now();
-    
+
     const timeoutPromise = new Promise<void>((_, reject) => {
       setTimeout(() => {
         reject(new Error(`Sync timeout after ${SYNC_TIMEOUT_MS / 1000} seconds`));
@@ -229,342 +229,94 @@ class SyncJobManager {
     // Wrap sync execution with timeout
     const syncExecution = async (): Promise<void> => {
       try {
-      // Update progress: 10% - Starting Agent 2 sync
-      syncStatus.progress = 10;
-      syncStatus.message = 'Establishing secure connection...';
-      this.updateSyncStatus(syncStatus);
-      this.sendProgressUpdate(userId, syncStatus);
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Connecting to Amazon SP-API Secure Tunnel...' });
-      this.sendLogEvent(userId, syncId, { type: 'success', category: 'system', message: '[CONNECTED] Secure tunnel established' });
-
-      if (isCancelled()) {
-        syncStatus.status = 'cancelled';
-        syncStatus.message = 'Sync cancelled';
+        // Update progress: 10% - Starting Agent 2 sync
+        syncStatus.progress = 10;
+        syncStatus.message = 'Establishing secure connection...';
         this.updateSyncStatus(syncStatus);
-        return;
-      }
+        this.sendProgressUpdate(userId, syncStatus);
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Connecting to Amazon SP-API Secure Tunnel...' });
+        this.sendLogEvent(userId, syncId, { type: 'success', category: 'system', message: '[CONNECTED] Secure tunnel established' });
 
-      // Update progress: 20% - Fetching orders
-      syncStatus.progress = 20;
-      syncStatus.message = 'Accessing seller ledger...';
-      this.updateSyncStatus(syncStatus);
-      this.sendProgressUpdate(userId, syncStatus);
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Requesting access to Seller Central ledger...' });
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Scanning 18-month transaction window...' });
+        if (isCancelled()) {
+          syncStatus.status = 'cancelled';
+          syncStatus.message = 'Sync cancelled';
+          this.updateSyncStatus(syncStatus);
+          return;
+        }
 
-      if (isCancelled()) {
-        syncStatus.status = 'cancelled';
-        syncStatus.message = 'Sync cancelled';
+        // Update progress: 20% - Fetching orders
+        syncStatus.progress = 20;
+        syncStatus.message = 'Accessing seller ledger...';
         this.updateSyncStatus(syncStatus);
-        return;
-      }
+        this.sendProgressUpdate(userId, syncStatus);
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Requesting access to Seller Central ledger...' });
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Scanning 18-month transaction window...' });
 
-      // Update progress: 40% - Running Agent 2 data sync
-      syncStatus.progress = 40;
-      syncStatus.message = 'Agent 2 Active: Cross-referencing FBA data...';
-      this.updateSyncStatus(syncStatus);
-      this.sendProgressUpdate(userId, syncStatus);
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Processing FBA data streams...' });
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Normalizing data across multiple report types...' });
+        if (isCancelled()) {
+          syncStatus.status = 'cancelled';
+          syncStatus.message = 'Sync cancelled';
+          this.updateSyncStatus(syncStatus);
+          return;
+        }
 
-      // Run Agent 2 Data Sync Service (comprehensive data sync with normalization)
-      // CRITICAL: This must complete quickly to meet 30s timeout
-      logger.info('🔄 [SYNC JOB MANAGER] Starting Agent 2 data sync', { userId, syncId });
-      const agent2StartTime = Date.now();
-      syncResult = await agent2DataSyncService.syncUserData(userId, undefined, undefined, syncId);
-      const agent2Duration = Date.now() - agent2StartTime;
-      logger.info('⏱️ [SYNC JOB MANAGER] Agent 2 sync duration', { 
-        userId, 
-        syncId, 
-        duration: `${agent2Duration}ms (${(agent2Duration / 1000).toFixed(2)}s)` 
-      });
-      
-      // Check if Agent 2 sync failed
-      if (!syncResult.success) {
-        logger.error('❌ [SYNC JOB MANAGER] Agent 2 sync failed', {
+        // Update progress: 40% - Running Agent 2 data sync
+        syncStatus.progress = 40;
+        syncStatus.message = 'Agent 2 Active: Cross-referencing FBA data...';
+        this.updateSyncStatus(syncStatus);
+        this.sendProgressUpdate(userId, syncStatus);
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Processing FBA data streams...' });
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Normalizing data across multiple report types...' });
+
+        // Run Agent 2 Data Sync Service (comprehensive data sync with normalization)
+        // CRITICAL: This must complete quickly to meet 30s timeout
+        logger.info('🔄 [SYNC JOB MANAGER] Starting Agent 2 data sync', { userId, syncId });
+        const agent2StartTime = Date.now();
+        syncResult = await agent2DataSyncService.syncUserData(userId, undefined, undefined, syncId);
+        const agent2Duration = Date.now() - agent2StartTime;
+        logger.info('⏱️ [SYNC JOB MANAGER] Agent 2 sync duration', {
           userId,
           syncId,
-          errors: syncResult.errors,
-          summary: syncResult.summary
+          duration: `${agent2Duration}ms (${(agent2Duration / 1000).toFixed(2)}s)`
         });
-        throw new Error(`Agent 2 sync failed: ${syncResult.errors.join(', ') || 'Unknown error'}`);
-      }
-      
-      // Log Agent 2 summary in detail to debug wrong counts
-      logger.info('✅ [SYNC JOB MANAGER] Agent 2 sync completed', {
-        userId,
-        syncId,
-        success: syncResult.success,
-        summary: syncResult.summary,
-        isMock: syncResult.isMock,
-        ordersCount: syncResult.summary?.ordersCount,
-        inventoryCount: syncResult.summary?.inventoryCount,
-        shipmentsCount: syncResult.summary?.shipmentsCount,
-        returnsCount: syncResult.summary?.returnsCount,
-        settlementsCount: syncResult.summary?.settlementsCount,
-        feesCount: syncResult.summary?.feesCount,
-        claimsCount: syncResult.summary?.claimsCount
-      });
-      
-      if (isCancelled()) {
-        syncStatus.status = 'cancelled';
-        syncStatus.message = 'Sync cancelled';
-        this.updateSyncStatus(syncStatus);
-        return;
-      }
 
-      // Update progress: 70% - Data normalization complete
-      syncStatus.progress = 70;
-      syncStatus.message = 'Data normalization complete. Processing results...';
-      // Store all data type counts from Agent 2 at this point
-      syncStatus.ordersProcessed = syncResult.summary.ordersCount || 0;
-      syncStatus.totalOrders = syncResult.summary.ordersCount || 0;
-      syncStatus.inventoryCount = syncResult.summary.inventoryCount || 0;
-      syncStatus.shipmentsCount = syncResult.summary.shipmentsCount || 0;
-      syncStatus.returnsCount = syncResult.summary.returnsCount || 0;
-      syncStatus.settlementsCount = syncResult.summary.settlementsCount || 0;
-      syncStatus.feesCount = syncResult.summary.feesCount || 0;
-      this.updateSyncStatus(syncStatus);
-      this.sendProgressUpdate(userId, syncStatus);
-      
-      // Send completion log events - machine dialogue style
-      if (syncStatus.ordersProcessed && syncStatus.ordersProcessed > 0) {
-        this.sendLogEvent(userId, syncId, { 
-          type: 'success', 
-          category: 'orders', 
-          message: `[FOUND] ${syncStatus.ordersProcessed.toLocaleString()} orders in ledger`,
-          count: syncStatus.ordersProcessed
-        });
-        this.sendLogEvent(userId, syncId, { 
-          type: 'info', 
-          category: 'orders', 
-          message: 'Cross-referencing order IDs with fulfillment records...'
-        });
-      }
-      if (syncStatus.inventoryCount && syncStatus.inventoryCount > 0) {
-        this.sendLogEvent(userId, syncId, { 
-          type: 'success', 
-          category: 'inventory', 
-          message: `[FOUND] ${syncStatus.inventoryCount.toLocaleString()} active SKUs in warehouse`,
-          count: syncStatus.inventoryCount
-        });
-        this.sendLogEvent(userId, syncId, { 
-          type: 'info', 
-          category: 'inventory', 
-          message: 'Checking unit counts against inbound shipments...'
-        });
-      }
-      if (syncStatus.shipmentsCount && syncStatus.shipmentsCount > 0) {
-        this.sendLogEvent(userId, syncId, { 
-          type: 'success', 
-          category: 'shipments', 
-          message: `[FOUND] ${syncStatus.shipmentsCount.toLocaleString()} shipments to fulfillment centers`,
-          count: syncStatus.shipmentsCount
-        });
-        this.sendLogEvent(userId, syncId, { 
-          type: 'info', 
-          category: 'shipments', 
-          message: 'Verifying received quantities match shipped quantities...'
-        });
-      }
-      if (syncStatus.returnsCount && syncStatus.returnsCount > 0) {
-        this.sendLogEvent(userId, syncId, { 
-          type: 'success', 
-          category: 'returns', 
-          message: `[FOUND] ${syncStatus.returnsCount.toLocaleString()} customer returns processed`,
-          count: syncStatus.returnsCount
-        });
-        this.sendLogEvent(userId, syncId, { 
-          type: 'info', 
-          category: 'returns', 
-          message: 'Checking if returns were properly credited to seller account...'
-        });
-      }
-      if (syncStatus.settlementsCount && syncStatus.settlementsCount > 0) {
-        this.sendLogEvent(userId, syncId, { 
-          type: 'success', 
-          category: 'settlements', 
-          message: `[FOUND] ${syncStatus.settlementsCount.toLocaleString()} settlement periods`,
-          count: syncStatus.settlementsCount
-        });
-        this.sendLogEvent(userId, syncId, { 
-          type: 'info', 
-          category: 'settlements', 
-          message: 'Reconciling payouts with expected amounts...'
-        });
-      }
-      if (syncStatus.feesCount && syncStatus.feesCount > 0) {
-        this.sendLogEvent(userId, syncId, { 
-          type: 'success', 
-          category: 'fees', 
-          message: `[FOUND] ${syncStatus.feesCount.toLocaleString()} fee line items`,
-          count: syncStatus.feesCount
-        });
-        this.sendLogEvent(userId, syncId, { 
-          type: 'info', 
-          category: 'fees', 
-          message: 'Analyzing fee calculations for overcharges...'
-        });
-      }
-
-      if (isCancelled()) {
-        syncStatus.status = 'cancelled';
-        syncStatus.message = 'Sync cancelled';
-        this.updateSyncStatus(syncStatus);
-        return;
-      }
-
-      // Update progress: 80% - DETECTION PHASE (now blocking)
-      // Agent 2 now runs detection as part of the sync, so we have results immediately
-      syncStatus.progress = 80;
-      syncStatus.status = 'detecting'; // New status phase!
-      syncStatus.message = 'Agent 3 Active: Scanning for discrepancies...';
-      this.updateSyncStatus(syncStatus);
-      this.sendProgressUpdate(userId, syncStatus);
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Initiating discrepancy scan...' });
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Comparing shipment manifests with received inventory...' });
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Checking for unreimbursed lost/damaged units...' });
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Validating fee calculations against product dimensions...' });
-
-      // Get detection results from Agent 2 (now included in syncResult)
-      const detectionResult = syncResult?.detectionResult;
-      
-      if (detectionResult && detectionResult.completed) {
-        if (detectionResult.totalDetected > 0) {
-          syncStatus.claimsDetected = detectionResult.totalDetected;
-          // Calculate estimated value (~$48 avg per claim)
-          const estimatedValue = detectionResult.totalDetected * 48;
-          const formattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(estimatedValue);
-          
-          logger.info('✅ [SYNC JOB MANAGER] Detection completed with results', { 
-            userId, 
-            syncId, 
-            totalDetected: detectionResult.totalDetected,
-            estimatedValue
-          });
-          
-          this.sendLogEvent(userId, syncId, { 
-            type: 'warning', 
-            category: 'detection', 
-            message: '[ALERT] Discrepancies detected in seller data'
-          });
-          this.sendLogEvent(userId, syncId, { 
-            type: 'success', 
-            category: 'detection', 
-            message: `[RESULT] ${detectionResult.totalDetected.toLocaleString()} recoverable items identified`,
-            count: detectionResult.totalDetected
-          });
-          this.sendLogEvent(userId, syncId, { 
-            type: 'success', 
-            category: 'detection', 
-            message: `[ESTIMATED] Potential recovery: ${formattedValue}`
-          });
-        } else if (detectionResult.skipped) {
-          logger.info('ℹ️ [SYNC JOB MANAGER] Detection skipped', {
+        // Check if Agent 2 sync failed
+        if (!syncResult.success) {
+          logger.error('❌ [SYNC JOB MANAGER] Agent 2 sync failed', {
             userId,
             syncId,
-            reason: detectionResult.reason
+            errors: syncResult.errors,
+            summary: syncResult.summary
           });
-          this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: `[SKIPPED] ${detectionResult.reason || 'Insufficient data for analysis'}` });
-        } else {
-          logger.info('ℹ️ [SYNC JOB MANAGER] Detection completed - no discrepancies found', {
-            userId,
-            syncId
-          });
-          this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Scan complete. All records appear aligned.' });
-          this.sendLogEvent(userId, syncId, { type: 'success', category: 'detection', message: '[RESULT] No discrepancies detected in current window' });
+          throw new Error(`Agent 2 sync failed: ${syncResult.errors.join(', ') || 'Unknown error'}`);
         }
-      } else if (detectionResult && detectionResult.error) {
-        logger.warn('⚠️ [SYNC JOB MANAGER] Detection failed', {
+
+        // Log Agent 2 summary in detail to debug wrong counts
+        logger.info('✅ [SYNC JOB MANAGER] Agent 2 sync completed', {
           userId,
           syncId,
-          error: detectionResult.error
+          success: syncResult.success,
+          summary: syncResult.summary,
+          isMock: syncResult.isMock,
+          ordersCount: syncResult.summary?.ordersCount,
+          inventoryCount: syncResult.summary?.inventoryCount,
+          shipmentsCount: syncResult.summary?.shipmentsCount,
+          returnsCount: syncResult.summary?.returnsCount,
+          settlementsCount: syncResult.summary?.settlementsCount,
+          feesCount: syncResult.summary?.feesCount,
+          claimsCount: syncResult.summary?.claimsCount
         });
-        this.sendLogEvent(userId, syncId, { type: 'warning', category: 'detection', message: `[ERROR] Analysis interrupted: ${detectionResult.error}` });
-      } else {
-        // Fallback: Check database for detection results
-        try {
-          const { count: detectionResultsCount } = await supabase
-            .from('detection_results')
-            .select('id', { count: 'exact', head: true })
-            .eq('seller_id', userId)
-            .eq('sync_id', syncId)
-            .limit(1);
 
-          if (detectionResultsCount && detectionResultsCount > 0) {
-            syncStatus.claimsDetected = detectionResultsCount;
-            this.sendLogEvent(userId, syncId, { 
-              type: 'success', 
-              category: 'detection', 
-              message: `✓ ${detectionResultsCount.toLocaleString()} potential recoveries found`,
-              count: detectionResultsCount
-            });
-          } else {
-            this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: '✓ Detection complete - no discrepancies in this data' });
-          }
-        } catch (error: any) {
-          logger.debug('Detection check error (non-critical)', { error: error.message, userId, syncId });
+        if (isCancelled()) {
+          syncStatus.status = 'cancelled';
+          syncStatus.message = 'Sync cancelled';
+          this.updateSyncStatus(syncStatus);
+          return;
         }
-      }
 
-      // Update status back to completing
-      syncStatus.status = 'running';
-      this.updateSyncStatus(syncStatus);
-
-      // Update progress: 95% - Finalizing
-      syncStatus.progress = 95;
-      syncStatus.message = 'Compiling analysis report...';
-      this.updateSyncStatus(syncStatus);
-      this.sendProgressUpdate(userId, syncStatus);
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Compiling analysis results...' });
-      this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Generating recovery report...' });
-
-      // Get sync results from database (now includes detection results if completed)
-      const syncResults = await this.getSyncResults(userId, syncId);
-
-      // Use Agent 2 sync result data if available, otherwise use database results
-      // NOTE: Claims are NOT included - they're detected FROM the data, not synced data
-      const totalItemsSynced = syncResult 
-        ? ((syncResult.summary?.ordersCount || 0) + 
-           (syncResult.summary?.shipmentsCount || 0) + 
-           (syncResult.summary?.returnsCount || 0) + 
-           (syncResult.summary?.settlementsCount || 0) + 
-           (syncResult.summary?.inventoryCount || 0) + 
-           (syncResult.summary?.feesCount || 0))
-        : ((syncResults.ordersProcessed || 0) + (syncResults.totalOrders || 0));
-      
-      // Debug logging to trace where "48 items" comes from
-      logger.info('🔍 [SYNC JOB MANAGER] Calculating totalItemsSynced', {
-        userId,
-        syncId,
-        hasSyncResult: !!syncResult,
-        hasSummary: !!(syncResult?.summary),
-        agent2Counts: syncResult?.summary ? {
-          ordersCount: syncResult.summary.ordersCount || 0,
-          shipmentsCount: syncResult.summary.shipmentsCount || 0,
-          returnsCount: syncResult.summary.returnsCount || 0,
-          settlementsCount: syncResult.summary.settlementsCount || 0,
-          inventoryCount: syncResult.summary.inventoryCount || 0,
-          feesCount: syncResult.summary.feesCount || 0,
-          claimsCount: syncResult.summary.claimsCount || 0  // Note: claims are detected, not synced
-        } : null,
-        databaseCounts: !syncResult ? {
-          ordersProcessed: syncResults.ordersProcessed || 0,
-          totalOrders: syncResults.totalOrders || 0
-        } : null,
-        calculatedTotal: totalItemsSynced
-      });
-
-      // Update progress: 100% - Complete (use 'completed' to match database)
-      syncStatus.progress = 100;
-      syncStatus.status = 'completed';
-      syncStatus.message = syncResults.claimsDetected > 0
-        ? `Sync completed successfully - ${totalItemsSynced} items synced, ${syncResults.claimsDetected} discrepancies detected`
-        : `Sync completed successfully - ${totalItemsSynced} items synced`;
-      syncStatus.completedAt = new Date().toISOString();
-      // Store all data type counts from Agent 2 - ALWAYS use Agent 2 result, never fall back to database
-      // The database might have old/incomplete data from previous updates
-      if (syncResult && syncResult.summary) {
+        // Update progress: 70% - Data normalization complete
+        syncStatus.progress = 70;
+        syncStatus.message = 'Data normalization complete. Processing results...';
+        // Store all data type counts from Agent 2 at this point
         syncStatus.ordersProcessed = syncResult.summary.ordersCount || 0;
         syncStatus.totalOrders = syncResult.summary.ordersCount || 0;
         syncStatus.inventoryCount = syncResult.summary.inventoryCount || 0;
@@ -572,181 +324,429 @@ class SyncJobManager {
         syncStatus.returnsCount = syncResult.summary.returnsCount || 0;
         syncStatus.settlementsCount = syncResult.summary.settlementsCount || 0;
         syncStatus.feesCount = syncResult.summary.feesCount || 0;
-        
-        // Log what we're saving to debug wrong counts
-        logger.info('💾 [SYNC JOB MANAGER] Saving sync completion with Agent 2 counts', {
-          userId,
-          syncId,
-          ordersProcessed: syncStatus.ordersProcessed,
-          totalOrders: syncStatus.totalOrders,
-          inventoryCount: syncStatus.inventoryCount,
-          shipmentsCount: syncStatus.shipmentsCount,
-          returnsCount: syncStatus.returnsCount,
-          settlementsCount: syncStatus.settlementsCount,
-          feesCount: syncStatus.feesCount,
-          totalItemsSynced
-        });
-      } else {
-        // Only use database results if Agent 2 result is not available (shouldn't happen)
-        logger.warn('⚠️ [SYNC JOB MANAGER] Agent 2 sync result not available, using database results (may be incomplete)', {
+        this.updateSyncStatus(syncStatus);
+        this.sendProgressUpdate(userId, syncStatus);
+
+        // Send completion log events - machine dialogue style
+        if (syncStatus.ordersProcessed && syncStatus.ordersProcessed > 0) {
+          this.sendLogEvent(userId, syncId, {
+            type: 'success',
+            category: 'orders',
+            message: `[FOUND] ${syncStatus.ordersProcessed.toLocaleString()} orders in ledger`,
+            count: syncStatus.ordersProcessed
+          });
+          this.sendLogEvent(userId, syncId, {
+            type: 'info',
+            category: 'orders',
+            message: 'Cross-referencing order IDs with fulfillment records...'
+          });
+        }
+        if (syncStatus.inventoryCount && syncStatus.inventoryCount > 0) {
+          this.sendLogEvent(userId, syncId, {
+            type: 'success',
+            category: 'inventory',
+            message: `[FOUND] ${syncStatus.inventoryCount.toLocaleString()} active SKUs in warehouse`,
+            count: syncStatus.inventoryCount
+          });
+          this.sendLogEvent(userId, syncId, {
+            type: 'info',
+            category: 'inventory',
+            message: 'Checking unit counts against inbound shipments...'
+          });
+        }
+        if (syncStatus.shipmentsCount && syncStatus.shipmentsCount > 0) {
+          this.sendLogEvent(userId, syncId, {
+            type: 'success',
+            category: 'shipments',
+            message: `[FOUND] ${syncStatus.shipmentsCount.toLocaleString()} shipments to fulfillment centers`,
+            count: syncStatus.shipmentsCount
+          });
+          this.sendLogEvent(userId, syncId, {
+            type: 'info',
+            category: 'shipments',
+            message: 'Verifying received quantities match shipped quantities...'
+          });
+        }
+        if (syncStatus.returnsCount && syncStatus.returnsCount > 0) {
+          this.sendLogEvent(userId, syncId, {
+            type: 'success',
+            category: 'returns',
+            message: `[FOUND] ${syncStatus.returnsCount.toLocaleString()} customer returns processed`,
+            count: syncStatus.returnsCount
+          });
+          this.sendLogEvent(userId, syncId, {
+            type: 'info',
+            category: 'returns',
+            message: 'Checking if returns were properly credited to seller account...'
+          });
+        }
+        if (syncStatus.settlementsCount && syncStatus.settlementsCount > 0) {
+          this.sendLogEvent(userId, syncId, {
+            type: 'success',
+            category: 'settlements',
+            message: `[FOUND] ${syncStatus.settlementsCount.toLocaleString()} settlement periods`,
+            count: syncStatus.settlementsCount
+          });
+          this.sendLogEvent(userId, syncId, {
+            type: 'info',
+            category: 'settlements',
+            message: 'Reconciling payouts with expected amounts...'
+          });
+        }
+        if (syncStatus.feesCount && syncStatus.feesCount > 0) {
+          this.sendLogEvent(userId, syncId, {
+            type: 'success',
+            category: 'fees',
+            message: `[FOUND] ${syncStatus.feesCount.toLocaleString()} fee line items`,
+            count: syncStatus.feesCount
+          });
+          this.sendLogEvent(userId, syncId, {
+            type: 'info',
+            category: 'fees',
+            message: 'Analyzing fee calculations for overcharges...'
+          });
+        }
+
+        if (isCancelled()) {
+          syncStatus.status = 'cancelled';
+          syncStatus.message = 'Sync cancelled';
+          this.updateSyncStatus(syncStatus);
+          return;
+        }
+
+        // Update progress: 80% - DETECTION PHASE (now blocking)
+        // Agent 2 now runs detection as part of the sync, so we have results immediately
+        syncStatus.progress = 80;
+        syncStatus.status = 'detecting'; // New status phase!
+        syncStatus.message = 'Agent 3 Active: Scanning for discrepancies...';
+        this.updateSyncStatus(syncStatus);
+        this.sendProgressUpdate(userId, syncStatus);
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Initiating discrepancy scan...' });
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Comparing shipment manifests with received inventory...' });
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Checking for unreimbursed lost/damaged units...' });
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Validating fee calculations against product dimensions...' });
+
+        // Get detection results from Agent 2 (now included in syncResult)
+        const detectionResult = syncResult?.detectionResult;
+
+        if (detectionResult && detectionResult.completed) {
+          if (detectionResult.totalDetected > 0) {
+            syncStatus.claimsDetected = detectionResult.totalDetected;
+            // Calculate estimated value (~$48 avg per claim)
+            const estimatedValue = detectionResult.totalDetected * 48;
+            const formattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(estimatedValue);
+
+            logger.info('✅ [SYNC JOB MANAGER] Detection completed with results', {
+              userId,
+              syncId,
+              totalDetected: detectionResult.totalDetected,
+              estimatedValue
+            });
+
+            this.sendLogEvent(userId, syncId, {
+              type: 'warning',
+              category: 'detection',
+              message: '[ALERT] Discrepancies detected in seller data'
+            });
+            this.sendLogEvent(userId, syncId, {
+              type: 'success',
+              category: 'detection',
+              message: `[RESULT] ${detectionResult.totalDetected.toLocaleString()} recoverable items identified`,
+              count: detectionResult.totalDetected
+            });
+            this.sendLogEvent(userId, syncId, {
+              type: 'success',
+              category: 'detection',
+              message: `[ESTIMATED] Potential recovery: ${formattedValue}`
+            });
+          } else if (detectionResult.skipped) {
+            logger.info('ℹ️ [SYNC JOB MANAGER] Detection skipped', {
+              userId,
+              syncId,
+              reason: detectionResult.reason
+            });
+            this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: `[SKIPPED] ${detectionResult.reason || 'Insufficient data for analysis'}` });
+          } else {
+            logger.info('ℹ️ [SYNC JOB MANAGER] Detection completed - no discrepancies found', {
+              userId,
+              syncId
+            });
+            this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Scan complete. All records appear aligned.' });
+            this.sendLogEvent(userId, syncId, { type: 'success', category: 'detection', message: '[RESULT] No discrepancies detected in current window' });
+          }
+        } else if (detectionResult && detectionResult.error) {
+          logger.warn('⚠️ [SYNC JOB MANAGER] Detection failed', {
+            userId,
+            syncId,
+            error: detectionResult.error
+          });
+          this.sendLogEvent(userId, syncId, { type: 'warning', category: 'detection', message: `[ERROR] Analysis interrupted: ${detectionResult.error}` });
+        } else {
+          // Fallback: Check database for detection results
+          try {
+            const { count: detectionResultsCount } = await supabase
+              .from('detection_results')
+              .select('id', { count: 'exact', head: true })
+              .eq('seller_id', userId)
+              .eq('sync_id', syncId)
+              .limit(1);
+
+            if (detectionResultsCount && detectionResultsCount > 0) {
+              syncStatus.claimsDetected = detectionResultsCount;
+              this.sendLogEvent(userId, syncId, {
+                type: 'success',
+                category: 'detection',
+                message: `✓ ${detectionResultsCount.toLocaleString()} potential recoveries found`,
+                count: detectionResultsCount
+              });
+            } else {
+              this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: '✓ Detection complete - no discrepancies in this data' });
+            }
+          } catch (error: any) {
+            logger.debug('Detection check error (non-critical)', { error: error.message, userId, syncId });
+          }
+        }
+
+        // Update status back to completing
+        syncStatus.status = 'running';
+        this.updateSyncStatus(syncStatus);
+
+        // Update progress: 95% - Finalizing
+        syncStatus.progress = 95;
+        syncStatus.message = 'Compiling analysis report...';
+        this.updateSyncStatus(syncStatus);
+        this.sendProgressUpdate(userId, syncStatus);
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Compiling analysis results...' });
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Generating recovery report...' });
+
+        // Get sync results from database (now includes detection results if completed)
+        const syncResults = await this.getSyncResults(userId, syncId);
+
+        // Use Agent 2 sync result data if available, otherwise use database results
+        // NOTE: Claims are NOT included - they're detected FROM the data, not synced data
+        const totalItemsSynced = syncResult
+          ? ((syncResult.summary?.ordersCount || 0) +
+            (syncResult.summary?.shipmentsCount || 0) +
+            (syncResult.summary?.returnsCount || 0) +
+            (syncResult.summary?.settlementsCount || 0) +
+            (syncResult.summary?.inventoryCount || 0) +
+            (syncResult.summary?.feesCount || 0))
+          : ((syncResults.ordersProcessed || 0) + (syncResults.totalOrders || 0));
+
+        // Debug logging to trace where "48 items" comes from
+        logger.info('🔍 [SYNC JOB MANAGER] Calculating totalItemsSynced', {
           userId,
           syncId,
           hasSyncResult: !!syncResult,
           hasSummary: !!(syncResult?.summary),
-          databaseOrdersProcessed: syncResults.ordersProcessed,
-          databaseTotalOrders: syncResults.totalOrders
+          agent2Counts: syncResult?.summary ? {
+            ordersCount: syncResult.summary.ordersCount || 0,
+            shipmentsCount: syncResult.summary.shipmentsCount || 0,
+            returnsCount: syncResult.summary.returnsCount || 0,
+            settlementsCount: syncResult.summary.settlementsCount || 0,
+            inventoryCount: syncResult.summary.inventoryCount || 0,
+            feesCount: syncResult.summary.feesCount || 0,
+            claimsCount: syncResult.summary.claimsCount || 0  // Note: claims are detected, not synced
+          } : null,
+          databaseCounts: !syncResult ? {
+            ordersProcessed: syncResults.ordersProcessed || 0,
+            totalOrders: syncResults.totalOrders || 0
+          } : null,
+          calculatedTotal: totalItemsSynced
         });
-        syncStatus.ordersProcessed = syncResults.ordersProcessed || 0;
-        syncStatus.totalOrders = syncResults.totalOrders || 0;
-        syncStatus.inventoryCount = 0;
-        syncStatus.shipmentsCount = 0;
-        syncStatus.returnsCount = 0;
-        syncStatus.settlementsCount = 0;
-        syncStatus.feesCount = 0;
-      }
-      
-      // Always use database count for claimsDetected (most accurate)
-      syncStatus.claimsDetected = syncResults.claimsDetected || 0;
-      logger.info('💾 [SYNC JOB MANAGER] Setting claimsDetected before final save', {
-        userId,
-        syncId,
-        claimsDetected: syncStatus.claimsDetected,
-        fromSyncResults: syncResults.claimsDetected
-      });
-      
-      this.updateSyncStatus(syncStatus);
-      this.sendProgressUpdate(userId, syncStatus);
-      
-      // Send final completion log - machine dialogue style
-      this.sendLogEvent(userId, syncId, { 
-        type: 'success', 
-        category: 'system', 
-        message: `[COMPLETE] Analysis finished. ${totalItemsSynced.toLocaleString()} records processed.`
-      });
-      if (syncStatus.claimsDetected > 0) {
-        const finalValue = syncStatus.claimsDetected * 48;
-        const finalFormattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(finalValue);
-        this.sendLogEvent(userId, syncId, { 
-          type: 'success', 
-          category: 'detection', 
-          message: `[READY] ${syncStatus.claimsDetected} claims ready for recovery (${finalFormattedValue} potential)`
-        });
-      } else {
-        this.sendLogEvent(userId, syncId, { 
-          type: 'info', 
-          category: 'system', 
-          message: 'Monitoring active. Will alert on new discrepancies.'
-        });
-      }
 
-      // 🎯 AGENT 2: Send SSE event for sync completed with connection verification
-      logger.info('🔍 [SYNC JOB MANAGER] Checking SSE connection before sending sync.completed event', {
-        userId,
-        syncId,
-        hasConnection: sseHub.hasConnection(userId),
-        connectionCount: sseHub.getConnectionCount(userId),
-        connectedUsers: sseHub.getConnectedUsers()
-      });
+        // Update progress: 100% - Complete (use 'completed' to match database)
+        syncStatus.progress = 100;
+        syncStatus.status = 'completed';
+        syncStatus.message = syncResults.claimsDetected > 0
+          ? `Sync completed successfully - ${totalItemsSynced} items synced, ${syncResults.claimsDetected} discrepancies detected`
+          : `Sync completed successfully - ${totalItemsSynced} items synced`;
+        syncStatus.completedAt = new Date().toISOString();
+        // Store all data type counts from Agent 2 - ALWAYS use Agent 2 result, never fall back to database
+        // The database might have old/incomplete data from previous updates
+        if (syncResult && syncResult.summary) {
+          syncStatus.ordersProcessed = syncResult.summary.ordersCount || 0;
+          syncStatus.totalOrders = syncResult.summary.ordersCount || 0;
+          syncStatus.inventoryCount = syncResult.summary.inventoryCount || 0;
+          syncStatus.shipmentsCount = syncResult.summary.shipmentsCount || 0;
+          syncStatus.returnsCount = syncResult.summary.returnsCount || 0;
+          syncStatus.settlementsCount = syncResult.summary.settlementsCount || 0;
+          syncStatus.feesCount = syncResult.summary.feesCount || 0;
 
-      const sseCompleted = sseHub.sendEvent(userId, 'sync.completed', {
-        type: 'sync',
-        status: 'completed',
-        syncId: syncId,
-        ordersProcessed: syncStatus.ordersProcessed || 0,
-        totalOrders: syncStatus.totalOrders || 0,
-        inventoryCount: syncStatus.inventoryCount || 0,
-        shipmentsCount: syncStatus.shipmentsCount || 0,
-        returnsCount: syncStatus.returnsCount || 0,
-        settlementsCount: syncStatus.settlementsCount || 0,
-        feesCount: syncStatus.feesCount || 0,
-        claimsDetected: syncStatus.claimsDetected || 0,
-        message: syncStatus.message,
-        timestamp: new Date().toISOString()
-      });
+          // Log what we're saving to debug wrong counts
+          logger.info('💾 [SYNC JOB MANAGER] Saving sync completion with Agent 2 counts', {
+            userId,
+            syncId,
+            ordersProcessed: syncStatus.ordersProcessed,
+            totalOrders: syncStatus.totalOrders,
+            inventoryCount: syncStatus.inventoryCount,
+            shipmentsCount: syncStatus.shipmentsCount,
+            returnsCount: syncStatus.returnsCount,
+            settlementsCount: syncStatus.settlementsCount,
+            feesCount: syncStatus.feesCount,
+            totalItemsSynced
+          });
+        } else {
+          // Only use database results if Agent 2 result is not available (shouldn't happen)
+          logger.warn('⚠️ [SYNC JOB MANAGER] Agent 2 sync result not available, using database results (may be incomplete)', {
+            userId,
+            syncId,
+            hasSyncResult: !!syncResult,
+            hasSummary: !!(syncResult?.summary),
+            databaseOrdersProcessed: syncResults.ordersProcessed,
+            databaseTotalOrders: syncResults.totalOrders
+          });
+          syncStatus.ordersProcessed = syncResults.ordersProcessed || 0;
+          syncStatus.totalOrders = syncResults.totalOrders || 0;
+          syncStatus.inventoryCount = 0;
+          syncStatus.shipmentsCount = 0;
+          syncStatus.returnsCount = 0;
+          syncStatus.settlementsCount = 0;
+          syncStatus.feesCount = 0;
+        }
 
-      if (!sseCompleted) {
-        logger.warn('⚠️ [SYNC JOB MANAGER] No SSE connection found for sync.completed event', {
+        // Always use database count for claimsDetected (most accurate)
+        syncStatus.claimsDetected = syncResults.claimsDetected || 0;
+        logger.info('💾 [SYNC JOB MANAGER] Setting claimsDetected before final save', {
           userId,
           syncId,
-          connectedUsers: sseHub.getConnectedUsers(),
-          suggestion: 'Frontend may not have SSE connection open, or user ID mismatch'
+          claimsDetected: syncStatus.claimsDetected,
+          fromSyncResults: syncResults.claimsDetected
         });
-      } else {
-        logger.info('✅ [SYNC JOB MANAGER] SSE event sync.completed sent successfully', { userId, syncId });
-      }
 
-      // Also send as 'message' event for backward compatibility
-      sseHub.sendEvent(userId, 'message', {
-        type: 'sync',
-        status: 'completed',
-        syncId: syncId,
-        ordersProcessed: syncStatus.ordersProcessed || 0,
-        totalOrders: syncStatus.totalOrders || 0,
-        inventoryCount: syncStatus.inventoryCount || 0,
-        shipmentsCount: syncStatus.shipmentsCount || 0,
-        returnsCount: syncStatus.returnsCount || 0,
-        settlementsCount: syncStatus.settlementsCount || 0,
-        feesCount: syncStatus.feesCount || 0,
-        claimsDetected: syncStatus.claimsDetected || 0,
-        message: syncStatus.message,
-        timestamp: new Date().toISOString()
-      });
+        this.updateSyncStatus(syncStatus);
+        this.sendProgressUpdate(userId, syncStatus);
 
-      // Remove from running jobs after a delay
-      setTimeout(() => {
-        this.runningJobs.delete(syncId);
-      }, 60000); // Keep for 1 minute after completion
+        // Send final completion log - machine dialogue style
+        this.sendLogEvent(userId, syncId, {
+          type: 'success',
+          category: 'system',
+          message: `[COMPLETE] Analysis finished. ${totalItemsSynced.toLocaleString()} records processed.`
+        });
+        if (syncStatus.claimsDetected > 0) {
+          const finalValue = syncStatus.claimsDetected * 48;
+          const finalFormattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(finalValue);
+          this.sendLogEvent(userId, syncId, {
+            type: 'success',
+            category: 'detection',
+            message: `[READY] ${syncStatus.claimsDetected} claims ready for recovery (${finalFormattedValue} potential)`
+          });
+        } else {
+          this.sendLogEvent(userId, syncId, {
+            type: 'info',
+            category: 'system',
+            message: 'Monitoring active. Will alert on new discrepancies.'
+          });
+        }
 
-    } catch (error: any) {
-      logger.error(`Sync job ${syncId} error:`, error);
-      syncStatus.status = 'failed';
-      syncStatus.error = error.message;
-      syncStatus.message = `Sync failed: ${error.message}`;
-      syncStatus.completedAt = new Date().toISOString();
-      this.updateSyncStatus(syncStatus);
-      this.sendProgressUpdate(userId, syncStatus);
-
-      // 🎯 AGENT 2: Send SSE event for sync failed with connection verification
-      logger.info('🔍 [SYNC JOB MANAGER] Checking SSE connection before sending sync.failed event', {
-        userId,
-        syncId,
-        hasConnection: sseHub.hasConnection(userId),
-        connectionCount: sseHub.getConnectionCount(userId),
-        error: error.message
-      });
-
-      const sseFailed = sseHub.sendEvent(userId, 'sync.failed', {
-        type: 'sync',
-        status: 'failed',
-        syncId: syncId,
-        error: error.message,
-        message: `Sync failed: ${error.message}`,
-        timestamp: new Date().toISOString()
-      });
-
-      if (!sseFailed) {
-        logger.warn('⚠️ [SYNC JOB MANAGER] No SSE connection found for sync.failed event', {
+        // 🎯 AGENT 2: Send SSE event for sync completed with connection verification
+        logger.info('🔍 [SYNC JOB MANAGER] Checking SSE connection before sending sync.completed event', {
           userId,
           syncId,
-          connectedUsers: sseHub.getConnectedUsers(),
+          hasConnection: sseHub.hasConnection(userId),
+          connectionCount: sseHub.getConnectionCount(userId),
+          connectedUsers: sseHub.getConnectedUsers()
+        });
+
+        const sseCompleted = sseHub.sendEvent(userId, 'sync.completed', {
+          type: 'sync',
+          status: 'completed',
+          syncId: syncId,
+          ordersProcessed: syncStatus.ordersProcessed || 0,
+          totalOrders: syncStatus.totalOrders || 0,
+          inventoryCount: syncStatus.inventoryCount || 0,
+          shipmentsCount: syncStatus.shipmentsCount || 0,
+          returnsCount: syncStatus.returnsCount || 0,
+          settlementsCount: syncStatus.settlementsCount || 0,
+          feesCount: syncStatus.feesCount || 0,
+          claimsDetected: syncStatus.claimsDetected || 0,
+          message: syncStatus.message,
+          timestamp: new Date().toISOString()
+        });
+
+        if (!sseCompleted) {
+          logger.warn('⚠️ [SYNC JOB MANAGER] No SSE connection found for sync.completed event', {
+            userId,
+            syncId,
+            connectedUsers: sseHub.getConnectedUsers(),
+            suggestion: 'Frontend may not have SSE connection open, or user ID mismatch'
+          });
+        } else {
+          logger.info('✅ [SYNC JOB MANAGER] SSE event sync.completed sent successfully', { userId, syncId });
+        }
+
+        // Also send as 'message' event for backward compatibility
+        sseHub.sendEvent(userId, 'message', {
+          type: 'sync',
+          status: 'completed',
+          syncId: syncId,
+          ordersProcessed: syncStatus.ordersProcessed || 0,
+          totalOrders: syncStatus.totalOrders || 0,
+          inventoryCount: syncStatus.inventoryCount || 0,
+          shipmentsCount: syncStatus.shipmentsCount || 0,
+          returnsCount: syncStatus.returnsCount || 0,
+          settlementsCount: syncStatus.settlementsCount || 0,
+          feesCount: syncStatus.feesCount || 0,
+          claimsDetected: syncStatus.claimsDetected || 0,
+          message: syncStatus.message,
+          timestamp: new Date().toISOString()
+        });
+
+        // Remove from running jobs after a delay
+        setTimeout(() => {
+          this.runningJobs.delete(syncId);
+        }, 60000); // Keep for 1 minute after completion
+
+      } catch (error: any) {
+        logger.error(`Sync job ${syncId} error:`, error);
+        syncStatus.status = 'failed';
+        syncStatus.error = error.message;
+        syncStatus.message = `Sync failed: ${error.message}`;
+        syncStatus.completedAt = new Date().toISOString();
+        this.updateSyncStatus(syncStatus);
+        this.sendProgressUpdate(userId, syncStatus);
+
+        // 🎯 AGENT 2: Send SSE event for sync failed with connection verification
+        logger.info('🔍 [SYNC JOB MANAGER] Checking SSE connection before sending sync.failed event', {
+          userId,
+          syncId,
+          hasConnection: sseHub.hasConnection(userId),
+          connectionCount: sseHub.getConnectionCount(userId),
           error: error.message
         });
-      } else {
-        logger.info('✅ [SYNC JOB MANAGER] SSE event sync.failed sent successfully', { userId, syncId });
+
+        const sseFailed = sseHub.sendEvent(userId, 'sync.failed', {
+          type: 'sync',
+          status: 'failed',
+          syncId: syncId,
+          error: error.message,
+          message: `Sync failed: ${error.message}`,
+          timestamp: new Date().toISOString()
+        });
+
+        if (!sseFailed) {
+          logger.warn('⚠️ [SYNC JOB MANAGER] No SSE connection found for sync.failed event', {
+            userId,
+            syncId,
+            connectedUsers: sseHub.getConnectedUsers(),
+            error: error.message
+          });
+        } else {
+          logger.info('✅ [SYNC JOB MANAGER] SSE event sync.failed sent successfully', { userId, syncId });
+        }
+
+        // Also send as 'message' event for backward compatibility
+        sseHub.sendEvent(userId, 'message', {
+          type: 'sync',
+          status: 'failed',
+          syncId: syncId,
+          error: error.message,
+          message: `Sync failed: ${error.message}`,
+          timestamp: new Date().toISOString()
+        });
+
+        throw error;
       }
-
-      // Also send as 'message' event for backward compatibility
-      sseHub.sendEvent(userId, 'message', {
-        type: 'sync',
-        status: 'failed',
-        syncId: syncId,
-        error: error.message,
-        message: `Sync failed: ${error.message}`,
-        timestamp: new Date().toISOString()
-      });
-
-      throw error;
-    }
     };
 
     // Race between sync execution and timeout
@@ -760,7 +760,7 @@ class SyncJobManager {
           syncId,
           duration: Date.now() - syncStartTime
         });
-        
+
         syncStatus.status = 'failed';
         syncStatus.error = `Sync timeout after ${SYNC_TIMEOUT_MS / 1000} seconds`;
         syncStatus.message = `Sync failed: Timeout after ${SYNC_TIMEOUT_MS / 1000} seconds`;
@@ -828,20 +828,20 @@ class SyncJobManager {
       }
 
       const metadata = (data.metadata as any) || {};
-      
+
       // If metadata is missing the new fields (old sync), try to recalculate from database
       // This handles syncs created before we added all the data type counts
-      const hasNewFields = metadata.inventoryCount !== undefined || 
-                           metadata.shipmentsCount !== undefined ||
-                           metadata.returnsCount !== undefined;
-      
+      const hasNewFields = metadata.inventoryCount !== undefined ||
+        metadata.shipmentsCount !== undefined ||
+        metadata.returnsCount !== undefined;
+
       // If old sync format and completed, try to recalculate counts from actual database records
       if (!hasNewFields && normalizedStatus === 'completed') {
         logger.warn(`Sync ${data.sync_id} has old metadata format (missing data type counts). Attempting to recalculate from database...`, {
           userId: data.user_id,
           syncId: data.sync_id
         });
-        
+
         try {
           // Recalculate counts from actual database records
           const syncStartDate = metadata.startedAt || data.created_at;
@@ -855,7 +855,7 @@ class SyncJobManager {
             // Discovery Agent stores claims in detection_results table, not claims table
             supabase.from('detection_results').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).eq('sync_id', data.sync_id)
           ]);
-          
+
           // Update metadata with recalculated counts
           const recalculatedMetadata = {
             ...metadata,
@@ -868,7 +868,7 @@ class SyncJobManager {
             feesCount: feesCount.count || 0,
             claimsDetected: claimsCount.count || metadata.claimsDetected || 0
           };
-          
+
           // Save recalculated metadata back to database (async, don't wait)
           supabase.from('sync_progress')
             .update({ metadata: recalculatedMetadata })
@@ -884,7 +884,7 @@ class SyncJobManager {
             .catch((err) => {
               logger.error(`Failed to update recalculated metadata for sync ${data.sync_id}:`, err);
             });
-          
+
           // Use recalculated metadata for this response
           Object.assign(metadata, recalculatedMetadata);
         } catch (recalcError: any) {
@@ -892,11 +892,11 @@ class SyncJobManager {
           // Continue with old metadata if recalculation fails
         }
       }
-      
+
       // ALWAYS query database directly for completed/failed syncs (most reliable)
       // For running syncs, use metadata for speed, but verify with database if metadata shows 0
       let claimsDetected = metadata.claimsDetected || 0;
-      
+
       // For completed/failed syncs, ALWAYS use database query (source of truth)
       // For running syncs with progress >= 80%, check database if metadata shows 0
       if (normalizedStatus === 'completed' || normalizedStatus === 'failed') {
@@ -907,21 +907,21 @@ class SyncJobManager {
           status: normalizedStatus,
           metadataClaimsDetected: metadata.claimsDetected
         });
-        
+
         const syncResults = await this.getSyncResults(data.user_id, data.sync_id);
         claimsDetected = syncResults.claimsDetected;
-        
+
         logger.info('✅ [SYNC JOB MANAGER] Got claimsDetected from database', {
           userId: data.user_id,
           syncId: data.sync_id,
           databaseCount: syncResults.claimsDetected,
           previousMetadataCount: metadata.claimsDetected
         });
-        
+
         // Update metadata for future requests if it was wrong (async, don't wait)
         if (metadata.claimsDetected !== claimsDetected) {
           supabase.from('sync_progress')
-            .update({ 
+            .update({
               metadata: { ...metadata, claimsDetected },
               updated_at: new Date().toISOString()
             })
@@ -946,7 +946,7 @@ class SyncJobManager {
           progress: data.progress,
           metadataClaimsDetected: metadata.claimsDetected
         });
-        
+
         const syncResults = await this.getSyncResults(data.user_id, data.sync_id);
         if (syncResults.claimsDetected > 0) {
           claimsDetected = syncResults.claimsDetected;
@@ -957,7 +957,7 @@ class SyncJobManager {
           });
         }
       }
-      
+
       return {
         syncId: data.sync_id,
         userId: data.user_id,
@@ -987,7 +987,7 @@ class SyncJobManager {
    */
   async cancelSync(syncId: string, userId: string): Promise<boolean> {
     const job = this.runningJobs.get(syncId);
-    
+
     // Check if job exists in memory
     if (job) {
       // Verify it belongs to the user
@@ -997,14 +997,14 @@ class SyncJobManager {
 
       // Cancel the job
       job.cancel();
-      
+
       // Update database
       await this.updateSyncStatusInDatabase(syncId, userId, {
         status: 'cancelled',
         message: 'Sync cancelled by user',
         completedAt: new Date().toISOString()
       });
-      
+
       return true;
     }
 
@@ -1051,9 +1051,9 @@ class SyncJobManager {
         .from('sync_progress')
         .update({
           status: updates.status === 'running' ? 'running' :
-                  updates.status === 'detecting' ? 'detecting' :
-                  updates.status === 'completed' ? 'completed' :
-                  updates.status === 'failed' ? 'failed' :
+            updates.status === 'detecting' ? 'detecting' :
+              updates.status === 'completed' ? 'completed' :
+                updates.status === 'failed' ? 'failed' :
                   updates.status === 'cancelled' ? 'cancelled' : 'running',
           current_step: updates.message,
           progress: updates.progress,
@@ -1456,7 +1456,7 @@ class SyncJobManager {
   private sendProgressUpdate(userId: string, syncStatus: SyncJobStatus): void {
     // Only log connection status for important progress updates (every 20%)
     const shouldLog = syncStatus.progress % 20 === 0 || syncStatus.progress === 100;
-    
+
     if (shouldLog) {
       logger.debug('🔍 [SYNC JOB MANAGER] Sending progress update', {
         userId,
@@ -1520,7 +1520,7 @@ class SyncJobManager {
       }
 
       const metadata = (syncData.metadata as any) || {};
-      
+
       // Also query actual counts from database for accuracy
       const [ordersCount, claimsCount] = await Promise.all([
         // Count orders processed in this sync (if we track this)
@@ -1540,7 +1540,7 @@ class SyncJobManager {
 
       // Always use actual database count for claimsDetected (metadata may be stale)
       const actualClaimsDetected = (claimsCount.count ?? 0) as number;
-      
+
       logger.info('🔍 [SYNC JOB MANAGER] getSyncResults query results', {
         userId,
         syncId,
@@ -1548,7 +1548,7 @@ class SyncJobManager {
         databaseClaimsCount: actualClaimsDetected,
         usingDatabaseCount: actualClaimsDetected > 0
       });
-      
+
       return {
         ordersProcessed: metadata.ordersProcessed || ordersCount.count || 0,
         totalOrders: metadata.totalOrders || ordersCount.count || 0,
