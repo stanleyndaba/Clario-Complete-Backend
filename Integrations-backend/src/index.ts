@@ -10,6 +10,7 @@ import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
 import { createServer } from 'http';
+import * as Sentry from '@sentry/node';
 import config from './config/env';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './utils/errorHandler';
@@ -294,7 +295,11 @@ app.use('/api/v1/inventory-sync', consolidatedInventorySyncRoutes);
 // These proxy requests to python-api-9.onrender.com
 app.use('/', proxyRoutes);
 
-// Error handling middleware
+// The error handler must be registered before any other error middleware and after all controllers
+// This is Sentry's recommended setup for Express
+Sentry.setupExpressErrorHandler(app);
+
+// Error handling middleware (fallthrough error handler)
 app.use(notFoundHandler);
 app.use(errorHandler);
 

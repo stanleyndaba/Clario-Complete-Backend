@@ -225,11 +225,14 @@ router.get('/health/detailed', async (req: Request, res: Response) => {
 });
 
 /**
- * Test Sentry error tracking
+ * Test Sentry error tracking (Sentry's recommended test endpoint)
  * GET /health/test-sentry
  * 
  * This endpoint intentionally throws an error to test Sentry integration
  * Only available in non-production environments
+ * 
+ * This snippet contains an intentional error and can be used as a test 
+ * to make sure that everything's working as expected.
  */
 router.get('/health/test-sentry', async (req: Request, res: Response) => {
   // Only allow in development/staging
@@ -239,42 +242,19 @@ router.get('/health/test-sentry', async (req: Request, res: Response) => {
     });
   }
 
-  try {
-    // Import Sentry
-    const Sentry = require('@sentry/node');
-    
-    // Test 1: Send a log
-    Sentry.logger?.info('User triggered test error', {
-      action: 'test_error_endpoint',
-    });
-    
-    // Test 2: Send a metric
-    Sentry.metrics?.count('test_counter', 1);
-    
-    // Test 3: Create a span and throw an error
-    Sentry.startSpan({
-      op: 'test',
-      name: 'Sentry Test Span',
-    }, () => {
-      // This will throw an error that Sentry will capture
-      throw new Error('This is a test error to verify Sentry integration');
-    });
-    
-    // This should never execute, but just in case:
-    res.json({
-      message: 'Test completed (unexpected - error should have been thrown)',
-    });
-  } catch (error: any) {
-    // Capture the exception with Sentry
-    const Sentry = require('@sentry/node');
-    Sentry.captureException(error);
-    
-    res.status(500).json({
-      message: 'Test error triggered successfully',
-      error: error.message,
-      note: 'Check your Sentry dashboard to see this error',
-    });
-  }
+  // Import Sentry
+  const Sentry = require('@sentry/node');
+  
+  // Send a log before throwing the error
+  Sentry.logger.info('User triggered test error', {
+    action: 'test_error_endpoint',
+  });
+  
+  // Send a test metric before throwing the error
+  Sentry.metrics.count('test_counter', 1);
+  
+  // Throw an error (Sentry's recommended test pattern)
+  throw new Error('My first Sentry error!');
 });
 
 export default router;
