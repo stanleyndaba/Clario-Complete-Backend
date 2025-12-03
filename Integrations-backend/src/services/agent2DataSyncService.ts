@@ -29,6 +29,9 @@ import agentEventLogger from './agentEventLogger';
 import { upsertDisputesAndRecoveriesFromDetections } from './disputeBackfillService';
 import axios from 'axios';
 import sseHub from '../utils/sseHub';
+import { withErrorHandling } from '../utils/errorHandlingUtils';
+import { validateClaim } from '../utils/claimValidation';
+import { preventDuplicateClaim } from '../utils/duplicateDetection';
 
 export interface SyncResult {
   success: boolean;
@@ -1984,12 +1987,24 @@ export class Agent2DataSyncService {
 
             console.log(`[AGENT 2] Batch ${batchIndex + 1} - API call attempt ${attempt}/${maxRetries}`);
 
-            const response = await axios.post(
-              `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
-              { claims: batchClaims },
+            // Wrap API call with comprehensive error handling
+            const response = await withErrorHandling(
+              async () => {
+                return await axios.post(
+                  `${this.pythonApiUrl}/api/v1/claim-detector/predict/batch`,
+                  { claims: batchClaims },
+                  {
+                    timeout: 90000, // 90 seconds timeout
+                    headers: { 'Content-Type': 'application/json' }
+                  }
+                );
+              },
               {
-                timeout: 90000, // 90 seconds timeout
-                headers: { 'Content-Type': 'application/json' }
+                service: 'python-detection-api',
+                operation: 'predictBatch',
+                userId,
+                timeoutMs: 90000,
+                maxRetries: maxRetries
               }
             );
 
@@ -2580,30 +2595,131 @@ export class Agent2DataSyncService {
       return; // Don't throw - allow detection to complete in demo mode
     }
 
-    const records = detections.map(detection => ({
-      seller_id: userId,
-      sync_id: syncId,
-      anomaly_type: detection.anomaly_type,
-      severity: detection.severity,
-      estimated_value: detection.estimated_value,
-      currency: detection.currency,
-      confidence_score: detection.confidence_score,
-      evidence: detection.evidence,
-      related_event_ids: detection.related_event_ids || [],
-      discovery_date: detection.discovery_date ? new Date(detection.discovery_date).toISOString() : new Date().toISOString(),
-      deadline_date: detection.deadline_date ? new Date(detection.deadline_date).toISOString() : null,
-      days_remaining: detection.days_remaining,
-      expired: detection.days_remaining !== null && detection.days_remaining === 0,
-      expiration_alert_sent: false,
-      status: 'pending',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    }));
+    // Validate and filter detections before storing
+    const validatedRecords: any[] = [];
+    const skippedDuplicates: string[] = [];
+    const validationErrors: string[] = [];
 
-    const { data: insertedDetections, error } = await supabaseAdmin
-      .from('detection_results')
-      .insert(records)
-      .select('id, seller_id, estimated_value, currency, severity, confidence_score, anomaly_type, created_at, sync_id');
+    for (const detection of detections) {
+      try {
+        // Create claim data structure for validation
+        const claimId = detection.claim_id || `claim_${userId}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const claimData = {
+          claim_id: claimId,
+          user_id: userId,
+          seller_id: userId,
+          amount: detection.estimated_value || 0,
+          claim_date: detection.discovery_date || new Date().toISOString(),
+          category: detection.anomaly_type,
+          order_id: detection.related_event_ids?.[0]
+        };
+
+        // Validate claim data
+        const validation = validateClaim(claimData);
+        if (!validation.isValid) {
+          validationErrors.push(`Claim ${claimData.claim_id}: ${Object.values(validation.errors).join(', ')}`);
+          continue;
+        }
+
+        // Check for duplicates
+        try {
+          await preventDuplicateClaim({
+            claimId: validation.normalized.claim_id!,
+            userId,
+            orderId: validation.normalized.order_id,
+            amount: validation.normalized.amount
+          });
+        } catch (duplicateError: any) {
+          if (duplicateError.code === 'CLAIM_ALREADY_FILED') {
+            skippedDuplicates.push(claimData.claim_id);
+            logger.debug('Skipping duplicate claim', { claimId: claimData.claim_id, userId });
+            continue;
+          }
+          throw duplicateError;
+        }
+
+        // Create validated record
+        validatedRecords.push({
+          seller_id: userId,
+          claim_id: validation.normalized.claim_id!,
+          sync_id: syncId,
+          anomaly_type: detection.anomaly_type,
+          severity: detection.severity,
+          estimated_value: validation.normalized.amount!,
+          currency: detection.currency || 'USD',
+          confidence_score: detection.confidence_score,
+          evidence: detection.evidence,
+          related_event_ids: detection.related_event_ids || [],
+          discovery_date: detection.discovery_date ? new Date(detection.discovery_date).toISOString() : new Date().toISOString(),
+          deadline_date: detection.deadline_date ? new Date(detection.deadline_date).toISOString() : null,
+          days_remaining: detection.days_remaining,
+          expired: detection.days_remaining !== null && detection.days_remaining === 0,
+          expiration_alert_sent: false,
+          status: 'pending',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+      } catch (error: any) {
+        logger.warn('Error validating detection', {
+          detection: detection.claim_id || 'unknown',
+          error: error.message,
+          userId
+        });
+        validationErrors.push(`Claim validation failed: ${error.message}`);
+      }
+    }
+
+    // Log validation results
+    if (skippedDuplicates.length > 0) {
+      logger.info('⏭️ [AGENT 2] Skipped duplicate claims', {
+        count: skippedDuplicates.length,
+        userId,
+        syncId
+      });
+    }
+
+    if (validationErrors.length > 0) {
+      logger.warn('⚠️ [AGENT 2] Validation errors detected', {
+        count: validationErrors.length,
+        errors: validationErrors.slice(0, 5), // Log first 5 errors
+        userId,
+        syncId
+      });
+    }
+
+    if (validatedRecords.length === 0) {
+      logger.warn('⚠️ [AGENT 2] No valid detections to store after validation', {
+        total: detections.length,
+        skipped: skippedDuplicates.length,
+        errors: validationErrors.length,
+        userId,
+        syncId
+      });
+      return;
+    }
+
+    // Store validated records with error handling
+    const { data: insertedDetections, error } = await withErrorHandling(
+      async () => {
+        const result = await supabaseAdmin
+          .from('detection_results')
+          .insert(validatedRecords)
+          .select('id, seller_id, estimated_value, currency, severity, confidence_score, anomaly_type, created_at, sync_id');
+        
+        if (result.error) {
+          throw new Error(result.error.message);
+        }
+        
+        return result;
+      },
+      {
+        service: 'supabase',
+        operation: 'storeDetectionResults',
+        userId,
+        timeoutMs: 30000,
+        maxRetries: 3
+      }
+    );
 
     if (error) {
       logger.error('❌ [AGENT 2] Failed to store detection results', {

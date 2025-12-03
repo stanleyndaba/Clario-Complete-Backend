@@ -5,6 +5,8 @@ import crypto from 'crypto';
 import logger from '../utils/logger';
 import { mockSPAPIService } from './mockSPAPIService';
 import { getMockDataGenerator, type MockScenario } from './mockDataGenerator';
+import { withErrorHandling } from '../utils/errorHandlingUtils';
+import { SPAPIRateLimiter } from '../utils/rateLimitHandler';
 
 export interface AmazonClaim {
   id: string;
@@ -42,6 +44,8 @@ export class AmazonService {
   // Simple in-memory cache for Financial Events API responses
   private financialEventsCache: Map<string, { data: any; expiresAt: Date }> = new Map();
   private readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+  // Rate limiter for SP-API calls
+  private rateLimiter: SPAPIRateLimiter;
 
   constructor() {
     // Support both sandbox and production modes
@@ -62,6 +66,10 @@ export class AmazonService {
         this.baseUrl = 'https://sandbox.sellingpartnerapi-na.amazon.com';
       }
     }
+    
+    // Initialize rate limiter (30 requests/minute for production, 60 for sandbox)
+    const maxRequestsPerMinute = this.isSandbox() ? 60 : 30;
+    this.rateLimiter = new SPAPIRateLimiter('amazon-sp-api', maxRequestsPerMinute);
     
     // Log environment mode on initialization
     const useMock = process.env.USE_MOCK_SPAPI === 'true';
