@@ -46,6 +46,7 @@ import evidenceSourcesRoutes from './routes/evidenceSourcesRoutes';
 import healthRoutes from './routes/healthRoutes';
 import notificationRoutes from './notifications/routes/notification_routes';
 import recoveryRoutes from './routes/recoveryRoutes';
+import learningRoutes from './routes/learningRoutes';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -283,6 +284,9 @@ logger.info('Notification routes registered at /api/notifications');
 
 app.use('/api/recoveries', recoveryRoutes);
 logger.info('Recovery routes registered at /api/recoveries');
+
+app.use('/api/learning', learningRoutes);
+logger.info('Learning routes registered at /api/learning');
 
 // Consolidated service routes (merged from separate microservices)
 app.use('/api/v1/stripe-payments', consolidatedStripeRoutes);
