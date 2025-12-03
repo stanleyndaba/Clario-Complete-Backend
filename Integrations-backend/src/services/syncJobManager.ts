@@ -3,6 +3,7 @@ import agent2DataSyncService from './agent2DataSyncService';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import sseHub from '../utils/sseHub';
 import tokenManager from '../utils/tokenManager';
+import config from '../config/env';
 
 // Standardized status values - use database values consistently
 export type SyncStatus = 'idle' | 'running' | 'detecting' | 'completed' | 'failed' | 'cancelled';
@@ -208,9 +209,9 @@ class SyncJobManager {
    * Run the actual sync job asynchronously with timeout protection
    */
   private async runSync(syncId: string, userId: string, isCancelled: () => boolean): Promise<void> {
-    // Set timeout for sync operation (180 seconds max - allows ML detection to complete)
-    // TODO: Optimize detection to reduce timeout in future iteration
-    const SYNC_TIMEOUT_MS = 180 * 1000; // 180 seconds (3 minutes)
+    // Set timeout for sync operation (configurable, default 300 seconds - allows ML detection to complete)
+    // Can be overridden via SYNC_TIMEOUT_MS environment variable
+    const SYNC_TIMEOUT_MS = config.SYNC_TIMEOUT_MS; // Default: 300 seconds (5 minutes)
     const syncStartTime = Date.now();
 
     const timeoutPromise = new Promise<void>((_, reject) => {

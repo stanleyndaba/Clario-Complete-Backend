@@ -1,7 +1,7 @@
 import { getLogger } from '../../utils/logger';
-import Notification, { 
-  CreateNotificationRequest, 
-  UpdateNotificationRequest, 
+import Notification, {
+  CreateNotificationRequest,
+  UpdateNotificationRequest,
   NotificationFilters,
   NotificationType,
   NotificationStatus,
@@ -10,6 +10,7 @@ import Notification, {
 } from '../models/notification';
 import { EmailService } from './delivery/email_service';
 import websocketService from '../../services/websocketService';
+import sseHub from '../../utils/sseHub';
 // Disable BullMQ worker for demo stability (avoid QueueScheduler import issues)
 class NoopNotificationWorker {
   async initialize(): Promise<void> { return; }
@@ -69,10 +70,10 @@ export class NotificationService {
    */
   async createNotification(event: NotificationEvent): Promise<Notification> {
     try {
-      logger.info('Creating notification', { 
-        type: event.type, 
-        user_id: event.user_id, 
-        immediate: event.immediate 
+      logger.info('Creating notification', {
+        type: event.type,
+        user_id: event.user_id,
+        immediate: event.immediate
       });
 
       // Create the notification in the database
@@ -123,9 +124,9 @@ export class NotificationService {
         }
       }
 
-      logger.info('Batch notifications created successfully', { 
-        total: events.length, 
-        successful: notifications.length 
+      logger.info('Batch notifications created successfully', {
+        total: events.length,
+        successful: notifications.length
       });
 
       return notifications;
@@ -171,7 +172,7 @@ export class NotificationService {
     try {
       logger.info('Marking notification as read', { id });
       const notification = await Notification.findById(id);
-      
+
       if (!notification) {
         throw new Error('Notification not found');
       }
@@ -191,10 +192,10 @@ export class NotificationService {
   async markMultipleAsRead(ids: string[]): Promise<Notification[]> {
     try {
       logger.info('Marking multiple notifications as read', { count: ids.length });
-      
+
       const promises = ids.map(id => this.markAsRead(id));
       const results = await Promise.allSettled(promises);
-      
+
       const successful: Notification[] = [];
       const failed: string[] = [];
 
@@ -203,17 +204,17 @@ export class NotificationService {
           successful.push(result.value);
         } else {
           failed.push(ids[index]);
-          logger.error('Failed to mark notification as read:', { 
-            id: ids[index], 
-            error: result.reason 
+          logger.error('Failed to mark notification as read:', {
+            id: ids[index],
+            error: result.reason
           });
         }
       });
 
-      logger.info('Batch mark as read completed', { 
-        total: ids.length, 
-        successful: successful.length, 
-        failed: failed.length 
+      logger.info('Batch mark as read completed', {
+        total: ids.length,
+        successful: successful.length,
+        failed: failed.length
       });
 
       return successful;
@@ -230,7 +231,7 @@ export class NotificationService {
     try {
       logger.info('Updating notification', { id, updates });
       const notification = await Notification.findById(id);
-      
+
       if (!notification) {
         throw new Error('Notification not found');
       }
@@ -251,7 +252,7 @@ export class NotificationService {
     try {
       logger.info('Deleting notification', { id });
       const notification = await Notification.findById(id);
-      
+
       if (!notification) {
         throw new Error('Notification not found');
       }
@@ -270,9 +271,9 @@ export class NotificationService {
   async getNotificationStats(user_id: string): Promise<NotificationStats> {
     try {
       logger.info('Fetching notification stats for user', { user_id });
-      
+
       const allNotifications = await Notification.findMany({ user_id });
-      
+
       const stats: NotificationStats = {
         total: allNotifications.length,
         unread: allNotifications.filter(n => n.isUnread()).length,
@@ -309,19 +310,19 @@ export class NotificationService {
   async cleanupExpiredNotifications(): Promise<number> {
     try {
       logger.info('Starting cleanup of expired notifications');
-      
+
       const allNotifications = await Notification.findMany({});
       const expiredNotifications = allNotifications.filter(n => n.isExpired());
-      
+
       let deletedCount = 0;
       for (const notification of expiredNotifications) {
         try {
           await notification.delete();
           deletedCount++;
         } catch (error) {
-          logger.error('Error deleting expired notification:', { 
-            id: notification.id, 
-            error 
+          logger.error('Error deleting expired notification:', {
+            id: notification.id,
+            error
           });
         }
       }
@@ -339,24 +340,24 @@ export class NotificationService {
    */
   private async deliverNotification(notification: Notification): Promise<void> {
     try {
-      logger.info('Delivering notification', { 
-        id: notification.id, 
-        channel: notification.channel 
+      logger.info('Delivering notification', {
+        id: notification.id,
+        channel: notification.channel
       });
 
       const deliveryPromises: Promise<void>[] = [];
 
       // Deliver via WebSocket if in-app or both
-      if (notification.channel === NotificationChannel.IN_APP || 
-          notification.channel === NotificationChannel.BOTH) {
+      if (notification.channel === NotificationChannel.IN_APP ||
+        notification.channel === NotificationChannel.BOTH) {
         deliveryPromises.push(
           this.deliverViaWebSocket(notification)
         );
       }
 
       // Deliver via email if email or both
-      if (notification.channel === NotificationChannel.EMAIL || 
-          notification.channel === NotificationChannel.BOTH) {
+      if (notification.channel === NotificationChannel.EMAIL ||
+        notification.channel === NotificationChannel.BOTH) {
         deliveryPromises.push(
           this.emailService.sendNotification(notification)
         );
@@ -367,7 +368,7 @@ export class NotificationService {
 
       // Mark as delivered
       await notification.markAsDelivered();
-      
+
       logger.info('Notification delivered successfully', { id: notification.id });
     } catch (error) {
       logger.error('Error delivering notification:', error);
@@ -377,25 +378,34 @@ export class NotificationService {
   }
 
   /**
-   * Deliver notification via WebSocket
+   * Deliver notification via WebSocket and SSE
    */
   private async deliverViaWebSocket(notification: Notification): Promise<void> {
     try {
-      websocketService.sendNotificationToUser(notification.user_id, {
+      const payload = {
         type: this.getNotificationType(notification.priority),
         title: notification.title,
         message: notification.message,
-        data: notification.payload
-      });
+        data: notification.payload,
+        timestamp: notification.created_at,
+        id: notification.id,
+        read: false
+      };
 
-      logger.debug('Notification sent via WebSocket', {
+      // Send via Socket.IO
+      websocketService.sendNotificationToUser(notification.user_id, payload);
+
+      // Send via SSE
+      sseHub.sendEvent(notification.user_id, 'notification', payload);
+
+      logger.debug('Notification sent via Realtime (WebSocket + SSE)', {
         id: notification.id,
         userId: notification.user_id
       });
 
     } catch (error) {
-      logger.error('Error sending notification via WebSocket:', error);
-      throw error;
+      logger.error('Error sending notification via Realtime:', error);
+      // Don't throw, as this is best-effort delivery
     }
   }
 

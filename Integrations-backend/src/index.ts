@@ -39,6 +39,8 @@ import workflowRoutes from './routes/workflowRoutes';
 import evidenceRoutes from './routes/evidenceRoutes';
 import evidenceSourcesRoutes from './routes/evidenceSourcesRoutes';
 import healthRoutes from './routes/healthRoutes';
+import notificationRoutes from './notifications/routes/notification_routes';
+import recoveryRoutes from './routes/recoveryRoutes';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -274,6 +276,12 @@ logger.info('Billing routes registered at /api/billing');
 import documentsRoutes from './routes/documentsRoutes';
 app.use('/api/documents', documentsRoutes);
 logger.info('Documents routes registered at /api/documents');
+
+app.use('/api/notifications', notificationRoutes);
+logger.info('Notification routes registered at /api/notifications');
+
+app.use('/api/recoveries', recoveryRoutes);
+logger.info('Recovery routes registered at /api/recoveries');
 
 // Consolidated service routes (merged from separate microservices)
 app.use('/api/v1/stripe-payments', consolidatedStripeRoutes);

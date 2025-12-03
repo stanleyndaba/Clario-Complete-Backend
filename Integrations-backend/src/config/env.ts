@@ -81,6 +81,9 @@ const config = {
   USE_MOCK_DATA_GENERATOR: process.env.USE_MOCK_DATA_GENERATOR !== 'false', // Default: true
   MOCK_SCENARIO: (process.env.MOCK_SCENARIO as 'normal_week' | 'high_volume' | 'with_issues') || 'normal_week',
   MOCK_RECORD_COUNT: process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75, // Default: 75 (50-100 range)
+
+  // Sync timeout configuration (in milliseconds)
+  SYNC_TIMEOUT_MS: toInt(process.env.SYNC_TIMEOUT_MS, 300 * 1000), // Default: 300 seconds (5 minutes) for ML detection
 };
 
 export default config;
