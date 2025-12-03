@@ -56,8 +56,7 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
       update: (data: any) => createMockQueryBuilder(), // Use query builder for update chains
       delete: () => createMockQueryBuilder() // Use query builder for delete chains
     })
-  })
-} as any;
+  } as any;
 
 // In demo mode, admin client is same as regular client
 supabaseAdmin = supabase;
