@@ -1,3 +1,11 @@
+# IMPORTANT: Import Sentry instrumentation FIRST, before any other imports
+# This ensures Sentry captures all errors and traces from the start
+try:
+    from .instrument import *  # type: ignore
+except Exception as _sentry_err:
+    # Non-critical - app will work without Sentry
+    print(f"[startup-warning] Sentry instrumentation not available: {_sentry_err}")
+
 # Compatibility patch for Python 3.13
 try:
     from .compatibility_patch import *  # type: ignore
@@ -52,9 +60,8 @@ from .services.service_directory import service_directory
 
 logger = logging.getLogger(__name__)
 
-# Initialize error tracking
-from .common.errors import initialize_sentry
-initialize_sentry()
+# Note: Sentry is already initialized via instrument.py import at the top
+# The old initialize_sentry() call is no longer needed
 
 # Simplified lifespan for debugging
 @asynccontextmanager
@@ -306,6 +313,60 @@ async def healthz():
     
     status_code = 200 if health["status"] == "ok" else 503
     return JSONResponse(status_code=status_code, content=health)
+
+@app.get("/health/test-sentry")
+async def test_sentry():
+    """
+    Test Sentry error tracking (Sentry's recommended test endpoint)
+    This endpoint intentionally throws an error to test Sentry integration
+    Only available in non-production environments
+    
+    When you open this endpoint, a transaction in the Performance section 
+    of Sentry will be created, and an error event will be sent to Sentry.
+    """
+    import os
+    import sentry_sdk
+    
+    # Only allow in development/staging
+    if os.getenv("ENV") == "production" or os.getenv("NODE_ENV") == "production":
+        return JSONResponse(
+            status_code=403,
+            content={"error": "Test endpoint not available in production"}
+        )
+    
+    try:
+        # Test 1: Send logs using Sentry's logger (recommended way)
+        sentry_sdk.logger.info('User triggered test error', extra={
+            'action': 'test_error_endpoint',
+            'service': 'python-api'
+        })
+        sentry_sdk.logger.warning('This is a warning message')
+        
+        # Test 2: Send metrics (if you want to test metrics)
+        try:
+            from sentry_sdk import metrics
+            metrics.count("test.counter", 1)
+            metrics.gauge("test.gauge", 42)
+        except ImportError:
+            pass  # Metrics might not be available in all versions
+        
+        # Test 3: Trigger an error (Sentry's recommended test)
+        # This will create a transaction in Performance section and an error event
+        division_by_zero = 1 / 0  # This will raise ZeroDivisionError
+        
+    except ZeroDivisionError as e:
+        # Sentry will automatically capture this error
+        # We can also explicitly capture it if needed
+        sentry_sdk.capture_exception(e)
+        
+        return JSONResponse(
+            status_code=500,
+            content={
+                "message": "Test error triggered successfully",
+                "error": "Division by zero (intentional test)",
+                "note": "Check your Sentry dashboard - you should see this error in Issues and a transaction in Performance"
+            }
+        )
 
 # Consolidated routers - all services merged into main-api
 from .api.consolidated.mcde_router import mcde_router
