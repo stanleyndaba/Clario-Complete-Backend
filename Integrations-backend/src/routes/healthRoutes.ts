@@ -224,5 +224,58 @@ router.get('/health/detailed', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * Test Sentry error tracking
+ * GET /health/test-sentry
+ * 
+ * This endpoint intentionally throws an error to test Sentry integration
+ * Only available in non-production environments
+ */
+router.get('/health/test-sentry', async (req: Request, res: Response) => {
+  // Only allow in development/staging
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({
+      error: 'Test endpoint not available in production',
+    });
+  }
+
+  try {
+    // Import Sentry
+    const Sentry = require('@sentry/node');
+    
+    // Test 1: Send a log
+    Sentry.logger?.info('User triggered test error', {
+      action: 'test_error_endpoint',
+    });
+    
+    // Test 2: Send a metric
+    Sentry.metrics?.count('test_counter', 1);
+    
+    // Test 3: Create a span and throw an error
+    Sentry.startSpan({
+      op: 'test',
+      name: 'Sentry Test Span',
+    }, () => {
+      // This will throw an error that Sentry will capture
+      throw new Error('This is a test error to verify Sentry integration');
+    });
+    
+    // This should never execute, but just in case:
+    res.json({
+      message: 'Test completed (unexpected - error should have been thrown)',
+    });
+  } catch (error: any) {
+    // Capture the exception with Sentry
+    const Sentry = require('@sentry/node');
+    Sentry.captureException(error);
+    
+    res.status(500).json({
+      message: 'Test error triggered successfully',
+      error: error.message,
+      note: 'Check your Sentry dashboard to see this error',
+    });
+  }
+});
+
 export default router;
 

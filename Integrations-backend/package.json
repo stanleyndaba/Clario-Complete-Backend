@@ -60,7 +60,10 @@
     "test:e2e-4-5-6": "ts-node scripts/test-e2e-agents-4-5-6.ts",
     "test:e2e-4-11": "ts-node scripts/test-e2e-agents-4-11.ts",
     "test:generate-large-dataset": "ts-node scripts/generate-large-dataset.ts",
-    "test:e2e-all-agents": "ts-node scripts/test-e2e-all-agents.ts"
+    "test:e2e-all-agents": "ts-node scripts/test-e2e-all-agents.ts",
+    "test:error-handling": "ts-node scripts/test-error-handling.ts",
+    "test:error-handling:unit": "jest tests/utils/errorHandlingUtils.test.ts",
+    "test:error-handling:integration": "jest tests/services/errorHandlingIntegration.test.ts"
   },
   "keywords": [
     "integrations",
@@ -107,7 +110,8 @@
     "stripe": "^14.5.0",
     "uuid": "^9.0.1",
     "winston": "^3.11.0",
-    "winston-daily-rotate-file": "^5.0.0"
+    "winston-daily-rotate-file": "^5.0.0",
+    "@sentry/node": "^7.120.4"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

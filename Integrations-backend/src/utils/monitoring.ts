@@ -1,73 +1,23 @@
 /**
  * Monitoring and Error Tracking Setup for Clario Backend
  * Integrates with Sentry for error tracking and custom metrics
+ * 
+ * Note: Sentry is initialized in instrument.ts (imported at the top of index.ts)
+ * This file provides utility functions to interact with Sentry
  */
 
 import logger from './logger';
 
-// Sentry types (optional dependency - install with: npm install @sentry/node)
+// Import Sentry (it's already initialized in instrument.ts)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let Sentry: any = null;
 
-/**
- * Initialize monitoring services
- */
-export async function initializeMonitoring(): Promise<void> {
-  const sentryDsn = process.env.SENTRY_DSN;
-  
-  if (sentryDsn) {
-    try {
-      // Dynamically import Sentry (optional dependency)
-      // @ts-ignore - Sentry is an optional dependency
-      Sentry = await import('@sentry/node').catch(() => null);
-      if (!Sentry) {
-        logger.info('Sentry package not installed - error tracking disabled');
-        return;
-      }
-      
-      Sentry.init({
-        dsn: sentryDsn,
-        environment: process.env.NODE_ENV || 'development',
-        release: process.env.APP_VERSION || '1.0.0',
-        
-        // Performance monitoring
-        tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
-        
-        // Filter out noisy errors
-        beforeSend(event: any, hint: any) {
-          const error = hint?.originalException;
-          
-          // Don't send 4xx client errors to Sentry
-          if (error?.statusCode && error.statusCode >= 400 && error.statusCode < 500) {
-            return null;
-          }
-          
-          // Don't send rate limit errors
-          if (error?.code === 'SPAPI_RATE_LIMITED') {
-            return null;
-          }
-          
-          return event;
-        },
-        
-        // Attach user context
-        initialScope: {
-          tags: {
-            service: 'clario-node-api',
-          },
-        },
-      });
-      
-      logger.info('Sentry monitoring initialized', { environment: process.env.NODE_ENV });
-    } catch (error) {
-      logger.warn('Sentry not available - error tracking disabled', { 
-        error: (error as Error).message,
-        note: 'Install @sentry/node to enable error tracking'
-      });
-    }
-  } else {
-    logger.info('Sentry DSN not configured - error tracking disabled');
-  }
+// Try to load Sentry (it may not be available if DSN is not set)
+try {
+  Sentry = require('@sentry/node');
+} catch {
+  // Sentry not available - that's OK, we'll just log locally
+  Sentry = null;
 }
 
 /**
@@ -356,7 +306,6 @@ export async function performHealthCheck(): Promise<HealthCheckResult> {
 }
 
 export default {
-  initializeMonitoring,
   captureException,
   captureMessage,
   setUser,
