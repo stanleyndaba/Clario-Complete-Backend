@@ -24,7 +24,8 @@ const migrations = [
   '013_evidence_matching_worker.sql',
   '014_fix_parser_jobs.sql',
   '015_refund_filing_worker.sql',
-  '024_add_expected_payout_date_to_disputes.sql'
+  '024_add_expected_payout_date_to_disputes.sql',
+  '016_ensure_parser_jobs_user_id.sql'
 ];
 
 async function runMigrationsViaSupabase(sql: string): Promise<boolean> {
