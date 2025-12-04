@@ -27,11 +27,8 @@ if (sentryDsn) {
     // Tracing - capture 100% of transactions
     tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
     
-    // Set sampling rate for profiling - this is evaluated only once per SDK.init call
-    profileSessionSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
-    
-    // Trace lifecycle automatically enables profiling during active traces
-    profileLifecycle: 'trace',
+    // Profiling sample rate (fraction of transactions to profile)
+    profilesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
     
     // Setting this option to true will send default PII data to Sentry
     // For example, automatic IP address collection on events
