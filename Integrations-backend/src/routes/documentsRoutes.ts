@@ -38,9 +38,22 @@ router.get('/', async (req: Request, res: Response) => {
 
         // Transform to match expected frontend format
         // The frontend expects: id, name, uploadDate, status, supplier, invoice, amount, parsedVia, etc.
+        // Worker stores parsed data in: parsed_metadata column (primary) or metadata column (fallback)
+        // Also check direct columns (supplier_name, invoice_number, total_amount) for legacy compatibility
         const formattedDocuments = documents.map(doc => {
+            // Primary: parsed_metadata (where documentParsingWorker stores data)
+            const parsedMetadata = doc.parsed_metadata || {};
+            // Fallback: metadata column (may contain parsed_data or parsed_metadata nested)
             const metadata = doc.metadata || {};
-            const parsedData = metadata.parsed_data || metadata.parsed_metadata || metadata;
+            const nestedParsedData = metadata.parsed_data || metadata.parsed_metadata || {};
+
+            // Merge all sources: parsed_metadata > direct columns > metadata.parsed_data > metadata
+            const supplier = parsedMetadata.supplier_name || doc.supplier_name || nestedParsedData.supplier_name || nestedParsedData.supplier || metadata.supplier_name || null;
+            const invoice = parsedMetadata.invoice_number || doc.invoice_number || nestedParsedData.invoice_number || nestedParsedData.invoice_no || metadata.invoice_number || null;
+            const amount = parsedMetadata.total_amount || doc.total_amount || nestedParsedData.total_amount || nestedParsedData.total || nestedParsedData.amount || metadata.total_amount || null;
+            const lineItems = parsedMetadata.line_items || nestedParsedData.line_items || nestedParsedData.items || [];
+            const confidence = parsedMetadata.confidence_score || doc.parser_confidence || nestedParsedData.confidence_score || metadata.parser_confidence || null;
+            const extractionMethod = parsedMetadata.extraction_method || nestedParsedData.extraction_method || metadata.parser_type || metadata.parsedVia || null;
 
             return {
                 id: doc.id,
@@ -50,16 +63,17 @@ router.get('/', async (req: Request, res: Response) => {
                 size: doc.size_bytes,
                 type: doc.content_type,
                 source: doc.source_id ? 'gmail' : 'upload',
-                // Extract parsed fields for table display
-                supplier: parsedData.supplier_name || parsedData.supplier || metadata.supplier_name || null,
-                invoice: parsedData.invoice_number || parsedData.invoice_no || metadata.invoice_number || null,
-                amount: parsedData.total_amount || parsedData.total || parsedData.amount || metadata.total_amount || null,
-                parsedVia: metadata.parser_type || metadata.parsedVia || (parsedData.confidence_score ? 'ml' : null),
-                parser_status: metadata.parser_status || doc.parser_status || 'pending',
-                parser_confidence: metadata.parser_confidence || parsedData.confidence_score || null,
-                linkedSKUs: (parsedData.line_items || parsedData.items || []).length || 0,
-                // Include raw metadata for advanced usage
-                metadata: doc.metadata
+                // Parsed fields for table display
+                supplier: supplier,
+                invoice: invoice,
+                amount: amount,
+                parsedVia: extractionMethod,
+                parser_status: parsedMetadata.parser_status || doc.parser_status || metadata.parser_status || 'pending',
+                parser_confidence: confidence,
+                linkedSKUs: lineItems.length || 0,
+                // Include raw data for debugging
+                metadata: doc.metadata,
+                parsed_metadata: doc.parsed_metadata
             };
         });
 
