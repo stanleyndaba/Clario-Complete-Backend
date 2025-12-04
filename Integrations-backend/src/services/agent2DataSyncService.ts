@@ -18,7 +18,7 @@
 
 import logger from '../utils/logger';
 import tokenManager from '../utils/tokenManager';
-import { supabaseAdmin } from '../database/supabaseClient';
+import { supabaseAdmin, supabase } from '../database/supabaseClient';
 import amazonService from './amazonService';
 import { OrdersService } from './ordersService';
 import { ShipmentsService } from './shipmentsService';
@@ -2585,14 +2585,19 @@ export class Agent2DataSyncService {
     userId: string,
     syncId: string
   ): Promise<void> {
-    // Handle demo mode (no real database)
-    if (!supabaseAdmin || typeof supabaseAdmin.from !== 'function') {
-      logger.warn('⚠️ [AGENT 2] No database client available (demo mode), skipping storage', {
+    // Use supabaseAdmin if available, otherwise fall back to regular supabase client
+    // CRITICAL: We must NOT skip storage - use whichever client is available
+    const dbClient = supabaseAdmin || supabase;
+
+    if (!dbClient || typeof dbClient.from !== 'function') {
+      logger.error('❌ [AGENT 2] No database client available - cannot store detection results!', {
         userId,
         syncId,
-        detectionsCount: detections.length
+        detectionsCount: detections.length,
+        supabaseAdminAvailable: !!supabaseAdmin,
+        supabaseAvailable: !!supabase
       });
-      return; // Don't throw - allow detection to complete in demo mode
+      throw new Error('No database client available for storing detection results');
     }
 
     // Validate and filter detections before storing
