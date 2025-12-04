@@ -3,13 +3,19 @@
  * 
  * This file must be imported at the very top of your application entry point
  * to ensure Sentry captures all errors and traces from the start.
+/**
+ * Sentry Instrumentation for Node.js
+ * 
+ * This file must be imported at the very top of your application entry point
+ * to ensure Sentry captures all errors and traces from the start.
  * 
  * Import this file BEFORE any other imports in index.ts:
  *   import './instrument';
  */
 
 import * as Sentry from '@sentry/node';
-import { nodeProfilingIntegration } from '@sentry/profiling-node';
+// Profiling disabled due to Node 25 compatibility issues on Render
+// import { nodeProfilingIntegration } from '@sentry/profiling-node';
 
 // Only initialize if DSN is provided
 const sentryDsn = process.env.SENTRY_DSN;
@@ -21,14 +27,14 @@ if (sentryDsn) {
     release: process.env.APP_VERSION || '1.0.0',
 
     integrations: [
-      nodeProfilingIntegration(),
+      // nodeProfilingIntegration(),
     ],
 
     // Tracing - capture 100% of transactions
     tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
 
-    // Profiling sample rate (fraction of transactions to profile)
-    profilesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
+    // Profiling disabled
+    // profilesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
 
     // Setting this option to true will send default PII data to Sentry
     sendDefaultPii: true,
@@ -63,8 +69,7 @@ if (sentryDsn) {
     },
   });
 
-  console.log('[Sentry] Initialized successfully with profiling');
+  console.log('[Sentry] Initialized successfully (profiling disabled)');
 } else {
   console.log('[Sentry] DSN not configured - error tracking disabled');
 }
-
