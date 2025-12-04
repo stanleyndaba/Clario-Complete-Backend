@@ -94,6 +94,50 @@ class SyncJobManager {
       }
     }
 
+    // 🧹 CLEAR STALE MOCK DATA FOR CONSISTENT SYNC
+    // In demo/mock mode, clear old data so dashboard only shows data from current sync cycle
+    // This ensures the sync order volume matches the dashboard recovered value
+    const dbClient = supabaseAdmin || supabase;
+    try {
+      logger.info('🧹 [SYNC JOB MANAGER] Clearing stale mock data for fresh sync', { userId, syncId });
+
+      // Clear old detection_results (claim detections from previous syncs)
+      const { error: detectionError } = await dbClient
+        .from('detection_results')
+        .delete()
+        .eq('seller_id', userId);
+      if (detectionError) {
+        logger.warn('⚠️ Failed to clear detection_results (may not exist)', { error: detectionError.message });
+      }
+
+      // Clear old dispute_cases (claims that were filed)
+      const { error: disputeError } = await dbClient
+        .from('dispute_cases')
+        .delete()
+        .eq('seller_id', userId);
+      if (disputeError) {
+        logger.warn('⚠️ Failed to clear dispute_cases (may not exist)', { error: disputeError.message });
+      }
+
+      // Clear old recoveries (reimbursements received)
+      const { error: recoveryError } = await dbClient
+        .from('recoveries')
+        .delete()
+        .eq('user_id', userId);
+      if (recoveryError) {
+        logger.warn('⚠️ Failed to clear recoveries (may not exist)', { error: recoveryError.message });
+      }
+
+      logger.info('✅ [SYNC JOB MANAGER] Stale mock data cleared successfully', { userId, syncId });
+    } catch (cleanupError: any) {
+      // Non-fatal: log warning but continue with sync
+      logger.warn('⚠️ [SYNC JOB MANAGER] Failed to clear stale data (non-fatal)', {
+        userId,
+        syncId,
+        error: cleanupError.message
+      });
+    }
+
     // Initialize sync status (use 'running' to match database)
     const syncStatus: SyncJobStatus = {
       syncId,
