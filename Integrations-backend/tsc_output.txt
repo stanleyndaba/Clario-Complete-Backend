@@ -1,0 +1,3 @@
+src/index.ts(13,25): error TS2307: Cannot find module '@sentry/node' or its corresponding type declarations.
+src/instrument.ts(11,25): error TS2307: Cannot find module '@sentry/node' or its corresponding type declarations.
+src/instrument.ts(12,42): error TS2307: Cannot find module '@sentry/profiling-node' or its corresponding type declarations.
