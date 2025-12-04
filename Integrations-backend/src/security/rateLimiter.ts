@@ -88,7 +88,7 @@ export function createRateLimiter(options: {
  */
 export const authRateLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // 100 requests per 15 minutes (as specified)
+  max: 1000, // 1000 requests per 15 minutes (increased for testing)
   message: 'Too many authentication requests from this IP, please try again later.',
   skipSuccessfulRequests: false, // Count all requests
 });
