@@ -29,7 +29,7 @@ function logTest(name: string, passed: boolean, error?: string, details?: any) {
 
 async function testMigration() {
   logger.info('\n📋 Testing Migration...');
-  
+
   try {
     const client = supabaseAdmin || supabase;
 
@@ -38,7 +38,7 @@ async function testMigration() {
       .from('evidence_documents')
       .select('id, parsed_metadata')
       .limit(1);
-    
+
     if (metadataError && metadataError.message?.includes('column') && metadataError.message?.includes('parsed_metadata')) {
       logTest('Migration: parsed_metadata column', false, metadataError.message);
       return false;
@@ -50,7 +50,7 @@ async function testMigration() {
       .from('evidence_documents')
       .select('id, parser_status')
       .limit(1);
-    
+
     if (statusError && statusError.message?.includes('column') && statusError.message?.includes('parser_status')) {
       logTest('Migration: parser_status column', false, statusError.message);
       return false;
@@ -62,7 +62,7 @@ async function testMigration() {
       .from('document_parsing_errors')
       .select('id')
       .limit(1);
-    
+
     if (errorsError && errorsError.message?.includes('relation') && errorsError.message?.includes('document_parsing_errors')) {
       logTest('Migration: document_parsing_errors table', false, errorsError.message);
       return false;
@@ -76,7 +76,7 @@ async function testMigration() {
         .from('evidence_documents')
         .select(`id, ${column}`)
         .limit(1);
-      
+
       if (error && error.message?.includes('column') && error.message?.includes(column)) {
         logTest(`Migration: ${column} column`, false, error.message);
         return false;
@@ -103,7 +103,7 @@ async function testDocumentParsingService() {
     logTest('Service: Initialization', true);
 
     // Test Python API URL configuration
-    const pythonApiUrl = process.env.PYTHON_API_URL || process.env.API_URL || 'https://python-api-9.onrender.com';
+    const pythonApiUrl = process.env.PYTHON_API_URL || process.env.API_URL || 'https://python-api-10.onrender.com';
     logTest('Service: Python API URL configured', true, undefined, { pythonApiUrl });
 
     // Note: We can't test actual API calls without a real document ID
@@ -169,7 +169,7 @@ async function testDatabaseOperations() {
 
     // Test: Create a test document (if we can)
     const testSellerId = 'test-seller-' + Date.now();
-    
+
     // Try to insert a test document
     const { data: testDoc, error: insertError } = await client
       .from('evidence_documents')
@@ -335,14 +335,14 @@ async function runAllTests() {
   // Print summary
   logger.info('\n📊 Test Summary:');
   logger.info('='.repeat(60));
-  
+
   const passed = testResults.filter(r => r.passed).length;
   const failed = testResults.filter(r => !r.passed).length;
-  
+
   logger.info(`✅ Passed: ${passed}`);
   logger.info(`❌ Failed: ${failed}`);
   logger.info(`📊 Total: ${testResults.length}`);
-  
+
   if (failed > 0) {
     logger.info('\n❌ Failed Tests:');
     testResults

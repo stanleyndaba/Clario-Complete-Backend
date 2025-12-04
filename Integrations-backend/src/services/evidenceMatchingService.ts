@@ -58,11 +58,9 @@ class EvidenceMatchingService {
 
   constructor() {
     // Get Python API URL from environment
-    this.pythonApiUrl = 
-      process.env.PYTHON_API_URL || 
-      process.env.API_URL || 
-      'https://python-api-9.onrender.com';
-    
+    const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
+    this.pythonApiUrl = pythonApiUrl;
+
     // Get thresholds from environment (optional)
     if (process.env.EVIDENCE_CONFIDENCE_AUTO) {
       this.autoSubmitThreshold = parseFloat(process.env.EVIDENCE_CONFIDENCE_AUTO);
@@ -70,7 +68,7 @@ class EvidenceMatchingService {
     if (process.env.EVIDENCE_CONFIDENCE_PROMPT) {
       this.smartPromptThreshold = parseFloat(process.env.EVIDENCE_CONFIDENCE_PROMPT);
     }
-    
+
     logger.info('🔗 [EVIDENCE MATCHING] Service initialized', {
       pythonApiUrl: this.pythonApiUrl,
       autoSubmitThreshold: this.autoSubmitThreshold,
@@ -181,7 +179,7 @@ class EvidenceMatchingService {
     const totalBatches = needsBatching ? Math.ceil(claims.length / this.BATCH_SIZE) : 1;
 
     this.sendSyncLog('info', `Assessing ${claims.length.toLocaleString()} claims for evidence matching...`);
-    
+
     if (needsBatching) {
       this.sendSyncLog('info', `Processing ${claims.length.toLocaleString()} claims in ${totalBatches} batches...`);
     } else {
@@ -219,7 +217,7 @@ class EvidenceMatchingService {
           if (statusCode === 429) {
             const retryAfter = error.response?.headers?.['retry-after'];
             const delay = retryAfter ? parseInt(retryAfter) * 1000 : 30000;
-            
+
             logger.warn(`⏳ [EVIDENCE MATCHING] Rate limited (429), waiting ${delay}ms before retry`, {
               userId,
               attempt: attempt + 1,
@@ -227,7 +225,7 @@ class EvidenceMatchingService {
               retryAfter,
               batchIndex: batchIndex + 1
             });
-            
+
             if (attempt < maxRetries) {
               await new Promise(resolve => setTimeout(resolve, delay));
               continue;
@@ -378,7 +376,7 @@ class EvidenceMatchingService {
             .select('claim_amount, currency')
             .eq('id', result.dispute_id)
             .single();
-          
+
           if (disputeCase) {
             await notificationHelper.notifyEvidenceFound(userId, {
               documentId: result.evidence_document_id,

@@ -4,7 +4,7 @@
 
 import axios from 'axios';
 
-const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
+const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
 
 // This is the exact format that Agent 2 sends (from prepareClaimsFromNormalizedData)
 const testClaims = [
@@ -64,7 +64,7 @@ async function testClaimFormat() {
 
   try {
     console.log('📤 Sending request to /api/v1/claim-detector/predict/batch...\n');
-    
+
     const response = await axios.post(
       `${PYTHON_API_URL}/api/v1/claim-detector/predict/batch`,
       { claims: testClaims },
@@ -77,7 +77,7 @@ async function testClaimFormat() {
     console.log('✅ SUCCESS! API responded successfully\n');
     console.log(`Status: ${response.status}`);
     console.log(`Predictions received: ${response.data?.predictions?.length || 0}\n`);
-    
+
     if (response.data?.predictions) {
       console.log('Sample predictions:');
       response.data.predictions.slice(0, 2).forEach((pred: any, idx: number) => {
@@ -93,12 +93,12 @@ async function testClaimFormat() {
     return true;
   } catch (error: any) {
     console.error('\n❌ FAILED - API rejected the claim format\n');
-    
+
     if (error.response) {
       console.error(`Status: ${error.response.status} ${error.response.statusText}\n`);
       console.error('Error Details:');
       console.error(JSON.stringify(error.response.data, null, 2));
-      
+
       if (error.response.data?.details) {
         console.error('\n📋 Validation Errors:');
         error.response.data.details.forEach((detail: any, idx: number) => {
@@ -111,7 +111,7 @@ async function testClaimFormat() {
         console.error(`Code: ${error.code}`);
       }
     }
-    
+
     console.log('\n❌ Claim format needs to be FIXED\n');
     return false;
   }

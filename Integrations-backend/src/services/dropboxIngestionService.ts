@@ -148,7 +148,7 @@ export class DropboxIngestionService {
 
           // Store document (with or without content)
           const documentId = await this.storeEvidenceDocument(userId, file, fileContent);
-          
+
           if (documentId) {
             documentsIngested++;
             logger.info('✅ [DROPBOX INGESTION] Stored evidence document', {
@@ -221,13 +221,13 @@ export class DropboxIngestionService {
       'packing slip', 'delivery', 'order confirmation'
     ];
 
-    const hasRelevantName = relevantPatterns.some(pattern => 
+    const hasRelevantName = relevantPatterns.some(pattern =>
       name.includes(pattern) || path.includes(pattern)
     );
 
     // Check file extensions
     const relevantExtensions = ['.pdf', '.jpg', '.jpeg', '.png', '.xlsx', '.xls', '.doc', '.docx', '.txt'];
-    const hasRelevantExtension = relevantExtensions.some(ext => 
+    const hasRelevantExtension = relevantExtensions.some(ext =>
       name.endsWith(ext) || path.endsWith(ext)
     );
 
@@ -277,7 +277,7 @@ export class DropboxIngestionService {
       );
 
       const entries = response.data.entries || [];
-      
+
       // Filter to only files (not folders) and map to our format
       return entries
         .filter((entry: any) => entry['.tag'] === 'file')
@@ -524,8 +524,8 @@ export class DropboxIngestionService {
    */
   private async triggerParsingPipeline(documentId: string, userId: string): Promise<void> {
     try {
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
-      
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
+
       await axios.post(
         `${pythonApiUrl}/api/documents/${documentId}/parse`,
         {},

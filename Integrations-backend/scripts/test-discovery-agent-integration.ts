@@ -14,7 +14,7 @@ import 'dotenv/config';
 import axios from 'axios';
 
 const NODE_API_URL = process.env.INTEGRATIONS_URL || 'https://opside-node-api-woco.onrender.com';
-const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
+const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
 const TEST_USER_ID = 'test-discovery-' + Date.now();
 
 interface TestResult {
@@ -32,7 +32,7 @@ async function testEndpoint(name: string, method: 'GET' | 'POST', url: string, d
   try {
     console.log(`\n🧪 Testing: ${name}`);
     console.log(`   ${method} ${url}`);
-    
+
     const config: any = {
       method,
       url,
@@ -49,13 +49,13 @@ async function testEndpoint(name: string, method: 'GET' | 'POST', url: string, d
 
     const response = await axios(config);
     const duration = Date.now() - startTime;
-    
+
     console.log(`   ✅ Status: ${response.status} (${duration}ms)`);
     if (response.data) {
       const preview = JSON.stringify(response.data, null, 2).substring(0, 400);
       console.log(`   Response:`, preview + (JSON.stringify(response.data).length > 400 ? '...' : ''));
     }
-    
+
     return {
       name,
       passed: true,
@@ -88,9 +88,9 @@ async function testEndpoint(name: string, method: 'GET' | 'POST', url: string, d
 async function waitForSync(syncId: string, maxWaitTime = 120000): Promise<TestResult> {
   const startTime = Date.now();
   const pollInterval = 3000;
-  
+
   console.log(`\n⏳ Waiting for sync + Discovery Agent to complete: ${syncId}`);
-  
+
   while (Date.now() - startTime < maxWaitTime) {
     const statusResult = await testEndpoint(
       'Get Sync Status',
@@ -99,18 +99,18 @@ async function waitForSync(syncId: string, maxWaitTime = 120000): Promise<TestRe
       undefined,
       20000
     );
-    
+
     if (!statusResult.passed) {
       return statusResult;
     }
-    
+
     const status = statusResult.data?.status;
     const progress = statusResult.data?.progress || 0;
     const message = statusResult.data?.message || 'Unknown';
     const claimsDetected = statusResult.data?.claimsDetected || 0;
-    
+
     console.log(`   Status: ${status}, Progress: ${progress}%, Claims: ${claimsDetected}, Message: ${message}`);
-    
+
     if (status === 'completed') {
       return {
         name: 'Sync + Discovery Agent Completion',
@@ -119,7 +119,7 @@ async function waitForSync(syncId: string, maxWaitTime = 120000): Promise<TestRe
         duration: Date.now() - startTime
       };
     }
-    
+
     if (status === 'failed' || status === 'cancelled') {
       return {
         name: 'Sync + Discovery Agent Completion',
@@ -129,10 +129,10 @@ async function waitForSync(syncId: string, maxWaitTime = 120000): Promise<TestRe
         duration: Date.now() - startTime
       };
     }
-    
+
     await new Promise(resolve => setTimeout(resolve, pollInterval));
   }
-  
+
   return {
     name: 'Sync + Discovery Agent Completion',
     passed: false,
@@ -151,7 +151,7 @@ async function runTests() {
   console.log('='.repeat(60));
   console.log('STEP 1: Verify Python API (Discovery Agent) is accessible');
   console.log('='.repeat(60));
-  
+
   const pythonHealthResult = await testEndpoint(
     'Python API Health Check',
     'GET',
@@ -165,7 +165,7 @@ async function runTests() {
   console.log('\n' + '='.repeat(60));
   console.log('STEP 2: Start Sync (Agent 2 will call Discovery Agent)');
   console.log('='.repeat(60));
-  
+
   const startResult = await testEndpoint(
     'Start Sync',
     'POST',
@@ -174,7 +174,7 @@ async function runTests() {
     60000
   );
   results.push(startResult);
-  
+
   const syncId = startResult.data?.syncId;
   if (!syncId) {
     console.log('\n⚠️  No syncId returned, cannot test Discovery Agent integration');
@@ -193,7 +193,7 @@ async function runTests() {
   console.log('  - Message: "Waiting for claim detection (Discovery Agent)..."');
   console.log('  - Progress reaching 100% (Discovery Agent completed)');
   console.log('  - claimsDetected > 0 (if any claimable items found)');
-  
+
   const syncCompletionResult = await waitForSync(syncId, 120000);
   results.push(syncCompletionResult);
 
@@ -202,7 +202,7 @@ async function runTests() {
     console.log('\n' + '='.repeat(60));
     console.log('STEP 4: Verify Discovery Agent Results');
     console.log('='.repeat(60));
-    
+
     const finalStatusResult = await testEndpoint(
       'Get Final Sync Status (with Discovery Agent results)',
       'GET',
@@ -215,12 +215,12 @@ async function runTests() {
     if (finalStatusResult.passed) {
       const data = finalStatusResult.data;
       const claimsDetected = data.claimsDetected || 0;
-      
+
       console.log(`\n📊 Discovery Agent Results:`);
       console.log(`   Claims Detected: ${claimsDetected}`);
       console.log(`   Status: ${data.status}`);
       console.log(`   Message: ${data.message}`);
-      
+
       if (claimsDetected > 0) {
         console.log(`\n✅ Discovery Agent found ${claimsDetected} claimable items!`);
       } else {
@@ -229,7 +229,7 @@ async function runTests() {
         console.log(`   - All predictions had claimable=false`);
         console.log(`   - Discovery Agent was called but returned empty results`);
       }
-      
+
       // Check if we can query detection results directly
       console.log(`\n🔍 Checking detection results...`);
       // Note: We'd need a detection results endpoint to verify storage
@@ -244,11 +244,11 @@ function printSummary() {
   console.log('\n' + '='.repeat(60));
   console.log('📊 Test Summary');
   console.log('='.repeat(60));
-  
+
   const passed = results.filter(r => r.passed).length;
   const failed = results.filter(r => !r.passed).length;
   const totalDuration = results.reduce((sum, r) => sum + (r.duration || 0), 0);
-  
+
   results.forEach(result => {
     const icon = result.passed ? '✅' : '❌';
     const duration = result.duration ? ` (${result.duration}ms)` : '';
@@ -257,12 +257,12 @@ function printSummary() {
       console.log(`   Error: ${result.error}`);
     }
   });
-  
+
   console.log('\n' + '='.repeat(60));
   console.log(`Total: ${results.length} | Passed: ${passed} | Failed: ${failed}`);
   console.log(`Total Duration: ${(totalDuration / 1000).toFixed(1)}s`);
   console.log('='.repeat(60));
-  
+
   if (failed > 0) {
     console.log('\n⚠️  Some tests failed.');
     process.exit(1);

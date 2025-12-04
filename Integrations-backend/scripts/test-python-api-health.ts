@@ -4,7 +4,7 @@
 
 import axios from 'axios';
 
-const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
+const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
 
 async function testHealth() {
   console.log('\n🔍 Testing Python API Health...\n');
@@ -51,7 +51,7 @@ async function testHealth() {
         headers: { 'Content-Type': 'application/json' }
       }
     );
-    
+
     console.log('✅ Prediction endpoint works!');
     console.log('   Status:', predictResponse.status);
     console.log('   Predictions:', predictResponse.data?.predictions?.length || 0);

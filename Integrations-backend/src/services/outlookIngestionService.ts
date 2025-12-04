@@ -112,7 +112,7 @@ export class OutlookIngestionService {
       }
 
       // Default query: search for invoices, receipts, FBA reports
-      const defaultQuery = options.query || 
+      const defaultQuery = options.query ||
         'from:amazon.com OR from:amazon.co.uk OR subject:(invoice OR receipt OR "FBA" OR "reimbursement" OR "refund") hasAttachments:true';
 
       // Fetch emails from Microsoft Graph API
@@ -157,7 +157,7 @@ export class OutlookIngestionService {
           for (const attachment of attachments) {
             try {
               const documentId = await this.storeEvidenceDocument(userId, email, attachment);
-              
+
               if (documentId) {
                 documentsIngested++;
                 logger.info('✅ [OUTLOOK INGESTION] Stored evidence document', {
@@ -580,8 +580,8 @@ export class OutlookIngestionService {
    */
   private async triggerParsingPipeline(documentId: string, userId: string): Promise<void> {
     try {
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
-      
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
+
       await axios.post(
         `${pythonApiUrl}/api/documents/${documentId}/parse`,
         {},

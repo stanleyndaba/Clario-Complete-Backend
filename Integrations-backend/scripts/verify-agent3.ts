@@ -13,7 +13,7 @@ import axios from 'axios';
 import logger from '../src/utils/logger';
 
 const NODE_API_URL = process.env.NODE_API_URL || 'https://opside-node-api.onrender.com';
-const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
+const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
 const TEST_USER_ID = process.env.TEST_USER_ID || 'demo-user';
 
 interface TestResult {
@@ -37,13 +37,13 @@ async function testEndpoint(name: string, method: 'GET' | 'POST', url: string, d
         'Content-Type': 'application/json'
       }
     };
-    
+
     if (data) {
       config.data = data;
     }
-    
+
     const response = await axios(config);
-    
+
     return {
       name,
       passed: true,
@@ -119,13 +119,13 @@ async function runTests() {
   );
   results.push(syncResult);
   console.log(syncResult.message);
-  
+
   if (!syncResult.passed || !syncResult.data?.syncId) {
     console.log('   ⚠️  Cannot continue - sync failed');
     printSummary();
     return;
   }
-  
+
   const syncId = syncResult.data.syncId;
   console.log(`   Sync ID: ${syncId}`);
   console.log('');
@@ -134,16 +134,16 @@ async function runTests() {
   console.log('📋 Test 4: Monitor Sync & Agent 3 Detection');
   console.log('-'.repeat(60));
   console.log('   Waiting for sync to complete and Agent 3 to finish...');
-  
+
   let syncComplete = false;
   let claimsDetected = 0;
   const maxWait = 180000; // 3 minutes
   const startTime = Date.now();
   let lastStatus: any = null;
-  
+
   while (!syncComplete && (Date.now() - startTime) < maxWait) {
     await new Promise(resolve => setTimeout(resolve, 3000)); // Poll every 3 seconds
-    
+
     try {
       const statusResponse = await axios.get(
         `${NODE_API_URL}/api/sync/status/${syncId}`,
@@ -152,22 +152,22 @@ async function runTests() {
           timeout: 10000
         }
       );
-      
+
       lastStatus = statusResponse.data;
       const status = lastStatus.status;
       const progress = lastStatus.progress || 0;
       claimsDetected = lastStatus.claimsDetected || 0;
-      
+
       console.log(`   [${new Date().toLocaleTimeString()}] Status: ${status}, Progress: ${progress}%, Claims: ${claimsDetected}`);
-      
+
       if (status === 'completed' || status === 'failed' || status === 'cancelled') {
         syncComplete = true;
-        
+
         // Wait a bit more for Agent 3 to finish (it runs async)
         if (status === 'completed') {
           console.log('   Sync completed, waiting for Agent 3 detection to finish...');
           await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10s for async detection
-          
+
           // Check status again
           const finalStatusResponse = await axios.get(
             `${NODE_API_URL}/api/sync/status/${syncId}`,
@@ -185,7 +185,7 @@ async function runTests() {
       console.log(`   ⚠️  Error checking status: ${error.message}`);
     }
   }
-  
+
   if (!syncComplete) {
     results.push({
       name: 'Sync Completion',
@@ -215,7 +215,7 @@ async function runTests() {
   );
   results.push(detectionResults);
   console.log(detectionResults.message);
-  
+
   if (detectionResults.passed && detectionResults.data) {
     const results = Array.isArray(detectionResults.data) ? detectionResults.data : detectionResults.data.results || [];
     console.log(`   Found ${results.length} detection results`);
@@ -270,16 +270,16 @@ function printSummary() {
   console.log('\n' + '='.repeat(60));
   console.log('📊 Test Summary');
   console.log('='.repeat(60));
-  
+
   const passed = results.filter(r => r.passed).length;
   const failed = results.filter(r => !r.passed).length;
   const total = results.length;
-  
+
   console.log(`Total Tests: ${total}`);
   console.log(`✅ Passed: ${passed}`);
   console.log(`❌ Failed: ${failed}`);
   console.log('');
-  
+
   if (failed > 0) {
     console.log('Failed Tests:');
     results.filter(r => !r.passed).forEach(r => {
@@ -290,15 +290,15 @@ function printSummary() {
     });
     console.log('');
   }
-  
+
   console.log('All Tests:');
   results.forEach(r => {
     const icon = r.passed ? '✅' : '❌';
     console.log(`  ${icon} ${r.name}`);
   });
-  
+
   console.log('\n' + '='.repeat(60));
-  
+
   if (failed === 0) {
     console.log('🎉 All tests passed! Agent 3 is working correctly.');
   } else {

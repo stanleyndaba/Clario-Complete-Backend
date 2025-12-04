@@ -41,10 +41,10 @@ function initializeQueues(): void {
 
   // Check if Redis URL is configured and not pointing to localhost
   // This prevents queues from being created if Redis is not available
-  if (!REDIS_URL || 
-      REDIS_URL === 'redis://localhost:6379' || 
-      REDIS_URL.includes('localhost') ||
-      REDIS_URL.includes('127.0.0.1')) {
+  if (!REDIS_URL ||
+    REDIS_URL === 'redis://localhost:6379' ||
+    REDIS_URL.includes('localhost') ||
+    REDIS_URL.includes('127.0.0.1')) {
     // Don't log warning here - Redis is optional, this is expected behavior
     queueInitialized = true;
     return;
@@ -112,7 +112,7 @@ export class OrchestrationJobManager {
   private static async fetchMCDEDocs(_userId: string): Promise<any[]> {
     return [];
   }
-  
+
   /**
    * Initialize job queues and processors
    */
@@ -120,7 +120,7 @@ export class OrchestrationJobManager {
     this.setupOrchestrationProcessor();
     this.setupSyncProgressProcessor();
     this.setupQueueEventHandlers();
-    
+
     logger.info('Orchestration job manager initialized');
   }
 
@@ -137,7 +137,7 @@ export class OrchestrationJobManager {
     try {
       // Use jobId to prevent duplicate jobs for same user/step/syncId
       const jobId = `orchestrate_${data.userId}_${data.step}_${data.syncId}`;
-      
+
       await orchestrationQueue.add('orchestrate', data, {
         jobId, // Prevents duplicate jobs with same ID
         attempts: 3,
@@ -149,10 +149,10 @@ export class OrchestrationJobManager {
         removeOnFail: 50
       });
 
-      logger.info('Orchestration job added to queue', { 
-        userId: data.userId, 
+      logger.info('Orchestration job added to queue', {
+        userId: data.userId,
         syncId: data.syncId,
-        step: data.step 
+        step: data.step
       });
     } catch (error: any) {
       // Don't throw error - queue failures are non-critical
@@ -181,9 +181,9 @@ export class OrchestrationJobManager {
         removeOnFail: 25
       });
 
-      logger.info('Sync progress job added to queue', { 
-        userId: data.userId, 
-        syncId: data.syncId 
+      logger.info('Sync progress job added to queue', {
+        userId: data.userId,
+        syncId: data.syncId
       });
     } catch (error: any) {
       // Don't throw error - queue failures are non-critical
@@ -203,23 +203,23 @@ export class OrchestrationJobManager {
 
     orchestrationQueue.process('orchestrate', async (job) => {
       const { userId, syncId, step, totalSteps, currentStep, metadata } = job.data;
-      
-      logger.info('Processing orchestration job', { 
+
+      logger.info('Processing orchestration job', {
         jobId: job.id,
-        userId, 
-        syncId, 
-        step, 
-        currentStep 
+        userId,
+        syncId,
+        step,
+        currentStep
       });
 
       const phaseStartTime = Date.now();
       let previousPhase: number | undefined;
-      
+
       try {
         // Get previous phase for rollback tracking
         const previousLog = await this.getLastPhaseLog(syncId);
         previousPhase = previousLog?.phase_number;
-        
+
         // Log phase start
         await this.logPhaseTransition({
           workflowId: syncId,
@@ -229,16 +229,16 @@ export class OrchestrationJobManager {
           previousPhase,
           metadata
         });
-        
+
         // Emit metrics: phase started
         await this.emitPhaseMetric('started', step, userId, syncId);
-        
+
         // Update sync progress to running
         await this.updateSyncProgress(userId, syncId, step, totalSteps, currentStep, 'running');
 
         // Execute the specific step
         let result: JobResult;
-        
+
         switch (step) {
           // Phase 1: Zero-Friction Onboarding (OAuth → Sync)
           case 1:
@@ -291,7 +291,7 @@ export class OrchestrationJobManager {
         // Calculate duration
         const durationMs = Date.now() - phaseStartTime;
         const status = result.success ? 'completed' : 'failed';
-        
+
         // Log phase completion/failure
         await this.logPhaseTransition({
           workflowId: syncId,
@@ -303,10 +303,10 @@ export class OrchestrationJobManager {
           errorMessage: result.error,
           metadata: { ...metadata, result: result.data }
         });
-        
+
         // Emit metrics: phase completed/failed
         await this.emitPhaseMetric(status, step, userId, syncId, durationMs, result.error);
-        
+
         // Update sync progress based on result
         await this.updateSyncProgress(userId, syncId, step, totalSteps, currentStep, status, result);
 
@@ -328,9 +328,9 @@ export class OrchestrationJobManager {
         const durationMs = Date.now() - phaseStartTime;
         const errorMessage = String((error as any)?.message ?? 'Unknown error');
         const errorStack = (error as any)?.stack;
-        
+
         logger.error('Error processing orchestration job', { error, jobId: job.id, data: job.data });
-        
+
         // Log phase failure
         await this.logPhaseTransition({
           workflowId: syncId,
@@ -345,12 +345,12 @@ export class OrchestrationJobManager {
         }).catch((logError) => {
           logger.warn('Failed to log phase transition (non-critical)', { logError });
         });
-        
+
         // Emit metrics: phase failed
         await this.emitPhaseMetric('failed', step, userId, syncId, durationMs, errorMessage).catch(() => {
           // Non-blocking
         });
-        
+
         // Update sync progress to failed
         await this.updateSyncProgress(userId, syncId, step, totalSteps, currentStep, 'failed', {
           success: false,
@@ -383,14 +383,14 @@ export class OrchestrationJobManager {
 
     syncProgressQueue.process('update-progress', async (job) => {
       const { userId, syncId, step, totalSteps, currentStep } = job.data;
-      
+
       try {
         // Update sync progress in database
         await this.updateSyncProgress(userId, syncId, step, totalSteps, currentStep, 'running');
-        
+
         // Broadcast via WebSocket
         this.broadcastProgressUpdate(userId, syncId, step, totalSteps, currentStep, 'running');
-        
+
         logger.info('Sync progress updated', { userId, syncId, step });
       } catch (error) {
         logger.error('Error processing sync progress job', { error, jobId: job.id });
@@ -410,58 +410,58 @@ export class OrchestrationJobManager {
     }
 
     orchestrationQueue.on('completed', (job, result) => {
-      logger.info('Orchestration job completed', { 
-        jobId: job.id, 
+      logger.info('Orchestration job completed', {
+        jobId: job.id,
         userId: job.data.userId,
         syncId: job.data.syncId,
-        step: job.data.step 
+        step: job.data.step
       });
     });
 
     orchestrationQueue.on('failed', (job, error) => {
-      logger.error('Orchestration job failed', { 
-        jobId: job.id, 
+      logger.error('Orchestration job failed', {
+        jobId: job.id,
         userId: job.data.userId,
         syncId: job.data.syncId,
         step: job.data.step,
-        error: String((error as any)?.message ?? 'Unknown error') 
+        error: String((error as any)?.message ?? 'Unknown error')
       });
     });
 
     syncProgressQueue.on('completed', (job) => {
-      logger.info('Sync progress job completed', { 
-        jobId: job.id, 
+      logger.info('Sync progress job completed', {
+        jobId: job.id,
         userId: job.data.userId,
-        syncId: job.data.syncId 
+        syncId: job.data.syncId
       });
     });
 
     syncProgressQueue.on('failed', (job, error) => {
-      logger.error('Sync progress job failed', { 
-        jobId: job.id, 
+      logger.error('Sync progress job failed', {
+        jobId: job.id,
         userId: job.data.userId,
         syncId: job.data.syncId,
-        error: String((error as any)?.message ?? 'Unknown error') 
+        error: String((error as any)?.message ?? 'Unknown error')
       });
     });
   }
 
   // ==================== 7-Phase Clario Experience Methods ====================
-  
+
   /**
    * Phase 1: Zero-Friction Onboarding
    * OAuth completion → User Creation → Background Sync → WebSocket
    */
   private static async executePhase1_OAuthCompletion(
-    userId: string, 
-    syncId: string, 
+    userId: string,
+    syncId: string,
     metadata?: Record<string, any>
   ): Promise<JobResult> {
     try {
       logger.info('🎬 Phase 1: Zero-Friction Onboarding', { userId, syncId });
-      
+
       const sellerId = metadata?.seller_id || userId;
-      
+
       // Step 1: User profile already created in OAuth callback
       // Step 2: Establish WebSocket connection (handled automatically)
       websocketService.sendNotificationToUser(userId, {
@@ -470,10 +470,10 @@ export class OrchestrationJobManager {
         message: 'Connected to Amazon!',
         data: { user_id: userId, timestamp: new Date().toISOString() }
       });
-      
+
       // Step 3: Trigger background sync job automatically
       const syncResult = await amazonSyncJob.syncUserData(userId);
-      
+
       // Step 4: Send real-time update
       websocketService.sendNotificationToUser(userId, {
         type: 'success',
@@ -485,7 +485,7 @@ export class OrchestrationJobManager {
           next_step: 'Syncing your data... (30 seconds)'
         }
       });
-      
+
       return {
         success: true,
         step: 1,
@@ -508,24 +508,24 @@ export class OrchestrationJobManager {
    * Sync → Detection → ML Scoring
    */
   private static async executePhase2_SyncCompletion(
-    userId: string, 
-    syncId: string, 
+    userId: string,
+    syncId: string,
     metadata?: Record<string, any>
   ): Promise<JobResult> {
     try {
-      const isSandbox = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || 
-                       process.env.NODE_ENV === 'development';
-      
-      logger.info('🔍 Phase 2: Autonomous Money Discovery (SANDBOX MODE)', { 
-        userId, 
+      const isSandbox = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') ||
+        process.env.NODE_ENV === 'development';
+
+      logger.info('🔍 Phase 2: Autonomous Money Discovery (SANDBOX MODE)', {
+        userId,
         syncId,
         isSandbox,
         mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
       });
-      
+
       const ordersCount = metadata?.orders_count || 0;
       const inventoryItems = metadata?.inventory_items || 0;
-      
+
       // Send real-time update with sandbox indicator
       websocketService.sendNotificationToUser(userId, {
         type: 'info',
@@ -539,7 +539,7 @@ export class OrchestrationJobManager {
           mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
         }
       });
-      
+
       // Step 1: Trigger claim detection automatically (with sandbox flag)
       const detectionJob = {
         seller_id: userId,
@@ -547,7 +547,7 @@ export class OrchestrationJobManager {
         timestamp: new Date().toISOString(),
         is_sandbox: isSandbox
       };
-      
+
       // Send initial toast: "Analyzing your orders..."
       websocketService.sendNotificationToUser(userId, {
         type: 'info',
@@ -561,22 +561,22 @@ export class OrchestrationJobManager {
           mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
         }
       });
-      
+
       await detectionService.enqueueDetectionJob(detectionJob);
-      
-      logger.info('Detection job triggered after sync (SANDBOX MODE)', { 
-        userId, 
+
+      logger.info('Detection job triggered after sync (SANDBOX MODE)', {
+        userId,
         syncId,
         isSandbox,
         mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
       });
-      
+
       return {
         success: true,
         step: 2,
         message: `Phase 2: Detection triggered after sync (${isSandbox ? 'SANDBOX' : 'PRODUCTION'} MODE)`,
-        data: { 
-          orders_count: ordersCount, 
+        data: {
+          orders_count: ordersCount,
           inventory_items: inventoryItems,
           detection_job_queued: true,
           is_sandbox: isSandbox,
@@ -599,29 +599,29 @@ export class OrchestrationJobManager {
    * Detection → Evidence Matching → OCR
    */
   private static async executePhase3_DetectionCompletion(
-    userId: string, 
-    syncId: string, 
+    userId: string,
+    syncId: string,
     metadata?: Record<string, any>
   ): Promise<JobResult> {
     try {
       logger.info('📄 Phase 3: Intelligent Evidence Ecosystem', { userId, syncId });
-      
+
       const claims = metadata?.claims || metadata?.claims_found || [];
       const claimsCount = Array.isArray(claims) ? claims.length : 0;
-      
-      const isSandbox = metadata?.is_sandbox || 
-                       process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || 
-                       process.env.NODE_ENV === 'development';
-      
+
+      const isSandbox = metadata?.is_sandbox ||
+        process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') ||
+        process.env.NODE_ENV === 'development';
+
       // Calculate success probability (mock for sandbox)
-      const highConfidenceCount = Array.isArray(claims) ? 
+      const highConfidenceCount = Array.isArray(claims) ?
         claims.filter((c: any) => (c.confidence || 0) >= 0.85).length : 0;
-      const mediumConfidenceCount = Array.isArray(claims) ? 
+      const mediumConfidenceCount = Array.isArray(claims) ?
         claims.filter((c: any) => (c.confidence || 0) >= 0.50 && (c.confidence || 0) < 0.85).length : 0;
       const avgConfidence = Array.isArray(claims) && claims.length > 0 ?
         claims.reduce((sum: number, c: any) => sum + (c.confidence || 0), 0) / claims.length : 0;
       const successProbability = Math.round(avgConfidence * 100);
-      
+
       // Send real-time update with success probability
       websocketService.sendNotificationToUser(userId, {
         type: 'success',
@@ -637,7 +637,7 @@ export class OrchestrationJobManager {
           mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
         }
       });
-      
+
       // Send success probability notification (with sandbox indicator)
       if (successProbability > 0) {
         const sandboxPrefix = isSandbox ? '[SANDBOX] ' : '';
@@ -655,7 +655,7 @@ export class OrchestrationJobManager {
           }
         });
       }
-      
+
       // Send notification for evidence validation starting (mock for sandbox)
       if (isSandbox) {
         websocketService.sendNotificationToUser(userId, {
@@ -670,10 +670,10 @@ export class OrchestrationJobManager {
           }
         });
       }
-      
+
       // Step 1: Trigger evidence matching automatically
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
-      
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
+
       try {
         // Trigger evidence matching via Python API
         await axios.post(
@@ -681,7 +681,7 @@ export class OrchestrationJobManager {
           { user_id: userId, claims: claims },
           { timeout: 30000, headers: { 'Content-Type': 'application/json' } }
         );
-        
+
         logger.info('Evidence matching triggered after detection', { userId, claimsCount });
       } catch (error: any) {
         // Non-blocking - evidence matching can be triggered manually if this fails
@@ -690,7 +690,7 @@ export class OrchestrationJobManager {
           userId
         });
       }
-      
+
       return {
         success: true,
         step: 3,
@@ -713,20 +713,20 @@ export class OrchestrationJobManager {
    * Evidence → Auto-Submit vs Smart Prompts
    */
   private static async executePhase4_EvidenceMatching(
-    userId: string, 
-    syncId: string, 
+    userId: string,
+    syncId: string,
     metadata?: Record<string, any>
   ): Promise<JobResult> {
     try {
       logger.info('🎯 Phase 4: Predictive Refund Orchestration', { userId, syncId });
-      
+
       const matches = metadata?.matches || metadata?.matching_results || [];
       const matchesCount = Array.isArray(matches) ? matches.length : 0;
-      
+
       let autoSubmits = 0;
       let smartPrompts = 0;
       let manualReview = 0;
-      
+
       // Categorize matches by confidence
       for (const match of matches) {
         const confidence = match.confidence || 0;
@@ -738,7 +738,7 @@ export class OrchestrationJobManager {
           manualReview++;
         }
       }
-      
+
       // Send real-time update
       websocketService.sendNotificationToUser(userId, {
         type: 'success',
@@ -751,10 +751,10 @@ export class OrchestrationJobManager {
           next_step: 'Submitting high-confidence claims...'
         }
       });
-      
+
       // Auto-submit is handled by Python evidence engine automatically
       // This orchestrator just tracks the status
-      
+
       return {
         success: true,
         step: 4,
@@ -782,16 +782,16 @@ export class OrchestrationJobManager {
    * Submission → Tracking → Payout Monitoring
    */
   private static async executePhase5_ClaimSubmission(
-    userId: string, 
-    syncId: string, 
+    userId: string,
+    syncId: string,
     metadata?: Record<string, any>
   ): Promise<JobResult> {
     try {
       logger.info('🚀 Phase 5: Autonomous Recovery Pipeline', { userId, syncId });
-      
+
       const claimId = metadata?.claim_id;
       const amazonCaseId = metadata?.amazon_case_id;
-      
+
       // Send real-time update
       websocketService.sendNotificationToUser(userId, {
         type: 'success',
@@ -804,7 +804,7 @@ export class OrchestrationJobManager {
           next_step: 'Amazon reviewing claim...'
         }
       });
-      
+
       // Start payout monitoring (store in database)
       if (claimId) {
         try {
@@ -820,7 +820,7 @@ export class OrchestrationJobManager {
           logger.warn('Failed to store payout monitoring (non-critical)', { dbError, claimId });
         }
       }
-      
+
       return {
         success: true,
         step: 5,
@@ -843,20 +843,20 @@ export class OrchestrationJobManager {
    * Rejection → Learning → Model Updates
    */
   private static async executePhase6_ClaimRejection(
-    userId: string, 
-    syncId: string, 
+    userId: string,
+    syncId: string,
     metadata?: Record<string, any>
   ): Promise<JobResult> {
     try {
       logger.info('🧠 Phase 6: Continuous Learning Brain', { userId, syncId });
-      
+
       const claimId = metadata?.claim_id;
       const rejectionReason = metadata?.rejection_reason || metadata?.reason || 'Unknown reason';
       const amazonCaseId = metadata?.amazon_case_id || metadata?.case_id;
-      
+
       // Log rejection for learning
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
-      
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
+
       try {
         await axios.post(
           `${pythonApiUrl}/api/v1/claim-detector/rejections/log`,
@@ -868,12 +868,12 @@ export class OrchestrationJobManager {
           },
           { timeout: 30000, headers: { 'Content-Type': 'application/json' } }
         );
-        
+
         logger.info('Rejection logged for learning', { userId, claimId });
       } catch (error: any) {
         logger.warn('Rejection logging failed (non-critical)', { error: error.message, claimId });
       }
-      
+
       // Send real-time update
       websocketService.sendNotificationToUser(userId, {
         type: 'warning',
@@ -886,13 +886,13 @@ export class OrchestrationJobManager {
           learning_triggered: true
         }
       });
-      
+
       return {
         success: true,
         step: 6,
         message: 'Phase 6: Rejection logged - learning triggered',
-        data: { 
-          claim_id: claimId, 
+        data: {
+          claim_id: claimId,
           rejection_reason: rejectionReason,
           learning_triggered: true
         }
@@ -913,21 +913,21 @@ export class OrchestrationJobManager {
    * Payout → Proof Packet Generation
    */
   private static async executePhase7_PayoutReceived(
-    userId: string, 
-    syncId: string, 
+    userId: string,
+    syncId: string,
     metadata?: Record<string, any>
   ): Promise<JobResult> {
     try {
       logger.info('💰 Phase 7: Payout Received', { userId, syncId });
-      
+
       const claimId = metadata?.claim_id;
       const amount = metadata?.amount || 0;
       const amazonCaseId = metadata?.amazon_case_id || metadata?.case_id;
-      
+
       // Calculate fees (20% platform fee)
       const platformFee = amount * 0.20;
       const sellerPayout = amount - platformFee;
-      
+
       // Process Stripe fee (call Stripe service)
       const integrationsUrl = process.env.INTEGRATIONS_URL || 'http://localhost:3001';
       try {
@@ -944,9 +944,9 @@ export class OrchestrationJobManager {
       } catch (error: any) {
         logger.warn('Stripe fee processing failed (non-critical)', { error: error.message });
       }
-      
+
       // Generate proof packet (call Python API)
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
       let proofPacketId = null;
       try {
         const proofPacketResponse = await axios.post(
@@ -959,14 +959,14 @@ export class OrchestrationJobManager {
           },
           { timeout: 60000, headers: { 'Content-Type': 'application/json' } }
         );
-        
+
         if (proofPacketResponse.data) {
           proofPacketId = proofPacketResponse.data.packet_id;
         }
       } catch (error: any) {
         logger.warn('Proof packet generation failed (non-critical)', { error: error.message });
       }
-      
+
       // Send real-time update
       websocketService.sendNotificationToUser(userId, {
         type: 'success',
@@ -981,7 +981,7 @@ export class OrchestrationJobManager {
           proof_packet_id: proofPacketId
         }
       });
-      
+
       return {
         success: true,
         step: 7,
@@ -1005,12 +1005,12 @@ export class OrchestrationJobManager {
   }
 
   // ==================== Legacy Step Methods (Backward Compatibility) ====================
-  
+
   // Step execution methods
   private static async executeStep1(userId: string, syncId: string): Promise<JobResult> {
     try {
       logger.info('Executing Step 1: Fetch Amazon Claims', { userId, syncId });
-      
+
       // This would integrate with the actual Amazon service
       // For now, using mock data
       const mockClaim = {
@@ -1026,7 +1026,7 @@ export class OrchestrationJobManager {
       };
 
       await dataOrchestrator.mapAmazonClaimToRefundEngine(userId, mockClaim);
-      
+
       return {
         success: true,
         step: 1,
@@ -1090,9 +1090,9 @@ export class OrchestrationJobManager {
   private static async executeStep3(userId: string, syncId: string): Promise<JobResult> {
     try {
       logger.info('Executing Step 3: Create Ledger Entries', { userId, syncId });
-      
+
       await dataOrchestrator.createCaseFileLedgerEntry(userId, 'CASE-AMZ-CLAIM-001-1234567890', [], null, []);
-      
+
       return {
         success: true,
         step: 3,
@@ -1113,11 +1113,11 @@ export class OrchestrationJobManager {
   private static async executeStep4(userId: string, syncId: string): Promise<JobResult> {
     try {
       logger.info('Executing Step 4: Process Stripe Transactions', { userId, syncId });
-      
+
       // This would integrate with the actual Stripe service
       // For now, just logging
       logger.info('Processing Stripe transactions', { userId });
-      
+
       return {
         success: true,
         step: 4,
@@ -1138,9 +1138,9 @@ export class OrchestrationJobManager {
   private static async executeStep5(userId: string, syncId: string): Promise<JobResult> {
     try {
       logger.info('Executing Step 5: Finalize Cases', { userId, syncId });
-      
+
       await dataOrchestrator.updateCaseFileStatus(userId, 'CASE-AMZ-CLAIM-001-1234567890', 'under_review');
-      
+
       return {
         success: true,
         step: 5,
@@ -1170,7 +1170,7 @@ export class OrchestrationJobManager {
   ): Promise<void> {
     try {
       const progress = Math.round((step / totalSteps) * 100);
-      
+
       const { error } = await supabase
         .from('sync_progress')
         .update({
@@ -1235,7 +1235,7 @@ export class OrchestrationJobManager {
     result?: JobResult
   ): void {
     const progress = Math.round((step / totalSteps) * 100);
-    
+
     const progressUpdate = {
       syncId,
       stage: currentStep,
@@ -1247,7 +1247,7 @@ export class OrchestrationJobManager {
     };
 
     websocketService.broadcastSyncProgress(syncId, progressUpdate);
-    
+
     // Emit workflow phase events (e.g., workflow.phase.1.completed)
     if (status === 'completed' || status === 'failed') {
       websocketService.emitWorkflowPhaseEvent(
@@ -1295,8 +1295,8 @@ export class OrchestrationJobManager {
         .filter(job => job.finishedOn && job.processedOn)
         .map(job => job.finishedOn! - job.processedOn!);
 
-      const avgDuration = durations.length > 0 
-        ? durations.reduce((a, b) => a + b, 0) / durations.length 
+      const avgDuration = durations.length > 0
+        ? durations.reduce((a, b) => a + b, 0) / durations.length
         : 0;
 
       return {
@@ -1345,9 +1345,9 @@ export class OrchestrationJobManager {
       if (syncProgressQueue) {
         closePromises.push(syncProgressQueue.close());
       }
-      
+
       await Promise.all(closePromises);
-      
+
       logger.info('Orchestration job manager cleaned up');
     } catch (error: any) {
       logger.warn('Error cleaning up orchestration job manager (non-critical)', { error: error?.message });
@@ -1396,7 +1396,7 @@ export class OrchestrationJobManager {
   }
 
   // ==================== Phase Audit Logging ====================
-  
+
   /**
    * Log phase transition to workflow_phase_logs table
    */
@@ -1439,7 +1439,7 @@ export class OrchestrationJobManager {
       }, {
         onConflict: 'user_id,sync_id'
       });
-      
+
       logger.debug('Phase transition logged', {
         workflowId: data.workflowId,
         phase: data.phaseNumber,
@@ -1450,7 +1450,7 @@ export class OrchestrationJobManager {
       logger.warn('Failed to log phase transition', { error, data });
     }
   }
-  
+
   /**
    * Get last phase log for a workflow
    */
@@ -1464,11 +1464,11 @@ export class OrchestrationJobManager {
         .order('updated_at', { ascending: false })
         .limit(1)
         .single();
-      
+
       if (error || !data) {
         return null;
       }
-      
+
       return {
         phase_number: data.phase_number || data.step || 0,
         status: data.status
@@ -1478,9 +1478,9 @@ export class OrchestrationJobManager {
       return null;
     }
   }
-  
+
   // ==================== Automatic Rollback Handlers ====================
-  
+
   /**
    * Handle automatic rollback when a phase fails
    */
@@ -1494,7 +1494,7 @@ export class OrchestrationJobManager {
     try {
       // Determine rollback target (previous phase or phase 1)
       const rollbackToPhase = previousPhase || 1;
-      
+
       // Only rollback if we have a valid previous phase and it's not phase 1
       if (!previousPhase || previousPhase === 1) {
         logger.info('Skipping rollback - no valid previous phase or already at phase 1', {
@@ -1504,7 +1504,7 @@ export class OrchestrationJobManager {
         });
         return;
       }
-      
+
       logger.warn('Phase failed - triggering rollback', {
         userId,
         syncId,
@@ -1512,7 +1512,7 @@ export class OrchestrationJobManager {
         rollbackToPhase,
         errorMessage
       });
-      
+
       // Log rollback
       await this.logPhaseTransition({
         workflowId: syncId,
@@ -1525,10 +1525,10 @@ export class OrchestrationJobManager {
         rollbackToPhase,
         metadata: { reason: 'automatic_rollback_on_failure' }
       });
-      
+
       // Emit rollback metric
       await this.emitPhaseMetric('rolled_back', failedPhase, userId, syncId, undefined, errorMessage);
-      
+
       // Re-queue the previous phase (optional - can be disabled)
       // Uncomment if you want automatic retry of previous phase
       /*
@@ -1541,7 +1541,7 @@ export class OrchestrationJobManager {
         metadata: { rollback_from_phase: failedPhase, rollback_reason: errorMessage }
       });
       */
-      
+
       // Send notification about rollback
       websocketService.sendNotificationToUser(userId, {
         type: 'warning',
@@ -1553,15 +1553,15 @@ export class OrchestrationJobManager {
           error: errorMessage
         }
       });
-      
+
     } catch (error) {
       logger.error('Error handling phase rollback', { error, userId, syncId, failedPhase });
       // Don't throw - rollback failure shouldn't break the system
     }
   }
-  
+
   // ==================== Metrics Hooks ====================
-  
+
   /**
    * Emit metrics for phase transitions (Prometheus/Supabase)
    */
@@ -1580,7 +1580,7 @@ export class OrchestrationJobManager {
         user_id: userId,
         workflow_id: workflowId
       };
-      
+
       // Emit to Supabase metrics table (if exists)
       try {
         await supabase.from('metrics_data').insert({
@@ -1602,7 +1602,7 @@ export class OrchestrationJobManager {
         // Metrics table might not exist - that's okay
         logger.debug('Metrics table not available (non-critical)', { supabaseError });
       }
-      
+
       // Log metric for Prometheus scraping (if using Prometheus)
       logger.info('Workflow phase metric', {
         metric: metricName,
@@ -1611,15 +1611,15 @@ export class OrchestrationJobManager {
         labels,
         error: errorMessage || null
       });
-      
+
     } catch (error) {
       // Non-blocking - metrics failure shouldn't break orchestration
       logger.warn('Failed to emit phase metric', { error, event, phaseNumber });
     }
   }
-  
+
   // ==================== Convenience Methods for 7-Phase Workflow ====================
-  
+
   /**
    * Phase 1: Trigger after OAuth completion
    * Includes idempotency check to prevent duplicate Phase 1 jobs
@@ -1630,7 +1630,7 @@ export class OrchestrationJobManager {
     syncId?: string
   ): Promise<void> {
     const workflowId = syncId || `oauth_${userId}_${Date.now()}`;
-    
+
     // Idempotency check: Check if Phase 1 already completed for this workflow
     try {
       const lastLog = await this.getLastPhaseLog(workflowId);
@@ -1642,19 +1642,19 @@ export class OrchestrationJobManager {
         });
         return; // Skip - already completed
       }
-      
+
       // Check if Phase 1 is already in queue or running (skip if queue not available)
       let existingJob = null;
       if (orchestrationQueue) {
         const jobs = await orchestrationQueue.getJobs(['waiting', 'active']);
         existingJob = jobs.find(
-          (job) => 
-            job.data.userId === userId && 
-            job.data.step === 1 && 
+          (job) =>
+            job.data.userId === userId &&
+            job.data.step === 1 &&
             (job.data.syncId === workflowId || job.data.syncId?.startsWith(`oauth_${userId}_`))
         );
       }
-      
+
       if (existingJob) {
         logger.info('Phase 1 job already exists in queue (idempotency)', {
           userId,
@@ -1668,7 +1668,7 @@ export class OrchestrationJobManager {
       // Non-blocking - if idempotency check fails, proceed anyway
       logger.warn('Idempotency check failed (proceeding anyway)', { error, userId, workflowId });
     }
-    
+
     await this.addOrchestrationJob({
       userId,
       syncId: workflowId,
@@ -1769,8 +1769,8 @@ export class OrchestrationJobManager {
       step: 6,
       totalSteps: 7,
       currentStep: 'Phase 6: Continuous Learning Brain',
-      metadata: { 
-        claim_id: claimId, 
+      metadata: {
+        claim_id: claimId,
         rejection_reason: rejectionReason,
         amazon_case_id: amazonCaseId,
         reason: rejectionReason,
@@ -1795,8 +1795,8 @@ export class OrchestrationJobManager {
       step: 7,
       totalSteps: 7,
       currentStep: 'Phase 7: Hyper-Transparency Layer',
-      metadata: { 
-        claim_id: claimId, 
+      metadata: {
+        claim_id: claimId,
         amount,
         amazon_case_id: amazonCaseId,
         case_id: amazonCaseId

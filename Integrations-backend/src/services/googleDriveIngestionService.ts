@@ -128,7 +128,7 @@ export class GoogleDriveIngestionService {
 
       // Build search query (metadata-first: search by name and MIME type)
       const defaultQuery = options.query || this.buildDefaultSearchQuery();
-      const searchQuery = options.folderId 
+      const searchQuery = options.folderId
         ? `'${options.folderId}' in parents and (${defaultQuery})`
         : defaultQuery;
 
@@ -170,7 +170,7 @@ export class GoogleDriveIngestionService {
 
           // Store document (with or without content)
           const documentId = await this.storeEvidenceDocument(userId, file, fileContent);
-          
+
           if (documentId) {
             documentsIngested++;
             logger.info('✅ [GDRIVE INGESTION] Stored evidence document', {
@@ -238,7 +238,7 @@ export class GoogleDriveIngestionService {
       'invoice', 'receipt', 'FBA', 'reimbursement', 'refund',
       'amazon', 'shipping', 'purchase order', 'PO', 'bill'
     ];
-    
+
     const mimeTypes = [
       'application/pdf',
       'image/jpeg',
@@ -251,7 +251,7 @@ export class GoogleDriveIngestionService {
     // Build query: (name contains pattern) OR (mimeType matches)
     const nameQueries = namePatterns.map(pattern => `name contains '${pattern}'`).join(' or ');
     const mimeQueries = mimeTypes.map(mime => `mimeType = '${mime}'`).join(' or ');
-    
+
     return `(${nameQueries}) or (${mimeQueries})`;
   }
 
@@ -527,8 +527,8 @@ export class GoogleDriveIngestionService {
    */
   private async triggerParsingPipeline(documentId: string, userId: string): Promise<void> {
     try {
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
-      
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
+
       await axios.post(
         `${pythonApiUrl}/api/documents/${documentId}/parse`,
         {},

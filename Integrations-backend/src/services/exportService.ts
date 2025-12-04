@@ -33,7 +33,7 @@ export class ExportService {
 
   constructor() {
     this.bucketName = process.env.S3_BUCKET_NAME || process.env.S3_BUCKET || '';
-    
+
     this.s3 = new S3({
       accessKeyId: process.env.AWS_ACCESS_KEY_ID,
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
@@ -112,7 +112,7 @@ export class ExportService {
       return result;
     } catch (error: any) {
       logger.error('Failed to create export bundle:', error);
-      
+
       return {
         id: bundleId,
         bundle_name,
@@ -131,12 +131,12 @@ export class ExportService {
     logger.info('Fetching documents for export', { documentIds });
 
     // Try to fetch from Python backend first
-    const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
-    
+    const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
+
     try {
       // Fetch documents from Python backend
       const documents: DocumentData[] = [];
-      
+
       for (const id of documentIds) {
         try {
           const response = await axios.get(`${pythonApiUrl}/api/documents/${id}`, {
@@ -248,8 +248,8 @@ export class ExportService {
     } catch (error) {
       // Cleanup on error
       try {
-        await unlink(tempDir).catch(() => {});
-      } catch {}
+        await unlink(tempDir).catch(() => { });
+      } catch { }
       throw error;
     }
   }

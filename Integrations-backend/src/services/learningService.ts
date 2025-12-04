@@ -59,7 +59,7 @@ class LearningService {
   private pythonApiUrl: string;
 
   constructor() {
-    this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
+    this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
   }
 
   private buildServiceHeaders(
@@ -252,10 +252,10 @@ class LearningService {
           }
           evidenceTypes[provider].count++;
           if (event.success) {
-            evidenceTypes[provider].successRate = 
+            evidenceTypes[provider].successRate =
               (evidenceTypes[provider].successRate * (evidenceTypes[provider].count - 1) + 1) / evidenceTypes[provider].count;
           } else {
-            evidenceTypes[provider].successRate = 
+            evidenceTypes[provider].successRate =
               (evidenceTypes[provider].successRate * (evidenceTypes[provider].count - 1)) / evidenceTypes[provider].count;
           }
         }
@@ -348,8 +348,8 @@ class LearningService {
         return true; // Simplified
       }).length;
 
-      const highConfidenceSuccessRate = highConfidence.length > 0 
-        ? highConfidenceApprovals / highConfidence.length 
+      const highConfidenceSuccessRate = highConfidence.length > 0
+        ? highConfidenceApprovals / highConfidence.length
         : 0;
 
       // Recommend threshold adjustments if success rate is low
@@ -402,7 +402,7 @@ class LearningService {
 
       // Store threshold updates in database
       const { supabaseAdmin } = await import('../database/supabaseClient');
-      
+
       for (const update of updates) {
         await supabaseAdmin
           .from('threshold_optimizations')

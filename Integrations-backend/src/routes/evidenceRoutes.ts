@@ -32,7 +32,7 @@ const router = Router();
 router.post('/ingest/outlook', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    
+
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -110,7 +110,7 @@ router.post('/ingest/outlook', async (req: Request, res: Response) => {
 router.post('/ingest/gdrive', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    
+
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -190,7 +190,7 @@ router.post('/ingest/gdrive', async (req: Request, res: Response) => {
 router.post('/ingest/dropbox', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    
+
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -270,7 +270,7 @@ router.post('/ingest/dropbox', async (req: Request, res: Response) => {
 router.post('/ingest/all', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    
+
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -354,7 +354,7 @@ router.post('/ingest/all', async (req: Request, res: Response) => {
 router.post('/ingest/gmail', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    
+
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -445,7 +445,7 @@ router.post('/ingest/gmail', async (req: Request, res: Response) => {
 router.get('/status', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    
+
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -479,7 +479,7 @@ router.get('/status', async (req: Request, res: Response) => {
 router.post('/auto-collect', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    
+
     if (!userId) {
       return res.status(401).json({
         ok: false,
@@ -523,7 +523,7 @@ router.post('/auto-collect', async (req: Request, res: Response) => {
 router.post('/schedule', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    
+
     if (!userId) {
       return res.status(401).json({
         ok: false,
@@ -575,7 +575,7 @@ router.post('/schedule', async (req: Request, res: Response) => {
 router.post('/filters', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    
+
     if (!userId) {
       return res.status(401).json({
         ok: false,
@@ -662,13 +662,13 @@ router.options('/upload', (req, res) => {
 router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) => {
   try {
     // Extract user ID from multiple sources (for flexibility)
-    const userId = (req as any).userId || 
-                   (req as any).user?.id || 
-                   (req as any).user?.user_id ||
-                   req.headers['x-user-id'] ||
-                   req.headers['x-forwarded-user-id'] ||
-                   req.query.userId as string;
-    
+    const userId = (req as any).userId ||
+      (req as any).user?.id ||
+      (req as any).user?.user_id ||
+      req.headers['x-user-id'] ||
+      req.headers['x-forwarded-user-id'] ||
+      req.query.userId as string;
+
     // Log all available user identification sources for debugging
     logger.debug('🔍 [EVIDENCE] User ID extraction', {
       'req.userId': (req as any).userId,
@@ -681,11 +681,11 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
       'hasAuthHeader': !!req.headers['authorization'],
       'hasCookie': !!req.cookies?.session_token
     });
-    
+
     // Allow demo-user for development/testing (userIdMiddleware sets this as default)
     // In production, authentication middleware should set a real user ID
     const finalUserId = userId || 'demo-user';
-    
+
     if (!userId) {
       logger.warn('⚠️ [EVIDENCE] Upload request without user ID - using demo-user fallback', {
         headers: {
@@ -701,7 +701,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
 
     const files = (req as any).files as MulterFile[];
     const claim_id = req.query.claim_id as string | undefined;
-    
+
     if (!files || files.length === 0) {
       return res.status(400).json({
         success: false,
@@ -718,13 +718,13 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
     });
 
     // Proxy to Python API /api/documents/upload endpoint
-    const pythonApiUrl = process.env.PYTHON_API_URL || process.env.VITE_PYTHON_API_URL || 'https://python-api-9.onrender.com';
+    const pythonApiUrl = process.env.PYTHON_API_URL || process.env.VITE_PYTHON_API_URL || 'https://python-api-10.onrender.com';
     const pythonUrl = `${pythonApiUrl}/api/documents/upload${claim_id ? `?claim_id=${claim_id}` : ''}`;
-    
+
     // DEMO MODE: Check if Python API should be skipped (for YC demo)
     const SKIP_PYTHON_API = process.env.SKIP_PYTHON_API === 'true';
     const DEMO_MODE = process.env.DEMO_MODE === 'true';
-    
+
     // Helper function to return mock success response
     const returnMockResponse = () => {
       const origin = req.headers.origin;
@@ -732,9 +732,9 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
         res.header('Access-Control-Allow-Origin', origin);
         res.header('Access-Control-Allow-Credentials', 'true');
       }
-      
+
       const mockDocumentIds = files.map((_, index) => `demo-doc-${Date.now()}-${index}`);
-      
+
       // Send SSE event for upload success (mock)
       (async () => {
         try {
@@ -754,7 +754,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
           logger.debug('Failed to send SSE event for mock upload', { error: sseError });
         }
       })();
-      
+
       return res.json({
         success: true,
         id: mockDocumentIds[0],
@@ -768,7 +768,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
         note: 'Python API is unavailable. This is a mock response for demo purposes.'
       });
     };
-    
+
     // If demo mode is enabled, return mock response immediately
     if (SKIP_PYTHON_API || DEMO_MODE) {
       logger.info('🎭 [EVIDENCE] DEMO MODE: Returning mock response (Python API skipped)', {
@@ -780,10 +780,10 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
       });
       return returnMockResponse();
     }
-    
+
     // Extract token for authentication
     const token = req.cookies?.session_token || req.headers['authorization']?.replace('Bearer ', '');
-    
+
     logger.info('📤 [EVIDENCE] Starting upload to Python API', {
       pythonApiUrl,
       pythonUrl,
@@ -793,16 +793,16 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
       claim_id,
       hasToken: !!token
     });
-    
+
     try {
       const axios = (await import('axios')).default;
       const FormData = (await import('form-data')).default;
-      
+
       // Quick health check before attempting upload (reduced timeout for faster failure detection)
       try {
         const healthCheckUrl = `${pythonApiUrl}/health`;
         logger.debug('🔍 [EVIDENCE] Checking Python API health before upload', { healthCheckUrl });
-        
+
         const healthResponse = await axios.get(healthCheckUrl, {
           timeout: 3000, // Reduced to 3 seconds for faster failure detection
           validateStatus: (status) => status < 500 // Allow 4xx but not 5xx
@@ -814,16 +814,16 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
             status: healthError?.response?.status,
             note: 'Returning mock response for YC demo'
           });
-          
+
           // Return mock response instead of error (for YC demo)
           return null; // Signal that health check failed
         });
-        
+
         if (!healthResponse) {
           // Health check failed - use demo mode fallback
           return returnMockResponse();
         }
-        
+
         const healthStatus = healthResponse.status;
         if (healthStatus === 200) {
           logger.info('✅ [EVIDENCE] Python API health check passed', {
@@ -837,7 +837,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
             data: healthResponse.data,
             note: 'Returning mock response for YC demo'
           });
-          
+
           // Return mock response instead of error (for YC demo)
           return returnMockResponse();
         }
@@ -848,14 +848,14 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
           code: healthError?.code,
           note: 'Returning mock response for YC demo'
         });
-        
+
         // Return mock response instead of error (for YC demo)
         return returnMockResponse();
       }
-      
+
       // Create FormData to forward files
       const formData = new FormData();
-      
+
       // Add all files with 'file' field name (singular, as expected by Python API)
       files.forEach(file => {
         formData.append('file', file.buffer, {
@@ -863,28 +863,28 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
           contentType: file.mimetype
         });
       });
-      
+
       // Add claim_id if provided (as form field, not query param for POST)
       if (claim_id) {
         formData.append('claim_id', claim_id);
       }
-      
+
       const headers: Record<string, string> = {
         ...formData.getHeaders(),
         'X-User-Id': userId
       };
-      
+
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
       }
-      
+
       logger.info('📤 [EVIDENCE] Forwarding upload to Python API', {
         pythonUrl,
         userId,
         fileCount: files.length,
         headers: Object.keys(headers)
       });
-      
+
       // Make request with extended timeout and better error handling
       const response = await axios.post(pythonUrl, formData, {
         headers,
@@ -897,10 +897,10 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
         // Enhanced error logging
         const responseData = error?.response?.data;
         const isHtmlError = typeof responseData === 'string' && (
-          responseData.trim().startsWith('<!DOCTYPE') || 
+          responseData.trim().startsWith('<!DOCTYPE') ||
           responseData.trim().startsWith('<html')
         );
-        
+
         logger.error('❌ [EVIDENCE] Axios error details', {
           message: error?.message,
           code: error?.code,
@@ -916,7 +916,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
           },
           stack: error?.stack
         });
-        
+
         // If it's an HTML error page, wrap it in a more useful error
         if (isHtmlError && error?.response?.status === 502) {
           const serviceDownError: any = new Error('Python API service unavailable (502)');
@@ -932,20 +932,20 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
           };
           throw serviceDownError;
         }
-        
+
         throw error;
       });
-      
+
       // Check if response is successful and valid JSON
       if (response.status >= 400) {
         // Check if response is HTML (Render error page)
         const contentType = response.headers['content-type'] || '';
         const isHtml = typeof response.data === 'string' && (
-          response.data.trim().startsWith('<!DOCTYPE') || 
+          response.data.trim().startsWith('<!DOCTYPE') ||
           response.data.trim().startsWith('<html') ||
           contentType.includes('text/html')
         );
-        
+
         if (isHtml) {
           logger.error('❌ [EVIDENCE] Python API returned HTML error page (service may be down)', {
             status: response.status,
@@ -954,7 +954,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
             userId,
             responsePreview: typeof response.data === 'string' ? response.data.substring(0, 200) : 'N/A'
           });
-          
+
           // Send SSE event for upload error
           try {
             const sseHub = (await import('../utils/sseHub')).default;
@@ -968,7 +968,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
           } catch (sseError) {
             logger.debug('Failed to send SSE event for upload error', { error: sseError });
           }
-          
+
           return res.status(503).json({
             success: false,
             error: 'Service unavailable',
@@ -977,14 +977,14 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
             retryAfter: 60
           });
         }
-        
+
         logger.error('❌ [EVIDENCE] Python API returned error status', {
           status: response.status,
           statusText: response.statusText,
           data: response.data,
           userId
         });
-        
+
         // Send SSE event for upload error
         try {
           const sseHub = (await import('../utils/sseHub')).default;
@@ -998,7 +998,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
         } catch (sseError) {
           logger.debug('Failed to send SSE event for upload error', { error: sseError });
         }
-        
+
         return res.status(response.status).json({
           success: false,
           error: response.data?.error || response.data?.detail || 'Upload failed',
@@ -1006,14 +1006,14 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
           details: response.data
         });
       }
-      
+
       logger.info('✅ [EVIDENCE] Document upload successful', {
         userId,
         documentId: response.data.id,
         status: response.data.status,
         responseStatus: response.status
       });
-      
+
       // Send SSE event for upload success
       try {
         const sseHub = (await import('../utils/sseHub')).default;
@@ -1027,7 +1027,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
           message: response.data.message || 'Document uploaded successfully',
           timestamp: new Date().toISOString()
         });
-        
+
         // Also send parsing_started event if processing_status is 'processing'
         if (response.data.processing_status === 'processing') {
           sseHub.sendEvent(userId, 'parsing_started', {
@@ -1039,7 +1039,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
       } catch (sseError) {
         logger.debug('Failed to send SSE event for upload completion', { error: sseError });
       }
-      
+
       // Return success response
       return res.json({
         success: true,
@@ -1051,7 +1051,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
       const errorCode = proxyError?.code;
       const responseStatus = proxyError?.response?.status;
       const responseData = proxyError?.response?.data;
-      
+
       logger.error('❌ [EVIDENCE] Error forwarding upload to Python API', {
         error: errorMessage,
         code: errorCode,
@@ -1062,7 +1062,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
         fileCount: files.length,
         stack: proxyError?.stack
       });
-      
+
       // Determine appropriate error response
       let statusCode = 502;
       let errorResponse: any = {
@@ -1070,7 +1070,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
         error: 'Failed to upload documents',
         message: 'Python API unavailable or error occurred'
       };
-      
+
       if (proxyError.response) {
         // Python API responded with an error
         statusCode = proxyError.response.status;
@@ -1097,17 +1097,17 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
           pythonApiUrl,
           userId: finalUserId
         });
-        
+
         // Set CORS headers
         const origin = req.headers.origin;
         if (origin) {
           res.header('Access-Control-Allow-Origin', origin);
           res.header('Access-Control-Allow-Credentials', 'true');
         }
-        
+
         // Generate mock document IDs
         const mockDocumentIds = files.map((_, index) => `demo-doc-${Date.now()}-${index}`);
-        
+
         // Send SSE event for upload success (mock)
         try {
           const sseHub = (await import('../utils/sseHub')).default;
@@ -1125,7 +1125,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
         } catch (sseError) {
           logger.debug('Failed to send SSE event for mock upload', { error: sseError });
         }
-        
+
         // Return mock success response instead of error
         return res.json({
           success: true,
@@ -1159,7 +1159,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
           code: errorCode || 'UNKNOWN_ERROR'
         };
       }
-      
+
       // Send SSE event for upload error
       try {
         const sseHub = (await import('../utils/sseHub')).default;
@@ -1174,7 +1174,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
       } catch (sseError) {
         logger.debug('Failed to send SSE event for upload error', { error: sseError });
       }
-      
+
       return res.status(statusCode).json(errorResponse);
     }
   } catch (error: any) {
@@ -1198,7 +1198,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
 router.get('/sources', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    
+
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -1212,7 +1212,7 @@ router.get('/sources', async (req: Request, res: Response) => {
       .select('id, provider, account_email, status, last_sync_at, created_at, metadata')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
-    
+
     // If user_id doesn't exist, try seller_id
     if (error && error.message?.includes('column') && error.message?.includes('user_id')) {
       const retry = await supabase
@@ -1262,7 +1262,7 @@ router.get('/sources/:id', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     const { id } = req.params;
-    
+
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -1277,7 +1277,7 @@ router.get('/sources/:id', async (req: Request, res: Response) => {
       .eq('id', id)
       .eq('user_id', userId)
       .single();
-    
+
     // If user_id doesn't exist, try seller_id
     if (error && error.message?.includes('column') && error.message?.includes('user_id')) {
       const retry = await supabase
@@ -1334,7 +1334,7 @@ router.get('/sources/:id/status', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     const { id } = req.params;
-    
+
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -1349,7 +1349,7 @@ router.get('/sources/:id/status', async (req: Request, res: Response) => {
       .eq('id', id)
       .eq('user_id', userId)
       .single();
-    
+
     // If user_id doesn't exist, try seller_id
     if (error && error.message?.includes('column') && error.message?.includes('user_id')) {
       const retry = await supabase
@@ -1411,7 +1411,7 @@ router.delete('/sources/:id', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     const { id } = req.params;
-    
+
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -1431,7 +1431,7 @@ router.delete('/sources/:id', async (req: Request, res: Response) => {
       .eq('user_id', userId)
       .select('id, provider')
       .single();
-    
+
     // If user_id doesn't exist, try seller_id
     if (error && error.message?.includes('column') && error.message?.includes('user_id')) {
       const retry = await supabase
@@ -1502,7 +1502,7 @@ router.delete('/sources/:id', async (req: Request, res: Response) => {
 router.get('/matching/results', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    
+
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -1595,7 +1595,7 @@ router.get('/matching/results', async (req: Request, res: Response) => {
         match_type: context.match_type || 'unknown',
         action_taken: (link.relevance_score || 0) >= 0.85 ? 'auto_submit'
           : (link.relevance_score || 0) >= 0.5 ? 'smart_prompt'
-          : 'no_action',
+            : 'no_action',
         matched_fields: context.matched_fields || [],
         reasoning: context.reasoning || '',
         created_at: link.created_at
@@ -1637,7 +1637,7 @@ router.get('/matching/results/by-document/:documentId', async (req: Request, res
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     const { documentId } = req.params;
-    
+
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -1711,7 +1711,7 @@ router.get('/matching/results/by-document/:documentId', async (req: Request, res
         match_type: context.match_type || 'unknown',
         action_taken: (link.relevance_score || 0) >= 0.85 ? 'auto_submit'
           : (link.relevance_score || 0) >= 0.5 ? 'smart_prompt'
-          : 'no_action',
+            : 'no_action',
         matched_fields: context.matched_fields || [],
         reasoning: context.reasoning || '',
         created_at: link.created_at

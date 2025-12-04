@@ -15,7 +15,7 @@ function logResult(name: string, status: '✅' | '❌' | '⚠️', message: stri
 
 async function verifyNodeAPI() {
   const nodeAPI = 'https://opside-node-api-woco.onrender.com';
-  
+
   try {
     const response = await axios.get(`${nodeAPI}/`, { timeout: 10000 });
     if (response.status === 200) {
@@ -27,7 +27,7 @@ async function verifyNodeAPI() {
   } catch (error: any) {
     logResult('Node API Health', '❌', error.message);
   }
-  
+
   // Test health endpoint if available
   try {
     const healthResponse = await axios.get(`${nodeAPI}/health`, { timeout: 10000 });
@@ -38,8 +38,8 @@ async function verifyNodeAPI() {
 }
 
 async function verifyPythonAPI() {
-  const pythonAPI = 'https://python-api-9.onrender.com';
-  
+  const pythonAPI = 'https://python-api-10.onrender.com';
+
   try {
     const response = await axios.get(`${pythonAPI}/`, { timeout: 10000 });
     if (response.status === 200) {
@@ -51,7 +51,7 @@ async function verifyPythonAPI() {
   } catch (error: any) {
     logResult('Python API Health', '❌', error.message);
   }
-  
+
   // Test health endpoint if available
   try {
     const healthResponse = await axios.get(`${pythonAPI}/health`, { timeout: 10000 });
@@ -88,27 +88,27 @@ async function verifyEnvironmentChecklist() {
 
 async function runAllVerifications() {
   console.log('🚀 Verifying Deployed Services...\n');
-  
+
   await verifyNodeAPI();
   await verifyPythonAPI();
   await verifyDatabaseConnection();
   await verifyEnvironmentChecklist();
-  
+
   console.log('\n📊 Summary:');
   const success = results.filter(r => r.status === '✅').length;
   const warnings = results.filter(r => r.status === '⚠️').length;
   const errors = results.filter(r => r.status === '❌').length;
-  
+
   console.log(`   ✅ Passed: ${success}`);
   console.log(`   ⚠️  Warnings: ${warnings}`);
   console.log(`   ❌ Failed: ${errors}`);
-  
+
   console.log('\n📝 Next Steps:');
   console.log('   1. Verify ENCRYPTION_KEY and JWT_SECRET in Render dashboard');
   console.log('   2. Test OAuth flow (Agent 1)');
   console.log('   3. Test data sync (Agent 2)');
   console.log('   4. Wire frontend to backend APIs');
-  
+
   if (errors === 0) {
     console.log('\n🎉 Core services are operational!');
   }

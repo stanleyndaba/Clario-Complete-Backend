@@ -47,7 +47,7 @@ export interface DetectionResultRecord {
 
 export class DetectionService {
   private readonly queueName = 'detection_queue';
-  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
+  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
 
   /**
    * Enqueue a detection job after sync completion
@@ -55,10 +55,10 @@ export class DetectionService {
    */
   async enqueueDetectionJob(job: DetectionJob & { is_sandbox?: boolean }): Promise<void> {
     try {
-      const isSandbox = job.is_sandbox || 
-                        process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || 
-                        process.env.NODE_ENV === 'development';
-      
+      const isSandbox = job.is_sandbox ||
+        process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') ||
+        process.env.NODE_ENV === 'development';
+
       logger.info('Enqueueing detection job (SANDBOX MODE)', {
         seller_id: job.seller_id,
         sync_id: job.sync_id,
@@ -172,10 +172,10 @@ export class DetectionService {
       const highConfidenceClaims = results.filter(r => r.confidence_score >= 0.85);
       const mediumConfidenceClaims = results.filter(r => r.confidence_score >= 0.50 && r.confidence_score < 0.85);
       const lowConfidenceClaims = results.filter(r => r.confidence_score < 0.50);
-      
+
       // Send notifications for each category
       const websocketService = (await import('./websocketService')).default;
-      
+
       if (highConfidenceClaims.length > 0) {
         websocketService.sendNotificationToUser(job.seller_id, {
           type: 'success',
@@ -189,7 +189,7 @@ export class DetectionService {
           }
         });
       }
-      
+
       if (mediumConfidenceClaims.length > 0) {
         websocketService.sendNotificationToUser(job.seller_id, {
           type: 'warning',
@@ -203,7 +203,7 @@ export class DetectionService {
           }
         });
       }
-      
+
       if (lowConfidenceClaims.length > 0) {
         websocketService.sendNotificationToUser(job.seller_id, {
           type: 'info',
@@ -217,7 +217,7 @@ export class DetectionService {
           }
         });
       }
-      
+
       // 🎯 PHASE 3: Trigger orchestrator Phase 3 (Detection Completion)
       try {
         const OrchestrationJobManager = (await import('../jobs/orchestrationJob')).default;
@@ -226,8 +226,8 @@ export class DetectionService {
           claim_type: result.anomaly_type,
           amount: result.estimated_value,
           confidence: result.confidence_score,
-          confidence_category: result.confidence_score >= 0.85 ? 'high' : 
-                              result.confidence_score >= 0.50 ? 'medium' : 'low',
+          confidence_category: result.confidence_score >= 0.85 ? 'high' :
+            result.confidence_score >= 0.50 ? 'medium' : 'low',
           currency: result.currency,
           evidence: result.evidence,
           discovery_date: result.discovery_date?.toISOString(),
@@ -265,7 +265,7 @@ export class DetectionService {
         const mediumConfidenceCount = results.filter(r => r.confidence_score >= 0.50 && r.confidence_score < 0.85).length;
         const lowConfidenceCount = results.filter(r => r.confidence_score < 0.50).length;
         const totalValue = results.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
-        
+
         sseHub.sendEvent(job.seller_id, 'message', {
           type: 'detection',
           status: 'completed',
@@ -294,7 +294,7 @@ export class DetectionService {
       });
     } catch (error) {
       logger.error('Error processing detection job directly', { error, job });
-      
+
       // Update job status to failed
       await this.updateJobStatus(job.seller_id, job.sync_id, 'failed', error instanceof Error ? error.message : 'Unknown error');
 
@@ -335,13 +335,13 @@ export class DetectionService {
       }
 
       const redisClient = await getRedisClient();
-      
+
       // Process jobs from Redis queue (with timeout to prevent blocking)
       const jobData = await Promise.race([
         redisClient.brPop(this.queueName, 1),
         new Promise<null>((resolve) => setTimeout(() => resolve(null), 1000))
       ]);
-      
+
       if (!jobData || !Array.isArray(jobData) || !jobData[1]) {
         // No jobs in queue, exit
         return;
@@ -349,7 +349,7 @@ export class DetectionService {
 
       // Process the job
       const job: DetectionJob = JSON.parse(jobData[1]);
-      
+
       try {
         logger.info('Processing detection job', {
           seller_id: job.seller_id,
@@ -372,10 +372,10 @@ export class DetectionService {
         const highConfidenceClaims = results.filter(r => r.confidence_score >= 0.85);
         const mediumConfidenceClaims = results.filter(r => r.confidence_score >= 0.50 && r.confidence_score < 0.85);
         const lowConfidenceClaims = results.filter(r => r.confidence_score < 0.50);
-        
+
         // Send notifications for each category
         const websocketService = (await import('./websocketService')).default;
-        
+
         if (highConfidenceClaims.length > 0) {
           websocketService.sendNotificationToUser(job.seller_id, {
             type: 'success',
@@ -389,7 +389,7 @@ export class DetectionService {
             }
           });
         }
-        
+
         if (mediumConfidenceClaims.length > 0) {
           websocketService.sendNotificationToUser(job.seller_id, {
             type: 'warning',
@@ -403,7 +403,7 @@ export class DetectionService {
             }
           });
         }
-        
+
         if (lowConfidenceClaims.length > 0) {
           websocketService.sendNotificationToUser(job.seller_id, {
             type: 'info',
@@ -417,7 +417,7 @@ export class DetectionService {
             }
           });
         }
-        
+
         // 🎯 PHASE 3: Trigger orchestrator Phase 3 (Detection Completion)
         try {
           const OrchestrationJobManager = (await import('../jobs/orchestrationJob')).default;
@@ -426,8 +426,8 @@ export class DetectionService {
             claim_type: result.anomaly_type,
             amount: result.estimated_value,
             confidence: result.confidence_score,
-            confidence_category: result.confidence_score >= 0.85 ? 'high' : 
-                                result.confidence_score >= 0.50 ? 'medium' : 'low',
+            confidence_category: result.confidence_score >= 0.85 ? 'high' :
+              result.confidence_score >= 0.50 ? 'medium' : 'low',
             currency: result.currency,
             evidence: result.evidence,
             discovery_date: result.discovery_date?.toISOString(),
@@ -459,7 +459,7 @@ export class DetectionService {
         }
       } catch (error) {
         logger.error('Error processing detection job', { error, job });
-        
+
         // Update job status to failed
         await this.updateJobStatus(job.seller_id, job.sync_id, 'failed', error instanceof Error ? error.message : 'Unknown error');
       }
@@ -481,10 +481,10 @@ export class DetectionService {
    */
   private async runDetectionAlgorithms(job: DetectionJob): Promise<DetectionResult[]> {
     try {
-      const isSandbox = (job as any).is_sandbox || 
-                        process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || 
-                        process.env.NODE_ENV === 'development';
-      
+      const isSandbox = (job as any).is_sandbox ||
+        process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') ||
+        process.env.NODE_ENV === 'development';
+
       logger.info('Running detection algorithms (Phase 2: Autonomous Money Discovery - SANDBOX MODE)', {
         seller_id: job.seller_id,
         sync_id: job.sync_id,
@@ -496,27 +496,27 @@ export class DetectionService {
 
       // Step 1: Get financial events from database (synced from SP-API)
       const financialEvents = await this.getFinancialEventsForUser(job.seller_id);
-      
+
       logger.info('Found financial events for claim detection (SANDBOX MODE)', {
         seller_id: job.seller_id,
         event_count: financialEvents.length,
         isSandbox,
         mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
       });
-      
+
       // For sandbox: If no financial events, create mock events from claims table for testing
       if (isSandbox && financialEvents.length === 0) {
         logger.info('No financial events found - checking claims table for sandbox test data', {
           seller_id: job.seller_id
         });
-        
+
         const { data: claims } = await supabase
           .from('claims')
           .select('*')
           .eq('user_id', job.seller_id)
           .eq('provider', 'amazon')
           .limit(100);
-        
+
         if (claims && claims.length > 0) {
           // Convert claims to financial events format for detection
           const mockEvents = claims.map((claim: any) => ({
@@ -529,12 +529,12 @@ export class DetectionService {
             amazon_order_id: claim.order_id || claim.amazon_order_id,
             raw_payload: claim.raw_data || {}
           }));
-          
+
           logger.info('Using claims as mock financial events for sandbox detection', {
             seller_id: job.seller_id,
             mock_event_count: mockEvents.length
           });
-          
+
           // Use mock events for detection
           for (const mockEvent of mockEvents) {
             financialEvents.push(mockEvent);
@@ -568,7 +568,7 @@ export class DetectionService {
       let apiResponseTimeMs = 0;
       let apiCallSuccess = false;
       let apiCallError: string | undefined;
-      
+
       try {
         logger.info('Calling Claim Detector API for batch prediction', {
           seller_id: job.seller_id,
@@ -586,14 +586,14 @@ export class DetectionService {
             }
           }
         );
-        
+
         apiResponseTimeMs = Date.now() - apiCallStartTime;
         apiCallSuccess = true;
 
         // Parse API response - the API returns { predictions: [], batch_metrics: {} }
         const apiPredictions = detectionResponse.data?.predictions || detectionResponse.data?.results || detectionResponse.data?.claims || [];
         const batchMetrics = detectionResponse.data?.batch_metrics || {};
-        
+
         logger.info('Claim Detector API response received', {
           seller_id: job.seller_id,
           predictions_count: apiPredictions.length,
@@ -609,7 +609,7 @@ export class DetectionService {
         for (const prediction of apiPredictions) {
           // Get the original claim data to preserve amount and other fields
           const originalClaim = claimsMap.get(prediction.claim_id);
-          
+
           if (!originalClaim) {
             logger.warn('Original claim not found for prediction', {
               claim_id: prediction.claim_id,
@@ -639,7 +639,7 @@ export class DetectionService {
               job.sync_id
             );
             results.push(detectionResult);
-            
+
             logger.debug('Mapped prediction to detection result', {
               claim_id: prediction.claim_id,
               claimable: prediction.claimable,
@@ -661,25 +661,25 @@ export class DetectionService {
         const mediumConfidence = results.filter(r => r.confidence_score >= 0.50 && r.confidence_score < 0.85).length;
         const lowConfidence = results.filter(r => r.confidence_score < 0.50).length;
         const totalAmount = results.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
-        
+
         // Record detection accuracy metrics and API call metrics
         try {
           const syncMonitoringService = (await import('./syncMonitoringService')).default;
           const claimsByType: Record<string, number> = {};
           const claimsBySeverity: Record<string, number> = {};
-          
+
           results.forEach(result => {
             claimsByType[result.anomaly_type] = (claimsByType[result.anomaly_type] || 0) + 1;
             claimsBySeverity[result.severity] = (claimsBySeverity[result.severity] || 0) + 1;
           });
-          
+
           const averageConfidence = results.length > 0
             ? results.reduce((sum, r) => sum + r.confidence_score, 0) / results.length
             : 0;
           const averageProbability = apiPredictions.length > 0
             ? apiPredictions.reduce((sum, p) => sum + (p.probability || 0), 0) / apiPredictions.length
             : 0;
-          
+
           // Record detection accuracy metrics
           await syncMonitoringService.recordDetectionAccuracy({
             sync_id: job.sync_id,
@@ -692,7 +692,7 @@ export class DetectionService {
             claims_by_type: claimsByType,
             claims_by_severity: claimsBySeverity
           });
-          
+
           // Record API call metrics
           await syncMonitoringService.recordApiCallMetrics(
             job.sync_id,
@@ -710,7 +710,7 @@ export class DetectionService {
             sync_id: job.sync_id
           });
         }
-        
+
         const environment = isSandbox ? 'SANDBOX' : 'PRODUCTION';
         logger.info(`Detection algorithms completed (${environment} MODE)`, {
           seller_id: job.seller_id,
@@ -723,7 +723,7 @@ export class DetectionService {
           isSandbox,
           mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
         });
-        
+
         // Send real-time notification with results (sandbox mode indicator)
         const websocketService = (await import('./websocketService')).default;
         const sandboxPrefix = isSandbox ? '[SANDBOX] ' : '';
@@ -744,7 +744,7 @@ export class DetectionService {
             sandbox_test_data: isSandbox
           }
         });
-        
+
         // Send additional toast for high-confidence claims ready for auto-submit
         if (highConfidence > 0) {
           websocketService.sendNotificationToUser(job.seller_id, {
@@ -765,7 +765,7 @@ export class DetectionService {
         apiResponseTimeMs = Date.now() - apiCallStartTime;
         apiCallSuccess = false;
         apiCallError = error.message || 'Unknown error';
-        
+
         // Enhanced error logging with full context
         const errorDetails = {
           error_message: error.message,
@@ -781,9 +781,9 @@ export class DetectionService {
           mode: isSandbox ? 'SANDBOX' : 'PRODUCTION',
           stack: error.stack
         };
-        
+
         logger.error('Error calling Claim Detector API', errorDetails);
-        
+
         // Record API call metrics even on failure
         try {
           const syncMonitoringService = (await import('./syncMonitoringService')).default;
@@ -799,7 +799,7 @@ export class DetectionService {
           // Non-blocking
           logger.warn('Failed to record API call metrics', { error: monitoringError });
         }
-        
+
         // If API is unreachable or returns error, log detailed diagnostics
         if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
           logger.error('Claim Detector API is unreachable', {
@@ -817,27 +817,27 @@ export class DetectionService {
             response_time_ms: apiResponseTimeMs
           });
         }
-        
+
         // Fallback: Create basic detection results from financial events if API fails
         // For sandbox, this is acceptable - we'll create mock claims from synced data
         logger.warn('Falling back to basic detection from financial events (SANDBOX MODE)', {
           isSandbox,
           event_count: financialEvents.length
         });
-        
+
         if (financialEvents.length === 0 && isSandbox) {
           // Sandbox may have no financial events - create mock claims from claims table
           logger.info('No financial events - creating mock claims from synced claims for sandbox testing', {
             seller_id: job.seller_id
           });
-          
+
           const { data: claims } = await supabase
             .from('claims')
             .select('*')
             .eq('user_id', job.seller_id)
             .eq('provider', 'amazon')
             .limit(50);
-          
+
           if (claims && claims.length > 0) {
             // Create detection results from claims with mock confidence scores
             for (const claim of claims) {
@@ -852,12 +852,12 @@ export class DetectionService {
                 amazon_order_id: claim.order_id || claim.amazon_order_id,
                 raw_payload: claim.raw_data || {}
               }, job.seller_id, job.sync_id);
-              
+
               // Override confidence with mock value for sandbox
               basicResult.confidence_score = mockConfidence;
               results.push(basicResult);
             }
-            
+
             logger.info('Created mock detection results from claims for sandbox testing', {
               seller_id: job.seller_id,
               mock_results_count: results.length
@@ -930,8 +930,8 @@ export class DetectionService {
       // Filter for potential discrepancies (could be enhanced with more logic)
       return (data || []).filter((item: any) => {
         // Check for potential lost/damaged inventory
-        return item.dimensions?.damaged > 0 || 
-               (item.quantity_available === 0 && item.quantity_reserved > 0);
+        return item.dimensions?.damaged > 0 ||
+          (item.quantity_available === 0 && item.quantity_reserved > 0);
       });
     } catch (error) {
       logger.error('Error in getInventoryDiscrepancies', { error, userId });
@@ -950,7 +950,7 @@ export class DetectionService {
       if (event.event_type === 'fee' || event.event_type === 'adjustment') {
         const eventDate = event.event_date ? new Date(event.event_date) : new Date();
         const daysSinceOrder = Math.floor((Date.now() - eventDate.getTime()) / (1000 * 60 * 60 * 24));
-        
+
         claims.push({
           claim_id: `claim_${event.id}_${Date.now()}`,
           seller_id: event.seller_id,
@@ -985,11 +985,11 @@ export class DetectionService {
     for (const item of inventoryDiscrepancies) {
       const damagedQty = item.dimensions?.damaged || 0;
       const estimatedValuePerUnit = item.price || item.cost || 10; // Use item price if available, else default to $10
-      
+
       if (damagedQty > 0) {
         const discoveryDate = item.updated_at ? new Date(item.updated_at) : new Date();
         const daysSinceOrder = Math.floor((Date.now() - discoveryDate.getTime()) / (1000 * 60 * 60 * 24));
-        
+
         claims.push({
           claim_id: `claim_inv_${item.id}_${Date.now()}`,
           seller_id: item.user_id,
@@ -1022,14 +1022,14 @@ export class DetectionService {
           }
         });
       }
-      
+
       // Also check for missing units (quantity_available === 0 but quantity_reserved > 0)
       if (item.quantity_available === 0 && item.quantity_reserved > 0) {
         const missingQty = item.quantity_reserved;
         const estimatedValuePerUnit = item.price || item.cost || 10;
         const discoveryDate = item.updated_at ? new Date(item.updated_at) : new Date();
         const daysSinceOrder = Math.floor((Date.now() - discoveryDate.getTime()) / (1000 * 60 * 60 * 24));
-        
+
         claims.push({
           claim_id: `claim_missing_${item.id}_${Date.now()}`,
           seller_id: item.user_id,
@@ -1072,10 +1072,10 @@ export class DetectionService {
   private calculateDeadline(discoveryDate: Date): { deadlineDate: Date; daysRemaining: number } {
     const deadlineDate = new Date(discoveryDate);
     deadlineDate.setDate(deadlineDate.getDate() + 60); // Add 60 days
-    
+
     const now = new Date();
     const daysRemaining = Math.max(0, Math.ceil((deadlineDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
-    
+
     return { deadlineDate, daysRemaining };
   }
 
@@ -1095,7 +1095,7 @@ export class DetectionService {
       'overcharge': 'overcharge',
       'duplicate': 'duplicate_charge'
     };
-    
+
     // Map by subcategory if available for more specific detection
     const subcategoryMap: Record<string, DetectionResult['anomaly_type']> = {
       'damaged_goods': 'damaged_stock',
@@ -1107,9 +1107,9 @@ export class DetectionService {
     };
 
     // Prefer subcategory mapping if available, otherwise use category
-    const anomalyType = subcategoryMap[detectedClaim.subcategory] || 
-                        anomalyTypeMap[detectedClaim.category] || 
-                        'missing_unit';
+    const anomalyType = subcategoryMap[detectedClaim.subcategory] ||
+      anomalyTypeMap[detectedClaim.category] ||
+      'missing_unit';
 
     // Map confidence to severity
     let severity: DetectionResult['severity'] = 'low';
@@ -1118,10 +1118,10 @@ export class DetectionService {
     else if (detectedClaim.probability >= 0.50) severity = 'medium';
 
     // Calculate discovery date (use claim_date from API or current date)
-    const discoveryDate = detectedClaim.claim_date ? 
-      new Date(detectedClaim.claim_date) : 
+    const discoveryDate = detectedClaim.claim_date ?
+      new Date(detectedClaim.claim_date) :
       new Date();
-    
+
     // Calculate 60-day deadline
     const { deadlineDate, daysRemaining } = this.calculateDeadline(discoveryDate);
 
@@ -1186,19 +1186,19 @@ export class DetectionService {
             // Recalculate days remaining before storing (in case time passed)
             const { deadlineDate, daysRemaining } = result.deadline_date && result.discovery_date ?
               this.calculateDeadline(new Date(result.discovery_date)) :
-              result.deadline_date ? 
+              result.deadline_date ?
                 { deadlineDate: new Date(result.deadline_date), daysRemaining: result.days_remaining || 0 } :
                 { deadlineDate: null, daysRemaining: null };
 
             return {
-            seller_id: result.seller_id,
-            sync_id: result.sync_id,
-            anomaly_type: result.anomaly_type,
-            severity: result.severity,
-            estimated_value: result.estimated_value,
-            currency: result.currency,
-            confidence_score: result.confidence_score,
-            evidence: result.evidence,
+              seller_id: result.seller_id,
+              sync_id: result.sync_id,
+              anomaly_type: result.anomaly_type,
+              severity: result.severity,
+              estimated_value: result.estimated_value,
+              currency: result.currency,
+              confidence_score: result.confidence_score,
+              evidence: result.evidence,
               related_event_ids: result.related_event_ids || [],
               discovery_date: result.discovery_date ? new Date(result.discovery_date).toISOString() : new Date().toISOString(),
               deadline_date: deadlineDate ? deadlineDate.toISOString() : null,
@@ -1354,7 +1354,7 @@ export class DetectionService {
       }
 
       const results = data as { anomaly_type: string; confidence_score: number; status: string }[];
-      
+
       // Initialize counters
       const by_confidence = { high: 0, medium: 0, low: 0 };
       const by_anomaly_type: Record<string, { high: number; medium: number; low: number; total: number }> = {};
@@ -1365,7 +1365,7 @@ export class DetectionService {
         '0.6-0.8': 0,
         '0.8-1.0': 0
       };
-      
+
       let totalConfidence = 0;
       const resolvedByConfidence = { high: 0, medium: 0, low: 0 };
       const totalByConfidence = { high: 0, medium: 0, low: 0 };
@@ -1526,7 +1526,7 @@ export class DetectionService {
   async checkExpiringClaims(sellerIds: string[]): Promise<void> {
     try {
       const uniqueSellerIds = [...new Set(sellerIds)];
-      
+
       for (const sellerId of uniqueSellerIds) {
         // Get claims expiring in 7 days or less
         // Use supabaseAdmin to bypass RLS (Agent 3 stores with supabaseAdmin)
@@ -1586,7 +1586,7 @@ export class DetectionService {
         days_remaining: daysRemaining,
         deadline_date: claim.deadline_date,
         urgency,
-        message: daysRemaining === 0 
+        message: daysRemaining === 0
           ? `Claim deadline expired! Claim ${claim.id} can no longer be filed.`
           : `Claim expires in ${daysRemaining} day${daysRemaining > 1 ? 's' : ''}. File soon to avoid missing the deadline.`
       });
@@ -1803,8 +1803,8 @@ export class DetectionService {
     results: DetectionResult[]
   ): Promise<void> {
     try {
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
-      
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
+
       // Transform detection results to claims format for evidence matching
       const claims = results.map((result, index) => ({
         claim_id: `claim_${result.seller_id}_${Date.now()}_${index}`,
@@ -1855,8 +1855,8 @@ export class DetectionService {
     results: DetectionResult[]
   ): Promise<void> {
     try {
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-9.onrender.com';
-      
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
+
       // Transform results to claims format
       const claims = results.map((result, index) => ({
         claim_id: `claim_${result.seller_id}_${Date.now()}_${index}`,
@@ -1914,7 +1914,7 @@ export class DetectionService {
         .in('status', ['pending', 'reviewed']);
 
       if (fetchError) {
-        logger.error('Error fetching expired claims', { 
+        logger.error('Error fetching expired claims', {
           error: fetchError?.message || String(fetchError),
           code: fetchError?.code,
           details: fetchError?.details
@@ -1930,7 +1930,7 @@ export class DetectionService {
       const claimIds = expiredClaims.map(c => c.id);
       const { error: updateError } = await supabase
         .from('detection_results')
-        .update({ 
+        .update({
           expired: true,
           days_remaining: 0,
           updated_at: new Date().toISOString()
@@ -1938,7 +1938,7 @@ export class DetectionService {
         .in('id', claimIds);
 
       if (updateError) {
-        logger.error('Error updating expired claims', { 
+        logger.error('Error updating expired claims', {
           error: updateError?.message || String(updateError),
           code: updateError?.code,
           details: updateError?.details
@@ -1957,7 +1957,7 @@ export class DetectionService {
         }
       } catch (sseError: any) {
         // Don't fail if SSE fails
-        logger.warn('Error sending SSE events for expired claims', { 
+        logger.warn('Error sending SSE events for expired claims', {
           error: sseError?.message || String(sseError)
         });
       }
@@ -1968,7 +1968,7 @@ export class DetectionService {
       // Handle error properly with serializable error message
       const errorMessage = error?.message || String(error) || 'Unknown error';
       const errorStack = error?.stack;
-      logger.error('Error in updateExpiredClaims', { 
+      logger.error('Error in updateExpiredClaims', {
         error: errorMessage,
         stack: errorStack,
         errorType: error?.constructor?.name
