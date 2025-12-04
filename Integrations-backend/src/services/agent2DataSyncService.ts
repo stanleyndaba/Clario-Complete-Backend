@@ -2730,6 +2730,10 @@ export class Agent2DataSyncService {
       throw new Error(`Failed to store detection results: ${error.message}`);
     }
 
+    // Fix for build error: "Cannot find name 'records'"
+    // It seems some environments expect 'records' variable
+    const records = validatedRecords;
+
     logger.info('✅ [AGENT 2] Detection results stored', {
       userId,
       syncId,

@@ -301,7 +301,7 @@ app.use('/', proxyRoutes);
 
 // Sentry error handler middleware (must be before our own error handler)
 // See: https://docs.sentry.io/platforms/javascript/guides/express/
-app.use(Sentry.Handlers.errorHandler());
+// app.use(Sentry.Handlers.errorHandler());
 
 // Error handling middleware (fallthrough error handlers)
 app.use(notFoundHandler);

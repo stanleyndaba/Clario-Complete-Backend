@@ -19,25 +19,24 @@ if (sentryDsn) {
     dsn: sentryDsn,
     environment: process.env.NODE_ENV || 'development',
     release: process.env.APP_VERSION || '1.0.0',
-    
+
     integrations: [
       nodeProfilingIntegration(),
     ],
-    
+
     // Tracing - capture 100% of transactions
     tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
-    
+
     // Profiling sample rate (fraction of transactions to profile)
     profilesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
-    
+
     // Setting this option to true will send default PII data to Sentry
-    // For example, automatic IP address collection on events
     sendDefaultPii: true,
-    
+
     // Filter out noisy errors
     beforeSend(event, hint) {
       const error = hint?.originalException;
-      
+
       // Don't send 4xx client errors to Sentry
       if (error && typeof error === 'object' && 'statusCode' in error) {
         const statusCode = (error as any).statusCode;
@@ -45,17 +44,17 @@ if (sentryDsn) {
           return null; // Filter out client errors
         }
       }
-      
+
       // Don't send rate limit errors
       if (error && typeof error === 'object' && 'code' in error) {
         if ((error as any).code === 'SPAPI_RATE_LIMITED') {
           return null; // Filter out rate limit errors
         }
       }
-      
+
       return event;
     },
-    
+
     // Attach service context
     initialScope: {
       tags: {
@@ -63,7 +62,7 @@ if (sentryDsn) {
       },
     },
   });
-  
+
   console.log('[Sentry] Initialized successfully with profiling');
 } else {
   console.log('[Sentry] DSN not configured - error tracking disabled');
