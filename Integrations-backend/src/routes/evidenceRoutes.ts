@@ -1743,6 +1743,98 @@ router.get('/matching/results/by-document/:documentId', async (req: Request, res
   }
 });
 
+/**
+ * GET /api/v1/evidence/documents/:documentId
+ * Get document with parsed data (for DocumentDetail page)
+ */
+router.get('/v1/evidence/documents/:documentId', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const documentId = req.params.documentId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    logger.info('📄 [EVIDENCE] Fetching document with parsed data', {
+      userId,
+      documentId
+    });
+
+    // Fetch document from evidence_documents
+    const { data: doc, error: docError } = await supabaseAdmin
+      .from('evidence_documents')
+      .select('*')
+      .eq('id', documentId)
+      .single();
+
+    if (docError) {
+      if (docError.code === 'PGRST116') {
+        return res.status(404).json({
+          success: false,
+          error: 'Document not found'
+        });
+      }
+      throw docError;
+    }
+
+    // Extract parsed data from metadata or document fields
+    const metadata = doc.metadata || {};
+    const parsedMetadata = metadata.parsed_data || metadata.parsed_metadata || metadata;
+
+    // Build response in expected format
+    const response = {
+      id: doc.id,
+      filename: doc.filename || doc.original_filename,
+      processing_status: doc.status || 'completed',
+      parser_status: metadata.parser_status || doc.parser_status || 'completed',
+      parser_confidence: metadata.parser_confidence || metadata.confidence_score || doc.parser_confidence || 0.95,
+      parsed_metadata: {
+        supplier_name: parsedMetadata.supplier_name || parsedMetadata.supplier || doc.supplier_name,
+        invoice_number: parsedMetadata.invoice_number || parsedMetadata.invoice_no || doc.invoice_number,
+        invoice_date: parsedMetadata.invoice_date || parsedMetadata.date,
+        total_amount: parsedMetadata.total_amount || parsedMetadata.total || parsedMetadata.amount,
+        currency: parsedMetadata.currency || 'USD',
+        line_items: parsedMetadata.line_items || parsedMetadata.items || [],
+        confidence_score: parsedMetadata.confidence_score || metadata.parser_confidence || 0.95
+      },
+      // Include raw doc data for fallback
+      name: doc.filename || doc.original_filename,
+      uploadDate: doc.created_at,
+      status: doc.status,
+      size: doc.size_bytes,
+      type: doc.content_type,
+      supplier: parsedMetadata.supplier_name || parsedMetadata.supplier,
+      invoice: parsedMetadata.invoice_number || parsedMetadata.invoice_no,
+      // Include extractedData if available (for legacy compatibility)
+      extractedData: parsedMetadata.line_items || parsedMetadata.items || []
+    };
+
+    logger.info('✅ [EVIDENCE] Document with parsed data fetched', {
+      documentId,
+      hasMetadata: !!metadata,
+      hasParsedData: !!parsedMetadata.supplier_name || !!parsedMetadata.invoice_number
+    });
+
+    res.json(response);
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error fetching document with parsed data', {
+      documentId: req.params.documentId,
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch document with parsed data',
+      message: error?.message || String(error)
+    });
+  }
+});
+
 export default router;
 
 

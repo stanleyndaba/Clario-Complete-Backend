@@ -268,7 +268,9 @@ app.use('/api/stripe-webhook', stripeWebhookRoutes);
 app.use('/api/v1/workflow', workflowRoutes);
 logger.info('Workflow routes registered at /api/v1/workflow');
 app.use('/api/evidence', evidenceRoutes);
-logger.info('Evidence routes registered at /api/evidence');
+// Also mount at /api for /api/v1/evidence/* endpoints (like /api/v1/evidence/documents/:id)
+app.use('/api', evidenceRoutes);
+logger.info('Evidence routes registered at /api/evidence and /api (for v1 endpoints)');
 
 import billingRoutes from './routes/billingRoutes';
 app.use('/api/billing', billingRoutes);
