@@ -250,8 +250,8 @@ Automatically extracts structured, searchable data from unstructured documents t
 ENABLE_DOCUMENT_PARSING_WORKER=true
 
 # Python API URL
-PYTHON_API_URL=https://python-api-9.onrender.com
-API_URL=https://python-api-9.onrender.com  # Fallback
+PYTHON_API_URL=https://python-api-10.onrender.com
+API_URL=https://python-api-10.onrender.com  # Fallback
 
 # Python API authentication
 PYTHON_API_JWT_SECRET=your-jwt-secret
