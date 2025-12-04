@@ -13,28 +13,180 @@ let supabaseAdmin: SupabaseClient | any; // Service role client for admin operat
 if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
   logger.warn('Using demo Supabase client - no real database connection');
 
-  // Create a mock client that doesn't actually connect
-  // This mock properly chains query methods for compatibility
-  const createMockQueryBuilder = () => {
+  // In-memory store for demo mode
+  const memoryStore: Record<string, any[]> = {
+    documents: [],
+    dispute_cases: [],
+    recoveries: [],
+    tokens: [],
+    agent_events: [],
+    learning_insights: [],
+    threshold_optimizations: [],
+    dispute_evidence_links: [],
+    financial_events: [],
+    notifications: [],
+    recovery_lifecycle_logs: []
+  };
+
+  logger.info('Using in-memory mock database for demo mode');
+
+  const createMockQueryBuilder = (table: string) => {
+    // Initialize table if not exists
+    if (!memoryStore[table]) memoryStore[table] = [];
+
+    // State for the query builder
+    let filters: Array<(row: any) => boolean> = [];
+    let pendingUpdate: any = null;
+    let pendingDelete = false;
+    let pendingInsert: any = null;
+    let limitCount = -1;
+    let orderConfig: { field: string, ascending: boolean } | null = null;
+    let singleResult = false;
+    let maybeSingleResult = false;
+
     const builder: any = {
-      eq: (field: string, value: any) => builder,
-      neq: (field: string, value: any) => builder,
-      gt: (field: string, value: any) => builder,
-      gte: (field: string, value: any) => builder,
-      lt: (field: string, value: any) => builder,
-      lte: (field: string, value: any) => builder,
-      like: (field: string, pattern: string) => builder,
-      ilike: (field: string, pattern: string) => builder,
-      is: (field: string, value: any) => builder,
-      not: (field: string, operator: string, value: any) => builder, // Add .not() method
-      in: (field: string, values: any[]) => builder,
-      contains: (field: string, value: any) => builder,
-      order: (field: string, options?: any) => builder,
-      limit: (count: number) => builder,
-      range: (from: number, to: number) => builder,
-      maybeSingle: () => Promise.resolve({ data: null, error: null }),
-      single: () => Promise.resolve({ data: null, error: { code: 'PGRST116', message: 'No rows returned' } }),
-      then: (resolve: any) => Promise.resolve({ data: [], error: null }).then(resolve)
+      select: (columns?: string) => builder,
+
+      // Filters
+      eq: (field: string, value: any) => {
+        filters.push(row => row[field] === value);
+        return builder;
+      },
+      neq: (field: string, value: any) => {
+        filters.push(row => row[field] !== value);
+        return builder;
+      },
+      gt: (field: string, value: any) => {
+        filters.push(row => row[field] > value);
+        return builder;
+      },
+      gte: (field: string, value: any) => {
+        filters.push(row => row[field] >= value);
+        return builder;
+      },
+      lt: (field: string, value: any) => {
+        filters.push(row => row[field] < value);
+        return builder;
+      },
+      lte: (field: string, value: any) => {
+        filters.push(row => row[field] <= value);
+        return builder;
+      },
+      in: (field: string, values: any[]) => {
+        filters.push(row => values.includes(row[field]));
+        return builder;
+      },
+
+      // Modifiers
+      order: (field: string, options?: any) => {
+        orderConfig = { field, ascending: options?.ascending !== false };
+        return builder;
+      },
+      limit: (count: number) => {
+        limitCount = count;
+        return builder;
+      },
+      single: () => {
+        singleResult = true;
+        return builder;
+      },
+      maybeSingle: () => {
+        maybeSingleResult = true;
+        return builder;
+      },
+
+      // Actions
+      insert: (data: any) => {
+        pendingInsert = data;
+        return builder;
+      },
+      update: (data: any) => {
+        pendingUpdate = data;
+        return builder;
+      },
+      delete: () => {
+        pendingDelete = true;
+        return builder;
+      },
+
+      // Execution
+      then: (resolve: any, reject: any) => {
+        // 1. Handle Insert (doesn't use filters usually)
+        if (pendingInsert) {
+          const rows = Array.isArray(pendingInsert) ? pendingInsert : [pendingInsert];
+          const now = new Date().toISOString();
+          const rowsWithMeta = rows.map(r => ({
+            created_at: now,
+            updated_at: now,
+            ...r
+          }));
+          memoryStore[table].push(...rowsWithMeta);
+          return Promise.resolve({ data: rowsWithMeta, error: null }).then(resolve, reject);
+        }
+
+        // 2. Apply Filters to get target rows
+        let resultData = [...memoryStore[table]];
+        for (const filter of filters) {
+          resultData = resultData.filter(filter);
+        }
+
+        // 3. Handle Update
+        if (pendingUpdate) {
+          const idsToUpdate = new Set(resultData.map(r => r.id).filter(id => id));
+          let updateCount = 0;
+
+          memoryStore[table] = memoryStore[table].map(row => {
+            if (idsToUpdate.has(row.id)) {
+              updateCount++;
+              return { ...row, ...pendingUpdate, updated_at: new Date().toISOString() };
+            }
+            return row;
+          });
+
+          // Return the updated data (simulated)
+          const updatedRows = memoryStore[table].filter(row => idsToUpdate.has(row.id));
+          return Promise.resolve({ data: updatedRows, error: null, count: updateCount }).then(resolve, reject);
+        }
+
+        // 4. Handle Delete
+        if (pendingDelete) {
+          const idsToDelete = new Set(resultData.map(r => r.id).filter(id => id));
+          const initialLength = memoryStore[table].length;
+          memoryStore[table] = memoryStore[table].filter(row => !idsToDelete.has(row.id));
+          return Promise.resolve({ data: null, error: null, count: initialLength - memoryStore[table].length }).then(resolve, reject);
+        }
+
+        // 5. Handle Select (Sorting & Limiting)
+        if (orderConfig) {
+          const { field, ascending } = orderConfig;
+          resultData.sort((a, b) => {
+            if (a[field] < b[field]) return ascending ? -1 : 1;
+            if (a[field] > b[field]) return ascending ? 1 : -1;
+            return 0;
+          });
+        }
+
+        if (limitCount > -1) {
+          resultData = resultData.slice(0, limitCount);
+        }
+
+        // 6. Handle Single/MaybeSingle
+        if (singleResult) {
+          if (resultData.length === 0) {
+            return Promise.resolve({ data: null, error: { code: 'PGRST116', message: 'No rows returned' } }).then(resolve, reject);
+          }
+          if (resultData.length > 1) {
+            return Promise.resolve({ data: null, error: { code: 'PGRST116', message: 'Multiple rows returned' } }).then(resolve, reject);
+          }
+          return Promise.resolve({ data: resultData[0], error: null }).then(resolve, reject);
+        }
+
+        if (maybeSingleResult) {
+          return Promise.resolve({ data: resultData.length > 0 ? resultData[0] : null, error: null }).then(resolve, reject);
+        }
+
+        return Promise.resolve({ data: resultData, error: null }).then(resolve, reject);
+      }
     };
     return builder;
   };
@@ -43,23 +195,11 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
     auth: {
       getSession: () => Promise.resolve({ data: { session: null }, error: null })
     },
-    from: (table: string) => ({
-      select: (columns?: string, options?: any) => createMockQueryBuilder(),
-      insert: (data: any) => ({
-        select: (columns?: string) => Promise.resolve({ data: null, error: null }),
-        then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
-      }),
-      upsert: (data: any, options?: any) => ({
-        select: (columns?: string) => Promise.resolve({ data: null, error: null }),
-        then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve)
-      }),
-      update: (data: any) => createMockQueryBuilder(), // Use query builder for update chains
-      delete: () => createMockQueryBuilder() // Use query builder for delete chains
-    })
+    from: (table: string) => createMockQueryBuilder(table)
   } as any;
 
-// In demo mode, admin client is same as regular client
-supabaseAdmin = supabase;
+  // In demo mode, admin client is same as regular client
+  supabaseAdmin = supabase;
 } else {
   // Validate URL before creating client
   if (!supabaseUrl || typeof supabaseUrl !== 'string' || !supabaseUrl.startsWith('http')) {
@@ -359,5 +499,3 @@ export const tokenManager = {
 };
 
 export default supabase;
-
-
