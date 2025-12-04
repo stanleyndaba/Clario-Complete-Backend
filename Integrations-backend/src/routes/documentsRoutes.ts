@@ -36,18 +36,32 @@ router.get('/', async (req: Request, res: Response) => {
             throw error;
         }
 
-        // Transform to match expected frontend format if needed
-        // The frontend expects: id, name, uploadDate, status, etc.
-        const formattedDocuments = documents.map(doc => ({
-            id: doc.id,
-            name: doc.filename,
-            uploadDate: doc.created_at,
-            status: doc.status || 'uploaded',
-            size: doc.size_bytes,
-            type: doc.content_type,
-            source: doc.source_id ? 'gmail' : 'upload', // Simplified source detection
-            metadata: doc.metadata
-        }));
+        // Transform to match expected frontend format
+        // The frontend expects: id, name, uploadDate, status, supplier, invoice, amount, parsedVia, etc.
+        const formattedDocuments = documents.map(doc => {
+            const metadata = doc.metadata || {};
+            const parsedData = metadata.parsed_data || metadata.parsed_metadata || metadata;
+
+            return {
+                id: doc.id,
+                name: doc.filename || doc.original_filename,
+                uploadDate: doc.created_at,
+                status: doc.status || 'uploaded',
+                size: doc.size_bytes,
+                type: doc.content_type,
+                source: doc.source_id ? 'gmail' : 'upload',
+                // Extract parsed fields for table display
+                supplier: parsedData.supplier_name || parsedData.supplier || metadata.supplier_name || null,
+                invoice: parsedData.invoice_number || parsedData.invoice_no || metadata.invoice_number || null,
+                amount: parsedData.total_amount || parsedData.total || parsedData.amount || metadata.total_amount || null,
+                parsedVia: metadata.parser_type || metadata.parsedVia || (parsedData.confidence_score ? 'ml' : null),
+                parser_status: metadata.parser_status || doc.parser_status || 'pending',
+                parser_confidence: metadata.parser_confidence || parsedData.confidence_score || null,
+                linkedSKUs: (parsedData.line_items || parsedData.items || []).length || 0,
+                // Include raw metadata for advanced usage
+                metadata: doc.metadata
+            };
+        });
 
         res.json(formattedDocuments);
     } catch (error: any) {
