@@ -19,32 +19,32 @@ async function retryWithBackoff<T>(
   baseDelay: number = 2000
 ): Promise<T> {
   let lastError: any;
-  
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
     } catch (error: any) {
       lastError = error;
       const statusCode = error.response?.status;
-      
+
       // Handle rate limit (429) with longer delay
       if (statusCode === 429) {
         const retryAfter = error.response?.headers?.['retry-after'];
         const delay = retryAfter ? parseInt(retryAfter) * 1000 : 30000; // Default 30s for rate limits
-        
+
         logger.warn(`⏳ [EVIDENCE MATCHING WORKER] Rate limited (429), waiting ${delay}ms`, {
           error: error.message,
           attempt: attempt + 1,
           maxRetries,
           delay
         });
-        
+
         if (attempt < maxRetries) {
           await new Promise(resolve => setTimeout(resolve, delay));
           continue;
         }
       }
-      
+
       // Standard exponential backoff for other errors
       if (attempt < maxRetries) {
         const delay = baseDelay * Math.pow(2, attempt);
@@ -57,7 +57,7 @@ async function retryWithBackoff<T>(
       }
     }
   }
-  
+
   throw lastError;
 }
 
@@ -137,7 +137,7 @@ export class EvidenceMatchingWorker {
    */
   private async runEvidenceMatchingForAllTenants(): Promise<void> {
     const runStartTime = Date.now();
-    
+
     try {
       logger.info('🔍 [EVIDENCE MATCHING WORKER] Starting scheduled evidence matching', {
         timestamp: new Date().toISOString()
@@ -168,7 +168,7 @@ export class EvidenceMatchingWorker {
 
       for (let i = 0; i < activeUsers.length; i++) {
         const userId = activeUsers[i];
-        
+
         // Stagger processing to avoid rate limits (5 seconds between users)
         // This helps prevent 429 errors from the Python API
         if (i > 0) {
@@ -178,7 +178,7 @@ export class EvidenceMatchingWorker {
         try {
           const result = await this.matchEvidenceForUser(userId);
           stats.processed++;
-          
+
           if (result.success) {
             stats.matched += result.matches || 0;
             stats.autoSubmitted += result.autoSubmitted || 0;
@@ -297,6 +297,28 @@ export class EvidenceMatchingWorker {
 
       logger.info(`📋 [EVIDENCE MATCHING WORKER] Found ${claims.length} pending claims for user ${userId}`);
 
+      // 🎯 SEND SSE EVENT FOR MATCHING STARTED (frontend real-time log)
+      try {
+        sseHub.sendEvent(userId, 'matching', {
+          type: 'matching',
+          status: 'started',
+          documentCount: claims.length,
+          userId,
+          message: `Analyzing ${claims.length} document(s) for claim matches...`,
+          timestamp: new Date().toISOString()
+        });
+        sseHub.sendEvent(userId, 'message', {
+          type: 'matching',
+          status: 'started',
+          documentCount: claims.length,
+          message: `Analyzing ${claims.length} document(s) for claim matches...`,
+          timestamp: new Date().toISOString()
+        });
+      } catch (sseError: any) {
+        logger.debug('SSE event failed (non-critical)', { error: sseError.message });
+      }
+
+
       // Set up sync log callback for real-time updates
       evidenceMatchingService.setSyncLogCallback((log) => {
         sseHub.sendEvent(userId, 'sync.log', {
@@ -352,20 +374,20 @@ export class EvidenceMatchingWorker {
             document_id: r.evidence_document_id,
             confidence_score: r.final_confidence,
             match_type: r.match_type,
-            action_taken: (r.final_confidence || 0) >= 0.85 ? 'auto_submit' 
-              : (r.final_confidence || 0) >= 0.5 ? 'smart_prompt' 
-              : 'no_action'
+            action_taken: (r.final_confidence || 0) >= 0.85 ? 'auto_submit'
+              : (r.final_confidence || 0) >= 0.5 ? 'smart_prompt'
+                : 'no_action'
           })),
           message: `Evidence matching completed: ${matchingResult.matches || 0} matches found`,
           timestamp: new Date().toISOString()
         };
-        
+
         // Send as specific event name
         sseHub.sendEvent(userId, 'matching_completed', matchingEventData);
-        
+
         // Also send as 'message' event for backward compatibility
         sseHub.sendEvent(userId, 'message', matchingEventData);
-        
+
         logger.info('✅ [EVIDENCE MATCHING WORKER] Sent SSE event for matching completion', {
           userId,
           matches: matchingResult.matches
@@ -380,16 +402,16 @@ export class EvidenceMatchingWorker {
       try {
         const agentEventLogger = (await import('../services/agentEventLogger')).default;
         const matchingStartTime = Date.now();
-        
+
         for (const result of (matchingResult.results || [])) {
           await agentEventLogger.logEvidenceMatching({
             userId,
             disputeId: result.dispute_id || '',
             success: true,
             confidence: result.final_confidence || 0,
-            action: (result.final_confidence || 0) >= 0.85 ? 'auto_submit' 
-              : (result.final_confidence || 0) >= 0.5 ? 'smart_prompt' 
-              : 'hold',
+            action: (result.final_confidence || 0) >= 0.85 ? 'auto_submit'
+              : (result.final_confidence || 0) >= 0.5 ? 'smart_prompt'
+                : 'hold',
             duration: Date.now() - matchingStartTime
           });
         }
@@ -553,7 +575,7 @@ export class EvidenceMatchingWorker {
   async triggerMatchingForParsedDocument(userId: string): Promise<void> {
     try {
       logger.info(`🔄 [EVIDENCE MATCHING WORKER] Triggering matching after document parsing for user: ${userId}`);
-      
+
       // Queue matching for this user (non-blocking)
       setImmediate(async () => {
         try {

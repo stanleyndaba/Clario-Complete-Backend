@@ -9,6 +9,7 @@ import cron from 'node-cron';
 import logger from '../utils/logger';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import documentParsingService, { ParsedDocumentData } from '../services/documentParsingService';
+import sseHub from '../utils/sseHub';
 
 // Retry logic with exponential backoff
 async function retryWithBackoff<T>(
@@ -280,6 +281,22 @@ export class DocumentParsingWorker {
         confidence: parsedData.confidence_score,
         extractionMethod: parsedData.extraction_method
       });
+
+      // 🎯 SEND SSE EVENT FOR FRONTEND REAL-TIME LOG
+      try {
+        sseHub.sendEvent(document.seller_id, 'message', {
+          type: 'parsing',
+          status: 'completed',
+          document_id: document.id,
+          filename: document.filename,
+          confidence: parsedData.confidence_score,
+          extraction_method: parsedData.extraction_method,
+          message: `Document parsed: ${document.filename || document.id}`,
+          timestamp: new Date().toISOString()
+        });
+      } catch (sseError: any) {
+        logger.debug('SSE event failed (non-critical)', { error: sseError.message });
+      }
 
       // 🎯 AGENT 11 INTEGRATION: Log parsing event
       try {
