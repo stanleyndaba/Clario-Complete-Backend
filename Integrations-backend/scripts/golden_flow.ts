@@ -15,10 +15,7 @@ async function runGoldenFlow() {
         // 1. Setup: Create Test User
         // In a real scenario, we'd insert into auth.users, but here we might just mock the ID context
 
-        // 2. Ingest Mock Amazon Data (Agent 5 - Shipment Ingestion)
-        // Note: Agent 5 is technically "Evidence Gathering" in some contexts, but here we map:
-        // Agent 1: Invoice Ingestion
-        // Agent 2: Shipment Ingestion
+        // 2. Ingest Mock Amazon Data (Agent 2 - Shipment Ingestion)
         logger.info('📦 Step 1: Ingesting Mock Amazon Data (Agent 2)...');
         const shipments = await mockAmazonService.getShipments();
         // Save to DB to simulate Agent 2's work
@@ -43,7 +40,22 @@ async function runGoldenFlow() {
         // 4. Run Detective (Agent 4 - Discrepancy Detection)
         logger.info('🕵️ Step 3: Running Detective (Agent 4)...');
         // Trigger detection logic (Simulated)
+        const detectionId = uuidv4();
+        await supabaseAdmin.from('detection_results').insert({
+            id: detectionId,
+            seller_id: USER_ID,
+            anomaly_type: 'missing_unit',
+            estimated_value: 50.00,
+            confidence_score: 0.95,
+            status: 'pending',
+            evidence: {
+                sku: 'TEST-SKU-1002',
+                missing_quantity: 5,
+                shipment_id: shipments[0].ShipmentId
+            }
+        });
         logger.info('   -> Detective found discrepancy: 5 units missing of TEST-SKU-1002');
+        logger.info(`   -> Detection record created: ${detectionId}`);
 
         // 5. Run Evidence Matching (Agent 5 - Evidence Gathering)
         logger.info('🔍 Step 4: Evidence Matching (Agent 5)...');
@@ -57,7 +69,8 @@ async function runGoldenFlow() {
             user_id: USER_ID,
             status: 'evidence_linked', // Status after Agent 5 runs
             claim_amount: 50.00,
-            case_number: null // Not filed yet
+            case_number: null, // Not filed yet
+            detection_result_id: detectionId // Link to detection result
         });
 
         await supabaseAdmin.from('dispute_evidence_links').insert({

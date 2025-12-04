@@ -25,7 +25,8 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
     dispute_evidence_links: [],
     financial_events: [],
     notifications: [],
-    recovery_lifecycle_logs: []
+    recovery_lifecycle_logs: [],
+    detection_results: []
   };
 
   logger.info('Using in-memory mock database for demo mode');
