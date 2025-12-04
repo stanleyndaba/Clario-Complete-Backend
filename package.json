@@ -3,5 +3,8 @@
     "@supabase/supabase-js": "^2.80.0",
     "bull": "^4.16.5",
     "dotenv": "^17.2.2"
+  },
+  "devDependencies": {
+    "puppeteer": "^24.32.0"
   }
 }

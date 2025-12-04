@@ -197,10 +197,10 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
       getSession: () => Promise.resolve({ data: { session: null }, error: null })
     },
     from: (table: string) => createMockQueryBuilder(table)
-  } as any;
+} as any;
 
-  // In demo mode, admin client is same as regular client
-  supabaseAdmin = supabase;
+// In demo mode, admin client is same as regular client
+supabaseAdmin = supabase;
 } else {
   // Validate URL before creating client
   if (!supabaseUrl || typeof supabaseUrl !== 'string' || !supabaseUrl.startsWith('http')) {
