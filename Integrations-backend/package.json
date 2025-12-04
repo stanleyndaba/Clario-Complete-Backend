@@ -111,8 +111,7 @@
     "uuid": "^9.0.1",
     "winston": "^3.11.0",
     "winston-daily-rotate-file": "^5.0.0",
-    "@sentry/node": "^7.120.4",
-    "@sentry/profiling-node": "^7.120.4"
+    "@sentry/node": "^7.120.4"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
