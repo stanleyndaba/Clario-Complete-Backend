@@ -2733,7 +2733,7 @@ export class Agent2DataSyncService {
     logger.info('✅ [AGENT 2] Detection results stored', {
       userId,
       syncId,
-      count: records.length
+      count: validatedRecords.length
     });
 
     try {

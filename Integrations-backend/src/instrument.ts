@@ -24,9 +24,6 @@ if (sentryDsn) {
       nodeProfilingIntegration(),
     ],
     
-    // Send structured logs to Sentry
-    enableLogs: true,
-    
     // Tracing - capture 100% of transactions
     tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
     

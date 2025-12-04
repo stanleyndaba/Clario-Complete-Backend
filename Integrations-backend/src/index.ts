@@ -299,11 +299,11 @@ app.use('/api/v1/inventory-sync', consolidatedInventorySyncRoutes);
 // These proxy requests to python-api-9.onrender.com
 app.use('/', proxyRoutes);
 
-// The error handler must be registered before any other error middleware and after all controllers
-// This is Sentry's recommended setup for Express
-Sentry.setupExpressErrorHandler(app);
+// Sentry error handler middleware (must be before our own error handler)
+// See: https://docs.sentry.io/platforms/javascript/guides/express/
+app.use(Sentry.Handlers.errorHandler());
 
-// Error handling middleware (fallthrough error handler)
+// Error handling middleware (fallthrough error handlers)
 app.use(notFoundHandler);
 app.use(errorHandler);
 
