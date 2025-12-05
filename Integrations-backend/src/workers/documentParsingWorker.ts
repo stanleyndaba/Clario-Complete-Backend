@@ -698,7 +698,10 @@ export class DocumentParsingWorker {
   /**
    * Get document by ID
    */
-  private async getDocumentById(documentId: string): Promise<{ id: string; seller_id: string; filename: string; content_type: string } | null> {
+  /**
+   * Get document by ID
+   */
+  public async getDocumentById(documentId: string): Promise<{ id: string; seller_id: string; filename: string; content_type: string } | null> {
     try {
       const client = supabaseAdmin || supabase;
       const { data, error } = await client
