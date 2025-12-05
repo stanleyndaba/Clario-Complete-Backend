@@ -1835,6 +1835,73 @@ router.get('/v1/evidence/documents/:documentId', async (req: Request, res: Respo
   }
 });
 
+/**
+ * POST /api/v1/evidence/parse/:documentId
+ * Trigger document parsing for a specific document
+ */
+router.post('/v1/evidence/parse/:documentId', async (req: Request, res: Response) => {
+  try {
+    const documentId = req.params.documentId;
+    const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
+
+    logger.info('📄 [EVIDENCE] Triggering document parsing', { documentId, userId });
+
+    // Reset parser_status to 'pending' so the worker picks it up
+    const { error: updateError } = await supabaseAdmin
+      .from('evidence_documents')
+      .update({
+        parser_status: 'pending',
+        parsed_metadata: null,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', documentId);
+
+    if (updateError) {
+      throw updateError;
+    }
+
+    // Try to trigger immediate parsing via the parsing service
+    let jobId = `job-${documentId}-${Date.now()}`;
+    let message = 'Document queued for parsing. It will be processed by the parsing worker within 2 minutes.';
+
+    try {
+      const documentParsingWorker = (await import('../workers/documentParsingWorker')).default;
+
+      // Get document details
+      const doc = await documentParsingWorker.getDocumentById(documentId);
+      if (doc) {
+        // Trigger immediate parsing
+        const result = await documentParsingWorker.triggerManualParsing(documentId, doc.seller_id);
+        if (result.success) {
+          message = 'Document parsing triggered successfully. Results will be available shortly.';
+        }
+      }
+    } catch (workerError: any) {
+      logger.debug('Could not trigger immediate parsing, document will be picked up by worker', {
+        error: workerError.message
+      });
+    }
+
+    res.json({
+      job_id: jobId,
+      status: 'pending',
+      message: message,
+      estimated_completion: new Date(Date.now() + 120000).toISOString() // 2 minutes from now
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error triggering document parsing', {
+      documentId: req.params.documentId,
+      error: error?.message || String(error)
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to trigger document parsing',
+      message: error?.message || String(error)
+    });
+  }
+});
+
 export default router;
 
 
