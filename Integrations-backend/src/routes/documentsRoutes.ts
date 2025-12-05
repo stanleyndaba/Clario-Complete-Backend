@@ -354,4 +354,104 @@ router.get('/:id/download', async (req: Request, res: Response) => {
     }
 });
 
+/**
+ * GET /api/documents/:id/generate-pdf
+ * Generate a PDF invoice from parsed document data
+ */
+router.get('/:id/generate-pdf', async (req: Request, res: Response) => {
+    try {
+        const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+        const docId = req.params.id;
+
+        logger.info('📄 [DOCUMENTS] Generating PDF for document', { docId, userId });
+
+        // Get document with parsed data
+        const { data: doc, error: dbError } = await supabaseAdmin
+            .from('evidence_documents')
+            .select('*')
+            .eq('id', docId)
+            .single();
+
+        if (dbError || !doc) {
+            return res.status(404).json({
+                success: false,
+                error: 'Document not found'
+            });
+        }
+
+        // Extract parsed metadata
+        const parsedMetadata = doc.parsed_metadata || {};
+        const metadata = doc.metadata || {};
+        const nestedParsed = metadata.parsed_data || metadata.parsed_metadata || {};
+
+        // Build invoice data from parsed document
+        const invoiceData = {
+            id: docId,
+            title: `Invoice - ${parsedMetadata.invoice_number || doc.invoice_number || doc.filename || 'Document'}`,
+            content: {
+                sections: [
+                    {
+                        title: 'Invoice Details',
+                        content: {
+                            'Invoice Number': parsedMetadata.invoice_number || doc.invoice_number || nestedParsed.invoice_number || 'N/A',
+                            'Date': parsedMetadata.invoice_date || doc.document_date || nestedParsed.invoice_date || new Date().toLocaleDateString(),
+                            'Supplier': parsedMetadata.supplier_name || doc.supplier_name || nestedParsed.supplier_name || 'N/A',
+                            'Currency': parsedMetadata.currency || doc.currency || nestedParsed.currency || 'USD',
+                            'Total Amount': `$${(parsedMetadata.total_amount || doc.total_amount || nestedParsed.total_amount || 0).toFixed(2)}`
+                        }
+                    }
+                ]
+            },
+            metadata: {
+                created_at: doc.created_at,
+                seller_id: doc.seller_id || doc.user_id,
+                document_id: docId
+            }
+        };
+
+        // Add line items if available
+        const lineItems = parsedMetadata.line_items || nestedParsed.line_items || [];
+        if (lineItems.length > 0) {
+            invoiceData.content.sections.push({
+                title: 'Line Items',
+                content: {
+                    table: lineItems.map((item: any, idx: number) => ({
+                        '#': idx + 1,
+                        'Description': item.description || item.sku || `Item ${idx + 1}`,
+                        'Quantity': item.quantity || 1,
+                        'Unit Price': `$${(item.unit_price || item.price || 0).toFixed(2)}`,
+                        'Total': `$${(item.total || (item.quantity || 1) * (item.unit_price || 0)).toFixed(2)}`
+                    }))
+                }
+            } as any);
+        }
+
+        // Import and use PDF service
+        const { pdfGenerationService } = await import('../services/pdfGenerationService');
+
+        const pdfBuffer = await pdfGenerationService.generatePDFFromDocument(invoiceData);
+
+        // Set headers for PDF download
+        const filename = `invoice-${parsedMetadata.invoice_number || docId}.pdf`;
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Content-Length', pdfBuffer.length);
+
+        logger.info('✅ [DOCUMENTS] PDF generated successfully', { docId, filename });
+
+        res.send(pdfBuffer);
+    } catch (error: any) {
+        logger.error('❌ [DOCUMENTS] Error generating PDF', {
+            docId: req.params.id,
+            error: error?.message || String(error)
+        });
+
+        res.status(500).json({
+            success: false,
+            error: 'Failed to generate PDF',
+            message: error?.message || String(error)
+        });
+    }
+});
+
 export default router;
