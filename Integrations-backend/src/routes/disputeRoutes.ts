@@ -1,16 +1,31 @@
 import { Router } from 'express';
-import { authenticateToken } from '../middleware/authMiddleware';
+import { optionalAuth } from '../middleware/authMiddleware';
+import { supabaseAdmin } from '../database/supabaseClient';
 
 const router = Router();
 
-// Apply authentication middleware to all routes
-router.use(authenticateToken);
+// Apply optional authentication - allows demo-user access
+router.use(optionalAuth);
 
-router.get('/', async (_req, res) => {
+router.get('/', async (req, res) => {
   try {
+    const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
+
+    // Fetch dispute cases from database
+    const { data: cases, error } = await supabaseAdmin
+      .from('dispute_cases')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    if (error) {
+      throw error;
+    }
+
     res.json({
       success: true,
-      disputes: []
+      cases: cases || [],
+      total: cases?.length || 0
     });
   } catch (error: any) {
     res.status(500).json({

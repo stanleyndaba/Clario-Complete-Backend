@@ -1,8 +1,155 @@
 import { Router, Request, Response } from 'express';
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
+import multer from 'multer';
+import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
+
+// Configure multer for file uploads (memory storage)
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: 50 * 1024 * 1024 // 50MB limit
+    }
+});
+
+/**
+ * POST /api/documents/upload
+ * Upload documents to Evidence Locker - stores to Supabase Storage
+ */
+router.post('/upload', upload.any(), async (req: Request, res: Response) => {
+    try {
+        // Extract user ID
+        const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+        const finalUserId = convertUserIdToUuid(userId);
+
+        const files = (req as any).files as Express.Multer.File[];
+
+        if (!files || files.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'No files provided'
+            });
+        }
+
+        logger.info('📤 [DOCUMENTS] Upload request received', {
+            userId,
+            finalUserId,
+            fileCount: files.length,
+            filenames: files.map(f => f.originalname)
+        });
+
+        const uploadedDocuments: any[] = [];
+
+        for (const file of files) {
+            const docId = uuidv4();
+            const timestamp = Date.now();
+            const storagePath = `${finalUserId}/${timestamp}/${file.originalname}`;
+
+            // Upload to Supabase Storage
+            const { data: storageData, error: storageError } = await supabaseAdmin
+                .storage
+                .from('evidence-documents')
+                .upload(storagePath, file.buffer, {
+                    contentType: file.mimetype,
+                    upsert: false
+                });
+
+            if (storageError) {
+                logger.error('❌ [DOCUMENTS] Storage upload failed', {
+                    filename: file.originalname,
+                    error: storageError.message
+                });
+                // Continue with other files
+                continue;
+            }
+
+            // Create database record
+            const { data: docRecord, error: dbError } = await supabaseAdmin
+                .from('evidence_documents')
+                .insert({
+                    id: docId,
+                    user_id: finalUserId,
+                    seller_id: finalUserId,
+                    filename: file.originalname,
+                    original_filename: file.originalname,
+                    content_type: file.mimetype,
+                    mime_type: file.mimetype,
+                    size_bytes: file.size,
+                    storage_path: storagePath,
+                    status: 'uploaded',
+                    parser_status: 'pending',
+                    source: 'upload',
+                    provider: 'upload',
+                    metadata: {
+                        uploaded_at: new Date().toISOString(),
+                        upload_method: 'drag_drop'
+                    }
+                })
+                .select()
+                .single();
+
+            if (dbError) {
+                logger.error('❌ [DOCUMENTS] Database insert failed', {
+                    filename: file.originalname,
+                    error: dbError.message
+                });
+                // Try to clean up storage
+                await supabaseAdmin.storage.from('evidence-documents').remove([storagePath]);
+                continue;
+            }
+
+            uploadedDocuments.push({
+                id: docId,
+                filename: file.originalname,
+                size: file.size,
+                type: file.mimetype,
+                status: 'uploaded',
+                parser_status: 'pending'
+            });
+
+            logger.info('✅ [DOCUMENTS] Document uploaded successfully', {
+                docId,
+                filename: file.originalname,
+                storagePath
+            });
+        }
+
+        // Send SSE event for real-time update
+        try {
+            const sseHub = (await import('../utils/sseHub')).default;
+            sseHub.sendEvent(finalUserId, 'evidence_upload_completed', {
+                userId: finalUserId,
+                documentIds: uploadedDocuments.map(d => d.id),
+                count: uploadedDocuments.length,
+                message: `${uploadedDocuments.length} document(s) uploaded successfully`,
+                timestamp: new Date().toISOString()
+            });
+        } catch (sseError) {
+            logger.debug('SSE event failed (non-critical)', { error: sseError });
+        }
+
+        res.json({
+            success: true,
+            message: `${uploadedDocuments.length} document(s) uploaded successfully`,
+            documents: uploadedDocuments,
+            document_ids: uploadedDocuments.map(d => d.id),
+            file_count: uploadedDocuments.length
+        });
+    } catch (error: any) {
+        logger.error('❌ [DOCUMENTS] Upload error', {
+            error: error?.message || String(error),
+            stack: error?.stack
+        });
+
+        res.status(500).json({
+            success: false,
+            error: 'Failed to upload documents',
+            message: error?.message || String(error)
+        });
+    }
+});
 
 /**
  * GET /api/documents
