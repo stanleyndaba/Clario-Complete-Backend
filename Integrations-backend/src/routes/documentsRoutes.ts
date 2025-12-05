@@ -454,4 +454,131 @@ router.get('/:id/generate-pdf', async (req: Request, res: Response) => {
     }
 });
 
+/**
+ * DELETE /api/documents/:id
+ * Delete a document from storage and database
+ */
+router.delete('/:id', async (req: Request, res: Response) => {
+    try {
+        const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+        const docId = req.params.id;
+        const finalUserId = convertUserIdToUuid(userId);
+
+        logger.info('🗑️ [DOCUMENTS] Delete request', { docId, userId, finalUserId });
+
+        // Get document to find storage path
+        const { data: doc, error: fetchError } = await supabaseAdmin
+            .from('evidence_documents')
+            .select('id, storage_path, filename, user_id')
+            .eq('id', docId)
+            .single();
+
+        if (fetchError || !doc) {
+            return res.status(404).json({
+                success: false,
+                error: 'Document not found'
+            });
+        }
+
+        // Delete from Supabase Storage if storage_path exists
+        if (doc.storage_path) {
+            const { error: storageError } = await supabaseAdmin
+                .storage
+                .from('evidence-documents')
+                .remove([doc.storage_path]);
+
+            if (storageError) {
+                logger.warn('⚠️ [DOCUMENTS] Could not delete from storage', {
+                    docId,
+                    storagePath: doc.storage_path,
+                    error: storageError.message
+                });
+                // Continue anyway - we still want to delete the DB record
+            } else {
+                logger.info('✅ [DOCUMENTS] Deleted from storage', { storagePath: doc.storage_path });
+            }
+        }
+
+        // Delete from database
+        const { error: deleteError } = await supabaseAdmin
+            .from('evidence_documents')
+            .delete()
+            .eq('id', docId);
+
+        if (deleteError) {
+            logger.error('❌ [DOCUMENTS] Failed to delete from database', {
+                docId,
+                error: deleteError.message
+            });
+            throw deleteError;
+        }
+
+        logger.info('✅ [DOCUMENTS] Document deleted successfully', { docId, filename: doc.filename });
+
+        res.json({
+            success: true,
+            message: 'Document deleted successfully',
+            documentId: docId
+        });
+    } catch (error: any) {
+        logger.error('❌ [DOCUMENTS] Delete error', {
+            docId: req.params.id,
+            error: error?.message || String(error)
+        });
+
+        res.status(500).json({
+            success: false,
+            error: 'Failed to delete document',
+            message: error?.message || String(error)
+        });
+    }
+});
+
+/**
+ * POST /api/documents/:id/reparse
+ * Trigger re-parsing for a document
+ */
+router.post('/:id/reparse', async (req: Request, res: Response) => {
+    try {
+        const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+        const docId = req.params.id;
+        const finalUserId = convertUserIdToUuid(userId);
+
+        logger.info('🔄 [DOCUMENTS] Re-parse request', { docId, userId });
+
+        // Reset parser_status to pending
+        const { error: updateError } = await supabaseAdmin
+            .from('evidence_documents')
+            .update({
+                parser_status: 'pending',
+                parsed_metadata: null,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', docId);
+
+        if (updateError) {
+            throw updateError;
+        }
+
+        logger.info('✅ [DOCUMENTS] Document queued for re-parsing', { docId });
+
+        res.json({
+            success: true,
+            message: 'Document queued for re-parsing. It will be processed by the parsing worker.',
+            documentId: docId
+        });
+    } catch (error: any) {
+        logger.error('❌ [DOCUMENTS] Re-parse error', {
+            docId: req.params.id,
+            error: error?.message || String(error)
+        });
+
+        res.status(500).json({
+            success: false,
+            error: 'Failed to queue document for re-parsing',
+            message: error?.message || String(error)
+        });
+    }
+});
+
 export default router;
