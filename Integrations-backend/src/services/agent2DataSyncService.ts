@@ -47,6 +47,8 @@ export interface SyncResult {
     inventoryCount: number;
     claimsCount: number;
     feesCount: number;
+    claimsDetected?: number;
+    detectionId?: string;
   };
   normalized: {
     orders: any[];
@@ -591,26 +593,14 @@ export class Agent2DataSyncService {
         try {
           logger.info('🔍 [AGENT 2] Starting Discovery Agent (Python ML) - BLOCKING', { userId, syncId });
 
-          // DEBUG: Log the normalized data being passed to detection
-          try {
-            const debugLogPath = path.resolve(process.cwd(), 'detection_debug.log');
-            const logEntry = `[${new Date().toISOString()}] BEFORE callDiscoveryAgent\n` +
-              `Orders: ${result.normalized.orders?.length || 0}\n` +
-              `Shipments: ${result.normalized.shipments?.length || 0}\n` +
-              `Returns: ${result.normalized.returns?.length || 0}\n` +
-              `Sample Order[0]: ${JSON.stringify(result.normalized.orders?.[0] || 'NONE')}\n\n`;
-            fs.appendFileSync(debugLogPath, logEntry);
-          } catch (e) {
-            console.error('Failed to write debug log', e);
-          }
-
           const detectionId = `detection_${userId}_${Date.now()}`;
           const detectionResult = await this.callDiscoveryAgent(
             userId,
             syncId,
             detectionId,
             result.normalized,
-            detectionSyncId
+            detectionSyncId,
+            isMockMode
           );
 
           // Add detection results to the sync result
@@ -620,11 +610,15 @@ export class Agent2DataSyncService {
             completed: true
           };
 
-          logger.info('✅ [AGENT 2] Discovery Agent completed (blocking)', {
+          // CRITICAL: Update summary for frontend visibility
+          result.summary.claimsDetected = detectionResult?.totalDetected || 0;
+          result.summary.detectionId = detectionId;
+
+
+          logger.info('✅ [AGENT 2] Discovery Agent completed', {
             userId,
             syncId,
-            detectionId,
-            totalDetected: detectionResult?.totalDetected || 0
+            totalDetected: detectionResult?.totalDetected
           });
         } catch (detectionError: any) {
           logger.error('❌ [AGENT 2] Discovery Agent failed', {
