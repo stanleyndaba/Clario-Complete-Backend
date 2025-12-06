@@ -20,6 +20,7 @@ export interface SyncJobStatus {
   ordersProcessed?: number;
   totalOrders?: number;
   claimsDetected?: number;
+  totalRecoverableValue?: number; // Actual calculated value from detection results
   inventoryCount?: number;
   shipmentsCount?: number;
   returnsCount?: number;
@@ -477,15 +478,31 @@ class SyncJobManager {
         if (detectionResult && detectionResult.completed) {
           if (detectionResult.totalDetected > 0) {
             syncStatus.claimsDetected = detectionResult.totalDetected;
-            // Calculate estimated value (~$48 avg per claim)
-            const estimatedValue = detectionResult.totalDetected * 48;
-            const formattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(estimatedValue);
+
+            // Query ACTUAL total value from detection results - no fallback
+            let actualValue = 0;
+            try {
+              const { data: amounts } = await supabase
+                .from('detection_results')
+                .select('amount')
+                .eq('seller_id', userId)
+                .eq('sync_id', syncId);
+
+              if (amounts && amounts.length > 0) {
+                actualValue = amounts.reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+              }
+            } catch (err) {
+              logger.debug('Could not query detection amounts', { error: err });
+            }
+
+            syncStatus.totalRecoverableValue = actualValue;
+            const formattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(actualValue);
 
             logger.info('✅ [SYNC JOB MANAGER] Detection completed with results', {
               userId,
               syncId,
               totalDetected: detectionResult.totalDetected,
-              estimatedValue
+              totalRecoverableValue: actualValue
             });
 
             this.sendLogEvent(userId, syncId, {
@@ -502,7 +519,7 @@ class SyncJobManager {
             this.sendLogEvent(userId, syncId, {
               type: 'success',
               category: 'detection',
-              message: `[ESTIMATED] Potential recovery: ${formattedValue}`
+              message: `[RECOVERY] Potential recovery: ${formattedValue}`
             });
           } else if (detectionResult.skipped) {
             logger.info('ℹ️ [SYNC JOB MANAGER] Detection skipped', {
@@ -527,22 +544,28 @@ class SyncJobManager {
           });
           this.sendLogEvent(userId, syncId, { type: 'warning', category: 'detection', message: `[ERROR] Analysis interrupted: ${detectionResult.error}` });
         } else {
-          // Fallback: Check database for detection results
+          // Fallback: Check database for detection results - get ACTUAL values, no fallback
           try {
-            const { count: detectionResultsCount } = await supabase
+            // Query both count and sum of actual amounts
+            const { data: detectionStats, error: statsError } = await supabase
               .from('detection_results')
-              .select('id', { count: 'exact', head: true })
+              .select('amount')
               .eq('seller_id', userId)
-              .eq('sync_id', syncId)
-              .limit(1);
+              .eq('sync_id', syncId);
 
-            if (detectionResultsCount && detectionResultsCount > 0) {
-              syncStatus.claimsDetected = detectionResultsCount;
+            if (!statsError && detectionStats && detectionStats.length > 0) {
+              const count = detectionStats.length;
+              const totalValue = detectionStats.reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+
+              syncStatus.claimsDetected = count;
+              syncStatus.totalRecoverableValue = totalValue;
+
+              const formattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(totalValue);
               this.sendLogEvent(userId, syncId, {
                 type: 'success',
                 category: 'detection',
-                message: `✓ ${detectionResultsCount.toLocaleString()} potential recoveries found`,
-                count: detectionResultsCount
+                message: `✓ ${count.toLocaleString()} potential recoveries found (${formattedValue})`,
+                count: count
               });
             } else {
               this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: '✓ Detection complete - no discrepancies in this data' });
@@ -669,7 +692,8 @@ class SyncJobManager {
           message: `[COMPLETE] Analysis finished. ${totalItemsSynced.toLocaleString()} records processed.`
         });
         if (syncStatus.claimsDetected > 0) {
-          const finalValue = syncStatus.claimsDetected * 48;
+          // Use ACTUAL totalRecoverableValue - no fallback
+          const finalValue = syncStatus.totalRecoverableValue || 0;
           const finalFormattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(finalValue);
           this.sendLogEvent(userId, syncId, {
             type: 'success',
@@ -705,6 +729,7 @@ class SyncJobManager {
           settlementsCount: syncStatus.settlementsCount || 0,
           feesCount: syncStatus.feesCount || 0,
           claimsDetected: syncStatus.claimsDetected || 0,
+          totalRecoverableValue: syncStatus.totalRecoverableValue || 0, // ACTUAL VALUE - no fallback
           message: syncStatus.message,
           timestamp: new Date().toISOString()
         });
