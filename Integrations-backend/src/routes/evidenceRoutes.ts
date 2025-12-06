@@ -10,6 +10,7 @@ import { outlookIngestionService } from '../services/outlookIngestionService';
 import { googleDriveIngestionService } from '../services/googleDriveIngestionService';
 import { dropboxIngestionService } from '../services/dropboxIngestionService';
 import { unifiedIngestionService } from '../services/unifiedIngestionService';
+import { evidenceMatchingService } from '../services/evidenceMatchingService';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import logger from '../utils/logger';
 
@@ -1595,6 +1596,86 @@ router.delete('/sources/:id', async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       error: 'Failed to disconnect evidence source',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * POST /api/evidence/matching/run
+ * Trigger evidence matching for the current user
+ * Matches parsed documents to claims using rule-based and ML scoring
+ */
+router.post('/matching/run', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    const { claims } = req.body;
+
+    logger.info('🎯 [EVIDENCE MATCHING] Starting evidence matching run', {
+      userId,
+      claimsProvided: claims?.length || 'auto-fetch'
+    });
+
+    // Send SSE event for matching start
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_matching_started', {
+        userId,
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for matching start', { error: sseError });
+    }
+
+    // Run evidence matching with retry logic
+    const result = await evidenceMatchingService.runMatchingWithRetry(userId, claims);
+
+    // Send SSE event for matching completion
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_matching_completed', {
+        userId,
+        matches: result.matches,
+        autoSubmits: result.auto_submits,
+        smartPrompts: result.smart_prompts,
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for matching completion', { error: sseError });
+    }
+
+    logger.info('✅ [EVIDENCE MATCHING] Evidence matching completed', {
+      userId,
+      matches: result.matches,
+      autoSubmits: result.auto_submits,
+      smartPrompts: result.smart_prompts
+    });
+
+    res.json({
+      success: true,
+      matches: result.matches,
+      auto_submits: result.auto_submits,
+      smart_prompts: result.smart_prompts,
+      results: result.results,
+      message: `Matched ${result.matches} documents to claims`
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE MATCHING] Error in matching run endpoint', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to run evidence matching',
       message: error?.message || String(error)
     });
   }
