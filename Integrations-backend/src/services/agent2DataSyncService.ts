@@ -1634,27 +1634,83 @@ export class Agent2DataSyncService {
         const { getMockDataGenerator } = require('./mockDataGenerator');
         const mockGenerator = getMockDataGenerator();
 
-        // Generate inbound shipments (40-60 records with 10% lost-in-transit, 8% damaged)
+        // Generate inbound shipments (50 records with ~10% discrepancies)
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'shipments',
+          message: 'Scanning FBA inbound shipment records...'
+        });
         const inboundData = mockGenerator.generateInboundShipments();
         (validatedData as any).inboundShipments = inboundData?.payload?.inboundShipments || [];
+        const inboundCount = (validatedData as any).inboundShipments.length;
+        if (inboundCount > 0) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'success',
+            category: 'shipments',
+            message: `[FOUND] ${inboundCount} inbound shipments to FBA warehouses`,
+            count: inboundCount
+          });
+        }
 
-        // Generate inventory adjustments (30-50 records with claimable reasons)
+        // Generate inventory adjustments (200 records with ~30% claimable)
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'inventory',
+          message: 'Auditing FBA inventory adjustment history...'
+        });
         const adjustmentsData = mockGenerator.generateInventoryAdjustments();
         (validatedData as any).inventoryAdjustments = adjustmentsData?.payload?.inventoryAdjustments || [];
+        const adjustmentCount = (validatedData as any).inventoryAdjustments.length;
+        if (adjustmentCount > 0) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'success',
+            category: 'inventory',
+            message: `[FOUND] ${adjustmentCount} inventory adjustments for review`,
+            count: adjustmentCount
+          });
+        }
 
         // Generate removal orders (15-25 records with 12% lost during removal)
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'inventory',
+          message: 'Checking FBA removal order completions...'
+        });
         const removalData = mockGenerator.generateRemovalOrders();
         (validatedData as any).removalOrders = removalData?.payload?.removalOrders || [];
+        const removalCount = (validatedData as any).removalOrders.length;
+        if (removalCount > 0) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'success',
+            category: 'inventory',
+            message: `[FOUND] ${removalCount} removal orders processed`,
+            count: removalCount
+          });
+        }
 
         // Generate fee overcharges (1000 orders, 10% with wrong size tier billing)
+        this.sendSyncLog(userId, syncId, {
+          type: 'info',
+          category: 'fees',
+          message: 'Analyzing FBA fee structures for billing errors...'
+        });
         const feeData = mockGenerator.generateFeeOvercharges();
         (validatedData as any).feeOvercharges = feeData?.payload?.feeOvercharges || [];
+        const feeCount = (validatedData as any).feeOvercharges.length;
+        if (feeCount > 0) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'success',
+            category: 'fees',
+            message: `[FOUND] ${feeCount} fee transactions requiring validation`,
+            count: feeCount
+          });
+        }
 
         console.log('[AGENT 2] Generated COMMERCIAL DEMO FBA data for claim detection:', {
-          inboundShipments: (validatedData as any).inboundShipments?.length || 0,
-          inventoryAdjustments: (validatedData as any).inventoryAdjustments?.length || 0,
-          removalOrders: (validatedData as any).removalOrders?.length || 0,
-          feeOvercharges: (validatedData as any).feeOvercharges?.length || 0
+          inboundShipments: inboundCount,
+          inventoryAdjustments: adjustmentCount,
+          removalOrders: removalCount,
+          feeOvercharges: feeCount
         });
       } catch (err: any) {
         console.error('[AGENT 2] Failed to generate additional FBA data:', err.message);
