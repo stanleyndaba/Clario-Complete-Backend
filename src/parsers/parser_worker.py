@@ -239,7 +239,7 @@ class ParserWorker:
                         'filename': result[1],
                         'content_type': result[2],
                         'download_url': result[3],
-                        'metadata': json.loads(result[4]) if result[4] else {}
+                        'metadata': result[4] if isinstance(result[4], dict) else (json.loads(result[4]) if result[4] else {})
                     }
                 return None
     
@@ -358,7 +358,8 @@ class ParserWorker:
     async def _handle_job_retry(self, job: Dict[str, Any]):
         """Handle job retry with exponential backoff"""
         job_id = job['id']
-        retry_count = job['retry_count']
+        # Use .get() with default 0 to avoid KeyError if retry_count not in job
+        retry_count = job.get('retry_count', 0)
         
         if retry_count < len(self.retry_delays):
             delay = self.retry_delays[retry_count]
