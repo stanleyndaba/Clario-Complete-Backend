@@ -2192,8 +2192,7 @@ export class Agent2DataSyncService {
 
           // Calculate total recoverable value from detection results
           const totalRecoverableValue = detectionResults.reduce((sum, det) => {
-            const amount = parseFloat(det.amount) || det.estimated_value || 0;
-            return sum + amount;
+            return sum + (det.estimated_value || 0);
           }, 0);
 
           sseHub.sendEvent(userId, 'detection.completed', {
