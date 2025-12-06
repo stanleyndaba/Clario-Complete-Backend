@@ -1,0 +1,16 @@
+[2025-12-05T23:17:57.011Z] simulateDetection called with 28 claims
+[2025-12-05T23:18:06.969Z] simulateDetection called with 28 claims
+[2025-12-05T23:22:41.385Z] simulateDetection called with 209 claims
+[2025-12-05T23:25:52.957Z] simulateDetection called with 209 claims
+[2025-12-05T23:59:13.484Z] simulateDetection called with 28 claims
+[2025-12-05T23:59:23.438Z] simulateDetection called with 28 claims
+[2025-12-06T00:35:21.341Z] simulateDetection called with 28 claims
+[2025-12-06T00:35:31.339Z] simulateDetection called with 28 claims
+[2025-12-06T00:49:14.517Z] simulateDetection called with 28 claims
+[2025-12-06T00:49:20.557Z] simulateDetection called with 28 claims
+[2025-12-06T00:54:09.844Z] simulateDetection called with 32 claims
+[2025-12-06T00:54:14.958Z] simulateDetection called with 29 claims
+[2025-12-06T01:07:16.882Z] simulateDetection called with 202 claims
+[2025-12-06T01:07:23.650Z] simulateDetection called with 208 claims
+[2025-12-06T01:57:13.492Z] simulateDetection called with 216 claims
+[2025-12-06T01:57:24.511Z] simulateDetection called with 210 claims

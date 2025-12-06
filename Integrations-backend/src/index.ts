@@ -27,6 +27,9 @@ import { userIdMiddleware } from './middleware/userIdMiddleware';
 // Import routes
 import amazonRoutes from './routes/amazonRoutes';
 import gmailRoutes from './routes/gmailRoutes';
+import outlookRoutes from './routes/outlookRoutes';
+import googleDriveRoutes from './routes/googleDriveRoutes';
+import dropboxRoutes from './routes/dropboxRoutes';
 import stripeRoutes from './routes/stripeRoutes';
 import syncRoutes from './routes/syncRoutes';
 import integrationRoutes from './routes/integrationRoutes';
@@ -241,6 +244,10 @@ app.get('/api/v1/integrations/connectamazon', (req, res) => {
   res.redirect(302, '/api/v1/integrations/amazon/auth/start');
 });
 app.use('/api/v1/integrations/gmail', gmailRoutes);
+app.use('/api/v1/integrations/outlook', outlookRoutes);
+app.use('/api/v1/integrations/gdrive', googleDriveRoutes);
+app.use('/api/v1/integrations/dropbox', dropboxRoutes);
+logger.info('OAuth routes registered: Gmail, Outlook, Google Drive, Dropbox');
 app.use('/api/v1/integrations/stripe', stripeRoutes);
 // Evidence sources routes (must be registered before generic integration routes)
 app.use('/api/v1/integrations', evidenceSourcesRoutes);

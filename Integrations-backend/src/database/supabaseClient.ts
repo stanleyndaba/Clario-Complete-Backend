@@ -197,10 +197,10 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
       getSession: () => Promise.resolve({ data: { session: null }, error: null })
     },
     from: (table: string) => createMockQueryBuilder(table)
-} as any;
+  } as any;
 
-// In demo mode, admin client is same as regular client
-supabaseAdmin = supabase;
+  // In demo mode, admin client is same as regular client
+  supabaseAdmin = supabase;
 } else {
   // Validate URL before creating client
   if (!supabaseUrl || typeof supabaseUrl !== 'string' || !supabaseUrl.startsWith('http')) {
@@ -259,7 +259,7 @@ export interface EncryptedToken {
 export interface TokenRecord {
   id: string;
   user_id: string;
-  provider: 'amazon' | 'gmail' | 'stripe';
+  provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox';
   access_token_iv?: string;
   access_token_data?: string;
   refresh_token_iv?: string;
@@ -318,7 +318,7 @@ export function convertUserIdToUuid(userId: string): string {
 export const tokenManager = {
   async saveToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
     accessTokenEnc: { iv: string; data: string },
     refreshTokenEnc?: { iv: string; data: string },
     expiresAt?: Date
@@ -368,7 +368,7 @@ export const tokenManager = {
 
   async getToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe'
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox'
   ): Promise<TokenRecord | null> {
     try {
       if (typeof supabase.from !== 'function') {
@@ -419,7 +419,7 @@ export const tokenManager = {
 
   async updateToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
     accessTokenEnc: { iv: string; data: string },
     refreshTokenEnc?: { iv: string; data: string },
     expiresAt?: Date
@@ -463,7 +463,7 @@ export const tokenManager = {
 
   async deleteToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe'
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox'
   ): Promise<void> {
     try {
       if (typeof supabase.from !== 'function') {

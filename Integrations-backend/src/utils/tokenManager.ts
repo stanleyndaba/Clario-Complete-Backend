@@ -67,7 +67,7 @@ export class TokenManager {
 
   async saveToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
     tokenData: TokenData
   ): Promise<void> {
     try {
@@ -91,7 +91,7 @@ export class TokenManager {
 
   async getToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe'
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox'
   ): Promise<TokenData | null> {
     try {
       const tokenStatus = await this.getTokenWithStatus(userId, provider);
@@ -114,7 +114,7 @@ export class TokenManager {
 
   async getTokenWithStatus(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe'
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox'
   ): Promise<TokenWithStatus | null> {
     try {
       const tokenRecord = await dbTokenManager.getToken(userId, provider);
@@ -192,7 +192,7 @@ export class TokenManager {
 
   async refreshToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
     newTokenData: TokenData
   ): Promise<void> {
     try {
@@ -216,7 +216,7 @@ export class TokenManager {
 
   async revokeToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe'
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox'
   ): Promise<void> {
     try {
       await dbTokenManager.deleteToken(userId, provider);
@@ -229,7 +229,7 @@ export class TokenManager {
 
   async isTokenValid(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe'
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox'
   ): Promise<boolean> {
     try {
       // First check database

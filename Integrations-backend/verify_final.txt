@@ -1,0 +1,31 @@
+≡ƒöì Checking detection_results table...
+Γ£à Found 1054 total detection results
+Most recent detections:
+- [2025-12-05T23:25:53.012+00:00] ID: da708e40-b885-4525-bcd2-c516d154a550 | Type: missing_unit | Value: 129.98 USD | SyncID: sync_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11_1764977146942
+- [2025-12-05T23:25:53.012+00:00] ID: 10c6cb8c-5bdc-4176-bdc3-9fdcb6e0fb7e | Type: missing_unit | Value: 137.92 USD | SyncID: sync_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11_1764977146942
+- [2025-12-05T23:25:53.012+00:00] ID: b91a742e-9ebd-4de3-990d-a64f003d8ef4 | Type: missing_unit | Value: 128.63 USD | SyncID: sync_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11_1764977146942
+- [2025-12-05T23:25:53.012+00:00] ID: 6270bb50-d4b6-44a4-92cb-9a7177630135 | Type: missing_unit | Value: 159.44 USD | SyncID: sync_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11_1764977146942
+- [2025-12-05T23:25:53.012+00:00] ID: c8e35367-649d-4e9c-837e-aa9724dda2de | Type: missing_unit | Value: 11.65 USD | SyncID: sync_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11_1764977146942
+- [2025-12-05T23:25:53.012+00:00] ID: cb0fb1ff-7f87-4acd-aaae-67a2d4cac15f | Type: missing_unit | Value: 32.52 USD | SyncID: sync_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11_1764977146942
+- [2025-12-05T23:25:53.012+00:00] ID: 8334d4ba-79b0-44ee-bd6b-3e04d8ae706c | Type: missing_unit | Value: 41.96 USD | SyncID: sync_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11_1764977146942
+- [2025-12-05T23:25:53.012+00:00] ID: 264ce261-b2ba-4b8d-8704-3b829af5cf82 | Type: missing_unit | Value: 12.97 USD | SyncID: sync_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11_1764977146942
+- [2025-12-05T23:25:53.012+00:00] ID: 7a64a8fa-3f3b-466d-9864-be747be4def3 | Type: missing_unit | Value: 17.35 USD | SyncID: sync_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11_1764977146942
+- [2025-12-05T23:25:53.012+00:00] ID: e4ccc12b-fa81-46b8-b6d3-3a4bec577097 | Type: missing_unit | Value: 577.1 USD | SyncID: sync_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11_1764977146942
+
+≡ƒöì Checking sync_progress table...
+Most recent syncs:
+- [2025-12-05T23:25:49.491524+00:00] Status: completed | SyncID: sync_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11_1764977146942
+  Claims Detected: 29
+  Summary: {}
+- [2025-12-05T22:17:32.527375+00:00] Status: completed | SyncID: sync_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11_1764973049851
+  Claims Detected: 0
+  Summary: {}
+- [2025-12-05T22:11:04.499194+00:00] Status: completed | SyncID: sync_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11_1764972662127
+  Claims Detected: 0
+  Summary: {}
+- [2025-12-05T22:05:04.453936+00:00] Status: completed | SyncID: sync_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11_1764972301959
+  Claims Detected: 0
+  Summary: {}
+- [2025-12-05T21:59:27.647778+00:00] Status: completed | SyncID: sync_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11_1764971964886
+  Claims Detected: 0
+  Summary: {}
