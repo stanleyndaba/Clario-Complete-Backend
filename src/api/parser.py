@@ -184,8 +184,8 @@ async def list_parser_jobs(
             with conn.cursor() as cursor:
                 cursor.execute(f"""
                     SELECT pj.id, pj.document_id, pj.status, pj.parser_type, 
-                           pj.started_at, pj.completed_at, pj.retry_count, 
-                           pj.max_retries, pj.error_message, pj.confidence_score,
+                           pj.started_at, pj.completed_at,
+                           pj.error_message, pj.confidence_score,
                            ed.filename, ed.content_type
                     FROM parser_jobs pj
                     JOIN evidence_documents ed ON pj.document_id = ed.id
@@ -203,12 +203,12 @@ async def list_parser_jobs(
                         "parser_type": row[3],
                         "started_at": row[4].isoformat() + "Z" if row[4] else None,
                         "completed_at": row[5].isoformat() + "Z" if row[5] else None,
-                        "retry_count": row[6],
-                        "max_retries": row[7],
-                        "error_message": row[8],
-                        "confidence_score": row[9],
-                        "filename": row[10],
-                        "content_type": row[11]
+                        "retry_count": 0,
+                        "max_retries": 3,
+                        "error_message": row[6],
+                        "confidence_score": row[7],
+                        "filename": row[8],
+                        "content_type": row[9]
                     })
                 
                 # Get total count

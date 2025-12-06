@@ -112,7 +112,7 @@ class ParserWorker:
         with self.db._get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT id, document_id, parser_type, retry_count, max_retries
+                    SELECT id, document_id, parser_type
                     FROM parser_jobs 
                     WHERE status = 'pending'
                     ORDER BY created_at ASC
@@ -125,8 +125,8 @@ class ParserWorker:
                         'id': str(row[0]),
                         'document_id': str(row[1]),
                         'parser_type': row[2],
-                        'retry_count': row[3],
-                        'max_retries': row[4]
+                        'retry_count': 0,
+                        'max_retries': 3
                     })
                 
                 return jobs
@@ -136,10 +136,9 @@ class ParserWorker:
         with self.db._get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT id, document_id, parser_type, retry_count, max_retries, error_message
+                    SELECT id, document_id, parser_type, error_message
                     FROM parser_jobs 
                     WHERE status = 'retrying' 
-                    AND retry_count < max_retries
                     AND updated_at < NOW() - INTERVAL '%s seconds'
                     ORDER BY updated_at ASC
                     LIMIT 5
@@ -151,9 +150,9 @@ class ParserWorker:
                         'id': str(row[0]),
                         'document_id': str(row[1]),
                         'parser_type': row[2],
-                        'retry_count': row[3],
-                        'max_retries': row[4],
-                        'error_message': row[5]
+                        'retry_count': 0,
+                        'max_retries': 3,
+                        'error_message': row[3]
                     })
                 
                 return jobs
@@ -342,35 +341,16 @@ class ParserWorker:
                 """, (error_message, job_id))
     
     async def _handle_parsing_failure(self, job_id: str, error: str):
-        """Handle parsing failure with retry logic"""
+        """Handle parsing failure - mark as failed (no retry columns in DB)"""
         with self.db._get_connection() as conn:
             with conn.cursor() as cursor:
-                # Get current retry count
+                # Mark as failed directly since retry columns don't exist
                 cursor.execute("""
-                    SELECT retry_count, max_retries FROM parser_jobs WHERE id = %s
-                """, (job_id,))
-                
-                result = cursor.fetchone()
-                if result:
-                    retry_count, max_retries = result
-                    
-                    if retry_count < max_retries:
-                        # Mark for retry
-                        cursor.execute("""
-                            UPDATE parser_jobs 
-                            SET status = 'retrying', retry_count = retry_count + 1, 
-                                error_message = %s, updated_at = NOW()
-                            WHERE id = %s
-                        """, (error, job_id))
-                        logger.info(f"Job {job_id} marked for retry ({retry_count + 1}/{max_retries})")
-                    else:
-                        # Mark as failed
-                        cursor.execute("""
-                            UPDATE parser_jobs 
-                            SET status = 'failed', completed_at = NOW(), error_message = %s
-                            WHERE id = %s
-                        """, (error, job_id))
-                        logger.error(f"Job {job_id} failed after {max_retries} retries")
+                    UPDATE parser_jobs 
+                    SET status = 'failed', completed_at = NOW(), error_message = %s
+                    WHERE id = %s
+                """, (error, job_id))
+                logger.error(f"Job {job_id} marked as failed: {error}")
     
     async def _handle_job_retry(self, job: Dict[str, Any]):
         """Handle job retry with exponential backoff"""
@@ -414,7 +394,7 @@ class ParserWorker:
             with conn.cursor() as cursor:
                 cursor.execute("""
                     SELECT id, document_id, status, started_at, completed_at, 
-                           retry_count, max_retries, error_message, confidence_score
+                           error_message, confidence_score
                     FROM parser_jobs 
                     WHERE id = %s
                 """, (job_id,))
@@ -427,10 +407,10 @@ class ParserWorker:
                         'status': result[2],
                         'started_at': result[3].isoformat() + "Z" if result[3] else None,
                         'completed_at': result[4].isoformat() + "Z" if result[4] else None,
-                        'retry_count': result[5],
-                        'max_retries': result[6],
-                        'error_message': result[7],
-                        'confidence_score': result[8]
+                        'retry_count': 0,
+                        'max_retries': 3,
+                        'error_message': result[5],
+                        'confidence_score': result[6]
                     }
                 return None
 
