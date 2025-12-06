@@ -283,6 +283,27 @@ export class MockDataGenerator {
         fulfillmentCenterId = '';
       }
 
+      // Add weight and dimensions for fee validation (NEW for claim detection)
+      const actualWeight = parseFloat((Math.random() * 10 + 0.5).toFixed(2)); // 0.5-10.5 lbs
+      const actualLength = parseFloat((Math.random() * 20 + 2).toFixed(1)); // 2-22 inches
+      const actualWidth = parseFloat((Math.random() * 15 + 1).toFixed(1)); // 1-16 inches  
+      const actualHeight = parseFloat((Math.random() * 12 + 1).toFixed(1)); // 1-13 inches
+
+      // Amazon's measured values (sometimes wrong - fee overcharge opportunity)
+      let amazonWeight = actualWeight;
+      let amazonLength = actualLength;
+      let amazonWidth = actualWidth;
+      let amazonHeight = actualHeight;
+
+      // 8% chance of measurement discrepancy (fee overcharge)
+      if (Math.random() < 0.08) {
+        const discrepancyFactor = 1.1 + Math.random() * 0.3; // 10-40% higher
+        amazonWeight = parseFloat((actualWeight * discrepancyFactor).toFixed(2));
+        amazonLength = parseFloat((actualLength * discrepancyFactor).toFixed(1));
+        amazonWidth = parseFloat((actualWidth * discrepancyFactor).toFixed(1));
+        amazonHeight = parseFloat((actualHeight * discrepancyFactor).toFixed(1));
+      }
+
       summaries.push({
         sellerSku: sku,
         asin: asin,
@@ -294,6 +315,20 @@ export class MockDataGenerator {
           damagedQuantity: damagedQuantity,
           unfulfillableQuantity: unfulfillableQuantity
         },
+        // Weight and dimensions (NEW for fee overcharge detection)
+        productDimensions: {
+          weight: { value: actualWeight, unit: 'pounds' },
+          length: { value: actualLength, unit: 'inches' },
+          width: { value: actualWidth, unit: 'inches' },
+          height: { value: actualHeight, unit: 'inches' }
+        },
+        amazonMeasurements: {
+          weight: { value: amazonWeight, unit: 'pounds' },
+          length: { value: amazonLength, unit: 'inches' },
+          width: { value: amazonWidth, unit: 'inches' },
+          height: { value: amazonHeight, unit: 'inches' }
+        },
+        hasMeasurementDiscrepancy: amazonWeight !== actualWeight,
         lastUpdatedTime: this.randomDate(this.startDate, this.endDate).toISOString(),
         // Add discrepancy flag for internal tracking/testing
         ...((this.scenario === 'with_issues' && Math.random() > 0.7) || (this.scenario === 'realistic' && Math.random() < 0.03) ? {
@@ -465,8 +500,8 @@ export class MockDataGenerator {
   generateReturns(orders: any[]): any {
     const returns: any[] = [];
 
-    // Return rate: 5% normal, 15% with_issues/realistic
-    const returnRate = (this.scenario === 'with_issues' || this.scenario === 'realistic') ? 0.15 : 0.05;
+    // INCREASED return rate: 15% normal, 25% with_issues/realistic for more claim opportunities
+    const returnRate = (this.scenario === 'with_issues' || this.scenario === 'realistic') ? 0.25 : 0.15;
 
     for (const order of orders) {
       if (order.OrderStatus === 'Shipped' && Math.random() < returnRate) {
@@ -480,14 +515,33 @@ export class MockDataGenerator {
           refundAmount = parseFloat((refundAmount * (0.6 + Math.random() * 0.3)).toFixed(2));
         }
 
+        // NEW: Return status variations for claim detection
+        let returnStatus = 'COMPLETED';
+        let returnReceived = true;
+        let refundIssued = true;
+
+        // 10% chance: Customer refunded but item NOT returned to inventory (CLAIM OPPORTUNITY)
+        if (Math.random() < 0.10) {
+          returnReceived = false;
+          returnStatus = 'REFUND_ISSUED_NO_RETURN';
+        }
+        // 5% chance: Return received but no credit issued (needs investigation)
+        else if (Math.random() < 0.05) {
+          refundIssued = false;
+          returnStatus = 'RETURN_RECEIVED_NO_CREDIT';
+        }
+
         returns.push({
           return_id: returnId,
           order_id: order.AmazonOrderId,
-          status: 'COMPLETED',
+          status: returnStatus,
           returned_date: returnDate.toISOString(),
           refund_amount: refundAmount,
           currency: 'USD',
-          reason: ['Customer Return', 'Damaged', 'Defective'][Math.floor(Math.random() * 3)],
+          reason: ['Customer Return', 'Damaged', 'Defective', 'Wrong Item', 'Not As Described'][Math.floor(Math.random() * 5)],
+          returnReceived: returnReceived,
+          refundIssued: refundIssued,
+          isClaimOpportunity: !returnReceived && refundIssued, // Customer got money, item not returned
           items: order.OrderItems.map((item: any) => ({
             sku: item.SellerSKU,
             quantity: item.QuantityOrdered,
@@ -533,6 +587,215 @@ export class MockDataGenerator {
 
     logger.info(`Generated ${settlements.length} settlements for scenario: ${this.scenario}`);
     return { payload: { settlements } };
+  }
+
+  /**
+   * Generate Inbound Shipments Data (NEW - for lost/damaged in transit claims)
+   * Returns: { payload: { inboundShipments: [...] } }
+   */
+  generateInboundShipments(): any {
+    const inboundShipments: any[] = [];
+
+    // Generate 40-60 inbound shipments based on scenario
+    const shipmentCount = this.scenario === 'high_volume'
+      ? Math.floor(this.recordCount * 0.8)  // 60 for high volume
+      : Math.floor(this.recordCount * 0.6); // 45 for normal
+
+    for (let i = 0; i < shipmentCount; i++) {
+      const shipmentId = `FBA${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`;
+      const createdDate = this.randomDate(this.startDate, this.endDate);
+      const receivedDate = new Date(createdDate.getTime() + Math.random() * 14 * 24 * 60 * 60 * 1000); // 0-14 days transit
+
+      // Units shipped
+      const unitsShipped = Math.floor(Math.random() * 100) + 10; // 10-110 units
+
+      // Calculate units received with discrepancy logic
+      let unitsReceived = unitsShipped;
+      let lostInTransit = 0;
+      let damagedOnReceipt = 0;
+      let status = 'RECEIVED';
+
+      // 10% chance: Lost in transit discrepancy (CLAIM OPPORTUNITY)
+      if (Math.random() < 0.10) {
+        lostInTransit = Math.floor(Math.random() * 5) + 1; // 1-5 units lost
+        unitsReceived = unitsShipped - lostInTransit;
+        status = 'RECEIVING_DISCREPANCY';
+      }
+      // 8% chance: Damaged on receipt (CLAIM OPPORTUNITY)
+      else if (Math.random() < 0.08) {
+        damagedOnReceipt = Math.floor(Math.random() * 3) + 1; // 1-3 units damaged
+        status = 'DAMAGED_ON_RECEIPT';
+      }
+      // 5% chance: Still in transit (pending)
+      else if (Math.random() < 0.05) {
+        unitsReceived = 0;
+        status = 'IN_TRANSIT';
+      }
+
+      // Calculate potential reimbursement value
+      const unitValue = this.randomAmount(10, 100);
+      const potentialClaimValue = (lostInTransit + damagedOnReceipt) * unitValue;
+
+      inboundShipments.push({
+        shipment_id: shipmentId,
+        shipment_name: `Shipment-${i + 1}`,
+        destination_fulfillment_center: `FBA${Math.floor(Math.random() * 5) + 1}`,
+        status: status,
+        created_date: createdDate.toISOString(),
+        received_date: status !== 'IN_TRANSIT' ? receivedDate.toISOString() : null,
+        units_shipped: unitsShipped,
+        units_received: unitsReceived,
+        lost_in_transit: lostInTransit,
+        damaged_on_receipt: damagedOnReceipt,
+        unit_value: unitValue,
+        potential_claim_value: potentialClaimValue,
+        is_claim_opportunity: lostInTransit > 0 || damagedOnReceipt > 0,
+        carrier: ['UPS', 'FedEx', 'USPS', 'Amazon Partnered'][Math.floor(Math.random() * 4)],
+        tracking_number: `TRK${String(Math.floor(Math.random() * 100000000)).padStart(12, '0')}`
+      });
+    }
+
+    logger.info(`Generated ${inboundShipments.length} inbound shipments for scenario: ${this.scenario}`);
+    return { payload: { inboundShipments } };
+  }
+
+  /**
+   * Generate Inventory Adjustments Data (NEW - for lost/damaged in warehouse claims)
+   * Returns: { payload: { inventoryAdjustments: [...] } }
+   */
+  generateInventoryAdjustments(): any {
+    const adjustments: any[] = [];
+
+    // Generate 30-50 inventory adjustments
+    const adjustmentCount = this.scenario === 'with_issues'
+      ? Math.floor(this.recordCount * 0.7)  // More for issues scenario
+      : Math.floor(this.recordCount * 0.4); // Normal
+
+    const adjustmentReasons = [
+      { reason: 'WAREHOUSE_DAMAGE', isClaimable: true, frequency: 0.25 },
+      { reason: 'LOST_WAREHOUSE', isClaimable: true, frequency: 0.20 },
+      { reason: 'FOUND_INVENTORY', isClaimable: false, frequency: 0.10 },
+      { reason: 'EXPIRED', isClaimable: false, frequency: 0.15 },
+      { reason: 'TRANSFER_LOSS', isClaimable: true, frequency: 0.15 },
+      { reason: 'CUSTOMER_DAMAGE', isClaimable: false, frequency: 0.10 },
+      { reason: 'DISPOSED', isClaimable: true, frequency: 0.05 }
+    ];
+
+    for (let i = 0; i < adjustmentCount; i++) {
+      const adjustmentId = `ADJ-${Date.now()}-${i}`;
+      const adjustmentDate = this.randomDate(this.startDate, this.endDate);
+      const sku = `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`;
+
+      // Select reason based on weighted frequency
+      const rand = Math.random();
+      let cumulativeFreq = 0;
+      let selectedReason = adjustmentReasons[0];
+      for (const reason of adjustmentReasons) {
+        cumulativeFreq += reason.frequency;
+        if (rand < cumulativeFreq) {
+          selectedReason = reason;
+          break;
+        }
+      }
+
+      const quantityAdjusted = selectedReason.reason === 'FOUND_INVENTORY'
+        ? Math.floor(Math.random() * 5) + 1  // Positive adjustment
+        : -(Math.floor(Math.random() * 10) + 1); // Negative adjustment (lost/damaged)
+
+      const unitValue = this.randomAmount(15, 150);
+      const claimValue = selectedReason.isClaimable ? Math.abs(quantityAdjusted) * unitValue : 0;
+
+      // Check if already reimbursed (some should be, some shouldn't)
+      const wasReimbursed = selectedReason.isClaimable ? Math.random() < 0.3 : false; // 30% already reimbursed
+
+      adjustments.push({
+        adjustment_id: adjustmentId,
+        seller_sku: sku,
+        asin: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
+        fulfillment_center: `FBA${Math.floor(Math.random() * 5) + 1}`,
+        adjustment_date: adjustmentDate.toISOString(),
+        reason: selectedReason.reason,
+        quantity_adjusted: quantityAdjusted,
+        unit_value: unitValue,
+        total_value: Math.abs(quantityAdjusted) * unitValue,
+        is_claimable: selectedReason.isClaimable,
+        was_reimbursed: wasReimbursed,
+        is_claim_opportunity: selectedReason.isClaimable && !wasReimbursed, // Claimable but NOT yet reimbursed
+        potential_claim_value: selectedReason.isClaimable && !wasReimbursed ? claimValue : 0
+      });
+    }
+
+    logger.info(`Generated ${adjustments.length} inventory adjustments for scenario: ${this.scenario}`);
+    return { payload: { inventoryAdjustments: adjustments } };
+  }
+
+  /**
+   * Generate Removal Orders Data (NEW - for lost during removal claims)
+   * Returns: { payload: { removalOrders: [...] } }
+   */
+  generateRemovalOrders(): any {
+    const removalOrders: any[] = [];
+
+    // Generate 15-25 removal orders
+    const orderCount = this.scenario === 'with_issues'
+      ? Math.floor(this.recordCount * 0.35)
+      : Math.floor(this.recordCount * 0.2);
+
+    for (let i = 0; i < orderCount; i++) {
+      const removalOrderId = `RMO-${Date.now()}-${i}`;
+      const createdDate = this.randomDate(this.startDate, this.endDate);
+      const completedDate = new Date(createdDate.getTime() + Math.random() * 21 * 24 * 60 * 60 * 1000); // 0-21 days
+      const sku = `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`;
+
+      const requestedQuantity = Math.floor(Math.random() * 50) + 5; // 5-55 units
+      let returnedQuantity = requestedQuantity;
+      let disposedQuantity = 0;
+      let lostQuantity = 0;
+      let status = 'COMPLETED';
+
+      // Determine removal type
+      const isReturn = Math.random() > 0.3; // 70% return, 30% disposal
+
+      if (isReturn) {
+        // 12% chance: Units lost during return (CLAIM OPPORTUNITY)
+        if (Math.random() < 0.12) {
+          lostQuantity = Math.floor(Math.random() * 5) + 1;
+          returnedQuantity = requestedQuantity - lostQuantity;
+          status = 'COMPLETED_WITH_DISCREPANCY';
+        }
+      } else {
+        disposedQuantity = requestedQuantity;
+        returnedQuantity = 0;
+        // 8% chance: Disposal fee discrepancy
+        if (Math.random() < 0.08) {
+          status = 'DISPOSAL_FEE_ERROR';
+        }
+      }
+
+      const unitValue = this.randomAmount(10, 80);
+      const potentialClaimValue = lostQuantity * unitValue;
+
+      removalOrders.push({
+        removal_order_id: removalOrderId,
+        seller_sku: sku,
+        asin: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
+        order_type: isReturn ? 'RETURN' : 'DISPOSAL',
+        status: status,
+        created_date: createdDate.toISOString(),
+        completed_date: completedDate.toISOString(),
+        requested_quantity: requestedQuantity,
+        returned_quantity: returnedQuantity,
+        disposed_quantity: disposedQuantity,
+        lost_quantity: lostQuantity,
+        unit_value: unitValue,
+        disposal_fee: isReturn ? 0 : parseFloat((requestedQuantity * 0.15).toFixed(2)), // $0.15/unit disposal fee
+        is_claim_opportunity: lostQuantity > 0 || status === 'DISPOSAL_FEE_ERROR',
+        potential_claim_value: potentialClaimValue
+      });
+    }
+
+    logger.info(`Generated ${removalOrders.length} removal orders for scenario: ${this.scenario}`);
+    return { payload: { removalOrders } };
   }
 
   // Helper methods

@@ -1628,6 +1628,34 @@ export class Agent2DataSyncService {
     // Step 1: Validate and normalize input contract
     const validatedData = this.validateAndNormalizeInputContract(normalizedData, userId, syncId);
 
+    // Step 1.5: Generate additional FBA data types for expanded claim detection (when in mock mode)
+    if (isMockMode) {
+      try {
+        const { getMockDataGenerator } = require('./mockDataGenerator');
+        const mockGenerator = getMockDataGenerator();
+
+        // Generate inbound shipments (40-60 records with 10% lost-in-transit, 8% damaged)
+        const inboundData = mockGenerator.generateInboundShipments();
+        (validatedData as any).inboundShipments = inboundData?.payload?.inboundShipments || [];
+
+        // Generate inventory adjustments (30-50 records with claimable reasons)
+        const adjustmentsData = mockGenerator.generateInventoryAdjustments();
+        (validatedData as any).inventoryAdjustments = adjustmentsData?.payload?.inventoryAdjustments || [];
+
+        // Generate removal orders (15-25 records with 12% lost during removal)
+        const removalData = mockGenerator.generateRemovalOrders();
+        (validatedData as any).removalOrders = removalData?.payload?.removalOrders || [];
+
+        console.log('[AGENT 2] Generated additional FBA data types for claim detection:', {
+          inboundShipments: (validatedData as any).inboundShipments?.length || 0,
+          inventoryAdjustments: (validatedData as any).inventoryAdjustments?.length || 0,
+          removalOrders: (validatedData as any).removalOrders?.length || 0
+        });
+      } catch (err: any) {
+        console.error('[AGENT 2] Failed to generate additional FBA data:', err.message);
+      }
+    }
+
     // Step 2: Transform normalized data into Discovery Agent claim format
     const allClaimsToDetect = this.prepareClaimsFromNormalizedData(validatedData, userId);
 
@@ -2302,6 +2330,10 @@ export class Agent2DataSyncService {
       settlements?: any[];
       inventory?: any[];
       claims?: any[];
+      // NEW data types for expanded FBA claims
+      inboundShipments?: any[];
+      inventoryAdjustments?: any[];
+      removalOrders?: any[];
     },
     userId: string
   ): any[] {
@@ -2454,6 +2486,106 @@ export class Agent2DataSyncService {
             reason: 'POTENTIAL_SETTLEMENT_FEE_DISCREPANCY', // Required by Discovery Agent
             notes: '',
             claim_date: settlement.settlement_date || new Date().toISOString()
+          });
+        }
+      }
+    }
+
+    // Process inbound shipments - generate claims for lost/damaged in transit (NEW)
+    if (data.inboundShipments) {
+      for (const shipment of data.inboundShipments) {
+        // Only generate claims for shipments with discrepancies
+        if (shipment.is_claim_opportunity && (shipment.lost_in_transit > 0 || shipment.damaged_on_receipt > 0)) {
+          const claimValue = shipment.potential_claim_value || (shipment.lost_in_transit + shipment.damaged_on_receipt) * (shipment.unit_value || 20);
+          const daysSinceReceived = this.calculateDaysSince(shipment.received_date || shipment.created_date);
+
+          claims.push({
+            claim_id: `claim_inbound_${shipment.shipment_id}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+            seller_id: userId,
+            order_id: shipment.shipment_id,
+            category: 'inventory_loss',
+            subcategory: shipment.lost_in_transit > 0 ? 'lost_in_transit' : 'damaged_on_receipt',
+            reason_code: shipment.lost_in_transit > 0 ? 'INBOUND_LOST_IN_TRANSIT' : 'INBOUND_DAMAGED_ON_RECEIPT',
+            marketplace: 'US',
+            fulfillment_center: shipment.destination_fulfillment_center || 'DEFAULT',
+            amount: claimValue,
+            quantity: shipment.lost_in_transit + shipment.damaged_on_receipt,
+            order_value: shipment.units_shipped * (shipment.unit_value || 20),
+            shipping_cost: 0,
+            days_since_order: daysSinceReceived,
+            days_since_delivery: daysSinceReceived,
+            description: shipment.lost_in_transit > 0
+              ? `${shipment.lost_in_transit} unit(s) lost in transit for inbound shipment ${shipment.shipment_id}`
+              : `${shipment.damaged_on_receipt} unit(s) damaged on receipt for inbound shipment ${shipment.shipment_id}`,
+            reason: shipment.lost_in_transit > 0 ? 'INBOUND_LOST_IN_TRANSIT' : 'INBOUND_DAMAGED_ON_RECEIPT',
+            notes: `Carrier: ${shipment.carrier || 'Unknown'}, Tracking: ${shipment.tracking_number || 'N/A'}`,
+            claim_date: shipment.received_date || shipment.created_date || new Date().toISOString()
+          });
+        }
+      }
+    }
+
+    // Process inventory adjustments - generate claims for lost/damaged in warehouse (NEW)
+    if (data.inventoryAdjustments) {
+      for (const adjustment of data.inventoryAdjustments) {
+        // Only generate claims for claimable adjustments that haven't been reimbursed
+        if (adjustment.is_claim_opportunity && adjustment.is_claimable && !adjustment.was_reimbursed) {
+          const claimValue = adjustment.potential_claim_value || Math.abs(adjustment.quantity_adjusted) * (adjustment.unit_value || 25);
+          const daysSinceAdjustment = this.calculateDaysSince(adjustment.adjustment_date);
+
+          claims.push({
+            claim_id: `claim_adjustment_${adjustment.adjustment_id}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+            seller_id: userId,
+            order_id: adjustment.adjustment_id,
+            category: 'inventory_loss',
+            subcategory: adjustment.reason?.toLowerCase() || 'warehouse_adjustment',
+            reason_code: `INVENTORY_${adjustment.reason || 'ADJUSTMENT'}`,
+            marketplace: 'US',
+            fulfillment_center: adjustment.fulfillment_center || 'DEFAULT',
+            amount: claimValue,
+            quantity: Math.abs(adjustment.quantity_adjusted),
+            order_value: claimValue,
+            shipping_cost: 0,
+            days_since_order: daysSinceAdjustment,
+            days_since_delivery: daysSinceAdjustment,
+            description: `Inventory ${adjustment.reason || 'adjustment'}: ${Math.abs(adjustment.quantity_adjusted)} unit(s) of SKU ${adjustment.seller_sku}`,
+            reason: `INVENTORY_${adjustment.reason || 'ADJUSTMENT'}`,
+            notes: `ASIN: ${adjustment.asin || 'Unknown'}, Not yet reimbursed`,
+            claim_date: adjustment.adjustment_date || new Date().toISOString()
+          });
+        }
+      }
+    }
+
+    // Process removal orders - generate claims for lost during removal (NEW)
+    if (data.removalOrders) {
+      for (const removal of data.removalOrders) {
+        // Only generate claims for removals with discrepancies
+        if (removal.is_claim_opportunity && (removal.lost_quantity > 0 || removal.status === 'DISPOSAL_FEE_ERROR')) {
+          const claimValue = removal.potential_claim_value || removal.lost_quantity * (removal.unit_value || 15);
+          const daysSinceRemoval = this.calculateDaysSince(removal.completed_date || removal.created_date);
+
+          claims.push({
+            claim_id: `claim_removal_${removal.removal_order_id}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+            seller_id: userId,
+            order_id: removal.removal_order_id,
+            category: removal.order_type === 'DISPOSAL' ? 'fee_error' : 'inventory_loss',
+            subcategory: removal.order_type === 'DISPOSAL' ? 'disposal_fee_error' : 'lost_during_removal',
+            reason_code: removal.order_type === 'DISPOSAL' ? 'DISPOSAL_FEE_DISCREPANCY' : 'REMOVAL_LOST_UNITS',
+            marketplace: 'US',
+            fulfillment_center: 'DEFAULT',
+            amount: claimValue,
+            quantity: removal.lost_quantity || removal.requested_quantity,
+            order_value: removal.requested_quantity * (removal.unit_value || 15),
+            shipping_cost: 0,
+            days_since_order: daysSinceRemoval,
+            days_since_delivery: daysSinceRemoval,
+            description: removal.lost_quantity > 0
+              ? `${removal.lost_quantity} unit(s) lost during removal order ${removal.removal_order_id}`
+              : `Disposal fee discrepancy for removal order ${removal.removal_order_id}`,
+            reason: removal.order_type === 'DISPOSAL' ? 'DISPOSAL_FEE_DISCREPANCY' : 'REMOVAL_LOST_UNITS',
+            notes: `SKU: ${removal.seller_sku || 'Unknown'}, Type: ${removal.order_type}`,
+            claim_date: removal.completed_date || removal.created_date || new Date().toISOString()
           });
         }
       }
