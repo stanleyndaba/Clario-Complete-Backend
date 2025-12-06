@@ -135,8 +135,9 @@ class ParserWorker:
         """Get jobs that need retrying"""
         with self.db._get_connection() as conn:
             with conn.cursor() as cursor:
+                # Note: error_message column may not exist in older schemas
                 cursor.execute("""
-                    SELECT id, document_id, parser_type, error_message
+                    SELECT id, document_id, parser_type
                     FROM parser_jobs 
                     WHERE status = 'retrying' 
                     AND updated_at < NOW() - INTERVAL '%s seconds'
@@ -152,7 +153,7 @@ class ParserWorker:
                         'parser_type': row[2],
                         'retry_count': 0,
                         'max_retries': 3,
-                        'error_message': row[3]
+                        'error_message': None  # Column not in schema
                     })
                 
                 return jobs
@@ -334,22 +335,24 @@ class ParserWorker:
         """Mark job as failed"""
         with self.db._get_connection() as conn:
             with conn.cursor() as cursor:
+                # Note: error_message column may not exist in older schemas
                 cursor.execute("""
                     UPDATE parser_jobs 
-                    SET status = 'failed', completed_at = NOW(), error_message = %s
+                    SET status = 'failed', completed_at = NOW()
                     WHERE id = %s
-                """, (error_message, job_id))
+                """, (job_id,))
+                logger.error(f"Job {job_id} marked as failed: {error_message}")
     
     async def _handle_parsing_failure(self, job_id: str, error: str):
         """Handle parsing failure - mark as failed (no retry columns in DB)"""
         with self.db._get_connection() as conn:
             with conn.cursor() as cursor:
-                # Mark as failed directly since retry columns don't exist
+                # Mark as failed directly since error_message column doesn't exist
                 cursor.execute("""
                     UPDATE parser_jobs 
-                    SET status = 'failed', completed_at = NOW(), error_message = %s
+                    SET status = 'failed', completed_at = NOW()
                     WHERE id = %s
-                """, (error, job_id))
+                """, (job_id,))
                 logger.error(f"Job {job_id} marked as failed: {error}")
     
     async def _handle_job_retry(self, job: Dict[str, Any]):
@@ -392,9 +395,10 @@ class ParserWorker:
         """Get parser job status"""
         with self.db._get_connection() as conn:
             with conn.cursor() as cursor:
+                # Note: error_message and confidence_score columns may not exist in older schemas
+                # Select only core columns and return nulls for missing fields
                 cursor.execute("""
-                    SELECT id, document_id, status, started_at, completed_at, 
-                           error_message, confidence_score
+                    SELECT id, document_id, status, started_at, completed_at
                     FROM parser_jobs 
                     WHERE id = %s
                 """, (job_id,))
@@ -409,8 +413,8 @@ class ParserWorker:
                         'completed_at': result[4].isoformat() + "Z" if result[4] else None,
                         'retry_count': 0,
                         'max_retries': 3,
-                        'error_message': result[5],
-                        'confidence_score': result[6]
+                        'error_message': None,  # Column not in schema
+                        'confidence_score': None  # Column not in schema
                     }
                 return None
 
