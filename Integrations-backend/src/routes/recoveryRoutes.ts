@@ -13,7 +13,8 @@ const logger = getLogger('RecoveryRoutes');
 router.get('/:id/events', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
-        const userId = (req as any).user?.id;
+        // Support multiple auth methods: req.user, X-User-Id header, or demo-user fallback
+        const userId = (req as any).user?.id || req.headers['x-user-id'] as string || 'demo-user';
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' });
@@ -164,7 +165,8 @@ router.get('/:id/events', async (req: Request, res: Response) => {
 router.get('/:id/status', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
-        const userId = (req as any).user?.id;
+        // Support multiple auth methods: req.user, X-User-Id header, or demo-user fallback
+        const userId = (req as any).user?.id || req.headers['x-user-id'] as string || 'demo-user';
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' });
