@@ -1615,6 +1615,15 @@ export class Agent2DataSyncService {
   ): Promise<{ totalDetected: number }> {
     const storageSyncId = parentSyncId || syncId;
 
+    // CRITICAL DEBUG: Log isMockMode to trace why Python API might be called
+    console.log(`[AGENT 2] callDiscoveryAgent - isMockMode: ${isMockMode}, MOCK_DETECTION_API: ${process.env.MOCK_DETECTION_API}`);
+    logger.info('🔍 [AGENT 2] Discovery Agent isMockMode check', {
+      userId,
+      syncId,
+      isMockMode,
+      MOCK_DETECTION_API: process.env.MOCK_DETECTION_API,
+      shouldUseMock: isMockMode || process.env.MOCK_DETECTION_API === 'true'
+    });
 
     // Step 1: Validate and normalize input contract
     const validatedData = this.validateAndNormalizeInputContract(normalizedData, userId, syncId);
@@ -1809,8 +1818,23 @@ export class Agent2DataSyncService {
         // Retry logic for this batch
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
           try {
-            // Check for Mock API override
-            if (isMockMode || process.env.MOCK_DETECTION_API === 'true') {
+            // ROBUST Mock Detection Check:
+            // Use mock detection if ANY of these conditions is true:
+            // 1. isMockMode flag is true (passed from syncUserData)
+            // 2. MOCK_DETECTION_API env var is 'true'
+            // 3. NODE_ENV is 'development' (always use mock in dev)
+            const useMockDetection = isMockMode ||
+              process.env.MOCK_DETECTION_API === 'true' ||
+              process.env.NODE_ENV === 'development';
+
+            console.log(`[AGENT 2] Batch ${batchIndex + 1} - Detection mode check:`, {
+              isMockMode,
+              MOCK_DETECTION_API: process.env.MOCK_DETECTION_API,
+              NODE_ENV: process.env.NODE_ENV,
+              useMockDetection
+            });
+
+            if (useMockDetection) {
               console.log(`[AGENT 2] Batch ${batchIndex + 1} - Using MOCK detection (simulated)`);
               // Simulate processing delay
               await new Promise(resolve => setTimeout(resolve, 500));
