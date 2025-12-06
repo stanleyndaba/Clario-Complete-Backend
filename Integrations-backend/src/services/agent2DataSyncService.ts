@@ -155,12 +155,23 @@ export class Agent2DataSyncService {
     const isMockMode = !isConnected || process.env.ENABLE_MOCK_SP_API === 'true' || process.env.USE_MOCK_DATA_GENERATOR !== 'false';
     const mockScenario: MockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
 
+    // DEBUG: Log isMockMode determination
+    console.log('[AGENT 2] isMockMode determination:', {
+      isConnected,
+      ENABLE_MOCK_SP_API: process.env.ENABLE_MOCK_SP_API,
+      USE_MOCK_DATA_GENERATOR: process.env.USE_MOCK_DATA_GENERATOR,
+      isMockMode,
+      mockScenario
+    });
+
     if (isMockMode) {
       logger.info('🧪 [AGENT 2] Using mock data generator (sandbox mode)', {
         userId,
         syncId,
         scenario: mockScenario
       });
+    } else {
+      console.log('[AGENT 2] ⚠️ NOT in mock mode - will use real SP-API (which may return empty for sandbox users)');
     }
 
     // Default to last 18 months for initial sync
