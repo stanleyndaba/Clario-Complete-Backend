@@ -2189,11 +2189,19 @@ export class Agent2DataSyncService {
         // This is critical because sync completes before detection finishes
         try {
           const sseHub = (await import('../utils/sseHub')).default;
+
+          // Calculate total recoverable value from detection results
+          const totalRecoverableValue = detectionResults.reduce((sum, det) => {
+            const amount = parseFloat(det.amount) || det.estimated_value || 0;
+            return sum + amount;
+          }, 0);
+
           sseHub.sendEvent(userId, 'detection.completed', {
             type: 'detection',
             status: 'completed',
             syncId: storageSyncId,
             claimsDetected: detectionResults.length,
+            totalRecoverableValue, // Include actual calculated value
             message: `Detection complete: ${detectionResults.length} claims detected`,
             timestamp: new Date().toISOString()
           });
@@ -2204,6 +2212,7 @@ export class Agent2DataSyncService {
             status: 'completed',
             syncId: storageSyncId,
             claimsDetected: detectionResults.length,
+            totalRecoverableValue, // Include actual calculated value
             message: `Detection complete: ${detectionResults.length} claims detected`,
             timestamp: new Date().toISOString()
           });
@@ -2211,7 +2220,8 @@ export class Agent2DataSyncService {
           logger.info('✅ [AGENT 2] Sent SSE event for detection completion', {
             userId,
             syncId: storageSyncId,
-            claimsDetected: detectionResults.length
+            claimsDetected: detectionResults.length,
+            totalRecoverableValue
           });
         } catch (sseError: any) {
           logger.warn('⚠️ [AGENT 2] Failed to send SSE event for detection completion (non-critical)', {
