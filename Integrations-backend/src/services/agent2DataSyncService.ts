@@ -1646,10 +1646,15 @@ export class Agent2DataSyncService {
         const removalData = mockGenerator.generateRemovalOrders();
         (validatedData as any).removalOrders = removalData?.payload?.removalOrders || [];
 
-        console.log('[AGENT 2] Generated additional FBA data types for claim detection:', {
+        // Generate fee overcharges (1000 orders, 10% with wrong size tier billing)
+        const feeData = mockGenerator.generateFeeOvercharges();
+        (validatedData as any).feeOvercharges = feeData?.payload?.feeOvercharges || [];
+
+        console.log('[AGENT 2] Generated COMMERCIAL DEMO FBA data for claim detection:', {
           inboundShipments: (validatedData as any).inboundShipments?.length || 0,
           inventoryAdjustments: (validatedData as any).inventoryAdjustments?.length || 0,
-          removalOrders: (validatedData as any).removalOrders?.length || 0
+          removalOrders: (validatedData as any).removalOrders?.length || 0,
+          feeOvercharges: (validatedData as any).feeOvercharges?.length || 0
         });
       } catch (err: any) {
         console.error('[AGENT 2] Failed to generate additional FBA data:', err.message);
@@ -2334,6 +2339,7 @@ export class Agent2DataSyncService {
       inboundShipments?: any[];
       inventoryAdjustments?: any[];
       removalOrders?: any[];
+      feeOvercharges?: any[];
     },
     userId: string
   ): any[] {
@@ -2586,6 +2592,37 @@ export class Agent2DataSyncService {
             reason: removal.order_type === 'DISPOSAL' ? 'DISPOSAL_FEE_DISCREPANCY' : 'REMOVAL_LOST_UNITS',
             notes: `SKU: ${removal.seller_sku || 'Unknown'}, Type: ${removal.order_type}`,
             claim_date: removal.completed_date || removal.created_date || new Date().toISOString()
+          });
+        }
+      }
+    }
+
+    // Process fee overcharges - generate claims for wrong size tier billing (NEW - The Silent Killer)
+    if (data.feeOvercharges) {
+      for (const fee of data.feeOvercharges) {
+        // Only generate claims for actual overcharges
+        if (fee.is_claim_opportunity && fee.overcharge_amount > 0) {
+          const daysSinceOrder = this.calculateDaysSince(fee.order_date);
+
+          claims.push({
+            claim_id: `claim_fee_${fee.order_id}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+            seller_id: userId,
+            order_id: fee.order_id,
+            category: 'fee_error',
+            subcategory: 'size_tier_overcharge',
+            reason_code: 'FBA_SIZE_TIER_OVERCHARGE',
+            marketplace: 'US',
+            fulfillment_center: 'DEFAULT',
+            amount: fee.overcharge_amount,
+            quantity: 1,
+            order_value: fee.charged_fulfillment_fee,
+            shipping_cost: 0,
+            days_since_order: daysSinceOrder,
+            days_since_delivery: daysSinceOrder,
+            description: `Size tier overcharge: Charged ${fee.charged_size_tier} ($${fee.charged_fulfillment_fee}) instead of ${fee.actual_size_tier} ($${fee.actual_fulfillment_fee})`,
+            reason: 'FBA_SIZE_TIER_OVERCHARGE',
+            notes: `SKU: ${fee.seller_sku}, Overcharge: $${fee.overcharge_amount.toFixed(2)} per order`,
+            claim_date: fee.order_date || new Date().toISOString()
           });
         }
       }

@@ -590,59 +590,63 @@ export class MockDataGenerator {
   }
 
   /**
-   * Generate Inbound Shipments Data (NEW - for lost/damaged in transit claims)
-   * Returns: { payload: { inboundShipments: [...] } }
+   * Generate Inbound Shipments Data (COMMERCIAL DEMO - Big Ticket Claims)
+   * Creates 50 shipments with 10% having major discrepancies ($400-500 each)
+   * Target: 5 shipments × $400 avg = $2,000 in detectable claims
    */
   generateInboundShipments(): any {
     const inboundShipments: any[] = [];
 
-    // Generate 40-60 inbound shipments based on scenario
-    const shipmentCount = this.scenario === 'high_volume'
-      ? Math.floor(this.recordCount * 0.8)  // 60 for high volume
-      : Math.floor(this.recordCount * 0.6); // 45 for normal
+    // COMMERCIAL DEMO: Generate exactly 50 inbound shipments
+    const shipmentCount = 50;
+
+    // Track which shipments will have the "big ticket" 10-unit discrepancy
+    // 10% (5 shipments) will have major discrepancies
+    const majorDiscrepancyIndices = new Set<number>();
+    while (majorDiscrepancyIndices.size < 5) {
+      majorDiscrepancyIndices.add(Math.floor(Math.random() * shipmentCount));
+    }
 
     for (let i = 0; i < shipmentCount; i++) {
       const shipmentId = `FBA${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`;
       const createdDate = this.randomDate(this.startDate, this.endDate);
-      const receivedDate = new Date(createdDate.getTime() + Math.random() * 14 * 24 * 60 * 60 * 1000); // 0-14 days transit
+      const receivedDate = new Date(createdDate.getTime() + Math.random() * 14 * 24 * 60 * 60 * 1000);
 
-      // Units shipped
-      const unitsShipped = Math.floor(Math.random() * 100) + 10; // 10-110 units
+      // COMMERCIAL DEMO: High-value unit prices ($40-60)
+      const unitValue = this.randomAmount(40, 60);
 
-      // Calculate units received with discrepancy logic
-      let unitsReceived = unitsShipped;
+      // Standard shipment with 100 units
+      let unitsShipped = 100;
+      let unitsReceived = 100;
       let lostInTransit = 0;
       let damagedOnReceipt = 0;
       let status = 'RECEIVED';
 
-      // 10% chance: Lost in transit discrepancy (CLAIM OPPORTUNITY)
-      if (Math.random() < 0.10) {
-        lostInTransit = Math.floor(Math.random() * 5) + 1; // 1-5 units lost
-        unitsReceived = unitsShipped - lostInTransit;
+      // THE BIG TICKET: 5 shipments (10%) with EXACTLY 10-unit discrepancy
+      // "Amazon lost 10 units on the dock. That is $500 pure loss."
+      if (majorDiscrepancyIndices.has(i)) {
+        unitsShipped = 100;
+        unitsReceived = 90;
+        lostInTransit = 10; // Exactly 10 units lost
         status = 'RECEIVING_DISCREPANCY';
       }
-      // 8% chance: Damaged on receipt (CLAIM OPPORTUNITY)
-      else if (Math.random() < 0.08) {
-        damagedOnReceipt = Math.floor(Math.random() * 3) + 1; // 1-3 units damaged
-        status = 'DAMAGED_ON_RECEIPT';
-      }
-      // 5% chance: Still in transit (pending)
+      // Minor discrepancy (5%) - 1-3 units damaged
       else if (Math.random() < 0.05) {
-        unitsReceived = 0;
-        status = 'IN_TRANSIT';
+        damagedOnReceipt = Math.floor(Math.random() * 3) + 1;
+        status = 'DAMAGED_ON_RECEIPT';
       }
 
       // Calculate potential reimbursement value
-      const unitValue = this.randomAmount(10, 100);
+      // For big ticket: 10 units × $50 avg = $500
       const potentialClaimValue = (lostInTransit + damagedOnReceipt) * unitValue;
 
       inboundShipments.push({
         shipment_id: shipmentId,
-        shipment_name: `Shipment-${i + 1}`,
+        shipment_name: `Inbound-${String(i + 1).padStart(3, '0')}`,
         destination_fulfillment_center: `FBA${Math.floor(Math.random() * 5) + 1}`,
         status: status,
         created_date: createdDate.toISOString(),
-        received_date: status !== 'IN_TRANSIT' ? receivedDate.toISOString() : null,
+        received_date: receivedDate.toISOString(),
         units_shipped: unitsShipped,
         units_received: unitsReceived,
         lost_in_transit: lostInTransit,
@@ -651,81 +655,123 @@ export class MockDataGenerator {
         potential_claim_value: potentialClaimValue,
         is_claim_opportunity: lostInTransit > 0 || damagedOnReceipt > 0,
         carrier: ['UPS', 'FedEx', 'USPS', 'Amazon Partnered'][Math.floor(Math.random() * 4)],
-        tracking_number: `TRK${String(Math.floor(Math.random() * 100000000)).padStart(12, '0')}`
+        tracking_number: `TRK${String(Math.floor(Math.random() * 100000000)).padStart(12, '0')}`,
+        bill_of_lading: lostInTransit > 0 ? `BOL-${shipmentId}` : null // Evidence reference
       });
     }
 
-    logger.info(`Generated ${inboundShipments.length} inbound shipments for scenario: ${this.scenario}`);
+    logger.info(`Generated ${inboundShipments.length} inbound shipments for commercial demo`, {
+      totalShipments: inboundShipments.length,
+      majorDiscrepancies: 5,
+      estimatedClaimValue: '$2,000-$2,500'
+    });
     return { payload: { inboundShipments } };
   }
 
   /**
-   * Generate Inventory Adjustments Data (NEW - for lost/damaged in warehouse claims)
-   * Returns: { payload: { inventoryAdjustments: [...] } }
+   * Generate Inventory Adjustments Data (COMMERCIAL DEMO - Ghost Inventory)
+   * Creates 200 adjustment events with Amazon codes M (Missing) and E (Damaged)
+   * Key: NO corresponding reimbursement or "Found" event within 45 days
+   * Target: 15 claimable units × $50 = $750 in detectable claims
    */
   generateInventoryAdjustments(): any {
     const adjustments: any[] = [];
 
-    // Generate 30-50 inventory adjustments
-    const adjustmentCount = this.scenario === 'with_issues'
-      ? Math.floor(this.recordCount * 0.7)  // More for issues scenario
-      : Math.floor(this.recordCount * 0.4); // Normal
+    // COMMERCIAL DEMO: Generate exactly 200 inventory adjustment events
+    const adjustmentCount = 200;
 
+    // Amazon adjustment reason codes (real codes used in FBA)
     const adjustmentReasons = [
-      { reason: 'WAREHOUSE_DAMAGE', isClaimable: true, frequency: 0.25 },
-      { reason: 'LOST_WAREHOUSE', isClaimable: true, frequency: 0.20 },
-      { reason: 'FOUND_INVENTORY', isClaimable: false, frequency: 0.10 },
-      { reason: 'EXPIRED', isClaimable: false, frequency: 0.15 },
-      { reason: 'TRANSFER_LOSS', isClaimable: true, frequency: 0.15 },
-      { reason: 'CUSTOMER_DAMAGE', isClaimable: false, frequency: 0.10 },
-      { reason: 'DISPOSED', isClaimable: true, frequency: 0.05 }
+      { code: 'M', reason: 'MISSING_FROM_INBOUND', description: 'Inventory missing - never checked in', isClaimable: true },
+      { code: 'E', reason: 'DAMAGED_WAREHOUSE', description: 'Damaged by Amazon in warehouse', isClaimable: true },
+      { code: 'D', reason: 'DAMAGED_DISTRIBUTOR', description: 'Damaged defective from distributor', isClaimable: false },
+      { code: 'F', reason: 'FOUND', description: 'Found - inventory recovered', isClaimable: false },
+      { code: 'Q', reason: 'TRANSFERRED', description: 'Transferred to another FC', isClaimable: false },
+      { code: 'U', reason: 'UNRECOVERABLE', description: 'Unrecoverable - customer damage', isClaimable: false }
     ];
 
+    // Generate adjustments with strategic distribution
+    // 40% Code M (Missing) - HIGH VALUE CLAIMS
+    // 20% Code E (Damaged) - HIGH VALUE CLAIMS  
+    // 10% Code F (Found) - offsetting events (no claim)
+    // 30% Other codes - noise
+
     for (let i = 0; i < adjustmentCount; i++) {
-      const adjustmentId = `ADJ-${Date.now()}-${i}`;
+      const adjustmentId = `ADJ-${Date.now()}-${String(i).padStart(4, '0')}`;
       const adjustmentDate = this.randomDate(this.startDate, this.endDate);
       const sku = `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`;
 
-      // Select reason based on weighted frequency
+      // Strategic distribution of reason codes
+      let selectedReason: typeof adjustmentReasons[0];
       const rand = Math.random();
-      let cumulativeFreq = 0;
-      let selectedReason = adjustmentReasons[0];
-      for (const reason of adjustmentReasons) {
-        cumulativeFreq += reason.frequency;
-        if (rand < cumulativeFreq) {
-          selectedReason = reason;
-          break;
-        }
+      if (rand < 0.40) {
+        selectedReason = adjustmentReasons[0]; // Code M - MISSING (40%)
+      } else if (rand < 0.60) {
+        selectedReason = adjustmentReasons[1]; // Code E - DAMAGED (20%)
+      } else if (rand < 0.70) {
+        selectedReason = adjustmentReasons[3]; // Code F - FOUND (10%)
+      } else {
+        // Random from remaining codes (30%)
+        selectedReason = adjustmentReasons[Math.floor(Math.random() * adjustmentReasons.length)];
       }
 
-      const quantityAdjusted = selectedReason.reason === 'FOUND_INVENTORY'
-        ? Math.floor(Math.random() * 5) + 1  // Positive adjustment
-        : -(Math.floor(Math.random() * 10) + 1); // Negative adjustment (lost/damaged)
+      // Quantity: 1-3 units per adjustment (realistic)
+      const quantityAdjusted = selectedReason.code === 'F'
+        ? Math.floor(Math.random() * 3) + 1  // Positive (found)
+        : -(Math.floor(Math.random() * 3) + 1); // Negative (lost/damaged)
 
-      const unitValue = this.randomAmount(15, 150);
-      const claimValue = selectedReason.isClaimable ? Math.abs(quantityAdjusted) * unitValue : 0;
+      // COMMERCIAL DEMO: High-value units ($40-60)
+      const unitValue = this.randomAmount(40, 60);
 
-      // Check if already reimbursed (some should be, some shouldn't)
-      const wasReimbursed = selectedReason.isClaimable ? Math.random() < 0.3 : false; // 30% already reimbursed
+      // THE KEY: Was this already reimbursed?
+      // For Code M and E: Only 20% have been reimbursed (80% are claim opportunities!)
+      // "Amazon broke it or lost it, and hoped you wouldn't notice."
+      const wasReimbursed = selectedReason.isClaimable
+        ? Math.random() < 0.20  // Only 20% reimbursed
+        : false;
+
+      // Check for corresponding "Found" event (breaks the claim)
+      // Only 15% of missing items were later found
+      const hasCorrespondingFound = selectedReason.code === 'M' && Math.random() < 0.15;
+
+      // Calculate claim opportunity
+      const isClaimOpportunity = selectedReason.isClaimable && !wasReimbursed && !hasCorrespondingFound;
+      const claimValue = isClaimOpportunity ? Math.abs(quantityAdjusted) * unitValue : 0;
 
       adjustments.push({
         adjustment_id: adjustmentId,
+        transaction_item_id: `TXN-${adjustmentId}`,
         seller_sku: sku,
+        fnsku: `X00${String(Math.floor(Math.random() * 1000000)).padStart(7, '0')}`,
         asin: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
         fulfillment_center: `FBA${Math.floor(Math.random() * 5) + 1}`,
         adjustment_date: adjustmentDate.toISOString(),
+        reason_code: selectedReason.code,
         reason: selectedReason.reason,
+        reason_description: selectedReason.description,
         quantity_adjusted: quantityAdjusted,
         unit_value: unitValue,
         total_value: Math.abs(quantityAdjusted) * unitValue,
         is_claimable: selectedReason.isClaimable,
         was_reimbursed: wasReimbursed,
-        is_claim_opportunity: selectedReason.isClaimable && !wasReimbursed, // Claimable but NOT yet reimbursed
-        potential_claim_value: selectedReason.isClaimable && !wasReimbursed ? claimValue : 0
+        has_corresponding_found: hasCorrespondingFound,
+        days_since_adjustment: Math.floor((Date.now() - adjustmentDate.getTime()) / (24 * 60 * 60 * 1000)),
+        is_claim_opportunity: isClaimOpportunity,
+        potential_claim_value: claimValue
       });
     }
 
-    logger.info(`Generated ${adjustments.length} inventory adjustments for scenario: ${this.scenario}`);
+    // Calculate statistics for logging
+    const claimOpportunities = adjustments.filter(a => a.is_claim_opportunity);
+    const totalClaimValue = claimOpportunities.reduce((sum, a) => sum + a.potential_claim_value, 0);
+
+    logger.info(`Generated ${adjustments.length} inventory adjustments for commercial demo`, {
+      totalAdjustments: adjustments.length,
+      codeMCount: adjustments.filter(a => a.reason_code === 'M').length,
+      codeECount: adjustments.filter(a => a.reason_code === 'E').length,
+      claimOpportunities: claimOpportunities.length,
+      estimatedClaimValue: `$${totalClaimValue.toFixed(2)}`
+    });
     return { payload: { inventoryAdjustments: adjustments } };
   }
 
@@ -796,6 +842,104 @@ export class MockDataGenerator {
 
     logger.info(`Generated ${removalOrders.length} removal orders for scenario: ${this.scenario}`);
     return { payload: { removalOrders } };
+  }
+
+  /**
+   * Generate Fee Overcharges Data (COMMERCIAL DEMO - The Silent Killer)
+   * Creates 1000 order fee records with 10% having wrong size tier billing
+   * "They scanned your item wrong. You are overpaying $0.50 on every single sale."
+   * Target: 100 overcharged orders × $0.50 = $50 per sale = $500 total
+   */
+  generateFeeOvercharges(): any {
+    const feeRecords: any[] = [];
+
+    // COMMERCIAL DEMO: 1000 order fee records
+    const orderCount = 1000;
+
+    // FBA Size Tiers and their fulfillment fees
+    const sizeTiers = [
+      { tier: 'Small Standard', weight: '12 oz or less', fee: 3.22 },
+      { tier: 'Large Standard', weight: '12+ oz to 1 lb', fee: 3.82 },
+      { tier: 'Large Standard', weight: '1+ lb to 2 lb', fee: 4.75 },
+      { tier: 'Large Standard', weight: '2+ lb to 3 lb', fee: 5.40 },
+      { tier: 'Small Oversize', weight: '0 to 70 lb', fee: 9.73 },
+      { tier: 'Medium Oversize', weight: '0 to 150 lb', fee: 19.79 }
+    ];
+
+    // Track overcharges for statistics
+    let overchargeCount = 0;
+    let totalOverchargeAmount = 0;
+
+    for (let i = 0; i < orderCount; i++) {
+      const orderId = `112-${String(Math.floor(Math.random() * 10000000)).padStart(7, '0')}-${String(Math.floor(Math.random() * 1000000)).padStart(7, '0')}`;
+      const orderDate = this.randomDate(this.startDate, this.endDate);
+      const sku = `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`;
+
+      // Assign actual size tier (majority should be Small Standard)
+      const actualTierIndex = Math.random() < 0.7 ? 0 : Math.floor(Math.random() * 3);
+      const actualTier = sizeTiers[actualTierIndex];
+
+      let chargedTier = actualTier;
+      let isOvercharge = false;
+      let overchargeAmount = 0;
+
+      // THE FLAW: 10% of orders are charged the WRONG (higher) tier
+      // "They scanned your item wrong."
+      if (Math.random() < 0.10) {
+        // Charge the next higher tier
+        const overchargeTierIndex = Math.min(actualTierIndex + 1, sizeTiers.length - 1);
+        chargedTier = sizeTiers[overchargeTierIndex];
+
+        if (chargedTier.tier !== actualTier.tier) {
+          isOvercharge = true;
+          overchargeAmount = chargedTier.fee - actualTier.fee;
+          overchargeCount++;
+          totalOverchargeAmount += overchargeAmount;
+        }
+      }
+
+      feeRecords.push({
+        order_id: orderId,
+        seller_sku: sku,
+        asin: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
+        order_date: orderDate.toISOString(),
+        // Product actual dimensions
+        actual_size_tier: actualTier.tier,
+        actual_weight_class: actualTier.weight,
+        actual_fulfillment_fee: actualTier.fee,
+        // What Amazon charged
+        charged_size_tier: chargedTier.tier,
+        charged_weight_class: chargedTier.weight,
+        charged_fulfillment_fee: chargedTier.fee,
+        // Overcharge detection
+        is_overcharge: isOvercharge,
+        overcharge_amount: overchargeAmount,
+        is_claim_opportunity: isOvercharge,
+        potential_claim_value: overchargeAmount,
+        // Evidence references
+        product_dimensions: {
+          length: this.randomAmount(5, 18),
+          width: this.randomAmount(3, 14),
+          height: this.randomAmount(1, 12),
+          weight: this.randomAmount(0.1, 3)
+        },
+        amazon_measured_dimensions: isOvercharge ? {
+          length: this.randomAmount(10, 25), // Inflated
+          width: this.randomAmount(8, 18),   // Inflated
+          height: this.randomAmount(4, 16),  // Inflated
+          weight: this.randomAmount(0.5, 5)  // Inflated
+        } : null
+      });
+    }
+
+    logger.info(`Generated ${feeRecords.length} fee records for commercial demo`, {
+      totalOrders: feeRecords.length,
+      overchargedOrders: overchargeCount,
+      totalOverchargeValue: `$${totalOverchargeAmount.toFixed(2)}`,
+      averageOvercharge: `$${(totalOverchargeAmount / Math.max(overchargeCount, 1)).toFixed(2)}`
+    });
+
+    return { payload: { feeOvercharges: feeRecords } };
   }
 
   // Helper methods
