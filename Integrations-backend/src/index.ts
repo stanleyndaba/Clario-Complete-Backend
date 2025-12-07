@@ -297,6 +297,10 @@ logger.info('Recovery routes registered at /api/recoveries');
 app.use('/api/learning', learningRoutes);
 logger.info('Learning routes registered at /api/learning');
 
+import adminRoutes from './routes/adminRoutes';
+app.use('/api/admin', adminRoutes);
+logger.info('Admin routes registered at /api/admin');
+
 // Consolidated service routes (merged from separate microservices)
 app.use('/api/v1/stripe-payments', consolidatedStripeRoutes);
 app.use('/api/v1/cost-docs', consolidatedCostDocsRoutes);
