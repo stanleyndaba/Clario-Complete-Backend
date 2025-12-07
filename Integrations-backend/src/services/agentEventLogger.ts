@@ -13,7 +13,8 @@ export enum AgentType {
   EVIDENCE_MATCHING = 'evidence_matching',
   REFUND_FILING = 'refund_filing',
   RECOVERIES = 'recoveries',
-  BILLING = 'billing'
+  BILLING = 'billing',
+  LEARNING = 'learning'  // Agent 11
 }
 
 export enum EventType {
@@ -34,7 +35,11 @@ export enum EventType {
   RECOVERY_DETECTED = 'recovery_detected',
   RECOVERY_RECONCILED = 'recovery_reconciled',
   BILLING_COMPLETED = 'billing_completed',
-  BILLING_FAILED = 'billing_failed'
+  BILLING_FAILED = 'billing_failed',
+  ANALYST_CORRECTION = 'analyst_correction',  // Agent 11 - manual review feedback
+  SCHEMA_CHANGE_DETECTED = 'schema_change_detected',  // Agent 11 - schema monitoring
+  RULE_UPDATED = 'rule_updated',  // Agent 11 - rules engine
+  THRESHOLD_OPTIMIZED = 'threshold_optimized'  // Agent 11 - learning
 }
 
 export interface AgentEventData {
@@ -47,7 +52,7 @@ export interface AgentEventData {
     duration?: number; // milliseconds
     error?: string;
     errorType?: string;
-    
+
     // Agent-specific fields
     documentCount?: number;
     confidence?: number;
@@ -59,12 +64,12 @@ export interface AgentEventData {
     amazonCaseId?: string;
     recoveryId?: string;
     billingTransactionId?: string;
-    
+
     // Performance metrics
     precision?: number;
     recall?: number;
     accuracy?: number;
-    
+
     // Additional context
     [key: string]: any;
   };
@@ -236,7 +241,7 @@ class AgentEventLogger {
    */
   async logRefundFiling(data: FilingEventData): Promise<void> {
     let eventType: EventType;
-    
+
     if (data.status === 'approved') {
       eventType = EventType.CASE_APPROVED;
     } else if (data.status === 'denied') {
@@ -267,8 +272,8 @@ class AgentEventLogger {
    * Log recovery event
    */
   async logRecovery(data: RecoveryEventData): Promise<void> {
-    const eventType = data.reconciliationStatus === 'reconciled' 
-      ? EventType.RECOVERY_RECONCILED 
+    const eventType = data.reconciliationStatus === 'reconciled'
+      ? EventType.RECOVERY_RECONCILED
       : EventType.RECOVERY_DETECTED;
 
     await this.logEvent({

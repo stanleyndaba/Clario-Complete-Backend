@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS agent_events (
         'evidence_matching',
         'refund_filing',
         'recoveries',
-        'billing'
+        'billing',
+        'learning'
     )),
     event_type TEXT NOT NULL,
     success BOOLEAN NOT NULL DEFAULT true,
