@@ -22,16 +22,27 @@ router.get('/:id/events', async (req: Request, res: Response) => {
 
         logger.info('Fetching timeline events for recovery', { recoveryId: id, userId });
 
-        // Get the dispute case to verify ownership
-        const { data: disputeCase, error: caseError } = await supabaseAdmin
-            .from('dispute_cases')
+        // First, try to find in detection_results (claims)
+        const { data: detectionResult, error: detError } = await supabaseAdmin
+            .from('detection_results')
             .select('*')
             .eq('id', id)
-            .eq('user_id', userId)
             .single();
 
-        if (caseError || !disputeCase) {
-            logger.warn('Dispute case not found or unauthorized', { id, userId, error: caseError });
+        // If not found in detection_results, try dispute_cases
+        let disputeCase: any = null;
+        if (!detectionResult) {
+            const { data: dispCase, error: caseError } = await supabaseAdmin
+                .from('dispute_cases')
+                .select('*')
+                .eq('id', id)
+                .single();
+            disputeCase = dispCase;
+        }
+
+        // If neither found, return 404
+        if (!detectionResult && !disputeCase) {
+            logger.warn('Recovery not found in either table', { id, userId });
             return res.status(404).json({ error: 'Recovery not found' });
         }
 
@@ -62,33 +73,62 @@ router.get('/:id/events', async (req: Request, res: Response) => {
             });
         }
 
-        // 2. Create events from dispute case status changes
-        if (disputeCase.status) {
+        // 2. Create events based on source (detection_results or dispute_cases)
+        if (detectionResult) {
+            // This is a detection result (claim not yet filed)
             events.push({
-                id: `case-status-${disputeCase.id}`,
+                id: `detection-${detectionResult.id}`,
                 type: 'claim',
-                status: disputeCase.status,
-                at: disputeCase.updated_at || disputeCase.created_at,
+                status: detectionResult.status || 'detected',
+                at: detectionResult.updated_at || detectionResult.created_at,
                 claimId: id,
-                message: getStatusMessage(disputeCase.status, disputeCase.claim_amount),
+                message: getStatusMessage(detectionResult.status || 'detected', detectionResult.estimated_value),
+                amount: detectionResult.estimated_value,
+                currency: detectionResult.currency || 'USD',
+                docIds: []
+            });
+
+            // Event for initial detection
+            events.push({
+                id: `detected-${detectionResult.id}`,
+                type: 'claim',
+                status: 'detected',
+                at: detectionResult.created_at || detectionResult.discovery_date,
+                claimId: id,
+                message: `Claim detected: ${detectionResult.anomaly_type || 'Unknown type'} - ${formatCurrency(detectionResult.estimated_value || 0, detectionResult.currency || 'USD')}`,
+                amount: detectionResult.estimated_value,
+                currency: detectionResult.currency || 'USD',
+                docIds: []
+            });
+        } else if (disputeCase) {
+            // This is a dispute case (filed claim)
+            if (disputeCase.status) {
+                events.push({
+                    id: `case-status-${disputeCase.id}`,
+                    type: 'claim',
+                    status: disputeCase.status,
+                    at: disputeCase.updated_at || disputeCase.created_at,
+                    claimId: id,
+                    message: getStatusMessage(disputeCase.status, disputeCase.claim_amount),
+                    amount: disputeCase.claim_amount,
+                    currency: disputeCase.currency || 'USD',
+                    docIds: []
+                });
+            }
+
+            // Event for case creation
+            events.push({
+                id: `case-created-${disputeCase.id}`,
+                type: 'claim',
+                status: 'filed',
+                at: disputeCase.created_at,
+                claimId: id,
+                message: `Claim filed for ${formatCurrency(disputeCase.claim_amount, disputeCase.currency)}`,
                 amount: disputeCase.claim_amount,
                 currency: disputeCase.currency || 'USD',
                 docIds: []
             });
         }
-
-        // 3. Create event for case creation
-        events.push({
-            id: `case-created-${disputeCase.id}`,
-            type: 'claim',
-            status: 'filed',
-            at: disputeCase.created_at,
-            claimId: id,
-            message: `Claim filed for ${formatCurrency(disputeCase.claim_amount, disputeCase.currency)}`,
-            amount: disputeCase.claim_amount,
-            currency: disputeCase.currency || 'USD',
-            docIds: []
-        });
 
         // 4. Get evidence/documents linked to this case
         const { data: evidence } = await supabaseAdmin
