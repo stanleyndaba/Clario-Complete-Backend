@@ -597,10 +597,13 @@ export class EvidenceIngestionWorker {
           throw new Error(`Unknown provider: ${source.provider}`);
       }
 
-      stats.ingested = result.documentsIngested || 0;
-      stats.skipped = (result.itemsProcessed || 0) - stats.ingested;
-      stats.failed = result.errors?.length || 0;
-      stats.errors = result.errors || [];
+      // Only process result if it was actually returned (handles skip case)
+      if (result) {
+        stats.ingested = result.documentsIngested || 0;
+        stats.skipped = (result.itemsProcessed || 0) - stats.ingested;
+        stats.failed = result.errors?.length || 0;
+        stats.errors = result.errors || [];
+      }
 
       // 🎯 AGENT 11 INTEGRATION: Log ingestion event
       try {
