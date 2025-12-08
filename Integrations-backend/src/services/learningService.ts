@@ -59,7 +59,7 @@ class LearningService {
   private pythonApiUrl: string;
 
   constructor() {
-    this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
+    this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-11.onrender.com';
   }
 
   private buildServiceHeaders(

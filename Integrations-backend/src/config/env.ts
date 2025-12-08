@@ -18,7 +18,7 @@ const DERIVED_ENCRYPTION_KEY = crypto
 const config = {
   NODE_ENV: process.env.NODE_ENV || 'production',
   PORT: toInt(process.env.PORT, 3001),
-  PYTHON_API_URL: process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com',
+  PYTHON_API_URL: process.env.PYTHON_API_URL || 'https://python-api-11.onrender.com',
 
   // Rate limiting
   RATE_LIMIT_WINDOW_MS: toInt(process.env.RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000), // 15 minutes

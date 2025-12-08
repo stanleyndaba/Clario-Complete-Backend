@@ -527,7 +527,7 @@ export class GoogleDriveIngestionService {
    */
   private async triggerParsingPipeline(documentId: string, userId: string): Promise<void> {
     try {
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-10.onrender.com';
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-11.onrender.com';
 
       await axios.post(
         `${pythonApiUrl}/api/documents/${documentId}/parse`,

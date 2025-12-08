@@ -824,7 +824,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
     });
 
     // Proxy to Python API /api/documents/upload endpoint
-    const pythonApiUrl = process.env.PYTHON_API_URL || process.env.VITE_PYTHON_API_URL || 'https://python-api-10.onrender.com';
+    const pythonApiUrl = process.env.PYTHON_API_URL || process.env.VITE_PYTHON_API_URL || 'https://python-api-11.onrender.com';
     const pythonUrl = `${pythonApiUrl}/api/documents/upload${claim_id ? `?claim_id=${claim_id}` : ''}`;
 
     // DEMO MODE: Check if Python API should be skipped (for YC demo)
