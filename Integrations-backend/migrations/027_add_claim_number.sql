@@ -8,7 +8,7 @@ ADD COLUMN IF NOT EXISTS claim_number VARCHAR(20);
 -- Create a unique index for claim_number
 CREATE UNIQUE INDEX IF NOT EXISTS idx_detection_results_claim_number 
 ON detection_results(claim_number) 
-WHERE claim_number IS NOT EXISTS;
+WHERE claim_number IS NOT NULL;
 
 -- Create a sequence for claim numbers (per month)
 CREATE SEQUENCE IF NOT EXISTS claim_number_seq START 1;
