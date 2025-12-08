@@ -53,19 +53,11 @@ router.get('/sources', async (req: Request, res: Response) => {
         .or(`user_id.eq.${userId},seller_id.eq.${userId}`)
         .eq('status', 'connected');
 
-      if (intError || !integrations) {
-        // Return demo sources for testing
+      if (intError || !integrations || integrations.length === 0) {
+        // No connected integrations found - return empty sources
         return res.json({
           success: true,
-          sources: [
-            {
-              id: 'demo-gmail',
-              provider: 'gmail',
-              account_email: 'demo@gmail.com',
-              status: 'connected',
-              last_sync_at: new Date().toISOString()
-            }
-          ]
+          sources: []
         });
       }
 
@@ -87,20 +79,31 @@ router.get('/sources', async (req: Request, res: Response) => {
     // Filter to connected sources only
     const connectedSources = (sources || []).filter((s: any) => s.status === 'connected' || s.is_active);
 
-    // If no sources, provide demo source for testing
+    // If no sources found, check integrations table as fallback
     if (connectedSources.length === 0) {
+      const { data: integrations } = await supabaseAdmin
+        .from('integrations')
+        .select('*')
+        .or(`user_id.eq.${userId},seller_id.eq.${userId}`)
+        .eq('status', 'connected');
+
+      if (integrations && integrations.length > 0) {
+        return res.json({
+          success: true,
+          sources: integrations.map((int: any) => ({
+            id: int.id,
+            provider: int.provider,
+            account_email: int.email || int.account_email || int.metadata?.email || `${int.provider}@connected.local`,
+            status: int.status || 'connected',
+            last_sync_at: int.last_sync_at || int.updated_at
+          }))
+        });
+      }
+
+      // No connected sources at all
       return res.json({
         success: true,
-        sources: [
-          {
-            id: 'demo-gmail',
-            provider: 'gmail',
-            account_email: 'demo@gmail.com',
-            status: 'connected',
-            last_sync_at: new Date().toISOString()
-          }
-        ],
-        note: 'Using demo source for testing'
+        sources: []
       });
     }
 
