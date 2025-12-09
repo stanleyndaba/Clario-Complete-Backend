@@ -9,10 +9,39 @@ export interface DetectionJob {
   timestamp: string;
 }
 
+// All 56 Amazon Financial Event detection types
+export type AnomalyType =
+  // Original types
+  | 'missing_unit' | 'overcharge' | 'damaged_stock' | 'incorrect_fee' | 'duplicate_charge'
+  // Batch 1: Core Reimbursement Events (AdjustmentEvent)
+  | 'lost_warehouse' | 'damaged_warehouse' | 'lost_inbound' | 'damaged_inbound'
+  | 'carrier_claim' | 'customer_return' | 'reimbursement_reversal'
+  | 'warehousing_error' | 'customer_service_issue' | 'general_adjustment'
+  // Batch 2: Fee Overcharges (ServiceFeeEvent/ShipmentEvent)
+  | 'weight_fee_overcharge' | 'fulfillment_fee_error' | 'order_fulfillment_error'
+  | 'transportation_fee_error' | 'inbound_defect_fee' | 'convenience_fee_error'
+  | 'network_fee_error' | 'commission_overcharge' | 'closing_fee_error' | 'variable_closing_error'
+  // Batch 3: Storage & Inventory Fees
+  | 'storage_overcharge' | 'lts_overcharge' | 'storage_overage_error'
+  | 'extra_large_storage_error' | 'removal_fee_error' | 'disposal_fee_error'
+  | 'liquidation_fee_error' | 'return_processing_error' | 'unplanned_prep_error'
+  // Batch 4: Refunds & Returns
+  | 'refund_no_return' | 'refund_commission_error' | 'restocking_missed'
+  | 'gift_wrap_tax_error' | 'shipping_tax_error' | 'goodwill_unfair'
+  | 'retrocharge' | 'high_volume_listing_error' | 'service_provider_credit'
+  // Batch 5: Claims & Chargebacks
+  | 'atoz_claim' | 'chargeback' | 'safet_claim' | 'debt_recovery'
+  | 'loan_servicing' | 'pay_with_amazon' | 'rental_transaction'
+  | 'fba_liquidation' | 'tax_withholding'
+  // Batch 6: Advertising & Other
+  | 'product_ads_error' | 'service_fee_error' | 'seller_deal_error'
+  | 'coupon_payment_error' | 'coupon_redemption_error' | 'lightning_deal_error'
+  | 'vine_enrollment_error' | 'imaging_services_error' | 'early_reviewer_error';
+
 export interface DetectionResult {
   seller_id: string;
   sync_id: string;
-  anomaly_type: 'missing_unit' | 'overcharge' | 'damaged_stock' | 'incorrect_fee' | 'duplicate_charge';
+  anomaly_type: AnomalyType;
   severity: 'low' | 'medium' | 'high' | 'critical';
   estimated_value: number;
   currency: string;
@@ -28,7 +57,7 @@ export interface DetectionResultRecord {
   id: string;
   seller_id: string;
   sync_id: string;
-  anomaly_type: 'missing_unit' | 'overcharge' | 'damaged_stock' | 'incorrect_fee' | 'duplicate_charge';
+  anomaly_type: AnomalyType;
   severity: 'low' | 'medium' | 'high' | 'critical';
   estimated_value: number;
   currency: string;
@@ -1087,27 +1116,199 @@ export class DetectionService {
     sellerId: string,
     syncId: string
   ): DetectionResult {
-    // Map claim type to anomaly type (check subcategory first for more specific mapping)
-    const anomalyTypeMap: Record<string, DetectionResult['anomaly_type']> = {
+    // Map claim category to anomaly type - comprehensive mapping for 56 types
+    const anomalyTypeMap: Record<string, AnomalyType> = {
+      // Original categories
       'fee_error': 'incorrect_fee',
       'inventory_loss': 'missing_unit',
       'damaged_goods': 'damaged_stock',
       'overcharge': 'overcharge',
-      'duplicate': 'duplicate_charge'
+      'duplicate': 'duplicate_charge',
+
+      // Batch 1: Core Reimbursement Events (AdjustmentEvent)
+      'adjustment_event': 'general_adjustment',
+      'warehousing_error': 'warehousing_error',
+      'customer_service': 'customer_service_issue',
+      'reimbursement': 'general_adjustment',
+
+      // Batch 2: Fee Overcharges
+      'fulfillment_fee': 'fulfillment_fee_error',
+      'weight_fee': 'weight_fee_overcharge',
+      'transportation_fee': 'transportation_fee_error',
+      'commission': 'commission_overcharge',
+
+      // Batch 3: Storage & Inventory Fees
+      'storage_fee': 'storage_overcharge',
+      'long_term_storage': 'lts_overcharge',
+      'removal_fee': 'removal_fee_error',
+      'disposal_fee': 'disposal_fee_error',
+
+      // Batch 4: Refunds & Returns
+      'refund_event': 'refund_no_return',
+      'refund': 'refund_no_return',
+      'return': 'customer_return',
+      'restocking': 'restocking_missed',
+      'tax_error': 'shipping_tax_error',
+
+      // Batch 5: Claims & Chargebacks
+      'guarantee_claim': 'atoz_claim',
+      'chargeback_event': 'chargeback',
+      'safet_reimbursement': 'safet_claim',
+      'debt_recovery': 'debt_recovery',
+
+      // Batch 6: Advertising & Other
+      'product_ads': 'product_ads_error',
+      'service_fee': 'service_fee_error',
+      'seller_deal': 'seller_deal_error',
+      'coupon': 'coupon_payment_error'
     };
 
-    // Map by subcategory if available for more specific detection
-    const subcategoryMap: Record<string, DetectionResult['anomaly_type']> = {
+    // Map by subcategory/reason_code for more specific detection - ALL 56 types
+    const subcategoryMap: Record<string, AnomalyType> = {
+      // Original subcategories
       'damaged_goods': 'damaged_stock',
       'missing_unit': 'missing_unit',
       'fee': 'incorrect_fee',
-      'adjustment': 'incorrect_fee',
+      'adjustment': 'general_adjustment',
       'overcharge': 'overcharge',
-      'duplicate': 'duplicate_charge'
+      'duplicate': 'duplicate_charge',
+
+      // Batch 1: Core Reimbursement Events (AdjustmentEvent codes)
+      'Lost:Warehouse': 'lost_warehouse',
+      'lost_warehouse': 'lost_warehouse',
+      'LOST_WAREHOUSE': 'lost_warehouse',
+      'Damaged:Warehouse': 'damaged_warehouse',
+      'damaged_warehouse': 'damaged_warehouse',
+      'DAMAGED_WAREHOUSE': 'damaged_warehouse',
+      'Lost:Inbound': 'lost_inbound',
+      'lost_inbound': 'lost_inbound',
+      'LOST_INBOUND': 'lost_inbound',
+      'Damaged:Inbound': 'damaged_inbound',
+      'damaged_inbound': 'damaged_inbound',
+      'DAMAGED_INBOUND': 'damaged_inbound',
+      'CarrierClaim': 'carrier_claim',
+      'carrier_claim': 'carrier_claim',
+      'CARRIER_CLAIM': 'carrier_claim',
+      'CustomerReturn': 'customer_return',
+      'customer_return': 'customer_return',
+      'CUSTOMER_RETURN': 'customer_return',
+      'FBAInventoryReimbursementReversal': 'reimbursement_reversal',
+      'ReimbursementReversal': 'reimbursement_reversal',
+      'reimbursement_reversal': 'reimbursement_reversal',
+      'WarehousingError': 'warehousing_error',
+      'warehousing_error': 'warehousing_error',
+      'CustomerServiceIssue': 'customer_service_issue',
+      'customer_service_issue': 'customer_service_issue',
+      'GeneralAdjustment': 'general_adjustment',
+      'general_adjustment': 'general_adjustment',
+
+      // Batch 2: Fee Overcharges (ServiceFeeEvent/ShipmentEvent codes)
+      'FBAWeightBasedFee': 'weight_fee_overcharge',
+      'weight_fee_overcharge': 'weight_fee_overcharge',
+      'FBAPerUnitFulfillmentFee': 'fulfillment_fee_error',
+      'fulfillment_fee_error': 'fulfillment_fee_error',
+      'FBAPerOrderFulfillmentFee': 'order_fulfillment_error',
+      'order_fulfillment_error': 'order_fulfillment_error',
+      'FBATransportationFee': 'transportation_fee_error',
+      'transportation_fee_error': 'transportation_fee_error',
+      'FBAInboundDefectFee': 'inbound_defect_fee',
+      'inbound_defect_fee': 'inbound_defect_fee',
+      'FBAInboundConvenienceFee': 'convenience_fee_error',
+      'convenience_fee_error': 'convenience_fee_error',
+      'FulfillmentNetworkFee': 'network_fee_error',
+      'network_fee_error': 'network_fee_error',
+      'Commission': 'commission_overcharge',
+      'commission_overcharge': 'commission_overcharge',
+      'FixedClosingFee': 'closing_fee_error',
+      'closing_fee_error': 'closing_fee_error',
+      'VariableClosingFee': 'variable_closing_error',
+      'variable_closing_error': 'variable_closing_error',
+
+      // Batch 3: Storage & Inventory Fees
+      'FBAStorageFee': 'storage_overcharge',
+      'storage_overcharge': 'storage_overcharge',
+      'FBALongTermStorageFee': 'lts_overcharge',
+      'lts_overcharge': 'lts_overcharge',
+      'FBAInventoryStorageOverageFee': 'storage_overage_error',
+      'storage_overage_error': 'storage_overage_error',
+      'FBAExtraLargeStorageFee': 'extra_large_storage_error',
+      'extra_large_storage_error': 'extra_large_storage_error',
+      'FBARemovalFee': 'removal_fee_error',
+      'removal_fee_error': 'removal_fee_error',
+      'FBADisposalFee': 'disposal_fee_error',
+      'disposal_fee_error': 'disposal_fee_error',
+      'FBALiquidationFee': 'liquidation_fee_error',
+      'liquidation_fee_error': 'liquidation_fee_error',
+      'FBAReturnProcessingFee': 'return_processing_error',
+      'return_processing_error': 'return_processing_error',
+      'FBAUnplannedPrepFee': 'unplanned_prep_error',
+      'unplanned_prep_error': 'unplanned_prep_error',
+
+      // Batch 4: Refunds & Returns
+      'RefundEvent': 'refund_no_return',
+      'refund_no_return': 'refund_no_return',
+      'RefundCommission': 'refund_commission_error',
+      'refund_commission_error': 'refund_commission_error',
+      'RestockingFee': 'restocking_missed',
+      'restocking_missed': 'restocking_missed',
+      'GiftWrapTax': 'gift_wrap_tax_error',
+      'gift_wrap_tax_error': 'gift_wrap_tax_error',
+      'ShippingTax': 'shipping_tax_error',
+      'shipping_tax_error': 'shipping_tax_error',
+      'Goodwill': 'goodwill_unfair',
+      'goodwill_unfair': 'goodwill_unfair',
+      'RetrochargeEvent': 'retrocharge',
+      'retrocharge': 'retrocharge',
+      'HighVolumeListingFee': 'high_volume_listing_error',
+      'high_volume_listing_error': 'high_volume_listing_error',
+      'ServiceProviderCreditEvent': 'service_provider_credit',
+      'service_provider_credit': 'service_provider_credit',
+
+      // Batch 5: Claims & Chargebacks
+      'GuaranteeClaimEvent': 'atoz_claim',
+      'atoz_claim': 'atoz_claim',
+      'ChargebackEvent': 'chargeback',
+      'chargeback': 'chargeback',
+      'SafeTReimbursementEvent': 'safet_claim',
+      'safet_claim': 'safet_claim',
+      'DebtRecoveryEvent': 'debt_recovery',
+      'debt_recovery': 'debt_recovery',
+      'LoanServicingEvent': 'loan_servicing',
+      'loan_servicing': 'loan_servicing',
+      'PayWithAmazonEvent': 'pay_with_amazon',
+      'pay_with_amazon': 'pay_with_amazon',
+      'RentalTransactionEvent': 'rental_transaction',
+      'rental_transaction': 'rental_transaction',
+      'FBALiquidationEvent': 'fba_liquidation',
+      'fba_liquidation': 'fba_liquidation',
+      'TaxWithholdingEvent': 'tax_withholding',
+      'tax_withholding': 'tax_withholding',
+
+      // Batch 6: Advertising & Other
+      'ProductAdsPaymentEvent': 'product_ads_error',
+      'product_ads_error': 'product_ads_error',
+      'ServiceFeeEvent': 'service_fee_error',
+      'service_fee_error': 'service_fee_error',
+      'SellerDealPaymentEvent': 'seller_deal_error',
+      'seller_deal_error': 'seller_deal_error',
+      'CouponPaymentEvent': 'coupon_payment_error',
+      'coupon_payment_error': 'coupon_payment_error',
+      'CouponRedemptionFee': 'coupon_redemption_error',
+      'coupon_redemption_error': 'coupon_redemption_error',
+      'RunLightningDealFee': 'lightning_deal_error',
+      'lightning_deal_error': 'lightning_deal_error',
+      'VineEnrollmentFee': 'vine_enrollment_error',
+      'vine_enrollment_error': 'vine_enrollment_error',
+      'ImagingServicesFeeEvent': 'imaging_services_error',
+      'imaging_services_error': 'imaging_services_error',
+      'EarlyReviewerProgramFee': 'early_reviewer_error',
+      'early_reviewer_error': 'early_reviewer_error'
     };
 
-    // Prefer subcategory mapping if available, otherwise use category
-    const anomalyType = subcategoryMap[detectedClaim.subcategory] ||
+    // Prefer subcategory/reason_code mapping if available, otherwise use category
+    const anomalyType: AnomalyType =
+      subcategoryMap[detectedClaim.reason_code] ||
+      subcategoryMap[detectedClaim.subcategory] ||
       anomalyTypeMap[detectedClaim.category] ||
       'missing_unit';
 
