@@ -6,7 +6,7 @@
 
 import logger from '../utils/logger';
 
-export type MockScenario = 'normal_week' | 'high_volume' | 'with_issues' | 'realistic';
+export type MockScenario = 'normal_week' | 'high_volume' | 'with_issues' | 'high_losses' | 'realistic';
 
 interface MockDataGeneratorOptions {
   scenario: MockScenario;
@@ -65,6 +65,13 @@ export class MockDataGenerator {
         feeCount = Math.floor(this.recordCount * 0.2);
         orderCount = Math.floor(this.recordCount * 0.1);
         break;
+      case 'high_losses':
+        // AGGRESSIVE TESTING: 50% adjustments to show lots of claim types
+        adjustmentCount = Math.floor(this.recordCount * 0.5); // 50% adjustments - shows 64 types
+        liquidationCount = Math.floor(this.recordCount * 0.25); // 25% liquidations
+        feeCount = Math.floor(this.recordCount * 0.15);
+        orderCount = Math.floor(this.recordCount * 0.1);
+        break;
       case 'realistic':
         // 15% global anomaly rate target
         adjustmentCount = Math.floor(this.recordCount * 0.15);
@@ -72,6 +79,13 @@ export class MockDataGenerator {
         feeCount = Math.floor(this.recordCount * 0.40);
         orderCount = Math.floor(this.recordCount * 0.35);
         break;
+      default:
+        // Fallback to with_issues distribution to prevent 0-count bug
+        console.warn(`[MockDataGenerator] Unknown scenario "${this.scenario}", defaulting to with_issues`);
+        adjustmentCount = Math.floor(this.recordCount * 0.4);
+        liquidationCount = Math.floor(this.recordCount * 0.3);
+        feeCount = Math.floor(this.recordCount * 0.2);
+        orderCount = Math.floor(this.recordCount * 0.1);
     }
 
     // Generate Adjustment Events (reimbursements, reversals, etc.)
