@@ -952,15 +952,65 @@ export class MockDataGenerator {
   }
 
   private randomAdjustmentType(): string {
+    // ALL 64 Amazon Financial Event codes for comprehensive detection testing
     const types = [
-      'REVERSAL_REIMBURSEMENT',
-      'REVERSAL_CHARGE',
-      'CHARGEBACK_REVERSAL',
-      'OTHER_ADJUSTMENT',
-      'SHIPPING_CHARGEBACK',
-      'RESERVE_DEBIT'
+      // Batch 1: Core Reimbursement Events (AdjustmentEvent codes) - 40% weight (most common)
+      'Lost:Warehouse', 'Damaged:Warehouse', 'Lost:Inbound', 'Damaged:Inbound',
+      'CarrierClaim', 'CustomerReturn', 'FBAInventoryReimbursementReversal',
+      'ReimbursementReversal', 'WarehousingError', 'CustomerServiceIssue',
+      'GeneralAdjustment', 'FBAInventoryReimbursement',
+
+      // Batch 2: Fee Overcharges (ServiceFeeEvent/ShipmentEvent codes) - 25% weight
+      'FBAWeightBasedFee', 'FBAPerUnitFulfillmentFee', 'FBAPerOrderFulfillmentFee',
+      'FBATransportationFee', 'FBAInboundDefectFee', 'FBAInboundConvenienceFee',
+      'FulfillmentNetworkFee', 'Commission', 'FixedClosingFee', 'VariableClosingFee',
+
+      // Batch 3: Storage & Inventory Fees - 15% weight
+      'FBAStorageFee', 'FBALongTermStorageFee', 'FBAInventoryStorageOverageFee',
+      'FBAExtraLargeStorageFee', 'FBARemovalFee', 'FBADisposalFee',
+      'FBALiquidationFee', 'FBAReturnProcessingFee', 'FBAUnplannedPrepFee',
+
+      // Batch 4: Refunds & Returns - 10% weight
+      'RefundEvent', 'RefundCommission', 'RestockingFee',
+      'GiftWrapTax', 'ShippingTax', 'Goodwill',
+      'RetrochargeEvent', 'HighVolumeListingFee', 'ServiceProviderCreditEvent',
+
+      // Batch 5: Claims & Chargebacks - 5% weight
+      'GuaranteeClaimEvent', 'ChargebackEvent', 'SafeTReimbursementEvent',
+      'DebtRecoveryEvent', 'LoanServicingEvent', 'PayWithAmazonEvent',
+      'RentalTransactionEvent', 'FBALiquidationEvent', 'TaxWithholdingEvent',
+
+      // Batch 6: Advertising & Other - 5% weight
+      'ProductAdsPaymentEvent', 'ServiceFeeEvent', 'SellerDealPaymentEvent',
+      'CouponPaymentEvent', 'CouponRedemptionFee', 'RunLightningDealFee',
+      'VineEnrollmentFee', 'ImagingServicesFeeEvent', 'EarlyReviewerProgramFee',
+      'CouponClipFee', 'SellerReviewEnrollmentPaymentEvent',
+
+      // Tax Collection at Source - International (rare but included)
+      'TCS-CGST', 'TCS-SGST', 'TCS-IGST'
     ];
-    return types[Math.floor(Math.random() * types.length)];
+
+    // Weighted selection: Core events are more common
+    const rand = Math.random();
+    if (rand < 0.40) {
+      // 40% Core Reimbursement (indices 0-11)
+      return types[Math.floor(Math.random() * 12)];
+    } else if (rand < 0.65) {
+      // 25% Fee Overcharges (indices 12-21)
+      return types[12 + Math.floor(Math.random() * 10)];
+    } else if (rand < 0.80) {
+      // 15% Storage & Inventory (indices 22-30)
+      return types[22 + Math.floor(Math.random() * 9)];
+    } else if (rand < 0.90) {
+      // 10% Refunds & Returns (indices 31-39)
+      return types[31 + Math.floor(Math.random() * 9)];
+    } else if (rand < 0.95) {
+      // 5% Claims & Chargebacks (indices 40-48)
+      return types[40 + Math.floor(Math.random() * 9)];
+    } else {
+      // 5% Advertising & Other + TCS (indices 49-63)
+      return types[49 + Math.floor(Math.random() * types.length - 49)];
+    }
   }
 }
 
