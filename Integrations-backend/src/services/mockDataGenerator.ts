@@ -75,7 +75,42 @@ export class MockDataGenerator {
     }
 
     // Generate Adjustment Events (reimbursements, reversals, etc.)
-    for (let i = 0; i < adjustmentCount; i++) {
+    // FIRST: Ensure at least one of EACH 64 types appears (guaranteed coverage)
+    const allTypes = this.getAllAdjustmentTypes();
+    const guaranteedCount = Math.min(adjustmentCount, allTypes.length);
+
+    // Generate guaranteed events (one of each type)
+    for (let i = 0; i < guaranteedCount; i++) {
+      const date = this.randomDate(this.startDate, this.endDate);
+      const amount = this.scenario === 'with_issues'
+        ? this.randomAmount(10, 500)
+        : this.randomAmount(5, 200);
+
+      const adjustmentType = allTypes[i]; // Sequential assignment for guaranteed coverage
+      let description = `${adjustmentType} - Amazon financial event`;
+
+      events.AdjustmentEventList.push({
+        AdjustmentEventId: `ADJ-${Date.now()}-${i}`,
+        AdjustmentType: adjustmentType,
+        AdjustmentAmount: {
+          CurrencyAmount: (this.scenario === 'with_issues' || (this.scenario === 'realistic' && Math.random() > 0.8)) && Math.random() > 0.5
+            ? -Math.abs(amount)
+            : amount,
+          CurrencyCode: 'USD'
+        },
+        PostedDate: date.toISOString(),
+        AmazonOrderId: `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`,
+        SellerSKU: `SKU-${String(Math.floor(Math.random() * 1000)).padStart(4, '0')}`,
+        ASIN: `B0${String(Math.floor(Math.random() * 10000000)).padStart(8, '0')}`,
+        Quantity: Math.floor(Math.random() * 5) + 1,
+        Description: description,
+        FulfillmentCenterId: `FBA${Math.floor(Math.random() * 5) + 1}`,
+        Marketplace: ['US', 'CA', 'MX', 'GB', 'DE', 'FR', 'IT', 'ES'][Math.floor(Math.random() * 8)]
+      });
+    }
+
+    // THEN: Fill remaining slots with random types (weighted distribution)
+    for (let i = guaranteedCount; i < adjustmentCount; i++) {
       const date = this.randomDate(this.startDate, this.endDate);
       const amount = this.scenario === 'with_issues'
         ? this.randomAmount(10, 500) // Higher amounts for issues
@@ -88,11 +123,7 @@ export class MockDataGenerator {
       if (this.scenario === 'realistic') {
         const rand = Math.random();
         if (rand < 0.05) {
-          // 5% chance of late reimbursement (simulated by date manipulation in post-processing or here if we tracked state)
           description = 'Late inventory reimbursement';
-        } else if (rand < 0.10) {
-          // 5% chance of partial reimbursement logic (handled in amount)
-          // We'll simulate this by creating a mismatch in the order generation side or here
         }
       } else if (this.scenario === 'with_issues') {
         description = 'Inventory adjustment - potential claim opportunity';
@@ -952,43 +983,7 @@ export class MockDataGenerator {
   }
 
   private randomAdjustmentType(): string {
-    // ALL 64 Amazon Financial Event codes for comprehensive detection testing
-    const types = [
-      // Batch 1: Core Reimbursement Events (AdjustmentEvent codes) - 40% weight (most common)
-      'Lost:Warehouse', 'Damaged:Warehouse', 'Lost:Inbound', 'Damaged:Inbound',
-      'CarrierClaim', 'CustomerReturn', 'FBAInventoryReimbursementReversal',
-      'ReimbursementReversal', 'WarehousingError', 'CustomerServiceIssue',
-      'GeneralAdjustment', 'FBAInventoryReimbursement',
-
-      // Batch 2: Fee Overcharges (ServiceFeeEvent/ShipmentEvent codes) - 25% weight
-      'FBAWeightBasedFee', 'FBAPerUnitFulfillmentFee', 'FBAPerOrderFulfillmentFee',
-      'FBATransportationFee', 'FBAInboundDefectFee', 'FBAInboundConvenienceFee',
-      'FulfillmentNetworkFee', 'Commission', 'FixedClosingFee', 'VariableClosingFee',
-
-      // Batch 3: Storage & Inventory Fees - 15% weight
-      'FBAStorageFee', 'FBALongTermStorageFee', 'FBAInventoryStorageOverageFee',
-      'FBAExtraLargeStorageFee', 'FBARemovalFee', 'FBADisposalFee',
-      'FBALiquidationFee', 'FBAReturnProcessingFee', 'FBAUnplannedPrepFee',
-
-      // Batch 4: Refunds & Returns - 10% weight
-      'RefundEvent', 'RefundCommission', 'RestockingFee',
-      'GiftWrapTax', 'ShippingTax', 'Goodwill',
-      'RetrochargeEvent', 'HighVolumeListingFee', 'ServiceProviderCreditEvent',
-
-      // Batch 5: Claims & Chargebacks - 5% weight
-      'GuaranteeClaimEvent', 'ChargebackEvent', 'SafeTReimbursementEvent',
-      'DebtRecoveryEvent', 'LoanServicingEvent', 'PayWithAmazonEvent',
-      'RentalTransactionEvent', 'FBALiquidationEvent', 'TaxWithholdingEvent',
-
-      // Batch 6: Advertising & Other - 5% weight
-      'ProductAdsPaymentEvent', 'ServiceFeeEvent', 'SellerDealPaymentEvent',
-      'CouponPaymentEvent', 'CouponRedemptionFee', 'RunLightningDealFee',
-      'VineEnrollmentFee', 'ImagingServicesFeeEvent', 'EarlyReviewerProgramFee',
-      'CouponClipFee', 'SellerReviewEnrollmentPaymentEvent',
-
-      // Tax Collection at Source - International (rare but included)
-      'TCS-CGST', 'TCS-SGST', 'TCS-IGST'
-    ];
+    const types = this.getAllAdjustmentTypes();
 
     // Weighted selection: Core events are more common
     const rand = Math.random();
@@ -1009,8 +1004,51 @@ export class MockDataGenerator {
       return types[40 + Math.floor(Math.random() * 9)];
     } else {
       // 5% Advertising & Other + TCS (indices 49-63)
-      return types[49 + Math.floor(Math.random() * types.length - 49)];
+      return types[49 + Math.floor(Math.random() * (types.length - 49))];
     }
+  }
+
+  /**
+   * Get ALL 64 Amazon Financial Event types for comprehensive testing
+   * This method allows external code to iterate through all types
+   */
+  public getAllAdjustmentTypes(): string[] {
+    return [
+      // Batch 1: Core Reimbursement Events (12 types)
+      'Lost:Warehouse', 'Damaged:Warehouse', 'Lost:Inbound', 'Damaged:Inbound',
+      'CarrierClaim', 'CustomerReturn', 'FBAInventoryReimbursementReversal',
+      'ReimbursementReversal', 'WarehousingError', 'CustomerServiceIssue',
+      'GeneralAdjustment', 'FBAInventoryReimbursement',
+
+      // Batch 2: Fee Overcharges (10 types)
+      'FBAWeightBasedFee', 'FBAPerUnitFulfillmentFee', 'FBAPerOrderFulfillmentFee',
+      'FBATransportationFee', 'FBAInboundDefectFee', 'FBAInboundConvenienceFee',
+      'FulfillmentNetworkFee', 'Commission', 'FixedClosingFee', 'VariableClosingFee',
+
+      // Batch 3: Storage & Inventory Fees (9 types)
+      'FBAStorageFee', 'FBALongTermStorageFee', 'FBAInventoryStorageOverageFee',
+      'FBAExtraLargeStorageFee', 'FBARemovalFee', 'FBADisposalFee',
+      'FBALiquidationFee', 'FBAReturnProcessingFee', 'FBAUnplannedPrepFee',
+
+      // Batch 4: Refunds & Returns (9 types)
+      'RefundEvent', 'RefundCommission', 'RestockingFee',
+      'GiftWrapTax', 'ShippingTax', 'Goodwill',
+      'RetrochargeEvent', 'HighVolumeListingFee', 'ServiceProviderCreditEvent',
+
+      // Batch 5: Claims & Chargebacks (9 types)
+      'GuaranteeClaimEvent', 'ChargebackEvent', 'SafeTReimbursementEvent',
+      'DebtRecoveryEvent', 'LoanServicingEvent', 'PayWithAmazonEvent',
+      'RentalTransactionEvent', 'FBALiquidationEvent', 'TaxWithholdingEvent',
+
+      // Batch 6: Advertising & Other (11 types)
+      'ProductAdsPaymentEvent', 'ServiceFeeEvent', 'SellerDealPaymentEvent',
+      'CouponPaymentEvent', 'CouponRedemptionFee', 'RunLightningDealFee',
+      'VineEnrollmentFee', 'ImagingServicesFeeEvent', 'EarlyReviewerProgramFee',
+      'CouponClipFee', 'SellerReviewEnrollmentPaymentEvent',
+
+      // Tax Collection at Source - International (3 types)
+      'TCS-CGST', 'TCS-SGST', 'TCS-IGST'
+    ];
   }
 }
 
