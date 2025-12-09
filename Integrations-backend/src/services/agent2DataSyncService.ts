@@ -2714,6 +2714,48 @@ export class Agent2DataSyncService {
       }
     }
 
+    // Process synced claims - CRITICAL: This is where the 64 Amazon types flow through!
+    // generateMockClaims produces claims with AdjustmentType (Lost:Warehouse, FBAWeightBasedFee, etc.)
+    if (data.claims && data.claims.length > 0) {
+      for (const claim of data.claims) {
+        // Map the claim type/AdjustmentType to the proper category
+        const claimType = claim.type || claim.adjustmentType || claim.AdjustmentType || 'unknown';
+        const claimCategory = claim.category || this.mapTypeToCategory(claimType);
+        const daysSinceClaim = this.calculateDaysSince(claim.createdAt || claim.created_at);
+
+        claims.push({
+          claim_id: `claim_synced_${claim.id}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+          seller_id: userId,
+          order_id: claim.orderId || claim.order_id || claim.id,
+          category: claimCategory,
+          subcategory: claimType.toLowerCase().replace(/[:\-]/g, '_'), // Convert to snake_case
+          reason_code: claimType, // Original Amazon code (Lost:Warehouse, FBAWeightBasedFee, etc.)
+          marketplace: claim.marketplace || 'US',
+          fulfillment_center: claim.fulfillmentCenter || claim.fulfillment_center || 'DEFAULT',
+          amount: claim.amount || 0,
+          quantity: claim.quantity || 1,
+          order_value: claim.amount || 0,
+          shipping_cost: 0,
+          days_since_order: daysSinceClaim,
+          days_since_delivery: daysSinceClaim,
+          description: claim.description || `${claimType} - Amazon financial event`,
+          reason: claimType, // Use the 64-type code directly
+          notes: `SKU: ${claim.sku || 'N/A'}, ASIN: ${claim.asin || 'N/A'}`,
+          claim_date: claim.createdAt || claim.created_at || new Date().toISOString(),
+          // Preserve original type information for detection mapping
+          original_type: claimType,
+          original_category: claim.category,
+          adjustment_type: claim.adjustmentType
+        });
+      }
+
+      logger.info('📋 [AGENT 2] Processed synced claims with 64-type codes', {
+        userId,
+        claimCount: data.claims.length,
+        sampleTypes: data.claims.slice(0, 5).map((c: any) => c.type || c.adjustmentType || 'unknown')
+      });
+    }
+
     return claims;
   }
 
@@ -3029,6 +3071,69 @@ export class Agent2DataSyncService {
     const date = new Date(dateString);
     const now = new Date();
     return Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
+  }
+
+  /**
+   * Helper: Map 64 Amazon event types to claim categories
+   */
+  private mapTypeToCategory(type: string): string {
+    const lower = type.toLowerCase().replace(/[:\-]/g, '_');
+
+    // Core Reimbursement Events
+    if (['lost_warehouse', 'damaged_warehouse', 'lost_inbound', 'damaged_inbound',
+      'carrier_claim', 'customer_return', 'reimbursement_reversal',
+      'warehousing_error', 'customer_service_issue', 'general_adjustment',
+      'fba_inventory_reimbursement', 'fba_inventory_reimbursement_reversal'].includes(lower)) {
+      return 'inventory_loss';
+    }
+
+    // Fee Overcharges
+    if (['weight_fee_overcharge', 'fba_weight_based_fee', 'fba_per_unit_fulfillment_fee',
+      'fba_per_order_fulfillment_fee', 'fba_transportation_fee', 'fba_inbound_defect_fee',
+      'fba_inbound_convenience_fee', 'fulfillment_network_fee', 'commission',
+      'fixed_closing_fee', 'variable_closing_fee', 'fbaweightbasedfee'].includes(lower)) {
+      return 'fee_error';
+    }
+
+    // Storage & Inventory Fees
+    if (['storage_overcharge', 'fba_storage_fee', 'fba_long_term_storage_fee',
+      'fba_inventory_storage_overage_fee', 'fba_extra_large_storage_fee',
+      'fba_removal_fee', 'fba_disposal_fee', 'fba_liquidation_fee',
+      'fba_return_processing_fee', 'fba_unplanned_prep_fee'].includes(lower)) {
+      return 'fee_error';
+    }
+
+    // Refunds & Returns
+    if (['refund_no_return', 'refund_commission', 'refund_commission_error', 'restocking_fee',
+      'gift_wrap_tax', 'shipping_tax', 'goodwill', 'retrocharge',
+      'high_volume_listing_fee', 'service_provider_credit'].includes(lower)) {
+      return 'return_discrepancy';
+    }
+
+    // Claims & Chargebacks
+    if (['atoz_claim', 'guarantee_claim_event', 'chargeback', 'chargeback_event',
+      'safet_claim', 'safe_t_reimbursement_event', 'debt_recovery',
+      'loan_servicing', 'pay_with_amazon', 'rental_transaction',
+      'fba_liquidation', 'tax_withholding'].includes(lower)) {
+      return 'chargeback';
+    }
+
+    // Advertising & Other
+    if (['product_ads_error', 'product_ads_payment_event', 'service_fee_error',
+      'seller_deal_error', 'coupon_payment_error', 'coupon_redemption_fee',
+      'lightning_deal_error', 'run_lightning_deal_fee', 'vine_enrollment_error',
+      'imaging_services_error', 'early_reviewer_error', 'coupon_clip_fee',
+      'seller_review_enrollment'].includes(lower)) {
+      return 'fee_error';
+    }
+
+    // Tax Collection
+    if (['tcs_cgst', 'tcs_sgst', 'tcs_igst'].includes(lower)) {
+      return 'tax_error';
+    }
+
+    // Default to fee_error for unknown types
+    return 'fee_error';
   }
 
   /**
