@@ -1479,20 +1479,30 @@ export class Agent2DataSyncService {
 
       const adjustment = adjustments[i];
       const amount = parseFloat(adjustment.AdjustmentAmount?.CurrencyAmount || '0');
-      if (amount > 0) {
-        allClaims.push({
-          id: adjustment.AdjustmentEventId || `ADJ-${Date.now()}-${i}`,
-          orderId: adjustment.AmazonOrderId || adjustment.AdjustmentEventId,
-          amount: amount,
-          status: 'approved',
-          type: 'adjustment_reimbursement',
-          currency: adjustment.AdjustmentAmount?.CurrencyCode || 'USD',
-          createdAt: adjustment.PostedDate || new Date().toISOString(),
-          isMock: true,
-          mockScenario: scenario
-        });
-        processedCount++;
-      }
+      // Include ALL adjustment events (positive and negative) to capture all 64 types
+      // Use AdjustmentType which contains our 64 Amazon Financial Event codes
+      allClaims.push({
+        id: adjustment.AdjustmentEventId || `ADJ-${Date.now()}-${i}`,
+        orderId: adjustment.AmazonOrderId || adjustment.AdjustmentEventId,
+        amount: Math.abs(amount), // Use absolute value for claim amount
+        status: amount > 0 ? 'approved' : 'pending', // Negative amounts are potential claims
+        type: adjustment.AdjustmentType || 'adjustment_reimbursement', // USE THE 64-TYPE CODE
+        adjustmentType: adjustment.AdjustmentType, // Preserve original type for detection
+        category: adjustment.AdjustmentType, // For detection mapping
+        subcategory: adjustment.AdjustmentType, // For detection mapping
+        reason_code: adjustment.AdjustmentType, // For detection mapping
+        currency: adjustment.AdjustmentAmount?.CurrencyCode || 'USD',
+        createdAt: adjustment.PostedDate || new Date().toISOString(),
+        description: adjustment.Description || `${adjustment.AdjustmentType} - Amazon financial event`,
+        sku: adjustment.SellerSKU,
+        asin: adjustment.ASIN,
+        quantity: adjustment.Quantity,
+        fulfillmentCenter: adjustment.FulfillmentCenterId,
+        marketplace: adjustment.Marketplace,
+        isMock: true,
+        mockScenario: scenario
+      });
+      processedCount++;
     }
 
     if (syncId) {
