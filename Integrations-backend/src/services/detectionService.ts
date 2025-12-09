@@ -9,34 +9,38 @@ export interface DetectionJob {
   timestamp: string;
 }
 
-// All 56 Amazon Financial Event detection types
+// All 64 Amazon Financial Event detection types
 export type AnomalyType =
-  // Original types
+  // Original types (5)
   | 'missing_unit' | 'overcharge' | 'damaged_stock' | 'incorrect_fee' | 'duplicate_charge'
-  // Batch 1: Core Reimbursement Events (AdjustmentEvent)
+  // Batch 1: Core Reimbursement Events - AdjustmentEvent (11)
   | 'lost_warehouse' | 'damaged_warehouse' | 'lost_inbound' | 'damaged_inbound'
   | 'carrier_claim' | 'customer_return' | 'reimbursement_reversal'
   | 'warehousing_error' | 'customer_service_issue' | 'general_adjustment'
-  // Batch 2: Fee Overcharges (ServiceFeeEvent/ShipmentEvent)
+  | 'fba_inventory_reimbursement'
+  // Batch 2: Fee Overcharges - ServiceFeeEvent/ShipmentEvent (10)
   | 'weight_fee_overcharge' | 'fulfillment_fee_error' | 'order_fulfillment_error'
   | 'transportation_fee_error' | 'inbound_defect_fee' | 'convenience_fee_error'
   | 'network_fee_error' | 'commission_overcharge' | 'closing_fee_error' | 'variable_closing_error'
-  // Batch 3: Storage & Inventory Fees
+  // Batch 3: Storage & Inventory Fees (9)
   | 'storage_overcharge' | 'lts_overcharge' | 'storage_overage_error'
   | 'extra_large_storage_error' | 'removal_fee_error' | 'disposal_fee_error'
   | 'liquidation_fee_error' | 'return_processing_error' | 'unplanned_prep_error'
-  // Batch 4: Refunds & Returns
+  // Batch 4: Refunds & Returns (9)
   | 'refund_no_return' | 'refund_commission_error' | 'restocking_missed'
   | 'gift_wrap_tax_error' | 'shipping_tax_error' | 'goodwill_unfair'
   | 'retrocharge' | 'high_volume_listing_error' | 'service_provider_credit'
-  // Batch 5: Claims & Chargebacks
+  // Batch 5: Claims & Chargebacks (9)
   | 'atoz_claim' | 'chargeback' | 'safet_claim' | 'debt_recovery'
   | 'loan_servicing' | 'pay_with_amazon' | 'rental_transaction'
   | 'fba_liquidation' | 'tax_withholding'
-  // Batch 6: Advertising & Other
+  // Batch 6: Advertising & Other (11)
   | 'product_ads_error' | 'service_fee_error' | 'seller_deal_error'
   | 'coupon_payment_error' | 'coupon_redemption_error' | 'lightning_deal_error'
-  | 'vine_enrollment_error' | 'imaging_services_error' | 'early_reviewer_error';
+  | 'vine_enrollment_error' | 'imaging_services_error' | 'early_reviewer_error'
+  | 'coupon_clip_fee' | 'seller_review_enrollment'
+  // Tax Collection at Source - International (3)
+  | 'tcs_cgst' | 'tcs_sgst' | 'tcs_igst';
 
 export interface DetectionResult {
   seller_id: string;
@@ -1302,7 +1306,23 @@ export class DetectionService {
       'ImagingServicesFeeEvent': 'imaging_services_error',
       'imaging_services_error': 'imaging_services_error',
       'EarlyReviewerProgramFee': 'early_reviewer_error',
-      'early_reviewer_error': 'early_reviewer_error'
+      'early_reviewer_error': 'early_reviewer_error',
+
+      // Missing 8 types to reach 64 total
+      'FBAInventoryReimbursement': 'fba_inventory_reimbursement',
+      'fba_inventory_reimbursement': 'fba_inventory_reimbursement',
+      'INVENTORY_REIMBURSEMENT': 'fba_inventory_reimbursement',
+      'CouponClipFee': 'coupon_clip_fee',
+      'coupon_clip_fee': 'coupon_clip_fee',
+      'SellerReviewEnrollmentPaymentEvent': 'seller_review_enrollment',
+      'seller_review_enrollment': 'seller_review_enrollment',
+      // Tax Collection at Source - International (India/EU)
+      'TCS-CGST': 'tcs_cgst',
+      'tcs_cgst': 'tcs_cgst',
+      'TCS-SGST': 'tcs_sgst',
+      'tcs_sgst': 'tcs_sgst',
+      'TCS-IGST': 'tcs_igst',
+      'tcs_igst': 'tcs_igst'
     };
 
     // Prefer subcategory/reason_code mapping if available, otherwise use category
