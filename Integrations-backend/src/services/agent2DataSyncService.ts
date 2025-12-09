@@ -1406,9 +1406,20 @@ export class Agent2DataSyncService {
     const financialEvents = generator.generateFinancialEvents();
     const allClaims: any[] = [];
 
+    // DEBUG: Log what financial events returned
+    console.log('[AGENT 2] generateMockClaims - financialEvents structure:', {
+      hasPayload: !!financialEvents?.payload,
+      hasFinancialEvents: !!financialEvents?.payload?.FinancialEvents,
+      adjustmentListLength: financialEvents?.payload?.FinancialEvents?.AdjustmentEventList?.length || 0,
+      liquidationListLength: financialEvents?.payload?.FinancialEvents?.FBALiquidationEventList?.length || 0,
+      scenario: scenario,
+      sampleAdjustment: financialEvents?.payload?.FinancialEvents?.AdjustmentEventList?.[0]?.AdjustmentType
+    });
+
     // Extract reimbursements
     const reimbursements = financialEvents.payload?.FinancialEvents?.FBALiquidationEventList || [];
-    const totalRecords = reimbursements.length + (financialEvents.payload?.FinancialEvents?.AdjustmentEventList || []).length;
+    const adjustmentsList = financialEvents.payload?.FinancialEvents?.AdjustmentEventList || [];
+    const totalRecords = reimbursements.length + adjustmentsList.length;
 
     // Batch processing for large datasets
     const needsBatching = totalRecords > this.BATCH_SIZE;
