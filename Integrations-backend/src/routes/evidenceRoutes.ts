@@ -2197,6 +2197,301 @@ router.delete('/v1/evidence/documents', async (req: Request, res: Response) => {
   }
 });
 
+// ============================================================================
+// EVIDENCE MATCHING ENDPOINTS (Agent 6)
+// ============================================================================
+
+/**
+ * POST /api/evidence/matching/run
+ * Run evidence matching for the current user
+ */
+router.post('/matching/run', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+
+    logger.info('🔍 [EVIDENCE MATCHING] Starting matching process', { userId });
+
+    // Run matching via the evidenceMatchingService
+    const result = await evidenceMatchingService.runMatchingWithRetry(userId);
+
+    logger.info('✅ [EVIDENCE MATCHING] Matching completed', {
+      userId,
+      matches: result.matches,
+      autoSubmits: result.auto_submits,
+      smartPrompts: result.smart_prompts
+    });
+
+    res.json({
+      success: true,
+      message: `Matching completed: ${result.matches} matches found`,
+      matches: result.matches,
+      auto_submits: result.auto_submits,
+      smart_prompts: result.smart_prompts,
+      results: result.results || []
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE MATCHING] Error running matching', {
+      error: error?.message || String(error)
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to run evidence matching',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * GET /api/evidence/matching/results
+ * Get evidence matching results for the current user
+ */
+router.get('/matching/results', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    const limit = parseInt(req.query.limit as string) || 100;
+    const status = req.query.status as string; // 'smart_prompt', 'auto_submit', 'rejected', 'approved'
+
+    logger.info('📊 [EVIDENCE MATCHING] Fetching matching results', { userId, limit, status });
+
+    // Build query
+    let query = supabaseAdmin
+      .from('evidence_match_results')
+      .select(`
+        id,
+        claim_id,
+        document_id,
+        confidence_score,
+        match_type,
+        action_taken,
+        matched_fields,
+        reasoning,
+        created_at,
+        updated_at,
+        evidence_documents:document_id (
+          id,
+          filename,
+          supplier_name,
+          invoice_number,
+          total_amount
+        )
+      `)
+      .or(`user_id.eq.${userId},seller_id.eq.${userId}`)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    // Filter by status if provided
+    if (status) {
+      query = query.eq('action_taken', status);
+    }
+
+    const { data: results, error } = await query;
+
+    if (error) {
+      // Table might not exist yet - return empty results
+      if (error.code === '42P01') {
+        return res.json({
+          success: true,
+          results: [],
+          total: 0,
+          message: 'No matching results yet'
+        });
+      }
+      throw error;
+    }
+
+    // Transform results to match frontend expected format
+    const formattedResults = (results || []).map((r: any) => ({
+      id: r.id,
+      claim_id: r.claim_id,
+      document_id: r.document_id,
+      confidence_score: r.confidence_score,
+      match_type: r.match_type,
+      action_taken: r.action_taken,
+      matched_fields: r.matched_fields,
+      reasoning: r.reasoning,
+      created_at: r.created_at,
+      // Document details
+      filename: r.evidence_documents?.filename,
+      supplier: r.evidence_documents?.supplier_name,
+      invoice_number: r.evidence_documents?.invoice_number,
+      amount: r.evidence_documents?.total_amount,
+      document_details: r.evidence_documents
+    }));
+
+    res.json({
+      success: true,
+      results: formattedResults,
+      total: formattedResults.length
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE MATCHING] Error fetching results', {
+      error: error?.message || String(error)
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch matching results',
+      results: []
+    });
+  }
+});
+
+/**
+ * POST /api/evidence/matching/:id/approve
+ * Approve a smart prompt match
+ */
+router.post('/matching/:id/approve', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    const matchId = req.params.id;
+
+    logger.info('✅ [EVIDENCE MATCHING] Approving smart prompt', { userId, matchId });
+
+    // Update the match result to approved
+    const { error } = await supabaseAdmin
+      .from('evidence_match_results')
+      .update({
+        action_taken: 'approved',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', matchId);
+
+    if (error) throw error;
+
+    // Optionally trigger filing process here
+
+    res.json({
+      success: true,
+      message: 'Smart prompt approved successfully',
+      matchId
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE MATCHING] Error approving match', {
+      error: error?.message || String(error)
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to approve match'
+    });
+  }
+});
+
+/**
+ * POST /api/evidence/matching/:id/reject
+ * Reject a smart prompt match
+ */
+router.post('/matching/:id/reject', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    const matchId = req.params.id;
+    const { reason } = req.body;
+
+    logger.info('❌ [EVIDENCE MATCHING] Rejecting smart prompt', { userId, matchId, reason });
+
+    // Update the match result to rejected
+    const { error } = await supabaseAdmin
+      .from('evidence_match_results')
+      .update({
+        action_taken: 'rejected',
+        reasoning: reason ? `Rejected: ${reason}` : 'User rejected',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', matchId);
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      message: 'Smart prompt rejected',
+      matchId
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE MATCHING] Error rejecting match', {
+      error: error?.message || String(error)
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reject match'
+    });
+  }
+});
+
+/**
+ * POST /api/evidence/matching/:id/request-more
+ * Request more evidence for a match
+ */
+router.post('/matching/:id/request-more', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    const matchId = req.params.id;
+
+    logger.info('📎 [EVIDENCE MATCHING] Requesting more evidence', { userId, matchId });
+
+    // Update the match result status
+    const { error } = await supabaseAdmin
+      .from('evidence_match_results')
+      .update({
+        action_taken: 'pending_evidence',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', matchId);
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      message: 'More evidence requested. Please upload additional documents.',
+      matchId
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE MATCHING] Error requesting more evidence', {
+      error: error?.message || String(error)
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to request more evidence'
+    });
+  }
+});
+
+/**
+ * GET /api/evidence/matching/metrics
+ * Get matching metrics for the user
+ */
+router.get('/matching/metrics', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    const days = parseInt(req.query.days as string) || 30;
+
+    const metrics = await evidenceMatchingService.getMatchingMetrics(userId, days);
+
+    res.json({
+      success: true,
+      metrics
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE MATCHING] Error fetching metrics', {
+      error: error?.message || String(error)
+    });
+
+    res.json({
+      success: true,
+      metrics: {
+        total_matches: 0,
+        auto_submitted: 0,
+        smart_prompts: 0,
+        approved: 0,
+        rejected: 0,
+        pending: 0
+      }
+    });
+  }
+});
+
 export default router;
 
 
