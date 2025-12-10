@@ -2105,6 +2105,108 @@ router.post('/v1/evidence/parse/:documentId', async (req: Request, res: Response
   }
 });
 
+/**
+ * DELETE /api/v1/evidence/documents/:documentId
+ * Delete a single document
+ */
+router.delete('/v1/evidence/documents/:documentId', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const documentId = req.params.documentId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    logger.info('🗑️ [EVIDENCE] Deleting document', { userId, documentId });
+
+    // Delete the document
+    const { error: deleteError } = await supabaseAdmin
+      .from('evidence_documents')
+      .delete()
+      .eq('id', documentId);
+
+    if (deleteError) {
+      throw deleteError;
+    }
+
+    logger.info('✅ [EVIDENCE] Document deleted', { documentId });
+
+    res.json({
+      success: true,
+      message: 'Document deleted successfully',
+      documentId
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error deleting document', {
+      documentId: req.params.documentId,
+      error: error?.message || String(error)
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete document',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * DELETE /api/v1/evidence/documents
+ * Delete all documents for the current user
+ */
+router.delete('/v1/evidence/documents', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    logger.info('🗑️ [EVIDENCE] Deleting all documents for user', { userId });
+
+    // Get count before deletion
+    const { count: beforeCount } = await supabaseAdmin
+      .from('evidence_documents')
+      .select('*', { count: 'exact', head: true })
+      .eq('seller_id', userId);
+
+    // Delete all documents for this user
+    const { error: deleteError } = await supabaseAdmin
+      .from('evidence_documents')
+      .delete()
+      .eq('seller_id', userId);
+
+    if (deleteError) {
+      throw deleteError;
+    }
+
+    logger.info('✅ [EVIDENCE] All documents deleted', { userId, count: beforeCount });
+
+    res.json({
+      success: true,
+      message: `Deleted ${beforeCount || 0} document(s)`,
+      deletedCount: beforeCount || 0
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error deleting all documents', {
+      error: error?.message || String(error)
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete documents',
+      message: error?.message || String(error)
+    });
+  }
+});
+
 export default router;
 
 
