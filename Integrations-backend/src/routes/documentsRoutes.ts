@@ -599,6 +599,101 @@ router.post('/:id/reparse', async (req: Request, res: Response) => {
 
         logger.info('✅ [DOCUMENTS] Document queued for re-parsing', { docId });
 
+        // Send SSE event for parsing started
+        try {
+            const sseHub = (await import('../utils/sseHub')).default;
+            sseHub.sendEvent(finalUserId, 'parsing_started', {
+                type: 'parsing',
+                status: 'started',
+                document_id: docId,
+                message: 'Document parsing has started',
+                timestamp: new Date().toISOString()
+            });
+        } catch (sseError) {
+            logger.debug('SSE event failed (non-critical)', { error: sseError });
+        }
+
+        // Try to trigger actual parsing if pdfExtractor is available
+        try {
+            // Get document from storage
+            const { data: doc } = await supabaseAdmin
+                .from('evidence_documents')
+                .select('storage_path, content_type')
+                .eq('id', docId)
+                .single();
+
+            if (doc?.storage_path && doc.content_type?.includes('pdf')) {
+                // Download file from Supabase Storage
+                const { data: fileData, error: downloadError } = await supabaseAdmin
+                    .storage
+                    .from('evidence-documents')
+                    .download(doc.storage_path);
+
+                if (!downloadError && fileData) {
+                    const buffer = Buffer.from(await fileData.arrayBuffer());
+                    const pdfExtractor = (await import('../utils/pdfExtractor')).default;
+
+                    // Extract text and key fields
+                    const extractionResult = await pdfExtractor.extractTextFromPdf(buffer);
+
+                    if (extractionResult.success) {
+                        const keyFields = pdfExtractor.extractKeyFieldsFromText(extractionResult.text);
+
+                        // Update document with parsed data
+                        await supabaseAdmin
+                            .from('evidence_documents')
+                            .update({
+                                parser_status: 'completed',
+                                parsed_metadata: {
+                                    raw_text: extractionResult.text,
+                                    page_count: extractionResult.pageCount,
+                                    order_ids: keyFields.orderIds,
+                                    asins: keyFields.asins,
+                                    skus: keyFields.skus,
+                                    tracking_numbers: keyFields.trackingNumbers,
+                                    amounts: keyFields.amounts,
+                                    invoice_numbers: keyFields.invoiceNumbers,
+                                    dates: keyFields.dates,
+                                    extraction_method: 'pdf-parse',
+                                    confidence_score: 0.85,
+                                    parsed_at: new Date().toISOString()
+                                },
+                                updated_at: new Date().toISOString()
+                            })
+                            .eq('id', docId);
+
+                        logger.info('✅ [DOCUMENTS] Document parsed successfully', {
+                            docId,
+                            orderIds: keyFields.orderIds.length,
+                            asins: keyFields.asins.length,
+                            trackingNumbers: keyFields.trackingNumbers.length
+                        });
+
+                        // Send SSE event for parsing completed
+                        const sseHub = (await import('../utils/sseHub')).default;
+                        sseHub.sendEvent(finalUserId, 'parsing_completed', {
+                            type: 'parsing',
+                            status: 'completed',
+                            document_id: docId,
+                            message: 'Document parsing completed',
+                            extracted: {
+                                order_ids: keyFields.orderIds.length,
+                                asins: keyFields.asins.length,
+                                tracking_numbers: keyFields.trackingNumbers.length,
+                                amounts: keyFields.amounts.length
+                            },
+                            timestamp: new Date().toISOString()
+                        });
+                    }
+                }
+            }
+        } catch (parseError: any) {
+            logger.warn('Could not parse document immediately, will be processed by worker', {
+                docId,
+                error: parseError?.message
+            });
+        }
+
         res.json({
             success: true,
             message: 'Document queued for re-parsing. It will be processed by the parsing worker.',
