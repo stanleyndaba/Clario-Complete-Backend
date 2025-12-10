@@ -8,6 +8,7 @@ import logger from '../utils/logger';
 import { GmailService } from './gmailService';
 import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
 import axios from 'axios';
+import { extractTextFromPdf, extractKeyFieldsFromText, isPdfBuffer } from '../utils/pdfExtractor';
 
 export interface GmailIngestionResult {
   success: boolean;
@@ -438,6 +439,67 @@ export class GmailIngestionService {
             error: storageError?.message,
             documentId: document.id
           });
+        }
+
+        // 🔍 AGENT 5 PREP: Extract text from PDF for parsing
+        if (isPdfBuffer(attachment.content)) {
+          try {
+            logger.info('📄 [GMAIL INGESTION] Starting PDF text extraction', {
+              documentId: document.id,
+              filename: attachment.filename
+            });
+
+            const pdfResult = await extractTextFromPdf(attachment.content);
+
+            if (pdfResult.success && pdfResult.text) {
+              // Extract key fields using regex patterns
+              const extractedFields = extractKeyFieldsFromText(pdfResult.text);
+
+              // Update document with raw_text and extracted fields
+              const { error: updateError } = await supabase
+                .from('evidence_documents')
+                .update({
+                  raw_text: pdfResult.text.substring(0, 50000), // Limit to 50k chars
+                  extracted: {
+                    order_ids: extractedFields.orderIds,
+                    asins: extractedFields.asins,
+                    skus: extractedFields.skus,
+                    fnskus: extractedFields.fnskus,
+                    tracking_numbers: extractedFields.trackingNumbers,
+                    amounts: extractedFields.amounts,
+                    invoice_numbers: extractedFields.invoiceNumbers,
+                    dates: extractedFields.dates,
+                    page_count: pdfResult.pageCount,
+                    pdf_title: pdfResult.info?.title,
+                    extraction_method: 'pdf-parse',
+                    extracted_at: new Date().toISOString()
+                  },
+                  parser_status: 'extracted',
+                  parser_confidence: 0.7 // Base confidence for regex extraction
+                })
+                .eq('id', document.id);
+
+              if (updateError) {
+                logger.warn('⚠️ [GMAIL INGESTION] Failed to store extracted text', {
+                  error: updateError.message,
+                  documentId: document.id
+                });
+              } else {
+                logger.info('✅ [GMAIL INGESTION] PDF text extracted and stored', {
+                  documentId: document.id,
+                  textLength: pdfResult.text.length,
+                  orderIds: extractedFields.orderIds.length,
+                  skus: extractedFields.skus.length,
+                  amounts: extractedFields.amounts.length
+                });
+              }
+            }
+          } catch (pdfError: any) {
+            logger.warn('⚠️ [GMAIL INGESTION] PDF extraction failed', {
+              error: pdfError.message,
+              documentId: document.id
+            });
+          }
         }
       }
 
