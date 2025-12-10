@@ -272,14 +272,51 @@ router.get('/:id', async (req: Request, res: Response) => {
             throw error;
         }
 
+        // Transform to match frontend expected format (same as list endpoint)
+        const parsedMetadata = doc.parsed_metadata || {};
+        const metadata = doc.metadata || {};
+        const nestedParsedData = metadata.parsed_data || metadata.parsed_metadata || {};
+
+        // Extract all relevant data
+        const extracted = {
+            order_ids: parsedMetadata.order_ids || nestedParsedData.order_ids || [],
+            asins: parsedMetadata.asins || nestedParsedData.asins || [],
+            skus: parsedMetadata.skus || nestedParsedData.skus || [],
+            tracking_numbers: parsedMetadata.tracking_numbers || nestedParsedData.tracking_numbers || [],
+            invoice_numbers: parsedMetadata.invoice_numbers || nestedParsedData.invoice_numbers || [],
+            amounts: parsedMetadata.amounts || nestedParsedData.amounts || [],
+            dates: parsedMetadata.dates || nestedParsedData.dates || []
+        };
+
         res.json({
             id: doc.id,
-            name: doc.filename,
+            name: doc.filename || doc.original_filename,
+            filename: doc.filename || doc.original_filename,
+            original_filename: doc.original_filename,
             uploadDate: doc.created_at,
-            status: doc.status,
+            created_at: doc.created_at,
+            status: doc.status || 'uploaded',
             size: doc.size_bytes,
+            file_size: doc.size_bytes,
             type: doc.content_type,
-            metadata: doc.metadata
+            content_type: doc.content_type,
+            source: doc.source || doc.provider || 'upload',
+            provider: doc.provider,
+            storage_path: doc.storage_path,
+            // Parsed data
+            supplier: parsedMetadata.supplier_name || doc.supplier_name || nestedParsedData.supplier_name || null,
+            invoice: parsedMetadata.invoice_number || doc.invoice_number || nestedParsedData.invoice_number || null,
+            amount: parsedMetadata.total_amount || doc.total_amount || nestedParsedData.total_amount || null,
+            // Parser status
+            parser_status: parsedMetadata.parser_status || doc.parser_status || metadata.parser_status || 'pending',
+            parser_confidence: parsedMetadata.confidence_score || doc.parser_confidence || nestedParsedData.confidence_score || null,
+            parsedVia: parsedMetadata.extraction_method || nestedParsedData.extraction_method || metadata.parser_type || null,
+            // Extracted entities
+            extracted: extracted,
+            raw_text_preview: parsedMetadata.raw_text?.substring(0, 500) || nestedParsedData.raw_text?.substring(0, 500) || null,
+            // Raw metadata for debugging
+            metadata: doc.metadata,
+            parsed_metadata: doc.parsed_metadata
         });
     } catch (error: any) {
         logger.error('❌ [DOCUMENTS] Error fetching document details', {
