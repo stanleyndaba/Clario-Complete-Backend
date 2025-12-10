@@ -1,9 +1,10 @@
 /**
  * PDF Text Extractor Utility
- * Extracts text content from PDF buffers using pdf-parse
+ * Extracts text content from PDF buffers using pdf-parse v1.1.1
  * Used by Agent 5 (Document Parsing) to get raw text before Python API processing
  */
 
+// pdf-parse v1.1.1 exports a simple function
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pdfParse = require('pdf-parse');
 import logger from './logger';
@@ -38,6 +39,7 @@ export async function extractTextFromPdf(buffer: Buffer): Promise<PdfExtractionR
             bufferSize: buffer.length
         });
 
+        // pdf-parse v1.1.1: simple function call
         const data = await pdfParse(buffer);
 
         const result: PdfExtractionResult = {
