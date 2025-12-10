@@ -1999,13 +1999,27 @@ router.get('/v1/evidence/documents/:documentId', async (req: Request, res: Respo
       supplier: parsedMetadata.supplier_name || parsedMetadata.supplier,
       invoice: parsedMetadata.invoice_number || parsedMetadata.invoice_no,
       // Include extractedData if available (for legacy compatibility)
-      extractedData: parsedMetadata.line_items || parsedMetadata.items || []
+      extractedData: parsedMetadata.line_items || parsedMetadata.items || [],
+      // Include extracted field from PDF extraction (Agent 5)
+      extracted: doc.extracted || {
+        order_ids: [],
+        asins: [],
+        skus: [],
+        fnskus: [],
+        tracking_numbers: [],
+        amounts: [],
+        invoice_numbers: [],
+        dates: []
+      },
+      // Include raw_text excerpt for preview
+      raw_text_preview: doc.raw_text ? doc.raw_text.substring(0, 500) : null
     };
 
     logger.info('✅ [EVIDENCE] Document with parsed data fetched', {
       documentId,
       hasMetadata: !!metadata,
-      hasParsedData: !!parsedMetadata.supplier_name || !!parsedMetadata.invoice_number
+      hasParsedData: !!parsedMetadata.supplier_name || !!parsedMetadata.invoice_number,
+      hasExtracted: !!(doc.extracted && (doc.extracted.order_ids?.length || doc.extracted.asins?.length))
     });
 
     res.json(response);
