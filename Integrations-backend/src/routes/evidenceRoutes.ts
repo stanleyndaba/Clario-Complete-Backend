@@ -2207,9 +2207,18 @@ router.delete('/v1/evidence/documents', async (req: Request, res: Response) => {
  */
 router.post('/matching/run', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    // Debug: log all potential user ID sources
+    const reqAny = req as any;
+    logger.info('🔍 [EVIDENCE MATCHING] User ID sources', {
+      userId: reqAny.userId,
+      user_id: reqAny.user?.id,
+      user_user_id: reqAny.user?.user_id,
+      hasUser: !!reqAny.user
+    });
 
-    logger.info('🔍 [EVIDENCE MATCHING] Starting matching process', { userId });
+    const userId = reqAny.userId || reqAny.user?.id || reqAny.user?.user_id || 'demo-user';
+
+    logger.info('🔍 [EVIDENCE MATCHING] Starting matching process', { userId, isDemo: userId === 'demo-user' });
 
     // Run matching via the evidenceMatchingService
     const result = await evidenceMatchingService.runMatchingWithRetry(userId);
