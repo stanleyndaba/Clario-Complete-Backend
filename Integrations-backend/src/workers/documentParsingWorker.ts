@@ -492,7 +492,7 @@ export class DocumentParsingWorker {
     try {
       const client = supabaseAdmin || supabase;
 
-      // Prepare structured JSON output
+      // Prepare structured JSON output including extracted arrays for frontend
       const structuredData = {
         supplier_name: parsedData.supplier_name,
         invoice_number: parsedData.invoice_number,
@@ -508,7 +508,15 @@ export class DocumentParsingWorker {
         raw_text: parsedData.raw_text,
         extraction_method: parsedData.extraction_method || 'regex',
         confidence_score: parsedData.confidence_score || 0.0,
-        parsed_at: new Date().toISOString()
+        parsed_at: new Date().toISOString(),
+        // Extracted arrays for frontend display
+        order_ids: parsedData.order_ids || [],
+        asins: parsedData.asins || [],
+        skus: parsedData.skus || [],
+        tracking_numbers: parsedData.tracking_numbers || [],
+        invoice_numbers: parsedData.invoice_numbers || [],
+        amounts: parsedData.amounts || [],
+        dates: parsedData.dates || []
       };
 
       // Update document with parsed metadata

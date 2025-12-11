@@ -29,6 +29,14 @@ export interface ParsedDocumentData {
   raw_text?: string;
   extraction_method?: 'regex' | 'ocr' | 'ml';
   confidence_score?: number;
+  // Extracted arrays for frontend display
+  order_ids?: string[];
+  asins?: string[];
+  skus?: string[];
+  tracking_numbers?: string[];
+  invoice_numbers?: string[];
+  amounts?: string[];
+  dates?: string[];
 }
 
 export interface ParsingJobResponse {
@@ -439,7 +447,7 @@ class DocumentParsingService {
       // Extract key fields
       const keyFields = pdfExtractor.extractKeyFieldsFromText(extractionResult.text);
 
-      // Build parsed data
+      // Build parsed data including extracted arrays for frontend
       const parsedData: ParsedDocumentData = {
         raw_text: extractionResult.text.substring(0, 5000), // Limit stored text
         extraction_method: 'regex',
@@ -453,7 +461,15 @@ class DocumentParsingService {
           sku: keyFields.skus[i] || keyFields.asins[i] || undefined,
           description: `Order: ${orderId}`,
           quantity: 1
-        })).slice(0, 20) // Limit to 20 items
+        })).slice(0, 20), // Limit to 20 items
+        // Extracted arrays for frontend display
+        order_ids: keyFields.orderIds,
+        asins: keyFields.asins,
+        skus: keyFields.skus,
+        tracking_numbers: keyFields.trackingNumbers,
+        invoice_numbers: keyFields.invoiceNumbers,
+        amounts: keyFields.amounts,
+        dates: keyFields.dates
       };
 
       return parsedData;
