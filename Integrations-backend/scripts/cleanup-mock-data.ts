@@ -103,30 +103,20 @@ async function cleanupMockData() {
             .limit(100);
 
         if (!sourceError && mockSources && mockSources.length > 0) {
-            console.log(`   Found ${mockSources.length} mock sources to disconnect`);
+            console.log(`   Found ${mockSources.length} mock sources to delete`);
 
             for (const source of mockSources) {
-                // Disconnect the source instead of deleting (preserves history)
-                const { error: updateError } = await supabase
+                // Delete the mock source entirely (NOT NULL constraint prevents disconnecting)
+                const { error: deleteError } = await supabase
                     .from('evidence_sources')
-                    .update({
-                        status: 'disconnected',
-                        encrypted_access_token: null,
-                        encrypted_refresh_token: null,
-                        metadata: {
-                            ...(source.metadata || {}),
-                            disconnected_at: new Date().toISOString(),
-                            disconnected_reason: 'mock_cleanup'
-                        },
-                        updated_at: new Date().toISOString()
-                    })
+                    .delete()
                     .eq('id', source.id);
 
-                if (!updateError) {
-                    totalSourcesUpdated++;
-                    console.log(`   ✅ Disconnected: ${source.provider} (${source.account_email || source.id})`);
+                if (!deleteError) {
+                    totalSourcesDeleted++;
+                    console.log(`   ✅ Deleted: ${source.provider} (${source.account_email || source.id})`);
                 } else {
-                    console.log(`   ⚠️ Failed to disconnect ${source.id}: ${updateError.message}`);
+                    console.log(`   ⚠️ Failed to delete ${source.id}: ${deleteError.message}`);
                 }
             }
         } else {
@@ -172,7 +162,7 @@ async function cleanupMockData() {
     console.log('✅ CLEANUP COMPLETE!');
     console.log('='.repeat(50));
     console.log(`   Documents deleted: ${totalDocumentsDeleted}`);
-    console.log(`   Sources disconnected: ${totalSourcesUpdated}`);
+    console.log(`   Sources deleted: ${totalSourcesDeleted}`);
     console.log('\nNote: Only real documents from actual Gmail/Outlook/Drive/Dropbox');
     console.log('integrations will now appear in the Evidence Locker.');
 }
