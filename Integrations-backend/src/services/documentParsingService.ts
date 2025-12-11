@@ -281,12 +281,33 @@ class DocumentParsingService {
 
   /**
    * Parse document with retry logic and exponential backoff
+   * Uses local pdfExtractor for PDFs (fast, no rate limits)
+   * Falls back to Python API for other formats or if local parsing fails
    */
   async parseDocumentWithRetry(
     documentId: string,
     userId: string,
     maxRetries: number = 3
   ): Promise<ParsedDocumentData | null> {
+    // First, try local PDF parsing (no rate limits, faster)
+    try {
+      const localResult = await this.parseDocumentLocally(documentId, userId);
+      if (localResult) {
+        logger.info('✅ [DOCUMENT PARSING] Parsed locally using pdfExtractor', {
+          documentId,
+          userId,
+          confidence: localResult.confidence_score
+        });
+        return localResult;
+      }
+    } catch (localError: any) {
+      logger.warn('⚠️ [DOCUMENT PARSING] Local parsing failed, will try Python API', {
+        documentId,
+        error: localError.message
+      });
+    }
+
+    // Fallback to Python API (with retry logic)
     let lastError: any;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -326,6 +347,15 @@ class DocumentParsingService {
       } catch (error: any) {
         lastError = error;
 
+        // If rate limited (429), don't retry API - just use local fallback result if any
+        if (error.response?.status === 429) {
+          logger.warn('🚫 [DOCUMENT PARSING] Rate limited by Python API, skipping retries', {
+            documentId,
+            userId
+          });
+          break;
+        }
+
         if (attempt < maxRetries) {
           const delay = this.baseDelay * Math.pow(2, attempt);
           logger.warn(`🔄 [DOCUMENT PARSING] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, {
@@ -345,6 +375,120 @@ class DocumentParsingService {
       error: lastError?.message
     });
     throw lastError;
+  }
+
+  /**
+   * Parse document locally using pdfExtractor
+   * No external API calls - fast and no rate limits
+   */
+  private async parseDocumentLocally(
+    documentId: string,
+    userId: string
+  ): Promise<ParsedDocumentData | null> {
+    try {
+      const client = supabaseAdmin || supabase;
+
+      // Get document info
+      const { data: doc, error: docError } = await client
+        .from('evidence_documents')
+        .select('id, storage_path, content_type, filename')
+        .eq('id', documentId)
+        .single();
+
+      if (docError || !doc) {
+        throw new Error(`Document not found: ${documentId}`);
+      }
+
+      // Only parse PDFs locally
+      if (!doc.content_type?.includes('pdf')) {
+        logger.info('⏭️ [DOCUMENT PARSING] Not a PDF, skipping local parsing', {
+          documentId,
+          contentType: doc.content_type
+        });
+        return null;
+      }
+
+      if (!doc.storage_path) {
+        logger.info('⏭️ [DOCUMENT PARSING] No storage path, skipping local parsing', {
+          documentId
+        });
+        return null;
+      }
+
+      // Download PDF from Supabase Storage
+      const { data: fileData, error: downloadError } = await client
+        .storage
+        .from('evidence-documents')
+        .download(doc.storage_path);
+
+      if (downloadError || !fileData) {
+        throw new Error(`Failed to download document: ${downloadError?.message}`);
+      }
+
+      // Convert to Buffer
+      const buffer = Buffer.from(await fileData.arrayBuffer());
+
+      // Use pdfExtractor
+      const pdfExtractor = (await import('../utils/pdfExtractor')).default;
+      const extractionResult = await pdfExtractor.extractTextFromPdf(buffer);
+
+      if (!extractionResult.success || !extractionResult.text) {
+        throw new Error('PDF extraction failed');
+      }
+
+      // Extract key fields
+      const keyFields = pdfExtractor.extractKeyFieldsFromText(extractionResult.text);
+
+      // Build parsed data
+      const parsedData: ParsedDocumentData = {
+        raw_text: extractionResult.text.substring(0, 5000), // Limit stored text
+        extraction_method: 'regex',
+        confidence_score: 0.85, // Local extraction confidence
+        // Supplier info (try to extract from text)
+        supplier_name: this.extractSupplierName(extractionResult.text),
+        invoice_number: keyFields.invoiceNumbers[0] || undefined,
+        invoice_date: keyFields.dates[0] || undefined,
+        total_amount: keyFields.amounts[0] ? parseFloat(keyFields.amounts[0].replace(/[^0-9.]/g, '')) : undefined,
+        line_items: keyFields.orderIds.map((orderId, i) => ({
+          sku: keyFields.skus[i] || keyFields.asins[i] || undefined,
+          description: `Order: ${orderId}`,
+          quantity: 1
+        })).slice(0, 20) // Limit to 20 items
+      };
+
+      return parsedData;
+
+    } catch (error: any) {
+      logger.warn('⚠️ [DOCUMENT PARSING] Local parsing error', {
+        documentId,
+        error: error.message
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Try to extract supplier name from text
+   */
+  private extractSupplierName(text: string): string | undefined {
+    // Common patterns for supplier/company names
+    const patterns = [
+      /(?:from|seller|vendor|supplier)[:\s]+([A-Z][A-Za-z\s&.,]+?)(?:\n|$)/i,
+      /(?:invoice from|bill from)[:\s]+([A-Z][A-Za-z\s&.,]+?)(?:\n|$)/i,
+      /^([A-Z][A-Za-z\s&.,]{3,30})\n/m, // First line that looks like a company name
+    ];
+
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        const name = match[1].trim();
+        if (name.length >= 3 && name.length <= 50) {
+          return name;
+        }
+      }
+    }
+
+    return undefined;
   }
 }
 
