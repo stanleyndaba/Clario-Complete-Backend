@@ -113,63 +113,25 @@ class EvidenceMatchingService {
   }
 
   /**
-   * Run evidence matching for a user via Python API
-   * Falls back to local matching if Python API fails
+   * Run evidence matching for a user
+   * Matches claims against parsed documents by ASIN/SKU
    */
   async runMatchingForUser(userId: string, claims?: ClaimData[]): Promise<MatchingJobResponse> {
-    try {
-      logger.info('🔄 [EVIDENCE MATCHING] Running matching for user', {
-        userId,
-        claimsCount: claims?.length || 0
-      });
+    logger.info('🔄 [EVIDENCE MATCHING] Running matching for user', {
+      userId,
+      claimsCount: claims?.length || 0
+    });
 
-      const endpoint = `${this.pythonApiUrl}/api/internal/evidence/matching/run`;
-
-      const response = await axios.post<MatchingJobResponse>(
-        endpoint,
-        {
-          user_id: userId,
-          claims: claims || []
-        },
-        {
-          headers: this.buildServiceHeaders(userId, 'evidence-matching:run', {
-            'Content-Type': 'application/json'
-          }),
-          timeout: 60000 // 60 seconds (matching can take time)
-        }
-      );
-
-      if (response.status === 200 || response.status === 201) {
-        logger.info('✅ [EVIDENCE MATCHING] Matching completed', {
-          userId,
-          matches: response.data.matches,
-          autoSubmits: response.data.auto_submits,
-          smartPrompts: response.data.smart_prompts
-        });
-        return response.data;
-      }
-
-      throw new Error(`Unexpected status code: ${response.status}`);
-
-    } catch (error: any) {
-      const statusCode = error.response?.status;
-      logger.error('❌ [EVIDENCE MATCHING] Python API failed, trying local matching', {
-        userId,
-        error: error.message,
-        status: statusCode
-      });
-
-      // Fallback to local matching if Python API fails (401, 429, network error, etc.)
-      return this.runLocalMatching(userId, claims || []);
-    }
+    // Use local ASIN/SKU matching
+    return this.matchClaimsToDocuments(userId, claims || []);
   }
 
   /**
-   * Run local matching - matches claims against parsed documents by ASIN/SKU
-   * Used as fallback when Python API is unavailable
+   * Match claims against parsed documents by ASIN/SKU
+   * Primary matching method - no external API dependency
    */
-  private async runLocalMatching(userId: string, claims: ClaimData[]): Promise<MatchingJobResponse> {
-    logger.info('🔍 [EVIDENCE MATCHING] Running local matching', { userId, claimsCount: claims.length });
+  private async matchClaimsToDocuments(userId: string, claims: ClaimData[]): Promise<MatchingJobResponse> {
+    logger.info('🔍 [EVIDENCE MATCHING] Matching claims to documents', { userId, claimsCount: claims.length });
 
     try {
       // Get parsed documents for user
