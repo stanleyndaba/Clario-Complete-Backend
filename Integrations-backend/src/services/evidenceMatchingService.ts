@@ -114,6 +114,7 @@ class EvidenceMatchingService {
 
   /**
    * Run evidence matching for a user via Python API
+   * Falls back to local matching if Python API fails
    */
   async runMatchingForUser(userId: string, claims?: ClaimData[]): Promise<MatchingJobResponse> {
     try {
@@ -151,13 +152,139 @@ class EvidenceMatchingService {
       throw new Error(`Unexpected status code: ${response.status}`);
 
     } catch (error: any) {
-      logger.error('❌ [EVIDENCE MATCHING] Failed to run matching', {
+      const statusCode = error.response?.status;
+      logger.error('❌ [EVIDENCE MATCHING] Python API failed, trying local matching', {
         userId,
         error: error.message,
-        status: error.response?.status,
-        statusText: error.response?.statusText
+        status: statusCode
       });
-      throw error;
+
+      // Fallback to local matching if Python API fails (401, 429, network error, etc.)
+      return this.runLocalMatching(userId, claims || []);
+    }
+  }
+
+  /**
+   * Run local matching - matches claims against parsed documents by ASIN/SKU
+   * Used as fallback when Python API is unavailable
+   */
+  private async runLocalMatching(userId: string, claims: ClaimData[]): Promise<MatchingJobResponse> {
+    logger.info('🔍 [EVIDENCE MATCHING] Running local matching', { userId, claimsCount: claims.length });
+
+    try {
+      // Get parsed documents for user
+      const { data: documents } = await supabaseAdmin
+        .from('evidence_documents')
+        .select('id, filename, parsed_metadata, storage_path')
+        .eq('seller_id', userId)
+        .eq('parser_status', 'completed')
+        .not('parsed_metadata', 'is', null);
+
+      if (!documents || documents.length === 0) {
+        logger.warn('⚠️ [EVIDENCE MATCHING] No parsed documents found for user', { userId });
+        return { matches: 0, auto_submits: 0, smart_prompts: 0, results: [] };
+      }
+
+      // Build document ASIN/SKU index
+      const docAsins: Map<string, any[]> = new Map();
+      const docSkus: Map<string, any[]> = new Map();
+
+      for (const doc of documents) {
+        const meta = typeof doc.parsed_metadata === 'string'
+          ? JSON.parse(doc.parsed_metadata)
+          : doc.parsed_metadata;
+
+        const asins = meta?.asins || [];
+        const skus = meta?.skus || [];
+
+        for (const asin of asins) {
+          if (!docAsins.has(asin)) docAsins.set(asin, []);
+          docAsins.get(asin)!.push(doc);
+        }
+
+        for (const sku of skus) {
+          if (!docSkus.has(sku)) docSkus.set(sku, []);
+          docSkus.get(sku)!.push(doc);
+        }
+      }
+
+      logger.info('📋 [EVIDENCE MATCHING] Built document index', {
+        docCount: documents.length,
+        uniqueAsins: docAsins.size,
+        uniqueSkus: docSkus.size
+      });
+
+      // Match claims against documents
+      const results: MatchingResult[] = [];
+      let matchCount = 0;
+      let autoSubmitCount = 0;
+      let smartPromptCount = 0;
+
+      for (const claim of claims) {
+        const claimAsin = claim.asin || claim.evidence?.asin;
+        const claimSku = claim.sku || claim.evidence?.sku;
+
+        let matchedDocs: any[] = [];
+        let matchType = '';
+
+        // Try ASIN match first
+        if (claimAsin && docAsins.has(claimAsin)) {
+          matchedDocs = docAsins.get(claimAsin)!;
+          matchType = 'asin';
+        }
+        // Then try SKU match
+        else if (claimSku && docSkus.has(claimSku)) {
+          matchedDocs = docSkus.get(claimSku)!;
+          matchType = 'sku';
+        }
+
+        if (matchedDocs.length > 0) {
+          matchCount++;
+          const bestDoc = matchedDocs[0];
+          const confidence = 0.85; // High confidence for exact ASIN/SKU match
+
+          // Determine action based on confidence
+          if (confidence >= this.autoSubmitThreshold) {
+            autoSubmitCount++;
+          } else if (confidence >= this.smartPromptThreshold) {
+            smartPromptCount++;
+          }
+
+          results.push({
+            claim_id: claim.claim_id,
+            document_id: bestDoc.id,
+            document_name: bestDoc.filename,
+            confidence: confidence,
+            match_type: matchType,
+            action: confidence >= this.autoSubmitThreshold ? 'auto_submit' : 'smart_prompt'
+          });
+
+          logger.info('✅ [EVIDENCE MATCHING] Found match', {
+            claimId: claim.claim_id,
+            asin: claimAsin,
+            documentId: bestDoc.id,
+            confidence
+          });
+        }
+      }
+
+      logger.info('📊 [EVIDENCE MATCHING] Local matching complete', {
+        claims: claims.length,
+        matches: matchCount,
+        autoSubmits: autoSubmitCount,
+        smartPrompts: smartPromptCount
+      });
+
+      return {
+        matches: matchCount,
+        auto_submits: autoSubmitCount,
+        smart_prompts: smartPromptCount,
+        results
+      };
+
+    } catch (error: any) {
+      logger.error('❌ [EVIDENCE MATCHING] Local matching failed', { error: error.message });
+      return { matches: 0, auto_submits: 0, smart_prompts: 0, results: [] };
     }
   }
 
@@ -189,7 +316,7 @@ class EvidenceMatchingService {
             claim_number,
             dispute_cases!inner(id, status)
           `)
-          .or(`seller_id.eq.${userId},user_id.eq.${userId}`)
+          .eq('seller_id', userId)
           .in('dispute_cases.status', ['pending', 'submitted']);
 
         if (error) {
@@ -199,7 +326,7 @@ class EvidenceMatchingService {
           const { data: simpleDetections } = await supabaseAdmin
             .from('detection_results')
             .select('id, seller_id, anomaly_type, estimated_value, currency, evidence, confidence_score, claim_number')
-            .or(`seller_id.eq.${userId},user_id.eq.${userId}`)
+            .eq('seller_id', userId)
             .not('evidence', 'is', null);
 
           if (simpleDetections && simpleDetections.length > 0) {
