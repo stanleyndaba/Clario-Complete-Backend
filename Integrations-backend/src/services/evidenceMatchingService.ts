@@ -170,7 +170,84 @@ class EvidenceMatchingService {
     claims?: ClaimData[],
     maxRetries: number = 3
   ): Promise<MatchingJobResponse> {
+    // If no claims provided, fetch them from the database
     if (!claims || claims.length === 0) {
+      logger.info('🔄 [EVIDENCE MATCHING] No claims provided, fetching from database', { userId });
+
+      try {
+        // Fetch claims from detection_results that have linked dispute_cases
+        const { data: detections, error } = await supabaseAdmin
+          .from('detection_results')
+          .select(`
+            id,
+            seller_id,
+            anomaly_type,
+            estimated_value,
+            currency,
+            evidence,
+            confidence_score,
+            claim_number,
+            dispute_cases!inner(id, status)
+          `)
+          .or(`seller_id.eq.${userId},user_id.eq.${userId}`)
+          .in('dispute_cases.status', ['pending', 'submitted']);
+
+        if (error) {
+          logger.warn('⚠️ [EVIDENCE MATCHING] Error fetching claims, trying simpler query', { error: error.message });
+
+          // Fallback: simpler query without join
+          const { data: simpleDetections } = await supabaseAdmin
+            .from('detection_results')
+            .select('id, seller_id, anomaly_type, estimated_value, currency, evidence, confidence_score, claim_number')
+            .or(`seller_id.eq.${userId},user_id.eq.${userId}`)
+            .not('evidence', 'is', null);
+
+          if (simpleDetections && simpleDetections.length > 0) {
+            claims = simpleDetections.map((d: any) => {
+              const ev = typeof d.evidence === 'string' ? JSON.parse(d.evidence) : (d.evidence || {});
+              return {
+                claim_id: d.id,
+                claim_type: d.anomaly_type || 'unknown',
+                amount: d.estimated_value || 0,
+                confidence: d.confidence_score || 0.5,
+                currency: d.currency || 'USD',
+                evidence: ev,
+                asin: ev.asin,
+                sku: ev.sku,
+                order_id: ev.order_id
+              };
+            });
+          }
+        } else if (detections && detections.length > 0) {
+          claims = detections.map((d: any) => {
+            const ev = typeof d.evidence === 'string' ? JSON.parse(d.evidence) : (d.evidence || {});
+            return {
+              claim_id: d.id,
+              claim_type: d.anomaly_type || 'unknown',
+              amount: d.estimated_value || 0,
+              confidence: d.confidence_score || 0.5,
+              currency: d.currency || 'USD',
+              evidence: ev,
+              asin: ev.asin,
+              sku: ev.sku,
+              order_id: ev.order_id
+            };
+          });
+        }
+
+        logger.info('📋 [EVIDENCE MATCHING] Fetched claims from database', {
+          userId,
+          claimsCount: claims?.length || 0
+        });
+
+      } catch (fetchError: any) {
+        logger.error('❌ [EVIDENCE MATCHING] Failed to fetch claims', { error: fetchError.message });
+      }
+    }
+
+    // If still no claims, return empty result
+    if (!claims || claims.length === 0) {
+      this.sendSyncLog('warning', 'No claims found for matching');
       return { matches: 0, auto_submits: 0, smart_prompts: 0, results: [] };
     }
 
