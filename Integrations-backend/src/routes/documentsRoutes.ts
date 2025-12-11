@@ -42,10 +42,12 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
 
         const uploadedDocuments: any[] = [];
 
-        for (const file of files) {
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
             const docId = uuidv4();
             const timestamp = Date.now();
-            const storagePath = `${finalUserId}/${timestamp}/${file.originalname}`;
+            // Use index to ensure unique paths even for files with same name
+            const storagePath = `${finalUserId}/${docId}/${file.originalname}`;
 
             // Upload to Supabase Storage
             const { data: storageData, error: storageError } = await supabaseAdmin
