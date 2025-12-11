@@ -204,27 +204,11 @@ export class GmailService {
     maxResults: number = 10
   ): Promise<GmailEmail[]> {
     try {
-      // MOCK MODE: If using a mock token, return fake data without calling API
+      // Check if using mock token - skip ingestion for mock sources
       const accessToken = await this.getValidAccessToken(userId);
-      if (accessToken.startsWith('mock-token-')) {
-        logger.info('🧪 [GMAIL MOCK] Returning mock emails for testing', { userId });
-
-        // Generate 1-3 mock emails
-        const mockEmails: GmailEmail[] = Array.from({ length: Math.floor(Math.random() * 3) + 1 }).map((_, i) => ({
-          id: `mock-email-${Date.now()}-${i}`,
-          threadId: `mock-thread-${Date.now()}-${i}`,
-          subject: `Amazon Invoice #${Math.floor(Math.random() * 100000)}`,
-          from: 'auto-confirm@amazon.com',
-          to: ['user@example.com'],
-          snippet: 'Your order has been shipped. View your invoice.',
-          body: 'Thank you for your order.',
-          date: new Date().toISOString(),
-          labels: ['INBOX'],
-          isRead: false,
-          hasAttachments: true
-        }));
-
-        return mockEmails;
+      if (accessToken.startsWith('mock-token-') || accessToken.startsWith('mock-')) {
+        logger.info('⏭️ [GMAIL] Skipping mock token (no fake documents will be created)', { userId });
+        return []; // Return empty - no fake documents
       }
 
       const response = await this.requestWithToken(userId, (accessToken) =>
@@ -287,49 +271,10 @@ export class GmailService {
     messageId: string,
     format: 'metadata' | 'full' = 'metadata'
   ): Promise<GmailMessageResponse> {
-    // MOCK MODE: If using a mock email ID, return fake message with attachment
-    if (messageId.startsWith('mock-email-')) {
-      logger.info('🧪 [GMAIL MOCK] Returning mock message with attachment', { userId, messageId });
-
-      return {
-        id: messageId,
-        threadId: messageId.replace('email', 'thread'),
-        labelIds: ['INBOX'],
-        snippet: 'Your order has been shipped. View your invoice.',
-        historyId: '12345',
-        internalDate: Date.now().toString(),
-        payload: {
-          partId: '',
-          mimeType: 'multipart/mixed',
-          filename: '',
-          headers: [
-            { name: 'Subject', value: `Amazon Invoice #${Math.floor(Math.random() * 100000)}` },
-            { name: 'From', value: 'auto-confirm@amazon.com' },
-            { name: 'To', value: 'user@example.com' },
-            { name: 'Date', value: new Date().toUTCString() }
-          ],
-          body: { size: 0 },
-          parts: [
-            {
-              partId: '0',
-              mimeType: 'text/plain',
-              filename: '',
-              headers: [],
-              body: { size: 0, data: Buffer.from('Thank you for your order.').toString('base64') }
-            },
-            {
-              partId: '1',
-              mimeType: 'application/pdf',
-              filename: 'invoice.pdf',
-              headers: [],
-              body: {
-                attachmentId: `mock-attachment-${messageId}`,
-                size: 1024
-              }
-            }
-          ]
-        }
-      };
+    // Skip mock email IDs - no fake messages
+    if (messageId.startsWith('mock-email-') || messageId.startsWith('mock-')) {
+      logger.warn('⏭️ [GMAIL] Skipping mock message ID', { userId, messageId });
+      throw createError('Mock messages are not supported', 400);
     }
 
     const response = await this.requestWithToken(userId, (accessToken) =>
