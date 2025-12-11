@@ -193,19 +193,21 @@ export class DocumentParsingWorker {
   /**
    * Get documents that need parsing
    * Checks for documents where parsed_metadata is null or parser_status is 'pending'
+   * Only returns PDF documents (PNG/images can't be parsed by pdfExtractor)
    */
   private async getPendingDocuments(): Promise<Array<{ id: string; seller_id: string; filename: string; content_type: string }>> {
     try {
       // Use admin client to bypass RLS
       const client = supabaseAdmin || supabase;
 
-      // First, try to get documents where parsed_metadata is null
-      // (This works with the current schema)
+      // Get PDF documents where parsed_metadata is null
+      // Filter for PDFs only - PNGs and images can't be parsed by pdfExtractor
       let { data: documents, error } = await client
         .from('evidence_documents')
         .select('id, seller_id, filename, content_type')
         .is('parsed_metadata', null)
-        .limit(50)
+        .or('content_type.ilike.%pdf%,content_type.eq.application/pdf,filename.ilike.%.pdf')
+        .limit(100) // Increased from 50 to process more docs per run
         .order('created_at', { ascending: true });
 
       // If parsed_metadata column doesn't exist, try checking by other criteria
@@ -216,7 +218,8 @@ export class DocumentParsingWorker {
           .from('evidence_documents')
           .select('id, seller_id, filename, content_type')
           .or('supplier_name.is.null,invoice_number.is.null')
-          .limit(50)
+          .or('content_type.ilike.%pdf%,content_type.eq.application/pdf,filename.ilike.%.pdf')
+          .limit(100)
           .order('created_at', { ascending: true });
         documents = retry.data;
         error = retry.error;
@@ -229,7 +232,19 @@ export class DocumentParsingWorker {
         return [];
       }
 
-      return (documents || []).map((doc: any) => ({
+      // Additional filter: only return PDFs (double-check in case DB filter didn't work)
+      const pdfDocs = (documents || []).filter((doc: any) => {
+        const contentType = doc.content_type?.toLowerCase() || '';
+        const filename = doc.filename?.toLowerCase() || '';
+        return contentType.includes('pdf') || filename.endsWith('.pdf');
+      });
+
+      logger.info(`📄 [DOCUMENT PARSING WORKER] Found ${pdfDocs.length} PDF documents to parse (out of ${documents?.length || 0} total pending)`, {
+        totalPending: documents?.length || 0,
+        pdfCount: pdfDocs.length
+      });
+
+      return pdfDocs.map((doc: any) => ({
         id: doc.id,
         seller_id: doc.seller_id,
         filename: doc.filename,
