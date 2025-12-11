@@ -213,12 +213,14 @@ class EvidenceMatchingService {
           }
 
           results.push({
-            claim_id: claim.claim_id,
-            document_id: bestDoc.id,
-            document_name: bestDoc.filename,
-            confidence: confidence,
+            dispute_id: claim.claim_id,
+            evidence_document_id: bestDoc.id,
+            rule_score: confidence,
+            final_confidence: confidence,
             match_type: matchType,
-            action: confidence >= this.autoSubmitThreshold ? 'auto_submit' : 'smart_prompt'
+            matched_fields: [matchType === 'asin' ? `asin:${claimAsin}` : `sku:${claimSku}`],
+            reasoning: `Exact ${matchType.toUpperCase()} match found in document ${bestDoc.filename}`,
+            action_taken: confidence >= this.autoSubmitThreshold ? 'auto_submit' : 'smart_prompt'
           });
 
           logger.info('✅ [EVIDENCE MATCHING] Found match', {
