@@ -274,7 +274,7 @@ export class GmailIngestionService {
       // Convert userId to UUID for database operations if needed
       const dbUserId = convertUserIdToUuid(userId);
 
-      // Check if document already exists
+      // Check if document already exists (by user_id + external_id + filename)
       const { data: existingDoc } = await supabase
         .from('evidence_documents')
         .select('id')
@@ -289,6 +289,23 @@ export class GmailIngestionService {
           filename: attachment.filename
         });
         return existingDoc.id;
+      }
+
+      // Additional de-duplication check: by seller_id + filename only
+      // This catches duplicates even if external_id differs (same file, different ingestion)
+      const { data: existingByFilename } = await supabase
+        .from('evidence_documents')
+        .select('id')
+        .eq('seller_id', dbUserId)
+        .eq('filename', attachment.filename)
+        .maybeSingle();
+
+      if (existingByFilename) {
+        logger.debug('⏭️ [GMAIL INGESTION] Document with same filename exists, skipping', {
+          documentId: existingByFilename.id,
+          filename: attachment.filename
+        });
+        return existingByFilename.id;
       }
 
       // Get or create evidence source (Gmail)
