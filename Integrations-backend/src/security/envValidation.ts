@@ -16,39 +16,42 @@ export interface EnvValidationRule {
 
 /**
  * Required environment variables for production
+ * Note: AMAZON* and DATABASE_URL are only required in production
  */
+const isProduction = process.env.NODE_ENV === 'production';
+
 const REQUIRED_ENV_VARS: EnvValidationRule[] = [
   {
     name: 'AMAZON_CLIENT_ID',
-    required: true,
+    required: isProduction, // Only required in production
     validator: (value) => value.startsWith('amzn1.') || value.length > 0,
     errorMessage: 'AMAZON_CLIENT_ID must be a valid Amazon client ID',
     sensitive: false,
   },
   {
     name: 'AMAZON_CLIENT_SECRET',
-    required: true,
+    required: isProduction, // Only required in production
     validator: (value) => value.startsWith('amzn1.') || value.length > 0,
     errorMessage: 'AMAZON_CLIENT_SECRET must be a valid Amazon client secret',
     sensitive: true,
   },
   {
     name: 'AMAZON_SPAPI_REFRESH_TOKEN',
-    required: true,
+    required: isProduction, // Only required in production
     validator: (value) => value.startsWith('Atzr|') || value.length > 0,
     errorMessage: 'AMAZON_SPAPI_REFRESH_TOKEN must be a valid refresh token',
     sensitive: true,
   },
   {
     name: 'JWT_SECRET',
-    required: true,
+    required: isProduction, // Only required in production
     validator: (value) => value.length >= 32,
     errorMessage: 'JWT_SECRET must be at least 32 characters',
     sensitive: true,
   },
   {
     name: 'DATABASE_URL',
-    required: true,
+    required: isProduction, // Only required in production
     validator: (value) => value.startsWith('postgresql://') || value.startsWith('postgres://'),
     errorMessage: 'DATABASE_URL must be a valid PostgreSQL connection string',
     sensitive: true,
@@ -123,7 +126,7 @@ export function validateEnvironment(
     if (rule.validator && !rule.validator(value)) {
       errors.push(
         rule.errorMessage ||
-          `Environment variable ${rule.name} has invalid format`
+        `Environment variable ${rule.name} has invalid format`
       );
     }
   }
@@ -143,7 +146,7 @@ export function validateEnvironment(
       if (rule.validator && !rule.validator(value)) {
         warnings.push(
           rule.errorMessage ||
-            `Environment variable ${rule.name} may have issues: ${value.substring(0, 20)}...`
+          `Environment variable ${rule.name} may have issues: ${value.substring(0, 20)}...`
         );
       }
     }

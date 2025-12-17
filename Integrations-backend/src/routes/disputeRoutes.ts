@@ -22,10 +22,17 @@ router.get('/', async (req, res) => {
       throw error;
     }
 
+    // Map claim_amount to amount for frontend compatibility
+    const mappedCases = (cases || []).map((c: any) => ({
+      ...c,
+      amount: c.claim_amount || c.amount || 0,  // Frontend expects 'amount' field
+      claim_id: c.detection_result_id || c.claim_id,  // Map detection_result_id to claim_id
+    }));
+
     res.json({
       success: true,
-      cases: cases || [],
-      total: cases?.length || 0
+      cases: mappedCases,
+      total: mappedCases.length
     });
   } catch (error: any) {
     res.status(500).json({

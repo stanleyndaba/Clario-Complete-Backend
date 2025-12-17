@@ -574,21 +574,33 @@ router.get('/upcoming-payments', wrap(async (req: Request, res: Response) => {
       logger.warn('❌ [UPCOMING PAYMENTS] Failed to fetch dispute cases', { error: disputeError.message, userId });
     } else if (disputeCases && disputeCases.length > 0) {
       disputeCases.forEach((dc: any) => {
+        // Calculate expected_payout_date for approved cases that don't have one:
+        // If approved and no expected_payout_date, use created_at + 14 days (Amazon standard)
+        let expectedPayoutDate = dc.expected_payout_date;
+        if (!expectedPayoutDate && (dc.status === 'approved' || dc.status === 'paid')) {
+          const baseDate = dc.resolution_date || dc.updated_at || dc.created_at;
+          if (baseDate) {
+            const payoutDate = new Date(baseDate);
+            payoutDate.setDate(payoutDate.getDate() + 14);
+            expectedPayoutDate = payoutDate.toISOString();
+          }
+        }
+
         allRecoveries.push({
           id: dc.id,
           claim_id: dc.claim_id || dc.id,
-          type: dc.dispute_type || 'unknown',
+          type: dc.dispute_type || dc.case_type || 'unknown',
           status: dc.status || 'pending',
           amount: parseFloat(dc.claim_amount?.toString() || '0'),
           currency: dc.currency || 'USD',
           created_at: dc.created_at,
-          expected_payout_date: dc.expected_payout_date,
+          expected_payout_date: expectedPayoutDate,
           filing_status: dc.filing_status,
-          amazon_case_id: dc.amazon_case_id,
+          amazon_case_id: dc.amazon_case_id || dc.provider_case_id,
           actual_payout_amount: dc.actual_payout_amount,
           // Map to frontend field names
           guaranteedAmount: parseFloat(dc.claim_amount?.toString() || '0'),
-          expectedPayoutDate: dc.expected_payout_date,
+          expectedPayoutDate: expectedPayoutDate,
           created: dc.created_at,
           source: 'dispute_cases'
         });
