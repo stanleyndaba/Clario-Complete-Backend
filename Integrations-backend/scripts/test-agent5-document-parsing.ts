@@ -171,12 +171,19 @@ async function testDatabaseOperations() {
     const testSellerId = 'test-seller-' + Date.now();
 
     // Try to insert a test document
+    const testDocId = 'test-doc-' + Date.now();
     const { data: testDoc, error: insertError } = await client
       .from('evidence_documents')
       .insert({
         seller_id: testSellerId,
         doc_type: 'invoice',
         filename: 'test-invoice.pdf',
+        provider: 'gmail', // Valid enum value for evidence_provider
+        external_id: testDocId, // Required: unique external identifier
+        storage_path: `test/${testDocId}.pdf`, // Required: storage path
+        size_bytes: 1024, // Required: file size
+        content_type: 'application/pdf', // Required: content type
+        mime_type: 'application/pdf', // Required: MIME type
         supplier_name: null, // Will be filled by parser
         parser_status: 'pending'
       })
