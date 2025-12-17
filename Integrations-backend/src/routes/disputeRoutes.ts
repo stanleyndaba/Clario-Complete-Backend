@@ -22,11 +22,16 @@ router.get('/', async (req, res) => {
       throw error;
     }
 
-    // Map claim_amount to amount for frontend compatibility
+    // Map database fields to frontend expected fields
     const mappedCases = (cases || []).map((c: any) => ({
       ...c,
-      amount: c.claim_amount || c.amount || 0,  // Frontend expects 'amount' field
-      claim_id: c.detection_result_id || c.claim_id,  // Map detection_result_id to claim_id
+      // Frontend expects these specific field names
+      amount: c.claim_amount || c.amount || 0,
+      claim_id: c.detection_result_id || c.claim_id || c.id,
+      amazon_case_id: c.provider_case_id || c.amazon_case_id || null,
+      case_type: c.case_type || c.dispute_type || 'unknown',
+      filing_status: c.filing_status || null,
+      retry_count: c.retry_count || 0,
     }));
 
     res.json({
