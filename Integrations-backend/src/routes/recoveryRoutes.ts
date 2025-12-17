@@ -6,6 +6,85 @@ const router = Router();
 const logger = getLogger('RecoveryRoutes');
 
 /**
+ * GET /api/recoveries/:id
+ * Get full details of a recovery/claim
+ */
+router.get('/:id', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const userId = (req as any).user?.id || req.headers['x-user-id'] as string || 'demo-user';
+
+        logger.info('Fetching recovery details', { recoveryId: id, userId });
+
+        // Try dispute_cases first (filed claims)
+        let { data: disputeCase, error: caseError } = await supabaseAdmin
+            .from('dispute_cases')
+            .select('*')
+            .eq('id', id)
+            .single();
+
+        if (!disputeCase) {
+            // Try by detection_result_id
+            const { data: caseByDetection } = await supabaseAdmin
+                .from('dispute_cases')
+                .select('*')
+                .eq('detection_result_id', id)
+                .single();
+            disputeCase = caseByDetection;
+        }
+
+        // If found in dispute_cases, return it
+        if (disputeCase) {
+            return res.json({
+                id: disputeCase.id,
+                title: disputeCase.case_type || 'Claim Details',
+                status: disputeCase.status,
+                guaranteedAmount: disputeCase.claim_amount || 0,
+                expectedPayoutDate: disputeCase.expected_payout_date,
+                createdDate: disputeCase.created_at,
+                sku: disputeCase.sku || 'N/A',
+                productName: disputeCase.case_type || 'Unknown Product',
+                amazonCaseId: disputeCase.provider_case_id || disputeCase.amazon_case_id,
+                currency: disputeCase.currency || 'USD',
+                filing_status: disputeCase.filing_status,
+                case_number: disputeCase.case_number,
+            });
+        }
+
+        // Try detection_results (unfiled claims)
+        const { data: detectionResult, error: detError } = await supabaseAdmin
+            .from('detection_results')
+            .select('*')
+            .eq('id', id)
+            .single();
+
+        if (detectionResult) {
+            return res.json({
+                id: detectionResult.id,
+                title: detectionResult.anomaly_type || 'Claim Details',
+                status: detectionResult.status || 'Open',
+                guaranteedAmount: detectionResult.estimated_value || 0,
+                expectedPayoutDate: null,
+                createdDate: detectionResult.created_at || detectionResult.discovery_date,
+                sku: detectionResult.sku || detectionResult.evidence?.sku || 'N/A',
+                asin: detectionResult.asin || detectionResult.evidence?.asin,
+                productName: detectionResult.anomaly_type || 'Unknown Product',
+                currency: detectionResult.currency || 'USD',
+                confidence_score: detectionResult.confidence_score,
+            });
+        }
+
+        // Not found
+        logger.warn('Recovery not found', { id, userId });
+        return res.status(404).json({ error: 'Recovery not found' });
+
+    } catch (error: any) {
+        logger.error('Error fetching recovery details', { error: error.message });
+        return res.status(500).json({ error: 'Failed to fetch recovery details' });
+    }
+});
+
+/**
  * GET /api/recoveries/:id/events
  * Get timeline/audit trail for a specific claim/recovery
  * Returns all events related to the claim with linked documents
