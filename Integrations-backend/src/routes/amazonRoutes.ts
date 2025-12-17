@@ -610,8 +610,8 @@ router.get('/upcoming-payments', wrap(async (req: Request, res: Response) => {
     // 2. Get detection_results that are NOT yet filed (Open/Detected claims)
     const { data: detectionResults, error: detectionError } = await dbClient
       .from('detection_results')
-      .select('id, user_id, anomaly_type, status, estimated_value, currency, created_at, confidence_score, details, order_id, asin, sku')
-      .eq('user_id', userId)
+      .select('id, seller_id, anomaly_type, status, estimated_value, currency, created_at, confidence_score, details, order_id, asin, sku')
+      .eq('seller_id', userId)
       .order('created_at', { ascending: false });
 
     if (detectionError) {
