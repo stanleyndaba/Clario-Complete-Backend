@@ -85,6 +85,196 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/recoveries/:id/submit
+ * Submit a claim for filing
+ * Creates a dispute_case and updates detection_result status
+ */
+router.post('/:id/submit', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const userId = (req as any).userId || (req as any).user?.id || req.headers['x-user-id'] as string || 'demo-user';
+
+        logger.info('Submitting claim', { claimId: id, userId });
+
+        // First, get the detection result to get claim details
+        const { data: detectionResult, error: detError } = await supabaseAdmin
+            .from('detection_results')
+            .select('*')
+            .eq('id', id)
+            .single();
+
+        if (detError || !detectionResult) {
+            logger.warn('Detection result not found for submission', { id, userId });
+            return res.status(404).json({ success: false, error: 'Claim not found' });
+        }
+
+        // Check if already submitted (dispute_case exists)
+        const { data: existingCase } = await supabaseAdmin
+            .from('dispute_cases')
+            .select('id, status')
+            .eq('detection_result_id', id)
+            .single();
+
+        if (existingCase) {
+            logger.info('Claim already submitted', { id, existingCaseId: existingCase.id });
+            return res.json({
+                success: true,
+                message: 'Claim already submitted',
+                caseId: existingCase.id,
+                status: existingCase.status
+            });
+        }
+
+        // Create dispute_case record
+        const caseNumber = `LI-${new Date().getFullYear().toString().slice(-2)}${(new Date().getMonth() + 1).toString().padStart(2, '0')}-${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`;
+
+        const disputeCase = {
+            seller_id: userId,
+            detection_result_id: id,
+            claim_id: detectionResult.evidence?.claim_id || id,
+            claim_amount: detectionResult.estimated_value || 0,
+            currency: detectionResult.currency || 'USD',
+            status: 'submitted',
+            filing_status: 'filed',
+            case_type: detectionResult.anomaly_type || 'unknown',
+            dispute_type: detectionResult.anomaly_type || 'unknown',
+            case_number: caseNumber,
+            sku: detectionResult.sku || detectionResult.evidence?.sku,
+            asin: detectionResult.asin || detectionResult.evidence?.asin,
+            order_id: detectionResult.order_id || detectionResult.evidence?.order_id,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        };
+
+        const { data: newCase, error: insertError } = await supabaseAdmin
+            .from('dispute_cases')
+            .insert(disputeCase)
+            .select()
+            .single();
+
+        if (insertError) {
+            logger.error('Failed to create dispute case', { error: insertError.message, id });
+            return res.status(500).json({ success: false, error: 'Failed to submit claim' });
+        }
+
+        // Update detection_result status to 'filed'
+        await supabaseAdmin
+            .from('detection_results')
+            .update({ status: 'filed', updated_at: new Date().toISOString() })
+            .eq('id', id);
+
+        // Create notification for the user
+        try {
+            await supabaseAdmin.from('notifications').insert({
+                user_id: userId,
+                type: 'case_filed',
+                message: `Claim ${caseNumber} submitted for ${formatCurrency(detectionResult.estimated_value || 0, detectionResult.currency || 'USD')}`,
+                payload: {
+                    claim_id: id,
+                    case_id: newCase.id,
+                    case_number: caseNumber,
+                    amount: detectionResult.estimated_value,
+                    currency: detectionResult.currency || 'USD'
+                },
+                is_read: false,
+                created_at: new Date().toISOString()
+            });
+        } catch (notifError) {
+            logger.warn('Failed to create notification', { error: notifError });
+        }
+
+        logger.info('Claim submitted successfully', {
+            claimId: id,
+            caseId: newCase.id,
+            caseNumber,
+            amount: detectionResult.estimated_value
+        });
+
+        return res.json({
+            success: true,
+            message: 'Claim submitted successfully',
+            caseId: newCase.id,
+            caseNumber,
+            status: 'submitted',
+            amount: detectionResult.estimated_value,
+            currency: detectionResult.currency || 'USD'
+        });
+
+    } catch (error: any) {
+        logger.error('Error submitting claim', { error: error.message, stack: error.stack });
+        return res.status(500).json({ success: false, error: 'Failed to submit claim' });
+    }
+});
+
+/**
+ * POST /api/recoveries/:id/resubmit
+ * Resubmit a claim with additional evidence
+ */
+router.post('/:id/resubmit', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const userId = (req as any).userId || (req as any).user?.id || req.headers['x-user-id'] as string || 'demo-user';
+
+        logger.info('Resubmitting claim', { claimId: id, userId });
+
+        // Find the existing dispute_case
+        let disputeCase = null;
+
+        // Try by ID first
+        const { data: caseById } = await supabaseAdmin
+            .from('dispute_cases')
+            .select('*')
+            .eq('id', id)
+            .single();
+
+        if (caseById) {
+            disputeCase = caseById;
+        } else {
+            // Try by detection_result_id
+            const { data: caseByDetection } = await supabaseAdmin
+                .from('dispute_cases')
+                .select('*')
+                .eq('detection_result_id', id)
+                .single();
+            disputeCase = caseByDetection;
+        }
+
+        if (!disputeCase) {
+            return res.status(404).json({ success: false, error: 'Case not found' });
+        }
+
+        // Update status to resubmitted
+        const { error: updateError } = await supabaseAdmin
+            .from('dispute_cases')
+            .update({
+                status: 'submitted',
+                filing_status: 'resubmitted',
+                retry_count: (disputeCase.retry_count || 0) + 1,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', disputeCase.id);
+
+        if (updateError) {
+            logger.error('Failed to update dispute case', { error: updateError.message });
+            return res.status(500).json({ success: false, error: 'Failed to resubmit claim' });
+        }
+
+        logger.info('Claim resubmitted successfully', { caseId: disputeCase.id });
+
+        return res.json({
+            success: true,
+            message: 'Claim resubmitted successfully',
+            caseId: disputeCase.id,
+            status: 'submitted'
+        });
+
+    } catch (error: any) {
+        logger.error('Error resubmitting claim', { error: error.message });
+        return res.status(500).json({ success: false, error: 'Failed to resubmit claim' });
+    }
+});
+
+/**
  * GET /api/recoveries/:id/events
  * Get timeline/audit trail for a specific claim/recovery
  * Returns all events related to the claim with linked documents
