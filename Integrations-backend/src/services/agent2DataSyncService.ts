@@ -2943,7 +2943,10 @@ export class Agent2DataSyncService {
       async () => {
         const result = await supabaseAdmin
           .from('detection_results')
-          .insert(validatedRecords)
+          .upsert(validatedRecords, {
+            onConflict: 'claim_number',  // Skip duplicates on claim_number constraint
+            ignoreDuplicates: true  // Don't error on conflicts, just skip
+          })
           .select('id, seller_id, estimated_value, currency, severity, confidence_score, anomaly_type, created_at, sync_id');
 
         if (result.error) {
