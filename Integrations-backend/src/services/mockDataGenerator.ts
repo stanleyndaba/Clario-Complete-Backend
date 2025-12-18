@@ -23,7 +23,7 @@ export class MockDataGenerator {
 
   constructor(options: MockDataGeneratorOptions) {
     this.scenario = options.scenario || 'normal_week';
-    this.recordCount = options.recordCount || 75; // Default 50-100 records
+    this.recordCount = options.recordCount || 850; // Enterprise demo: 850 records
     this.startDate = options.startDate || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // Last 7 days
     this.endDate = options.endDate || new Date();
   }
@@ -97,8 +97,8 @@ export class MockDataGenerator {
     for (let i = 0; i < guaranteedCount; i++) {
       const date = this.randomDate(this.startDate, this.endDate);
       const amount = this.scenario === 'with_issues'
-        ? this.randomAmount(10, 500)
-        : this.randomAmount(5, 200);
+        ? this.randomAmount(50, 2500)  // Enterprise: $50-$2500 per issue
+        : this.randomAmount(25, 1000); // Enterprise: $25-$1000 baseline
 
       const adjustmentType = allTypes[i]; // Sequential assignment for guaranteed coverage
       let description = `${adjustmentType} - Amazon financial event`;
@@ -127,8 +127,8 @@ export class MockDataGenerator {
     for (let i = guaranteedCount; i < adjustmentCount; i++) {
       const date = this.randomDate(this.startDate, this.endDate);
       const amount = this.scenario === 'with_issues'
-        ? this.randomAmount(10, 500) // Higher amounts for issues
-        : this.randomAmount(5, 200);
+        ? this.randomAmount(50, 2500) // Enterprise: High-value claims
+        : this.randomAmount(25, 1000);
 
       // Realistic scenario: Add subtle anomalies
       let description = 'Standard inventory adjustment';
@@ -167,8 +167,8 @@ export class MockDataGenerator {
     for (let i = 0; i < liquidationCount; i++) {
       const date = this.randomDate(this.startDate, this.endDate);
       const amount = this.scenario === 'with_issues'
-        ? this.randomAmount(20, 600)
-        : this.randomAmount(10, 300);
+        ? this.randomAmount(100, 3000) // Enterprise: High-value liquidations
+        : this.randomAmount(50, 1500);
 
       events.FBALiquidationEventList.push({
         OriginalRemovalOrderId: `RMO-${Date.now()}-${i}`,
@@ -189,7 +189,7 @@ export class MockDataGenerator {
       const orderId = `112-${Math.floor(Math.random() * 10000000)}-${Math.floor(Math.random() * 1000000)}`;
 
       // Realistic: Commission rounding errors or storage fee mismatches
-      let feeAmount = this.randomAmount(1, 50);
+      let feeAmount = this.randomAmount(10, 250); // Enterprise: $10-$250 fees
       let feeDescription = '';
 
       if (this.scenario === 'realistic' && Math.random() < 0.05) {
@@ -230,14 +230,14 @@ export class MockDataGenerator {
           {
             ChargeType: 'Principal',
             ChargeAmount: {
-              CurrencyAmount: this.randomAmount(10, 500),
+              CurrencyAmount: this.randomAmount(50, 2500), // Enterprise: $50-$2500 orders
               CurrencyCode: 'USD'
             }
           },
           {
             ChargeType: 'Shipping',
             ChargeAmount: {
-              CurrencyAmount: this.randomAmount(5, 25),
+              CurrencyAmount: this.randomAmount(15, 150), // Enterprise: $15-$150 shipping
               CurrencyCode: 'USD'
             }
           }
@@ -247,7 +247,7 @@ export class MockDataGenerator {
             {
               ChargeType: 'Principal',
               ChargeAmount: {
-                CurrencyAmount: -this.randomAmount(5, 50), // Negative adjustment
+                CurrencyAmount: -this.randomAmount(25, 500), // Enterprise: $25-$500 negative adjustment
                 CurrencyCode: 'USD'
               }
             }

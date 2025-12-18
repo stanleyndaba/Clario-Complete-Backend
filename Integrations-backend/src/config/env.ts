@@ -89,7 +89,7 @@ const config = {
   // Enable mock data generator when sandbox returns empty data
   USE_MOCK_DATA_GENERATOR: process.env.USE_MOCK_DATA_GENERATOR !== 'false', // Default: true
   MOCK_SCENARIO: (process.env.MOCK_SCENARIO as 'normal_week' | 'high_volume' | 'with_issues') || 'normal_week',
-  MOCK_RECORD_COUNT: process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75, // Default: 75 (50-100 range)
+  MOCK_RECORD_COUNT: process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 850, // Enterprise demo: 850 records for $150K+ potential
 
   // Sync timeout configuration (in milliseconds)
   SYNC_TIMEOUT_MS: toInt(process.env.SYNC_TIMEOUT_MS, 300 * 1000), // Default: 300 seconds (5 minutes) for ML detection
