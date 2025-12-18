@@ -2938,31 +2938,66 @@ export class Agent2DataSyncService {
       return;
     }
 
-    // Store validated records with error handling
-    const { data: insertedDetections, error } = await withErrorHandling(
-      async () => {
-        const result = await supabaseAdmin
+    // Store validated records with error handling - insert in small batches
+    // to handle potential duplicate claim_number collisions gracefully
+    const batchSize = 20;
+    const allInsertedDetections: any[] = [];
+    let insertErrors = 0;
+
+    for (let i = 0; i < validatedRecords.length; i += batchSize) {
+      const batch = validatedRecords.slice(i, i + batchSize);
+
+      try {
+        const { data: insertedBatch, error: batchError } = await supabaseAdmin
           .from('detection_results')
-          .upsert(validatedRecords, {
-            onConflict: 'claim_number',  // Skip duplicates on claim_number constraint
-            ignoreDuplicates: true  // Don't error on conflicts, just skip
-          })
+          .insert(batch)
           .select('id, seller_id, estimated_value, currency, severity, confidence_score, anomaly_type, created_at, sync_id');
 
-        if (result.error) {
-          throw new Error(result.error.message);
-        }
+        if (batchError) {
+          // If batch fails due to duplicate, try inserting one by one
+          if (batchError.message?.includes('duplicate key') || batchError.message?.includes('unique constraint')) {
+            logger.warn('⚠️ [AGENT 2] Batch insert failed, inserting individually', {
+              batchIndex: i / batchSize,
+              error: batchError.message
+            });
 
-        return result;
-      },
-      {
-        service: 'supabase',
-        operation: 'storeDetectionResults',
-        userId,
-        timeoutMs: 30000,
-        maxRetries: 3
+            for (const record of batch) {
+              try {
+                const { data: singleRecord, error: singleError } = await supabaseAdmin
+                  .from('detection_results')
+                  .insert(record)
+                  .select('id, seller_id, estimated_value, currency, severity, confidence_score, anomaly_type, created_at, sync_id')
+                  .single();
+
+                if (singleRecord && !singleError) {
+                  allInsertedDetections.push(singleRecord);
+                } else if (singleError?.message?.includes('duplicate')) {
+                  insertErrors++;
+                } else if (singleError) {
+                  logger.warn('⚠️ Record insert failed', { error: singleError.message });
+                  insertErrors++;
+                }
+              } catch (e: any) {
+                insertErrors++;
+              }
+            }
+          } else {
+            logger.error('❌ Batch insert failed', { error: batchError.message });
+            insertErrors += batch.length;
+          }
+        } else if (insertedBatch) {
+          allInsertedDetections.push(...insertedBatch);
+        }
+      } catch (batchException: any) {
+        logger.error('❌ Exception during batch insert', { error: batchException.message });
+        insertErrors += batch.length;
       }
-    );
+    }
+
+    const insertedDetections = allInsertedDetections;
+    const error = insertErrors > 0 && allInsertedDetections.length === 0
+      ? { message: 'All inserts failed' }
+      : null;
 
     if (error) {
       logger.error('❌ [AGENT 2] Failed to store detection results', {
@@ -2980,7 +3015,8 @@ export class Agent2DataSyncService {
     logger.info('✅ [AGENT 2] Detection results stored', {
       userId,
       syncId,
-      count: validatedRecords.length
+      count: allInsertedDetections.length,
+      skippedDuplicates: insertErrors
     });
 
     try {
