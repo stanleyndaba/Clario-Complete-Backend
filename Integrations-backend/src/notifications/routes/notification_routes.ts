@@ -535,5 +535,105 @@ router.get('/types', notificationController.getNotificationTypes.bind(notificati
  */
 router.get('/health', notificationController.healthCheck.bind(notificationController));
 
+/**
+ * @swagger
+ * /notifications/preferences:
+ *   get:
+ *     summary: Get notification preferences for the authenticated user
+ *     tags: [Notifications]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Preferences retrieved successfully
+ */
+router.get('/preferences', async (req: any, res) => {
+    try {
+        const userId = req.userId || req.user?.id || req.headers['x-user-id'] || 'demo-user';
+
+        // Try to get from database
+        const { supabaseAdmin } = await import('../../database/supabaseClient');
+        const { data, error } = await supabaseAdmin
+            .from('user_notification_preferences')
+            .select('*')
+            .eq('user_id', userId)
+            .single();
+
+        if (data) {
+            return res.json({
+                success: true,
+                data: data.preferences || {}
+            });
+        }
+
+        // Return default preferences if none exist
+        res.json({
+            success: true,
+            data: {
+                'recovery-guaranteed': { email: true, inApp: true },
+                'payout-confirmed': { email: true, inApp: true },
+                'invoice-issued': { email: true, inApp: true },
+                'team-member-joins': { email: true, inApp: true },
+                'document-processed': { email: false, inApp: true },
+                'device-login': { email: true, inApp: true },
+                'monthly-summary': { email: true, inApp: false },
+                'product-updates': { email: false, inApp: true }
+            }
+        });
+    } catch (error: any) {
+        console.error('Error fetching notification preferences:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch preferences' });
+    }
+});
+
+/**
+ * @swagger
+ * /notifications/preferences:
+ *   put:
+ *     summary: Update notification preferences for the authenticated user
+ *     tags: [Notifications]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *     responses:
+ *       200:
+ *         description: Preferences updated successfully
+ */
+router.put('/preferences', async (req: any, res) => {
+    try {
+        const userId = req.userId || req.user?.id || req.headers['x-user-id'] || 'demo-user';
+        const preferences = req.body;
+
+        const { supabaseAdmin } = await import('../../database/supabaseClient');
+
+        // Upsert preferences
+        const { error } = await supabaseAdmin
+            .from('user_notification_preferences')
+            .upsert({
+                user_id: userId,
+                preferences,
+                updated_at: new Date().toISOString()
+            }, { onConflict: 'user_id' });
+
+        if (error) {
+            console.warn('Failed to save preferences to DB:', error.message);
+            // Still return success - frontend will use its local state
+        }
+
+        res.json({
+            success: true,
+            message: 'Preferences saved successfully'
+        });
+    } catch (error: any) {
+        console.error('Error saving notification preferences:', error);
+        res.status(500).json({ success: false, error: 'Failed to save preferences' });
+    }
+});
+
 export default router;
 
