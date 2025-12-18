@@ -172,7 +172,7 @@ class NotificationHelper {
         type: NotificationType.CASE_FILED,
         user_id: userId,
         title: data.status === 'filed' ? '📋 Case Filed with Amazon' : '⏳ Case Filing in Progress',
-        message: data.status === 'filed' 
+        message: data.status === 'filed'
           ? `Your dispute case for ${data.currency || '$'}${data.claimAmount.toFixed(2)} has been filed with Amazon${data.amazonCaseId ? ` (Case ID: ${data.amazonCaseId})` : ''}.`
           : `Your dispute case for ${data.currency || '$'}${data.claimAmount.toFixed(2)} is being filed with Amazon.`,
         priority: NotificationPriority.HIGH,
@@ -222,8 +222,8 @@ class NotificationHelper {
       const event: NotificationEvent = {
         type: NotificationType.REFUND_APPROVED,
         user_id: userId,
-        title: '✅ Refund Approved by Amazon',
-        message: `Your refund request for ${data.currency || '$'}${approvedAmount.toFixed(2)} has been approved by Amazon${data.amazonCaseId ? ` (Case ID: ${data.amazonCaseId})` : ''}. We're now tracking the payout.`,
+        title: '🎉 Refund Approved by Amazon!',
+        message: `🎉 ${data.currency || '$'}${approvedAmount.toFixed(2)} from your claim has been approved by Amazon${data.amazonCaseId ? ` (Case ID: ${data.amazonCaseId})` : ''}! We're now tracking the payout.`,
         priority: NotificationPriority.URGENT,
         channel: NotificationChannel.BOTH,
         payload: {
@@ -241,8 +241,8 @@ class NotificationHelper {
       // Also send via WebSocket
       websocketService.sendNotificationToUser(userId, {
         type: 'success',
-        title: '✅ Refund Approved by Amazon',
-        message: `Your refund of ${data.currency || '$'}${approvedAmount.toFixed(2)} has been approved!`,
+        title: '🎉 Refund Approved!',
+        message: `🎉 ${data.currency || '$'}${approvedAmount.toFixed(2)} approved! Money is on its way.`,
         data: event.payload
       });
 
@@ -265,8 +265,8 @@ class NotificationHelper {
         amount: data.amount
       });
 
-      let title = '💰 Funds Deposited';
-      let message = `Your refund of ${data.currency || '$'}${data.amount.toFixed(2)} has been deposited`;
+      let title = '🎉 Funds Deposited!';
+      let message = `🎉 ${data.currency || '$'}${data.amount.toFixed(2)} has been deposited to your account`;
 
       if (data.billingStatus === 'charged') {
         const platformFee = data.platformFee || (data.amount * 0.20);
