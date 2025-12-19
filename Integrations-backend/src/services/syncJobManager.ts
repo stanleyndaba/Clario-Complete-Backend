@@ -1476,31 +1476,51 @@ class SyncJobManager {
         syncStatusClaimsDetected: syncStatus.claimsDetected
       });
 
-      const { error } = await supabase
+      // Use insert with update fallback instead of upsert (onConflict may fail)
+      const existingSync = await supabase
         .from('sync_progress')
-        .upsert({
-          user_id: syncStatus.userId,
-          sync_id: syncStatus.syncId,
-          step: Math.round(syncStatus.progress / 20), // 0-5 steps
-          total_steps: 5,
-          current_step: syncStatus.message,
-          status: dbStatus,
-          progress: syncStatus.progress,
-          metadata: metadataToSave,
-          updated_at: new Date().toISOString()
-        }, {
-          onConflict: 'sync_id'
-        });
+        .select('id')
+        .eq('sync_id', syncStatus.syncId)
+        .maybeSingle();
 
-      if (error) {
-        logger.error(`Error saving sync to database:`, error);
+      if (existingSync.data) {
+        // Update existing record
+        const { error: updateErr } = await supabase
+          .from('sync_progress')
+          .update({
+            step: Math.round(syncStatus.progress / 20),
+            total_steps: 5,
+            current_step: syncStatus.message,
+            status: dbStatus,
+            progress: syncStatus.progress,
+            metadata: metadataToSave,
+            updated_at: new Date().toISOString()
+          })
+          .eq('sync_id', syncStatus.syncId);
+        if (updateErr) throw updateErr;
       } else {
-        logger.info('✅ [SYNC JOB MANAGER] Successfully saved sync to database', {
-          userId: syncStatus.userId,
-          syncId: syncStatus.syncId,
-          claimsDetected: metadataToSave.claimsDetected
-        });
+        // Insert new record
+        const { error: insertErr } = await supabase
+          .from('sync_progress')
+          .insert({
+            user_id: syncStatus.userId,
+            sync_id: syncStatus.syncId,
+            step: Math.round(syncStatus.progress / 20),
+            total_steps: 5,
+            current_step: syncStatus.message,
+            status: dbStatus,
+            progress: syncStatus.progress,
+            metadata: metadataToSave,
+            updated_at: new Date().toISOString()
+          });
+        if (insertErr) throw insertErr;
       }
+
+      logger.info('✅ [SYNC JOB MANAGER] Successfully saved sync to database', {
+        userId: syncStatus.userId,
+        syncId: syncStatus.syncId,
+        claimsDetected: metadataToSave.claimsDetected
+      });
     } catch (error) {
       logger.error(`Error in saveSyncToDatabase:`, error);
     }

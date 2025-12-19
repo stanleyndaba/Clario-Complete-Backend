@@ -808,14 +808,18 @@ export class OrchestrationJobManager {
       // Start payout monitoring (store in database)
       if (claimId) {
         try {
-          await supabase.from('payout_monitoring').upsert({
+          // Try insert first, ignore duplicate errors
+          const { error: insertErr } = await supabase.from('payout_monitoring').insert({
             user_id: userId,
             claim_id: claimId,
             amazon_case_id: amazonCaseId,
             status: 'monitoring',
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
-          }, { onConflict: 'claim_id' });
+          });
+          if (insertErr && !insertErr.message?.includes('duplicate')) {
+            throw insertErr;
+          }
         } catch (dbError) {
           logger.warn('Failed to store payout monitoring (non-critical)', { dbError, claimId });
         }
@@ -1053,14 +1057,32 @@ export class OrchestrationJobManager {
       // Normalize and ingest
       const result = await dataOrchestrator.orchestrateIngestion(userId, rawAmazonData, mcdeDocs);
       // Save audit log and update sync_progress
-      await supabase.from('sync_progress').upsert({
-        user_id: userId,
-        stage: 'Normalizing Amazon data',
-        percent: 40,
-        total_cases: result.totalCases,
-        processed_cases: result.processed,
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'user_id' });
+      // Use update if exists, insert if not (avoid onConflict issues)
+      const { data: existingProgress } = await supabase
+        .from('sync_progress')
+        .select('id')
+        .eq('user_id', userId)
+        .limit(1)
+        .maybeSingle();
+
+      if (existingProgress) {
+        await supabase.from('sync_progress').update({
+          stage: 'Normalizing Amazon data',
+          percent: 40,
+          total_cases: result.totalCases,
+          processed_cases: result.processed,
+          updated_at: new Date().toISOString()
+        }).eq('user_id', userId);
+      } else {
+        await supabase.from('sync_progress').insert({
+          user_id: userId,
+          stage: 'Normalizing Amazon data',
+          percent: 40,
+          total_cases: result.totalCases,
+          processed_cases: result.processed,
+          updated_at: new Date().toISOString()
+        });
+      }
       websocketService.broadcastSyncProgress(syncId, {
         syncId,
         stage: 'Normalizing Amazon data',
