@@ -1500,12 +1500,23 @@ export class DetectionService {
       // Fall back to supabase if supabaseAdmin is not available
       const { supabaseAdmin, supabase: supabaseClient } = await import('../database/supabaseClient');
       const client = supabaseAdmin || supabaseClient;
+
+      // SANDBOX MODE: In sandbox/demo mode, show ALL detection results regardless of seller_id
+      // This is because sandbox has no real SP-API and seller_ids in data don't match user IDs
+      const isSandbox = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') ||
+        process.env.NODE_ENV === 'development' ||
+        !process.env.AMAZON_LWA_CLIENT_ID;
+
       let query = client
         .from('detection_results')
         .select('*')
-        .eq('seller_id', sellerId)
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1);
+
+      // Only filter by seller_id in production mode with real SP-API
+      if (!isSandbox && sellerId && sellerId !== 'demo-user') {
+        query = query.eq('seller_id', sellerId);
+      }
 
       if (syncId) {
         query = query.eq('sync_id', syncId);
