@@ -2501,6 +2501,199 @@ router.get('/matching/metrics', async (req: Request, res: Response) => {
   }
 });
 
+// ============================================
+// DOCUMENT GRAPH & REUSE ROUTES
+// ============================================
+
+import { documentGraphService } from '../services/documentGraphService';
+
+/**
+ * GET /api/evidence/documents/:id/linked-claims
+ * Get all claims linked to a specific document
+ */
+router.get('/documents/:id/linked-claims', async (req: Request, res: Response) => {
+  try {
+    const documentId = req.params.id;
+
+    logger.info('📊 [DOC GRAPH] Getting linked claims for document', { documentId });
+
+    const linkedClaims = await documentGraphService.getLinkedClaims(documentId);
+
+    res.json({
+      success: true,
+      documentId,
+      linkedClaimCount: linkedClaims.length,
+      linkedClaims,
+      reuseMessage: linkedClaims.length > 0
+        ? `This document already supports ${linkedClaims.length} other claim${linkedClaims.length > 1 ? 's' : ''}`
+        : null
+    });
+  } catch (error: any) {
+    logger.error('❌ [DOC GRAPH] Error getting linked claims', { error: error?.message });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get linked claims'
+    });
+  }
+});
+
+/**
+ * GET /api/evidence/claims/:id/suggest-documents
+ * Get document reuse suggestions for a claim
+ */
+router.get('/claims/:id/suggest-documents', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
+    const claimId = req.params.id;
+
+    logger.info('💡 [DOC GRAPH] Getting document suggestions for claim', { userId, claimId });
+
+    const suggestions = await documentGraphService.suggestDocumentsForClaim(userId, claimId);
+
+    res.json({
+      success: true,
+      claimId,
+      suggestions: suggestions.map(s => ({
+        ...s,
+        reuseMessage: s.linkedClaimCount > 0
+          ? `This invoice already supports ${s.linkedClaimCount} other claim${s.linkedClaimCount > 1 ? 's' : ''}; linked here too.`
+          : 'New document — not linked to other claims yet.'
+      }))
+    });
+  } catch (error: any) {
+    logger.error('❌ [DOC GRAPH] Error getting suggestions', { error: error?.message });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get document suggestions'
+    });
+  }
+});
+
+/**
+ * POST /api/evidence/documents/:id/link-claim
+ * Link a document to a claim
+ */
+router.post('/documents/:id/link-claim', async (req: Request, res: Response) => {
+  try {
+    const documentId = req.params.id;
+    const { claimId, matchType, confidence } = req.body;
+
+    if (!claimId) {
+      return res.status(400).json({
+        success: false,
+        error: 'claimId is required'
+      });
+    }
+
+    logger.info('🔗 [DOC GRAPH] Linking document to claim', { documentId, claimId });
+
+    const success = await documentGraphService.linkDocumentToClaim(
+      documentId,
+      claimId,
+      matchType || 'manual',
+      confidence || 1.0
+    );
+
+    if (success) {
+      // Get updated linked claims count
+      const linkedClaims = await documentGraphService.getLinkedClaims(documentId);
+
+      res.json({
+        success: true,
+        message: `Document linked to claim successfully`,
+        linkedClaimCount: linkedClaims.length,
+        reuseMessage: `This document now supports ${linkedClaims.length} claim${linkedClaims.length > 1 ? 's' : ''}`
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: 'Failed to link document to claim'
+      });
+    }
+  } catch (error: any) {
+    logger.error('❌ [DOC GRAPH] Error linking document', { error: error?.message });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to link document to claim'
+    });
+  }
+});
+
+/**
+ * GET /api/evidence/reuse-stats
+ * Get document reuse statistics for the user
+ */
+router.get('/reuse-stats', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
+
+    logger.info('📊 [DOC GRAPH] Getting document reuse stats', { userId });
+
+    const stats = await documentGraphService.getDocumentReuseStats(userId);
+
+    res.json({
+      success: true,
+      ...stats
+    });
+  } catch (error: any) {
+    logger.error('❌ [DOC GRAPH] Error getting reuse stats', { error: error?.message });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get reuse statistics'
+    });
+  }
+});
+
+/**
+ * GET /api/evidence/products/:identifier/documents
+ * Get all documents for a specific SKU or ASIN
+ */
+router.get('/products/:identifier/documents', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
+    const identifier = req.params.identifier;
+    const type = req.query.type as string || 'auto'; // 'sku', 'asin', or 'auto'
+
+    logger.info('📋 [DOC GRAPH] Getting documents for product', { userId, identifier, type });
+
+    let sku: string | undefined;
+    let asin: string | undefined;
+
+    if (type === 'sku') {
+      sku = identifier;
+    } else if (type === 'asin') {
+      asin = identifier;
+    } else {
+      // Auto-detect: ASINs are 10 chars starting with B
+      if (/^B[A-Z0-9]{9}$/.test(identifier)) {
+        asin = identifier;
+      } else {
+        sku = identifier;
+      }
+    }
+
+    const documents = await documentGraphService.getDocumentsForProduct(userId, sku, asin);
+
+    res.json({
+      success: true,
+      identifier,
+      type: asin ? 'asin' : 'sku',
+      documents: documents.map(doc => ({
+        ...doc,
+        reuseMessage: doc.linkedClaimCount > 0
+          ? `Already used for ${doc.linkedClaimCount} claim${doc.linkedClaimCount > 1 ? 's' : ''}`
+          : 'Not linked to any claims yet'
+      }))
+    });
+  } catch (error: any) {
+    logger.error('❌ [DOC GRAPH] Error getting product documents', { error: error?.message });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get documents for product'
+    });
+  }
+});
+
 export default router;
 
 
