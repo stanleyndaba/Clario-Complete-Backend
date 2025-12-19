@@ -123,14 +123,43 @@ export async function upsertDisputesAndRecoveriesFromDetections(
     };
   });
 
-  const { data: disputes, error: disputeError } = await supabaseAdmin
+  // Insert dispute cases - handle duplicates gracefully by inserting one by one if needed
+  let disputes: any[] = [];
+
+  // Try batch insert first
+  const { data: batchResult, error: batchError } = await supabaseAdmin
     .from('dispute_cases')
-    .upsert(disputePayload, { onConflict: 'case_number' })
+    .insert(disputePayload)
     .select('id, detection_result_id, seller_id, status, claim_amount, currency, resolution_date, case_number, created_at');
 
-  if (disputeError) {
-    logger.error('❌ [DISPUTE BACKFILL] Failed to upsert dispute cases', { error: disputeError.message });
-    throw disputeError;
+  if (batchError) {
+    // If batch fails (likely duplicates), try inserting one by one
+    if (batchError.message?.includes('duplicate') || batchError.message?.includes('unique')) {
+      logger.warn('⚠️ [DISPUTE BACKFILL] Batch insert failed, trying individual inserts', {
+        error: batchError.message
+      });
+
+      for (const dispute of disputePayload) {
+        try {
+          const { data: single, error: singleError } = await supabaseAdmin
+            .from('dispute_cases')
+            .insert(dispute)
+            .select('id, detection_result_id, seller_id, status, claim_amount, currency, resolution_date, case_number, created_at')
+            .single();
+
+          if (single && !singleError) {
+            disputes.push(single);
+          }
+        } catch (e) {
+          // Skip duplicates silently
+        }
+      }
+    } else {
+      logger.error('❌ [DISPUTE BACKFILL] Failed to insert dispute cases', { error: batchError.message });
+      throw batchError;
+    }
+  } else if (batchResult) {
+    disputes = batchResult;
   }
 
   if (!disputes?.length) return;
