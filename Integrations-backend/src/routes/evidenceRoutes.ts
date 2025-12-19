@@ -2813,6 +2813,45 @@ router.post('/documents/:id/audit/edit', async (req: Request, res: Response) => 
   }
 });
 
+// ============================================
+// AMAZON PROOF REQUIREMENTS CHECKLIST ROUTES
+// ============================================
+
+import { proofChecklistService } from '../services/proofChecklistService';
+
+/**
+ * GET /api/evidence/claims/:id/proof-checklist
+ * Get Amazon proof requirements checklist for a claim
+ */
+router.get('/claims/:id/proof-checklist', async (req: Request, res: Response) => {
+  try {
+    const claimId = req.params.id;
+    const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
+
+    logger.info('📋 [PROOF] Getting proof checklist for claim', { claimId, userId });
+
+    const checklist = await proofChecklistService.getClaimProofChecklist(claimId, userId);
+
+    if (!checklist) {
+      return res.status(404).json({
+        success: false,
+        error: 'Claim not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      ...checklist
+    });
+  } catch (error: any) {
+    logger.error('❌ [PROOF] Error getting proof checklist', { error: error?.message });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get proof checklist'
+    });
+  }
+});
+
 export default router;
 
 
