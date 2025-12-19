@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { getLogger } from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
+import { compositePdfService } from '../services/compositePdfService';
 
 const router = Router();
 const logger = getLogger('RecoveryRoutes');
@@ -544,5 +545,46 @@ function formatCurrency(amount: number, currency: string = 'USD'): string {
         currency: currency
     }).format(amount);
 }
+
+/**
+ * GET /api/recoveries/:id/packet
+ * Download a composite PDF evidence packet for a claim
+ * Bundles: cover sheet + invoice (highlighted line items) + supporting docs
+ */
+router.get('/:id/packet', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const userId = (req as any).userId || (req as any).user?.id || req.headers['x-user-id'] as string || 'demo-user';
+
+        logger.info('Generating composite PDF packet', { claimId: id, userId });
+
+        const { buffer, filename } = await compositePdfService.generateClaimPacket(id, userId);
+
+        // Set headers for PDF download
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Content-Length', buffer.length);
+
+        logger.info('Composite PDF generated and sent', { claimId: id, filename, sizeBytes: buffer.length });
+
+        return res.send(buffer);
+
+    } catch (error: any) {
+        logger.error('Error generating composite PDF', { error: error.message });
+
+        // Check for specific error types
+        if (error.message?.includes('not found')) {
+            return res.status(404).json({ error: 'Claim not found' });
+        }
+        if (error.message?.includes('Chrome') || error.message?.includes('Puppeteer')) {
+            return res.status(503).json({
+                error: 'PDF generation temporarily unavailable',
+                message: 'The PDF generation service is not available. Please try again later.'
+            });
+        }
+
+        return res.status(500).json({ error: 'Failed to generate PDF packet' });
+    }
+});
 
 export default router;
