@@ -2506,6 +2506,7 @@ router.get('/matching/metrics', async (req: Request, res: Response) => {
 // ============================================
 
 import { documentGraphService } from '../services/documentGraphService';
+import { evidenceAuditService } from '../services/evidenceAuditService';
 
 /**
  * GET /api/evidence/documents/:id/linked-claims
@@ -2690,6 +2691,124 @@ router.get('/products/:identifier/documents', async (req: Request, res: Response
     res.status(500).json({
       success: false,
       error: 'Failed to get documents for product'
+    });
+  }
+});
+
+// ============================================
+// EVIDENCE AUDIT TRAIL ROUTES
+// ============================================
+
+/**
+ * GET /api/evidence/documents/:id/audit
+ * Get complete audit trail for a document
+ */
+router.get('/documents/:id/audit', async (req: Request, res: Response) => {
+  try {
+    const documentId = req.params.id;
+
+    logger.info('📋 [AUDIT] Getting audit trail for document', { documentId });
+
+    const auditTrail = await evidenceAuditService.getDocumentAuditTrail(documentId);
+
+    if (!auditTrail) {
+      return res.status(404).json({
+        success: false,
+        error: 'Document not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      ...auditTrail
+    });
+  } catch (error: any) {
+    logger.error('❌ [AUDIT] Error getting document audit trail', { error: error?.message });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get audit trail'
+    });
+  }
+});
+
+/**
+ * GET /api/evidence/claims/:id/audit
+ * Get audit trail for all documents linked to a claim
+ */
+router.get('/claims/:id/audit', async (req: Request, res: Response) => {
+  try {
+    const claimId = req.params.id;
+
+    logger.info('📋 [AUDIT] Getting evidence audit trail for claim', { claimId });
+
+    const auditTrails = await evidenceAuditService.getClaimEvidenceAuditTrail(claimId);
+
+    // Flatten all events and sort by timestamp
+    const allEvents = auditTrails.flatMap(trail =>
+      trail.events.map(event => ({
+        ...event,
+        documentFilename: trail.filename
+      }))
+    );
+    allEvents.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+    res.json({
+      success: true,
+      claimId,
+      documentCount: auditTrails.length,
+      documents: auditTrails.map(t => ({
+        documentId: t.documentId,
+        filename: t.filename,
+        summary: t.summary
+      })),
+      timeline: allEvents,
+      narrativeSummary: allEvents.map(e => e.narrative).join(' → ')
+    });
+  } catch (error: any) {
+    logger.error('❌ [AUDIT] Error getting claim evidence audit', { error: error?.message });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get evidence audit trail'
+    });
+  }
+});
+
+/**
+ * POST /api/evidence/documents/:id/audit/edit
+ * Log a manual edit to a document
+ */
+router.post('/documents/:id/audit/edit', async (req: Request, res: Response) => {
+  try {
+    const documentId = req.params.id;
+    const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
+    const { fieldName, oldValue, newValue } = req.body;
+
+    if (!fieldName) {
+      return res.status(400).json({
+        success: false,
+        error: 'fieldName is required'
+      });
+    }
+
+    logger.info('📝 [AUDIT] Logging manual edit', { documentId, userId, fieldName });
+
+    const success = await evidenceAuditService.logManualEdit(
+      documentId,
+      userId,
+      fieldName,
+      oldValue || '',
+      newValue || ''
+    );
+
+    res.json({
+      success,
+      message: success ? 'Edit logged successfully' : 'Failed to log edit'
+    });
+  } catch (error: any) {
+    logger.error('❌ [AUDIT] Error logging manual edit', { error: error?.message });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to log edit'
     });
   }
 });
