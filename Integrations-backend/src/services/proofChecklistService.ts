@@ -464,25 +464,25 @@ class ProofChecklistService {
 
         // Priority order: ownership > value > delivery > inventory
         if (proofs.ownership.status === 'missing') {
-            recommendations.push(`⚠️ Upload supplier invoice or fapiao for ${identifier} to maximize approval odds`);
+            recommendations.push(`Upload supplier invoice or fapiao for ${identifier} to maximize approval odds`);
         }
 
         if (proofs.value.status === 'missing') {
-            recommendations.push(`💰 Missing proof of value — Amazon may use their estimate (usually lower)`);
+            recommendations.push(`Missing proof of value — Amazon may use their estimate (usually lower)`);
         } else if (proofs.value.status === 'partial') {
-            recommendations.push(`💡 Add unit cost to strengthen value proof`);
+            recommendations.push(`Add unit cost to strengthen value proof`);
         }
 
         if (proofs.delivery.status === 'missing') {
-            recommendations.push(`🚚 Upload POD or tracking confirmation for ${identifier}`);
+            recommendations.push(`Upload POD or tracking confirmation for ${identifier}`);
         }
 
         if (proofs.inventory.status === 'missing' && proofs.ownership.status !== 'missing') {
-            recommendations.push(`📦 FBA shipment ID not found — we're searching your records`);
+            recommendations.push(`FBA shipment ID not found — we're searching your records`);
         }
 
         if (recommendations.length === 0) {
-            recommendations.push(`✅ All proof requirements satisfied for ${identifier}`);
+            recommendations.push(`All proof requirements satisfied for ${identifier}`);
         }
 
         return recommendations;
