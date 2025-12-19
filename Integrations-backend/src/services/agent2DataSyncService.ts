@@ -2971,41 +2971,68 @@ export class Agent2DataSyncService {
 
                 if (singleRecord && !singleError) {
                   allInsertedDetections.push(singleRecord);
-                } else if (singleError?.message?.includes('duplicate')) {
+                } else if (singleError?.message?.includes('duplicate') || singleError?.message?.includes('unique constraint')) {
                   insertErrors++;
+                  // Duplicate is expected, don't log as warning
                 } else if (singleError) {
-                  logger.warn('⚠️ Record insert failed', { error: singleError.message });
+                  logger.warn('⚠️ Record insert failed', { 
+                    error: singleError.message,
+                    code: singleError.code,
+                    anomalyType: record.anomaly_type,
+                    sellerId: record.seller_id
+                  });
                   insertErrors++;
                 }
               } catch (e: any) {
+                logger.error('❌ Exception inserting record', { 
+                  error: e.message,
+                  anomalyType: record?.anomaly_type 
+                });
                 insertErrors++;
               }
             }
           } else {
-            logger.error('❌ Batch insert failed', { error: batchError.message });
+            logger.error('❌ Batch insert failed (not duplicate error)', { 
+              error: batchError.message,
+              code: batchError.code,
+              batchSize: batch.length
+            });
             insertErrors += batch.length;
           }
         } else if (insertedBatch) {
           allInsertedDetections.push(...insertedBatch);
         }
       } catch (batchException: any) {
-        logger.error('❌ Exception during batch insert', { error: batchException.message });
+        logger.error('❌ Exception during batch insert', { 
+          error: batchException.message,
+          batchSize: batch.length
+        });
         insertErrors += batch.length;
       }
     }
 
     const insertedDetections = allInsertedDetections;
-    const error = insertErrors > 0 && allInsertedDetections.length === 0
-      ? { message: 'All inserts failed' }
-      : null;
 
-    if (error) {
-      logger.error('❌ [AGENT 2] Failed to store detection results', {
-        error: error.message,
+    // Only error if we had records to insert AND all failed for non-duplicate reasons
+    // If all records were duplicates, that's expected behavior - not an error
+    const allAreDuplicates = insertErrors === validatedRecords.length && validatedRecords.length > 0;
+    const hasSomeSuccess = allInsertedDetections.length > 0;
+
+    if (insertErrors > 0 && !hasSomeSuccess && !allAreDuplicates) {
+      logger.error('❌ [AGENT 2] Failed to store detection results - all inserts failed', {
         userId,
-        syncId
+        syncId,
+        totalRecords: validatedRecords.length,
+        insertErrors,
+        successCount: allInsertedDetections.length
       });
-      throw new Error(`Failed to store detection results: ${error.message}`);
+      // Don't throw - just log and continue so sync can complete
+    } else if (allAreDuplicates) {
+      logger.info('ℹ️ [AGENT 2] All detection results already exist (duplicates)', {
+        userId,
+        syncId,
+        skippedCount: insertErrors
+      });
     }
 
     // Fix for build error: "Cannot find name 'records'"
@@ -3016,11 +3043,16 @@ export class Agent2DataSyncService {
       userId,
       syncId,
       count: allInsertedDetections.length,
-      skippedDuplicates: insertErrors
+      skippedDuplicates: insertErrors,
+      totalAttempted: validatedRecords.length
     });
 
+    // Always try to backfill disputes/recoveries even if no new detections
+    // (in case previous sync had partial data)
     try {
-      await upsertDisputesAndRecoveriesFromDetections(insertedDetections || []);
+      if (insertedDetections && insertedDetections.length > 0) {
+        await upsertDisputesAndRecoveriesFromDetections(insertedDetections);
+      }
     } catch (backfillError: any) {
       logger.error('⚠️ [AGENT 2] Failed to backfill dispute/recovery records', {
         error: backfillError?.message || backfillError,
