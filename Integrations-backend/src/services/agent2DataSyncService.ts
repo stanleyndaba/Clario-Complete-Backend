@@ -1785,6 +1785,23 @@ export class Agent2DataSyncService {
         returnsCount: validatedData.returns?.length || 0,
         settlementsCount: validatedData.settlements?.length || 0
       });
+
+      // Send user-friendly sync log when no claims found
+      this.sendSyncLog(userId, syncId, {
+        type: 'success',
+        category: 'detection',
+        message: `✅ Account health check complete - No recoverable discrepancies found`,
+        context: {
+          details: [
+            `Scanned across 67 claim categories`,
+            `Orders analyzed: ${validatedData.orders?.length || 0}`,
+            `Shipments checked: ${validatedData.shipments?.length || 0}`,
+            `Returns verified: ${validatedData.returns?.length || 0}`,
+            `Your Amazon account appears healthy! 🎉`
+          ]
+        }
+      });
+
       await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, true);
       return { totalDetected: 0 };
     }
