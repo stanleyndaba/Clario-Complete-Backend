@@ -1839,20 +1839,6 @@ export class Agent2DataSyncService {
       }
     });
 
-    if (totalBatches > 1) {
-      this.sendSyncLog(userId, syncId, {
-        type: 'info',
-        category: 'detection',
-        message: `Processing ${allClaimsToDetect.length.toLocaleString()} claims in ${totalBatches} batches...`
-      });
-    } else {
-      this.sendSyncLog(userId, syncId, {
-        type: 'info',
-        category: 'detection',
-        message: `Processing ${allClaimsToDetect.length.toLocaleString()} claims...`
-      });
-    }
-
     // Step 3: Create detection_queue entry BEFORE calling API (so syncJobManager can track it)
     try {
       const { data: existingQueue } = await supabaseAdmin
@@ -2158,7 +2144,7 @@ export class Agent2DataSyncService {
     this.sendSyncLog(userId, syncId, {
       type: 'info',
       category: 'detection',
-      message: `Analyzing ${allPredictions.length.toLocaleString()} predictions for claimable opportunities...`
+      message: `Processing ${allPredictions.length.toLocaleString()} transactions with ML (70% confidence threshold)...`
     });
 
     // Log detailed statistics before filtering
