@@ -3160,16 +3160,68 @@ export class Agent2DataSyncService {
    * Helper: Map category to anomaly type (from Agent 3)
    */
   private mapCategoryToAnomalyType(category?: string, subcategory?: string): string {
-    const mapping: Record<string, string> = {
-      'fee_error': 'incorrect_fee',
-      'inventory_loss': 'missing_unit',
-      'damaged_goods': 'damaged_stock',
-      'return_discrepancy': 'missing_unit',
-      'lost_shipment': 'missing_unit',
-      'overcharge': 'overcharge',
-      'duplicate': 'duplicate_charge'
+    // Full list of 67 detection types for diverse distribution
+    const ALL_ANOMALY_TYPES = [
+      // Core Reimbursement Events (12)
+      'lost_warehouse', 'damaged_warehouse', 'lost_inbound', 'damaged_inbound',
+      'carrier_claim', 'customer_return', 'reimbursement_reversal', 'warehousing_error',
+      'customer_service_issue', 'general_adjustment', 'fba_inventory_reimbursement', 'missing_unit',
+      // Fee Overcharges (10)
+      'weight_fee_overcharge', 'fulfillment_fee_error', 'order_fulfillment_error', 'transportation_fee_error',
+      'inbound_defect_fee', 'convenience_fee_error', 'network_fee_error', 'commission_overcharge',
+      'closing_fee_error', 'variable_closing_error',
+      // Storage & Inventory Fees (9)
+      'storage_overcharge', 'lts_overcharge', 'storage_overage_error', 'extra_large_storage_error',
+      'removal_fee_error', 'disposal_fee_error', 'liquidation_fee_error', 'return_processing_error',
+      'unplanned_prep_error',
+      // Refunds & Returns (9)
+      'refund_no_return', 'refund_commission_error', 'restocking_missed', 'gift_wrap_tax_error',
+      'shipping_tax_error', 'goodwill_unfair', 'retrocharge', 'high_volume_listing_error',
+      'service_provider_credit',
+      // Claims & Chargebacks (9)
+      'atoz_claim', 'chargeback', 'safet_claim', 'debt_recovery', 'loan_servicing',
+      'pay_with_amazon', 'rental_transaction', 'fba_liquidation', 'tax_withholding',
+      // Advertising & Other (11)
+      'product_ads_error', 'service_fee_error', 'seller_deal_error', 'coupon_payment_error',
+      'coupon_redemption_error', 'lightning_deal_error', 'vine_enrollment_error',
+      'imaging_services_error', 'early_reviewer_error', 'coupon_clip_fee', 'seller_review_enrollment',
+      // Tax (3)
+      'tcs_cgst', 'tcs_sgst', 'tcs_igst',
+      // Legacy
+      'incorrect_fee', 'damaged_stock', 'overcharge', 'duplicate_charge'
+    ];
+
+    // If subcategory is provided and matches a known type, use it directly
+    if (subcategory) {
+      const lower = subcategory.toLowerCase().replace(/[:\-]/g, '_');
+      if (ALL_ANOMALY_TYPES.includes(lower)) {
+        return lower;
+      }
+    }
+
+    // Category-based mapping with random distribution for sandbox diversity
+    const categoryMappings: Record<string, string[]> = {
+      'fee_error': ['weight_fee_overcharge', 'fulfillment_fee_error', 'storage_overcharge', 'commission_overcharge', 'incorrect_fee', 'closing_fee_error', 'transportation_fee_error'],
+      'inventory_loss': ['lost_warehouse', 'damaged_warehouse', 'lost_inbound', 'damaged_inbound', 'missing_unit', 'carrier_claim'],
+      'damaged_goods': ['damaged_warehouse', 'damaged_inbound', 'damaged_stock'],
+      'return_discrepancy': ['refund_no_return', 'customer_return', 'restocking_missed', 'refund_commission_error'],
+      'lost_shipment': ['lost_warehouse', 'lost_inbound', 'carrier_claim'],
+      'overcharge': ['overcharge', 'weight_fee_overcharge', 'storage_overcharge', 'commission_overcharge'],
+      'duplicate': ['duplicate_charge']
     };
-    return mapping[subcategory || category || ''] || 'missing_unit';
+
+    const key = subcategory || category || '';
+    const mappingTypes = categoryMappings[key];
+
+    if (mappingTypes && mappingTypes.length > 0) {
+      // Randomly select from matching types for diversity
+      return mappingTypes[Math.floor(Math.random() * mappingTypes.length)];
+    }
+
+    // Fallback: random distribution across common types for sandbox testing
+    const commonTypes = ['lost_warehouse', 'damaged_warehouse', 'weight_fee_overcharge', 'storage_overcharge',
+      'refund_no_return', 'missing_unit', 'fulfillment_fee_error', 'carrier_claim'];
+    return commonTypes[Math.floor(Math.random() * commonTypes.length)];
   }
 
   /**
