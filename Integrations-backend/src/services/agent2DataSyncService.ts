@@ -2294,18 +2294,26 @@ export class Agent2DataSyncService {
       }
       const cleanCategories = allCategories.filter(c => !foundCategories.has(c));
 
-      // Send sync log with type breakdown
+      // Calculate total value
+      const totalValue = detectionResults.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
+
+      // Send sync log with FULL explanation of WHERE the numbers come from
       this.sendSyncLog(userId, syncId, {
         type: 'info',
         category: 'detection',
-        message: `Detected ${detectionResults.length.toLocaleString()} opportunities across ${foundTypeCount} claim types`,
+        message: `Found ${detectionResults.length.toLocaleString()} recoverable opportunities worth $${totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
         context: {
           details: [
-            `Top detection types:`,
-            ...typeDetails,
+            `📊 How we found them:`,
+            `   • Scanned ${allClaimsToDetect.length.toLocaleString()} transactions for anomalies`,
+            `   • Analyzed against 67 Amazon claim categories`,
+            `   • ${detectionResults.length} flagged as recoverable (${((detectionResults.length / allClaimsToDetect.length) * 100).toFixed(1)}% detection rate)`,
+            ``,
+            `💰 Breakdown by issue type:`,
+            ...typeDetails.map(detail => `   • ${detail}`),
             ...(cleanCategories.length > 0 ? [
               ``,
-              `✅ No issues in: ${cleanCategories.join(', ')} (${cleanCategoryCount} types clean)`
+              `✅ No issues found in: ${cleanCategories.join(', ')}`
             ] : [])
           ]
         }
