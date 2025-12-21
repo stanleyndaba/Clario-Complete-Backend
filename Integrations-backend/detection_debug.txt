@@ -174,3 +174,47 @@ IsSandbox: true
 Input Detections: 33
 DB Client: Admin
 
+[2025-12-21T15:29:39.876Z] AFTER detection mapping
+All Predictions: 221
+Claimable Predictions: 32
+Mapped Detection Results: 32
+Sample Result: {"claim_id":"claim_return_RET-1766330972174-0_1766330972849","seller_id":"8491239e-64a0-4642-8e26-f71770733872","anomaly_type":"missing_unit","severity":"medium","estimated_value":22.06,"currency":"USD","confidence_score":0.5504,"evidence":{},"related_event_ids":["112-7528545-50659"],"discovery_date":"2024-06-29T18:41:03.890Z","deadline_date":"2024-08-28T18:41:03.890Z","days_remaining":0}
+
+[2025-12-21T15:29:39.883Z] storeDetectionResults
+IsSandbox: true
+Input Detections: 32
+DB Client: Admin
+
+[2025-12-21T15:30:11.608Z] AFTER detection mapping
+All Predictions: 227
+Claimable Predictions: 26
+Mapped Detection Results: 26
+Sample Result: {"claim_id":"claim_order_112-7675661-93833_1766331005200_0o67q","seller_id":"8491239e-64a0-4642-8e26-f71770733872","anomaly_type":"missing_unit","severity":"medium","estimated_value":7.75,"currency":"USD","confidence_score":0.65,"evidence":{},"related_event_ids":["112-7675661-93833"],"discovery_date":"2025-09-28T03:47:35.569Z","deadline_date":"2025-11-27T03:47:35.569Z","days_remaining":0}
+
+[2025-12-21T15:30:11.639Z] storeDetectionResults
+IsSandbox: true
+Input Detections: 26
+DB Client: Admin
+
+[2025-12-21T15:41:17.074Z] AFTER detection mapping
+All Predictions: 239
+Claimable Predictions: 26
+Mapped Detection Results: 26
+Sample Result: {"claim_id":"claim_order_112-6000568-488815_1766331670082_pht9t","seller_id":"439ca714-72f8-4a3d-b0bd-a9987e75b10f","anomaly_type":"missing_unit","severity":"critical","estimated_value":19.05,"currency":"USD","confidence_score":0.9568,"evidence":{},"related_event_ids":["112-6000568-488815"],"discovery_date":"2024-09-27T11:11:03.864Z","deadline_date":"2024-11-26T11:11:03.864Z","days_remaining":0}
+
+[2025-12-21T15:41:17.091Z] storeDetectionResults
+IsSandbox: true
+Input Detections: 26
+DB Client: Admin
+
+[2025-12-21T15:41:52.475Z] AFTER detection mapping
+All Predictions: 225
+Claimable Predictions: 25
+Mapped Detection Results: 25
+Sample Result: {"claim_id":"claim_order_112-3511440-374240_1766331705749_4cbgz","seller_id":"439ca714-72f8-4a3d-b0bd-a9987e75b10f","anomaly_type":"missing_unit","severity":"critical","estimated_value":0.52,"currency":"USD","confidence_score":0.8556,"evidence":{},"related_event_ids":["112-3511440-374240"],"discovery_date":"2024-11-17T08:33:24.620Z","deadline_date":"2025-01-16T08:33:24.620Z","days_remaining":0}
+
+[2025-12-21T15:41:52.482Z] storeDetectionResults
+IsSandbox: true
+Input Detections: 25
+DB Client: Admin
+

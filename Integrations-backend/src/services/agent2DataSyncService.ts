@@ -1808,13 +1808,16 @@ export class Agent2DataSyncService {
     this.sendSyncLog(userId, syncId, {
       type: 'thinking',
       category: 'detection',
-      message: `Running ML anomaly detection on ${allClaimsToDetect.length.toLocaleString()} claim candidates...`,
+      message: `Scanning for 67 claim types across ${allClaimsToDetect.length.toLocaleString()} transactions...`,
       context: {
         details: [
-          'Pattern matching against 10,000+ historical claims',
-          'Using 5 ML models: FeeFinder, InventoryGuard, ShipmentWatch, ReturnScan, SettlementAudit',
-          'Confidence threshold: 70%',
-          `Processing batch 1/${totalBatches} (${Math.min(allClaimsToDetect.length, MAX_CLAIMS_PER_BATCH)} items)`
+          '📊 Fee Errors: weight overcharge, fulfillment fee, storage fee, commission error, closing fee',
+          '📦 Inventory: lost in warehouse, damaged goods, missing units, carrier claims',
+          '🚚 Inbound: lost inbound, damaged inbound, inbound defect, convenience fee',
+          '↩️ Returns: refund no return, restocking missed, return processing error',
+          '💰 Adjustments: reimbursement reversal, general adjustment, retrocharge',
+          '🔍 Plus 50+ more specialized claim types...',
+          `Processing ${totalBatches} batch${totalBatches > 1 ? 'es' : ''} with ML confidence threshold: 70%`
         ]
       }
     });
@@ -2227,6 +2230,40 @@ export class Agent2DataSyncService {
 
     // Step 6: Store detection results
     if (detectionResults.length > 0) {
+      // Generate detection type breakdown for logs
+      const typeBreakdown: Record<string, { count: number; value: number }> = {};
+      for (const det of detectionResults) {
+        const type = det.anomaly_type || 'unknown';
+        if (!typeBreakdown[type]) {
+          typeBreakdown[type] = { count: 0, value: 0 };
+        }
+        typeBreakdown[type].count += 1;
+        typeBreakdown[type].value += det.estimated_value || 0;
+      }
+
+      // Sort by count descending and get top types
+      const sortedTypes = Object.entries(typeBreakdown)
+        .sort(([, a], [, b]) => b.count - a.count)
+        .slice(0, 10); // Top 10 types
+
+      // Format type breakdown for display
+      const typeDetails = sortedTypes.map(([type, data]) =>
+        `${type.replace(/_/g, ' ')}: ${data.count} ($${data.value.toFixed(2)})`
+      );
+
+      // Send sync log with type breakdown
+      this.sendSyncLog(userId, syncId, {
+        type: 'info',
+        category: 'detection',
+        message: `Detected ${detectionResults.length.toLocaleString()} opportunities across ${Object.keys(typeBreakdown).length} claim types`,
+        context: {
+          details: typeDetails.length > 0 ? [
+            `Top detection types:`,
+            ...typeDetails
+          ] : ['No claims detected']
+        }
+      });
+
       this.sendSyncLog(userId, syncId, {
         type: 'info',
         category: 'detection',
@@ -2975,7 +3012,7 @@ export class Agent2DataSyncService {
                   insertErrors++;
                   // Duplicate is expected, don't log as warning
                 } else if (singleError) {
-                  logger.warn('⚠️ Record insert failed', { 
+                  logger.warn('⚠️ Record insert failed', {
                     error: singleError.message,
                     code: singleError.code,
                     anomalyType: record.anomaly_type,
@@ -2984,15 +3021,15 @@ export class Agent2DataSyncService {
                   insertErrors++;
                 }
               } catch (e: any) {
-                logger.error('❌ Exception inserting record', { 
+                logger.error('❌ Exception inserting record', {
                   error: e.message,
-                  anomalyType: record?.anomaly_type 
+                  anomalyType: record?.anomaly_type
                 });
                 insertErrors++;
               }
             }
           } else {
-            logger.error('❌ Batch insert failed (not duplicate error)', { 
+            logger.error('❌ Batch insert failed (not duplicate error)', {
               error: batchError.message,
               code: batchError.code,
               batchSize: batch.length
@@ -3003,7 +3040,7 @@ export class Agent2DataSyncService {
           allInsertedDetections.push(...insertedBatch);
         }
       } catch (batchException: any) {
-        logger.error('❌ Exception during batch insert', { 
+        logger.error('❌ Exception during batch insert', {
           error: batchException.message,
           batchSize: batch.length
         });
