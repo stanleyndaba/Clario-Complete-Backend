@@ -1834,7 +1834,7 @@ export class Agent2DataSyncService {
           'Returns: refund no return, restocking missed, return processing error',
           'Adjustments: reimbursement reversal, general adjustment, retrocharge',
           'Plus 50+ more specialized claim types...',
-          `Processing ${totalBatches} batch${totalBatches > 1 ? 'es' : ''} with ML confidence threshold: 70%`
+          `Processing ${totalBatches} batch${totalBatches > 1 ? 'es' : ''}...`
         ]
       }
     });
@@ -2144,7 +2144,7 @@ export class Agent2DataSyncService {
     this.sendSyncLog(userId, syncId, {
       type: 'info',
       category: 'detection',
-      message: `Processing ${allPredictions.length.toLocaleString()} transactions with ML (70% confidence threshold)...`
+      message: `Processing ${allPredictions.length.toLocaleString()} transactions...`
     });
 
     // Log detailed statistics before filtering
