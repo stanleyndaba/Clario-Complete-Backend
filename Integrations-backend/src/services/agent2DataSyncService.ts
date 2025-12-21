@@ -2140,12 +2140,8 @@ export class Agent2DataSyncService {
       throw new Error(`Batch processing failed: ${batchProcessingError.message}`);
     }
 
-    // Send sync log for detection analysis
-    this.sendSyncLog(userId, syncId, {
-      type: 'info',
-      category: 'detection',
-      message: `Processing ${allPredictions.length.toLocaleString()} transactions...`
-    });
+    // Send sync log for detection analysis - merged into outcome line below
+    // (removed duplicate "Processing X transactions" to reduce noise)
 
     // Log detailed statistics before filtering
     const claimablePredictions = allPredictions.filter((p: any) => p.claimable);
@@ -2287,13 +2283,13 @@ export class Agent2DataSyncService {
       this.sendSyncLog(userId, syncId, {
         type: 'info',
         category: 'detection',
-        message: `Found ${detectionResults.length.toLocaleString()} recoverable opportunities worth $${totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+        message: `Found ${detectionResults.length.toLocaleString()} recoverable opportunities (${((detectionResults.length / allClaimsToDetect.length) * 100).toFixed(1)}% detection rate)`,
         context: {
           details: [
-            `How we found them:`,
+            `Behind these results:`,
             `   • Scanned ${allClaimsToDetect.length.toLocaleString()} transactions for anomalies`,
             `   • Analyzed against 67 Amazon claim categories`,
-            `   • ${detectionResults.length} flagged as recoverable (${((detectionResults.length / allClaimsToDetect.length) * 100).toFixed(1)}% detection rate)`,
+            `   • ${detectionResults.length} flagged as recoverable`,
             ``,
             `Breakdown by issue type:`,
             ...typeDetails.map(detail => `   • ${detail}`),
