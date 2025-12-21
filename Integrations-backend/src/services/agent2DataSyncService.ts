@@ -2268,16 +2268,46 @@ export class Agent2DataSyncService {
         `${type.replace(/_/g, ' ')}: ${data.count} ($${data.value.toFixed(2)})`
       );
 
+      // Calculate clean categories (67 total - found types)
+      const foundTypeCount = Object.keys(typeBreakdown).length;
+      const cleanCategoryCount = 67 - foundTypeCount;
+
+      // Group clean categories by high-level category
+      const allCategories = ['Reimbursement', 'Fee Overcharges', 'Storage Fees', 'Returns', 'Chargebacks', 'Advertising', 'Tax'];
+      const foundCategories = new Set<string>();
+      for (const type of Object.keys(typeBreakdown)) {
+        if (['lost_warehouse', 'damaged_warehouse', 'lost_inbound', 'carrier_claim', 'missing_unit'].some(t => type.includes(t))) {
+          foundCategories.add('Reimbursement');
+        } else if (['fee', 'overcharge', 'commission'].some(t => type.includes(t))) {
+          foundCategories.add('Fee Overcharges');
+        } else if (['storage', 'removal', 'disposal'].some(t => type.includes(t))) {
+          foundCategories.add('Storage Fees');
+        } else if (['refund', 'return', 'restocking'].some(t => type.includes(t))) {
+          foundCategories.add('Returns');
+        } else if (['chargeback', 'atoz', 'safet', 'debt'].some(t => type.includes(t))) {
+          foundCategories.add('Chargebacks');
+        } else if (['ads', 'coupon', 'lightning', 'vine'].some(t => type.includes(t))) {
+          foundCategories.add('Advertising');
+        } else if (['tcs', 'tax'].some(t => type.includes(t))) {
+          foundCategories.add('Tax');
+        }
+      }
+      const cleanCategories = allCategories.filter(c => !foundCategories.has(c));
+
       // Send sync log with type breakdown
       this.sendSyncLog(userId, syncId, {
         type: 'info',
         category: 'detection',
-        message: `Detected ${detectionResults.length.toLocaleString()} opportunities across ${Object.keys(typeBreakdown).length} claim types`,
+        message: `Detected ${detectionResults.length.toLocaleString()} opportunities across ${foundTypeCount} claim types`,
         context: {
-          details: typeDetails.length > 0 ? [
+          details: [
             `Top detection types:`,
-            ...typeDetails
-          ] : ['No claims detected']
+            ...typeDetails,
+            ...(cleanCategories.length > 0 ? [
+              ``,
+              `✅ No issues in: ${cleanCategories.join(', ')} (${cleanCategoryCount} types clean)`
+            ] : [])
+          ]
         }
       });
 
