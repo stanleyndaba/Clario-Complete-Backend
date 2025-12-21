@@ -1828,12 +1828,12 @@ export class Agent2DataSyncService {
       message: `Scanning for 67 claim types across ${allClaimsToDetect.length.toLocaleString()} transactions...`,
       context: {
         details: [
-          '📊 Fee Errors: weight overcharge, fulfillment fee, storage fee, commission error, closing fee',
-          '📦 Inventory: lost in warehouse, damaged goods, missing units, carrier claims',
-          '🚚 Inbound: lost inbound, damaged inbound, inbound defect, convenience fee',
-          '↩️ Returns: refund no return, restocking missed, return processing error',
-          '💰 Adjustments: reimbursement reversal, general adjustment, retrocharge',
-          '🔍 Plus 50+ more specialized claim types...',
+          'Fee Errors: weight overcharge, fulfillment fee, storage fee, commission error, closing fee',
+          'Inventory: lost in warehouse, damaged goods, missing units, carrier claims',
+          'Inbound: lost inbound, damaged inbound, inbound defect, convenience fee',
+          'Returns: refund no return, restocking missed, return processing error',
+          'Adjustments: reimbursement reversal, general adjustment, retrocharge',
+          'Plus 50+ more specialized claim types...',
           `Processing ${totalBatches} batch${totalBatches > 1 ? 'es' : ''} with ML confidence threshold: 70%`
         ]
       }
@@ -2304,16 +2304,16 @@ export class Agent2DataSyncService {
         message: `Found ${detectionResults.length.toLocaleString()} recoverable opportunities worth $${totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
         context: {
           details: [
-            `📊 How we found them:`,
+            `How we found them:`,
             `   • Scanned ${allClaimsToDetect.length.toLocaleString()} transactions for anomalies`,
             `   • Analyzed against 67 Amazon claim categories`,
             `   • ${detectionResults.length} flagged as recoverable (${((detectionResults.length / allClaimsToDetect.length) * 100).toFixed(1)}% detection rate)`,
             ``,
-            `💰 Breakdown by issue type:`,
+            `Breakdown by issue type:`,
             ...typeDetails.map(detail => `   • ${detail}`),
             ...(cleanCategories.length > 0 ? [
               ``,
-              `✅ No issues found in: ${cleanCategories.join(', ')}`
+              `No issues found in: ${cleanCategories.join(', ')}`
             ] : [])
           ]
         }
