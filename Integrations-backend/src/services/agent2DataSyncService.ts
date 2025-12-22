@@ -227,8 +227,13 @@ export class Agent2DataSyncService {
         result.summary.ordersCount = result.normalized.orders.length;
 
         if (result.summary.ordersCount > 0) {
-          const totalVolume = result.normalized.orders.reduce((sum: number, o: any) => sum + (Number(o.total_amount) || 0), 0);
-          const avgValue = totalVolume / result.summary.ordersCount;
+          const rawVolume = result.normalized.orders.reduce((sum: number, o: any) => sum + (Number(o.total_amount) || 0), 0);
+
+          // For demo realism: boost volume so claims (~$7k) represent realistic 2% error rate
+          // Real Amazon error rate is 1-3%, so if claims ~$7k, volume should be ~$350k
+          const volumeMultiplier = isMockMode ? 22 : 1; // 22x makes ~$15k -> ~$350k
+          const totalVolume = rawVolume * volumeMultiplier;
+          const avgValue = (rawVolume / result.summary.ordersCount) * (isMockMode ? 3 : 1); // Slightly boost avg too
 
           this.sendSyncLog(userId, syncId, {
             type: 'success',
