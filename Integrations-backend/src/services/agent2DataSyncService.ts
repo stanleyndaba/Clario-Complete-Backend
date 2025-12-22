@@ -456,21 +456,30 @@ export class Agent2DataSyncService {
         result.summary.inventoryCount = result.normalized.inventory.length;
 
         if (result.summary.inventoryCount > 0) {
-          // Calculate inventory value if price exists, otherwise estimate
-          const totalValue = result.normalized.inventory.reduce((sum: number, i: any) => sum + ((Number(i.price) || 25) * (Number(i.quantity) || 0)), 0);
-          const avgValue = totalValue / (result.normalized.inventory.reduce((sum: number, i: any) => sum + (Number(i.quantity) || 0), 1) || 1);
+          // Calculate inventory value - default price $25, default quantity 1 per SKU for mock data
+          const totalValue = result.normalized.inventory.reduce((sum: number, i: any) => {
+            const price = Number(i.price) || 25; // Default $25 per unit
+            const qty = Number(i.quantity) || 1;  // Default 1 unit per SKU (not 0!)
+            return sum + (price * qty);
+          }, 0);
+          const totalUnits = result.normalized.inventory.reduce((sum: number, i: any) => sum + (Number(i.quantity) || 1), 0);
+          const avgValue = totalUnits > 0 ? totalValue / totalUnits : 25;
+
+          // Build details - only show value lines if we have meaningful values
+          const inventoryDetails: string[] = [];
+          if (totalValue > 0) {
+            inventoryDetails.push(`Total inventory value: ~$${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+            inventoryDetails.push(`Average unit value: ~$${avgValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+          }
 
           this.sendSyncLog(userId, syncId, {
             type: 'success',
             category: 'inventory',
             message: `[FOUND] ${result.summary.inventoryCount.toLocaleString()} active SKUs in warehouse`,
             count: result.summary.inventoryCount,
-            context: {
-              details: [
-                `Total inventory value: ~$${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-                `Average unit value: ~$${avgValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-              ]
-            }
+            ...(inventoryDetails.length > 0 && {
+              context: { details: inventoryDetails }
+            })
           });
           this.sendSyncLog(userId, syncId, {
             type: 'thinking',
