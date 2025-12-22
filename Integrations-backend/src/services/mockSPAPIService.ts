@@ -17,7 +17,7 @@ function parseCSV(content: string, options: { columns?: boolean; skip_empty_line
   if (lines.length === 0) return [];
 
   // Remove empty lines if requested
-  const nonEmptyLines = options.skip_empty_lines 
+  const nonEmptyLines = options.skip_empty_lines
     ? lines.filter(line => line.trim().length > 0)
     : lines;
 
@@ -46,12 +46,12 @@ function parseCSV(content: string, options: { columns?: boolean; skip_empty_line
 
     headers.forEach((header, index) => {
       let value = values[index] !== undefined ? values[index] : null;
-      
+
       // Apply cast function if provided
       if (options.cast) {
         value = options.cast(value, { header: true, column: header, index });
       }
-      
+
       record[header] = value;
     });
 
@@ -126,9 +126,9 @@ export class MockSPAPIService {
     // 1. Local: C:\Users\...\Clario-Complete-Backend\Integrations-backend
     // 2. Render: /opt/render/project/src/Integrations-backend
     // 3. Render (alternative): /opt/render/project/src/Clario-Complete-Backend/Integrations-backend
-    
+
     let projectRoot = process.cwd();
-    
+
     // If we're in Integrations-backend, go up one level
     if (projectRoot.includes('Integrations-backend')) {
       // Check if parent directory exists and contains 'data' folder
@@ -144,20 +144,20 @@ export class MockSPAPIService {
         }
       }
     }
-    
+
     this.dataDir = path.join(projectRoot, 'data', 'mock-spapi');
-    
+
     // Ensure directory exists
     if (!fs.existsSync(this.dataDir)) {
       fs.mkdirSync(this.dataDir, { recursive: true });
       logger.warn('Created mock SP-API data directory (may be empty)', { path: this.dataDir });
     }
-    
+
     // Log initialization status
     const useMock = process.env.USE_MOCK_SPAPI === 'true';
     const filesExist = fs.existsSync(this.dataDir);
     const csvFiles = filesExist ? fs.readdirSync(this.dataDir).filter(f => f.endsWith('.csv')) : [];
-    
+
     logger.info('Mock SP-API Service initialized', {
       dataDir: this.dataDir,
       useMock,
@@ -167,7 +167,7 @@ export class MockSPAPIService {
       csvFiles: csvFiles.length > 0 ? csvFiles : 'none found',
       cwd: process.cwd()
     });
-    
+
     if (useMock && csvFiles.length === 0) {
       logger.warn('USE_MOCK_SPAPI is enabled but no CSV files found in data directory', {
         dataDir: this.dataDir,
@@ -181,14 +181,14 @@ export class MockSPAPIService {
    */
   private loadCSV(filename: string): any[] {
     const cacheKey = `csv_${filename}`;
-    
+
     // Check cache first
     if (this.cache.has(cacheKey)) {
       return this.cache.get(cacheKey)!;
     }
 
     const filePath = path.join(this.dataDir, filename);
-    
+
     if (!fs.existsSync(filePath)) {
       logger.warn(`CSV file not found: ${filePath}`, { filename });
       return [];
@@ -213,16 +213,16 @@ export class MockSPAPIService {
 
       // Cache the parsed data
       this.cache.set(cacheKey, records);
-      logger.info(`Loaded ${records.length} records from ${filename}`, { 
-        filename, 
-        recordCount: records.length 
+      logger.info(`Loaded ${records.length} records from ${filename}`, {
+        filename,
+        recordCount: records.length
       });
 
       return records;
     } catch (error: any) {
-      logger.error(`Error loading CSV file ${filename}:`, { 
-        error: error.message, 
-        filePath 
+      logger.error(`Error loading CSV file ${filename}:`, {
+        error: error.message,
+        filePath
       });
       return [];
     }
@@ -232,9 +232,9 @@ export class MockSPAPIService {
    * Filter records by date range
    */
   private filterByDateRange(
-    records: any[], 
-    dateField: string, 
-    startDate?: string, 
+    records: any[],
+    dateField: string,
+    startDate?: string,
     endDate?: string
   ): any[] {
     if (!startDate && !endDate) return records;
@@ -277,7 +277,7 @@ export class MockSPAPIService {
    */
   async getFinancialEvents(params: MockSPAPIParams): Promise<any> {
     const records = this.loadCSV('financial_events.csv');
-    
+
     if (records.length === 0) {
       return {
         payload: {
@@ -343,7 +343,7 @@ export class MockSPAPIService {
    */
   async getOrders(params: MockSPAPIParams): Promise<any> {
     const records = this.loadCSV('orders.csv');
-    
+
     if (records.length === 0) {
       return {
         payload: {
@@ -408,7 +408,7 @@ export class MockSPAPIService {
    */
   async getInventorySummaries(params: MockSPAPIParams): Promise<any> {
     const records = this.loadCSV('inventory.csv');
-    
+
     if (records.length === 0) {
       return {
         payload: {
@@ -445,7 +445,7 @@ export class MockSPAPIService {
    */
   async getFees(params: MockSPAPIParams): Promise<any> {
     const records = this.loadCSV('fees.csv');
-    
+
     if (records.length === 0) {
       return {
         payload: {
@@ -518,7 +518,7 @@ export class MockSPAPIService {
    */
   async getShipments(params: MockSPAPIParams): Promise<any> {
     const records = this.loadCSV('shipments_returns.csv');
-    
+
     if (records.length === 0) {
       return {
         payload: {
@@ -556,7 +556,7 @@ export class MockSPAPIService {
    */
   async getReturns(params: MockSPAPIParams): Promise<any> {
     const records = this.loadCSV('shipments_returns.csv');
-    
+
     if (records.length === 0) {
       return {
         payload: {

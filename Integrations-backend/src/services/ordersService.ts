@@ -66,15 +66,11 @@ export class OrdersService {
         isSandbox: this.isSandbox()
       });
 
-      // Get access token (this should be handled by amazonService, but for now we'll use a placeholder)
-      // In production, this should use the tokenManager
-      const accessToken = await this.getAccessToken(userId);
-      const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
-
       // Default to last 18 months for Phase 1 (first sync)
       // If no dates provided, fetch 18 months of historical data
       const createdAfter = startDate || new Date(Date.now() - 18 * 30 * 24 * 60 * 60 * 1000);
       const createdBefore = endDate || new Date();
+      const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
 
       const params: any = {
         MarketplaceIds: marketplaceId,
@@ -82,13 +78,13 @@ export class OrdersService {
         CreatedBefore: createdBefore.toISOString()
       };
 
-      // Check if using mock SP-API
+      // Check if using mock SP-API (Bypass credentials check)
       if (process.env.USE_MOCK_SPAPI === 'true') {
-        logger.info('Using Mock SP-API for orders', { userId });
+        logger.info('Using Mock SP-API for orders (Credentials bypassed)', { userId });
         const mockResponse = await mockSPAPIService.getOrders(params);
         const payload = mockResponse.payload || mockResponse;
         const orders = payload?.Orders || [];
-        
+
         // Normalize orders
         const normalizedOrders = this.normalizeOrders(orders, userId);
 
@@ -98,6 +94,10 @@ export class OrdersService {
           message: `Fetched ${normalizedOrders.length} orders from Mock SP-API`
         };
       }
+
+      // Get access token (this should be handled by amazonService, but for now we'll use a placeholder)
+      // In production, this should use the tokenManager
+      const accessToken = await this.getAccessToken(userId);
 
       // Fetch orders from SP-API
       const response = await axios.get(`${this.baseUrl}/orders/v0/orders`, {

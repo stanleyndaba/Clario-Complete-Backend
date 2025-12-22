@@ -60,11 +60,26 @@ export class ShipmentsService {
       logger.info('Fetching shipments from SP-API', {
         userId,
         environment,
-        dataType,
-        startDate: startDate?.toISOString(),
         endDate: endDate?.toISOString(),
         isSandbox: this.isSandbox()
       });
+
+      // Check if using mock SP-API (Bypass credentials check)
+      if (process.env.USE_MOCK_SPAPI === 'true') {
+        logger.info('Using Mock SP-API for shipments (Credentials bypassed)', { userId });
+        const mockResponse = await (await import('./mockSPAPIService')).mockSPAPIService.getShipments({});
+        const payload = mockResponse.payload || mockResponse;
+        const shipments = payload?.Shipments || [];
+
+        // Normalize shipments
+        const normalizedShipments = this.normalizeShipments(shipments, userId);
+
+        return {
+          success: true,
+          data: normalizedShipments,
+          message: `Fetched ${normalizedShipments.length} shipments from Mock SP-API`
+        };
+      }
 
       // For now, we'll use a placeholder approach
       // In production, this should request and download FBA shipment reports

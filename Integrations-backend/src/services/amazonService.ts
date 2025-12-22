@@ -548,13 +548,80 @@ export class AmazonService {
     const environment = isSandboxMode ? 'SANDBOX' : 'PRODUCTION';
     const dataType = isSandboxMode ? 'SANDBOX_TEST_DATA' : 'LIVE_PRODUCTION_DATA';
 
+    // Default to last 90 days if no dates provided
+    const postedAfter = startDate || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    const postedBefore = endDate || new Date();
+    const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
+
+    // Use Financial Events API to get reimbursements (claims)
+    // Financial Events includes: Reimbursement events, Adjustments, etc.
+    const params: any = {
+      PostedAfter: postedAfter.toISOString(),
+      PostedBefore: postedBefore.toISOString(),
+      MarketplaceIds: marketplaceId
+    };
+
+    // Check if using mock SP-API (Bypass credentials check)
+    if (process.env.USE_MOCK_SPAPI === 'true') {
+      logger.info('Using Mock SP-API for financial events (Credentials bypassed)', { accountId });
+      const mockResponse = await mockSPAPIService.getFinancialEvents(params);
+      const payload = mockResponse.payload || mockResponse;
+      const financialEvents = payload?.FinancialEvents || {};
+
+      // Extract reimbursement events (these are the "claims")
+      const reimbursements = financialEvents.FBALiquidationEventList || [];
+      const adjustments = financialEvents.AdjustmentEventList || [];
+
+      // Transform reimbursements into claims format
+      const allClaims: any[] = [];
+      for (const reimbursement of reimbursements) {
+        allClaims.push({
+          id: reimbursement.OriginalRemovalOrderId || `RMB-${Date.now()}`,
+          orderId: reimbursement.OriginalRemovalOrderId,
+          amount: parseFloat(reimbursement.LiquidationProceedsAmount?.CurrencyAmount || '0'),
+          status: 'approved',
+          type: 'liquidation_reimbursement',
+          currency: reimbursement.LiquidationProceedsAmount?.CurrencyCode || 'USD',
+          createdAt: reimbursement.PostedDate || new Date().toISOString(),
+          description: `FBA Liquidation reimbursement for ${reimbursement.OriginalRemovalOrderId || 'N/A'}`,
+          fromApi: true
+        });
+      }
+
+      // Transform adjustment events (some are reimbursements)
+      for (const adjustment of adjustments) {
+        const adjustmentAmount = adjustment.AdjustmentAmount?.CurrencyAmount || '0';
+        const amount = parseFloat(adjustmentAmount);
+
+        if (amount > 0) {
+          allClaims.push({
+            id: adjustment.AdjustmentEventId || `ADJ-${Date.now()}`,
+            orderId: adjustment.AdjustmentEventId,
+            amount: amount,
+            status: 'approved',
+            type: 'adjustment_reimbursement',
+            currency: adjustment.AdjustmentAmount?.CurrencyCode || 'USD',
+            createdAt: adjustment.PostedDate || new Date().toISOString(),
+            description: adjustment.AdjustmentType || 'Amazon adjustment reimbursement',
+            fromApi: true
+          });
+        }
+      }
+
+      return {
+        success: true,
+        data: allClaims,
+        message: `Fetched ${allClaims.length} claims/reimbursements from Mock SP-API`,
+        fromApi: true,
+        isSandbox: true,
+        environment: 'MOCK',
+        dataType: 'MOCK_DATA',
+        note: 'Data loaded from CSV files'
+      };
+    }
+
     try {
       const accessToken = await this.getAccessToken(accountId);
-      const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
-
-      // Default to last 90 days if no dates provided
-      const postedAfter = startDate || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-      const postedBefore = endDate || new Date();
 
       logger.info(`Fetching claims/reimbursements for account ${accountId} from SP-API ${environment}`, {
         baseUrl: this.baseUrl,
@@ -568,73 +635,6 @@ export class AmazonService {
           ? 'Using Amazon SP-API sandbox - returns test/fake data only, not real production data'
           : 'Using Amazon SP-API production - fetching real live data from Amazon'
       });
-
-      // Use Financial Events API to get reimbursements (claims)
-      // Financial Events includes: Reimbursement events, Adjustments, etc.
-      const params: any = {
-        PostedAfter: postedAfter.toISOString(),
-        PostedBefore: postedBefore.toISOString(),
-        MarketplaceIds: marketplaceId
-      };
-
-      // Check if using mock SP-API
-      if (process.env.USE_MOCK_SPAPI === 'true') {
-        logger.info('Using Mock SP-API for financial events', { accountId });
-        const mockResponse = await mockSPAPIService.getFinancialEvents(params);
-        const payload = mockResponse.payload || mockResponse;
-        const financialEvents = payload?.FinancialEvents || {};
-
-        // Extract reimbursement events (these are the "claims")
-        const reimbursements = financialEvents.FBALiquidationEventList || [];
-        const adjustments = financialEvents.AdjustmentEventList || [];
-
-        // Transform reimbursements into claims format
-        const allClaims: any[] = [];
-        for (const reimbursement of reimbursements) {
-          allClaims.push({
-            id: reimbursement.OriginalRemovalOrderId || `RMB-${Date.now()}`,
-            orderId: reimbursement.OriginalRemovalOrderId,
-            amount: parseFloat(reimbursement.LiquidationProceedsAmount?.CurrencyAmount || '0'),
-            status: 'approved',
-            type: 'liquidation_reimbursement',
-            currency: reimbursement.LiquidationProceedsAmount?.CurrencyCode || 'USD',
-            createdAt: reimbursement.PostedDate || new Date().toISOString(),
-            description: `FBA Liquidation reimbursement for ${reimbursement.OriginalRemovalOrderId || 'N/A'}`,
-            fromApi: true
-          });
-        }
-
-        // Transform adjustment events (some are reimbursements)
-        for (const adjustment of adjustments) {
-          const adjustmentAmount = adjustment.AdjustmentAmount?.CurrencyAmount || '0';
-          const amount = parseFloat(adjustmentAmount);
-
-          if (amount > 0) {
-            allClaims.push({
-              id: adjustment.AdjustmentEventId || `ADJ-${Date.now()}`,
-              orderId: adjustment.AdjustmentEventId,
-              amount: amount,
-              status: 'approved',
-              type: 'adjustment_reimbursement',
-              currency: adjustment.AdjustmentAmount?.CurrencyCode || 'USD',
-              createdAt: adjustment.PostedDate || new Date().toISOString(),
-              description: adjustment.AdjustmentType || 'Amazon adjustment reimbursement',
-              fromApi: true
-            });
-          }
-        }
-
-        return {
-          success: true,
-          data: allClaims,
-          message: `Fetched ${allClaims.length} claims/reimbursements from Mock SP-API`,
-          fromApi: true,
-          isSandbox: true,
-          environment: 'MOCK',
-          dataType: 'MOCK_DATA',
-          note: 'Data loaded from CSV files'
-        };
-      }
 
       // Check cache for first page (subsequent pages are less cacheable)
       const cacheKey = this.getCacheKey('financialEvents', { ...params, endpoint: 'claims' });
@@ -1001,21 +1001,10 @@ export class AmazonService {
 
   async fetchInventory(accountId: string): Promise<any> {
     try {
-      const accessToken = await this.getAccessToken(accountId);
-      const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
-
-      logger.info(`Fetching inventory for account ${accountId} from SP-API SANDBOX`, {
-        baseUrl: this.baseUrl,
-        marketplaceId,
-        isSandbox: this.isSandbox(),
-        dataType: 'SANDBOX_TEST_DATA',
-        note: 'Using Amazon SP-API sandbox - returns test/fake data only, not real production data'
-      });
-
-      // Check if using mock SP-API
+      // Check if using mock SP-API (Bypass credentials check)
       if (process.env.USE_MOCK_SPAPI === 'true') {
-        logger.info('Using Mock SP-API for inventory', { accountId });
-        const mockResponse = await mockSPAPIService.getInventorySummaries({ MarketplaceIds: marketplaceId });
+        logger.info('Using Mock SP-API for inventory (Credentials bypassed)', { accountId });
+        const mockResponse = await mockSPAPIService.getInventorySummaries({ MarketplaceIds: 'ATVPDKIKX0DER' });
         const payload = mockResponse.payload || mockResponse;
         const summaries = payload?.inventorySummaries || [];
 
@@ -1042,6 +1031,17 @@ export class AmazonService {
           note: 'Data loaded from CSV files'
         };
       }
+
+      const accessToken = await this.getAccessToken(accountId);
+      const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
+
+      logger.info(`Fetching inventory for account ${accountId} from SP-API SANDBOX`, {
+        baseUrl: this.baseUrl,
+        marketplaceId,
+        isSandbox: this.isSandbox(),
+        dataType: 'SANDBOX_TEST_DATA',
+        note: 'Using Amazon SP-API sandbox - returns test/fake data only, not real production data'
+      });
 
       // Build params - sandbox may not support granularityType
       const params: any = {

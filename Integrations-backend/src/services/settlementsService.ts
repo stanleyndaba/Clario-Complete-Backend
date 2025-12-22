@@ -65,6 +65,26 @@ export class SettlementsService {
         isSandbox: this.isSandbox()
       });
 
+      // Check if using mock SP-API (Bypass credentials check)
+      if (process.env.USE_MOCK_SPAPI === 'true') {
+        logger.info('Using Mock SP-API for settlements (Credentials bypassed)', { userId });
+        // Settlements logic is complex (financial events -> settlements), mockSPAPIService provides getFees which returns FinancialEvents
+        // But settlementsService expects to call /finances/v0/financialEvents
+        // mockSPAPIService.getFees returns the FinancialEvents structure we need
+        const mockResponse = await (await import('./mockSPAPIService')).mockSPAPIService.getFees({});
+        const payload = mockResponse.payload || mockResponse;
+        const financialEvents = payload?.FinancialEvents || {};
+
+        // Extract settlement data from financial events
+        const settlements = this.extractSettlementsFromFinancialEvents(financialEvents, userId);
+
+        return {
+          success: true,
+          data: settlements,
+          message: `Fetched ${settlements.length} settlements from Mock SP-API`
+        };
+      }
+
       // Get access token (should use tokenManager)
       const accessToken = await this.getAccessToken(userId);
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
@@ -211,7 +231,7 @@ export class SettlementsService {
     const adjustmentEvents = financialEvents.AdjustmentEventList || [];
     adjustmentEvents.forEach((event: any) => {
       const adjustmentAmount = parseFloat(event.AdjustmentAmount?.CurrencyAmount || event.amount || '0');
-      
+
       settlements.push({
         settlement_id: event.AdjustmentType || `ADJUSTMENT_${Date.now()}_${Math.random()}`,
         order_id: event.AmazonOrderId || event.OrderId || null,
@@ -284,7 +304,7 @@ export class SettlementsService {
 
       // Check for existing settlements (using composite key: settlement_id + transaction_type)
       const settlementKeys = settlementsToInsert.map(s => `${s.settlement_id}_${s.transaction_type}`);
-      
+
       // Insert with conflict handling
       const { error: insertError } = await supabase
         .from('settlements')

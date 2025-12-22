@@ -151,8 +151,16 @@ export class Agent2DataSyncService {
     });
 
     // Check if user has valid Amazon token from Agent 1
+    // Check if user has valid Amazon token from Agent 1
     const isConnected = await tokenManager.isTokenValid(userId, 'amazon');
-    const isMockMode = !isConnected || process.env.ENABLE_MOCK_SP_API === 'true' || process.env.USE_MOCK_DATA_GENERATOR !== 'false';
+
+    // Check if using CSV-based Mock SP-API (Real Truth mode)
+    // If getting data from CSVs, we disable "random mock mode" so we call the services
+    const useCsvMock = process.env.USE_MOCK_SPAPI === 'true';
+
+    // "isMockMode" here specifically means "Use Random Data Generator"
+    // If useCsvMock is true, we force this to FALSE so it falls through to the services (which use CSVs)
+    const isMockMode = !useCsvMock && (!isConnected || process.env.ENABLE_MOCK_SP_API === 'true' || process.env.USE_MOCK_DATA_GENERATOR !== 'false');
     const mockScenario: MockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
 
     // DEBUG: Log isMockMode determination

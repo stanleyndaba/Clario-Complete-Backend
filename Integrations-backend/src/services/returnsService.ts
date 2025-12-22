@@ -63,6 +63,23 @@ export class ReturnsService {
         isSandbox: this.isSandbox()
       });
 
+      // Check if using mock SP-API (Bypass credentials check)
+      if (process.env.USE_MOCK_SPAPI === 'true') {
+        logger.info('Using Mock SP-API for returns (Credentials bypassed)', { userId });
+        const mockResponse = await (await import('./mockSPAPIService')).mockSPAPIService.getReturns({});
+        const payload = mockResponse.payload || mockResponse;
+        const returns = payload?.Returns || [];
+
+        // Normalize returns
+        const normalizedReturns = this.normalizeReturns(returns, userId);
+
+        return {
+          success: true,
+          data: normalizedReturns,
+          message: `Fetched ${normalizedReturns.length} returns from Mock SP-API`
+        };
+      }
+
       // Returns are fetched via FBA reports
       // Report type: GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA
       // This will be implemented with report processing
