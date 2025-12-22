@@ -868,7 +868,7 @@ export class AmazonService {
           error.message.includes('token') ||
           error.message.includes('Please connect your Amazon account');
 
-        if (isCredentialError && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
+        if (isCredentialError && process.env.USE_MOCK_DATA_GENERATOR === 'true') {
           logger.info('Sandbox credentials missing - using mock data generator', {
             scenario: process.env.MOCK_SCENARIO || 'normal_week',
             accountId
@@ -1163,7 +1163,7 @@ export class AmazonService {
           error.message.includes('token') ||
           error.message.includes('Please connect your Amazon account');
 
-        if (isCredentialError && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
+        if (isCredentialError && process.env.USE_MOCK_DATA_GENERATOR === 'true') {
           logger.info('Sandbox credentials missing - using mock data generator for inventory', {
             scenario: process.env.MOCK_SCENARIO || 'normal_week',
             accountId
