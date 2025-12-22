@@ -2286,9 +2286,8 @@ export class Agent2DataSyncService {
         message: `Found ${detectionResults.length.toLocaleString()} recoverable opportunities (${((detectionResults.length / allClaimsToDetect.length) * 100).toFixed(1)}% detection rate)`,
         context: {
           details: [
-            `Behind these results:`,
-            `   • Scanned ${allClaimsToDetect.length.toLocaleString()} transactions for anomalies`,
-            `   • Analyzed against 67 Amazon claim categories`,
+            `Scan summary:`,
+            `   • Analyzed ${allClaimsToDetect.length.toLocaleString()} transactions against 67 Amazon claim categories`,
             `   • ${detectionResults.length} flagged as recoverable`,
             ``,
             `Breakdown by issue type:`,
@@ -2301,11 +2300,7 @@ export class Agent2DataSyncService {
         }
       });
 
-      this.sendSyncLog(userId, syncId, {
-        type: 'info',
-        category: 'detection',
-        message: `Storing ${detectionResults.length.toLocaleString()} claimable opportunities...`
-      });
+      // Store detection results (no log needed - happens immediately)
       await this.storeDetectionResults(detectionResults, userId, storageSyncId);
     }
 
