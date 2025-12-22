@@ -53,7 +53,7 @@ export class AmazonService {
     // Production URL: https://sellingpartnerapi-na.amazon.com (or region-specific)
     // Default to sandbox if no URL is specified
     const envUrl = process.env.AMAZON_SPAPI_BASE_URL;
-    
+
     if (envUrl) {
       this.baseUrl = envUrl;
     } else {
@@ -66,11 +66,11 @@ export class AmazonService {
         this.baseUrl = 'https://sandbox.sellingpartnerapi-na.amazon.com';
       }
     }
-    
+
     // Initialize rate limiter (30 requests/minute for production, 60 for sandbox)
     const maxRequestsPerMinute = this.isSandbox() ? 60 : 30;
     this.rateLimiter = new SPAPIRateLimiter('amazon-sp-api', maxRequestsPerMinute);
-    
+
     // Log environment mode on initialization
     const useMock = process.env.USE_MOCK_SPAPI === 'true';
     if (useMock) {
@@ -105,17 +105,17 @@ export class AmazonService {
     if (this.baseUrl.includes('sandbox')) {
       return true;
     }
-    
+
     // Check environment variable explicitly
     if (process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox')) {
       return true;
     }
-    
+
     // If NODE_ENV is development and no explicit production URL, assume sandbox
     if (process.env.NODE_ENV === 'development' && !process.env.AMAZON_SPAPI_BASE_URL) {
       return true;
     }
-    
+
     return false;
   }
 
@@ -182,25 +182,25 @@ export class AmazonService {
   private async refreshAccessToken(userId?: string): Promise<void> {
     try {
       let refreshToken: string | undefined;
-      
+
       // First, try to get token from database if userId is provided
       if (userId) {
         try {
           const tokenManager = (await import('../utils/tokenManager')).default;
           const tokenData = await tokenManager.getToken(userId, 'amazon');
-          
+
           if (tokenData && tokenData.refreshToken) {
             refreshToken = tokenData.refreshToken;
             logger.info('Using refresh token from database for user', { userId });
           }
         } catch (dbError: any) {
-          logger.warn('Could not get token from database, falling back to env vars', { 
+          logger.warn('Could not get token from database, falling back to env vars', {
             error: dbError.message,
-            userId 
+            userId
           });
         }
       }
-      
+
       // Fall back to environment variable if no database token found
       if (!refreshToken) {
         refreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
@@ -208,7 +208,7 @@ export class AmazonService {
           logger.info('Using refresh token from environment variables');
         }
       }
-      
+
       // Use AMAZON_SPAPI_CLIENT_ID as fallback if AMAZON_CLIENT_ID not set (for consistency)
       const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
       const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET;
@@ -246,14 +246,14 @@ export class AmazonService {
         try {
           const { rotateRefreshToken } = await import('../security/tokenRotation');
           const { logTokenEvent } = await import('../security/auditLogger');
-          
+
           const rotationResult = await rotateRefreshToken(
             userId,
             'amazon',
             refreshToken,
             response.data.refresh_token
           );
-          
+
           if (rotationResult.success) {
             logger.info('Token rotated successfully', { userId });
             // Log audit event
@@ -307,9 +307,9 @@ export class AmazonService {
         status: error.response?.status,
         // Don't log full error response data (may contain sensitive info)
       };
-      
+
       logger.error('Failed to refresh access token:', sanitizedError);
-      
+
       // Provide more helpful error message
       if (error.response?.status === 401) {
         throw new Error('Amazon refresh token is invalid or expired. Please reconnect your Amazon account.');
@@ -327,10 +327,10 @@ export class AmazonService {
         // Continue with OAuth URL generation anyway, but note that token exists
         // The user can still use existing token if they have it
       }
-      
+
       // Get client ID (checks both variable names for consistency)
       const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
-      
+
       if (!clientId || clientId.trim() === '') {
         logger.warn('Amazon client ID not configured, returning mock URL');
         return {
@@ -341,15 +341,15 @@ export class AmazonService {
 
       // Generate state for CSRF protection
       const state = crypto.randomBytes(32).toString('hex');
-      
+
       // Get redirect URI from environment or use default
-      const redirectUri = process.env.AMAZON_REDIRECT_URI || 
-                         process.env.AMAZON_SPAPI_REDIRECT_URI ||
-                         `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/amazon/auth/callback`;
-      
+      const redirectUri = process.env.AMAZON_REDIRECT_URI ||
+        process.env.AMAZON_SPAPI_REDIRECT_URI ||
+        `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/amazon/auth/callback`;
+
       // Amazon OAuth URL (same for sandbox and production)
       const oauthBase = 'https://www.amazon.com/ap/oa';
-      
+
       // For SP-API OAuth, scope should NOT be included
       // Amazon SP-API uses permissions granted in Seller Central, not OAuth scopes
       // Including scope parameter can cause "unknown scope" errors, especially in sandbox
@@ -360,7 +360,7 @@ export class AmazonService {
         `response_type=code&` +
         `redirect_uri=${encodeURIComponent(redirectUri)}&` +
         `state=${state}`;
-      
+
       // Note: Do NOT include scope parameter for Amazon SP-API
       // If you get "unknown scope" error, check Amazon Developer Console Security Profile:
       // 1. Go to https://developer.amazon.com/
@@ -369,14 +369,14 @@ export class AmazonService {
       // 4. The Security Profile should be configured for SP-API, not LWA with scopes
 
       const isSandboxMode = this.isSandbox();
-      
+
       logger.info('Generated Amazon OAuth URL', {
         hasClientId: !!clientId,
         redirectUri,
         stateLength: state.length,
         authUrlLength: authUrl.length,
         isSandboxMode,
-        note: isSandboxMode 
+        note: isSandboxMode
           ? 'SANDBOX MODE: If you get "unknown scope" error, this is likely due to Security Profile configuration in Amazon Developer Console. For sandbox testing, use bypass flow (?bypass=true) instead.'
           : 'OAuth URL generated - ensure Security Profile is configured correctly in Amazon Developer Console'
       });
@@ -385,7 +385,7 @@ export class AmazonService {
         authUrl,
         state,
         sandboxMode: isSandboxMode,
-        warning: isSandboxMode 
+        warning: isSandboxMode
           ? 'For sandbox testing, using bypass flow (?bypass=true) is recommended if refresh token exists. OAuth flow requires proper Security Profile configuration in Amazon Developer Console.'
           : undefined
       };
@@ -399,9 +399,9 @@ export class AmazonService {
     // Get client credentials (declare outside try block so available in catch)
     const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
     const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET;
-    const redirectUri = process.env.AMAZON_REDIRECT_URI || 
-                       process.env.AMAZON_SPAPI_REDIRECT_URI ||
-                       `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/amazon/auth/callback`;
+    const redirectUri = process.env.AMAZON_REDIRECT_URI ||
+      process.env.AMAZON_SPAPI_REDIRECT_URI ||
+      `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/amazon/auth/callback`;
 
     try {
       if (!clientId || !clientSecret) {
@@ -483,7 +483,7 @@ export class AmazonService {
 
       // Provide specific error messages based on error code
       let userFriendlyError = errorDescription;
-      
+
       if (errorCode === 'invalid_grant') {
         userFriendlyError = 'Authorization code is invalid or has expired. Please try connecting again.';
       } else if (errorCode === 'invalid_client') {
@@ -510,10 +510,10 @@ export class AmazonService {
       const fees = await this.fetchFees(userId);
 
       // Calculate totals from actual data
-      const totalRecovered = claims.data.reduce((sum: number, claim: any) => 
+      const totalRecovered = claims.data.reduce((sum: number, claim: any) =>
         claim.status === 'approved' ? sum + claim.amount : sum, 0);
       const totalFees = fees.data.reduce((sum: number, fee: any) => sum + fee.amount, 0);
-      const potentialRecovery = claims.data.reduce((sum: number, claim: any) => 
+      const potentialRecovery = claims.data.reduce((sum: number, claim: any) =>
         claim.status === 'pending' || claim.status === 'under_review' ? sum + claim.amount : sum, 0);
 
       return {
@@ -547,15 +547,15 @@ export class AmazonService {
     const isSandboxMode = this.isSandbox();
     const environment = isSandboxMode ? 'SANDBOX' : 'PRODUCTION';
     const dataType = isSandboxMode ? 'SANDBOX_TEST_DATA' : 'LIVE_PRODUCTION_DATA';
-    
+
     try {
       const accessToken = await this.getAccessToken(accountId);
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
-      
+
       // Default to last 90 days if no dates provided
       const postedAfter = startDate || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
       const postedBefore = endDate || new Date();
-      
+
       logger.info(`Fetching claims/reimbursements for account ${accountId} from SP-API ${environment}`, {
         baseUrl: this.baseUrl,
         marketplaceId,
@@ -564,7 +564,7 @@ export class AmazonService {
         isSandbox: isSandboxMode,
         environment,
         dataType,
-        note: isSandboxMode 
+        note: isSandboxMode
           ? 'Using Amazon SP-API sandbox - returns test/fake data only, not real production data'
           : 'Using Amazon SP-API production - fetching real live data from Amazon'
       });
@@ -583,11 +583,11 @@ export class AmazonService {
         const mockResponse = await mockSPAPIService.getFinancialEvents(params);
         const payload = mockResponse.payload || mockResponse;
         const financialEvents = payload?.FinancialEvents || {};
-        
+
         // Extract reimbursement events (these are the "claims")
         const reimbursements = financialEvents.FBALiquidationEventList || [];
         const adjustments = financialEvents.AdjustmentEventList || [];
-        
+
         // Transform reimbursements into claims format
         const allClaims: any[] = [];
         for (const reimbursement of reimbursements) {
@@ -603,12 +603,12 @@ export class AmazonService {
             fromApi: true
           });
         }
-        
+
         // Transform adjustment events (some are reimbursements)
         for (const adjustment of adjustments) {
           const adjustmentAmount = adjustment.AdjustmentAmount?.CurrencyAmount || '0';
           const amount = parseFloat(adjustmentAmount);
-          
+
           if (amount > 0) {
             allClaims.push({
               id: adjustment.AdjustmentEventId || `ADJ-${Date.now()}`,
@@ -678,11 +678,11 @@ export class AmazonService {
 
         const payload = response.data?.payload || response.data;
         const financialEvents = payload?.FinancialEvents || {};
-        
+
         // Extract reimbursement events (these are the "claims")
         const reimbursements = financialEvents.FBALiquidationEventList || [];
         const adjustments = financialEvents.AdjustmentEventList || [];
-        
+
         // Transform reimbursements into claims format
         for (const reimbursement of reimbursements) {
           allClaims.push({
@@ -697,12 +697,12 @@ export class AmazonService {
             fromApi: true
           });
         }
-        
+
         // Transform adjustment events (some are reimbursements)
         for (const adjustment of adjustments) {
           const adjustmentAmount = adjustment.AdjustmentAmount?.CurrencyAmount || '0';
           const amount = parseFloat(adjustmentAmount);
-          
+
           // Only include positive adjustments (reimbursements), not charges
           if (amount > 0) {
             allClaims.push({
@@ -718,10 +718,10 @@ export class AmazonService {
             });
           }
         }
-        
+
         // Check for next token (pagination)
         nextToken = payload?.NextToken;
-        
+
         // Rate limiting: respect SP-API limits (faster for sandbox)
         if (nextToken) {
           await new Promise(resolve => setTimeout(resolve, rateLimitDelay));
@@ -729,12 +729,13 @@ export class AmazonService {
       } while (nextToken);
 
       // If sandbox returned empty data, use mock data generator
-      if (isSandboxMode && allClaims.length === 0 && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
+      // DISABLED: User requested clean slate (mock data was causing confusion)
+      if (isSandboxMode && allClaims.length === 0 && process.env.USE_MOCK_DATA_GENERATOR === 'true') {
         logger.info('Sandbox returned empty data - using mock data generator', {
           scenario: process.env.MOCK_SCENARIO || 'normal_week',
           accountId
         });
-        
+
         const mockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
         const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
         const generator = getMockDataGenerator(mockScenario);
@@ -744,11 +745,11 @@ export class AmazonService {
         }
         const mockResponse = generator.generateFinancialEvents();
         const financialEvents = mockResponse.payload?.FinancialEvents || {};
-        
+
         // Extract from mock data (same format as real SP-API)
         const reimbursements = financialEvents.FBALiquidationEventList || [];
         const adjustments = financialEvents.AdjustmentEventList || [];
-        
+
         // Transform reimbursements into claims format
         for (const reimbursement of reimbursements) {
           allClaims.push({
@@ -765,12 +766,12 @@ export class AmazonService {
             mockScenario: mockScenario
           });
         }
-        
+
         // Transform adjustment events
         for (const adjustment of adjustments) {
           const adjustmentAmount = adjustment.AdjustmentAmount?.CurrencyAmount || '0';
           const amount = typeof adjustmentAmount === 'number' ? adjustmentAmount : parseFloat(adjustmentAmount);
-          
+
           if (amount > 0) {
             allClaims.push({
               id: adjustment.AdjustmentEventId || `ADJ-${Date.now()}`,
@@ -787,7 +788,7 @@ export class AmazonService {
             });
           }
         }
-        
+
         logger.info(`Generated ${allClaims.length} mock claims from generator`, {
           scenario: mockScenario,
           accountId
@@ -802,14 +803,14 @@ export class AmazonService {
         cacheUsed: false,
         dataType: allClaims.length > 0 && allClaims[0]?.isMock ? 'MOCK_GENERATED' : dataType,
         note: isSandboxMode
-          ? (allClaims.length === 0 
-              ? 'Sandbox returned empty data and mock generator disabled' 
-              : allClaims[0]?.isMock
+          ? (allClaims.length === 0
+            ? 'Sandbox returned empty data and mock generator disabled'
+            : allClaims[0]?.isMock
               ? 'Using mock data generator for sandbox testing'
               : 'Sandbox test data retrieved successfully')
           : (allClaims.length === 0
-              ? 'No claims found in production data for the specified date range'
-              : `Successfully retrieved ${allClaims.length} live production claims from Amazon SP-API`)
+            ? 'No claims found in production data for the specified date range'
+            : `Successfully retrieved ${allClaims.length} live production claims from Amazon SP-API`)
       });
 
       // Cache the first page result
@@ -819,15 +820,15 @@ export class AmazonService {
 
       // Track payment status changes for Transparency Agent (after fetching all claims)
       await this.trackPaymentStatusChanges(accountId, allClaims);
-      
-      return { 
-        success: true, 
-        data: allClaims, 
+
+      return {
+        success: true,
+        data: allClaims,
         message: isSandboxMode && allClaims[0]?.isMock
           ? `Generated ${allClaims.length} mock claims using scenario: ${allClaims[0]?.mockScenario || 'normal_week'}`
           : isSandboxMode
-          ? `Fetched ${allClaims.length} claims/reimbursements from SP-API SANDBOX (test data)`
-          : `Fetched ${allClaims.length} claims/reimbursements from SP-API PRODUCTION (live data)`,
+            ? `Fetched ${allClaims.length} claims/reimbursements from SP-API SANDBOX (test data)`
+            : `Fetched ${allClaims.length} claims/reimbursements from SP-API PRODUCTION (live data)`,
         fromApi: true,
         isSandbox: isSandboxMode,
         environment,
@@ -835,19 +836,19 @@ export class AmazonService {
         isMock: allClaims.length > 0 && allClaims[0]?.isMock ? true : undefined,
         mockScenario: allClaims.length > 0 && allClaims[0]?.isMock ? allClaims[0]?.mockScenario : undefined,
         note: isSandboxMode
-          ? (allClaims.length === 0 
-              ? 'Sandbox returned empty data and mock generator disabled' 
-              : allClaims[0]?.isMock
+          ? (allClaims.length === 0
+            ? 'Sandbox returned empty data and mock generator disabled'
+            : allClaims[0]?.isMock
               ? 'Using mock data generator for sandbox testing'
               : 'Sandbox test data retrieved successfully')
           : (allClaims.length === 0
-              ? 'No claims found in production data for the specified date range'
-              : 'Live production claims retrieved successfully from Amazon SP-API')
+            ? 'No claims found in production data for the specified date range'
+            : 'Live production claims retrieved successfully from Amazon SP-API')
       };
     } catch (error: any) {
       const errorDetails = error.response?.data?.errors?.[0] || {};
       const errorMessage = errorDetails.message || error.message || 'Unknown error';
-      
+
       logger.error("Error fetching Amazon claims from SP-API:", {
         error: error.message,
         status: error.response?.status,
@@ -859,20 +860,20 @@ export class AmazonService {
         isSandbox: isSandboxMode,
         environment
       });
-      
+
       // Handle errors appropriately for sandbox vs production
       if (isSandboxMode) {
         // Check if error is due to missing credentials - activate mock generator if enabled
-        const isCredentialError = error.message.includes('credentials not configured') || 
-                                 error.message.includes('token') ||
-                                 error.message.includes('Please connect your Amazon account');
-        
+        const isCredentialError = error.message.includes('credentials not configured') ||
+          error.message.includes('token') ||
+          error.message.includes('Please connect your Amazon account');
+
         if (isCredentialError && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
           logger.info('Sandbox credentials missing - using mock data generator', {
             scenario: process.env.MOCK_SCENARIO || 'normal_week',
             accountId
           });
-          
+
           const mockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
           const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
           const generator = getMockDataGenerator(mockScenario);
@@ -881,11 +882,11 @@ export class AmazonService {
           }
           const mockResponse = generator.generateFinancialEvents();
           const financialEvents = mockResponse.payload?.FinancialEvents || {};
-          
+
           // Extract from mock data (same format as real SP-API)
           const reimbursements = financialEvents.FBALiquidationEventList || [];
           const adjustments = financialEvents.AdjustmentEventList || [];
-          
+
           const mockClaims: any[] = [];
           // Transform reimbursements into claims format
           for (const reimbursement of reimbursements) {
@@ -903,12 +904,12 @@ export class AmazonService {
               mockScenario: mockScenario
             });
           }
-          
+
           // Transform adjustment events
           for (const adjustment of adjustments) {
             const adjustmentAmount = adjustment.AdjustmentAmount?.CurrencyAmount || '0';
             const amount = typeof adjustmentAmount === 'number' ? adjustmentAmount : parseFloat(adjustmentAmount);
-            
+
             if (amount > 0) {
               mockClaims.push({
                 id: adjustment.AdjustmentEventId || `ADJ-${Date.now()}`,
@@ -925,12 +926,12 @@ export class AmazonService {
               });
             }
           }
-          
+
           logger.info(`Generated ${mockClaims.length} mock claims from generator (credentials missing)`, {
             scenario: mockScenario,
             accountId
           });
-          
+
           return {
             success: true,
             data: mockClaims,
@@ -944,7 +945,7 @@ export class AmazonService {
             note: 'Mock data generated due to missing credentials in sandbox mode'
           };
         }
-        
+
         // In sandbox, empty responses or 404s are normal - return empty array instead of error
         if (error.response?.status === 404 || error.response?.status === 400) {
           logger.info('Sandbox returned empty/error response - returning empty claims (this is normal for sandbox)', {
@@ -973,7 +974,7 @@ export class AmazonService {
           environment,
           error: errorMessage
         });
-        
+
         // For production, if it's a 404 or 400, return empty array (no claims found)
         if (error.response?.status === 404 || error.response?.status === 400) {
           logger.warn('Production SP-API returned 404/400 - no claims found for date range', {
@@ -991,7 +992,7 @@ export class AmazonService {
             note: 'Production SP-API returned no claims - this may indicate no claims exist for this date range'
           };
         }
-        
+
         // For other errors in production, throw the error
         throw error;
       }
@@ -1017,7 +1018,7 @@ export class AmazonService {
         const mockResponse = await mockSPAPIService.getInventorySummaries({ MarketplaceIds: marketplaceId });
         const payload = mockResponse.payload || mockResponse;
         const summaries = payload?.inventorySummaries || [];
-        
+
         const inventory = summaries.map((item: any) => ({
           sku: item.sellerSku || item.sku,
           asin: item.asin,
@@ -1070,18 +1071,18 @@ export class AmazonService {
       // Handle both production and sandbox response formats
       const payload = response.data?.payload || response.data;
       const summaries = payload?.inventorySummaries || (Array.isArray(payload) ? payload : []);
-      
+
       // Track if we're using mock data
       let isUsingMockData = false;
       let mockScenario: MockScenario | undefined = undefined;
-      
+
       // If sandbox returned empty data, use mock data generator
       if (this.isSandbox() && summaries.length === 0 && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
         logger.info('Sandbox returned empty inventory - using mock data generator', {
           scenario: process.env.MOCK_SCENARIO || 'normal_week',
           accountId
         });
-        
+
         mockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
         const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
         const generator = getMockDataGenerator(mockScenario);
@@ -1092,23 +1093,23 @@ export class AmazonService {
         const mockResponse = generator.generateInventory();
         summaries.push(...(mockResponse.payload?.inventorySummaries || []));
         isUsingMockData = true;
-        
+
         logger.info(`Generated ${summaries.length} mock inventory items from generator`, {
           scenario: mockScenario,
           accountId
         });
       }
-      
+
       logger.info(`Successfully fetched ${summaries.length} inventory items from SP-API SANDBOX`, {
         itemCount: summaries.length,
         accountId,
         isSandbox: this.isSandbox(),
         dataType: isUsingMockData ? 'MOCK_GENERATED' : 'SANDBOX_TEST_DATA',
-        note: summaries.length === 0 
-          ? 'Sandbox returned empty inventory and mock generator disabled' 
+        note: summaries.length === 0
+          ? 'Sandbox returned empty inventory and mock generator disabled'
           : isUsingMockData
-          ? 'Using mock data generator for sandbox testing'
-          : 'Sandbox test inventory data retrieved successfully'
+            ? 'Using mock data generator for sandbox testing'
+            : 'Sandbox test inventory data retrieved successfully'
       });
 
       // Transform SP-API response to our format (handle both formats)
@@ -1126,19 +1127,19 @@ export class AmazonService {
         ...(isUsingMockData && { isMock: true, mockScenario: mockScenario })
       }));
 
-      return { 
-        success: true, 
-        data: inventory, 
+      return {
+        success: true,
+        data: inventory,
         message: `Fetched ${inventory.length} inventory items from SP-API SANDBOX (test data)`,
         fromApi: true,  // Flag to indicate this is from SP-API (sandbox test data, not mock)
         isSandbox: this.isSandbox(),
         dataType: isUsingMockData ? 'MOCK_GENERATED' : 'SANDBOX_TEST_DATA',
         ...(isUsingMockData && { isMock: true, mockScenario: mockScenario }),
-        note: inventory.length === 0 
-          ? 'Sandbox returned empty inventory - this is normal for testing' 
+        note: inventory.length === 0
+          ? 'Sandbox returned empty inventory - this is normal for testing'
           : isUsingMockData
-          ? 'Mock data generated for sandbox testing'
-          : 'Sandbox test inventory data retrieved successfully'
+            ? 'Mock data generated for sandbox testing'
+            : 'Sandbox test inventory data retrieved successfully'
       };
     } catch (error: any) {
       // Enhanced error logging for sandbox vs production
@@ -1153,21 +1154,21 @@ export class AmazonService {
         accountId,
         isSandbox: this.isSandbox()
       });
-      
+
       // For sandbox, empty responses or 404s are normal - return empty array instead of error
       const errorMessage = errorDetails.message || error.message;
       if (this.isSandbox()) {
         // Check if error is due to missing credentials - activate mock generator if enabled
-        const isCredentialError = error.message.includes('credentials not configured') || 
-                                 error.message.includes('token') ||
-                                 error.message.includes('Please connect your Amazon account');
-        
+        const isCredentialError = error.message.includes('credentials not configured') ||
+          error.message.includes('token') ||
+          error.message.includes('Please connect your Amazon account');
+
         if (isCredentialError && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
           logger.info('Sandbox credentials missing - using mock data generator for inventory', {
             scenario: process.env.MOCK_SCENARIO || 'normal_week',
             accountId
           });
-          
+
           const mockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
           const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
           const generator = getMockDataGenerator(mockScenario);
@@ -1176,12 +1177,12 @@ export class AmazonService {
           }
           const mockResponse = generator.generateInventory();
           const summaries = mockResponse.payload?.inventorySummaries || [];
-          
+
           logger.info(`Generated ${summaries.length} mock inventory items from generator (credentials missing)`, {
             scenario: mockScenario,
             accountId
           });
-          
+
           // Transform to our format
           const inventory = summaries.map((item: any) => ({
             sku: item.sellerSku || item.sku,
@@ -1197,7 +1198,7 @@ export class AmazonService {
             isMock: true,
             mockScenario: mockScenario
           }));
-          
+
           return {
             success: true,
             data: inventory,
@@ -1210,7 +1211,7 @@ export class AmazonService {
             note: 'Mock data generated due to missing credentials in sandbox mode'
           };
         }
-        
+
         if (error.response?.status === 404 || error.response?.status === 400) {
           logger.info('Sandbox returned empty/error response - returning empty inventory (this is normal for sandbox)', {
             status: error.response?.status,
@@ -1266,12 +1267,12 @@ export class AmazonService {
 
         // Handle different response formats
         let participations: any[] = [];
-        
+
         if (Array.isArray(payload)) {
           participations = payload;
         } else if (typeof payload === 'object' && payload !== null) {
           participations = payload.marketplaceParticipations || [];
-          
+
           if (participations.length === 0 && payload.marketplace) {
             participations = [payload];
           }
@@ -1348,14 +1349,14 @@ export class AmazonService {
         // Production: {"payload": {"marketplaceParticipations": [...]}}
         // Sandbox: {"payload": [...]} or just [...]
         let participations: any[] = [];
-        
+
         if (Array.isArray(payload)) {
           // Sandbox format: payload is directly an array
           participations = payload;
         } else if (typeof payload === 'object' && payload !== null) {
           // Production format: payload has marketplaceParticipations key
           participations = payload.marketplaceParticipations || [];
-          
+
           // Alternative sandbox format: payload is the participation itself
           if (participations.length === 0 && payload.marketplace) {
             participations = [payload];
@@ -1371,15 +1372,15 @@ export class AmazonService {
 
           // Extract seller/store info - handle both formats
           sellerInfo.seller_id = first.participation?.sellerId || first.sellerId;
-          sellerInfo.seller_name = 
-            first.participation?.sellerName || 
-            first.storeName || 
-            first.sellerName || 
+          sellerInfo.seller_name =
+            first.participation?.sellerName ||
+            first.storeName ||
+            first.sellerName ||
             'Unknown Seller';
           sellerInfo.store_name = first.storeName;
-          sellerInfo.has_suspended_participation = 
-            first.participation?.hasSuspendedParticipation || 
-            first.participation?.hasSuspendedListings || 
+          sellerInfo.has_suspended_participation =
+            first.participation?.hasSuspendedParticipation ||
+            first.participation?.hasSuspendedListings ||
             false;
 
           // Extract marketplace info
@@ -1435,12 +1436,12 @@ export class AmazonService {
     try {
       const accessToken = await this.getAccessToken(accountId);
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
-      
+
       // Default to last 18 months for Phase 1 (first sync)
       // If no dates provided, fetch 18 months of historical data
       const postedAfter = startDate || new Date(Date.now() - 18 * 30 * 24 * 60 * 60 * 1000);
       const postedBefore = endDate || new Date();
-      
+
       logger.info(`Fetching fees for account ${accountId} from SP-API`, {
         baseUrl: this.baseUrl,
         marketplaceId,
@@ -1462,18 +1463,18 @@ export class AmazonService {
         const mockResponse = await mockSPAPIService.getFees(params);
         const payload = mockResponse.payload || mockResponse;
         const financialEvents = payload?.FinancialEvents || {};
-        
+
         const serviceFeeEvents = financialEvents.ServiceFeeEventList || [];
         const orderEvents = financialEvents.OrderEventList || [];
-        
+
         const allFees: any[] = [];
-        
+
         // Process service fees
         for (const feeEvent of serviceFeeEvents) {
           for (const fee of feeEvent.FeeList || []) {
             const feeAmount = fee.FeeAmount?.CurrencyAmount || '0';
             const amount = Math.abs(parseFloat(feeAmount));
-            
+
             if (amount > 0) {
               allFees.push({
                 type: fee.FeeType || 'SERVICE_FEE',
@@ -1489,14 +1490,14 @@ export class AmazonService {
             }
           }
         }
-        
+
         // Process order events
         for (const orderEvent of orderEvents) {
           const order = orderEvent.OrderChargeList || [];
           for (const charge of order) {
             const chargeAmount = charge.ChargeAmount?.CurrencyAmount || '0';
             const amount = Math.abs(parseFloat(chargeAmount));
-            
+
             if (amount > 0 && charge.ChargeType) {
               allFees.push({
                 type: charge.ChargeType,
@@ -1562,18 +1563,18 @@ export class AmazonService {
 
         const payload = response.data?.payload || response.data;
         const financialEvents = payload?.FinancialEvents || {};
-        
+
         // Extract fee events from Financial Events
         const serviceFeeEvents = financialEvents.ServiceFeeEventList || [];
         const orderEvents = financialEvents.OrderEventList || [];
         const adjustmentEvents = financialEvents.AdjustmentEventList || [];
-        
+
         // Process service fees (FBA fees, referral fees, etc.)
         for (const feeEvent of serviceFeeEvents) {
           for (const fee of feeEvent.FeeList || []) {
             const feeAmount = fee.FeeAmount?.CurrencyAmount || '0';
             const amount = Math.abs(parseFloat(feeAmount)); // Fees are negative, make positive
-            
+
             if (amount > 0) {
               allFees.push({
                 type: fee.FeeType || 'SERVICE_FEE',
@@ -1589,14 +1590,14 @@ export class AmazonService {
             }
           }
         }
-        
+
         // Process order events (fees associated with orders)
         for (const orderEvent of orderEvents) {
           const order = orderEvent.OrderChargeList || [];
           for (const charge of order) {
             const chargeAmount = charge.ChargeAmount?.CurrencyAmount || '0';
             const amount = Math.abs(parseFloat(chargeAmount));
-            
+
             if (amount > 0 && charge.ChargeType) {
               allFees.push({
                 type: charge.ChargeType,
@@ -1610,12 +1611,12 @@ export class AmazonService {
             }
           }
         }
-        
+
         // Process negative adjustments (these are fees/charges)
         for (const adjustment of adjustmentEvents) {
           const adjustmentAmount = adjustment.AdjustmentAmount?.CurrencyAmount || '0';
           const amount = parseFloat(adjustmentAmount);
-          
+
           // Negative amounts are fees/charges
           if (amount < 0) {
             allFees.push({
@@ -1629,10 +1630,10 @@ export class AmazonService {
             });
           }
         }
-        
+
         // Check for next token (pagination)
         nextToken = payload?.NextToken;
-        
+
         // Rate limiting: respect SP-API limits (faster for sandbox)
         if (nextToken) {
           await new Promise(resolve => setTimeout(resolve, rateLimitDelay));
@@ -1651,9 +1652,9 @@ export class AmazonService {
         this.setCachedResponse(cacheKey, allFees);
       }
 
-      return { 
-        success: true, 
-        data: allFees, 
+      return {
+        success: true,
+        data: allFees,
         message: `Fetched ${allFees.length} fees from SP-API`,
         fromApi: true,
         isSandbox: this.isSandbox()
@@ -1670,7 +1671,7 @@ export class AmazonService {
         accountId,
         isSandbox: this.isSandbox()
       });
-      
+
       // For sandbox, provide more helpful error messages
       const errorMessage = errorDetails.message || error.message;
       if (this.isSandbox() && error.response?.status === 400) {
@@ -1701,7 +1702,7 @@ export class AmazonService {
       // Track status changes and send SSE events
       for (const claim of claims) {
         const previousClaim = previousClaimsMap.get(claim.id) as { status: string; estimated_value: number; currency?: string } | undefined;
-        
+
         if (previousClaim && claim.status === 'approved' && previousClaim.status !== 'approved') {
           // Payment approved - send transparency event
           sseHub.sendEvent(accountId, 'payment_approved', {
@@ -1820,7 +1821,7 @@ export class AmazonService {
           scenario: process.env.MOCK_SCENARIO || 'normal_week',
           userId
         });
-        
+
         const mockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
         const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
         const generator = getMockDataGenerator(mockScenario);
@@ -1830,13 +1831,13 @@ export class AmazonService {
         }
         const mockResponse = generator.generateOrders();
         orders.push(...(mockResponse.payload?.Orders || []));
-        
+
         // Mark as mock data
         orders.forEach((order: any) => {
           order.isMock = true;
           order.mockScenario = mockScenario;
         });
-        
+
         logger.info(`Generated ${orders.length} mock orders from generator`, {
           scenario: mockScenario,
           userId
@@ -1851,8 +1852,8 @@ export class AmazonService {
         note: orders.length === 0
           ? 'Sandbox returned empty orders and mock generator disabled'
           : orders[0]?.isMock
-          ? 'Using mock data generator for sandbox testing'
-          : 'Orders retrieved successfully'
+            ? 'Using mock data generator for sandbox testing'
+            : 'Orders retrieved successfully'
       });
 
       return {
@@ -1881,16 +1882,16 @@ export class AmazonService {
       // For sandbox, return empty array instead of error
       if (this.isSandbox()) {
         // Check if error is due to missing credentials - activate mock generator if enabled
-        const isCredentialError = error.message.includes('credentials not configured') || 
-                                 error.message.includes('token') ||
-                                 error.message.includes('Please connect your Amazon account');
-        
+        const isCredentialError = error.message.includes('credentials not configured') ||
+          error.message.includes('token') ||
+          error.message.includes('Please connect your Amazon account');
+
         if (isCredentialError && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
           logger.info('Sandbox credentials missing - using mock data generator for orders', {
             scenario: process.env.MOCK_SCENARIO || 'normal_week',
             userId
           });
-          
+
           const mockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
           const recordCount = process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75;
           const generator = getMockDataGenerator(mockScenario);
@@ -1899,18 +1900,18 @@ export class AmazonService {
           }
           const mockResponse = generator.generateOrders();
           const orders = mockResponse.payload?.Orders || [];
-          
+
           // Mark as mock data
           orders.forEach((order: any) => {
             order.isMock = true;
             order.mockScenario = mockScenario;
           });
-          
+
           logger.info(`Generated ${orders.length} mock orders from generator (credentials missing)`, {
             scenario: mockScenario,
             userId
           });
-          
+
           return {
             success: true,
             data: orders,
@@ -1923,20 +1924,20 @@ export class AmazonService {
             note: 'Mock data generated due to missing credentials in sandbox mode'
           };
         }
-        
+
         if (error.response?.status === 404 || error.response?.status === 400) {
-        logger.info('Sandbox returned empty/error response - returning empty orders (normal for sandbox)', {
-          status: error.response?.status,
-          userId
-        });
-        return {
-          success: true,
-          data: [],
-          message: 'Sandbox returned no orders data (normal for testing)',
-          fromApi: true,
-          isSandbox: true,
-          dataType: 'SANDBOX_TEST_DATA'
-        };
+          logger.info('Sandbox returned empty/error response - returning empty orders (normal for sandbox)', {
+            status: error.response?.status,
+            userId
+          });
+          return {
+            success: true,
+            data: [],
+            message: 'Sandbox returned no orders data (normal for testing)',
+            fromApi: true,
+            isSandbox: true,
+            dataType: 'SANDBOX_TEST_DATA'
+          };
         }
       }
 
