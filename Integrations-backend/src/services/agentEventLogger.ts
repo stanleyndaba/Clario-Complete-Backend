@@ -141,10 +141,52 @@ export interface BillingEventData {
 }
 
 class AgentEventLogger {
+  // Rate limiting: max 100 events per user per minute
+  private rateLimitMap: Map<string, { count: number; resetTime: number }> = new Map();
+  private readonly maxEventsPerMinute = 100;
+  private readonly rateLimitWindow = 60 * 1000; // 1 minute in ms
+
+  /**
+   * Check and update rate limit for a user
+   * Returns true if the event should be logged, false if rate limited
+   */
+  private checkRateLimit(userId: string): boolean {
+    const now = Date.now();
+    const userLimit = this.rateLimitMap.get(userId);
+
+    if (!userLimit || now > userLimit.resetTime) {
+      // Reset or create new rate limit window
+      this.rateLimitMap.set(userId, { count: 1, resetTime: now + this.rateLimitWindow });
+      return true;
+    }
+
+    if (userLimit.count >= this.maxEventsPerMinute) {
+      // Rate limit exceeded - log warning only once per window
+      if (userLimit.count === this.maxEventsPerMinute) {
+        logger.warn('⚠️ [AGENT EVENT LOGGER] Rate limit exceeded for user', {
+          userId,
+          limit: this.maxEventsPerMinute,
+          window: '1 minute',
+          message: 'Subsequent events will be skipped to protect database'
+        });
+      }
+      userLimit.count++;
+      return false;
+    }
+
+    userLimit.count++;
+    return true;
+  }
+
   /**
    * Log a generic agent event
    */
   async logEvent(data: AgentEventData): Promise<void> {
+    // Rate limit check - prevents logging explosions
+    if (!this.checkRateLimit(data.userId)) {
+      return; // Skip this event to protect the database
+    }
+
     try {
       const { error } = await supabaseAdmin
         .from('agent_events')
