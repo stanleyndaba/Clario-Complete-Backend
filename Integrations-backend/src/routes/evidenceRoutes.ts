@@ -1819,6 +1819,205 @@ router.get('/matching/results', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/evidence/matching/:matchId/approve
+ * Approve a smart prompt match and submit the claim
+ */
+router.post('/matching/:matchId/approve', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const { matchId } = req.params;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    logger.info('✅ [EVIDENCE] Approving smart prompt match', { matchId, userId });
+
+    const client = supabaseAdmin || supabase;
+
+    // Update the dispute_evidence_link to mark as approved
+    const { data: link, error: updateError } = await client
+      .from('dispute_evidence_links')
+      .update({
+        link_type: 'approved',
+        verification_status: 'approved',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', matchId)
+      .select()
+      .single();
+
+    if (updateError) {
+      logger.error('❌ [EVIDENCE] Error approving match', {
+        error: updateError.message,
+        matchId,
+        userId
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to approve match',
+        message: updateError.message
+      });
+    }
+
+    // Optionally trigger claim filing here
+    logger.info('✅ [EVIDENCE] Match approved successfully', { matchId, userId });
+
+    res.json({
+      success: true,
+      message: 'Match approved and claim queued for filing',
+      matchId,
+      caseId: link?.dispute_case_id
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in approve match endpoint', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to approve match',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * POST /api/evidence/matching/:matchId/reject
+ * Reject a smart prompt match
+ */
+router.post('/matching/:matchId/reject', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const { matchId } = req.params;
+    const { reason } = req.body || {};
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    logger.info('❌ [EVIDENCE] Rejecting smart prompt match', { matchId, userId, reason });
+
+    const client = supabaseAdmin || supabase;
+
+    // Update the dispute_evidence_link to mark as rejected
+    const { error: updateError } = await client
+      .from('dispute_evidence_links')
+      .update({
+        link_type: 'rejected',
+        verification_status: 'rejected',
+        notes: reason || 'User rejected match',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', matchId);
+
+    if (updateError) {
+      logger.error('❌ [EVIDENCE] Error rejecting match', {
+        error: updateError.message,
+        matchId,
+        userId
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to reject match',
+        message: updateError.message
+      });
+    }
+
+    logger.info('✅ [EVIDENCE] Match rejected successfully', { matchId, userId });
+
+    res.json({
+      success: true,
+      message: 'Match rejected',
+      matchId
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in reject match endpoint', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reject match',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * POST /api/evidence/matching/:matchId/request-more-evidence
+ * Flag a match for additional evidence collection
+ */
+router.post('/matching/:matchId/request-more-evidence', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const { matchId } = req.params;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    logger.info('📋 [EVIDENCE] Requesting more evidence for match', { matchId, userId });
+
+    const client = supabaseAdmin || supabase;
+
+    // Update the dispute_evidence_link to flag for more evidence
+    const { error: updateError } = await client
+      .from('dispute_evidence_links')
+      .update({
+        link_type: 'needs_more_evidence',
+        verification_status: 'pending_evidence',
+        notes: 'User requested additional evidence',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', matchId);
+
+    if (updateError) {
+      logger.error('❌ [EVIDENCE] Error flagging for more evidence', {
+        error: updateError.message,
+        matchId,
+        userId
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to request more evidence',
+        message: updateError.message
+      });
+    }
+
+    logger.info('✅ [EVIDENCE] Match flagged for more evidence', { matchId, userId });
+
+    res.json({
+      success: true,
+      message: 'Match flagged for additional evidence collection',
+      matchId
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in request-more-evidence endpoint', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to request more evidence',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
  * GET /api/evidence/matching/results/by-document/:documentId
  * Get matching results for a specific document
  */
