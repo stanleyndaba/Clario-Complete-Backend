@@ -3151,6 +3151,64 @@ export class Agent2DataSyncService {
         syncId
       });
     }
+
+    // Also insert into claims table for frontend visibility
+    // This bridges detection_results → claims for the Recoveries page
+    try {
+      if (insertedDetections && insertedDetections.length > 0) {
+        const claimsToInsert = insertedDetections.map((detection: any) => ({
+          user_id: userId,
+          status: 'pending',
+          amount: detection.estimated_value || 0,
+          description: `${detection.anomaly_type || 'Unknown'} detected - $${(detection.estimated_value || 0).toFixed(2)} recovery opportunity`,
+          source: 'amazon',
+          external_id: detection.id || `det_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }));
+
+        // Check for existing claims to avoid duplicates
+        const externalIds = claimsToInsert.map((c: any) => c.external_id).filter(Boolean);
+        const { data: existingClaims } = await dbClient
+          .from('claims')
+          .select('external_id')
+          .eq('user_id', userId)
+          .in('external_id', externalIds);
+
+        const existingIds = new Set((existingClaims || []).map((c: any) => c.external_id));
+        const newClaims = claimsToInsert.filter((c: any) => !existingIds.has(c.external_id));
+
+        if (newClaims.length > 0) {
+          const { error: claimsError } = await dbClient
+            .from('claims')
+            .insert(newClaims);
+
+          if (claimsError) {
+            logger.warn('⚠️ [AGENT 2] Failed to insert claims from detections', {
+              error: claimsError.message,
+              count: newClaims.length
+            });
+          } else {
+            logger.info('✅ [AGENT 2] Claims created from detections', {
+              count: newClaims.length,
+              userId,
+              syncId
+            });
+          }
+        } else {
+          logger.info('ℹ️ [AGENT 2] All claims already exist, skipping insert', {
+            totalDetections: insertedDetections.length,
+            userId
+          });
+        }
+      }
+    } catch (claimsError: any) {
+      logger.warn('⚠️ [AGENT 2] Failed to create claims from detections', {
+        error: claimsError?.message || claimsError,
+        userId,
+        syncId
+      });
+    }
   }
 
   /**
