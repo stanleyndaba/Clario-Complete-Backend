@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticateToken, AuthenticatedRequest } from '../middleware/authMiddleware';
 import enhancedDetectionService from '../services/enhancedDetectionService';
 import detectionService from '../services/detectionService';
+import { timelineService } from '../services/timelineService';
 
 const router = Router();
 
@@ -84,8 +85,8 @@ router.get('/deadlines', async (req: AuthenticatedRequest, res) => {
     const userId = req.user?.id as string;
     const daysThreshold = parseInt((req as any).query.days || '7', 10);
     const claims = await detectionService.getClaimsApproachingDeadline(userId, daysThreshold);
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       claims,
       count: claims.length,
       threshold_days: daysThreshold
@@ -128,29 +129,32 @@ router.put('/:id/resolve', async (req: AuthenticatedRequest, res) => {
     const { notes, resolution_amount } = (req as any).body || {};
 
     if (!id) {
-      return res.status(400).json({ 
-        success: false, 
-        error: { code: 'VALIDATION_ERROR', message: 'Detection result ID is required' } 
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Detection result ID is required' }
       });
     }
 
     const result = await detectionService.resolveDetectionResult(userId, id, notes, resolution_amount);
-    
-    return res.json({ 
-      success: true, 
+
+    // Log resolution event to timeline
+    await timelineService.logResolution(id, resolution_amount, notes, 'detection_results');
+
+    return res.json({
+      success: true,
       message: 'Detection result resolved successfully',
       detection: result
     });
   } catch (error: any) {
     if (error.message === 'Detection result not found') {
-      return res.status(404).json({ 
-        success: false, 
-        error: { code: 'NOT_FOUND', message: error.message } 
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: error.message }
       });
     }
-    return res.status(500).json({ 
-      success: false, 
-      error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } 
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' }
     });
   }
 });
@@ -164,44 +168,47 @@ router.put('/:id/status', async (req: AuthenticatedRequest, res) => {
     const { status, notes } = (req as any).body || {};
 
     if (!id) {
-      return res.status(400).json({ 
-        success: false, 
-        error: { code: 'VALIDATION_ERROR', message: 'Detection result ID is required' } 
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Detection result ID is required' }
       });
     }
 
     if (!status) {
-      return res.status(400).json({ 
-        success: false, 
-        error: { code: 'VALIDATION_ERROR', message: 'Status is required' } 
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Status is required' }
       });
     }
 
     const validStatuses = ['pending', 'reviewed', 'disputed', 'resolved'];
     if (!validStatuses.includes(status)) {
-      return res.status(400).json({ 
-        success: false, 
-        error: { code: 'VALIDATION_ERROR', message: `Status must be one of: ${validStatuses.join(', ')}` } 
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: `Status must be one of: ${validStatuses.join(', ')}` }
       });
     }
 
     const result = await detectionService.updateDetectionResultStatus(userId, id, status, notes);
-    
-    return res.json({ 
-      success: true, 
+
+    // Log status change event to timeline
+    await timelineService.logStatusChange(id, 'previous', status, notes, 'detection_results');
+
+    return res.json({
+      success: true,
       message: 'Detection result status updated successfully',
       detection: result
     });
   } catch (error: any) {
     if (error.message === 'Detection result not found') {
-      return res.status(404).json({ 
-        success: false, 
-        error: { code: 'NOT_FOUND', message: error.message } 
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: error.message }
       });
     }
-    return res.status(500).json({ 
-      success: false, 
-      error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } 
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' }
     });
   }
 });

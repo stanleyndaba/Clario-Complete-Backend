@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { getLogger } from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import { compositePdfService } from '../services/compositePdfService';
+import { timelineService } from '../services/timelineService';
 
 const router = Router();
 const logger = getLogger('RecoveryRoutes');
@@ -191,7 +192,17 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
         await supabaseAdmin
             .from('detection_results')
             .update({ status: 'filed', updated_at: new Date().toISOString() })
-            .eq('id', id);
+            .eq('id', detectionId);
+
+        // Log submission event to timeline
+        const claimAmount = sourceRecord.estimated_value || sourceRecord.amount || 0;
+        await timelineService.addEvent({
+            claimId: detectionId,
+            action: 'auto_submitted',
+            description: `Claim submitted to Amazon. Case #${caseNumber}`,
+            amount: claimAmount,
+            table: 'detection_results'
+        });
 
         // Create notification for the user
         try {
