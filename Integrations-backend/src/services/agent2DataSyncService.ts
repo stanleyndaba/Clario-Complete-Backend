@@ -3156,27 +3156,43 @@ export class Agent2DataSyncService {
     // This bridges detection_results → claims for the Recoveries page
     try {
       if (insertedDetections && insertedDetections.length > 0) {
+        // Map anomaly_type to claim_type enum (reimbursement, refund, adjustment, dispute)
+        const mapToClaimType = (anomalyType: string): string => {
+          const type = (anomalyType || '').toLowerCase();
+          if (type.includes('refund') || type.includes('return')) return 'refund';
+          if (type.includes('adjust') || type.includes('error')) return 'adjustment';
+          if (type.includes('dispute') || type.includes('charge')) return 'dispute';
+          return 'reimbursement'; // default
+        };
+
+        // Insert all fields that claims table likely requires
         const claimsToInsert = insertedDetections.map((detection: any) => ({
+          claim_id: detection.id || `claim_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           user_id: userId,
-          status: 'pending',
+          claim_type: 'reimbursement',
+          provider: 'amazon',
+          reference_id: detection.id,
           amount: detection.estimated_value || 0,
-          description: `${detection.anomaly_type || 'Unknown'} detected - $${(detection.estimated_value || 0).toFixed(2)} recovery opportunity`,
-          source: 'amazon',
-          external_id: detection.id || `det_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          amount_estimate: detection.estimated_value || 0,
+          currency: detection.currency || 'USD',
+          confidence: detection.confidence_score || 0.85,
+          status: 'detected',
+          reason: `${detection.anomaly_type || 'Unknown'} - $${(detection.estimated_value || 0).toFixed(2)} recovery`,
+          quantity_affected: 1,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         }));
 
         // Check for existing claims to avoid duplicates
-        const externalIds = claimsToInsert.map((c: any) => c.external_id).filter(Boolean);
+        const referenceIds = claimsToInsert.map((c: any) => c.reference_id).filter(Boolean);
         const { data: existingClaims } = await dbClient
           .from('claims')
-          .select('external_id')
+          .select('reference_id')
           .eq('user_id', userId)
-          .in('external_id', externalIds);
+          .in('reference_id', referenceIds);
 
-        const existingIds = new Set((existingClaims || []).map((c: any) => c.external_id));
-        const newClaims = claimsToInsert.filter((c: any) => !existingIds.has(c.external_id));
+        const existingIds = new Set((existingClaims || []).map((c: any) => c.reference_id));
+        const newClaims = claimsToInsert.filter((c: any) => !existingIds.has(c.reference_id));
 
         if (newClaims.length > 0) {
           const { error: claimsError } = await dbClient
@@ -3186,7 +3202,8 @@ export class Agent2DataSyncService {
           if (claimsError) {
             logger.warn('⚠️ [AGENT 2] Failed to insert claims from detections', {
               error: claimsError.message,
-              count: newClaims.length
+              count: newClaims.length,
+              hint: claimsError.hint || 'Check claims table schema matches expected columns'
             });
           } else {
             logger.info('✅ [AGENT 2] Claims created from detections', {
