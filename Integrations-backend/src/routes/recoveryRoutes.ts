@@ -37,6 +37,22 @@ router.get('/:id', async (req: Request, res: Response) => {
 
         // If found in dispute_cases, return it
         if (disputeCase) {
+            // Fetch linked documents for dispute case
+            const { data: docLinks } = await supabaseAdmin
+                .from('dispute_evidence_links')
+                .select('evidence_document_id')
+                .eq('dispute_case_id', disputeCase.id);
+
+            let documents: any[] = [];
+            if (docLinks && docLinks.length > 0) {
+                const docIds = docLinks.map(l => l.evidence_document_id);
+                const { data: docs } = await supabaseAdmin
+                    .from('evidence_documents')
+                    .select('id, filename, doc_type, source_type, created_at, metadata')
+                    .in('id', docIds);
+                documents = docs || [];
+            }
+
             return res.json({
                 id: disputeCase.id,
                 title: disputeCase.case_type || 'Claim Details',
@@ -50,6 +66,7 @@ router.get('/:id', async (req: Request, res: Response) => {
                 currency: disputeCase.currency || 'USD',
                 filing_status: disputeCase.filing_status,
                 case_number: disputeCase.case_number,
+                documents,
             });
         }
 
@@ -61,6 +78,17 @@ router.get('/:id', async (req: Request, res: Response) => {
             .single();
 
         if (detectionResult) {
+            // Fetch matched documents from detection result
+            let documents: any[] = [];
+            const matchedDocIds = detectionResult.matched_document_ids;
+            if (matchedDocIds && Array.isArray(matchedDocIds) && matchedDocIds.length > 0) {
+                const { data: docs } = await supabaseAdmin
+                    .from('evidence_documents')
+                    .select('id, filename, doc_type, source_type, created_at, metadata')
+                    .in('id', matchedDocIds);
+                documents = docs || [];
+            }
+
             return res.json({
                 id: detectionResult.id,
                 title: detectionResult.anomaly_type || 'Claim Details',
@@ -73,6 +101,7 @@ router.get('/:id', async (req: Request, res: Response) => {
                 productName: detectionResult.anomaly_type || 'Unknown Product',
                 currency: detectionResult.currency || 'USD',
                 confidence_score: detectionResult.confidence_score,
+                documents,
             });
         }
 
