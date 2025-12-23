@@ -284,7 +284,7 @@ class EvidenceAuditService {
                 // Try detection_results
                 const { data: detection } = await supabaseAdmin
                     .from('detection_results')
-                    .select('matched_document_ids')
+                    .select('matched_document_ids, timeline, created_at, status, anomaly_type')
                     .eq('id', claimId)
                     .single();
 
@@ -299,6 +299,22 @@ class EvidenceAuditService {
                         if (trail) trails.push(trail);
                     }
                     return trails;
+                }
+
+                // No evidence documents linked - generate synthetic audit trail from claim timeline
+                if (detection?.timeline || detection?.created_at) {
+                    return this.generateSyntheticAuditTrail(claimId, detection);
+                }
+
+                // Try claims table
+                const { data: claim } = await supabaseAdmin
+                    .from('claims')
+                    .select('timeline, created_at, status, claim_type')
+                    .eq('id', claimId)
+                    .single();
+
+                if (claim?.timeline || claim?.created_at) {
+                    return this.generateSyntheticAuditTrail(claimId, claim);
                 }
 
                 return [];
@@ -316,6 +332,87 @@ class EvidenceAuditService {
             logger.error('❌ [AUDIT] Failed to get claim evidence audit trail', { claimId, error: error.message });
             return [];
         }
+    }
+
+    /**
+     * Generate synthetic audit trail from claim timeline when no evidence documents exist
+     */
+    private generateSyntheticAuditTrail(claimId: string, claim: any): DocumentAuditTrail[] {
+        const events: AuditEvent[] = [];
+        const timeline = claim.timeline || [];
+
+        // Add claim creation event
+        events.push({
+            id: `claim-created-${claimId}`,
+            documentId: claimId,
+            eventType: 'ingested',
+            timestamp: claim.created_at || new Date().toISOString(),
+            actor: 'system',
+            details: {
+                source: 'detection_agent'
+            },
+            narrative: `Claim ${claimId.slice(0, 8)} was detected by AI agent`
+        });
+
+        // Add timeline events
+        for (const event of timeline) {
+            events.push({
+                id: event.id || `timeline-${Math.random().toString(36).slice(2)}`,
+                documentId: claimId,
+                eventType: this.mapTimelineAction(event.action),
+                timestamp: event.date || new Date().toISOString(),
+                actor: 'system',
+                details: {
+                    reason: event.description
+                },
+                narrative: event.description || `Claim ${event.action}`
+            });
+        }
+
+        // If claim has a status, add a status event
+        if (claim.status && events.length === 1) {
+            events.push({
+                id: `status-${claimId}`,
+                documentId: claimId,
+                eventType: 'verified',
+                timestamp: claim.updated_at || claim.created_at || new Date().toISOString(),
+                actor: 'system',
+                details: {},
+                narrative: `Claim status: ${claim.status}`
+            });
+        }
+
+        // Sort by timestamp
+        events.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+        return [{
+            documentId: claimId,
+            filename: `Claim ${claimId.slice(0, 8)}`,
+            events,
+            summary: {
+                ingestedAt: claim.created_at,
+                ingestedFrom: 'detection_agent',
+                linkedClaims: 1,
+                lastActivity: events[events.length - 1]?.timestamp || claim.created_at
+            }
+        }];
+    }
+
+    /**
+     * Map timeline action to audit event type
+     */
+    private mapTimelineAction(action: string): AuditEvent['eventType'] {
+        const mapping: Record<string, AuditEvent['eventType']> = {
+            'filed': 'filed',
+            'auto_submitted': 'filed',
+            'approved': 'verified',
+            'partially_approved': 'verified',
+            'denied': 'error',
+            'escalated': 'linked',
+            'resolved': 'verified',
+            'status_changed': 'edited'
+        };
+        return mapping[action] || 'edited';
     }
 
     /**

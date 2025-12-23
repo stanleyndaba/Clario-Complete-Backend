@@ -124,7 +124,7 @@ router.get('/confidence-distribution', async (req: AuthenticatedRequest, res) =>
 // Resolve a detection result (mark as resolved)
 router.put('/:id/resolve', async (req: AuthenticatedRequest, res) => {
   try {
-    const userId = req.user?.id as string;
+    const userId = (req as any).userId || req.user?.id as string;
     const { id } = (req as any).params;
     const { notes, resolution_amount } = (req as any).body || {};
 
@@ -163,7 +163,7 @@ router.put('/:id/resolve', async (req: AuthenticatedRequest, res) => {
 // Update detection result status (generic status update)
 router.put('/:id/status', async (req: AuthenticatedRequest, res) => {
   try {
-    const userId = req.user?.id as string;
+    const userId = (req as any).userId || req.user?.id as string;
     const { id } = (req as any).params;
     const { status, notes } = (req as any).body || {};
 
