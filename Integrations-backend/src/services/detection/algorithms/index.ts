@@ -9,24 +9,28 @@
 export * from './inventoryAlgorithms';
 export { default as inventoryAlgorithms } from './inventoryAlgorithms';
 
+export * from './refundAlgorithms';
+export { default as refundAlgorithms } from './refundAlgorithms';
+
 // Future P1 Priority - Fee Overcharges
 // export * from './feeAlgorithms';
 
 // Future P2 Priority - Chargebacks/Disputes
 // export * from './chargebackAlgorithms';
 
-// Future P3 Priority - Refunds/Returns
-// export * from './refundAlgorithms';
-
 // Algorithm Registry - maps anomaly types to detection functions
 import { detectLostInventory } from './inventoryAlgorithms';
+import { detectRefundWithoutReturn } from './refundAlgorithms';
 
 export const algorithmRegistry = {
     // P0 - Inventory
     'lost_warehouse': detectLostInventory,
-    'damaged_warehouse': detectLostInventory, // Uses same base algorithm
+    'damaged_warehouse': detectLostInventory,
     'lost_inbound': detectLostInventory,
     'damaged_inbound': detectLostInventory,
+
+    // P0 - Refunds
+    'refund_no_return': detectRefundWithoutReturn,
 
     // P1 - Fees (to be implemented)
     // 'weight_fee_overcharge': detectFeeOvercharge,

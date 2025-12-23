@@ -16,6 +16,15 @@ import {
   SyncedData,
   DetectionResult as InventoryDetectionResult
 } from './detection/algorithms/inventoryAlgorithms';
+import {
+  detectRefundWithoutReturn,
+  fetchRefundEvents,
+  fetchReturnEvents,
+  fetchReimbursementEvents,
+  storeRefundDetectionResults,
+  RefundSyncedData,
+  RefundDetectionResult
+} from './detection/algorithms/refundAlgorithms';
 
 // ============================================================================
 // Types
@@ -99,33 +108,68 @@ export class EnhancedDetectionService {
       // Step 3: RUN THE WHALE HUNTER 🐋
       logger.info('🐋 [AGENT3] Unleashing the Whale Hunter...', { userId, syncId });
 
-      const detectionResults = detectLostInventory(userId, syncId, syncedData);
+      const inventoryResults = detectLostInventory(userId, syncId, syncedData);
 
       logger.info('🐋 [AGENT3] Whale Hunter complete!', {
         userId,
         syncId,
-        detectionsFound: detectionResults.length,
-        estimatedRecovery: detectionResults.reduce((sum, r) => sum + r.estimated_value, 0)
+        detectionsFound: inventoryResults.length,
+        estimatedRecovery: inventoryResults.reduce((sum, r) => sum + r.estimated_value, 0)
       });
 
-      // Step 4: Store results in database
-      if (detectionResults.length > 0) {
-        await storeDetectionResults(detectionResults);
-        logger.info('🐋 [AGENT3] Detection results stored in database', {
-          count: detectionResults.length
+      // Step 4: RUN THE REFUND TRAP 🪤
+      logger.info('🪤 [AGENT3] Setting the Refund Trap...', { userId, syncId });
+
+      const lookbackDate = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
+      const [refundEvents, returnEvents, reimbursementEvents] = await Promise.all([
+        fetchRefundEvents(userId, { startDate: lookbackDate }),
+        fetchReturnEvents(userId, { startDate: lookbackDate }),
+        fetchReimbursementEvents(userId, { startDate: lookbackDate })
+      ]);
+
+      const refundSyncedData: RefundSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        refund_events: refundEvents,
+        return_events: returnEvents,
+        reimbursement_events: reimbursementEvents
+      };
+
+      const refundResults = detectRefundWithoutReturn(userId, syncId, refundSyncedData);
+
+      logger.info('🪤 [AGENT3] Refund Trap complete!', {
+        userId,
+        syncId,
+        detectionsFound: refundResults.length,
+        estimatedRecovery: refundResults.reduce((sum, r) => sum + r.estimated_value, 0)
+      });
+
+      // Step 5: Store ALL results in database
+      if (inventoryResults.length > 0) {
+        await storeDetectionResults(inventoryResults);
+        logger.info('🐋 [AGENT3] Inventory detection results stored', {
+          count: inventoryResults.length
         });
       }
 
-      // Step 5: Calculate summary
-      const totalRecovery = detectionResults.reduce((sum, r) => sum + r.estimated_value, 0);
+      if (refundResults.length > 0) {
+        await storeRefundDetectionResults(refundResults);
+        logger.info('🪤 [AGENT3] Refund detection results stored', {
+          count: refundResults.length
+        });
+      }
+
+      // Step 6: Calculate combined summary
+      const allResults = [...inventoryResults, ...refundResults];
+      const totalRecovery = allResults.reduce((sum, r) => sum + r.estimated_value, 0);
 
       return {
         success: true,
         jobId,
-        message: detectionResults.length > 0
-          ? `🐋 Whale Hunter found ${detectionResults.length} lost inventory cases worth $${totalRecovery.toFixed(2)}!`
+        message: allResults.length > 0
+          ? `🧠 Agent 3 found ${allResults.length} claims: ${inventoryResults.length} inventory, ${refundResults.length} refunds. Total recovery: $${totalRecovery.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
-        detectionsFound: detectionResults.length,
+        detectionsFound: allResults.length,
         estimatedRecovery: totalRecovery
       };
 
