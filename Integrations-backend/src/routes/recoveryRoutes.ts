@@ -97,23 +97,56 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
 
         logger.info('Submitting claim', { claimId: id, userId });
 
-        // First, get the detection result to get claim details
-        const { data: detectionResult, error: detError } = await supabaseAdmin
+        // First, try to get from detection_results
+        let detectionResult: any = null;
+        let claimRecord: any = null;
+
+        const { data: detResult, error: detError } = await supabaseAdmin
             .from('detection_results')
             .select('*')
             .eq('id', id)
             .single();
 
-        if (detError || !detectionResult) {
-            logger.warn('Detection result not found for submission', { id, userId });
+        if (detResult && !detError) {
+            detectionResult = detResult;
+        } else {
+            // Not in detection_results, check claims table
+            const { data: claimResult, error: claimError } = await supabaseAdmin
+                .from('claims')
+                .select('*')
+                .eq('claim_id', id)
+                .single();
+
+            if (claimResult && !claimError) {
+                claimRecord = claimResult;
+            } else {
+                // Also try by id column
+                const { data: claimById } = await supabaseAdmin
+                    .from('claims')
+                    .select('*')
+                    .eq('id', id)
+                    .single();
+
+                if (claimById) {
+                    claimRecord = claimById;
+                }
+            }
+        }
+
+        if (!detectionResult && !claimRecord) {
+            logger.warn('Claim not found for submission', { id, userId });
             return res.status(404).json({ success: false, error: 'Claim not found' });
         }
+
+        // Use detection result if available, otherwise use claim record
+        const sourceRecord = detectionResult || claimRecord;
+        const detectionId = detectionResult?.id || claimRecord?.reference_id || id;
 
         // Check if already submitted (dispute_case exists)
         const { data: existingCase } = await supabaseAdmin
             .from('dispute_cases')
             .select('id, status')
-            .eq('detection_result_id', id)
+            .or(`detection_result_id.eq.${detectionId},claim_id.eq.${id}`)
             .single();
 
         if (existingCase) {
@@ -131,13 +164,13 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
 
         const disputeCase = {
             seller_id: userId,
-            detection_result_id: id,
-            claim_id: detectionResult.evidence?.claim_id || id,
-            claim_amount: detectionResult.estimated_value || 0,
-            currency: detectionResult.currency || 'USD',
+            detection_result_id: detectionId,
+            claim_id: sourceRecord.claim_id || id,
+            claim_amount: sourceRecord.estimated_value || sourceRecord.amount || 0,
+            currency: sourceRecord.currency || 'USD',
             status: 'submitted',
             filing_status: 'filed',
-            case_type: detectionResult.anomaly_type || 'unknown',
+            case_type: sourceRecord.anomaly_type || sourceRecord.claim_type || 'unknown',
             case_number: caseNumber,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
