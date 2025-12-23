@@ -138,11 +138,7 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
             status: 'submitted',
             filing_status: 'filed',
             case_type: detectionResult.anomaly_type || 'unknown',
-            dispute_type: detectionResult.anomaly_type || 'unknown',
             case_number: caseNumber,
-            sku: detectionResult.sku || detectionResult.evidence?.sku,
-            asin: detectionResult.asin || detectionResult.evidence?.asin,
-            order_id: detectionResult.order_id || detectionResult.evidence?.order_id,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
