@@ -389,6 +389,9 @@ export function detectLostInventory(
 
 /**
  * Fetch inventory ledger events from database for a seller
+ * 
+ * ADAPTER: Since Agent 2 uses separate tables (orders, returns, shipments, settlements),
+ * we build the inventory ledger by combining data from these tables.
  */
 export async function fetchInventoryLedger(
     sellerId: string,
@@ -398,38 +401,164 @@ export async function fetchInventoryLedger(
         limit?: number;
     }
 ): Promise<InventoryLedgerEvent[]> {
+    const events: InventoryLedgerEvent[] = [];
+
     try {
-        let query = supabaseAdmin
-            .from('inventory_ledger')
+        logger.info('🐋 [WHALE] Building inventory ledger from Agent 2 tables', { sellerId });
+
+        // 1. Fetch shipments (inbound = Receipt, outbound = Shipment)
+        const { data: shipments, error: shipmentsError } = await supabaseAdmin
+            .from('shipments')
             .select('*')
-            .eq('seller_id', sellerId)
-            .order('event_date', { ascending: true });
+            .eq('user_id', sellerId)
+            .order('shipment_date', { ascending: true });
 
-        if (options?.startDate) {
-            query = query.gte('event_date', options.startDate);
+        if (!shipmentsError && shipments) {
+            for (const shipment of shipments) {
+                // Inbound shipments = Receipts
+                if (shipment.shipment_type === 'INBOUND' || shipment.status?.includes('INBOUND')) {
+                    events.push({
+                        id: shipment.shipment_id || shipment.id,
+                        seller_id: sellerId,
+                        fnsku: shipment.fnsku || shipment.items?.[0]?.fnsku || 'UNKNOWN',
+                        sku: shipment.sku || shipment.items?.[0]?.sku,
+                        asin: shipment.asin || shipment.items?.[0]?.asin,
+                        product_name: shipment.product_name,
+                        event_type: 'Receipt',
+                        quantity: shipment.quantity_received || shipment.quantity || 0,
+                        quantity_direction: 'in',
+                        event_date: shipment.shipment_date || shipment.created_at,
+                        fulfillment_center_id: shipment.fulfillment_center_id || shipment.destination_fc,
+                        reference_id: shipment.shipment_id,
+                        created_at: shipment.created_at
+                    });
+                } else {
+                    // Outbound = customer orders shipped
+                    events.push({
+                        id: shipment.shipment_id || shipment.id,
+                        seller_id: sellerId,
+                        fnsku: shipment.fnsku || shipment.items?.[0]?.fnsku || 'UNKNOWN',
+                        sku: shipment.sku || shipment.items?.[0]?.sku,
+                        asin: shipment.asin || shipment.items?.[0]?.asin,
+                        product_name: shipment.product_name,
+                        event_type: 'Shipment',
+                        quantity: shipment.quantity_shipped || shipment.quantity || 0,
+                        quantity_direction: 'out',
+                        event_date: shipment.shipment_date || shipment.created_at,
+                        fulfillment_center_id: shipment.fulfillment_center_id,
+                        reference_id: shipment.order_id || shipment.shipment_id,
+                        created_at: shipment.created_at
+                    });
+                }
+            }
+            logger.info('🐋 [WHALE] Processed shipments', { count: shipments.length });
         }
 
-        if (options?.endDate) {
-            query = query.lte('event_date', options.endDate);
+        // 2. Fetch returns (customer returns = inventory back in)
+        const { data: returns, error: returnsError } = await supabaseAdmin
+            .from('returns')
+            .select('*')
+            .eq('user_id', sellerId)
+            .order('returned_date', { ascending: true });
+
+        if (!returnsError && returns) {
+            for (const returnData of returns) {
+                const items = returnData.items || [];
+                for (const item of items) {
+                    events.push({
+                        id: `return-${returnData.return_id}-${item.sku || 'item'}`,
+                        seller_id: sellerId,
+                        fnsku: item.fnsku || item.asin || 'UNKNOWN',
+                        sku: item.sku,
+                        asin: item.asin,
+                        event_type: 'Return',
+                        quantity: item.quantity || 1,
+                        quantity_direction: 'in',
+                        event_date: returnData.returned_date || returnData.created_at,
+                        reference_id: returnData.order_id,
+                        average_sales_price: item.refund_amount || returnData.refund_amount,
+                        created_at: returnData.created_at
+                    });
+                }
+            }
+            logger.info('🐋 [WHALE] Processed returns', { count: returns.length });
         }
 
-        if (options?.limit) {
-            query = query.limit(options.limit);
+        // 3. Fetch orders (for tracking quantities sold)
+        const { data: orders, error: ordersError } = await supabaseAdmin
+            .from('orders')
+            .select('*')
+            .eq('user_id', sellerId)
+            .eq('order_status', 'Shipped')
+            .order('order_date', { ascending: true });
+
+        if (!ordersError && orders) {
+            for (const order of orders) {
+                const items = order.items || [];
+                for (const item of items) {
+                    events.push({
+                        id: `order-${order.order_id}-${item.sku || 'item'}`,
+                        seller_id: sellerId,
+                        fnsku: item.fnsku || item.asin || 'UNKNOWN',
+                        sku: item.sku,
+                        asin: item.asin,
+                        product_name: item.title,
+                        event_type: 'Shipment',
+                        quantity: item.quantity || 1,
+                        quantity_direction: 'out',
+                        event_date: order.shipment_date || order.order_date,
+                        reference_id: order.order_id,
+                        average_sales_price: item.price,
+                        created_at: order.created_at
+                    });
+                }
+            }
+            logger.info('🐋 [WHALE] Processed orders', { count: orders.length });
         }
 
-        const { data, error } = await query;
+        // 4. Fetch settlements for reimbursements/adjustments
+        const { data: settlements, error: settlementsError } = await supabaseAdmin
+            .from('settlements')
+            .select('*')
+            .eq('user_id', sellerId)
+            .in('transaction_type', ['reimbursement', 'adjustment'])
+            .order('settlement_date', { ascending: true });
 
-        if (error) {
-            logger.error('🐋 [WHALE] Error fetching inventory ledger', {
-                sellerId,
-                error: error.message
-            });
-            return [];
+        if (!settlementsError && settlements) {
+            for (const settlement of settlements) {
+                if (settlement.transaction_type === 'reimbursement') {
+                    // Reimbursements don't directly affect inventory ledger
+                    // but we track them for the reimbursement check in detection
+                    continue;
+                }
+
+                events.push({
+                    id: settlement.settlement_id || settlement.id,
+                    seller_id: sellerId,
+                    fnsku: settlement.metadata?.fnsku || 'UNKNOWN',
+                    sku: settlement.metadata?.sku,
+                    event_type: 'Adjustment',
+                    quantity: settlement.amount > 0 ? 1 : -1,
+                    quantity_direction: settlement.amount > 0 ? 'in' : 'out',
+                    event_date: settlement.settlement_date,
+                    reference_id: settlement.order_id,
+                    created_at: settlement.created_at
+                });
+            }
+            logger.info('🐋 [WHALE] Processed settlements', { count: settlements.length });
         }
 
-        return data || [];
+        // Sort all events by date
+        events.sort((a, b) => new Date(a.event_date).getTime() - new Date(b.event_date).getTime());
+
+        logger.info('🐋 [WHALE] Inventory ledger built', {
+            sellerId,
+            totalEvents: events.length
+        });
+
+        return events;
     } catch (err: any) {
-        logger.error('🐋 [WHALE] Exception fetching inventory ledger', {
+        logger.error('🐋 [WHALE] Exception building inventory ledger', {
             sellerId,
             error: err.message
         });

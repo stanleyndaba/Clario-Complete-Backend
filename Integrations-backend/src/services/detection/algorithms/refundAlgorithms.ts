@@ -337,67 +337,71 @@ export function detectRefundWithoutReturn(
 
 /**
  * Fetch refund events from database
+ * 
+ * ADAPTER: Agent 2 stores refunds in the settlements table with transaction_type = 'fee' 
+ * or in orders as refund-related records. We extract from settlements.
  */
 export async function fetchRefundEvents(
     sellerId: string,
     options?: { startDate?: string; endDate?: string; limit?: number }
 ): Promise<RefundEvent[]> {
     try {
-        let query = supabaseAdmin
-            .from('refund_events')
+        logger.info('🪤 [REFUND TRAP] Fetching refund events from settlements table', { sellerId });
+
+        // Refunds are typically negative amounts in settlements or have specific transaction types
+        const { data, error } = await supabaseAdmin
+            .from('settlements')
             .select('*')
-            .eq('seller_id', sellerId)
-            .order('refund_date', { ascending: false });
-
-        if (options?.startDate) {
-            query = query.gte('refund_date', options.startDate);
-        }
-
-        if (options?.endDate) {
-            query = query.lte('refund_date', options.endDate);
-        }
-
-        if (options?.limit) {
-            query = query.limit(options.limit);
-        }
-
-        const { data, error } = await query;
+            .eq('user_id', sellerId)
+            .in('transaction_type', ['refund', 'fee', 'shipment_fee'])
+            .order('settlement_date', { ascending: false });
 
         if (error) {
-            logger.error('🪤 [REFUND TRAP] Error fetching refund events', {
-                sellerId,
-                error: error.message
-            });
+            logger.error('🪤 [REFUND TRAP] Error fetching settlements', { sellerId, error: error.message });
             return [];
         }
 
-        return data || [];
+        // Transform settlements into refund events
+        const refundEvents: RefundEvent[] = (data || [])
+            .filter(s => s.amount < 0 || s.transaction_type === 'refund')
+            .map(settlement => ({
+                id: settlement.id || settlement.settlement_id,
+                seller_id: sellerId,
+                order_id: settlement.order_id || '',
+                sku: settlement.metadata?.sku,
+                asin: settlement.metadata?.asin,
+                refund_amount: Math.abs(settlement.amount || 0),
+                currency: settlement.currency || 'USD',
+                refund_date: settlement.settlement_date,
+                refund_reason: settlement.metadata?.reason || 'Customer Refund',
+                created_at: settlement.created_at
+            }));
+
+        logger.info('🪤 [REFUND TRAP] Extracted refund events', { count: refundEvents.length });
+        return refundEvents;
     } catch (err: any) {
-        logger.error('🪤 [REFUND TRAP] Exception fetching refund events', {
-            sellerId,
-            error: err.message
-        });
+        logger.error('🪤 [REFUND TRAP] Exception fetching refund events', { sellerId, error: err.message });
         return [];
     }
 }
 
 /**
  * Fetch return events from database
+ * 
+ * ADAPTER: Uses Agent 2's 'returns' table directly
  */
 export async function fetchReturnEvents(
     sellerId: string,
     options?: { startDate?: string; limit?: number }
 ): Promise<ReturnEvent[]> {
     try {
-        let query = supabaseAdmin
-            .from('return_events')
-            .select('*')
-            .eq('seller_id', sellerId)
-            .order('return_date', { ascending: false });
+        logger.info('🪤 [REFUND TRAP] Fetching return events from returns table', { sellerId });
 
-        if (options?.startDate) {
-            query = query.gte('return_date', options.startDate);
-        }
+        let query = supabaseAdmin
+            .from('returns')
+            .select('*')
+            .eq('user_id', sellerId)
+            .order('returned_date', { ascending: false });
 
         if (options?.limit) {
             query = query.limit(options.limit);
@@ -406,40 +410,51 @@ export async function fetchReturnEvents(
         const { data, error } = await query;
 
         if (error) {
-            logger.error('🪤 [REFUND TRAP] Error fetching return events', {
-                sellerId,
-                error: error.message
-            });
+            logger.error('🪤 [REFUND TRAP] Error fetching returns', { sellerId, error: error.message });
             return [];
         }
 
-        return data || [];
+        // Transform returns to ReturnEvent format
+        const returnEvents: ReturnEvent[] = (data || []).map(ret => ({
+            id: ret.id || ret.return_id,
+            seller_id: sellerId,
+            order_id: ret.order_id || '',
+            sku: ret.items?.[0]?.sku,
+            asin: ret.items?.[0]?.asin,
+            return_date: ret.returned_date,
+            return_status: ret.status || 'received',
+            quantity_returned: ret.items?.reduce((sum: number, i: any) => sum + (i.quantity || 0), 0) || 1,
+            disposition: ret.metadata?.disposition,
+            fulfillment_center_id: ret.metadata?.fulfillmentCenterId,
+            created_at: ret.created_at
+        }));
+
+        logger.info('🪤 [REFUND TRAP] Fetched return events', { count: returnEvents.length });
+        return returnEvents;
     } catch (err: any) {
-        logger.error('🪤 [REFUND TRAP] Exception fetching return events', {
-            sellerId,
-            error: err.message
-        });
+        logger.error('🪤 [REFUND TRAP] Exception fetching return events', { sellerId, error: err.message });
         return [];
     }
 }
 
 /**
  * Fetch reimbursement events from database
+ * 
+ * ADAPTER: Uses Agent 2's 'settlements' table filtered by transaction_type = 'reimbursement'
  */
 export async function fetchReimbursementEvents(
     sellerId: string,
     options?: { startDate?: string; limit?: number }
 ): Promise<ReimbursementEvent[]> {
     try {
-        let query = supabaseAdmin
-            .from('reimbursement_events')
-            .select('*')
-            .eq('seller_id', sellerId)
-            .order('reimbursement_date', { ascending: false });
+        logger.info('🪤 [REFUND TRAP] Fetching reimbursements from settlements table', { sellerId });
 
-        if (options?.startDate) {
-            query = query.gte('reimbursement_date', options.startDate);
-        }
+        let query = supabaseAdmin
+            .from('settlements')
+            .select('*')
+            .eq('user_id', sellerId)
+            .eq('transaction_type', 'reimbursement')
+            .order('settlement_date', { ascending: false });
 
         if (options?.limit) {
             query = query.limit(options.limit);
@@ -448,19 +463,29 @@ export async function fetchReimbursementEvents(
         const { data, error } = await query;
 
         if (error) {
-            logger.error('🪤 [REFUND TRAP] Error fetching reimbursement events', {
-                sellerId,
-                error: error.message
-            });
+            logger.error('🪤 [REFUND TRAP] Error fetching reimbursements', { sellerId, error: error.message });
             return [];
         }
 
-        return data || [];
+        // Transform settlements to ReimbursementEvent format
+        const reimbursementEvents: ReimbursementEvent[] = (data || []).map(settlement => ({
+            id: settlement.id || settlement.settlement_id,
+            seller_id: sellerId,
+            order_id: settlement.order_id,
+            sku: settlement.metadata?.sku,
+            asin: settlement.metadata?.asin,
+            reimbursement_amount: settlement.amount || 0,
+            currency: settlement.currency || 'USD',
+            reimbursement_date: settlement.settlement_date,
+            reimbursement_type: settlement.metadata?.adjustmentType || 'REIMBURSEMENT',
+            reason_code: settlement.metadata?.reason,
+            created_at: settlement.created_at
+        }));
+
+        logger.info('🪤 [REFUND TRAP] Fetched reimbursement events', { count: reimbursementEvents.length });
+        return reimbursementEvents;
     } catch (err: any) {
-        logger.error('🪤 [REFUND TRAP] Exception fetching reimbursement events', {
-            sellerId,
-            error: err.message
-        });
+        logger.error('🪤 [REFUND TRAP] Exception fetching reimbursement events', { sellerId, error: err.message });
         return [];
     }
 }
