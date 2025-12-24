@@ -376,86 +376,108 @@ export function detectDamagedInventory(
 
 /**
  * Fetch damaged inventory events from ledger
+ * 
+ * ADAPTER: Agent 2 doesn't have inventory_ledger. 
+ * We extract damaged events from returns table (disposition field).
  */
 export async function fetchDamagedEvents(
     sellerId: string,
     options?: { startDate?: string; limit?: number }
 ): Promise<DamagedEvent[]> {
     try {
-        let query = supabaseAdmin
-            .from('inventory_ledger')
+        logger.info('💥 [BROKEN GOODS] Fetching damaged events from returns table', { sellerId });
+
+        // Get returns with damaged/defective items
+        const { data: returns, error } = await supabaseAdmin
+            .from('returns')
             .select('*')
-            .eq('seller_id', sellerId)
-            .eq('event_type', 'Adjustment')
-            .in('disposition', ['DAMAGED', 'UNSELLABLE', 'DEFECTIVE'])
-            .order('event_date', { ascending: false });
-
-        if (options?.startDate) {
-            query = query.gte('event_date', options.startDate);
-        }
-
-        if (options?.limit) {
-            query = query.limit(options.limit);
-        }
-
-        const { data, error } = await query;
+            .eq('user_id', sellerId)
+            .order('returned_date', { ascending: false });
 
         if (error) {
-            logger.error('💥 [BROKEN GOODS] Error fetching damaged events', {
-                sellerId,
-                error: error.message
-            });
+            logger.error('💥 [BROKEN GOODS] Error fetching returns', { sellerId, error: error.message });
             return [];
         }
 
-        return data || [];
+        // Transform into DamagedEvent format - filter for damaged items
+        const events: DamagedEvent[] = [];
+        for (const ret of (returns || [])) {
+            const disposition = ret.metadata?.disposition?.toUpperCase() || '';
+            if (!['DAMAGED', 'UNSELLABLE', 'DEFECTIVE'].includes(disposition)) continue;
+
+            for (const item of (ret.items || [])) {
+                events.push({
+                    id: `damage-${ret.return_id}-${item.sku || 'item'}`,
+                    seller_id: sellerId,
+                    fnsku: item.fnsku || item.asin || 'UNKNOWN',
+                    sku: item.sku,
+                    asin: item.asin,
+                    event_type: 'Adjustment',
+                    event_date: ret.returned_date,
+                    disposition: disposition,
+                    reason_code: ret.metadata?.reason_code || 'Q', // Default to 'Q' - return processing damage
+                    quantity: item.quantity || 1,
+                    unit_value: item.refund_amount,
+                    average_sales_price: item.refund_amount,
+                    fulfillment_center_id: ret.metadata?.fulfillmentCenterId,
+                    created_at: ret.created_at
+                });
+            }
+        }
+
+        logger.info('💥 [BROKEN GOODS] Extracted damaged events', { count: events.length });
+        return events;
     } catch (err: any) {
-        logger.error('💥 [BROKEN GOODS] Exception fetching damaged events', {
-            sellerId,
-            error: err.message
-        });
+        logger.error('💥 [BROKEN GOODS] Exception fetching damaged events', { sellerId, error: err.message });
         return [];
     }
 }
 
 /**
  * Fetch reimbursement events
+ * 
+ * ADAPTER: Uses Agent 2's settlements table filtered by 'reimbursement' type
  */
 export async function fetchReimbursementsForDamage(
     sellerId: string,
     options?: { startDate?: string; limit?: number }
 ): Promise<ReimbursementEvent[]> {
     try {
-        let query = supabaseAdmin
-            .from('reimbursement_events')
+        logger.info('💥 [BROKEN GOODS] Fetching reimbursements from settlements', { sellerId });
+
+        const { data, error } = await supabaseAdmin
+            .from('settlements')
             .select('*')
-            .eq('seller_id', sellerId)
-            .order('reimbursement_date', { ascending: false });
-
-        if (options?.startDate) {
-            query = query.gte('reimbursement_date', options.startDate);
-        }
-
-        if (options?.limit) {
-            query = query.limit(options.limit);
-        }
-
-        const { data, error } = await query;
+            .eq('user_id', sellerId)
+            .eq('transaction_type', 'reimbursement')
+            .order('settlement_date', { ascending: false });
 
         if (error) {
-            logger.error('💥 [BROKEN GOODS] Error fetching reimbursements', {
-                sellerId,
-                error: error.message
-            });
+            logger.error('💥 [BROKEN GOODS] Error fetching settlements', { sellerId, error: error.message });
             return [];
         }
 
-        return data || [];
+        // Transform to ReimbursementEvent format
+        const events: ReimbursementEvent[] = (data || []).map(s => ({
+            id: s.id || s.settlement_id,
+            seller_id: sellerId,
+            fnsku: s.metadata?.fnsku,
+            sku: s.metadata?.sku,
+            asin: s.metadata?.asin,
+            reimbursement_type: s.metadata?.adjustmentType || 'REIMBURSEMENT',
+            reimbursement_date: s.settlement_date,
+            reimbursement_amount: s.amount || 0,
+            currency: s.currency || 'USD',
+            quantity_reimbursed: s.metadata?.quantity || 1,
+            reason_code: s.metadata?.reason,
+            amazon_order_id: s.order_id,
+            created_at: s.created_at
+        }));
+
+        logger.info('💥 [BROKEN GOODS] Fetched reimbursements', { count: events.length });
+        return events;
     } catch (err: any) {
-        logger.error('💥 [BROKEN GOODS] Exception fetching reimbursements', {
-            sellerId,
-            error: err.message
-        });
+        logger.error('💥 [BROKEN GOODS] Exception fetching reimbursements', { sellerId, error: err.message });
         return [];
     }
 }

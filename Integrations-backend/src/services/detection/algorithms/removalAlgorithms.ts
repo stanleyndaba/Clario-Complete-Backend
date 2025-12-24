@@ -320,16 +320,79 @@ export function detectRemovalAnomalies(sellerId: string, syncId: string, data: R
     return all;
 }
 
+/**
+ * Fetch Removal Orders
+ * 
+ * ADAPTER: Agent 2 doesn't have removal_order_detail. 
+ * We extract removal orders from shipments with appropriate filters.
+ */
 export async function fetchRemovalOrders(sellerId: string): Promise<RemovalOrderDetail[]> {
-    const { data } = await supabaseAdmin.from('removal_order_detail').select('*').eq('seller_id', sellerId).order('request_date', { ascending: false }).limit(500);
-    return data || [];
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('shipments')
+            .select('*')
+            .eq('user_id', sellerId)
+            .order('shipment_date', { ascending: false })
+            .limit(500);
+
+        if (error) {
+            logger.error('🗑️ [REMOVAL] Error fetching shipments', { sellerId, error: error.message });
+            return [];
+        }
+
+        // Filter for removal-type shipments (OUTBOUND from FBA back to seller)
+        const removalOrders: RemovalOrderDetail[] = (data || [])
+            .filter(s => s.shipment_type === 'REMOVAL' || s.shipment_type === 'DISPOSAL' ||
+                s.status?.includes('REMOVAL') || s.metadata?.order_type)
+            .map(s => ({
+                id: s.id || s.shipment_id,
+                seller_id: sellerId,
+                order_id: s.shipment_id,
+                order_type: (s.metadata?.order_type || s.shipment_type || 'Return') as 'Return' | 'Disposal' | 'Liquidation',
+                order_status: s.status || 'unknown',
+                sku: s.sku || s.items?.[0]?.sku || '',
+                fnsku: s.fnsku || s.items?.[0]?.fnsku,
+                asin: s.asin || s.items?.[0]?.asin,
+                product_name: s.product_name,
+                requested_quantity: s.quantity || 0,
+                shipped_quantity: s.quantity_shipped,
+                disposed_quantity: s.metadata?.disposed_quantity,
+                cancelled_quantity: s.metadata?.cancelled_quantity,
+                liquidation_proceeds: s.metadata?.liquidation_proceeds,
+                expected_liquidation: s.metadata?.expected_liquidation,
+                request_date: s.created_at,
+                completion_date: s.metadata?.completion_date,
+                ship_date: s.shipment_date,
+                removal_fee: s.metadata?.removal_fee,
+                expected_fee: s.metadata?.expected_fee,
+                tracking_id: s.tracking_id,
+                carrier: s.metadata?.carrier,
+                destination_address: s.metadata?.destination_address,
+                created_at: s.created_at
+            }));
+
+        logger.info('🗑️ [REMOVAL] Fetched removal orders', { count: removalOrders.length });
+        return removalOrders;
+    } catch (err: any) {
+        logger.error('🗑️ [REMOVAL] Exception fetching removal orders', { sellerId, error: err.message });
+        return [];
+    }
 }
 
 export async function runRemovalDetection(sellerId: string, syncId: string): Promise<RemovalDetectionResult[]> {
-    const [orders, reimbs] = await Promise.all([
+    const [orders, settlementsData] = await Promise.all([
         fetchRemovalOrders(sellerId),
-        supabaseAdmin.from('reimbursement_events').select('*').eq('seller_id', sellerId).then(r => r.data || [])
+        supabaseAdmin.from('settlements').select('*').eq('user_id', sellerId).eq('transaction_type', 'reimbursement').then(r => r.data || [])
     ]);
+
+    // Transform settlements to reimbursement format
+    const reimbs = settlementsData.map((s: any) => ({
+        id: s.id || s.settlement_id,
+        order_id: s.order_id,
+        sku: s.metadata?.sku,
+        reimbursement_amount: s.amount || 0
+    }));
+
     return detectRemovalAnomalies(sellerId, syncId, { seller_id: sellerId, sync_id: syncId, removal_orders: orders, reimbursement_events: reimbs });
 }
 

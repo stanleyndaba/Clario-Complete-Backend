@@ -335,21 +335,118 @@ export function detectFraudAnomalies(sellerId: string, syncId: string, data: Fra
     return all;
 }
 
+/**
+ * Fetch Return Events for Fraud Detection
+ * 
+ * ADAPTER: Uses Agent 2's 'returns' table
+ */
 export async function fetchReturnEvents(sellerId: string): Promise<ReturnEvent[]> {
-    const { data } = await supabaseAdmin.from('return_events').select('*').eq('seller_id', sellerId).order('return_date', { ascending: false }).limit(1000);
-    return data || [];
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('returns')
+            .select('*')
+            .eq('user_id', sellerId)
+            .order('returned_date', { ascending: false })
+            .limit(1000);
+
+        if (error) {
+            logger.error('🕵️ [FRAUD] Error fetching returns', { sellerId, error: error.message });
+            return [];
+        }
+
+        // Transform to ReturnEvent format
+        const returnEvents: ReturnEvent[] = (data || []).map(r => ({
+            id: r.id || r.return_id,
+            seller_id: sellerId,
+            order_id: r.order_id || '',
+            sku: r.items?.[0]?.sku,
+            fnsku: r.items?.[0]?.fnsku,
+            asin: r.items?.[0]?.asin,
+            product_name: r.items?.[0]?.title,
+            detailed_disposition: r.metadata?.disposition,
+            return_reason: r.reason,
+            customer_comment: r.metadata?.customer_comment,
+            return_date: r.returned_date,
+            quantity_returned: r.items?.reduce((sum: number, i: any) => sum + (i.quantity || 0), 0) || 1,
+            refund_amount: r.refund_amount,
+            original_order_amount: r.metadata?.original_order_amount,
+            weight_returned: r.metadata?.weight_returned,
+            expected_weight: r.metadata?.expected_weight,
+            customer_id: r.metadata?.customer_id,
+            customer_name: r.metadata?.customer_name,
+            created_at: r.created_at
+        }));
+
+        logger.info('🕵️ [FRAUD] Fetched return events', { count: returnEvents.length });
+        return returnEvents;
+    } catch (err: any) {
+        logger.error('🕵️ [FRAUD] Exception fetching returns', { sellerId, error: err.message });
+        return [];
+    }
 }
 
+/**
+ * Fetch Refund Events for Fraud Detection
+ * 
+ * ADAPTER: Uses Agent 2's 'settlements' table filtered for refunds
+ */
 export async function fetchRefundEventsForFraud(sellerId: string): Promise<RefundEvent[]> {
-    const { data } = await supabaseAdmin.from('refund_events').select('*').eq('seller_id', sellerId).order('refund_date', { ascending: false }).limit(1000);
-    return data || [];
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('settlements')
+            .select('*')
+            .eq('user_id', sellerId)
+            .in('transaction_type', ['refund', 'fee'])
+            .order('settlement_date', { ascending: false })
+            .limit(1000);
+
+        if (error) {
+            logger.error('🕵️ [FRAUD] Error fetching settlements', { sellerId, error: error.message });
+            return [];
+        }
+
+        // Transform to RefundEvent format
+        const refundEvents: RefundEvent[] = (data || [])
+            .filter(s => s.amount < 0 || s.transaction_type === 'refund')
+            .map(s => ({
+                id: s.id || s.settlement_id,
+                seller_id: sellerId,
+                order_id: s.order_id || '',
+                sku: s.metadata?.sku,
+                asin: s.metadata?.asin,
+                product_name: s.metadata?.product_name,
+                refund_reason: s.metadata?.reason,
+                refund_amount: Math.abs(s.amount || 0),
+                refund_date: s.settlement_date,
+                customer_id: s.metadata?.customer_id,
+                is_returnless: s.metadata?.is_returnless || false,
+                refund_type: s.metadata?.refund_type,
+                created_at: s.created_at
+            }));
+
+        logger.info('🕵️ [FRAUD] Fetched refund events', { count: refundEvents.length });
+        return refundEvents;
+    } catch (err: any) {
+        logger.error('🕵️ [FRAUD] Exception fetching refunds', { sellerId, error: err.message });
+        return [];
+    }
 }
 
 export async function runFraudDetection(sellerId: string, syncId: string): Promise<FraudDetectionResult[]> {
-    const [returns, refunds, reimbs] = await Promise.all([
-        fetchReturnEvents(sellerId), fetchRefundEventsForFraud(sellerId),
-        supabaseAdmin.from('reimbursement_events').select('*').eq('seller_id', sellerId).then(r => r.data || [])
+    const [returns, refunds, settlementsData] = await Promise.all([
+        fetchReturnEvents(sellerId),
+        fetchRefundEventsForFraud(sellerId),
+        supabaseAdmin.from('settlements').select('*').eq('user_id', sellerId).eq('transaction_type', 'reimbursement').then(r => r.data || [])
     ]);
+
+    // Transform settlements to reimbursement format
+    const reimbs = settlementsData.map((s: any) => ({
+        id: s.id || s.settlement_id,
+        order_id: s.order_id,
+        sku: s.metadata?.sku,
+        reimbursement_amount: s.amount || 0
+    }));
+
     return detectFraudAnomalies(sellerId, syncId, { seller_id: sellerId, sync_id: syncId, return_events: returns, refund_events: refunds, reimbursement_events: reimbs });
 }
 

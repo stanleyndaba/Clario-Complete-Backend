@@ -405,15 +405,103 @@ export function detectInboundAnomalies(sellerId: string, syncId: string, data: I
     return all;
 }
 
-// Database functions
+// Database functions - ADAPTERS for Agent 2 tables
+
+/**
+ * Fetch inbound shipment items
+ * 
+ * ADAPTER: Agent 2 uses 'shipments' table. We filter for INBOUND type shipments.
+ */
 export async function fetchInboundShipmentItems(sellerId: string): Promise<InboundShipmentItem[]> {
-    const { data } = await supabaseAdmin.from('inbound_shipment_items').select('*').eq('seller_id', sellerId).order('shipment_created_date', { ascending: false }).limit(1000);
-    return data || [];
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('shipments')
+            .select('*')
+            .eq('user_id', sellerId)
+            .order('shipment_date', { ascending: false })
+            .limit(1000);
+
+        if (error) {
+            logger.error('📦 [INBOUND] Error fetching shipments', { sellerId, error: error.message });
+            return [];
+        }
+
+        // Transform to InboundShipmentItem format
+        const items: InboundShipmentItem[] = (data || [])
+            .filter(s => s.shipment_type === 'INBOUND' || s.destination_fc || s.status?.includes('INBOUND'))
+            .map(s => ({
+                id: s.id || s.shipment_id,
+                seller_id: sellerId,
+                shipment_id: s.shipment_id,
+                sku: s.sku || s.items?.[0]?.sku || '',
+                fnsku: s.fnsku || s.items?.[0]?.fnsku,
+                asin: s.asin || s.items?.[0]?.asin,
+                product_name: s.product_name,
+                quantity_shipped: s.quantity_shipped || s.quantity || 0,
+                quantity_received: s.quantity_received || 0,
+                quantity_in_case: s.metadata?.quantity_in_case,
+                cases_shipped: s.metadata?.cases_shipped,
+                shipment_status: s.status || 'UNKNOWN',
+                shipment_created_date: s.created_at,
+                shipment_closed_date: s.status?.toUpperCase() === 'CLOSED' ? s.sync_timestamp : undefined,
+                receiving_discrepancy: s.metadata?.receiving_discrepancy,
+                discrepancy_reason: s.metadata?.discrepancy_reason,
+                carrier: s.metadata?.carrier,
+                tracking_id: s.tracking_id,
+                prep_fee_charged: s.metadata?.prep_fee,
+                prep_instructions: s.metadata?.prep_instructions,
+                label_owner: s.metadata?.label_owner,
+                expected_fnsku: s.fnsku,
+                created_at: s.created_at
+            }));
+
+        logger.info('📦 [INBOUND] Fetched inbound shipments', { count: items.length });
+        return items;
+    } catch (err: any) {
+        logger.error('📦 [INBOUND] Exception fetching shipments', { sellerId, error: err.message });
+        return [];
+    }
 }
 
+/**
+ * Fetch inbound reimbursements
+ * 
+ * ADAPTER: Uses Agent 2's settlements table with 'reimbursement' type
+ */
 export async function fetchInboundReimbursements(sellerId: string): Promise<InboundReimbursement[]> {
-    const { data } = await supabaseAdmin.from('reimbursement_events').select('*').eq('seller_id', sellerId).limit(500);
-    return data || [];
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('settlements')
+            .select('*')
+            .eq('user_id', sellerId)
+            .eq('transaction_type', 'reimbursement')
+            .order('settlement_date', { ascending: false })
+            .limit(500);
+
+        if (error) {
+            logger.error('📦 [INBOUND] Error fetching settlements', { sellerId, error: error.message });
+            return [];
+        }
+
+        // Transform to InboundReimbursement format
+        const reimbs: InboundReimbursement[] = (data || []).map(s => ({
+            id: s.id || s.settlement_id,
+            seller_id: sellerId,
+            shipment_id: s.metadata?.shipment_id,
+            sku: s.metadata?.sku,
+            reimbursement_amount: s.amount || 0,
+            currency: s.currency || 'USD',
+            reimbursement_date: s.settlement_date,
+            reason: s.metadata?.reason,
+            created_at: s.created_at
+        }));
+
+        logger.info('📦 [INBOUND] Fetched reimbursements', { count: reimbs.length });
+        return reimbs;
+    } catch (err: any) {
+        logger.error('📦 [INBOUND] Exception fetching reimbursements', { sellerId, error: err.message });
+        return [];
+    }
 }
 
 export async function runInboundDetection(sellerId: string, syncId: string): Promise<InboundDetectionResult[]> {
