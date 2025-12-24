@@ -411,7 +411,7 @@ export async function fetchInventoryLedger(
             .from('shipments')
             .select('*')
             .eq('user_id', sellerId)
-            .order('shipment_date', { ascending: true });
+            .order('shipped_date', { ascending: true });
 
         if (!shipmentsError && shipments) {
             for (const shipment of shipments) {
@@ -427,7 +427,7 @@ export async function fetchInventoryLedger(
                         event_type: 'Receipt',
                         quantity: shipment.quantity_received || shipment.quantity || 0,
                         quantity_direction: 'in',
-                        event_date: shipment.shipment_date || shipment.created_at,
+                        event_date: shipment.shipped_date || shipment.created_at,
                         fulfillment_center_id: shipment.fulfillment_center_id || shipment.destination_fc,
                         reference_id: shipment.shipment_id,
                         created_at: shipment.created_at
@@ -444,7 +444,7 @@ export async function fetchInventoryLedger(
                         event_type: 'Shipment',
                         quantity: shipment.quantity_shipped || shipment.quantity || 0,
                         quantity_direction: 'out',
-                        event_date: shipment.shipment_date || shipment.created_at,
+                        event_date: shipment.shipped_date || shipment.created_at,
                         fulfillment_center_id: shipment.fulfillment_center_id,
                         reference_id: shipment.order_id || shipment.shipment_id,
                         created_at: shipment.created_at
@@ -506,7 +506,7 @@ export async function fetchInventoryLedger(
                         event_type: 'Shipment',
                         quantity: item.quantity || 1,
                         quantity_direction: 'out',
-                        event_date: order.shipment_date || order.order_date,
+                        event_date: order.shipped_date || order.order_date,
                         reference_id: order.order_id,
                         average_sales_price: item.price,
                         created_at: order.created_at

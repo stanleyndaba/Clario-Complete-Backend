@@ -332,7 +332,7 @@ export async function fetchRemovalOrders(sellerId: string): Promise<RemovalOrder
             .from('shipments')
             .select('*')
             .eq('user_id', sellerId)
-            .order('shipment_date', { ascending: false })
+            .order('shipped_date', { ascending: false })
             .limit(500);
 
         if (error) {
@@ -362,7 +362,7 @@ export async function fetchRemovalOrders(sellerId: string): Promise<RemovalOrder
                 expected_liquidation: s.metadata?.expected_liquidation,
                 request_date: s.created_at,
                 completion_date: s.metadata?.completion_date,
-                ship_date: s.shipment_date,
+                ship_date: s.shipped_date,
                 removal_fee: s.metadata?.removal_fee,
                 expected_fee: s.metadata?.expected_fee,
                 tracking_id: s.tracking_id,

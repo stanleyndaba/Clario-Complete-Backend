@@ -418,7 +418,7 @@ export async function fetchInboundShipmentItems(sellerId: string): Promise<Inbou
             .from('shipments')
             .select('*')
             .eq('user_id', sellerId)
-            .order('shipment_date', { ascending: false })
+            .order('shipped_date', { ascending: false })
             .limit(1000);
 
         if (error) {
