@@ -1,4 +1,5 @@
 // Test setup file
+import { beforeAll, afterAll } from '@jest/globals';
 import dotenv from 'dotenv';
 
 // Load environment variables for testing
