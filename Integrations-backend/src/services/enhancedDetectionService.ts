@@ -58,6 +58,9 @@ import {
   DamagedSyncedData,
   DamagedDetectionResult
 } from './detection/algorithms/damagedAlgorithms';
+import { detectInboundAnomalies, runInboundDetection, storeInboundDetectionResults } from './detection/algorithms/inboundAlgorithms';
+import { detectRemovalAnomalies, runRemovalDetection, storeRemovalResults } from './detection/algorithms/removalAlgorithms';
+import { detectFraudAnomalies, runFraudDetection, storeFraudResults } from './detection/algorithms/fraudAlgorithms';
 
 // ============================================================================
 // Types
@@ -331,28 +334,48 @@ export class EnhancedDetectionService {
         ...disputeResults,       // 🛡️ Dispute Defender
         ...advertisingResults    // 📢 Ad Auditor
       ];
-      const totalRecovery = allResults.reduce((sum, r) => sum + r.estimated_value, 0);
 
-      logger.info('🧠 [AGENT3] Full detection pipeline complete! THE ARSENAL IS READY.', {
+      // Run Cluster Algorithms in parallel
+      logger.info('🚀 [AGENT3] Running Cluster Algorithms...', { userId, syncId });
+      const [inboundResults, removalResults, fraudResults] = await Promise.all([
+        runInboundDetection(userId, syncId),
+        runRemovalDetection(userId, syncId),
+        runFraudDetection(userId, syncId)
+      ]);
+
+      // Store cluster results
+      await Promise.all([
+        storeInboundDetectionResults(inboundResults),
+        storeRemovalResults(removalResults),
+        storeFraudResults(fraudResults)
+      ]);
+
+      // Combine ALL results from 9 algorithms
+      const clusterResults = [...inboundResults, ...removalResults, ...fraudResults];
+      const finalResults = [...allResults, ...clusterResults];
+      const totalRecovery = finalResults.reduce((sum, r) => sum + r.estimated_value, 0);
+
+      logger.info('🧠 [AGENT3] FULL 9-ALGORITHM PIPELINE COMPLETE!', {
         userId,
         syncId,
-        totalClaims: allResults.length,
-        inventory: inventoryResults.length,
-        refunds: refundResults.length,
-        damaged: damagedResults.length,
+        totalClaims: finalResults.length,
+        p0Trinity: inventoryResults.length + damagedResults.length + refundResults.length,
         fees: feeResults.length,
         disputes: disputeResults.length,
         advertising: advertisingResults.length,
+        inbound: inboundResults.length,
+        removals: removalResults.length,
+        fraud: fraudResults.length,
         totalRecovery
       });
 
       return {
         success: true,
         jobId,
-        message: allResults.length > 0
-          ? `🧠 Agent 3 found ${allResults.length} claims: ${inventoryResults.length} lost, ${damagedResults.length} damaged, ${refundResults.length} refunds, ${feeResults.length} fees, ${disputeResults.length} disputes, ${advertisingResults.length} ads. Total recovery: $${totalRecovery.toFixed(2)}!`
+        message: finalResults.length > 0
+          ? `🧠 Agent 3 ran 9 algorithms - Found ${finalResults.length} claims. Total recovery: $${totalRecovery.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
-        detectionsFound: allResults.length,
+        detectionsFound: finalResults.length,
         estimatedRecovery: totalRecovery
       };
 

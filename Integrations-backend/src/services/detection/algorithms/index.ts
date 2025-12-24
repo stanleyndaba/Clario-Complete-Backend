@@ -1,23 +1,20 @@
 /**
  * Detection Algorithms Registry - Agent 3's Complete Brain
  * 
- * Central export for all detection algorithm modules.
- * Each module implements specialized detection logic for specific anomaly types.
+ * THE FULL ARSENAL - 9 Algorithm Modules, 50+ Anomaly Types
  * 
- * THE FULL ARSENAL:
- * - P0 Trinity: Whale Hunter + Refund Trap + Broken Goods Hunter
- * - P1: Fee Auditor
- * - P2: Dispute Defender
- * - P3: Ad Auditor
+ * P0 Trinity: Whale Hunter + Refund Trap + Broken Goods Hunter
+ * P1: Fee Auditor
+ * P2: Dispute Defender
+ * P3: Ad Auditor
+ * Clusters: Inbound Inspector + Removal Tracker + Fraud Hunter
  */
 
-// P0 Priority - THE TRINITY (Highest Value Detections)
+// P0 Priority - THE TRINITY
 export * from './inventoryAlgorithms';
 export { default as inventoryAlgorithms } from './inventoryAlgorithms';
-
 export * from './refundAlgorithms';
 export { default as refundAlgorithms } from './refundAlgorithms';
-
 export * from './damagedAlgorithms';
 export { default as damagedAlgorithms } from './damagedAlgorithms';
 
@@ -33,101 +30,55 @@ export { default as chargebackAlgorithms } from './chargebackAlgorithms';
 export * from './advertisingAlgorithms';
 export { default as advertisingAlgorithms } from './advertisingAlgorithms';
 
-// Algorithm Registry - maps anomaly types to detection functions
+// CLUSTER 1 - Inbound & Receiving
+export * from './inboundAlgorithms';
+export { default as inboundAlgorithms } from './inboundAlgorithms';
+
+// CLUSTER 2 - Removal & Disposal
+export * from './removalAlgorithms';
+export { default as removalAlgorithms } from './removalAlgorithms';
+
+// CLUSTER 3 - Fraud & Fulfillment Errors
+export * from './fraudAlgorithms';
+export { default as fraudAlgorithms } from './fraudAlgorithms';
+
+// Algorithm Registry
 import { detectLostInventory } from './inventoryAlgorithms';
 import { detectRefundWithoutReturn } from './refundAlgorithms';
 import { detectDamagedInventory } from './damagedAlgorithms';
-import {
-    detectFulfillmentFeeOvercharge,
-    detectStorageFeeOvercharge,
-    detectCommissionOvercharge,
-    detectAllFeeOvercharges
-} from './feeAlgorithms';
-import {
-    detectDefensibleChargebacks,
-    detectAtoZClaims
-} from './chargebackAlgorithms';
-import {
-    detectCouponErrors,
-    detectDealFeeErrors,
-    detectSubscribeSaveErrors,
-    detectAllAdvertisingErrors
-} from './advertisingAlgorithms';
+import { detectAllFeeOvercharges } from './feeAlgorithms';
+import { detectDefensibleChargebacks } from './chargebackAlgorithms';
+import { detectAllAdvertisingErrors } from './advertisingAlgorithms';
+import { detectInboundAnomalies } from './inboundAlgorithms';
+import { detectRemovalAnomalies } from './removalAlgorithms';
+import { detectFraudAnomalies } from './fraudAlgorithms';
 
 export const algorithmRegistry = {
-    // P0 Trinity - Inventory
-    'lost_warehouse': detectLostInventory,
-    'lost_inbound': detectLostInventory,
-
-    // P0 Trinity - Damaged (Broken Goods Hunter)
-    'damaged_warehouse': detectDamagedInventory,
-    'damaged_inbound': detectDamagedInventory,
-    'damaged_removal': detectDamagedInventory,
-
-    // P0 Trinity - Refunds
+    // P0 Trinity
+    'lost_warehouse': detectLostInventory, 'lost_inbound': detectLostInventory,
+    'damaged_warehouse': detectDamagedInventory, 'damaged_inbound': detectDamagedInventory, 'damaged_removal': detectDamagedInventory,
     'refund_no_return': detectRefundWithoutReturn,
 
-    // P1 - Fees
-    'fulfillment_fee_error': detectFulfillmentFeeOvercharge,
-    'weight_fee_overcharge': detectFulfillmentFeeOvercharge,
-    'storage_overcharge': detectStorageFeeOvercharge,
-    'lts_overcharge': detectStorageFeeOvercharge,
-    'commission_overcharge': detectCommissionOvercharge,
-    'referral_fee_error': detectCommissionOvercharge,
+    // P1 Fees
     'all_fee_overcharges': detectAllFeeOvercharges,
 
-    // P2 - Chargebacks/Disputes
-    'chargeback': detectDefensibleChargebacks,
-    'atoz_claim': detectAtoZClaims,
-    'safet_claim': detectDefensibleChargebacks,
-    'inr_claim': detectDefensibleChargebacks,
-    'undefended_dispute': detectDefensibleChargebacks,
+    // P2 Disputes
+    'chargeback': detectDefensibleChargebacks, 'atoz_claim': detectDefensibleChargebacks,
 
-    // P3 - Advertising/Promotions
-    'coupon_overapplied': detectCouponErrors,
-    'promotion_stacking_error': detectCouponErrors,
-    'lightning_deal_fee_error': detectDealFeeErrors,
-    'deal_fee_error': detectDealFeeErrors,
-    'subscribe_save_error': detectSubscribeSaveErrors,
+    // P3 Advertising
     'all_advertising_errors': detectAllAdvertisingErrors,
+
+    // Cluster 1 - Inbound
+    'shipment_missing': detectInboundAnomalies, 'shipment_shortage': detectInboundAnomalies,
+    'receiving_error': detectInboundAnomalies, 'carrier_damage': detectInboundAnomalies,
+
+    // Cluster 2 - Removal
+    'removal_unfulfilled': detectRemovalAnomalies, 'disposal_error': detectRemovalAnomalies,
+    'removal_order_lost': detectRemovalAnomalies, 'removal_quantity_mismatch': detectRemovalAnomalies,
+
+    // Cluster 3 - Fraud
+    'customer_return_fraud': detectFraudAnomalies, 'switcheroo': detectFraudAnomalies,
+    'wrong_item_returned': detectFraudAnomalies, 'returnless_refund_abuse': detectFraudAnomalies,
 };
 
 export type RegisteredAnomalyType = keyof typeof algorithmRegistry;
-
-// ============================================================================
-// THE COMPLETE ARSENAL - Agent 3 Detection Capabilities
-// ============================================================================
-//
-// 🐋 WHALE HUNTER (inventoryAlgorithms.ts)
-//    Formula: Input - Output vs WarehouseBalance
-//    - Lost warehouse inventory
-//    - Lost inbound shipments
-//
-// 💥 BROKEN GOODS HUNTER (damagedAlgorithms.ts)  ← NEW!
-//    Rule: Amazon fault codes (E, M, Q, K, H) + No reimbursement > 45 days
-//    - Damaged warehouse inventory
-//    - Damaged inbound shipments
-//    - Damaged during removal
-//
-// 🪤 REFUND TRAP (refundAlgorithms.ts)
-//    Rule: Refund > 45 days + No Return + No Reimbursement
-//    - Refunds without returns
-//
-// 💰 FEE AUDITOR (feeAlgorithms.ts)
-//    - Fulfillment fee overcharges
-//    - Weight/dimensional fee errors
-//    - Storage fee overcharges
-//    - Commission/referral fee errors
-//
-// 🛡️ DISPUTE DEFENDER (chargebackAlgorithms.ts)
-//    - Credit card chargebacks
-//    - A-to-Z claims
-//    - SAFE-T claims
-//    - INR claims with delivery proof
-//
-// 📢 AD AUDITOR (advertisingAlgorithms.ts)
-//    - Coupon over-application
-//    - Promotion stacking errors
-//    - Lightning Deal fee errors
-//    - Subscribe & Save discount errors
-// ============================================================================
