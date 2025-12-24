@@ -213,19 +213,25 @@ export { runE2EDetectionTest };
 
 // Auto-detect a real user ID and run if called directly
 async function main() {
-    // First, get a real user ID from the orders table
-    const { data: orderSample, error } = await supabaseAdmin
-        .from('orders')
-        .select('user_id')
-        .limit(1);
+    // Check for CLI argument FIRST - prioritize explicit user ID
+    let testUserId = process.argv[2];
 
-    let testUserId = process.argv[2] || 'test-user-123';
-
-    if (!error && orderSample && orderSample[0]?.user_id) {
-        testUserId = orderSample[0].user_id;
-        console.log(`📍 Found real user ID: ${testUserId}\n`);
+    if (testUserId) {
+        console.log(`📍 Using provided user ID: ${testUserId}\n`);
     } else {
-        console.log(`⚠️ Could not find real user ID, using: ${testUserId}\n`);
+        // Auto-detect from orders table
+        const { data: orderSample, error } = await supabaseAdmin
+            .from('orders')
+            .select('user_id')
+            .limit(1);
+
+        if (!error && orderSample && orderSample[0]?.user_id) {
+            testUserId = orderSample[0].user_id;
+            console.log(`📍 Auto-detected user ID: ${testUserId}\n`);
+        } else {
+            testUserId = 'test-user-123';
+            console.log(`⚠️ Could not find real user ID, using: ${testUserId}\n`);
+        }
     }
 
     try {
