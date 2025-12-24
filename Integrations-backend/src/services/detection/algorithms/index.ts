@@ -4,19 +4,22 @@
  * Central export for all detection algorithm modules.
  * Each module implements specialized detection logic for specific anomaly types.
  * 
- * Current Capabilities:
- * - P0: Inventory (Whale Hunter) + Refunds (Refund Trap)
- * - P1: Fees (Fee Auditor)
- * - P2: Chargebacks/Disputes (Dispute Defender)
- * - P3: Advertising/Promotions (Ad Auditor)
+ * THE FULL ARSENAL:
+ * - P0 Trinity: Whale Hunter + Refund Trap + Broken Goods Hunter
+ * - P1: Fee Auditor
+ * - P2: Dispute Defender
+ * - P3: Ad Auditor
  */
 
-// P0 Priority - Highest Value Detections
+// P0 Priority - THE TRINITY (Highest Value Detections)
 export * from './inventoryAlgorithms';
 export { default as inventoryAlgorithms } from './inventoryAlgorithms';
 
 export * from './refundAlgorithms';
 export { default as refundAlgorithms } from './refundAlgorithms';
+
+export * from './damagedAlgorithms';
+export { default as damagedAlgorithms } from './damagedAlgorithms';
 
 // P1 Priority - Fee Overcharges
 export * from './feeAlgorithms';
@@ -33,6 +36,7 @@ export { default as advertisingAlgorithms } from './advertisingAlgorithms';
 // Algorithm Registry - maps anomaly types to detection functions
 import { detectLostInventory } from './inventoryAlgorithms';
 import { detectRefundWithoutReturn } from './refundAlgorithms';
+import { detectDamagedInventory } from './damagedAlgorithms';
 import {
     detectFulfillmentFeeOvercharge,
     detectStorageFeeOvercharge,
@@ -51,13 +55,16 @@ import {
 } from './advertisingAlgorithms';
 
 export const algorithmRegistry = {
-    // P0 - Inventory
+    // P0 Trinity - Inventory
     'lost_warehouse': detectLostInventory,
-    'damaged_warehouse': detectLostInventory,
     'lost_inbound': detectLostInventory,
-    'damaged_inbound': detectLostInventory,
 
-    // P0 - Refunds
+    // P0 Trinity - Damaged (Broken Goods Hunter)
+    'damaged_warehouse': detectDamagedInventory,
+    'damaged_inbound': detectDamagedInventory,
+    'damaged_removal': detectDamagedInventory,
+
+    // P0 Trinity - Refunds
     'refund_no_return': detectRefundWithoutReturn,
 
     // P1 - Fees
@@ -88,24 +95,28 @@ export const algorithmRegistry = {
 export type RegisteredAnomalyType = keyof typeof algorithmRegistry;
 
 // ============================================================================
-// Summary: Agent 3 Detection Capabilities
+// THE COMPLETE ARSENAL - Agent 3 Detection Capabilities
 // ============================================================================
 //
 // 🐋 WHALE HUNTER (inventoryAlgorithms.ts)
+//    Formula: Input - Output vs WarehouseBalance
 //    - Lost warehouse inventory
-//    - Damaged warehouse inventory
 //    - Lost inbound shipments
+//
+// 💥 BROKEN GOODS HUNTER (damagedAlgorithms.ts)  ← NEW!
+//    Rule: Amazon fault codes (E, M, Q, K, H) + No reimbursement > 45 days
+//    - Damaged warehouse inventory
 //    - Damaged inbound shipments
+//    - Damaged during removal
 //
 // 🪤 REFUND TRAP (refundAlgorithms.ts)
-//    - Refunds without returns (45-day rule)
-//    - Restocking fee errors
-//    - Refund commission errors
+//    Rule: Refund > 45 days + No Return + No Reimbursement
+//    - Refunds without returns
 //
 // 💰 FEE AUDITOR (feeAlgorithms.ts)
 //    - Fulfillment fee overcharges
 //    - Weight/dimensional fee errors
-//    - Storage fee overcharges (monthly + Q4 + LTS)
+//    - Storage fee overcharges
 //    - Commission/referral fee errors
 //
 // 🛡️ DISPUTE DEFENDER (chargebackAlgorithms.ts)

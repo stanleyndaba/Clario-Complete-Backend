@@ -50,6 +50,14 @@ import {
   AdvertisingSyncedData,
   AdvertisingDetectionResult
 } from './detection/algorithms/advertisingAlgorithms';
+import {
+  detectDamagedInventory,
+  fetchDamagedEvents,
+  fetchReimbursementsForDamage,
+  storeDamagedDetectionResults,
+  DamagedSyncedData,
+  DamagedDetectionResult
+} from './detection/algorithms/damagedAlgorithms';
 
 // ============================================================================
 // Types
@@ -282,22 +290,56 @@ export class EnhancedDetectionService {
         });
       }
 
-      // Step 12: Calculate combined summary from ALL 5 algorithms
+      // Step 12: RUN THE BROKEN GOODS HUNTER 💥 (P0 Trinity Final)
+      logger.info('💥 [AGENT3] Deploying the Broken Goods Hunter...', { userId, syncId });
+
+      const [damagedEvents, reimbursementsForDamage] = await Promise.all([
+        fetchDamagedEvents(userId, { startDate: lookbackDate }),
+        fetchReimbursementsForDamage(userId, { startDate: lookbackDate })
+      ]);
+
+      const damagedSyncedData: DamagedSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        inventory_ledger: damagedEvents,
+        reimbursement_events: reimbursementsForDamage
+      };
+
+      const damagedResults = detectDamagedInventory(userId, syncId, damagedSyncedData);
+
+      logger.info('💥 [AGENT3] Broken Goods Hunter complete!', {
+        userId,
+        syncId,
+        detectionsFound: damagedResults.length,
+        estimatedRecovery: damagedResults.reduce((sum, r) => sum + r.estimated_value, 0)
+      });
+
+      // Step 13: Store damaged results
+      if (damagedResults.length > 0) {
+        await storeDamagedDetectionResults(damagedResults);
+        logger.info('💥 [AGENT3] Damaged detection results stored', {
+          count: damagedResults.length
+        });
+      }
+
+      // Step 14: Calculate combined summary from ALL 6 algorithms
       const allResults = [
-        ...inventoryResults,
-        ...refundResults,
-        ...feeResults,
-        ...disputeResults,
-        ...advertisingResults
+        ...inventoryResults,     // 🐋 Whale Hunter
+        ...refundResults,        // 🪤 Refund Trap
+        ...damagedResults,       // 💥 Broken Goods Hunter
+        ...feeResults,           // 💰 Fee Auditor
+        ...disputeResults,       // 🛡️ Dispute Defender
+        ...advertisingResults    // 📢 Ad Auditor
       ];
       const totalRecovery = allResults.reduce((sum, r) => sum + r.estimated_value, 0);
 
-      logger.info('🧠 [AGENT3] Full detection pipeline complete!', {
+      logger.info('🧠 [AGENT3] Full detection pipeline complete! THE ARSENAL IS READY.', {
         userId,
         syncId,
         totalClaims: allResults.length,
         inventory: inventoryResults.length,
         refunds: refundResults.length,
+        damaged: damagedResults.length,
         fees: feeResults.length,
         disputes: disputeResults.length,
         advertising: advertisingResults.length,
@@ -308,7 +350,7 @@ export class EnhancedDetectionService {
         success: true,
         jobId,
         message: allResults.length > 0
-          ? `🧠 Agent 3 found ${allResults.length} claims: ${inventoryResults.length} inventory, ${refundResults.length} refunds, ${feeResults.length} fees, ${disputeResults.length} disputes, ${advertisingResults.length} ads. Total recovery: $${totalRecovery.toFixed(2)}!`
+          ? `🧠 Agent 3 found ${allResults.length} claims: ${inventoryResults.length} lost, ${damagedResults.length} damaged, ${refundResults.length} refunds, ${feeResults.length} fees, ${disputeResults.length} disputes, ${advertisingResults.length} ads. Total recovery: $${totalRecovery.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: allResults.length,
         estimatedRecovery: totalRecovery
