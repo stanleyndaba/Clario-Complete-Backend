@@ -25,6 +25,14 @@ import {
   RefundSyncedData,
   RefundDetectionResult
 } from './detection/algorithms/refundAlgorithms';
+import {
+  detectAllFeeOvercharges,
+  fetchFeeEvents,
+  fetchProductCatalog,
+  storeFeeDetectionResults,
+  FeeSyncedData,
+  FeeDetectionResult
+} from './detection/algorithms/feeAlgorithms';
 
 // ============================================================================
 // Types
@@ -144,7 +152,7 @@ export class EnhancedDetectionService {
         estimatedRecovery: refundResults.reduce((sum, r) => sum + r.estimated_value, 0)
       });
 
-      // Step 5: Store ALL results in database
+      // Step 5: Store inventory and refund results
       if (inventoryResults.length > 0) {
         await storeDetectionResults(inventoryResults);
         logger.info('🐋 [AGENT3] Inventory detection results stored', {
@@ -159,15 +167,47 @@ export class EnhancedDetectionService {
         });
       }
 
-      // Step 6: Calculate combined summary
-      const allResults = [...inventoryResults, ...refundResults];
+      // Step 6: RUN THE FEE AUDITOR 💰
+      logger.info('💰 [AGENT3] Running the Fee Auditor...', { userId, syncId });
+
+      const [feeEvents, productCatalog] = await Promise.all([
+        fetchFeeEvents(userId, { startDate: lookbackDate }),
+        fetchProductCatalog(userId)
+      ]);
+
+      const feeSyncedData: FeeSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        fee_events: feeEvents,
+        product_catalog: productCatalog
+      };
+
+      const feeResults = detectAllFeeOvercharges(userId, syncId, feeSyncedData);
+
+      logger.info('💰 [AGENT3] Fee Auditor complete!', {
+        userId,
+        syncId,
+        detectionsFound: feeResults.length,
+        estimatedRecovery: feeResults.reduce((sum, r) => sum + r.estimated_value, 0)
+      });
+
+      // Step 7: Store fee results
+      if (feeResults.length > 0) {
+        await storeFeeDetectionResults(feeResults);
+        logger.info('💰 [AGENT3] Fee detection results stored', {
+          count: feeResults.length
+        });
+      }
+
+      // Step 8: Calculate combined summary from ALL algorithms
+      const allResults = [...inventoryResults, ...refundResults, ...feeResults];
       const totalRecovery = allResults.reduce((sum, r) => sum + r.estimated_value, 0);
 
       return {
         success: true,
         jobId,
         message: allResults.length > 0
-          ? `🧠 Agent 3 found ${allResults.length} claims: ${inventoryResults.length} inventory, ${refundResults.length} refunds. Total recovery: $${totalRecovery.toFixed(2)}!`
+          ? `🧠 Agent 3 found ${allResults.length} claims: ${inventoryResults.length} inventory, ${refundResults.length} refunds, ${feeResults.length} fee overcharges. Total recovery: $${totalRecovery.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: allResults.length,
         estimatedRecovery: totalRecovery
