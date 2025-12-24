@@ -41,6 +41,15 @@ import {
   DisputeSyncedData,
   DisputeDetectionResult
 } from './detection/algorithms/chargebackAlgorithms';
+import {
+  detectAllAdvertisingErrors,
+  fetchCouponEvents,
+  fetchDealEvents,
+  fetchSubscribeSaveEvents,
+  storeAdvertisingDetectionResults,
+  AdvertisingSyncedData,
+  AdvertisingDetectionResult
+} from './detection/algorithms/advertisingAlgorithms';
 
 // ============================================================================
 // Types
@@ -239,15 +248,67 @@ export class EnhancedDetectionService {
         });
       }
 
-      // Step 10: Calculate combined summary from ALL 4 algorithms
-      const allResults = [...inventoryResults, ...refundResults, ...feeResults, ...disputeResults];
+      // Step 10: RUN THE AD AUDITOR 📢
+      logger.info('📢 [AGENT3] Launching the Ad Auditor...', { userId, syncId });
+
+      const [couponEvents, dealEvents, subscribeSaveEvents] = await Promise.all([
+        fetchCouponEvents(userId, { startDate: lookbackDate }),
+        fetchDealEvents(userId, { startDate: lookbackDate }),
+        fetchSubscribeSaveEvents(userId, { startDate: lookbackDate })
+      ]);
+
+      const advertisingSyncedData: AdvertisingSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        coupon_events: couponEvents,
+        deal_events: dealEvents,
+        subscribe_save_events: subscribeSaveEvents
+      };
+
+      const advertisingResults = detectAllAdvertisingErrors(userId, syncId, advertisingSyncedData);
+
+      logger.info('📢 [AGENT3] Ad Auditor complete!', {
+        userId,
+        syncId,
+        detectionsFound: advertisingResults.length,
+        estimatedRecovery: advertisingResults.reduce((sum, r) => sum + r.estimated_value, 0)
+      });
+
+      // Step 11: Store advertising results
+      if (advertisingResults.length > 0) {
+        await storeAdvertisingDetectionResults(advertisingResults);
+        logger.info('📢 [AGENT3] Advertising detection results stored', {
+          count: advertisingResults.length
+        });
+      }
+
+      // Step 12: Calculate combined summary from ALL 5 algorithms
+      const allResults = [
+        ...inventoryResults,
+        ...refundResults,
+        ...feeResults,
+        ...disputeResults,
+        ...advertisingResults
+      ];
       const totalRecovery = allResults.reduce((sum, r) => sum + r.estimated_value, 0);
+
+      logger.info('🧠 [AGENT3] Full detection pipeline complete!', {
+        userId,
+        syncId,
+        totalClaims: allResults.length,
+        inventory: inventoryResults.length,
+        refunds: refundResults.length,
+        fees: feeResults.length,
+        disputes: disputeResults.length,
+        advertising: advertisingResults.length,
+        totalRecovery
+      });
 
       return {
         success: true,
         jobId,
         message: allResults.length > 0
-          ? `🧠 Agent 3 found ${allResults.length} claims: ${inventoryResults.length} inventory, ${refundResults.length} refunds, ${feeResults.length} fees, ${disputeResults.length} disputes. Total recovery: $${totalRecovery.toFixed(2)}!`
+          ? `🧠 Agent 3 found ${allResults.length} claims: ${inventoryResults.length} inventory, ${refundResults.length} refunds, ${feeResults.length} fees, ${disputeResults.length} disputes, ${advertisingResults.length} ads. Total recovery: $${totalRecovery.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: allResults.length,
         estimatedRecovery: totalRecovery
