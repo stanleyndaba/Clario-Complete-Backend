@@ -211,14 +211,31 @@ async function runE2EDetectionTest(userId: string) {
 // Export for use
 export { runE2EDetectionTest };
 
-// Run if called directly
-const testUserId = process.argv[2] || 'test-user-123';
-runE2EDetectionTest(testUserId)
-    .then(results => {
+// Auto-detect a real user ID and run if called directly
+async function main() {
+    // First, get a real user ID from the orders table
+    const { data: orderSample, error } = await supabaseAdmin
+        .from('orders')
+        .select('user_id')
+        .limit(1);
+
+    let testUserId = process.argv[2] || 'test-user-123';
+
+    if (!error && orderSample && orderSample[0]?.user_id) {
+        testUserId = orderSample[0].user_id;
+        console.log(`📍 Found real user ID: ${testUserId}\n`);
+    } else {
+        console.log(`⚠️ Could not find real user ID, using: ${testUserId}\n`);
+    }
+
+    try {
+        const results = await runE2EDetectionTest(testUserId);
         console.log('\n✅ Test complete!');
         process.exit(0);
-    })
-    .catch(err => {
-        console.error('\n❌ Test failed:', err);
+    } catch (err: any) {
+        console.error('\n❌ Test failed:', err.message);
         process.exit(1);
-    });
+    }
+}
+
+main();
