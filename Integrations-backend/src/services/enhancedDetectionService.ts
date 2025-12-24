@@ -9,6 +9,8 @@
 
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
+import { calculateCalibratedConfidence, calibrateBatch, getCalibrationStats } from './detection/confidenceCalibrator';
+import { analyzeSellerPatterns, generateInsights } from './detection/patternAnalyzer';
 import {
   detectLostInventory,
   fetchInventoryLedger,
@@ -355,10 +357,46 @@ export class EnhancedDetectionService {
       const finalResults = [...allResults, ...clusterResults];
       const totalRecovery = finalResults.reduce((sum, r) => sum + r.estimated_value, 0);
 
-      logger.info('🧠 [AGENT3] FULL 9-ALGORITHM PIPELINE COMPLETE!', {
+      // PHASE 3: Apply ML Calibration to confidence scores
+      logger.info('🧠 [AGENT3] Applying ML confidence calibration...', { userId, syncId });
+
+      let calibratedCount = 0;
+      for (const result of finalResults) {
+        try {
+          const calibration = await calculateCalibratedConfidence(
+            result.anomaly_type,
+            result.confidence_score
+          );
+          // Update confidence with calibrated value
+          (result as any).raw_confidence = result.confidence_score;
+          (result as any).confidence_score = calibration.calibrated_confidence;
+          (result as any).calibration_data = {
+            factor: calibration.calibration_factor,
+            historical_approval_rate: calibration.historical_approval_rate,
+            sample_size: calibration.sample_size
+          };
+          calibratedCount++;
+        } catch (err) {
+          // Keep original confidence if calibration fails
+        }
+      }
+
+      // Generate seller insights (async, non-blocking)
+      generateInsights(userId).then(insights => {
+        if (insights.length > 0) {
+          logger.info('📊 [AGENT3] Pattern insights generated', {
+            userId,
+            insightCount: insights.length,
+            urgent: insights.filter(i => i.priority === 'urgent').length
+          });
+        }
+      }).catch(() => { });
+
+      logger.info('🧠 [AGENT3] FULL 9-ALGORITHM + ML PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
+        calibratedClaims: calibratedCount,
         p0Trinity: inventoryResults.length + damagedResults.length + refundResults.length,
         fees: feeResults.length,
         disputes: disputeResults.length,
@@ -373,7 +411,7 @@ export class EnhancedDetectionService {
         success: true,
         jobId,
         message: finalResults.length > 0
-          ? `🧠 Agent 3 ran 9 algorithms - Found ${finalResults.length} claims. Total recovery: $${totalRecovery.toFixed(2)}!`
+          ? `🧠 Agent 3 ran 9 algorithms + ML calibration - Found ${finalResults.length} claims. Total recovery: $${totalRecovery.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: finalResults.length,
         estimatedRecovery: totalRecovery
