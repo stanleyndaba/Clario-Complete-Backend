@@ -16,8 +16,9 @@ export { default as refundAlgorithms } from './refundAlgorithms';
 export * from './feeAlgorithms';
 export { default as feeAlgorithms } from './feeAlgorithms';
 
-// Future P2 Priority - Chargebacks/Disputes
-// export * from './chargebackAlgorithms';
+// P2 Priority - Chargebacks/Disputes
+export * from './chargebackAlgorithms';
+export { default as chargebackAlgorithms } from './chargebackAlgorithms';
 
 // Algorithm Registry - maps anomaly types to detection functions
 import { detectLostInventory } from './inventoryAlgorithms';
@@ -28,6 +29,10 @@ import {
     detectCommissionOvercharge,
     detectAllFeeOvercharges
 } from './feeAlgorithms';
+import {
+    detectDefensibleChargebacks,
+    detectAtoZClaims
+} from './chargebackAlgorithms';
 
 export const algorithmRegistry = {
     // P0 - Inventory
@@ -46,13 +51,14 @@ export const algorithmRegistry = {
     'lts_overcharge': detectStorageFeeOvercharge,
     'commission_overcharge': detectCommissionOvercharge,
     'referral_fee_error': detectCommissionOvercharge,
-
-    // Combined fee detection
     'all_fee_overcharges': detectAllFeeOvercharges,
 
-    // P2 - Chargebacks (to be implemented)
-    // 'chargeback': detectChargeback,
-    // 'atoz_claim': detectAtoZClaim,
+    // P2 - Chargebacks/Disputes
+    'chargeback': detectDefensibleChargebacks,
+    'atoz_claim': detectAtoZClaims,
+    'safet_claim': detectDefensibleChargebacks,
+    'inr_claim': detectDefensibleChargebacks,
+    'undefended_dispute': detectDefensibleChargebacks,
 };
 
 export type RegisteredAnomalyType = keyof typeof algorithmRegistry;

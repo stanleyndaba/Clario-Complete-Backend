@@ -33,6 +33,14 @@ import {
   FeeSyncedData,
   FeeDetectionResult
 } from './detection/algorithms/feeAlgorithms';
+import {
+  detectDefensibleChargebacks,
+  fetchChargebackEvents,
+  fetchDeliveryRecords,
+  storeDisputeDetectionResults,
+  DisputeSyncedData,
+  DisputeDetectionResult
+} from './detection/algorithms/chargebackAlgorithms';
 
 // ============================================================================
 // Types
@@ -199,15 +207,47 @@ export class EnhancedDetectionService {
         });
       }
 
-      // Step 8: Calculate combined summary from ALL algorithms
-      const allResults = [...inventoryResults, ...refundResults, ...feeResults];
+      // Step 8: RUN THE DISPUTE DEFENDER 🛡️
+      logger.info('🛡️ [AGENT3] Deploying the Dispute Defender...', { userId, syncId });
+
+      const [chargebackEvents, deliveryRecords] = await Promise.all([
+        fetchChargebackEvents(userId, { startDate: lookbackDate }),
+        fetchDeliveryRecords(userId, { startDate: lookbackDate })
+      ]);
+
+      const disputeSyncedData: DisputeSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        chargeback_events: chargebackEvents,
+        delivery_records: deliveryRecords
+      };
+
+      const disputeResults = detectDefensibleChargebacks(userId, syncId, disputeSyncedData);
+
+      logger.info('🛡️ [AGENT3] Dispute Defender complete!', {
+        userId,
+        syncId,
+        detectionsFound: disputeResults.length,
+        estimatedRecovery: disputeResults.reduce((sum, r) => sum + r.estimated_value, 0)
+      });
+
+      // Step 9: Store dispute results
+      if (disputeResults.length > 0) {
+        await storeDisputeDetectionResults(disputeResults);
+        logger.info('🛡️ [AGENT3] Dispute detection results stored', {
+          count: disputeResults.length
+        });
+      }
+
+      // Step 10: Calculate combined summary from ALL 4 algorithms
+      const allResults = [...inventoryResults, ...refundResults, ...feeResults, ...disputeResults];
       const totalRecovery = allResults.reduce((sum, r) => sum + r.estimated_value, 0);
 
       return {
         success: true,
         jobId,
         message: allResults.length > 0
-          ? `🧠 Agent 3 found ${allResults.length} claims: ${inventoryResults.length} inventory, ${refundResults.length} refunds, ${feeResults.length} fee overcharges. Total recovery: $${totalRecovery.toFixed(2)}!`
+          ? `🧠 Agent 3 found ${allResults.length} claims: ${inventoryResults.length} inventory, ${refundResults.length} refunds, ${feeResults.length} fees, ${disputeResults.length} disputes. Total recovery: $${totalRecovery.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: allResults.length,
         estimatedRecovery: totalRecovery
