@@ -109,6 +109,12 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
         pendingDelete = true;
         return builder;
       },
+      // Upsert: insert or update based on conflict
+      upsert: (data: any, options?: { onConflict?: string }) => {
+        // In mock mode, upsert behaves like insert (simplified)
+        pendingInsert = data;
+        return builder;
+      },
 
       // Execution
       then: (resolve: any, reject: any) => {

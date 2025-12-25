@@ -636,3 +636,14 @@ IsSandbox: true
 Input Detections: 45
 DB Client: Admin
 
+[2025-12-25T01:24:31.561Z] AFTER detection mapping
+All Predictions: 411
+Claimable Predictions: 56
+Mapped Detection Results: 56
+Sample Result: {"claim_id":"claim_order_112-6213258-915608_1766625865719_tewmf","seller_id":"test-user","anomaly_type":"missing_unit","severity":"medium","estimated_value":5.8,"currency":"USD","confidence_score":0.65,"evidence":{},"related_event_ids":["112-6213258-915608"],"discovery_date":"2025-09-25T01:18:48.931Z","deadline_date":"2025-11-24T01:18:48.931Z","days_remaining":0}
+
+[2025-12-25T01:24:31.570Z] storeDetectionResults
+IsSandbox: true
+Input Detections: 56
+DB Client: Admin
+
