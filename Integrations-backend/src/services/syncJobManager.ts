@@ -90,6 +90,38 @@ class SyncJobManager {
       }
     }
 
+    // 🧹 AUTO-CLEANUP: Clear stale syncs stuck in 'running' for 10+ minutes
+    // This prevents orphaned syncs from blocking new sync requests
+    const STALE_SYNC_THRESHOLD_MINUTES = 10;
+    try {
+      const { data: staleSyncs, error: staleError } = await supabase
+        .from('sync_progress')
+        .update({
+          status: 'failed',
+          current_step: 'Auto-cleared: Sync timed out after 10 minutes of inactivity',
+          error_code: 'TIMEOUT',
+          updated_at: new Date().toISOString()
+        })
+        .eq('user_id', userId)
+        .eq('status', 'running')
+        .lt('updated_at', new Date(Date.now() - STALE_SYNC_THRESHOLD_MINUTES * 60 * 1000).toISOString())
+        .select('sync_id');
+
+      if (staleSyncs && staleSyncs.length > 0) {
+        logger.info('🧹 [SYNC JOB MANAGER] Auto-cleared stale syncs', {
+          userId,
+          clearedCount: staleSyncs.length,
+          clearedSyncIds: staleSyncs.map(s => s.sync_id)
+        });
+      }
+    } catch (cleanupError: any) {
+      // Non-fatal - log and continue
+      logger.warn('⚠️ [SYNC JOB MANAGER] Failed to cleanup stale syncs (non-fatal)', {
+        userId,
+        error: cleanupError.message
+      });
+    }
+
     // Check if there's already a running sync (both in-memory and database)
     const existingSync = await this.getActiveSync(userId);
     if (existingSync && existingSync.status === 'running') {
@@ -99,7 +131,7 @@ class SyncJobManager {
     // Also check database for any active syncs
     const { data: dbActiveSync } = await supabase
       .from('sync_progress')
-      .select('sync_id, status')
+      .select('sync_id, status, updated_at')
       .eq('user_id', userId)
       .eq('status', 'running')
       .order('created_at', { ascending: false })
@@ -107,9 +139,28 @@ class SyncJobManager {
       .maybeSingle();
 
     if (dbActiveSync && dbActiveSync.status === 'running') {
-      // Check if it's actually still running (not stale)
-      const dbSyncStatus = await this.getSyncStatus(dbActiveSync.sync_id, userId);
-      if (dbSyncStatus && dbSyncStatus.status === 'running') {
+      // Double-check it's not stale (should have been cleaned above, but check again)
+      const updatedAt = new Date(dbActiveSync.updated_at).getTime();
+      const isStale = Date.now() - updatedAt > STALE_SYNC_THRESHOLD_MINUTES * 60 * 1000;
+
+      if (isStale) {
+        // Force clear this stale sync
+        await supabase
+          .from('sync_progress')
+          .update({
+            status: 'failed',
+            current_step: 'Auto-cleared: Sync was stale',
+            error_code: 'TIMEOUT',
+            updated_at: new Date().toISOString()
+          })
+          .eq('sync_id', dbActiveSync.sync_id);
+
+        logger.info('🧹 [SYNC JOB MANAGER] Force-cleared stale sync', {
+          userId,
+          staleSyncId: dbActiveSync.sync_id
+        });
+      } else {
+        // It's a real active sync - block the new sync
         throw new Error(`Sync already in progress (${dbActiveSync.sync_id}). Please wait for it to complete or cancel it first.`);
       }
     }
