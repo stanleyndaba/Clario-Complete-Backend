@@ -354,6 +354,11 @@ import adminRoutes from './routes/adminRoutes';
 app.use('/api/admin', adminRoutes);
 logger.info('Admin routes registered at /api/admin');
 
+// Test evidence routes (for E2E testing of evidence matching)
+import testEvidenceRoutes from './routes/testEvidence';
+app.use('/api/test', testEvidenceRoutes);
+logger.info('Test evidence routes registered at /api/test');
+
 // Consolidated service routes (merged from separate microservices)
 app.use('/api/v1/stripe-payments', consolidatedStripeRoutes);
 app.use('/api/v1/cost-docs', consolidatedCostDocsRoutes);
