@@ -10,36 +10,43 @@
  * Clusters: Inbound Inspector + Removal Tracker + Fraud Hunter
  */
 
+// =====================================================
+// MODULE EXPORTS - Detection Functions Only
+// (Avoiding duplicate interface exports across modules)
+// =====================================================
+
 // P0 Priority - THE TRINITY
-export * from './inventoryAlgorithms';
+export { detectLostInventory } from './inventoryAlgorithms';
 export { default as inventoryAlgorithms } from './inventoryAlgorithms';
-export * from './refundAlgorithms';
+
+export { detectRefundWithoutReturn, fetchReturnEvents, fetchReimbursementEvents } from './refundAlgorithms';
 export { default as refundAlgorithms } from './refundAlgorithms';
-export * from './damagedAlgorithms';
+
+export { detectDamagedInventory } from './damagedAlgorithms';
 export { default as damagedAlgorithms } from './damagedAlgorithms';
 
 // P1 Priority - Fee Overcharges
-export * from './feeAlgorithms';
+export { detectAllFeeOvercharges } from './feeAlgorithms';
 export { default as feeAlgorithms } from './feeAlgorithms';
 
 // P2 Priority - Chargebacks/Disputes
-export * from './chargebackAlgorithms';
+export { detectDefensibleChargebacks } from './chargebackAlgorithms';
 export { default as chargebackAlgorithms } from './chargebackAlgorithms';
 
 // P3 Priority - Advertising/Promotions
-export * from './advertisingAlgorithms';
+export { detectAllAdvertisingErrors } from './advertisingAlgorithms';
 export { default as advertisingAlgorithms } from './advertisingAlgorithms';
 
 // CLUSTER 1 - Inbound & Receiving
-export * from './inboundAlgorithms';
+export { detectInboundAnomalies } from './inboundAlgorithms';
 export { default as inboundAlgorithms } from './inboundAlgorithms';
 
 // CLUSTER 2 - Removal & Disposal
-export * from './removalAlgorithms';
+export { detectRemovalAnomalies } from './removalAlgorithms';
 export { default as removalAlgorithms } from './removalAlgorithms';
 
 // CLUSTER 3 - Fraud & Fulfillment Errors
-export * from './fraudAlgorithms';
+export { detectFraudAnomalies } from './fraudAlgorithms';
 export { default as fraudAlgorithms } from './fraudAlgorithms';
 
 // Algorithm Registry
