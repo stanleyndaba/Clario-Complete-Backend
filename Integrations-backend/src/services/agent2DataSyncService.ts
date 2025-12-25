@@ -34,6 +34,8 @@ import sseHub from '../utils/sseHub';
 import { withErrorHandling } from '../utils/errorHandlingUtils';
 import { validateClaim } from '../utils/claimValidation';
 import { preventDuplicateClaim } from '../utils/duplicateDetection';
+import { withRetry, toSyncError } from '../utils/retryUtils';
+import { createCoverageReport, SyncCoverageReport } from '../utils/syncFingerprint';
 
 export interface SyncResult {
   success: boolean;
@@ -755,9 +757,33 @@ export class Agent2DataSyncService {
       return this.generateMockOrders(userId, startDate, endDate, mockScenario, syncId);
     }
 
-    // Production: Use real SP-API
-    logger.info('📦 [AGENT 2] Using REAL SP-API for orders', { userId, syncId });
-    return await this.ordersService.fetchOrders(userId, startDate, endDate);
+    // Production: Use real SP-API with retry logic
+    logger.info('📦 [AGENT 2] Using REAL SP-API for orders (with retry)', { userId, syncId });
+
+    const result = await withRetry(
+      () => this.ordersService.fetchOrders(userId, startDate, endDate),
+      {
+        maxRetries: 3,
+        initialDelayMs: 1000,
+        onRetry: (attempt, error) => {
+          logger.warn(`🔄 [AGENT 2] Retrying orders fetch (attempt ${attempt})`, {
+            userId, syncId, error: error.message
+          });
+        }
+      }
+    );
+
+    if (result.success && result.data) {
+      return result.data;
+    }
+
+    // Return error result
+    const syncError = toSyncError(result.error);
+    return {
+      success: false,
+      data: [],
+      message: `Orders sync failed: ${syncError.message}`
+    };
   }
 
   /**
@@ -779,9 +805,28 @@ export class Agent2DataSyncService {
       return this.generateMockShipments(userId, startDate, endDate, mockScenario, syncId);
     }
 
-    // Production: Use real SP-API
-    logger.info('🚚 [AGENT 2] Using REAL SP-API for shipments', { userId, syncId });
-    return await this.shipmentsService.fetchShipments(userId, startDate, endDate);
+    // Production: Use real SP-API with retry logic
+    logger.info('🚚 [AGENT 2] Using REAL SP-API for shipments (with retry)', { userId, syncId });
+
+    const result = await withRetry(
+      () => this.shipmentsService.fetchShipments(userId, startDate, endDate),
+      {
+        maxRetries: 3,
+        initialDelayMs: 1000,
+        onRetry: (attempt, error) => {
+          logger.warn(`🔄 [AGENT 2] Retrying shipments fetch (attempt ${attempt})`, {
+            userId, syncId, error: error.message
+          });
+        }
+      }
+    );
+
+    if (result.success && result.data) {
+      return result.data;
+    }
+
+    const syncError = toSyncError(result.error);
+    return { success: false, data: [], message: `Shipments sync failed: ${syncError.message}` };
   }
 
   /**
@@ -803,9 +848,28 @@ export class Agent2DataSyncService {
       return this.generateMockReturns(userId, startDate, endDate, mockScenario, syncId);
     }
 
-    // Production: Use real SP-API
-    logger.info('↩️ [AGENT 2] Using REAL SP-API for returns', { userId, syncId });
-    return await this.returnsService.fetchReturns(userId, startDate, endDate);
+    // Production: Use real SP-API with retry logic
+    logger.info('↩️ [AGENT 2] Using REAL SP-API for returns (with retry)', { userId, syncId });
+
+    const result = await withRetry(
+      () => this.returnsService.fetchReturns(userId, startDate, endDate),
+      {
+        maxRetries: 3,
+        initialDelayMs: 1000,
+        onRetry: (attempt, error) => {
+          logger.warn(`🔄 [AGENT 2] Retrying returns fetch (attempt ${attempt})`, {
+            userId, syncId, error: error.message
+          });
+        }
+      }
+    );
+
+    if (result.success && result.data) {
+      return result.data;
+    }
+
+    const syncError = toSyncError(result.error);
+    return { success: false, data: [], message: `Returns sync failed: ${syncError.message}` };
   }
 
   /**
@@ -827,9 +891,28 @@ export class Agent2DataSyncService {
       return this.generateMockSettlements(userId, startDate, endDate, mockScenario, syncId);
     }
 
-    // Production: Use real SP-API
-    logger.info('💰 [AGENT 2] Using REAL SP-API for settlements', { userId, syncId });
-    return await this.settlementsService.fetchSettlements(userId, startDate, endDate);
+    // Production: Use real SP-API with retry logic
+    logger.info('💰 [AGENT 2] Using REAL SP-API for settlements (with retry)', { userId, syncId });
+
+    const result = await withRetry(
+      () => this.settlementsService.fetchSettlements(userId, startDate, endDate),
+      {
+        maxRetries: 3,
+        initialDelayMs: 1000,
+        onRetry: (attempt, error) => {
+          logger.warn(`🔄 [AGENT 2] Retrying settlements fetch (attempt ${attempt})`, {
+            userId, syncId, error: error.message
+          });
+        }
+      }
+    );
+
+    if (result.success && result.data) {
+      return result.data;
+    }
+
+    const syncError = toSyncError(result.error);
+    return { success: false, data: [], message: `Settlements sync failed: ${syncError.message}` };
   }
 
   /**
