@@ -647,3 +647,14 @@ IsSandbox: true
 Input Detections: 56
 DB Client: Admin
 
+[2025-12-25T01:58:35.148Z] AFTER detection mapping
+All Predictions: 417
+Claimable Predictions: 72
+Mapped Detection Results: 72
+Sample Result: {"claim_id":"claim_order_112-1036356-593254_1766627912997_shifw","seller_id":"test-user","anomaly_type":"missing_unit","severity":"medium","estimated_value":18.63,"currency":"USD","confidence_score":0.65,"evidence":{},"related_event_ids":["112-1036356-593254"],"discovery_date":"2024-08-10T17:34:29.914Z","deadline_date":"2024-10-09T17:34:29.914Z","days_remaining":0}
+
+[2025-12-25T01:58:35.156Z] storeDetectionResults
+IsSandbox: true
+Input Detections: 72
+DB Client: Admin
+

@@ -4,6 +4,14 @@ import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import sseHub from '../utils/sseHub';
 import tokenManager from '../utils/tokenManager';
 import config from '../config/env';
+import { withRetry, toSyncError, SyncError, SyncErrorCode, SyncNextAction } from '../utils/retryUtils';
+import {
+  createSyncFingerprint,
+  createCoverageReport,
+  createSyncSnapshot,
+  SyncCoverage,
+  SyncCoverageReport
+} from '../utils/syncFingerprint';
 
 // Standardized status values - use database values consistently
 export type SyncStatus = 'idle' | 'running' | 'detecting' | 'completed' | 'failed' | 'cancelled';
@@ -27,6 +35,17 @@ export interface SyncJobStatus {
   settlementsCount?: number;
   feesCount?: number;
   error?: string;
+  // Enhanced error tracking (Pillar 1: Reliability)
+  errorCode?: SyncErrorCode;
+  errorDetails?: SyncError;
+  retryCount?: number;
+  nextRetryAt?: string;
+  // Coverage tracking (Pillar 3: Completeness)
+  coverage?: SyncCoverage[];
+  coverageComplete?: boolean;
+  // Fingerprint for idempotency (Pillar 1: Reliability)
+  syncFingerprint?: string;
+  lastSuccessfulSyncAt?: string;
 }
 
 class SyncJobManager {
@@ -95,6 +114,43 @@ class SyncJobManager {
       }
     }
 
+    // 🔐 PILLAR 1: IDEMPOTENT JOB DETECTION
+    // Check if a sync with the same fingerprint completed recently (within 5 minutes)
+    const defaultSyncDays = parseInt(process.env.SYNC_DAYS || '90', 10);
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - defaultSyncDays);
+    const endDate = new Date();
+    const syncFingerprint = createSyncFingerprint(userId, startDate, endDate, 5);
+
+    const { data: recentSync } = await supabase
+      .from('sync_progress')
+      .select('sync_id, status, completed_at, sync_fingerprint')
+      .eq('user_id', userId)
+      .eq('sync_fingerprint', syncFingerprint)
+      .eq('status', 'completed')
+      .order('completed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (recentSync && recentSync.completed_at) {
+      const completedAt = new Date(recentSync.completed_at);
+      const minutesAgo = (Date.now() - completedAt.getTime()) / (1000 * 60);
+
+      if (minutesAgo < 5) {
+        logger.info('⏭️ [SYNC JOB MANAGER] Skipping duplicate sync - recent sync exists', {
+          userId,
+          recentSyncId: recentSync.sync_id,
+          minutesAgo: Math.round(minutesAgo * 10) / 10,
+          fingerprint: syncFingerprint
+        });
+        return {
+          syncId: recentSync.sync_id,
+          status: 'skipped',
+          message: `Recent sync completed ${Math.round(minutesAgo)} minutes ago. Skipping duplicate.`
+        } as any; // Return with skipped status
+      }
+    }
+
     // 🧹 CLEAR STALE MOCK DATA FOR CONSISTENT SYNC
     // In demo/mock mode, clear old data so dashboard only shows data from current sync cycle
     // This ensures the sync order volume matches the dashboard recovered value
@@ -149,7 +205,9 @@ class SyncJobManager {
       startedAt: new Date().toISOString(),
       ordersProcessed: 0,
       totalOrders: 0,
-      claimsDetected: 0
+      claimsDetected: 0,
+      syncFingerprint, // Store fingerprint for idempotency (Pillar 1)
+      retryCount: 0
     };
 
     // Create cancel function
@@ -769,10 +827,26 @@ class SyncJobManager {
 
       } catch (error: any) {
         logger.error(`Sync job ${syncId} error:`, error);
+
+        // 🔐 PILLAR 1: STRUCTURED ERROR HANDLING
+        const structuredError = toSyncError(error);
+
         syncStatus.status = 'failed';
         syncStatus.error = error.message;
-        syncStatus.message = `Sync failed: ${error.message}`;
+        syncStatus.errorCode = structuredError.code;
+        syncStatus.errorDetails = structuredError;
+        syncStatus.message = `Sync failed: ${structuredError.message}`;
         syncStatus.completedAt = new Date().toISOString();
+
+        // Log structured error with next action
+        logger.info('🔐 [SYNC JOB MANAGER] Structured error captured', {
+          userId,
+          syncId,
+          errorCode: structuredError.code,
+          nextAction: structuredError.nextAction,
+          retryInSeconds: structuredError.retryInSeconds
+        });
+
         this.updateSyncStatus(syncStatus);
         this.sendProgressUpdate(userId, syncStatus);
 
@@ -1464,7 +1538,14 @@ class SyncJobManager {
         claimsDetected: syncStatus.claimsDetected || 0,
         error: syncStatus.error,
         startedAt: syncStatus.startedAt,
-        completedAt: syncStatus.completedAt
+        completedAt: syncStatus.completedAt,
+        // Pillar 1: Enhanced error tracking
+        errorCode: syncStatus.errorCode,
+        errorDetails: syncStatus.errorDetails,
+        retryCount: syncStatus.retryCount || 0,
+        // Pillar 3: Coverage tracking
+        coverage: syncStatus.coverage,
+        coverageComplete: syncStatus.coverageComplete
       };
 
       logger.info('💾 [SYNC JOB MANAGER] Saving sync to database', {
@@ -1483,19 +1564,37 @@ class SyncJobManager {
         .eq('sync_id', syncStatus.syncId)
         .maybeSingle();
 
+      // Fields to save for Pillar 1 & 3 enhancements
+      const enhancedFields: Record<string, any> = {
+        step: Math.round(syncStatus.progress / 20),
+        total_steps: 5,
+        current_step: syncStatus.message,
+        status: dbStatus,
+        progress: syncStatus.progress,
+        metadata: metadataToSave,
+        updated_at: new Date().toISOString(),
+        // Pillar 1: Idempotency
+        sync_fingerprint: syncStatus.syncFingerprint,
+        // Pillar 1: Reliability - error tracking
+        error_code: syncStatus.errorCode,
+        error_details: syncStatus.errorDetails ? JSON.stringify(syncStatus.errorDetails) : null,
+        retry_count: syncStatus.retryCount || 0,
+        // Pillar 3: Coverage tracking
+        coverage: syncStatus.coverage ? JSON.stringify(syncStatus.coverage) : null,
+        coverage_complete: syncStatus.coverageComplete || false
+      };
+
+      // Add last_successful_sync_at if completed successfully
+      if (dbStatus === 'completed') {
+        enhancedFields.completed_at = new Date().toISOString();
+        enhancedFields.last_successful_sync_at = new Date().toISOString();
+      }
+
       if (existingSync.data) {
         // Update existing record
         const { error: updateErr } = await supabase
           .from('sync_progress')
-          .update({
-            step: Math.round(syncStatus.progress / 20),
-            total_steps: 5,
-            current_step: syncStatus.message,
-            status: dbStatus,
-            progress: syncStatus.progress,
-            metadata: metadataToSave,
-            updated_at: new Date().toISOString()
-          })
+          .update(enhancedFields)
           .eq('sync_id', syncStatus.syncId);
         if (updateErr) throw updateErr;
       } else {
@@ -1505,13 +1604,7 @@ class SyncJobManager {
           .insert({
             user_id: syncStatus.userId,
             sync_id: syncStatus.syncId,
-            step: Math.round(syncStatus.progress / 20),
-            total_steps: 5,
-            current_step: syncStatus.message,
-            status: dbStatus,
-            progress: syncStatus.progress,
-            metadata: metadataToSave,
-            updated_at: new Date().toISOString()
+            ...enhancedFields
           });
         if (insertErr) throw insertErr;
       }
@@ -1519,7 +1612,9 @@ class SyncJobManager {
       logger.info('✅ [SYNC JOB MANAGER] Successfully saved sync to database', {
         userId: syncStatus.userId,
         syncId: syncStatus.syncId,
-        claimsDetected: metadataToSave.claimsDetected
+        claimsDetected: metadataToSave.claimsDetected,
+        hasFingerprint: !!syncStatus.syncFingerprint,
+        hasCoverage: !!syncStatus.coverage
       });
     } catch (error) {
       logger.error(`Error in saveSyncToDatabase:`, error);
