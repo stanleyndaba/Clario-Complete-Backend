@@ -151,32 +151,49 @@ export class Agent2DataSyncService {
     });
 
     // Check if user has valid Amazon token from Agent 1
-    // Check if user has valid Amazon token from Agent 1
     const isConnected = await tokenManager.isTokenValid(userId, 'amazon');
 
-    // Check if using CSV-based Mock SP-API (Real Truth mode)
-    // If getting data from CSVs, we disable "random mock mode" so we call the services
-    const useCsvMock = process.env.USE_MOCK_SPAPI === 'true';
+    // ===============================================
+    // SIMPLIFIED MODE LOGIC (Single Source of Truth)
+    // ===============================================
+    // DEMO_MODE=true  → Generate fake data for testing/demos
+    // DEMO_MODE=false → Require real SP-API connection
+    // Default: true (demo mode) for development, false for production
+    // ===============================================
+    const isDemoMode = process.env.DEMO_MODE === 'true' ||
+      (process.env.NODE_ENV !== 'production' && process.env.DEMO_MODE !== 'false');
 
-    // "isMockMode" here specifically means "Use Random Data Generator"
-    // If useCsvMock is true, we force this to FALSE so it falls through to the services (which use CSVs)
-    const isMockMode = !useCsvMock && (!isConnected || process.env.ENABLE_MOCK_SP_API === 'true' || process.env.USE_MOCK_DATA_GENERATOR !== 'false');
-    const mockScenario: MockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'normal_week';
+    // In production without DEMO_MODE, require real Amazon connection
+    const requiresRealConnection = !isDemoMode && process.env.NODE_ENV === 'production';
 
-    // DEBUG: Log isMockMode determination
-    console.log('[AGENT 2] isMockMode determination:', {
-      isConnected,
-      ENABLE_MOCK_SP_API: process.env.ENABLE_MOCK_SP_API,
-      USE_MOCK_DATA_GENERATOR: process.env.USE_MOCK_DATA_GENERATOR,
-      isMockMode,
-      mockScenario
-    });
-
-    if (isMockMode) {
-      logger.info('🧪 [AGENT 2] Using mock data generator (sandbox mode)', {
+    if (requiresRealConnection && !isConnected) {
+      logger.error('❌ [AGENT 2] Production mode requires real Amazon SP-API connection', {
         userId,
         syncId,
-        scenario: mockScenario
+        isConnected,
+        isDemoMode
+      });
+      throw new Error('Amazon SP-API connection required. Please connect your Amazon Seller Central account.');
+    }
+
+    // Use mock data generator in demo mode OR if not connected (fallback for testing)
+    const useMockGenerator = isDemoMode || !isConnected;
+    const mockScenario: MockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'realistic';
+
+    // Clear logging of which mode we're in
+    console.log(`[AGENT 2] ═══════════════════════════════════════`);
+    console.log(`[AGENT 2] MODE: ${useMockGenerator ? '🧪 DEMO (Mock Data)' : '🔗 PRODUCTION (Real SP-API)'}`);
+    console.log(`[AGENT 2] DEMO_MODE=${process.env.DEMO_MODE}, NODE_ENV=${process.env.NODE_ENV}`);
+    console.log(`[AGENT 2] Amazon Connected: ${isConnected}`);
+    console.log(`[AGENT 2] Mock Scenario: ${useMockGenerator ? mockScenario : 'N/A'}`);
+    console.log(`[AGENT 2] ═══════════════════════════════════════`);
+
+    if (useMockGenerator) {
+      logger.info('🧪 [AGENT 2] DEMO MODE - Generating mock data for testing', {
+        userId,
+        syncId,
+        scenario: mockScenario,
+        note: 'Set DEMO_MODE=false and connect Amazon account for real data'
       });
     } else {
       console.log('[AGENT 2] ⚠️ NOT in mock mode - will use real SP-API (which may return empty for sandbox users)');
@@ -209,8 +226,8 @@ export class Agent2DataSyncService {
       },
       errors: [],
       duration: 0,
-      isMock: isMockMode,
-      mockScenario: isMockMode ? mockScenario : undefined
+      isMock: useMockGenerator,
+      mockScenario: useMockGenerator ? mockScenario : undefined
     };
 
     try {
@@ -230,7 +247,7 @@ export class Agent2DataSyncService {
         });
         logger.info('📦 [AGENT 2] Fetching orders...', { userId, syncId });
 
-        const ordersResult = await this.syncOrders(userId, syncStartDate, syncEndDate, isMockMode, mockScenario, syncId);
+        const ordersResult = await this.syncOrders(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId);
         result.normalized.orders = ordersResult.data || [];
         result.summary.ordersCount = result.normalized.orders.length;
 
@@ -239,9 +256,9 @@ export class Agent2DataSyncService {
 
           // For demo realism: boost volume so claims (~$7k) represent realistic 2% error rate
           // Real Amazon error rate is 1-3%, so if claims ~$7k, volume should be ~$350k
-          const volumeMultiplier = isMockMode ? 22 : 1; // 22x makes ~$15k -> ~$350k
+          const volumeMultiplier = useMockGenerator ? 22 : 1; // 22x makes ~$15k -> ~$350k
           const totalVolume = rawVolume * volumeMultiplier;
-          const avgValue = (rawVolume / result.summary.ordersCount) * (isMockMode ? 3 : 1); // Slightly boost avg too
+          const avgValue = (rawVolume / result.summary.ordersCount) * (useMockGenerator ? 3 : 1); // Slightly boost avg too
 
           this.sendSyncLog(userId, syncId, {
             type: 'success',
@@ -305,7 +322,7 @@ export class Agent2DataSyncService {
         });
         logger.info('🚚 [AGENT 2] Fetching shipments...', { userId, syncId });
 
-        const shipmentsResult = await this.syncShipments(userId, syncStartDate, syncEndDate, isMockMode, mockScenario, syncId);
+        const shipmentsResult = await this.syncShipments(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId);
         result.normalized.shipments = shipmentsResult.data || [];
         result.summary.shipmentsCount = result.normalized.shipments.length;
 
@@ -360,7 +377,7 @@ export class Agent2DataSyncService {
         });
         logger.info('↩️ [AGENT 2] Fetching returns...', { userId, syncId });
 
-        const returnsResult = await this.syncReturns(userId, syncStartDate, syncEndDate, isMockMode, mockScenario, syncId);
+        const returnsResult = await this.syncReturns(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId);
         result.normalized.returns = returnsResult.data || [];
         result.summary.returnsCount = result.normalized.returns.length;
 
@@ -409,7 +426,7 @@ export class Agent2DataSyncService {
         });
         logger.info('💰 [AGENT 2] Fetching settlements...', { userId, syncId });
 
-        const settlementsResult = await this.syncSettlements(userId, syncStartDate, syncEndDate, isMockMode, mockScenario, syncId);
+        const settlementsResult = await this.syncSettlements(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId);
         result.normalized.settlements = settlementsResult.data || [];
         result.summary.settlementsCount = result.normalized.settlements.length;
 
@@ -464,7 +481,7 @@ export class Agent2DataSyncService {
         });
         logger.info('📊 [AGENT 2] Fetching inventory...', { userId, syncId });
 
-        const inventoryResult = await this.syncInventory(userId, isMockMode, mockScenario, syncId);
+        const inventoryResult = await this.syncInventory(userId, useMockGenerator, mockScenario, syncId);
         result.normalized.inventory = inventoryResult.data || [];
         result.summary.inventoryCount = result.normalized.inventory.length;
 
@@ -538,7 +555,7 @@ export class Agent2DataSyncService {
         });
         logger.info('🎯 [AGENT 2] Fetching claims...', { userId, syncId });
 
-        const claimsResult = await this.syncClaims(userId, syncStartDate, syncEndDate, isMockMode, mockScenario, syncId);
+        const claimsResult = await this.syncClaims(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId);
         result.normalized.claims = claimsResult.data || [];
         result.summary.claimsCount = result.normalized.claims.length;
 
@@ -633,7 +650,7 @@ export class Agent2DataSyncService {
             detectionId,
             result.normalized,
             detectionSyncId,
-            isMockMode
+            useMockGenerator
           );
 
           // Add detection results to the sync result
@@ -728,12 +745,12 @@ export class Agent2DataSyncService {
     userId: string,
     startDate: Date,
     endDate: Date,
-    isMockMode: boolean,
+    useMockGenerator: boolean,
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // SIMPLE LOGIC: Mock mode = generate, Real mode = SP-API
-    if (isMockMode) {
+    if (useMockGenerator) {
       logger.info('📦 [AGENT 2] Using MOCK DATA GENERATOR for orders', { userId, syncId });
       return this.generateMockOrders(userId, startDate, endDate, mockScenario, syncId);
     }
@@ -752,12 +769,12 @@ export class Agent2DataSyncService {
     userId: string,
     startDate: Date,
     endDate: Date,
-    isMockMode: boolean,
+    useMockGenerator: boolean,
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // SIMPLE LOGIC: Mock mode = generate, Real mode = SP-API
-    if (isMockMode) {
+    if (useMockGenerator) {
       logger.info('🚚 [AGENT 2] Using MOCK DATA GENERATOR for shipments', { userId, syncId });
       return this.generateMockShipments(userId, startDate, endDate, mockScenario, syncId);
     }
@@ -776,12 +793,12 @@ export class Agent2DataSyncService {
     userId: string,
     startDate: Date,
     endDate: Date,
-    isMockMode: boolean,
+    useMockGenerator: boolean,
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // SIMPLE LOGIC: Mock mode = generate, Real mode = SP-API
-    if (isMockMode) {
+    if (useMockGenerator) {
       logger.info('↩️ [AGENT 2] Using MOCK DATA GENERATOR for returns', { userId, syncId });
       return this.generateMockReturns(userId, startDate, endDate, mockScenario, syncId);
     }
@@ -800,12 +817,12 @@ export class Agent2DataSyncService {
     userId: string,
     startDate: Date,
     endDate: Date,
-    isMockMode: boolean,
+    useMockGenerator: boolean,
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // SIMPLE LOGIC: Mock mode = generate, Real mode = SP-API
-    if (isMockMode) {
+    if (useMockGenerator) {
       logger.info('💰 [AGENT 2] Using MOCK DATA GENERATOR for settlements', { userId, syncId });
       return this.generateMockSettlements(userId, startDate, endDate, mockScenario, syncId);
     }
@@ -822,12 +839,12 @@ export class Agent2DataSyncService {
    */
   private async syncInventory(
     userId: string,
-    isMockMode: boolean,
+    useMockGenerator: boolean,
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // SIMPLE LOGIC: Mock mode = generate, Real mode = SP-API
-    if (isMockMode) {
+    if (useMockGenerator) {
       logger.info('📦 [AGENT 2] Using MOCK DATA GENERATOR for inventory', { userId, syncId });
       return this.generateMockInventory(userId, mockScenario, syncId);
     }
@@ -850,11 +867,11 @@ export class Agent2DataSyncService {
     userId: string,
     startDate: Date,
     endDate: Date,
-    isMockMode: boolean,
+    useMockGenerator: boolean,
     mockScenario: MockScenario,
     syncId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
-    if (isMockMode) {
+    if (useMockGenerator) {
       return this.generateMockClaims(userId, startDate, endDate, mockScenario, syncId);
     }
 
@@ -1665,25 +1682,25 @@ export class Agent2DataSyncService {
       claims?: any[];
     },
     parentSyncId?: string,
-    isMockMode = false
+    useMockGenerator = false
   ): Promise<{ totalDetected: number }> {
     const storageSyncId = parentSyncId || syncId;
 
-    // CRITICAL DEBUG: Log isMockMode to trace why Python API might be called
-    console.log(`[AGENT 2] callDiscoveryAgent - isMockMode: ${isMockMode}, MOCK_DETECTION_API: ${process.env.MOCK_DETECTION_API}`);
-    logger.info('🔍 [AGENT 2] Discovery Agent isMockMode check', {
+    // CRITICAL DEBUG: Log useMockGenerator to trace why Python API might be called
+    console.log(`[AGENT 2] callDiscoveryAgent - useMockGenerator: ${useMockGenerator}, MOCK_DETECTION_API: ${process.env.MOCK_DETECTION_API}`);
+    logger.info('🔍 [AGENT 2] Discovery Agent useMockGenerator check', {
       userId,
       syncId,
-      isMockMode,
+      useMockGenerator,
       MOCK_DETECTION_API: process.env.MOCK_DETECTION_API,
-      shouldUseMock: isMockMode || process.env.MOCK_DETECTION_API === 'true'
+      shouldUseMock: useMockGenerator || process.env.MOCK_DETECTION_API === 'true'
     });
 
     // Step 1: Validate and normalize input contract
     const validatedData = this.validateAndNormalizeInputContract(normalizedData, userId, syncId);
 
     // Step 1.5: Generate additional FBA data types for expanded claim detection (when in mock mode)
-    if (isMockMode) {
+    if (useMockGenerator) {
       try {
         const { getMockDataGenerator } = require('./mockDataGenerator');
         const mockGenerator = getMockDataGenerator();
@@ -1969,15 +1986,15 @@ export class Agent2DataSyncService {
           try {
             // ROBUST Mock Detection Check:
             // Use mock detection if ANY of these conditions is true:
-            // 1. isMockMode flag is true (passed from syncUserData)
+            // 1. useMockGenerator flag is true (passed from syncUserData)
             // 2. MOCK_DETECTION_API env var is 'true'
             // 3. NODE_ENV is 'development' (always use mock in dev)
-            const useMockDetection = isMockMode ||
+            const useMockDetection = useMockGenerator ||
               process.env.MOCK_DETECTION_API === 'true' ||
               process.env.NODE_ENV === 'development';
 
             console.log(`[AGENT 2] Batch ${batchIndex + 1} - Detection mode check:`, {
-              isMockMode,
+              useMockGenerator,
               MOCK_DETECTION_API: process.env.MOCK_DETECTION_API,
               NODE_ENV: process.env.NODE_ENV,
               useMockDetection
