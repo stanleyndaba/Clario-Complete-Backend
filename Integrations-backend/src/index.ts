@@ -51,6 +51,7 @@ import notificationRoutes from './notifications/routes/notification_routes';
 import recoveryRoutes from './routes/recoveryRoutes';
 import learningRoutes from './routes/learningRoutes';
 import timelineRoutes from './routes/timelineRoutes';
+import inviteRoutes from './routes/inviteRoutes';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -345,6 +346,9 @@ logger.info('Learning routes registered at /api/learning');
 
 app.use('/api/claims', timelineRoutes);
 logger.info('Timeline routes registered at /api/claims');
+
+app.use('/api/invites', inviteRoutes);
+logger.info('Invite routes registered at /api/invites');
 
 import adminRoutes from './routes/adminRoutes';
 app.use('/api/admin', adminRoutes);
