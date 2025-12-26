@@ -127,43 +127,77 @@ class EvidenceMatchingService {
   }
 
   /**
-   * Match claims against parsed documents by ASIN/SKU
+   * Match claims against parsed documents by Order ID, ASIN, or SKU
    * Primary matching method - no external API dependency
+   * Uses 'extracted' column (not parsed_metadata) for document data
    */
   private async matchClaimsToDocuments(userId: string, claims: ClaimData[]): Promise<MatchingJobResponse> {
     logger.info('🔍 [EVIDENCE MATCHING] Matching claims to documents', { userId, claimsCount: claims.length });
 
     try {
-      // Get parsed documents for user
-      const { data: documents } = await supabaseAdmin
+      // Get documents with extracted data for user
+      // Support multiple parser_status values: completed, extracted, etc.
+      const { data: documents, error: docError } = await supabaseAdmin
         .from('evidence_documents')
-        .select('id, filename, parsed_metadata, storage_path')
-        .eq('seller_id', userId)
-        .eq('parser_status', 'completed')
-        .not('parsed_metadata', 'is', null);
+        .select('id, filename, extracted, parsed_metadata, raw_text, storage_path, parser_status')
+        .eq('seller_id', userId);
 
-      if (!documents || documents.length === 0) {
-        logger.warn('⚠️ [EVIDENCE MATCHING] No parsed documents found for user', { userId });
+      if (docError) {
+        logger.error('❌ [EVIDENCE MATCHING] Failed to fetch documents', { error: docError.message });
         return { matches: 0, auto_submits: 0, smart_prompts: 0, results: [] };
       }
 
-      // Build document ASIN/SKU index
+      if (!documents || documents.length === 0) {
+        logger.warn('⚠️ [EVIDENCE MATCHING] No documents found for user', { userId });
+        return { matches: 0, auto_submits: 0, smart_prompts: 0, results: [] };
+      }
+
+      logger.info('📄 [EVIDENCE MATCHING] Found documents', { userId, docCount: documents.length });
+
+      // Build document index by Order ID, ASIN, and SKU
+      const docOrderIds: Map<string, any[]> = new Map();
       const docAsins: Map<string, any[]> = new Map();
       const docSkus: Map<string, any[]> = new Map();
 
       for (const doc of documents) {
-        const meta = typeof doc.parsed_metadata === 'string'
-          ? JSON.parse(doc.parsed_metadata)
-          : doc.parsed_metadata;
+        // Get extracted data from either 'extracted' or 'parsed_metadata' column
+        let extracted = doc.extracted || doc.parsed_metadata;
+        if (typeof extracted === 'string') {
+          try {
+            extracted = JSON.parse(extracted);
+          } catch {
+            extracted = {};
+          }
+        }
+        extracted = extracted || {};
 
-        const asins = meta?.asins || [];
-        const skus = meta?.skus || [];
+        // Also try to extract order IDs from raw_text
+        const rawText = doc.raw_text || '';
+        const orderIdRegex = /\b\d{3}-\d{7}-\d{7}\b/g;
+        const rawOrderIds = rawText.match(orderIdRegex) || [];
 
+        // Combine extracted order_ids with any found in raw_text
+        const orderIds = [...new Set([
+          ...(extracted.order_ids || []),
+          ...rawOrderIds
+        ])];
+        const asins = extracted.asins || [];
+        const skus = extracted.skus || [];
+
+        // Index by order ID
+        for (const orderId of orderIds) {
+          const normalizedOrderId = orderId.trim();
+          if (!docOrderIds.has(normalizedOrderId)) docOrderIds.set(normalizedOrderId, []);
+          docOrderIds.get(normalizedOrderId)!.push(doc);
+        }
+
+        // Index by ASIN
         for (const asin of asins) {
           if (!docAsins.has(asin)) docAsins.set(asin, []);
           docAsins.get(asin)!.push(doc);
         }
 
+        // Index by SKU
         for (const sku of skus) {
           if (!docSkus.has(sku)) docSkus.set(sku, []);
           docSkus.get(sku)!.push(doc);
@@ -172,9 +206,31 @@ class EvidenceMatchingService {
 
       logger.info('📋 [EVIDENCE MATCHING] Built document index', {
         docCount: documents.length,
+        uniqueOrderIds: docOrderIds.size,
         uniqueAsins: docAsins.size,
         uniqueSkus: docSkus.size
       });
+
+      // Also fetch claims with related_event_ids from database if not provided
+      let claimsToMatch = claims;
+      if (claims.length === 0) {
+        const { data: dbClaims } = await supabaseAdmin
+          .from('detection_results')
+          .select('id, anomaly_type, estimated_value, currency, evidence, confidence_score, related_event_ids')
+          .eq('seller_id', userId);
+
+        if (dbClaims) {
+          claimsToMatch = dbClaims.map((d: any) => ({
+            claim_id: d.id,
+            claim_type: d.anomaly_type || 'unknown',
+            amount: d.estimated_value || 0,
+            confidence: d.confidence_score || 0.5,
+            currency: d.currency || 'USD',
+            evidence: d.evidence || {},
+            related_event_ids: d.related_event_ids || []
+          }));
+        }
+      }
 
       // Match claims against documents
       const results: MatchingResult[] = [];
@@ -182,28 +238,53 @@ class EvidenceMatchingService {
       let autoSubmitCount = 0;
       let smartPromptCount = 0;
 
-      for (const claim of claims) {
-        const claimAsin = claim.asin || claim.evidence?.asin;
-        const claimSku = claim.sku || claim.evidence?.sku;
+      for (const claim of claimsToMatch) {
+        const claimEvidence = typeof claim.evidence === 'string' ? JSON.parse(claim.evidence) : (claim.evidence || {});
+        const claimAsin = claim.asin || claimEvidence.asin;
+        const claimSku = claim.sku || claimEvidence.sku;
+        const claimOrderId = claim.order_id || claimEvidence.order_id;
+
+        // Get order IDs from related_event_ids (array of order IDs)
+        const relatedEventIds: string[] = (claim as any).related_event_ids || [];
 
         let matchedDocs: any[] = [];
         let matchType = '';
+        let matchedId = '';
 
-        // Try ASIN match first
-        if (claimAsin && docAsins.has(claimAsin)) {
+        // Try Order ID match first (highest priority)
+        if (claimOrderId && docOrderIds.has(claimOrderId)) {
+          matchedDocs = docOrderIds.get(claimOrderId)!;
+          matchType = 'order_id';
+          matchedId = claimOrderId;
+        }
+        // Then try related_event_ids (order IDs from claims)
+        else if (relatedEventIds.length > 0) {
+          for (const eventId of relatedEventIds) {
+            if (docOrderIds.has(eventId)) {
+              matchedDocs = docOrderIds.get(eventId)!;
+              matchType = 'order_id';
+              matchedId = eventId;
+              break;
+            }
+          }
+        }
+        // Then try ASIN match
+        else if (claimAsin && docAsins.has(claimAsin)) {
           matchedDocs = docAsins.get(claimAsin)!;
           matchType = 'asin';
+          matchedId = claimAsin;
         }
-        // Then try SKU match
+        // Finally try SKU match
         else if (claimSku && docSkus.has(claimSku)) {
           matchedDocs = docSkus.get(claimSku)!;
           matchType = 'sku';
+          matchedId = claimSku;
         }
 
         if (matchedDocs.length > 0) {
           matchCount++;
           const bestDoc = matchedDocs[0];
-          const confidence = 0.85; // High confidence for exact ASIN/SKU match
+          const confidence = matchType === 'order_id' ? 0.95 : 0.85; // Higher confidence for order ID match
 
           // Determine action based on confidence
           if (confidence >= this.autoSubmitThreshold) {
@@ -218,22 +299,24 @@ class EvidenceMatchingService {
             rule_score: confidence,
             final_confidence: confidence,
             match_type: matchType,
-            matched_fields: [matchType === 'asin' ? `asin:${claimAsin}` : `sku:${claimSku}`],
-            reasoning: `Exact ${matchType.toUpperCase()} match found in document ${bestDoc.filename}`,
+            matched_fields: [`${matchType}:${matchedId}`],
+            reasoning: `Exact ${matchType.toUpperCase().replace('_', ' ')} match found in document ${bestDoc.filename}`,
             action_taken: confidence >= this.autoSubmitThreshold ? 'auto_submit' : 'smart_prompt'
           });
 
           logger.info('✅ [EVIDENCE MATCHING] Found match', {
             claimId: claim.claim_id,
-            asin: claimAsin,
+            matchType,
+            matchedId,
             documentId: bestDoc.id,
+            filename: bestDoc.filename,
             confidence
           });
         }
       }
 
       logger.info('📊 [EVIDENCE MATCHING] Local matching complete', {
-        claims: claims.length,
+        claims: claimsToMatch.length,
         matches: matchCount,
         autoSubmits: autoSubmitCount,
         smartPrompts: smartPromptCount
@@ -247,7 +330,7 @@ class EvidenceMatchingService {
       };
 
     } catch (error: any) {
-      logger.error('❌ [EVIDENCE MATCHING] Local matching failed', { error: error.message });
+      logger.error('❌ [EVIDENCE MATCHING] Local matching failed', { error: error.message, stack: error.stack });
       return { matches: 0, auto_submits: 0, smart_prompts: 0, results: [] };
     }
   }
