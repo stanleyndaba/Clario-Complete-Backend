@@ -37,7 +37,7 @@ router.get('/', async (req: Request, res: Response) => {
     // Fetch all dispute cases
     const { data: allCases, error: allError } = await supabaseAdmin
       .from('dispute_cases')
-      .select('id, status, amount, seller_id, created_at, claim_id');
+      .select('id, status, claim_amount, seller_id, created_at, claim_id');
 
     if (allError) {
       throw allError;
@@ -59,7 +59,7 @@ router.get('/', async (req: Request, res: Response) => {
     const pendingClaims = pendingCases.length;
     const deniedClaimsCount = deniedCases.length;
 
-    const totalRecovered = approvedCases.reduce((sum, c) => sum + (c.amount || 0), 0);
+    const totalRecovered = approvedCases.reduce((sum, c) => sum + (c.claim_amount || 0), 0);
     const opsideRevenue = totalRecovered * OPSIDE_FEE_PERCENTAGE;
     const approvalRate = totalClaims > 0 ? (approvedClaims / totalClaims) * 100 : 0;
     const averageClaimValue = approvedClaims > 0 ? totalRecovered / approvedClaims : 0;
