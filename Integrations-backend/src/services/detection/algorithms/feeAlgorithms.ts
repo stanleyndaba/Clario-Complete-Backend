@@ -631,7 +631,7 @@ export function detectCommissionOvercharge(
             currency: fee.currency || 'USD',
             confidence_score: 0.80,
             evidence,
-            related_event_ids: [fee.id],
+            related_event_ids: [fee.order_id || fee.id],
             discovery_date: discoveryDate,
             deadline_date: deadline,
             days_remaining: daysRemaining,

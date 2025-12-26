@@ -275,7 +275,7 @@ export function detectCouponErrors(
                 evidence_summary: evidenceSummary,
                 event_ids: [coupon.id]
             },
-            related_event_ids: [coupon.id],
+            related_event_ids: [coupon.order_id || coupon.id],
             discovery_date: discoveryDate,
             deadline_date: deadline,
             days_remaining: daysRemaining,
@@ -437,7 +437,7 @@ export function detectSubscribeSaveErrors(
                 evidence_summary: `Subscribe & Save order ${sns.order_id} applied $${actualDiscount.toFixed(2)} discount but expected max is $${expectedDiscount.toFixed(2)}. Over-discounted by $${discrepancy.toFixed(2)}.`,
                 event_ids: [sns.id]
             },
-            related_event_ids: [sns.id],
+            related_event_ids: [sns.order_id || sns.id],
             discovery_date: discoveryDate,
             deadline_date: deadline,
             days_remaining: daysRemaining,

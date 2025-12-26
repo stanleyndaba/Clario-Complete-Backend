@@ -252,7 +252,7 @@ export function detectDefensibleChargebacks(
                                 chargeback_event_id: chargeback.id,
                                 delivery_record_id: delivery?.id
                             },
-                            related_event_ids: [chargeback.id],
+                            related_event_ids: [chargeback.order_id || chargeback.id],
                             discovery_date: discoveryDate,
                             deadline_date: recDeadline,
                             days_remaining: recDays,
@@ -369,7 +369,7 @@ export function detectDefensibleChargebacks(
             currency: chargeback.currency || 'USD',
             confidence_score: confidenceScore,
             evidence,
-            related_event_ids: [chargeback.id],
+            related_event_ids: [chargeback.order_id || chargeback.id],
             discovery_date: discoveryDate,
             deadline_date: new Date(chargeback.response_deadline || deadline),
             days_remaining: daysToRespond || daysRemaining,

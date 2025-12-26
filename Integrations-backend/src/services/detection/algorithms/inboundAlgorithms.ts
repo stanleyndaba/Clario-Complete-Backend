@@ -171,7 +171,7 @@ export function detectShipmentShortage(sellerId: string, syncId: string, data: I
                 received: item.quantity_received, shortage, days_since_closed: daysSinceClosed,
                 summary: `Shipment ${item.shipment_id}: Shipped ${item.quantity_shipped} units of ${item.sku}, received ${item.quantity_received}. ${shortage} units short. No reimbursement after ${daysSinceClosed} days.`
             },
-            related_event_ids: [item.id],
+            related_event_ids: [item.shipment_id || item.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
             shipment_id: item.shipment_id, sku: item.sku, fnsku: item.fnsku, product_name: item.product_name
         });
@@ -224,7 +224,7 @@ export function detectCarrierDamage(sellerId: string, syncId: string, data: Inbo
                 damaged_qty: damagedQty, discrepancy_reason: item.discrepancy_reason,
                 summary: `Shipment ${item.shipment_id}: ${damagedQty} units of ${item.sku} damaged in transit (${item.carrier || 'carrier'}). Reason: "${item.discrepancy_reason}". No reimbursement.`
             },
-            related_event_ids: [item.id],
+            related_event_ids: [item.shipment_id || item.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
             shipment_id: item.shipment_id, sku: item.sku, fnsku: item.fnsku, product_name: item.product_name
         });
@@ -277,7 +277,7 @@ export function detectReceivingError(sellerId: string, syncId: string, data: Inb
                 receiving_discrepancy: item.receiving_discrepancy || item.discrepancy_reason,
                 summary: `Shipment ${item.shipment_id}: Amazon receiving error on ${item.sku}. Shipped ${item.quantity_shipped}, received ${item.quantity_received}. Discrepancy: "${item.receiving_discrepancy || item.discrepancy_reason}"`
             },
-            related_event_ids: [item.id],
+            related_event_ids: [item.shipment_id || item.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
             shipment_id: item.shipment_id, sku: item.sku, fnsku: item.fnsku, product_name: item.product_name
         });
@@ -331,7 +331,7 @@ export function detectCaseBreakError(sellerId: string, syncId: string, data: Inb
                 expected_units: expectedUnits, received_units: item.quantity_received, shortage,
                 summary: `Shipment ${item.shipment_id}: Shipped ${item.cases_shipped} cases × ${item.quantity_in_case} = ${expectedUnits} units. Received ${item.quantity_received}. ${shortage} units missing (${shortage / item.quantity_in_case} cases).`
             },
-            related_event_ids: [item.id],
+            related_event_ids: [item.shipment_id || item.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
             shipment_id: item.shipment_id, sku: item.sku, fnsku: item.fnsku, product_name: item.product_name
         });
@@ -372,7 +372,7 @@ export function detectPrepFeeError(sellerId: string, syncId: string, data: Inbou
                 prep_fee_charged: item.prep_fee_charged, label_owner: item.label_owner,
                 summary: `Shipment ${item.shipment_id}: Charged $${item.prep_fee_charged.toFixed(2)} prep fee for ${item.sku} but seller completed prep (label_owner: ${item.label_owner}).`
             },
-            related_event_ids: [item.id],
+            related_event_ids: [item.shipment_id || item.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
             shipment_id: item.shipment_id, sku: item.sku, fnsku: item.fnsku, product_name: item.product_name
         });

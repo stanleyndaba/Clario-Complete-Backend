@@ -109,7 +109,7 @@ export function detectSwitcheroo(sellerId: string, syncId: string, data: FraudSy
                 quantity: ret.quantity_returned, refund_amount: ret.refund_amount,
                 summary: `SWITCHEROO FRAUD: Order ${ret.order_id}. Customer returned fake/different item instead of ${ret.sku}. Disposition: "${ret.detailed_disposition}". Value: $${value.toFixed(2)}.`
             },
-            related_event_ids: [ret.id],
+            related_event_ids: [ret.order_id || ret.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
             order_id: ret.order_id, sku: ret.sku, customer_id: ret.customer_id
         });
@@ -157,7 +157,7 @@ export function detectWrongItemReturned(sellerId: string, syncId: string, data: 
                 disposition: ret.detailed_disposition, return_reason: ret.return_reason,
                 summary: `Wrong item returned on order ${ret.order_id}. Expected ${ret.sku}, received different product. Disposition: "${ret.detailed_disposition}". No reimbursement found.`
             },
-            related_event_ids: [ret.id],
+            related_event_ids: [ret.order_id || ret.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
             order_id: ret.order_id, sku: ret.sku, customer_id: ret.customer_id
         });
@@ -252,7 +252,7 @@ export function detectEmptyBoxReturn(sellerId: string, syncId: string, data: Fra
                 weight_difference_percent: weightDiffPercent.toFixed(1),
                 summary: `EMPTY BOX: Order ${ret.order_id}. Expected weight ${ret.expected_weight}oz, received ${ret.weight_returned}oz (${weightDiffPercent.toFixed(0)}% lighter). Customer likely returned empty box.`
             },
-            related_event_ids: [ret.id],
+            related_event_ids: [ret.order_id || ret.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
             order_id: ret.order_id, sku: ret.sku, customer_id: ret.customer_id
         });

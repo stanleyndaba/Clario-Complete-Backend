@@ -300,7 +300,7 @@ export function detectRefundWithoutReturn(
             currency: refund.currency || 'USD',
             confidence_score: confidenceScore,
             evidence,
-            related_event_ids: [refund.id],
+            related_event_ids: [refund.order_id || refund.id],
             discovery_date: discoveryDate,
             deadline_date: deadline,
             days_remaining: daysRemaining,

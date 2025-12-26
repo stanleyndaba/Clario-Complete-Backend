@@ -101,7 +101,7 @@ export function detectRemovalUnfulfilled(sellerId: string, syncId: string, data:
                 requested: order.requested_quantity, shipped: 0, days_since: daysSince,
                 summary: `Removal ${order.order_id}: Requested ${order.requested_quantity} units returned, NONE shipped. Status: Completed. ${daysSince} days since request.`
             },
-            related_event_ids: [order.id],
+            related_event_ids: [order.order_id || order.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
             order_id: order.order_id, sku: order.sku, fnsku: order.fnsku, product_name: order.product_name
         });
@@ -148,7 +148,7 @@ export function detectDisposalIncomplete(sellerId: string, syncId: string, data:
                 requested: order.requested_quantity, disposed: disposedQty, missing: missingQty,
                 summary: `Disposal ${order.order_id}: Requested ${order.requested_quantity} units destroyed, only ${disposedQty} processed. ${missingQty} units unaccounted.`
             },
-            related_event_ids: [order.id],
+            related_event_ids: [order.order_id || order.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
             order_id: order.order_id, sku: order.sku, fnsku: order.fnsku, product_name: order.product_name
         });
@@ -196,7 +196,7 @@ export function detectRemovalInTransitLost(sellerId: string, syncId: string, dat
                 days_in_transit: daysSinceShip, quantity: shippedQty,
                 summary: `Removal ${order.order_id}: Shipped ${daysSinceShip} days ago (${order.carrier}, ${order.tracking_id}) but status still "${order.order_status}". ${shippedQty} units likely lost in transit.`
             },
-            related_event_ids: [order.id],
+            related_event_ids: [order.order_id || order.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
             order_id: order.order_id, sku: order.sku, fnsku: order.fnsku, product_name: order.product_name
         });
@@ -239,7 +239,7 @@ export function detectLiquidationUndervalue(sellerId: string, syncId: string, da
                 underpayment, underpay_percent: underpayPercent.toFixed(1),
                 summary: `Liquidation ${order.order_id}: Expected $${order.expected_liquidation.toFixed(2)}, received $${order.liquidation_proceeds.toFixed(2)}. Underpaid by $${underpayment.toFixed(2)} (${underpayPercent.toFixed(1)}%).`
             },
-            related_event_ids: [order.id],
+            related_event_ids: [order.order_id || order.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
             order_id: order.order_id, sku: order.sku, fnsku: order.fnsku, product_name: order.product_name
         });
@@ -288,7 +288,7 @@ export function detectRemovalFeeOvercharge(sellerId: string, syncId: string, dat
                 quantity: qty, charged: order.removal_fee, expected: expectedFee, overcharge,
                 summary: `Removal ${order.order_id}: Charged $${order.removal_fee.toFixed(2)} for ${qty} units, expected $${expectedFee.toFixed(2)}. Overcharged $${overcharge.toFixed(2)}.`
             },
-            related_event_ids: [order.id],
+            related_event_ids: [order.order_id || order.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
             order_id: order.order_id, sku: order.sku, fnsku: order.fnsku, product_name: order.product_name
         });
