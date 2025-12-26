@@ -4,7 +4,7 @@ import { supabaseAdmin } from '../database/supabaseClient';
 const router = Router();
 
 // Opside fee percentage (configurable)
-const OPSIDE_FEE_PERCENTAGE = 0.25; // 25%
+const OPSIDE_FEE_PERCENTAGE = 0.20; // 20%
 
 interface RevenueMetrics {
   totalRecovered: number;
@@ -24,6 +24,12 @@ interface RevenueMetrics {
     claims: number;
     approvedClaims: number;
   };
+  // Investor metrics
+  mrrGrowth: number; // Month-over-month growth %
+  currentMrr: number;
+  previousMrr: number;
+  activeCustomers: number;
+  avgRevenuePerCustomer: number;
 }
 
 /**
@@ -72,7 +78,7 @@ router.get('/', async (req: Request, res: Response) => {
       const existing = monthlyMap.get(month) || { claims: 0, recovered: 0 };
       existing.claims++;
       if (approvedStatuses.includes((c.status || '').toLowerCase())) {
-        existing.recovered += c.amount || 0;
+        existing.recovered += c.claim_amount || 0;
       }
       monthlyMap.set(month, existing);
     }
@@ -86,6 +92,16 @@ router.get('/', async (req: Request, res: Response) => {
       .sort((a, b) => b.month.localeCompare(a.month))
       .slice(0, 12);
 
+    // Calculate MRR growth (compare current month to previous month)
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const previousMonthStr = `${prevMonth.getFullYear()}-${String(prevMonth.getMonth() + 1).padStart(2, '0')}`;
+
+    const currentMrr = revenueByMonth.find(m => m.month === currentMonth)?.revenue || 0;
+    const previousMrr = revenueByMonth.find(m => m.month === previousMonthStr)?.revenue || 0;
+    const mrrGrowth = previousMrr > 0 ? ((currentMrr - previousMrr) / previousMrr) * 100 : 0;
+
     // Calculate revenue by customer
     const customerMap = new Map<string, { claims: number; recovered: number }>();
     for (const c of cases) {
@@ -93,10 +109,14 @@ router.get('/', async (req: Request, res: Response) => {
       const existing = customerMap.get(c.seller_id) || { claims: 0, recovered: 0 };
       existing.claims++;
       if (approvedStatuses.includes((c.status || '').toLowerCase())) {
-        existing.recovered += c.amount || 0;
+        existing.recovered += c.claim_amount || 0;
       }
       customerMap.set(c.seller_id, existing);
     }
+
+    const activeCustomers = customerMap.size;
+    const avgRevenuePerCustomer = activeCustomers > 0 ? opsideRevenue / activeCustomers : 0;
+
     const revenueByCustomer = Array.from(customerMap.entries())
       .map(([seller_id, data]) => ({
         seller_id,
@@ -112,7 +132,7 @@ router.get('/', async (req: Request, res: Response) => {
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     const last30Cases = cases.filter(c => c.created_at && new Date(c.created_at) >= thirtyDaysAgo);
     const last30Approved = last30Cases.filter(c => approvedStatuses.includes((c.status || '').toLowerCase()));
-    const last30Recovered = last30Approved.reduce((sum, c) => sum + (c.amount || 0), 0);
+    const last30Recovered = last30Approved.reduce((sum, c) => sum + (c.claim_amount || 0), 0);
 
     const metrics: RevenueMetrics = {
       totalRecovered,
@@ -125,20 +145,28 @@ router.get('/', async (req: Request, res: Response) => {
       averageClaimValue,
       revenueByMonth,
       revenueByCustomer,
-      revenueByClaimType: [], // Would need to join with detection_results
+      revenueByClaimType: [],
       last30Days: {
         revenue: last30Recovered * OPSIDE_FEE_PERCENTAGE,
         recovered: last30Recovered,
         claims: last30Cases.length,
         approvedClaims: last30Approved.length
-      }
+      },
+      // Investor metrics
+      mrrGrowth,
+      currentMrr,
+      previousMrr,
+      activeCustomers,
+      avgRevenuePerCustomer
     };
 
     console.log('[AdminRevenue] Metrics calculated:', {
       totalRecovered,
       opsideRevenue,
       totalClaims,
-      approvedClaims
+      approvedClaims,
+      mrrGrowth,
+      activeCustomers
     });
 
     res.json({
