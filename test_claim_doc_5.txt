@@ -1,0 +1,10 @@
+Amazon Invoice
+Date: December 26, 2024
+Order ID: 112-5337136-0931119
+
+This is a test invoice document for Amazon order 112-5337136-0931119.
+Amount: $300.00
+SKU: TEST-SKU-005
+ASIN: B0TEST00005
+
+Thank you for your purchase.

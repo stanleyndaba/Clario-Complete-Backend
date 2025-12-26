@@ -1,0 +1,10 @@
+Amazon Invoice
+Date: December 26, 2024
+Order ID: 112-8624972-785835
+
+This is a test invoice document for Amazon order 112-8624972-785835.
+Amount: $200.00
+SKU: TEST-SKU-003
+ASIN: B0TEST00003
+
+Thank you for your purchase.
