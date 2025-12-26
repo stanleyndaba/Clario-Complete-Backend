@@ -37,7 +37,7 @@ router.get('/', async (req: Request, res: Response) => {
     // Fetch all dispute cases
     const { data: allCases, error: allError } = await supabaseAdmin
       .from('dispute_cases')
-      .select('id, status, claim_amount, seller_id, created_at, claim_id');
+      .select('id, status, claim_amount, seller_id, created_at');
 
     if (allError) {
       throw allError;
