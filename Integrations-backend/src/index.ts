@@ -350,6 +350,11 @@ logger.info('Timeline routes registered at /api/claims');
 app.use('/api/invites', inviteRoutes);
 logger.info('Invite routes registered at /api/invites');
 
+// Admin revenue routes (internal metrics)
+import adminRevenueRoutes from './routes/adminRevenueRoutes';
+app.use('/api/admin/revenue', adminRevenueRoutes);
+logger.info('Admin revenue routes registered at /api/admin/revenue');
+
 import adminRoutes from './routes/adminRoutes';
 app.use('/api/admin', adminRoutes);
 logger.info('Admin routes registered at /api/admin');
