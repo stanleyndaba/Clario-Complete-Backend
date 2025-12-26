@@ -407,11 +407,15 @@ class DocumentParsingService {
         throw new Error(`Document not found: ${documentId}`);
       }
 
-      // Only parse PDFs locally
-      if (!doc.content_type?.includes('pdf')) {
-        logger.info('⏭️ [DOCUMENT PARSING] Not a PDF, skipping local parsing', {
+      // Check if document is parsable (PDF or TXT)
+      const isPdf = doc.content_type?.includes('pdf') || doc.filename?.toLowerCase().endsWith('.pdf');
+      const isTxt = doc.content_type?.includes('text') || doc.filename?.toLowerCase().endsWith('.txt');
+
+      if (!isPdf && !isTxt) {
+        logger.info('⏭️ [DOCUMENT PARSING] Not a parsable format (PDF/TXT), skipping local parsing', {
           documentId,
-          contentType: doc.content_type
+          contentType: doc.content_type,
+          filename: doc.filename
         });
         return null;
       }
@@ -423,7 +427,7 @@ class DocumentParsingService {
         return null;
       }
 
-      // Download PDF from Supabase Storage
+      // Download file from Supabase Storage
       const { data: fileData, error: downloadError } = await client
         .storage
         .from('evidence-documents')
@@ -436,24 +440,37 @@ class DocumentParsingService {
       // Convert to Buffer
       const buffer = Buffer.from(await fileData.arrayBuffer());
 
-      // Use pdfExtractor
-      const pdfExtractor = (await import('../utils/pdfExtractor')).default;
-      const extractionResult = await pdfExtractor.extractTextFromPdf(buffer);
+      let rawText: string;
 
-      if (!extractionResult.success || !extractionResult.text) {
-        throw new Error('PDF extraction failed');
+      if (isTxt) {
+        // For text files, just read the content directly
+        rawText = buffer.toString('utf8');
+        logger.info('📄 [DOCUMENT PARSING] Extracted text from TXT file', {
+          documentId,
+          textLength: rawText.length
+        });
+      } else {
+        // Use pdfExtractor for PDFs
+        const pdfExtractor = (await import('../utils/pdfExtractor')).default;
+        const extractionResult = await pdfExtractor.extractTextFromPdf(buffer);
+
+        if (!extractionResult.success || !extractionResult.text) {
+          throw new Error('PDF extraction failed');
+        }
+        rawText = extractionResult.text;
       }
 
-      // Extract key fields
-      const keyFields = pdfExtractor.extractKeyFieldsFromText(extractionResult.text);
+      // Extract key fields using regex patterns
+      const pdfExtractor = (await import('../utils/pdfExtractor')).default;
+      const keyFields = pdfExtractor.extractKeyFieldsFromText(rawText);
 
       // Build parsed data including extracted arrays for frontend
       const parsedData: ParsedDocumentData = {
-        raw_text: extractionResult.text.substring(0, 5000), // Limit stored text
+        raw_text: rawText.substring(0, 5000), // Limit stored text
         extraction_method: 'regex',
         confidence_score: 0.85, // Local extraction confidence
         // Supplier info (try to extract from text)
-        supplier_name: this.extractSupplierName(extractionResult.text),
+        supplier_name: this.extractSupplierName(rawText),
         invoice_number: keyFields.invoiceNumbers[0] || undefined,
         invoice_date: keyFields.dates[0] || undefined,
         total_amount: keyFields.amounts[0] ? parseFloat(keyFields.amounts[0].replace(/[^0-9.]/g, '')) : undefined,

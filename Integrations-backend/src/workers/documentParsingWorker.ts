@@ -232,19 +232,20 @@ export class DocumentParsingWorker {
         return [];
       }
 
-      // Additional filter: only return PDFs (double-check in case DB filter didn't work)
-      const pdfDocs = (documents || []).filter((doc: any) => {
+      // Additional filter: only return PDFs and TXT files (double-check in case DB filter didn't work)
+      const parsableDocs = (documents || []).filter((doc: any) => {
         const contentType = doc.content_type?.toLowerCase() || '';
         const filename = doc.filename?.toLowerCase() || '';
-        return contentType.includes('pdf') || filename.endsWith('.pdf');
+        return contentType.includes('pdf') || filename.endsWith('.pdf') ||
+          contentType.includes('text') || filename.endsWith('.txt');
       });
 
-      logger.info(`📄 [DOCUMENT PARSING WORKER] Found ${pdfDocs.length} PDF documents to parse (out of ${documents?.length || 0} total pending)`, {
+      logger.info(`📄 [DOCUMENT PARSING WORKER] Found ${parsableDocs.length} documents to parse (out of ${documents?.length || 0} total pending)`, {
         totalPending: documents?.length || 0,
-        pdfCount: pdfDocs.length
+        parsableCount: parsableDocs.length
       });
 
-      return pdfDocs.map((doc: any) => ({
+      return parsableDocs.map((doc: any) => ({
         id: doc.id,
         seller_id: doc.seller_id,
         filename: doc.filename,
