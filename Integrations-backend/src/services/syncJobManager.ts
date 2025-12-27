@@ -90,9 +90,9 @@ class SyncJobManager {
       }
     }
 
-    // 🧹 AUTO-CLEANUP: Clear stale syncs stuck in 'running' for 10+ minutes
+    // 🧹 AUTO-CLEANUP: Clear stale syncs stuck in 'running' for 2+ minutes
     // This prevents orphaned syncs from blocking new sync requests
-    const STALE_SYNC_THRESHOLD_MINUTES = 10;
+    const STALE_SYNC_THRESHOLD_MINUTES = 2;
     try {
       const { data: staleSyncs, error: staleError } = await supabase
         .from('sync_progress')
