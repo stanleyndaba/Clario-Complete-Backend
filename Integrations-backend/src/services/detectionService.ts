@@ -1346,6 +1346,9 @@ export class DetectionService {
     // Calculate 60-day deadline
     const { deadlineDate, daysRemaining } = this.calculateDeadline(discoveryDate);
 
+    // Build comprehensive details string for frontend display
+    const details = `${anomalyType.replace(/_/g, '_')} detected with ${Math.round((detectedClaim.probability || detectedClaim.confidence || 0.5) * 100)}% confidence`;
+
     return {
       seller_id: sellerId,
       sync_id: syncId,
@@ -1355,9 +1358,38 @@ export class DetectionService {
       currency: detectedClaim.currency || 'USD',
       confidence_score: detectedClaim.probability || detectedClaim.confidence || 0.5,
       evidence: {
+        // Core identifiers
         claim_id: detectedClaim.claim_id,
         order_id: detectedClaim.order_id,
+        amazon_order_id: detectedClaim.order_id,
         category: detectedClaim.category,
+        subcategory: detectedClaim.subcategory,
+        reason_code: detectedClaim.reason_code,
+
+        // Product identifiers - CRITICAL FOR FRONTEND DISPLAY
+        asin: detectedClaim.evidence?.asin || detectedClaim.asin || null,
+        sku: detectedClaim.evidence?.sku || detectedClaim.sku || null,
+        fnsku: detectedClaim.evidence?.fnsku || detectedClaim.fnsku || null,
+
+        // Quantity and value
+        quantity: detectedClaim.quantity || detectedClaim.evidence?.quantity || 1,
+        amount: detectedClaim.amount || 0,
+        order_value: detectedClaim.order_value || detectedClaim.amount || 0,
+
+        // Location
+        fulfillment_center: detectedClaim.fulfillment_center || detectedClaim.evidence?.fulfillment_center || null,
+        marketplace: detectedClaim.marketplace || 'US',
+
+        // Human-readable
+        description: detectedClaim.description || details,
+        reason: detectedClaim.reason || `Automated detection: ${anomalyType}`,
+        notes: detectedClaim.notes || '',
+
+        // Dates
+        claim_date: detectedClaim.claim_date,
+        event_date: detectedClaim.evidence?.event_date,
+
+        // Spread any additional evidence fields
         ...detectedClaim.evidence
       },
       related_event_ids: [detectedClaim.order_id],
@@ -1367,6 +1399,7 @@ export class DetectionService {
     };
   }
 
+
   /**
    * Create basic detection result from financial event (fallback when API fails)
    */
@@ -1375,17 +1408,45 @@ export class DetectionService {
     const discoveryDate = event.event_date ? new Date(event.event_date) : new Date();
     const { deadlineDate, daysRemaining } = this.calculateDeadline(discoveryDate);
 
+    const anomalyType = event.event_type === 'fee' ? 'incorrect_fee' : 'missing_unit';
+    const details = `${anomalyType} detected with 65% confidence`;
+
     return {
       seller_id: sellerId,
       sync_id: syncId,
-      anomaly_type: event.event_type === 'fee' ? 'incorrect_fee' : 'missing_unit',
+      anomaly_type: anomalyType,
       severity: 'medium',
       estimated_value: Math.abs(event.amount || 0),
       currency: event.currency || 'USD',
       confidence_score: 0.65, // Default medium confidence
       evidence: {
+        // Core identifiers
         event_id: event.id,
         event_type: event.event_type,
+        order_id: event.amazon_order_id || event.event_id,
+        amazon_order_id: event.amazon_order_id,
+
+        // Product identifiers - CRITICAL FOR FRONTEND DISPLAY
+        asin: event.raw_payload?.ASIN || event.amazon_asin || null,
+        sku: event.amazon_sku || event.raw_payload?.SellerSKU || null,
+        fnsku: event.raw_payload?.fnSku || null,
+
+        // Quantity and value
+        quantity: event.raw_payload?.Quantity || 1,
+        amount: Math.abs(event.amount || 0),
+
+        // Location
+        fulfillment_center: event.raw_payload?.FulfillmentCenterId || null,
+        marketplace: event.raw_payload?.Marketplace || 'US',
+
+        // Human-readable
+        description: event.description || details,
+        reason: `Automated detection from ${event.event_type} event`,
+
+        // Dates
+        event_date: event.event_date,
+
+        // Spread raw payload
         ...event.raw_payload
       },
       related_event_ids: [event.amazon_event_id || event.id],
@@ -1394,6 +1455,7 @@ export class DetectionService {
       days_remaining: daysRemaining
     };
   }
+
 
   /**
    * Store detection results in database
