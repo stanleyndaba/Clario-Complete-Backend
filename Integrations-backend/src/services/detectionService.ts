@@ -984,6 +984,15 @@ export class DetectionService {
         const eventDate = event.event_date ? new Date(event.event_date) : new Date();
         const daysSinceOrder = Math.floor((Date.now() - eventDate.getTime()) / (1000 * 60 * 60 * 24));
 
+        // Extract product identifiers from event and raw_payload
+        const rawPayload = event.raw_payload || {};
+        const sku = event.amazon_sku || rawPayload.SellerSKU || rawPayload.sellerSku || null;
+        const asin = rawPayload.ASIN || rawPayload.asin || null;
+        const fnsku = rawPayload.fnSku || rawPayload.FNSKU || null;
+        const quantity = rawPayload.Quantity || rawPayload.quantity || 1;
+        const fulfillmentCenter = rawPayload.FulfillmentCenterId || rawPayload.fulfillmentCenter || event.fulfillment_center || 'UNKNOWN';
+        const marketplace = rawPayload.Marketplace || event.marketplace || 'US';
+
         claims.push({
           claim_id: `claim_${event.id}_${Date.now()}`,
           seller_id: event.seller_id,
@@ -991,10 +1000,10 @@ export class DetectionService {
           category: 'fee_error',
           subcategory: event.event_type,
           reason_code: 'INCORRECT_FEE',
-          marketplace: event.marketplace || 'US',
-          fulfillment_center: event.fulfillment_center || 'UNKNOWN',
+          marketplace: marketplace,
+          fulfillment_center: fulfillmentCenter,
           amount: Math.abs(event.amount || 0),
-          quantity: 1,
+          quantity: quantity,
           order_value: Math.abs(event.amount || 0),
           shipping_cost: 0,
           days_since_order: daysSinceOrder,
@@ -1004,15 +1013,27 @@ export class DetectionService {
           notes: event.description || event.notes || '',
           claim_date: eventDate.toISOString(),
           currency: event.currency || 'USD',
+          // NEW: Include product identifiers at top level for mapClaimToDetectionResult
+          sku: sku,
+          asin: asin,
+          fnsku: fnsku,
           evidence: {
             event_id: event.id,
             event_type: event.event_type,
-            raw_payload: event.raw_payload || {},
+            // Include product identifiers in evidence as well
+            sku: sku,
+            asin: asin,
+            fnsku: fnsku,
+            quantity: quantity,
+            fulfillment_center: fulfillmentCenter,
+            marketplace: marketplace,
+            raw_payload: rawPayload,
             event_date: event.event_date
           }
         });
       }
     }
+
 
     // Process inventory discrepancies as lost/damaged inventory claims
     for (const item of inventoryDiscrepancies) {
@@ -1043,10 +1064,17 @@ export class DetectionService {
           notes: item.notes || '',
           claim_date: discoveryDate.toISOString(),
           currency: item.currency || 'USD',
+          // NEW: Include product identifiers at top level
+          sku: item.sku,
+          asin: item.asin,
+          fnsku: item.fnsku || null,
           evidence: {
             item_id: item.id,
             sku: item.sku,
             asin: item.asin,
+            fnsku: item.fnsku || null,
+            quantity: damagedQty,
+            fulfillment_center: item.dimensions?.location || item.fulfillment_center || 'UNKNOWN',
             dimensions: item.dimensions || {},
             quantity_available: item.quantity_available,
             quantity_reserved: item.quantity_reserved,
@@ -1083,10 +1111,17 @@ export class DetectionService {
           notes: item.notes || '',
           claim_date: discoveryDate.toISOString(),
           currency: item.currency || 'USD',
+          // NEW: Include product identifiers at top level
+          sku: item.sku,
+          asin: item.asin,
+          fnsku: item.fnsku || null,
           evidence: {
             item_id: item.id,
             sku: item.sku,
             asin: item.asin,
+            fnsku: item.fnsku || null,
+            quantity: missingQty,
+            fulfillment_center: item.dimensions?.location || item.fulfillment_center || 'UNKNOWN',
             quantity_available: item.quantity_available,
             quantity_reserved: item.quantity_reserved,
             price: item.price,
