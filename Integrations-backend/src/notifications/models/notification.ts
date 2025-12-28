@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { supabase, supabaseAdmin } from '../../database/supabaseClient';
 import { getLogger } from '../../utils/logger';
 
 const logger = getLogger('NotificationModel');
@@ -127,9 +128,8 @@ export class Notification {
   static async create(data: CreateNotificationRequest): Promise<Notification> {
     try {
       // Use admin client to bypass RLS (backend services need to create notifications)
-      const { supabaseAdmin } = await import('../../database/supabaseClient');
-      const supabase = supabaseAdmin || getSupabaseClient();
-      
+      const client = supabaseAdmin || supabase;
+
       const notificationData = {
         ...data,
         status: NotificationStatus.PENDING,
@@ -164,10 +164,9 @@ export class Notification {
   static async findById(id: string): Promise<Notification | null> {
     try {
       // Use admin client to bypass RLS (backend services need to read notifications)
-      const { supabaseAdmin } = await import('../../database/supabaseClient');
-      const supabase = supabaseAdmin || getSupabaseClient();
-      
-      const { data, error } = await supabase
+      const client = supabaseAdmin || supabase;
+
+      const { data, error } = await client
         .from('notifications')
         .select('*')
         .eq('id', id)
@@ -194,9 +193,8 @@ export class Notification {
   static async findMany(filters: NotificationFilters): Promise<Notification[]> {
     try {
       // Use admin client to bypass RLS (backend services need to read notifications)
-      const { supabaseAdmin } = await import('../../database/supabaseClient');
-      const supabase = supabaseAdmin || getSupabaseClient();
-      let query = supabase.from('notifications').select('*');
+      const client = supabaseAdmin || supabase;
+      let query = client.from('notifications').select('*');
 
       // Apply filters
       if (filters.user_id) {
@@ -249,15 +247,14 @@ export class Notification {
   async update(updates: UpdateNotificationRequest): Promise<Notification> {
     try {
       // Use admin client to bypass RLS (backend services need to update notifications)
-      const { supabaseAdmin } = await import('../../database/supabaseClient');
-      const supabase = supabaseAdmin || getSupabaseClient();
-      
+      const client = supabaseAdmin || supabase;
+
       const updateData = {
         ...updates,
         updated_at: new Date().toISOString()
       };
 
-      const { data, error } = await supabase
+      const { data, error } = await client
         .from('notifications')
         .update(updateData)
         .eq('id', this.id)
@@ -271,7 +268,7 @@ export class Notification {
 
       // Update local instance
       Object.assign(this, data);
-      
+
       logger.info('Notification updated successfully', { id: this.id, status: this.status });
       return this;
     } catch (error) {
@@ -315,10 +312,9 @@ export class Notification {
   async delete(): Promise<void> {
     try {
       // Use admin client to bypass RLS (backend services need to delete notifications)
-      const { supabaseAdmin } = await import('../../database/supabaseClient');
-      const supabase = supabaseAdmin || getSupabaseClient();
-      
-      const { error } = await supabase
+      const client = supabaseAdmin || supabase;
+
+      const { error } = await client
         .from('notifications')
         .delete()
         .eq('id', this.id);
@@ -358,19 +354,41 @@ export class Notification {
     const created = new Date(this.created_at);
     return Math.floor((now.getTime() - created.getTime()) / (1000 * 60));
   }
+
+  /**
+   * Mark all notifications as read for a user
+   */
+  static async markAllAsRead(userId: string): Promise<number> {
+    try {
+      // Use admin client to bypass RLS (backend services need to update notifications)
+      const client = supabaseAdmin || supabase;
+
+      const { data, error, count } = await client
+        .from('notifications')
+        .update({
+          status: NotificationStatus.READ,
+          read_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq('user_id', userId)
+        .eq('status', NotificationStatus.PENDING)
+        .select('id', { count: 'exact' });
+
+      if (error) {
+        logger.error('Error marking all notifications as read:', error);
+        throw new Error(`Failed to mark all notifications as read: ${error.message}`);
+      }
+
+      logger.info('Marked all notifications as read', { userId, count: count || 0 });
+      return count || 0;
+    } catch (error) {
+      logger.error('Error in Notification.markAllAsRead:', error);
+      throw error;
+    }
+  }
 }
 
-// Helper function to get Supabase client
-function getSupabaseClient(): SupabaseClient {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-  
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('SUPABASE_URL and SUPABASE_ANON_KEY environment variables are required');
-  }
-  
-  return createClient(supabaseUrl, supabaseKey);
-}
+
 
 export default Notification;
 

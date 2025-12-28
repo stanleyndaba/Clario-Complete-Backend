@@ -238,6 +238,41 @@ router.post('/mark-read', notificationController.markAsRead.bind(notificationCon
 
 /**
  * @swagger
+ * /notifications/mark-all-read:
+ *   post:
+ *     summary: Mark all notifications as read for the authenticated user
+ *     tags: [Notifications]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: All notifications marked as read successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 meta:
+ *                   type: object
+ *                   properties:
+ *                     count:
+ *                       type: integer
+ *                     timestamp:
+ *                       type: string
+ *                       format: date-time
+ *       401:
+ *         description: User not authenticated
+ *       500:
+ *         description: Internal server error
+ */
+router.post('/mark-all-read', notificationController.markAllAsRead.bind(notificationController));
+
+/**
+ * @swagger
  * /notifications:
  *   post:
  *     summary: Create a new notification manually

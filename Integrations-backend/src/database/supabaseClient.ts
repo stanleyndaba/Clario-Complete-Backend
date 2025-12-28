@@ -123,6 +123,7 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
           const rows = Array.isArray(pendingInsert) ? pendingInsert : [pendingInsert];
           const now = new Date().toISOString();
           const rowsWithMeta = rows.map(r => ({
+            id: r.id || require('crypto').randomUUID(),
             created_at: now,
             updated_at: now,
             ...r

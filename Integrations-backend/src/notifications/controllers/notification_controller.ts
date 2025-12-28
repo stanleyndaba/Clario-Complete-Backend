@@ -92,7 +92,7 @@ export class NotificationController {
       }
 
       const notification = await notificationService.getNotificationById(id);
-      
+
       if (!notification) {
         res.status(404).json({ error: 'Notification not found' });
         return;
@@ -164,6 +164,37 @@ export class NotificationController {
   }
 
   /**
+   * Mark all notifications as read (bulk)
+   * POST /notifications/mark-all-read
+   */
+  async markAllAsRead(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const userId = req.user?.id;
+      if (!userId) {
+        res.status(401).json({ error: 'User not authenticated' });
+        return;
+      }
+
+      const count = await notificationService.markAllAsRead(userId);
+
+      res.json({
+        success: true,
+        message: `Marked ${count} notifications as read`,
+        meta: {
+          count,
+          timestamp: new Date().toISOString()
+        }
+      });
+    } catch (error) {
+      logger.error('Error marking all notifications as read:', error);
+      res.status(500).json({
+        error: 'Failed to mark all notifications as read',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  /**
    * Create a new notification manually
    * POST /notifications
    */
@@ -188,7 +219,7 @@ export class NotificationController {
 
       // Validate required fields
       if (!type || !title || !message) {
-        res.status(400).json({ 
+        res.status(400).json({
           error: 'Missing required fields',
           required: ['type', 'title', 'message']
         });
@@ -197,7 +228,7 @@ export class NotificationController {
 
       // Validate notification type
       if (!Object.values(NotificationType).includes(type)) {
-        res.status(400).json({ 
+        res.status(400).json({
           error: 'Invalid notification type',
           validTypes: Object.values(NotificationType)
         });

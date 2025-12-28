@@ -225,6 +225,21 @@ export class NotificationService {
   }
 
   /**
+   * Mark all notifications as read for a user
+   */
+  async markAllAsRead(userId: string): Promise<number> {
+    try {
+      logger.info('Marking all notifications as read', { userId });
+      const count = await Notification.markAllAsRead(userId);
+      logger.info('All notifications marked as read successfully', { userId, count });
+      return count;
+    } catch (error) {
+      logger.error('Error marking all notifications as read:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Update notification
    */
   async updateNotification(id: string, updates: UpdateNotificationRequest): Promise<Notification> {
