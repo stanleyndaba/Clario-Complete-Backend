@@ -5,7 +5,8 @@ import {
   getSyncStatus,
   getSyncHistory,
   cancelSync,
-  forceSync
+  forceSync,
+  forceClearSync
 } from '../controllers/syncController';
 
 const router = Router();
@@ -29,5 +30,8 @@ router.post('/cancel/:syncId', cancelSync);
 
 // POST /api/sync/force - Force sync (alias for startSync)
 router.post('/force', forceSync);
+
+// POST /api/sync/force-clear - Force clear stuck syncs
+router.post('/force-clear', forceClearSync);
 
 export default router;

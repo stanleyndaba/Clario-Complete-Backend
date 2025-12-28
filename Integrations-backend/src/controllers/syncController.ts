@@ -10,7 +10,7 @@ export const startSync = async (req: Request, res: Response) => {
   try {
     // Extract user ID from middleware (set by userIdMiddleware)
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    
+
     if (!userId) {
       logger.warn('Start sync called without user ID');
       return res.status(401).json({
@@ -31,7 +31,7 @@ export const startSync = async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     logger.error('Sync start error:', error);
-    
+
     if (error.message.includes('not found') || error.message.includes('not connected')) {
       return res.status(400).json({
         success: false,
@@ -78,10 +78,10 @@ export const getActiveSyncStatus = async (req: Request, res: Response) => {
 
     // In sandbox mode, default to 'demo-user' to query actual generated data
     if (!userId) {
-      const isSandbox = process.env.NODE_ENV !== 'production' || 
-                        process.env.AMAZON_SANDBOX_MODE === 'true' ||
-                        process.env.USE_MOCK_DATA === 'true';
-      
+      const isSandbox = process.env.NODE_ENV !== 'production' ||
+        process.env.AMAZON_SANDBOX_MODE === 'true' ||
+        process.env.USE_MOCK_DATA === 'true';
+
       if (isSandbox) {
         userId = 'demo-user';
         logger.info('ℹ️ [SYNC STATUS] Using demo-user in sandbox mode', { path: req.path });
@@ -219,7 +219,7 @@ export const getSyncHistory = async (req: Request, res: Response) => {
         settlementsCount: sync.settlementsCount,
         feesCount: sync.feesCount,
         claimsDetected: sync.claimsDetected,
-        duration: sync.completedAt && sync.startedAt 
+        duration: sync.completedAt && sync.startedAt
           ? Math.round((new Date(sync.completedAt).getTime() - new Date(sync.startedAt).getTime()) / 1000)
           : undefined,
         error: sync.error
@@ -294,11 +294,52 @@ export const forceSync = async (req: Request, res: Response) => {
   return startSync(req, res);
 };
 
+/**
+ * Force clear stuck syncs for a user
+ * POST /api/sync/force-clear
+ * 
+ * Use when "Sync already in progress" error occurs but no sync is running.
+ * Clears all 'running' syncs for the user so they can start a new one.
+ */
+export const forceClearSync = async (req: Request, res: Response) => {
+  try {
+    // Extract user ID from middleware
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    logger.info(`Force-clearing stuck syncs for user: ${userId}`);
+
+    const clearedCount = await syncJobManager.forceClearSyncs(userId);
+
+    res.json({
+      success: true,
+      message: clearedCount > 0
+        ? `Cleared ${clearedCount} stuck sync(s). You can now start a new sync.`
+        : 'No stuck syncs found.',
+      clearedCount
+    });
+  } catch (error: any) {
+    logger.error('Force clear sync error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to clear stuck syncs',
+      message: error.message
+    });
+  }
+};
+
 export default {
   startSync,
   getActiveSyncStatus,
   getSyncStatus,
   getSyncHistory,
   cancelSync,
-  forceSync
+  forceSync,
+  forceClearSync
 };

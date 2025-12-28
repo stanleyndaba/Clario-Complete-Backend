@@ -1820,6 +1820,61 @@ class SyncJobManager {
       };
     }
   }
+
+  /**
+   * Force-clear all stuck syncs for a user
+   * Used when user gets "Sync already in progress" but no sync is actually running
+   */
+  async forceClearSyncs(userId: string): Promise<number> {
+    logger.info(`🔓 [SYNC JOB MANAGER] Force-clearing stuck syncs for user: ${userId}`);
+
+    try {
+      // Find all running syncs for this user
+      const { data: runningSyncs, error: findError } = await supabase
+        .from('sync_progress')
+        .select('sync_id')
+        .eq('user_id', userId)
+        .eq('status', 'running');
+
+      if (findError) {
+        logger.error('Failed to find running syncs:', findError);
+        throw new Error(`Failed to find running syncs: ${findError.message}`);
+      }
+
+      if (!runningSyncs || runningSyncs.length === 0) {
+        logger.info('No stuck syncs found');
+        return 0;
+      }
+
+      // Clear all running syncs
+      const { error: updateError } = await supabase
+        .from('sync_progress')
+        .update({
+          status: 'failed',
+          current_step: 'Force-cleared by user',
+          error_code: 'USER_CLEARED',
+          updated_at: new Date().toISOString()
+        })
+        .eq('user_id', userId)
+        .eq('status', 'running');
+
+      if (updateError) {
+        logger.error('Failed to clear syncs:', updateError);
+        throw new Error(`Failed to clear syncs: ${updateError.message}`);
+      }
+
+      // Also clear from in-memory cache
+      for (const sync of runningSyncs) {
+        this.runningJobs.delete(sync.sync_id);
+      }
+
+      logger.info(`✅ [SYNC JOB MANAGER] Cleared ${runningSyncs.length} stuck sync(s) for user: ${userId}`);
+      return runningSyncs.length;
+    } catch (error: any) {
+      logger.error('Force-clear syncs failed:', error);
+      throw error;
+    }
+  }
 }
 
 export const syncJobManager = new SyncJobManager();
