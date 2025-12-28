@@ -67,6 +67,9 @@ router.get('/:id', async (req: Request, res: Response) => {
                 filing_status: disputeCase.filing_status,
                 case_number: disputeCase.case_number,
                 documents,
+                // Add fields for detailed view
+                claim_number: disputeCase.claim_id || disputeCase.case_number,
+                evidence: disputeCase.evidence || {},
             });
         }
 
@@ -102,6 +105,9 @@ router.get('/:id', async (req: Request, res: Response) => {
                 currency: detectionResult.currency || 'USD',
                 confidence_score: detectionResult.confidence_score,
                 documents,
+                // Add fields for detailed view
+                claim_number: detectionResult.claim_number,
+                evidence: detectionResult.evidence || {},
             });
         }
 
