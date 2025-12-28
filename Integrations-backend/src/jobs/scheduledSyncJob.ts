@@ -13,10 +13,10 @@ import logger from '../utils/logger';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import agent2DataSyncService from '../services/agent2DataSyncService';
 
-// Default sync interval (every 6 hours)
-const SYNC_INTERVAL_HOURS = parseInt(process.env.AUTO_SYNC_INTERVAL_HOURS || '6', 10);
+// Default sync interval (every 1 hour)
+const SYNC_INTERVAL_HOURS = parseInt(process.env.AUTO_SYNC_INTERVAL_HOURS || '1', 10);
 // Minimum hours since last sync before triggering auto-sync
-const MIN_HOURS_BETWEEN_SYNCS = parseInt(process.env.MIN_HOURS_BETWEEN_SYNCS || '4', 10);
+const MIN_HOURS_BETWEEN_SYNCS = parseInt(process.env.MIN_HOURS_BETWEEN_SYNCS || '1', 10);
 
 interface UserSyncInfo {
     userId: string;
