@@ -10,12 +10,16 @@ import { NotificationType, NotificationPriority, NotificationChannel } from '../
 import websocketService from './websocketService';
 
 export interface ClaimDetectedData {
-  claimId: string;
-  amount: number;
+  claimId?: string;
+  amount?: number;
+  count?: number;        // For bulk detections
+  totalValue?: number;   // For bulk detections
   currency?: string;
   confidence?: number;
   orderId?: string;
   sku?: string;
+  source?: string;
+  syncId?: string;
 }
 
 export interface EvidenceFoundData {
@@ -60,26 +64,43 @@ class NotificationHelper {
    */
   async notifyClaimDetected(userId: string, data: ClaimDetectedData): Promise<void> {
     try {
+      const isBulk = data.count && data.count > 1;
+      const amount = data.totalValue || data.amount || 0;
+      const currency = data.currency || 'USD';
+      const currencySymbol = currency === 'USD' ? '$' : currency + ' ';
+
       logger.info('📢 [NOTIFICATIONS] Notifying claim detected', {
         userId,
+        isBulk,
+        count: data.count,
         claimId: data.claimId,
-        amount: data.amount
+        amount
       });
+
+      let title = '💰 New Claim Detected';
+      let message = `A potential reimbursement claim of ${currencySymbol}${amount.toFixed(2)} has been detected${data.orderId ? ` for order ${data.orderId}` : ''}.`;
+
+      if (isBulk) {
+        title = `💰 ${data.count} New Claims Detected`;
+        message = `We found ${data.count} new potential reimbursement claims totaling ${currencySymbol}${amount.toFixed(2)}.`;
+      }
 
       const event: NotificationEvent = {
         type: NotificationType.CLAIM_DETECTED,
         user_id: userId,
-        title: '💰 New Claim Detected',
-        message: `A potential reimbursement claim of ${data.currency || '$'}${data.amount.toFixed(2)} has been detected${data.orderId ? ` for order ${data.orderId}` : ''}.`,
+        title,
+        message,
         priority: NotificationPriority.HIGH,
         channel: NotificationChannel.BOTH,
         payload: {
           claimId: data.claimId,
-          amount: data.amount,
-          currency: data.currency || 'usd',
+          count: data.count,
+          amount,
+          currency,
           confidence: data.confidence,
           orderId: data.orderId,
-          sku: data.sku
+          sku: data.sku,
+          isBulk
         },
         immediate: true
       };
@@ -89,8 +110,8 @@ class NotificationHelper {
       // Also send via WebSocket for real-time delivery
       websocketService.sendNotificationToUser(userId, {
         type: 'success',
-        title: '💰 New Claim Detected',
-        message: `Claim of ${data.currency || '$'}${data.amount.toFixed(2)} detected${data.orderId ? ` for order ${data.orderId}` : ''}`,
+        title,
+        message,
         data: event.payload
       });
 

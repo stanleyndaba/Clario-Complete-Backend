@@ -21,6 +21,7 @@ import * as path from 'path';
 import logger from '../utils/logger';
 import tokenManager from '../utils/tokenManager';
 import { supabaseAdmin, supabase } from '../database/supabaseClient';
+import notificationHelper from './notificationHelper';
 import amazonService from './amazonService';
 import { OrdersService } from './ordersService';
 import { ShipmentsService } from './shipmentsService';
@@ -444,6 +445,26 @@ export class Agent2DataSyncService {
             category: 'settlements',
             message: 'Reconciling payouts with expected amounts...'
           });
+
+          // Step 10b: Trigger Agent 10 Notifications for Settlements (Funds Deposited)
+          try {
+            const recentSettlements = result.normalized.settlements.slice(0, 3); // Notify for most recent ones
+            for (const settlement of recentSettlements) {
+              // Only notify if amount is positive
+              if (settlement.amount > 0) {
+                await notificationHelper.notifyFundsDeposited(userId, {
+                  disputeId: settlement.settlement_id || `settlement_${Date.now()}`,
+                  amount: settlement.amount,
+                  currency: settlement.currency || 'USD',
+                  billingStatus: 'pending'
+                });
+                logger.info('🔔 [AGENT 10] Notification sent for funds deposited', { userId, settlementId: settlement.settlement_id });
+              }
+            }
+          } catch (notifError) {
+            logger.error('❌ [AGENT 10] Failed to send settlement notifications', { error: notifError });
+          }
+
         } else {
           this.sendSyncLog(userId, syncId, {
             type: 'info',
@@ -2501,6 +2522,23 @@ export class Agent2DataSyncService {
             claimsDetected: detectionResults.length,
             totalRecoverableValue
           });
+
+          // Step 10: Trigger Agent 10 Notifications
+          if (detectionResults.length > 0) {
+            try {
+              // Notify about claims detected (Agent 1 event)
+              await notificationHelper.notifyClaimDetected(userId, {
+                count: detectionResults.length,
+                totalValue: totalRecoverableValue,
+                currency: 'USD',
+                source: 'agent2_sync',
+                syncId: storageSyncId
+              });
+              logger.info('🔔 [AGENT 10] Notification sent for detected claims', { userId, count: detectionResults.length });
+            } catch (notifError) {
+              logger.error('❌ [AGENT 10] Failed to send notification', { error: notifError });
+            }
+          }
         } catch (sseError: any) {
           logger.warn('⚠️ [AGENT 2] Failed to send SSE event for detection completion (non-critical)', {
             error: sseError.message,
