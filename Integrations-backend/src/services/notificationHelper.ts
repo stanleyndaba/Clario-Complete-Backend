@@ -286,8 +286,10 @@ class NotificationHelper {
         amount: data.amount
       });
 
-      let title = '🎉 Funds Deposited!';
-      let message = `🎉 ${data.currency || '$'}${data.amount.toFixed(2)} has been deposited to your account`;
+      let title = 'Funds Deposited! 🎉';
+      const currency = data.currency || 'USD';
+      const formattedAmount = currency.length === 3 ? `${currency} ${data.amount.toFixed(2)}` : `${currency}${data.amount.toFixed(2)}`;
+      let message = `**${formattedAmount}** has been deposited to your account`;
 
       if (data.billingStatus === 'charged') {
         const platformFee = data.platformFee || (data.amount * 0.20);
