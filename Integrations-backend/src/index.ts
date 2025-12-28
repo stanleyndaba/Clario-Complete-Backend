@@ -76,6 +76,7 @@ import recoveriesWorker from './workers/recoveriesWorker';
 import billingWorker from './workers/billingWorker';
 import notificationsWorker from './workers/notificationsWorker';
 import learningWorker from './workers/learningWorker';
+import scheduledSyncJob from './jobs/scheduledSyncJob';
 
 const app = express();
 const server = createServer(app);
@@ -492,6 +493,15 @@ server.listen(PORT, '0.0.0.0', () => {
         logger.info('Learning worker initialized');
       } else {
         logger.info('Learning worker disabled (ENABLE_LEARNING_WORKER=false)');
+      }
+
+      // Start Scheduled Sync Job - Agent 2: The Radar Always On
+      // Automatically syncs all users every 6 hours (configurable via AUTO_SYNC_INTERVAL_HOURS)
+      if (process.env.ENABLE_SCHEDULED_SYNC !== 'false') {
+        scheduledSyncJob.start();
+        logger.info('Scheduled sync job initialized (auto-sync every 6 hours)');
+      } else {
+        logger.info('Scheduled sync job disabled (ENABLE_SCHEDULED_SYNC=false)');
       }
 
       // Start detection job processor (processes detection jobs from queue)
