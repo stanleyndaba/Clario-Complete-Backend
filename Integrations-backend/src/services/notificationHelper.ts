@@ -287,8 +287,9 @@ class NotificationHelper {
       });
 
       let title = 'Funds Deposited! 🎉';
-      const currency = data.currency || 'USD';
-      const formattedAmount = currency.length === 3 ? `${currency} ${data.amount.toFixed(2)}` : `${currency}${data.amount.toFixed(2)}`;
+      const currency = (data.currency || 'USD').toUpperCase();
+      const currencySymbol = currency === 'USD' ? '$' : currency + ' ';
+      const formattedAmount = `${currencySymbol}${data.amount.toFixed(2)}`;
       let message = `**${formattedAmount}** has been deposited to your account`;
 
       if (data.billingStatus === 'charged') {
