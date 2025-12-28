@@ -3022,6 +3022,16 @@ export class Agent2DataSyncService {
 
         // SANDBOX MODE: Skip validation and duplicate checks for mock data
         if (isSandboxMode) {
+          // Generate realistic product identifiers for sandbox mode if not present
+          const orderId = detection.related_event_ids?.[0] || claimId;
+          const orderSuffix = orderId.slice(-4) || '0000';
+          const sku = detection.evidence?.sku || `SKU-${orderSuffix}`;
+          const asin = detection.evidence?.asin || `B00${orderSuffix}${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
+          const fnsku = detection.evidence?.fnsku || `X00${orderSuffix}${Math.random().toString(36).substr(2, 2).toUpperCase()}`;
+          const quantity = detection.evidence?.quantity || Math.floor(Math.random() * 5) + 1;
+          const fulfillmentCenter = detection.evidence?.fulfillment_center || ['PHX5', 'ONT2', 'SBD1', 'LAX9', 'SMF3'][Math.floor(Math.random() * 5)];
+          const marketplace = detection.evidence?.marketplace || 'US';
+
           validatedRecords.push({
             seller_id: userId,
             // claim_id: claimId, // Column does not exist
@@ -3031,7 +3041,25 @@ export class Agent2DataSyncService {
             estimated_value: detection.estimated_value || 0,
             currency: detection.currency || 'USD',
             confidence_score: detection.confidence_score || 0.85,
-            evidence: { ...detection.evidence, simulated: true, claim_id: claimId },
+            evidence: {
+              // Spread original evidence first
+              ...detection.evidence,
+              // Then add/override with required product identifiers
+              simulated: true,
+              claim_id: claimId,
+              order_id: orderId,
+              // Product identifiers - CRITICAL FOR FRONTEND DISPLAY
+              sku: sku,
+              asin: asin,
+              fnsku: fnsku,
+              // Quantity and location
+              quantity: quantity,
+              fulfillment_center: fulfillmentCenter,
+              marketplace: marketplace,
+              // Human-readable
+              description: detection.evidence?.description || `${detection.anomaly_type || 'Detection'} for ${orderId}`,
+              reason: detection.evidence?.reason || detection.anomaly_type || 'Automated detection'
+            },
             related_event_ids: detection.related_event_ids || [],
             discovery_date: detection.discovery_date ? new Date(detection.discovery_date).toISOString() : new Date().toISOString(),
             deadline_date: detection.deadline_date ? new Date(detection.deadline_date).toISOString() : null,
