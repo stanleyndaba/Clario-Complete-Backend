@@ -10,13 +10,22 @@ router.use(optionalAuth);
 router.get('/', async (req, res) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
+    const { status, limit } = req.query;
 
-    // Fetch dispute cases from database
-    const { data: cases, error } = await supabaseAdmin
+    // Build query with optional status filter
+    let query = supabaseAdmin
       .from('dispute_cases')
       .select('*')
       .order('created_at', { ascending: false })
-      .limit(100);
+      .limit(Number(limit) || 100);
+
+    // Apply status filter if provided (convert to proper case matching)
+    if (status && status !== 'all') {
+      // Try both lowercase and capitalized versions
+      query = query.or(`status.ilike.${status},status.ilike.${String(status).charAt(0).toUpperCase() + String(status).slice(1)}`);
+    }
+
+    const { data: cases, error } = await query;
 
     if (error) {
       throw error;
