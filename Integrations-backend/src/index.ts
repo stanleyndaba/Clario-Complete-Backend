@@ -52,7 +52,6 @@ import healthRoutes from './routes/healthRoutes';
 import notificationRoutes from './notifications/routes/notification_routes';
 import recoveryRoutes from './routes/recoveryRoutes';
 import learningRoutes from './routes/learningRoutes';
-import timelineRoutes from './routes/timelineRoutes';
 import inviteRoutes from './routes/inviteRoutes';
 
 // Consolidated service routes (merged from separate microservices)
@@ -339,16 +338,9 @@ import billingRoutes from './routes/billingRoutes';
 app.use('/api/billing', billingRoutes);
 logger.info('Billing routes registered at /api/billing');
 
-// Documents routes (replaces Python proxy for documents)
-import documentsRoutes from './routes/documentsRoutes';
-app.use('/api/documents', documentsRoutes);
-logger.info('Documents routes registered at /api/documents');
 
 app.use('/api/notifications', notificationRoutes);
 logger.info('Notification routes registered at /api/notifications');
-
-app.use('/api/recoveries', recoveryRoutes);
-logger.info('Recovery routes registered at /api/recoveries');
 
 app.use('/api/learning', learningRoutes);
 logger.info('Learning routes registered at /api/learning');

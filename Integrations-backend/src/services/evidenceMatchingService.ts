@@ -181,8 +181,30 @@ class EvidenceMatchingService {
           ...(extracted.order_ids || []),
           ...rawOrderIds
         ])];
-        const asins = extracted.asins || [];
-        const skus = extracted.skus || [];
+
+        // Handle both plural (asins) and singular (asin) forms - normalize to uppercase
+        const asinArray: string[] = [];
+        if (extracted.asins && Array.isArray(extracted.asins)) {
+          asinArray.push(...extracted.asins.map((a: string) => String(a).toUpperCase().trim()));
+        }
+        if (extracted.asin) {
+          const singleAsin = String(extracted.asin).toUpperCase().trim();
+          if (singleAsin && !asinArray.includes(singleAsin)) {
+            asinArray.push(singleAsin);
+          }
+        }
+
+        // Handle both plural (skus) and singular (sku) forms
+        const skuArray: string[] = [];
+        if (extracted.skus && Array.isArray(extracted.skus)) {
+          skuArray.push(...extracted.skus.map((s: string) => String(s).toUpperCase().trim()));
+        }
+        if (extracted.sku) {
+          const singleSku = String(extracted.sku).toUpperCase().trim();
+          if (singleSku && !skuArray.includes(singleSku)) {
+            skuArray.push(singleSku);
+          }
+        }
 
         // Index by order ID
         for (const orderId of orderIds) {
@@ -191,14 +213,14 @@ class EvidenceMatchingService {
           docOrderIds.get(normalizedOrderId)!.push(doc);
         }
 
-        // Index by ASIN
-        for (const asin of asins) {
+        // Index by ASIN (normalized to uppercase)
+        for (const asin of asinArray) {
           if (!docAsins.has(asin)) docAsins.set(asin, []);
           docAsins.get(asin)!.push(doc);
         }
 
-        // Index by SKU
-        for (const sku of skus) {
+        // Index by SKU (normalized to uppercase)
+        for (const sku of skuArray) {
           if (!docSkus.has(sku)) docSkus.set(sku, []);
           docSkus.get(sku)!.push(doc);
         }
@@ -240,8 +262,11 @@ class EvidenceMatchingService {
 
       for (const claim of claimsToMatch) {
         const claimEvidence = typeof claim.evidence === 'string' ? JSON.parse(claim.evidence) : (claim.evidence || {});
-        const claimAsin = claim.asin || claimEvidence.asin;
-        const claimSku = claim.sku || claimEvidence.sku;
+        // Normalize ASIN and SKU to uppercase to match indexed documents
+        const rawAsin = claim.asin || claimEvidence.asin;
+        const rawSku = claim.sku || claimEvidence.sku;
+        const claimAsin = rawAsin ? String(rawAsin).toUpperCase().trim() : null;
+        const claimSku = rawSku ? String(rawSku).toUpperCase().trim() : null;
         const claimOrderId = claim.order_id || claimEvidence.order_id;
 
         // Get order IDs from related_event_ids (array of order IDs)
