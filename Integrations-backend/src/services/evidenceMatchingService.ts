@@ -1058,7 +1058,7 @@ class EvidenceMatchingService {
         seller_id: detectionResult.seller_id,
         detection_result_id: result.dispute_id,
         case_number: caseNumber,
-        status: 'evidence_linked',
+        status: 'pending',
         claim_amount: detectionResult.estimated_value || 0,
         currency: detectionResult.currency || 'USD',
         case_type: detectionResult.anomaly_type || 'amazon_fba',
@@ -1075,15 +1075,41 @@ class EvidenceMatchingService {
         updated_at: new Date().toISOString()
       };
 
-      // Use upsert to handle cases where dispute case might already exist
-      const { data: disputeCase, error: insertError } = await supabaseAdmin
+      // Check if dispute case already exists for this detection result
+      const { data: existingCase } = await supabaseAdmin
         .from('dispute_cases')
-        .upsert(disputeCaseData, {
-          onConflict: 'detection_result_id',
-          ignoreDuplicates: false
-        })
         .select('id')
+        .eq('detection_result_id', result.dispute_id)
         .single();
+
+      let disputeCase;
+      let insertError;
+
+      if (existingCase) {
+        // Update existing case
+        const { data, error } = await supabaseAdmin
+          .from('dispute_cases')
+          .update({
+            status: 'pending',
+            filing_status: 'pending',
+            evidence_attachments: disputeCaseData.evidence_attachments,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', existingCase.id)
+          .select('id')
+          .single();
+        disputeCase = data;
+        insertError = error;
+      } else {
+        // Create new dispute case
+        const { data, error } = await supabaseAdmin
+          .from('dispute_cases')
+          .insert(disputeCaseData)
+          .select('id')
+          .single();
+        disputeCase = data;
+        insertError = error;
+      }
 
       if (insertError) {
         logger.error('❌ [EVIDENCE MATCHING] Failed to create dispute case', {
