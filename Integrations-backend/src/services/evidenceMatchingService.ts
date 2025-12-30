@@ -155,7 +155,7 @@ class EvidenceMatchingService {
 
       logger.info('📄 [EVIDENCE MATCHING] Found documents', { userId, docCount: documents.length });
 
-      // Build document index by all available identifiers (9 match types)
+      // Build document index by all available identifiers (17 match types)
       const docOrderIds: Map<string, any[]> = new Map();
       const docAsins: Map<string, any[]> = new Map();
       const docSkus: Map<string, any[]> = new Map();
@@ -165,6 +165,15 @@ class EvidenceMatchingService {
       const docPoNumbers: Map<string, any[]> = new Map();
       const docShipmentIds: Map<string, any[]> = new Map();
       const docLpns: Map<string, any[]> = new Map(); // License Plate Numbers (FBA)
+      // New identifiers
+      const docAmazonRefIds: Map<string, any[]> = new Map(); // Amazon Reference IDs
+      const docRemovalOrderIds: Map<string, any[]> = new Map(); // FBA Removal Order IDs
+      const docRmaNumbers: Map<string, any[]> = new Map(); // Return Authorization Numbers
+      const docCaseIds: Map<string, any[]> = new Map(); // Seller Support Case IDs
+      const docReimbursementIds: Map<string, any[]> = new Map(); // Amazon Reimbursement IDs
+      const docTransactionIds: Map<string, any[]> = new Map(); // Amazon Transaction IDs
+      const docUpcs: Map<string, any[]> = new Map(); // UPC/EAN/GTIN barcodes
+      const docBolNumbers: Map<string, any[]> = new Map(); // Bill of Lading numbers
 
       for (const doc of documents) {
         // Get extracted data from either 'extracted' or 'parsed_metadata' column
@@ -187,6 +196,11 @@ class EvidenceMatchingService {
         const shipmentIdRegex = /\bFBA[A-Z0-9]{6,12}\b/gi; // Amazon FBA shipment IDs
         const fnSkuRegex = /\bX[0-9A-Z]{9}\b/g; // Amazon FNSKU format
         const lpnRegex = /\bLPN[A-Z0-9]{6,12}\b/gi; // FBA License Plate Numbers
+        // New regex patterns
+        const removalOrderRegex = /\b[A-Z0-9]{10,14}\b/g; // Removal order IDs (matched loosely, filtered by context)
+        const caseIdRegex = /\b\d{10,12}\b/g; // Amazon case IDs (10-12 digit numbers)
+        const reimbursementIdRegex = /\b[A-Z0-9]{8,12}\b/g; // Reimbursement IDs
+        const upcRegex = /\b(\d{12}|\d{13}|\d{14})\b/g; // UPC-12, EAN-13, GTIN-14
 
         const rawOrderIds = rawText.match(orderIdRegex) || [];
         const rawTrackingNumbers = rawText.match(trackingRegex) || [];
@@ -249,6 +263,56 @@ class EvidenceMatchingService {
           ...rawLpns.map(normalize)
         ])].filter(Boolean);
 
+        // New identifier arrays
+        const amazonRefIds = [...new Set([
+          ...(extracted.amazon_reference_ids || []).map(normalize),
+          ...(extracted.amazon_reference_id ? [normalize(extracted.amazon_reference_id)] : []),
+          ...(extracted.reference_id ? [normalize(extracted.reference_id)] : [])
+        ])].filter(Boolean);
+
+        const removalOrderIds = [...new Set([
+          ...(extracted.removal_order_ids || []).map(normalize),
+          ...(extracted.removal_order_id ? [normalize(extracted.removal_order_id)] : [])
+        ])].filter(Boolean);
+
+        const rmaNumbers = [...new Set([
+          ...(extracted.rma_numbers || []).map(normalize),
+          ...(extracted.rma_number ? [normalize(extracted.rma_number)] : []),
+          ...(extracted.rma ? [normalize(extracted.rma)] : []),
+          ...(extracted.return_authorization ? [normalize(extracted.return_authorization)] : [])
+        ])].filter(Boolean);
+
+        const caseIds = [...new Set([
+          ...(extracted.case_ids || []).map(normalize),
+          ...(extracted.case_id ? [normalize(extracted.case_id)] : []),
+          ...(extracted.amazon_case_id ? [normalize(extracted.amazon_case_id)] : [])
+        ])].filter(Boolean);
+
+        const reimbursementIds = [...new Set([
+          ...(extracted.reimbursement_ids || []).map(normalize),
+          ...(extracted.reimbursement_id ? [normalize(extracted.reimbursement_id)] : [])
+        ])].filter(Boolean);
+
+        const transactionIds = [...new Set([
+          ...(extracted.transaction_ids || []).map(normalize),
+          ...(extracted.transaction_id ? [normalize(extracted.transaction_id)] : []),
+          ...(extracted.amazon_transaction_id ? [normalize(extracted.amazon_transaction_id)] : [])
+        ])].filter(Boolean);
+
+        const upcArray = [...new Set([
+          ...(extracted.upcs || []).map(normalize),
+          ...(extracted.upc ? [normalize(extracted.upc)] : []),
+          ...(extracted.ean ? [normalize(extracted.ean)] : []),
+          ...(extracted.gtin ? [normalize(extracted.gtin)] : []),
+          ...(extracted.barcode ? [normalize(extracted.barcode)] : [])
+        ])].filter(Boolean);
+
+        const bolNumbers = [...new Set([
+          ...(extracted.bol_numbers || []).map(normalize),
+          ...(extracted.bol_number ? [normalize(extracted.bol_number)] : []),
+          ...(extracted.bill_of_lading ? [normalize(extracted.bill_of_lading)] : [])
+        ])].filter(Boolean);
+
         // Index by all identifier types
         for (const orderId of orderIds) {
           const key = orderId.trim();
@@ -295,9 +359,50 @@ class EvidenceMatchingService {
           if (!docLpns.has(lpn)) docLpns.set(lpn, []);
           docLpns.get(lpn)!.push(doc);
         }
+
+        // Index new identifier types
+        for (const refId of amazonRefIds) {
+          if (!docAmazonRefIds.has(refId)) docAmazonRefIds.set(refId, []);
+          docAmazonRefIds.get(refId)!.push(doc);
+        }
+
+        for (const removalId of removalOrderIds) {
+          if (!docRemovalOrderIds.has(removalId)) docRemovalOrderIds.set(removalId, []);
+          docRemovalOrderIds.get(removalId)!.push(doc);
+        }
+
+        for (const rma of rmaNumbers) {
+          if (!docRmaNumbers.has(rma)) docRmaNumbers.set(rma, []);
+          docRmaNumbers.get(rma)!.push(doc);
+        }
+
+        for (const caseId of caseIds) {
+          if (!docCaseIds.has(caseId)) docCaseIds.set(caseId, []);
+          docCaseIds.get(caseId)!.push(doc);
+        }
+
+        for (const reimbId of reimbursementIds) {
+          if (!docReimbursementIds.has(reimbId)) docReimbursementIds.set(reimbId, []);
+          docReimbursementIds.get(reimbId)!.push(doc);
+        }
+
+        for (const txnId of transactionIds) {
+          if (!docTransactionIds.has(txnId)) docTransactionIds.set(txnId, []);
+          docTransactionIds.get(txnId)!.push(doc);
+        }
+
+        for (const upc of upcArray) {
+          if (!docUpcs.has(upc)) docUpcs.set(upc, []);
+          docUpcs.get(upc)!.push(doc);
+        }
+
+        for (const bol of bolNumbers) {
+          if (!docBolNumbers.has(bol)) docBolNumbers.set(bol, []);
+          docBolNumbers.get(bol)!.push(doc);
+        }
       }
 
-      logger.info('📋 [EVIDENCE MATCHING] Built document index (9 match types)', {
+      logger.info('📋 [EVIDENCE MATCHING] Built document index (17 match types)', {
         docCount: documents.length,
         uniqueOrderIds: docOrderIds.size,
         uniqueAsins: docAsins.size,
@@ -307,7 +412,15 @@ class EvidenceMatchingService {
         uniqueFnskus: docFnskus.size,
         uniquePoNumbers: docPoNumbers.size,
         uniqueShipmentIds: docShipmentIds.size,
-        uniqueLpns: docLpns.size
+        uniqueLpns: docLpns.size,
+        uniqueAmazonRefIds: docAmazonRefIds.size,
+        uniqueRemovalOrderIds: docRemovalOrderIds.size,
+        uniqueRmaNumbers: docRmaNumbers.size,
+        uniqueCaseIds: docCaseIds.size,
+        uniqueReimbursementIds: docReimbursementIds.size,
+        uniqueTransactionIds: docTransactionIds.size,
+        uniqueUpcs: docUpcs.size,
+        uniqueBolNumbers: docBolNumbers.size
       });
 
       // Also fetch claims with related_event_ids from database if not provided
@@ -353,6 +466,15 @@ class EvidenceMatchingService {
         const claimShipmentId = normalize(claimEvidence.shipment_id || claimEvidence.amazon_shipment_id);
         const claimInvoice = normalize(claimEvidence.invoice_number);
         const claimPo = normalize(claimEvidence.po_number || claimEvidence.purchase_order_number);
+        // New identifiers
+        const claimAmazonRefId = normalize(claimEvidence.amazon_reference_id || claimEvidence.reference_id);
+        const claimRemovalOrderId = normalize(claimEvidence.removal_order_id);
+        const claimRma = normalize(claimEvidence.rma_number || claimEvidence.rma || claimEvidence.return_authorization);
+        const claimCaseId = normalize(claimEvidence.case_id || claimEvidence.amazon_case_id);
+        const claimReimbursementId = normalize(claimEvidence.reimbursement_id);
+        const claimTransactionId = normalize(claimEvidence.transaction_id || claimEvidence.amazon_transaction_id);
+        const claimUpc = normalize(claimEvidence.upc || claimEvidence.ean || claimEvidence.gtin || claimEvidence.barcode);
+        const claimBol = normalize(claimEvidence.bol_number || claimEvidence.bill_of_lading);
 
         // Get order IDs from related_event_ids (array of order IDs)
         const relatedEventIds: string[] = (claim as any).related_event_ids || [];
@@ -375,63 +497,119 @@ class EvidenceMatchingService {
             const normalizedEventId = eventId.trim();
             if (docOrderIds.has(normalizedEventId)) {
               matchedDocs = docOrderIds.get(normalizedEventId)!;
-              matchType = 'order_id'; // Still considered order ID match
+              matchType = 'order_id';
               matchedId = eventId;
               baseConfidence = 0.95;
               break;
             }
           }
         }
-        // 3. Tracking Number
+        // 3. Transaction ID (Amazon-specific, high reliability)
+        else if (claimTransactionId && docTransactionIds.has(claimTransactionId)) {
+          matchedDocs = docTransactionIds.get(claimTransactionId)!;
+          matchType = 'transaction_id';
+          matchedId = claimTransactionId;
+          baseConfidence = 0.92;
+        }
+        // 4. Reimbursement ID
+        else if (claimReimbursementId && docReimbursementIds.has(claimReimbursementId)) {
+          matchedDocs = docReimbursementIds.get(claimReimbursementId)!;
+          matchType = 'reimbursement_id';
+          matchedId = claimReimbursementId;
+          baseConfidence = 0.92;
+        }
+        // 5. Case ID (Seller Support)
+        else if (claimCaseId && docCaseIds.has(claimCaseId)) {
+          matchedDocs = docCaseIds.get(claimCaseId)!;
+          matchType = 'case_id';
+          matchedId = claimCaseId;
+          baseConfidence = 0.90;
+        }
+        // 6. Tracking Number
         else if (claimTracking && docTrackingNumbers.has(claimTracking)) {
           matchedDocs = docTrackingNumbers.get(claimTracking)!;
           matchType = 'tracking_number';
           matchedId = claimTracking;
           baseConfidence = 0.90;
         }
-        // 4. Shipment ID (FBA Inbound)
+        // 7. Shipment ID (FBA Inbound)
         else if (claimShipmentId && docShipmentIds.has(claimShipmentId)) {
           matchedDocs = docShipmentIds.get(claimShipmentId)!;
           matchType = 'shipment_id';
           matchedId = claimShipmentId;
           baseConfidence = 0.90;
         }
-        // 5. LPN (License Plate Number - FBA Returns)
+        // 8. Removal Order ID
+        else if (claimRemovalOrderId && docRemovalOrderIds.has(claimRemovalOrderId)) {
+          matchedDocs = docRemovalOrderIds.get(claimRemovalOrderId)!;
+          matchType = 'removal_order_id';
+          matchedId = claimRemovalOrderId;
+          baseConfidence = 0.90;
+        }
+        // 9. Amazon Reference ID
+        else if (claimAmazonRefId && docAmazonRefIds.has(claimAmazonRefId)) {
+          matchedDocs = docAmazonRefIds.get(claimAmazonRefId)!;
+          matchType = 'amazon_reference_id';
+          matchedId = claimAmazonRefId;
+          baseConfidence = 0.88;
+        }
+        // 10. RMA (Return Authorization)
+        else if (claimRma && docRmaNumbers.has(claimRma)) {
+          matchedDocs = docRmaNumbers.get(claimRma)!;
+          matchType = 'rma_number';
+          matchedId = claimRma;
+          baseConfidence = 0.88;
+        }
+        // 11. LPN (License Plate Number - FBA Returns)
         else if (claimLpn && docLpns.has(claimLpn)) {
           matchedDocs = docLpns.get(claimLpn)!;
           matchType = 'lpn';
           matchedId = claimLpn;
           baseConfidence = 0.85;
         }
-        // 6. FNSKU (FBA specialized SKU)
+        // 12. FNSKU (FBA specialized SKU)
         else if (claimFnsku && docFnskus.has(claimFnsku)) {
           matchedDocs = docFnskus.get(claimFnsku)!;
           matchType = 'fnsku';
           matchedId = claimFnsku;
           baseConfidence = 0.85;
         }
-        // 7. ASIN
+        // 13. ASIN
         else if (claimAsin && docAsins.has(claimAsin)) {
           matchedDocs = docAsins.get(claimAsin)!;
           matchType = 'asin';
           matchedId = claimAsin;
           baseConfidence = 0.85;
         }
-        // 8. SKU
+        // 14. SKU
         else if (claimSku && docSkus.has(claimSku)) {
           matchedDocs = docSkus.get(claimSku)!;
           matchType = 'sku';
           matchedId = claimSku;
           baseConfidence = 0.85;
         }
-        // 9. Invoice Number
+        // 15. UPC/EAN/GTIN (Barcode)
+        else if (claimUpc && docUpcs.has(claimUpc)) {
+          matchedDocs = docUpcs.get(claimUpc)!;
+          matchType = 'upc';
+          matchedId = claimUpc;
+          baseConfidence = 0.85;
+        }
+        // 16. Bill of Lading
+        else if (claimBol && docBolNumbers.has(claimBol)) {
+          matchedDocs = docBolNumbers.get(claimBol)!;
+          matchType = 'bol_number';
+          matchedId = claimBol;
+          baseConfidence = 0.82;
+        }
+        // 17. Invoice Number
         else if (claimInvoice && docInvoiceNumbers.has(claimInvoice)) {
           matchedDocs = docInvoiceNumbers.get(claimInvoice)!;
           matchType = 'invoice_number';
           matchedId = claimInvoice;
           baseConfidence = 0.80;
         }
-        // 10. PO Number
+        // 18. PO Number
         else if (claimPo && docPoNumbers.has(claimPo)) {
           matchedDocs = docPoNumbers.get(claimPo)!;
           matchType = 'po_number';
