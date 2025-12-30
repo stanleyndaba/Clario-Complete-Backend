@@ -155,10 +155,16 @@ class EvidenceMatchingService {
 
       logger.info('📄 [EVIDENCE MATCHING] Found documents', { userId, docCount: documents.length });
 
-      // Build document index by Order ID, ASIN, and SKU
+      // Build document index by all available identifiers (9 match types)
       const docOrderIds: Map<string, any[]> = new Map();
       const docAsins: Map<string, any[]> = new Map();
       const docSkus: Map<string, any[]> = new Map();
+      const docInvoiceNumbers: Map<string, any[]> = new Map();
+      const docTrackingNumbers: Map<string, any[]> = new Map();
+      const docFnskus: Map<string, any[]> = new Map();
+      const docPoNumbers: Map<string, any[]> = new Map();
+      const docShipmentIds: Map<string, any[]> = new Map();
+      const docLpns: Map<string, any[]> = new Map(); // License Plate Numbers (FBA)
 
       for (const doc of documents) {
         // Get extracted data from either 'extracted' or 'parsed_metadata' column
@@ -172,66 +178,136 @@ class EvidenceMatchingService {
         }
         extracted = extracted || {};
 
-        // Also try to extract order IDs from raw_text
+        // Also try to extract identifiers from raw_text using regex
         const rawText = doc.raw_text || '';
-        const orderIdRegex = /\b\d{3}-\d{7}-\d{7}\b/g;
-        const rawOrderIds = rawText.match(orderIdRegex) || [];
 
-        // Combine extracted order_ids with any found in raw_text
+        // Regex patterns for various identifiers
+        const orderIdRegex = /\b\d{3}-\d{7}-\d{7}\b/g;
+        const trackingRegex = /\b(1Z[A-Z0-9]{16}|[0-9]{20,22}|[A-Z]{2}\d{9}[A-Z]{2})\b/gi; // UPS, FedEx, USPS
+        const shipmentIdRegex = /\bFBA[A-Z0-9]{6,12}\b/gi; // Amazon FBA shipment IDs
+        const fnSkuRegex = /\bX[0-9A-Z]{9}\b/g; // Amazon FNSKU format
+        const lpnRegex = /\bLPN[A-Z0-9]{6,12}\b/gi; // FBA License Plate Numbers
+
+        const rawOrderIds = rawText.match(orderIdRegex) || [];
+        const rawTrackingNumbers = rawText.match(trackingRegex) || [];
+        const rawShipmentIds = rawText.match(shipmentIdRegex) || [];
+        const rawFnskus = rawText.match(fnSkuRegex) || [];
+        const rawLpns = rawText.match(lpnRegex) || [];
+
+        // Combine extracted identifiers with those found in raw_text
         const orderIds = [...new Set([
           ...(extracted.order_ids || []),
+          ...(extracted.order_id ? [extracted.order_id] : []),
           ...rawOrderIds
         ])];
 
-        // Handle both plural (asins) and singular (asin) forms - normalize to uppercase
-        const asinArray: string[] = [];
-        if (extracted.asins && Array.isArray(extracted.asins)) {
-          asinArray.push(...extracted.asins.map((a: string) => String(a).toUpperCase().trim()));
-        }
-        if (extracted.asin) {
-          const singleAsin = String(extracted.asin).toUpperCase().trim();
-          if (singleAsin && !asinArray.includes(singleAsin)) {
-            asinArray.push(singleAsin);
-          }
-        }
+        // Handle both plural and singular forms - normalize to uppercase
+        const normalize = (val: any): string => String(val).toUpperCase().trim();
 
-        // Handle both plural (skus) and singular (sku) forms
-        const skuArray: string[] = [];
-        if (extracted.skus && Array.isArray(extracted.skus)) {
-          skuArray.push(...extracted.skus.map((s: string) => String(s).toUpperCase().trim()));
-        }
-        if (extracted.sku) {
-          const singleSku = String(extracted.sku).toUpperCase().trim();
-          if (singleSku && !skuArray.includes(singleSku)) {
-            skuArray.push(singleSku);
-          }
-        }
+        const asinArray = [...new Set([
+          ...(extracted.asins || []).map(normalize),
+          ...(extracted.asin ? [normalize(extracted.asin)] : [])
+        ])].filter(Boolean);
 
-        // Index by order ID
+        const skuArray = [...new Set([
+          ...(extracted.skus || []).map(normalize),
+          ...(extracted.sku ? [normalize(extracted.sku)] : [])
+        ])].filter(Boolean);
+
+        const invoiceNumbers = [...new Set([
+          ...(extracted.invoice_numbers || []).map(normalize),
+          ...(extracted.invoice_number ? [normalize(extracted.invoice_number)] : [])
+        ])].filter(Boolean);
+
+        const trackingNumbers = [...new Set([
+          ...(extracted.tracking_numbers || []).map(normalize),
+          ...(extracted.tracking_number ? [normalize(extracted.tracking_number)] : []),
+          ...rawTrackingNumbers.map(normalize)
+        ])].filter(Boolean);
+
+        const fnskuArray = [...new Set([
+          ...(extracted.fnskus || []).map(normalize),
+          ...(extracted.fnsku ? [normalize(extracted.fnsku)] : []),
+          ...rawFnskus.map(normalize)
+        ])].filter(Boolean);
+
+        const poNumbers = [...new Set([
+          ...(extracted.po_numbers || []).map(normalize),
+          ...(extracted.purchase_order_number ? [normalize(extracted.purchase_order_number)] : []),
+          ...(extracted.po_number ? [normalize(extracted.po_number)] : [])
+        ])].filter(Boolean);
+
+        const shipmentIds = [...new Set([
+          ...(extracted.shipment_ids || []).map(normalize),
+          ...(extracted.shipment_id ? [normalize(extracted.shipment_id)] : []),
+          ...rawShipmentIds.map(normalize)
+        ])].filter(Boolean);
+
+        const lpnArray = [...new Set([
+          ...(extracted.lpns || []).map(normalize),
+          ...(extracted.lpn ? [normalize(extracted.lpn)] : []),
+          ...rawLpns.map(normalize)
+        ])].filter(Boolean);
+
+        // Index by all identifier types
         for (const orderId of orderIds) {
-          const normalizedOrderId = orderId.trim();
-          if (!docOrderIds.has(normalizedOrderId)) docOrderIds.set(normalizedOrderId, []);
-          docOrderIds.get(normalizedOrderId)!.push(doc);
+          const key = orderId.trim();
+          if (!docOrderIds.has(key)) docOrderIds.set(key, []);
+          docOrderIds.get(key)!.push(doc);
         }
 
-        // Index by ASIN (normalized to uppercase)
         for (const asin of asinArray) {
           if (!docAsins.has(asin)) docAsins.set(asin, []);
           docAsins.get(asin)!.push(doc);
         }
 
-        // Index by SKU (normalized to uppercase)
         for (const sku of skuArray) {
           if (!docSkus.has(sku)) docSkus.set(sku, []);
           docSkus.get(sku)!.push(doc);
         }
+
+        for (const invoiceNum of invoiceNumbers) {
+          if (!docInvoiceNumbers.has(invoiceNum)) docInvoiceNumbers.set(invoiceNum, []);
+          docInvoiceNumbers.get(invoiceNum)!.push(doc);
+        }
+
+        for (const trackingNum of trackingNumbers) {
+          if (!docTrackingNumbers.has(trackingNum)) docTrackingNumbers.set(trackingNum, []);
+          docTrackingNumbers.get(trackingNum)!.push(doc);
+        }
+
+        for (const fnsku of fnskuArray) {
+          if (!docFnskus.has(fnsku)) docFnskus.set(fnsku, []);
+          docFnskus.get(fnsku)!.push(doc);
+        }
+
+        for (const poNum of poNumbers) {
+          if (!docPoNumbers.has(poNum)) docPoNumbers.set(poNum, []);
+          docPoNumbers.get(poNum)!.push(doc);
+        }
+
+        for (const shipmentId of shipmentIds) {
+          if (!docShipmentIds.has(shipmentId)) docShipmentIds.set(shipmentId, []);
+          docShipmentIds.get(shipmentId)!.push(doc);
+        }
+
+        for (const lpn of lpnArray) {
+          if (!docLpns.has(lpn)) docLpns.set(lpn, []);
+          docLpns.get(lpn)!.push(doc);
+        }
       }
 
-      logger.info('📋 [EVIDENCE MATCHING] Built document index', {
+      logger.info('📋 [EVIDENCE MATCHING] Built document index (9 match types)', {
         docCount: documents.length,
         uniqueOrderIds: docOrderIds.size,
         uniqueAsins: docAsins.size,
-        uniqueSkus: docSkus.size
+        uniqueSkus: docSkus.size,
+        uniqueInvoiceNumbers: docInvoiceNumbers.size,
+        uniqueTrackingNumbers: docTrackingNumbers.size,
+        uniqueFnskus: docFnskus.size,
+        uniquePoNumbers: docPoNumbers.size,
+        uniqueShipmentIds: docShipmentIds.size,
+        uniqueLpns: docLpns.size
       });
 
       // Also fetch claims with related_event_ids from database if not provided
@@ -263,12 +339,20 @@ class EvidenceMatchingService {
 
       for (const claim of claimsToMatch) {
         const claimEvidence = typeof claim.evidence === 'string' ? JSON.parse(claim.evidence) : (claim.evidence || {});
-        // Normalize ASIN and SKU to uppercase to match indexed documents
-        const rawAsin = claim.asin || claimEvidence.asin;
-        const rawSku = claim.sku || claimEvidence.sku;
-        const claimAsin = rawAsin ? String(rawAsin).toUpperCase().trim() : null;
-        const claimSku = rawSku ? String(rawSku).toUpperCase().trim() : null;
+
+        // Helper to normalize values
+        const normalize = (val: any): string | null => val ? String(val).toUpperCase().trim() : null;
+
+        // Extract and normalize all identifiers from claim or claim evidence
         const claimOrderId = claim.order_id || claimEvidence.order_id;
+        const claimAsin = normalize(claim.asin || claimEvidence.asin);
+        const claimSku = normalize(claim.sku || claimEvidence.sku);
+        const claimFnsku = normalize(claimEvidence.fnsku);
+        const claimLpn = normalize(claimEvidence.lpn || claimEvidence.license_plate_number);
+        const claimTracking = normalize(claimEvidence.tracking_number || claimEvidence.tracking_id);
+        const claimShipmentId = normalize(claimEvidence.shipment_id || claimEvidence.amazon_shipment_id);
+        const claimInvoice = normalize(claimEvidence.invoice_number);
+        const claimPo = normalize(claimEvidence.po_number || claimEvidence.purchase_order_number);
 
         // Get order IDs from related_event_ids (array of order IDs)
         const relatedEventIds: string[] = (claim as any).related_event_ids || [];
@@ -276,41 +360,89 @@ class EvidenceMatchingService {
         let matchedDocs: any[] = [];
         let matchType = '';
         let matchedId = '';
+        let baseConfidence = 0.0;
 
-        // Try Order ID match first (highest priority)
-        if (claimOrderId && docOrderIds.has(claimOrderId)) {
-          matchedDocs = docOrderIds.get(claimOrderId)!;
+        // 1. Order ID match (Highest Priority)
+        if (claimOrderId && docOrderIds.has(claimOrderId.trim())) {
+          matchedDocs = docOrderIds.get(claimOrderId.trim())!;
           matchType = 'order_id';
           matchedId = claimOrderId;
+          baseConfidence = 0.95;
         }
-        // Then try related_event_ids (order IDs from claims)
+        // 2. Related Event IDs (Order IDs)
         else if (relatedEventIds.length > 0) {
           for (const eventId of relatedEventIds) {
-            if (docOrderIds.has(eventId)) {
-              matchedDocs = docOrderIds.get(eventId)!;
-              matchType = 'order_id';
+            const normalizedEventId = eventId.trim();
+            if (docOrderIds.has(normalizedEventId)) {
+              matchedDocs = docOrderIds.get(normalizedEventId)!;
+              matchType = 'order_id'; // Still considered order ID match
               matchedId = eventId;
+              baseConfidence = 0.95;
               break;
             }
           }
         }
-        // Then try ASIN match
+        // 3. Tracking Number
+        else if (claimTracking && docTrackingNumbers.has(claimTracking)) {
+          matchedDocs = docTrackingNumbers.get(claimTracking)!;
+          matchType = 'tracking_number';
+          matchedId = claimTracking;
+          baseConfidence = 0.90;
+        }
+        // 4. Shipment ID (FBA Inbound)
+        else if (claimShipmentId && docShipmentIds.has(claimShipmentId)) {
+          matchedDocs = docShipmentIds.get(claimShipmentId)!;
+          matchType = 'shipment_id';
+          matchedId = claimShipmentId;
+          baseConfidence = 0.90;
+        }
+        // 5. LPN (License Plate Number - FBA Returns)
+        else if (claimLpn && docLpns.has(claimLpn)) {
+          matchedDocs = docLpns.get(claimLpn)!;
+          matchType = 'lpn';
+          matchedId = claimLpn;
+          baseConfidence = 0.85;
+        }
+        // 6. FNSKU (FBA specialized SKU)
+        else if (claimFnsku && docFnskus.has(claimFnsku)) {
+          matchedDocs = docFnskus.get(claimFnsku)!;
+          matchType = 'fnsku';
+          matchedId = claimFnsku;
+          baseConfidence = 0.85;
+        }
+        // 7. ASIN
         else if (claimAsin && docAsins.has(claimAsin)) {
           matchedDocs = docAsins.get(claimAsin)!;
           matchType = 'asin';
           matchedId = claimAsin;
+          baseConfidence = 0.85;
         }
-        // Finally try SKU match
+        // 8. SKU
         else if (claimSku && docSkus.has(claimSku)) {
           matchedDocs = docSkus.get(claimSku)!;
           matchType = 'sku';
           matchedId = claimSku;
+          baseConfidence = 0.85;
+        }
+        // 9. Invoice Number
+        else if (claimInvoice && docInvoiceNumbers.has(claimInvoice)) {
+          matchedDocs = docInvoiceNumbers.get(claimInvoice)!;
+          matchType = 'invoice_number';
+          matchedId = claimInvoice;
+          baseConfidence = 0.80;
+        }
+        // 10. PO Number
+        else if (claimPo && docPoNumbers.has(claimPo)) {
+          matchedDocs = docPoNumbers.get(claimPo)!;
+          matchType = 'po_number';
+          matchedId = claimPo;
+          baseConfidence = 0.80;
         }
 
         if (matchedDocs.length > 0) {
           matchCount++;
           const bestDoc = matchedDocs[0];
-          const confidence = matchType === 'order_id' ? 0.95 : 0.85; // Higher confidence for order ID match
+          const confidence = baseConfidence;
 
           // Determine action based on confidence
           if (confidence >= this.autoSubmitThreshold) {
