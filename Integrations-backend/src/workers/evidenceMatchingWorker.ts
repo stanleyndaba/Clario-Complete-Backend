@@ -249,17 +249,18 @@ export class EvidenceMatchingWorker {
       }
 
       // Get users with newly parsed documents
+      // Documents are stored with 'user_id' column by Document Library
       const { data: parsedDocs, error: docsError } = await client
         .from('evidence_documents')
-        .select('seller_id')
+        .select('user_id')
         .eq('parser_status', 'completed')
         .not('parsed_metadata', 'is', null)
         .limit(100);
 
       if (!docsError && parsedDocs) {
         parsedDocs.forEach((doc: any) => {
-          if (doc.seller_id) {
-            userIds.add(doc.seller_id);
+          if (doc.user_id) {
+            userIds.add(doc.user_id);
           }
         });
       }

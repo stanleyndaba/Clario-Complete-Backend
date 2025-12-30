@@ -136,11 +136,12 @@ class EvidenceMatchingService {
 
     try {
       // Get documents with extracted data for user
+      // Documents are stored with 'user_id' column (not 'seller_id') by Document Library
       // Support multiple parser_status values: completed, extracted, etc.
       const { data: documents, error: docError } = await supabaseAdmin
         .from('evidence_documents')
         .select('id, filename, extracted, parsed_metadata, raw_text, storage_path, parser_status')
-        .eq('seller_id', userId);
+        .eq('user_id', userId);
 
       if (docError) {
         logger.error('❌ [EVIDENCE MATCHING] Failed to fetch documents', { error: docError.message });
