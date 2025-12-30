@@ -939,6 +939,21 @@ class EvidenceMatchingService {
             autoSubmits: totalAutoSubmits,
             smartPrompts: totalSmartPrompts
           });
+
+          // 🎯 AGENT 7: Process actionable results (auto-submit → dispute_cases)
+          // This triggers handleAutoSubmit which creates dispute cases for Agent 7 to file
+          try {
+            const processedStats = await this.processMatchingResults(userId, allResults);
+            logger.info('🚀 [EVIDENCE MATCHING] Processed actionable results', {
+              autoSubmitted: processedStats.autoSubmitted,
+              smartPromptsCreated: processedStats.smartPromptsCreated,
+              held: processedStats.held
+            });
+          } catch (processError: any) {
+            logger.error('❌ [EVIDENCE MATCHING] Failed to process matching results', {
+              error: processError.message
+            });
+          }
         }
       } catch (saveError: any) {
         logger.warn('⚠️ [EVIDENCE MATCHING] Error saving match results', {
@@ -1001,7 +1016,7 @@ class EvidenceMatchingService {
 
   /**
    * Handle auto-submit (confidence >= 0.85)
-   * Marks case for filing by Agent 7 (Refund Filing Worker)
+   * Creates dispute case from matched evidence and marks for filing by Agent 7
    */
   private async handleAutoSubmit(userId: string, result: MatchingResult): Promise<void> {
     try {
@@ -1018,47 +1033,81 @@ class EvidenceMatchingService {
       // Update detection result status
       await this.updateDetectionResultStatus(result.dispute_id, 'disputed', result.final_confidence);
 
-      // 🎯 AGENT 7 INTEGRATION: Mark case for filing
+      // 🎯 AGENT 7 INTEGRATION: Create dispute case from matched evidence
       // Agent 7 (Refund Filing Worker) will pick up cases with filing_status = 'pending'
       const { supabaseAdmin } = await import('../database/supabaseClient');
-      const { error: updateError } = await supabaseAdmin
-        .from('dispute_cases')
-        .update({
-          filing_status: 'pending',
-          status: 'evidence_linked',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', result.dispute_id);
 
-      if (updateError) {
-        logger.error('❌ [EVIDENCE MATCHING] Failed to mark case for filing', {
+      // First get the detection result details to create the dispute case
+      const { data: detectionResult, error: fetchError } = await supabaseAdmin
+        .from('detection_results')
+        .select('id, seller_id, anomaly_type, estimated_value, currency, evidence, claim_number')
+        .eq('id', result.dispute_id)
+        .single();
+
+      if (fetchError || !detectionResult) {
+        logger.error('❌ [EVIDENCE MATCHING] Failed to fetch detection result for filing', {
           disputeId: result.dispute_id,
-          error: updateError.message
+          error: fetchError?.message || 'Not found'
+        });
+        return;
+      }
+
+      // Create or update dispute case
+      const caseNumber = `CASE-${Date.now().toString(36).toUpperCase()}-${result.dispute_id.slice(0, 8).toUpperCase()}`;
+      const disputeCaseData = {
+        seller_id: detectionResult.seller_id,
+        detection_result_id: result.dispute_id,
+        case_number: caseNumber,
+        status: 'evidence_linked',
+        claim_amount: detectionResult.estimated_value || 0,
+        currency: detectionResult.currency || 'USD',
+        case_type: detectionResult.anomaly_type || 'amazon_fba',
+        provider: 'amazon',
+        filing_status: 'pending', // Agent 7 will pick this up
+        evidence_attachments: {
+          document_id: result.evidence_document_id,
+          match_confidence: result.final_confidence,
+          match_type: result.match_type,
+          matched_fields: result.matched_fields || [],
+          matched_at: new Date().toISOString()
+        },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      // Use upsert to handle cases where dispute case might already exist
+      const { data: disputeCase, error: insertError } = await supabaseAdmin
+        .from('dispute_cases')
+        .upsert(disputeCaseData, {
+          onConflict: 'detection_result_id',
+          ignoreDuplicates: false
+        })
+        .select('id')
+        .single();
+
+      if (insertError) {
+        logger.error('❌ [EVIDENCE MATCHING] Failed to create dispute case', {
+          disputeId: result.dispute_id,
+          error: insertError.message
         });
       } else {
-        logger.info('📝 [EVIDENCE MATCHING] Case marked for filing by Agent 7', {
-          disputeId: result.dispute_id
+        logger.info('📝 [EVIDENCE MATCHING] Dispute case created/updated for Agent 7 filing', {
+          disputeId: result.dispute_id,
+          caseId: disputeCase?.id,
+          caseNumber
         });
 
         // 🎯 AGENT 10 INTEGRATION: Notify when evidence is matched
         try {
           const notificationHelper = (await import('../services/notificationHelper')).default;
-          const { data: disputeCase } = await supabaseAdmin
-            .from('dispute_cases')
-            .select('claim_amount, currency')
-            .eq('id', result.dispute_id)
-            .single();
-
-          if (disputeCase) {
-            await notificationHelper.notifyEvidenceFound(userId, {
-              documentId: result.evidence_document_id,
-              source: 'unknown' as 'gmail' | 'outlook' | 'drive' | 'dropbox',
-              fileName: 'Evidence Document',
-              parsed: true,
-              matchFound: true,
-              disputeId: result.dispute_id
-            });
-          }
+          await notificationHelper.notifyEvidenceFound(userId, {
+            documentId: result.evidence_document_id,
+            source: 'unknown' as 'gmail' | 'outlook' | 'drive' | 'dropbox',
+            fileName: 'Evidence Document',
+            parsed: true,
+            matchFound: true,
+            disputeId: disputeCase?.id || result.dispute_id
+          });
         } catch (notifError: any) {
           logger.warn('⚠️ [EVIDENCE MATCHING] Failed to send notification', {
             error: notifError.message
