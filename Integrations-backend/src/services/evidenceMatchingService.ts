@@ -221,11 +221,25 @@ class EvidenceMatchingService {
         const rawFnskus = rawText.match(fnSkuRegex) || [];
         const rawLpns = rawText.match(lpnRegex) || [];
 
-        // Combine extracted identifiers with those found in raw_text
+        // Also extract order IDs from items[].description (format: "Order: XXX-XXXXXXX-XXXXXXX")
+        const itemsOrderIds: string[] = [];
+        if (Array.isArray(extracted.items)) {
+          for (const item of extracted.items) {
+            if (item.description) {
+              const orderMatch = item.description.match(/Order:\s*(\d{3}-\d{7}-\d{7})/i);
+              if (orderMatch) {
+                itemsOrderIds.push(orderMatch[1]);
+              }
+            }
+          }
+        }
+
+        // Combine extracted identifiers with those found in raw_text AND items descriptions
         const orderIds = [...new Set([
           ...(extracted.order_ids || []),
           ...(extracted.order_id ? [extracted.order_id] : []),
-          ...rawOrderIds
+          ...rawOrderIds,
+          ...itemsOrderIds
         ])];
 
         // Handle both plural and singular forms - normalize to uppercase
