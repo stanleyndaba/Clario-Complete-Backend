@@ -862,6 +862,53 @@ class EvidenceMatchingService {
 
     this.sendSyncLog('success', `[COMPLETE] Matched evidence for ${totalMatches.toLocaleString()} claims (${totalAutoSubmits} auto-submitted, ${totalSmartPrompts} smart prompts)`);
 
+    // Save match results to the database
+    if (allResults.length > 0) {
+      try {
+        const matchResultRecords = allResults.map(result => ({
+          seller_id: userId,
+          user_id: userId,
+          claim_id: result.dispute_id,
+          document_id: result.evidence_document_id,
+          match_type: result.match_type,
+          matched_fields: result.matched_fields || [],
+          confidence_score: result.final_confidence,
+          rule_score: result.rule_score,
+          action_taken: result.action_taken,
+          reasoning: result.reasoning,
+          status: result.action_taken === 'auto_submit' ? 'approved' : 'pending',
+          metadata: {
+            matched_at: new Date().toISOString(),
+            total_matches_in_batch: allResults.length
+          }
+        }));
+
+        const { error: insertError } = await supabaseAdmin
+          .from('evidence_match_results')
+          .upsert(matchResultRecords, {
+            onConflict: 'claim_id,document_id',
+            ignoreDuplicates: false
+          });
+
+        if (insertError) {
+          logger.warn('⚠️ [EVIDENCE MATCHING] Failed to save match results (table may not exist yet)', {
+            error: insertError.message,
+            resultsCount: allResults.length
+          });
+        } else {
+          logger.info('💾 [EVIDENCE MATCHING] Saved match results to database', {
+            savedCount: allResults.length,
+            autoSubmits: totalAutoSubmits,
+            smartPrompts: totalSmartPrompts
+          });
+        }
+      } catch (saveError: any) {
+        logger.warn('⚠️ [EVIDENCE MATCHING] Error saving match results', {
+          error: saveError.message
+        });
+      }
+    }
+
     return {
       matches: totalMatches,
       auto_submits: totalAutoSubmits,
