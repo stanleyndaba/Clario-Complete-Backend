@@ -729,10 +729,14 @@ class EvidenceMatchingService {
           .eq('seller_id', userId)
           .in('dispute_cases.status', ['pending', 'submitted']);
 
-        if (error) {
-          logger.warn('⚠️ [EVIDENCE MATCHING] Error fetching claims, trying simpler query', { error: error.message });
+        if (error || !detections || detections.length === 0) {
+          if (error) {
+            logger.warn('⚠️ [EVIDENCE MATCHING] Error fetching claims, trying simpler query', { error: error.message });
+          } else {
+            logger.info('📋 [EVIDENCE MATCHING] No claims with dispute_cases, fetching all claims', { userId });
+          }
 
-          // Fallback: simpler query without join
+          // Fallback: simpler query without join - gets ALL claims that can be matched
           const { data: simpleDetections } = await supabaseAdmin
             .from('detection_results')
             .select('id, seller_id, anomaly_type, estimated_value, currency, evidence, confidence_score, claim_number')
@@ -755,7 +759,7 @@ class EvidenceMatchingService {
               };
             });
           }
-        } else if (detections && detections.length > 0) {
+        } else {
           claims = detections.map((d: any) => {
             const ev = typeof d.evidence === 'string' ? JSON.parse(d.evidence) : (d.evidence || {});
             return {
