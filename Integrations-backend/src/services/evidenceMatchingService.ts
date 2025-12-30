@@ -136,12 +136,25 @@ class EvidenceMatchingService {
 
     try {
       // Get documents with extracted data for user
-      // IMPORTANT: Documents may be stored with EITHER 'user_id' (Document Library) OR 'seller_id' (programmatic ingestion)
-      // We query both columns to find all documents for this user
-      const { data: documents, error: docError } = await supabaseAdmin
+      // IMPORTANT: Documents may be stored with EITHER 'user_id' (UUID - Document Library) OR 'seller_id' (TEXT - programmatic ingestion)
+      // We need to handle the case where userId might be TEXT (not UUID) - can't query user_id with non-UUID value
+
+      // Check if userId is a valid UUID (user_id column is UUID type)
+      const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId);
+
+      let query = supabaseAdmin
         .from('evidence_documents')
-        .select('id, filename, extracted, parsed_metadata, raw_text, storage_path, parser_status, user_id, seller_id')
-        .or(`user_id.eq.${userId},seller_id.eq.${userId}`);
+        .select('id, filename, extracted, parsed_metadata, raw_text, storage_path, parser_status, user_id, seller_id');
+
+      // Only include user_id in query if userId is a valid UUID, otherwise just query by seller_id (TEXT)
+      if (isValidUUID) {
+        query = query.or(`user_id.eq.${userId},seller_id.eq.${userId}`);
+      } else {
+        // userId is TEXT (like 'demo-user'), only query by seller_id to avoid UUID type error
+        query = query.eq('seller_id', userId);
+      }
+
+      const { data: documents, error: docError } = await query;
 
       if (docError) {
         logger.error('❌ [EVIDENCE MATCHING] Failed to fetch documents', { error: docError.message });
@@ -865,23 +878,34 @@ class EvidenceMatchingService {
     // Save match results to the database
     if (allResults.length > 0) {
       try {
-        const matchResultRecords = allResults.map(result => ({
-          seller_id: userId,
-          user_id: userId,
-          claim_id: result.dispute_id,
-          document_id: result.evidence_document_id,
-          match_type: result.match_type,
-          matched_fields: result.matched_fields || [],
-          confidence_score: result.final_confidence,
-          rule_score: result.rule_score,
-          action_taken: result.action_taken,
-          reasoning: result.reasoning,
-          status: result.action_taken === 'auto_submit' ? 'approved' : 'pending',
-          metadata: {
-            matched_at: new Date().toISOString(),
-            total_matches_in_batch: allResults.length
+        // Check if userId is a valid UUID (user_id column is UUID type)
+        const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId);
+
+        const matchResultRecords = allResults.map(result => {
+          const record: any = {
+            seller_id: userId,
+            claim_id: result.dispute_id,
+            document_id: result.evidence_document_id,
+            match_type: result.match_type,
+            matched_fields: result.matched_fields || [],
+            confidence_score: result.final_confidence,
+            rule_score: result.rule_score,
+            action_taken: result.action_taken,
+            reasoning: result.reasoning,
+            status: result.action_taken === 'auto_submit' ? 'approved' : 'pending',
+            metadata: {
+              matched_at: new Date().toISOString(),
+              total_matches_in_batch: allResults.length
+            }
+          };
+
+          // Only include user_id if it's a valid UUID
+          if (isValidUUID) {
+            record.user_id = userId;
           }
-        }));
+
+          return record;
+        });
 
         const { error: insertError } = await supabaseAdmin
           .from('evidence_match_results')

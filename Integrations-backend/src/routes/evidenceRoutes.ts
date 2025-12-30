@@ -27,6 +27,27 @@ interface MulterFile {
 const router = Router();
 
 /**
+ * Helper function to check if a string is a valid UUID
+ * This is needed because user_id is UUID type, but seller_id is TEXT
+ * Querying user_id.eq with non-UUID value causes PostgreSQL errors
+ */
+function isValidUUID(str: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+}
+
+/**
+ * Build a user ID filter that handles both UUID user_id and TEXT seller_id
+ * Only includes user_id in query if userId is a valid UUID
+ */
+function buildUserFilter(userId: string): string {
+  if (isValidUUID(userId)) {
+    return `user_id.eq.${userId},seller_id.eq.${userId}`;
+  }
+  // userId is TEXT (like 'demo-user'), only query by seller_id to avoid UUID type error
+  return `seller_id.eq.${userId}`;
+}
+
+/**
  * GET /api/evidence/sources
  * Get all connected evidence sources for the current user
  */
@@ -40,7 +61,7 @@ router.get('/sources', async (req: Request, res: Response) => {
     const { data: sources, error } = await supabaseAdmin
       .from('evidence_sources')
       .select('*')
-      .or(`user_id.eq.${userId},seller_id.eq.${userId}`)
+      .or(buildUserFilter(userId))
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -50,7 +71,7 @@ router.get('/sources', async (req: Request, res: Response) => {
       const { data: integrations, error: intError } = await supabaseAdmin
         .from('integrations')
         .select('*')
-        .or(`user_id.eq.${userId},seller_id.eq.${userId}`)
+        .or(buildUserFilter(userId))
         .eq('status', 'connected');
 
       if (intError || !integrations || integrations.length === 0) {
@@ -84,7 +105,7 @@ router.get('/sources', async (req: Request, res: Response) => {
       const { data: integrations } = await supabaseAdmin
         .from('integrations')
         .select('*')
-        .or(`user_id.eq.${userId},seller_id.eq.${userId}`)
+        .or(buildUserFilter(userId))
         .eq('status', 'connected');
 
       if (integrations && integrations.length > 0) {
@@ -2484,7 +2505,7 @@ router.get('/matching/results', async (req: Request, res: Response) => {
           total_amount
         )
       `)
-      .or(`user_id.eq.${userId},seller_id.eq.${userId}`)
+      .or(buildUserFilter(userId))
       .order('created_at', { ascending: false })
       .limit(limit);
 
