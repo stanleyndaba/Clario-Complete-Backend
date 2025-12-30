@@ -136,12 +136,12 @@ class EvidenceMatchingService {
 
     try {
       // Get documents with extracted data for user
-      // Documents are stored with 'user_id' column (not 'seller_id') by Document Library
-      // Support multiple parser_status values: completed, extracted, etc.
+      // IMPORTANT: Documents may be stored with EITHER 'user_id' (Document Library) OR 'seller_id' (programmatic ingestion)
+      // We query both columns to find all documents for this user
       const { data: documents, error: docError } = await supabaseAdmin
         .from('evidence_documents')
-        .select('id, filename, extracted, parsed_metadata, raw_text, storage_path, parser_status')
-        .eq('user_id', userId);
+        .select('id, filename, extracted, parsed_metadata, raw_text, storage_path, parser_status, user_id, seller_id')
+        .or(`user_id.eq.${userId},seller_id.eq.${userId}`);
 
       if (docError) {
         logger.error('❌ [EVIDENCE MATCHING] Failed to fetch documents', { error: docError.message });

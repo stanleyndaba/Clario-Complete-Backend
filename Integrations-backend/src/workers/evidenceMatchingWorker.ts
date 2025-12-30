@@ -249,18 +249,22 @@ export class EvidenceMatchingWorker {
       }
 
       // Get users with newly parsed documents
-      // Documents are stored with 'user_id' column by Document Library
+      // Documents may be stored with EITHER 'user_id' (Document Library) OR 'seller_id' (programmatic ingestion)
       const { data: parsedDocs, error: docsError } = await client
         .from('evidence_documents')
-        .select('user_id')
+        .select('user_id, seller_id')
         .eq('parser_status', 'completed')
         .not('parsed_metadata', 'is', null)
         .limit(100);
 
       if (!docsError && parsedDocs) {
         parsedDocs.forEach((doc: any) => {
+          // Check both columns and add whichever is set
           if (doc.user_id) {
             userIds.add(doc.user_id);
+          }
+          if (doc.seller_id) {
+            userIds.add(doc.seller_id);
           }
         });
       }
