@@ -48,7 +48,7 @@ router.get('/:id', async (req: Request, res: Response) => {
                 const docIds = docLinks.map(l => l.evidence_document_id);
                 const { data: docs } = await supabaseAdmin
                     .from('evidence_documents')
-                    .select('id, filename, doc_type, source_type, created_at, metadata, extracted')
+                    .select('id, filename, doc_type, created_at, metadata, extracted')
                     .in('id', docIds);
                 documents = docs || [];
             }
@@ -56,7 +56,7 @@ router.get('/:id', async (req: Request, res: Response) => {
             else if (disputeCase.evidence_attachments?.document_id) {
                 const { data: matchedDoc } = await supabaseAdmin
                     .from('evidence_documents')
-                    .select('id, filename, doc_type, source_type, created_at, metadata, extracted')
+                    .select('id, filename, doc_type, created_at, metadata, extracted')
                     .eq('id', disputeCase.evidence_attachments.document_id)
                     .single();
                 if (matchedDoc) {
@@ -105,7 +105,7 @@ router.get('/:id', async (req: Request, res: Response) => {
             if (matchedDocIds && Array.isArray(matchedDocIds) && matchedDocIds.length > 0) {
                 const { data: docs } = await supabaseAdmin
                     .from('evidence_documents')
-                    .select('id, filename, doc_type, source_type, created_at, metadata')
+                    .select('id, filename, doc_type, created_at, metadata')
                     .in('id', matchedDocIds);
                 documents = docs || [];
             }
