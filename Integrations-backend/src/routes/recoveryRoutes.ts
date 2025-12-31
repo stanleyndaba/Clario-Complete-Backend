@@ -48,9 +48,25 @@ router.get('/:id', async (req: Request, res: Response) => {
                 const docIds = docLinks.map(l => l.evidence_document_id);
                 const { data: docs } = await supabaseAdmin
                     .from('evidence_documents')
-                    .select('id, filename, doc_type, source_type, created_at, metadata')
+                    .select('id, filename, doc_type, source_type, created_at, metadata, extracted')
                     .in('id', docIds);
                 documents = docs || [];
+            }
+            // Also check evidence_attachments for document_id (set by matching flow)
+            else if (disputeCase.evidence_attachments?.document_id) {
+                const { data: matchedDoc } = await supabaseAdmin
+                    .from('evidence_documents')
+                    .select('id, filename, doc_type, source_type, created_at, metadata, extracted')
+                    .eq('id', disputeCase.evidence_attachments.document_id)
+                    .single();
+                if (matchedDoc) {
+                    documents = [{
+                        ...matchedDoc,
+                        matchConfidence: disputeCase.evidence_attachments?.match_confidence,
+                        matchType: disputeCase.evidence_attachments?.match_type,
+                        matchedFields: disputeCase.evidence_attachments?.matched_fields,
+                    }];
+                }
             }
 
             return res.json({
@@ -67,6 +83,8 @@ router.get('/:id', async (req: Request, res: Response) => {
                 filing_status: disputeCase.filing_status,
                 case_number: disputeCase.case_number,
                 documents,
+                // Add evidence_attachments for frontend to access match details
+                evidence_attachments: disputeCase.evidence_attachments,
                 // Add fields for detailed view
                 claim_number: disputeCase.claim_id || disputeCase.case_number,
                 evidence: disputeCase.evidence || {},
