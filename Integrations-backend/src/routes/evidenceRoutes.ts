@@ -1729,9 +1729,8 @@ router.get('/matching/results', async (req: Request, res: Response) => {
     const { data: casesWithEvidence, error: casesError } = await client
       .from('dispute_cases')
       .select('id, case_type, status, claim_amount, evidence_attachments, created_at, sku')
-      .not('evidence_attachments', 'is', null)
       .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
+      .limit(500);  // Fetch more to filter in JS
 
     if (casesError) {
       logger.error('❌ [EVIDENCE] Error fetching cases with evidence', {
@@ -1748,13 +1747,12 @@ router.get('/matching/results', async (req: Request, res: Response) => {
     // Filter to only cases that have document_id in evidence_attachments
     const matchedCases = (casesWithEvidence || []).filter((c: any) =>
       c.evidence_attachments?.document_id
-    );
+    ).slice(offset, offset + limit);
 
-    // Get total count
+    // Get total count (filter all for count)
     const { data: allCasesWithEvidence } = await client
       .from('dispute_cases')
-      .select('id, evidence_attachments')
-      .not('evidence_attachments', 'is', null);
+      .select('id, evidence_attachments');
 
     const totalMatched = (allCasesWithEvidence || []).filter((c: any) =>
       c.evidence_attachments?.document_id
@@ -1801,7 +1799,6 @@ router.get('/matching/results', async (req: Request, res: Response) => {
         claim_type: c.case_type,
         claim_status: c.status,
         claim_amount: c.claim_amount,
-        sku: c.sku,
         // Document details
         document_details: docDetails,
         filename: docDetails.filename,
