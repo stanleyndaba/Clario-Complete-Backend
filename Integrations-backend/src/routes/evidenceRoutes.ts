@@ -2040,91 +2040,64 @@ router.post('/matching/:matchId/request-more-evidence', async (req: Request, res
  */
 router.get('/matching/results/by-document/:documentId', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     const { documentId } = req.params;
 
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
-
     logger.info('🔍 [EVIDENCE] Fetching matching results for document', {
-      userId,
       documentId
     });
 
     const client = supabaseAdmin || supabase;
 
-    // Verify document belongs to user
-    const { data: doc, error: docError } = await client
-      .from('evidence_documents')
-      .select('id, seller_id')
-      .eq('id', documentId)
-      .single();
+    // Query dispute_cases where evidence_attachments.document_id matches this document
+    // We need to find all cases where the evidence_attachments JSONB contains this document_id
+    const { data: allCases, error: casesError } = await client
+      .from('dispute_cases')
+      .select('id, case_type, status, claim_amount, evidence_attachments, created_at')
+      .order('created_at', { ascending: false })
+      .limit(500);
 
-    if (docError || !doc) {
-      return res.status(404).json({
-        success: false,
-        error: 'Document not found'
-      });
-    }
-
-    if (doc.seller_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        error: 'Forbidden'
-      });
-    }
-
-    // Get matching results for this document
-    const { data: links, error: linksError } = await client
-      .from('dispute_evidence_links')
-      .select(`
-        id,
-        dispute_case_id,
-        evidence_document_id,
-        relevance_score,
-        matched_context,
-        created_at
-      `)
-      .eq('evidence_document_id', documentId)
-      .order('created_at', { ascending: false });
-
-    if (linksError) {
-      logger.error('❌ [EVIDENCE] Error fetching document matching results', {
-        error: linksError.message,
-        userId,
+    if (casesError) {
+      logger.error('❌ [EVIDENCE] Error fetching cases for document', {
+        error: casesError.message,
         documentId
       });
       return res.status(500).json({
         success: false,
         error: 'Failed to fetch matching results',
-        message: linksError.message
+        message: casesError.message
       });
     }
 
-    // Transform results
-    const results = (links || []).map((link: any) => {
-      const context = link.matched_context || {};
+    // Filter to cases that have this document_id in evidence_attachments
+    const matchedCases = (allCases || []).filter((c: any) =>
+      c.evidence_attachments?.document_id === documentId
+    );
+
+    // Transform results to expected format
+    const results = matchedCases.map((c: any) => {
+      const ea = c.evidence_attachments || {};
+      const confidence = ea.match_confidence || 0;
+
       return {
-        id: link.id,
-        claim_id: link.dispute_case_id,
-        document_id: link.evidence_document_id,
-        confidence_score: link.relevance_score || 0,
-        match_type: context.match_type || 'unknown',
-        action_taken: (link.relevance_score || 0) >= 0.85 ? 'auto_submit'
-          : (link.relevance_score || 0) >= 0.5 ? 'smart_prompt'
+        id: c.id,
+        claim_id: c.id,
+        document_id: documentId,
+        confidence_score: confidence,
+        match_type: ea.match_type || 'unknown',
+        action_taken: confidence >= 0.85 ? 'auto_submit'
+          : confidence >= 0.5 ? 'smart_prompt'
             : 'no_action',
-        matched_fields: context.matched_fields || [],
-        reasoning: context.reasoning || '',
-        created_at: link.created_at
+        matched_fields: ea.matched_fields || [],
+        reasoning: '',
+        created_at: ea.matched_at || c.created_at,
+        // Additional claim info
+        claim_type: c.case_type,
+        claim_status: c.status,
+        claim_amount: c.claim_amount
       };
     });
 
     logger.info('✅ [EVIDENCE] Document matching results fetched', {
-      userId,
       documentId,
       count: results.length
     });
