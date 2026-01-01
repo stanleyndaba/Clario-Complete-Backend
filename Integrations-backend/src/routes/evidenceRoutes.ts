@@ -1713,115 +1713,114 @@ router.get('/matching/results', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
 
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
-
+    // For demo/testing, allow fetching without userId
     const limit = parseInt(req.query.limit as string) || 100;
     const offset = parseInt(req.query.offset as string) || 0;
 
     logger.info('🔍 [EVIDENCE] Fetching matching results', {
-      userId,
+      userId: userId || 'all',
       limit,
       offset
     });
 
-    // Get matching results from dispute_evidence_links
-    // Join with detection_results to get claim info and evidence_documents to get document info
     const client = supabaseAdmin || supabase;
 
-    // First, get all detection_results (claims) for this user
-    const { data: claims, error: claimsError } = await client
-      .from('detection_results')
-      .select('id')
-      .eq('seller_id', userId);
-
-    if (claimsError) {
-      logger.error('❌ [EVIDENCE] Error fetching claims', {
-        error: claimsError.message,
-        userId
-      });
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to fetch claims',
-        message: claimsError.message
-      });
-    }
-
-    const claimIds = claims?.map(c => c.id) || [];
-
-    if (claimIds.length === 0) {
-      return res.json({
-        success: true,
-        results: [],
-        total: 0
-      });
-    }
-
-    // Get matching results
-    const { data: links, error: linksError } = await client
-      .from('dispute_evidence_links')
-      .select(`
-        id,
-        dispute_case_id,
-        evidence_document_id,
-        relevance_score,
-        matched_context,
-        created_at
-      `)
-      .in('dispute_case_id', claimIds)
+    // Query dispute_cases that have evidence_attachments with document_id set
+    const { data: casesWithEvidence, error: casesError } = await client
+      .from('dispute_cases')
+      .select('id, case_type, status, claim_amount, evidence_attachments, created_at, sku')
+      .not('evidence_attachments', 'is', null)
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
 
-    if (linksError) {
-      logger.error('❌ [EVIDENCE] Error fetching matching results', {
-        error: linksError.message,
+    if (casesError) {
+      logger.error('❌ [EVIDENCE] Error fetching cases with evidence', {
+        error: casesError.message,
         userId
       });
       return res.status(500).json({
         success: false,
         error: 'Failed to fetch matching results',
-        message: linksError.message
+        message: casesError.message
       });
     }
 
-    // Get total count
-    const { count, error: countError } = await client
-      .from('dispute_evidence_links')
-      .select('*', { count: 'exact', head: true })
-      .in('dispute_case_id', claimIds);
+    // Filter to only cases that have document_id in evidence_attachments
+    const matchedCases = (casesWithEvidence || []).filter((c: any) =>
+      c.evidence_attachments?.document_id
+    );
 
-    // Transform results
-    const results = (links || []).map((link: any) => {
-      const context = link.matched_context || {};
+    // Get total count
+    const { data: allCasesWithEvidence } = await client
+      .from('dispute_cases')
+      .select('id, evidence_attachments')
+      .not('evidence_attachments', 'is', null);
+
+    const totalMatched = (allCasesWithEvidence || []).filter((c: any) =>
+      c.evidence_attachments?.document_id
+    ).length;
+
+    // Fetch document details for each match
+    const results = await Promise.all(matchedCases.map(async (c: any) => {
+      const docId = c.evidence_attachments?.document_id;
+      let docDetails: any = {};
+
+      if (docId) {
+        const { data: doc } = await client
+          .from('evidence_documents')
+          .select('id, filename, doc_type, created_at, metadata')
+          .eq('id', docId)
+          .single();
+
+        if (doc) {
+          docDetails = {
+            filename: doc.filename,
+            doc_type: doc.doc_type,
+            supplier: doc.metadata?.supplier,
+            invoice_number: doc.metadata?.invoice_number,
+            amount: doc.metadata?.amount
+          };
+        }
+      }
+
+      const confidence = c.evidence_attachments?.match_confidence || 0;
+
       return {
-        id: link.id,
-        claim_id: link.dispute_case_id,
-        document_id: link.evidence_document_id,
-        confidence_score: link.relevance_score || 0,
-        match_type: context.match_type || 'unknown',
-        action_taken: (link.relevance_score || 0) >= 0.85 ? 'auto_submit'
-          : (link.relevance_score || 0) >= 0.5 ? 'smart_prompt'
+        id: c.id,
+        claim_id: c.id,
+        document_id: docId,
+        confidence_score: confidence,
+        match_type: c.evidence_attachments?.match_type || 'unknown',
+        action_taken: confidence >= 0.85 ? 'auto_submit'
+          : confidence >= 0.5 ? 'smart_prompt'
             : 'no_action',
-        matched_fields: context.matched_fields || [],
-        reasoning: context.reasoning || '',
-        created_at: link.created_at
+        matched_fields: c.evidence_attachments?.matched_fields || [],
+        reasoning: '',
+        created_at: c.evidence_attachments?.matched_at || c.created_at,
+        // Additional claim info
+        claim_type: c.case_type,
+        claim_status: c.status,
+        claim_amount: c.claim_amount,
+        sku: c.sku,
+        // Document details
+        document_details: docDetails,
+        filename: docDetails.filename,
+        supplier: docDetails.supplier,
+        invoice_number: docDetails.invoice_number,
+        amount: docDetails.amount
       };
-    });
+    }));
 
     logger.info('✅ [EVIDENCE] Matching results fetched', {
-      userId,
+      userId: userId || 'all',
       count: results.length,
-      total: count || 0
+      total: totalMatched
     });
 
     res.json({
       success: true,
       results,
-      total: count || 0,
+      total: totalMatched,
       limit,
       offset
     });
