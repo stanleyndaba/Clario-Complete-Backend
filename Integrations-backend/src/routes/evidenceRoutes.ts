@@ -1838,40 +1838,51 @@ router.get('/matching/results', async (req: Request, res: Response) => {
 /**
  * POST /api/evidence/matching/:matchId/approve
  * Approve a smart prompt match and submit the claim
+ * Note: matchId is actually the dispute_case_id since matches are stored in evidence_attachments
  */
 router.post('/matching/:matchId/approve', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     const { matchId } = req.params;
 
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
-
-    logger.info('✅ [EVIDENCE] Approving smart prompt match', { matchId, userId });
+    logger.info('✅ [EVIDENCE] Approving smart prompt match', { matchId });
 
     const client = supabaseAdmin || supabase;
 
-    // Update the dispute_evidence_link to mark as approved
-    const { data: link, error: updateError } = await client
-      .from('dispute_evidence_links')
+    // Get the dispute case and update its evidence_attachments to mark as approved
+    const { data: existingCase, error: fetchError } = await client
+      .from('dispute_cases')
+      .select('id, evidence_attachments, status')
+      .eq('id', matchId)
+      .single();
+
+    if (fetchError || !existingCase) {
+      logger.error('❌ [EVIDENCE] Case not found for approval', { matchId, error: fetchError?.message });
+      return res.status(404).json({
+        success: false,
+        error: 'Match not found'
+      });
+    }
+
+    // Update evidence_attachments to mark as approved
+    const updatedAttachments = {
+      ...(existingCase.evidence_attachments || {}),
+      action_taken: 'approved',
+      approved_at: new Date().toISOString()
+    };
+
+    const { error: updateError } = await client
+      .from('dispute_cases')
       .update({
-        link_type: 'approved',
-        verification_status: 'approved',
+        evidence_attachments: updatedAttachments,
+        status: 'approved',
         updated_at: new Date().toISOString()
       })
-      .eq('id', matchId)
-      .select()
-      .single();
+      .eq('id', matchId);
 
     if (updateError) {
       logger.error('❌ [EVIDENCE] Error approving match', {
         error: updateError.message,
-        matchId,
-        userId
+        matchId
       });
       return res.status(500).json({
         success: false,
@@ -1880,14 +1891,13 @@ router.post('/matching/:matchId/approve', async (req: Request, res: Response) =>
       });
     }
 
-    // Optionally trigger claim filing here
-    logger.info('✅ [EVIDENCE] Match approved successfully', { matchId, userId });
+    logger.info('✅ [EVIDENCE] Match approved successfully', { matchId });
 
     res.json({
       success: true,
       message: 'Match approved and claim queued for filing',
       matchId,
-      caseId: link?.dispute_case_id
+      caseId: matchId
     });
   } catch (error: any) {
     logger.error('❌ [EVIDENCE] Error in approve match endpoint', {
@@ -1906,31 +1916,45 @@ router.post('/matching/:matchId/approve', async (req: Request, res: Response) =>
 /**
  * POST /api/evidence/matching/:matchId/reject
  * Reject a smart prompt match
+ * Note: matchId is actually the dispute_case_id since matches are stored in evidence_attachments
  */
 router.post('/matching/:matchId/reject', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     const { matchId } = req.params;
     const { reason } = req.body || {};
 
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
-
-    logger.info('❌ [EVIDENCE] Rejecting smart prompt match', { matchId, userId, reason });
+    logger.info('❌ [EVIDENCE] Rejecting smart prompt match', { matchId, reason });
 
     const client = supabaseAdmin || supabase;
 
-    // Update the dispute_evidence_link to mark as rejected
+    // Get the dispute case and update its evidence_attachments to mark as rejected
+    const { data: existingCase, error: fetchError } = await client
+      .from('dispute_cases')
+      .select('id, evidence_attachments, status')
+      .eq('id', matchId)
+      .single();
+
+    if (fetchError || !existingCase) {
+      logger.error('❌ [EVIDENCE] Case not found for rejection', { matchId, error: fetchError?.message });
+      return res.status(404).json({
+        success: false,
+        error: 'Match not found'
+      });
+    }
+
+    // Update evidence_attachments to mark as rejected
+    const updatedAttachments = {
+      ...(existingCase.evidence_attachments || {}),
+      action_taken: 'rejected',
+      rejection_reason: reason || 'User rejected match',
+      rejected_at: new Date().toISOString()
+    };
+
     const { error: updateError } = await client
-      .from('dispute_evidence_links')
+      .from('dispute_cases')
       .update({
-        link_type: 'rejected',
-        verification_status: 'rejected',
-        notes: reason || 'User rejected match',
+        evidence_attachments: updatedAttachments,
+        status: 'rejected',
         updated_at: new Date().toISOString()
       })
       .eq('id', matchId);
@@ -1938,8 +1962,7 @@ router.post('/matching/:matchId/reject', async (req: Request, res: Response) => 
     if (updateError) {
       logger.error('❌ [EVIDENCE] Error rejecting match', {
         error: updateError.message,
-        matchId,
-        userId
+        matchId
       });
       return res.status(500).json({
         success: false,
@@ -1948,7 +1971,7 @@ router.post('/matching/:matchId/reject', async (req: Request, res: Response) => 
       });
     }
 
-    logger.info('✅ [EVIDENCE] Match rejected successfully', { matchId, userId });
+    logger.info('✅ [EVIDENCE] Match rejected successfully', { matchId });
 
     res.json({
       success: true,
