@@ -13,6 +13,7 @@ import { unifiedIngestionService } from '../services/unifiedIngestionService';
 import { evidenceMatchingService } from '../services/evidenceMatchingService';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import logger from '../utils/logger';
+import mlScoringService from '../services/mlScoringService';
 
 // Type for multer file
 interface MulterFile {
@@ -1893,6 +1894,20 @@ router.post('/matching/:matchId/approve', async (req: Request, res: Response) =>
 
     logger.info('✅ [EVIDENCE] Match approved successfully', { matchId });
 
+    // Log ML feedback for learning
+    try {
+      const attachments = existingCase.evidence_attachments || {};
+      await mlScoringService.logFeedback({
+        claim_type: attachments.claim_type || 'unknown',
+        match_type: attachments.match_type || 'order_id',
+        matched_fields: attachments.matched_fields || [],
+        user_action: 'approved',
+        confidence_score: attachments.confidence_score || 0.5
+      });
+    } catch (mlError: any) {
+      logger.warn('⚠️ [EVIDENCE] Failed to log ML feedback (non-critical)', { error: mlError.message });
+    }
+
     res.json({
       success: true,
       message: 'Match approved and claim queued for filing',
@@ -1973,6 +1988,20 @@ router.post('/matching/:matchId/reject', async (req: Request, res: Response) => 
 
     logger.info('✅ [EVIDENCE] Match rejected successfully', { matchId });
 
+    // Log ML feedback for learning
+    try {
+      const attachments = existingCase.evidence_attachments || {};
+      await mlScoringService.logFeedback({
+        claim_type: attachments.claim_type || 'unknown',
+        match_type: attachments.match_type || 'order_id',
+        matched_fields: attachments.matched_fields || [],
+        user_action: 'rejected',
+        confidence_score: attachments.confidence_score || 0.5
+      });
+    } catch (mlError: any) {
+      logger.warn('⚠️ [EVIDENCE] Failed to log ML feedback (non-critical)', { error: mlError.message });
+    }
+
     res.json({
       success: true,
       message: 'Match rejected',
@@ -1995,30 +2024,43 @@ router.post('/matching/:matchId/reject', async (req: Request, res: Response) => 
 /**
  * POST /api/evidence/matching/:matchId/request-more-evidence
  * Flag a match for additional evidence collection
+ * Note: matchId is the dispute_case_id
  */
 router.post('/matching/:matchId/request-more-evidence', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     const { matchId } = req.params;
 
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
-
-    logger.info('📋 [EVIDENCE] Requesting more evidence for match', { matchId, userId });
+    logger.info('📋 [EVIDENCE] Requesting more evidence for match', { matchId });
 
     const client = supabaseAdmin || supabase;
 
-    // Update the dispute_evidence_link to flag for more evidence
+    // Get the dispute case
+    const { data: existingCase, error: fetchError } = await client
+      .from('dispute_cases')
+      .select('id, evidence_attachments, status')
+      .eq('id', matchId)
+      .single();
+
+    if (fetchError || !existingCase) {
+      logger.error('❌ [EVIDENCE] Case not found for evidence request', { matchId, error: fetchError?.message });
+      return res.status(404).json({
+        success: false,
+        error: 'Match not found'
+      });
+    }
+
+    // Update evidence_attachments to flag as needing more evidence
+    const updatedAttachments = {
+      ...(existingCase.evidence_attachments || {}),
+      action_taken: 'needs_evidence',
+      evidence_requested_at: new Date().toISOString()
+    };
+
     const { error: updateError } = await client
-      .from('dispute_evidence_links')
+      .from('dispute_cases')
       .update({
-        link_type: 'needs_more_evidence',
-        verification_status: 'pending_evidence',
-        notes: 'User requested additional evidence',
+        evidence_attachments: updatedAttachments,
+        status: 'needs_evidence',
         updated_at: new Date().toISOString()
       })
       .eq('id', matchId);
@@ -2026,8 +2068,7 @@ router.post('/matching/:matchId/request-more-evidence', async (req: Request, res
     if (updateError) {
       logger.error('❌ [EVIDENCE] Error flagging for more evidence', {
         error: updateError.message,
-        matchId,
-        userId
+        matchId
       });
       return res.status(500).json({
         success: false,
@@ -2036,11 +2077,11 @@ router.post('/matching/:matchId/request-more-evidence', async (req: Request, res
       });
     }
 
-    logger.info('✅ [EVIDENCE] Match flagged for more evidence', { matchId, userId });
+    logger.info('✅ [EVIDENCE] Match flagged for more evidence', { matchId });
 
     res.json({
       success: true,
-      message: 'Match flagged for additional evidence collection',
+      message: 'Match flagged for additional evidence collection. We will search for more documents.',
       matchId
     });
   } catch (error: any) {
