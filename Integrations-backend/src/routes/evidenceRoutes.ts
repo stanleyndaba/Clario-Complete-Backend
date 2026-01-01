@@ -1728,7 +1728,7 @@ router.get('/matching/results', async (req: Request, res: Response) => {
     // Query dispute_cases that have evidence_attachments with document_id set
     const { data: casesWithEvidence, error: casesError } = await client
       .from('dispute_cases')
-      .select('id, case_type, status, claim_amount, evidence_attachments, created_at, sku')
+      .select('id, case_type, status, claim_amount, evidence_attachments, created_at')
       .order('created_at', { ascending: false })
       .limit(500);  // Fetch more to filter in JS
 
