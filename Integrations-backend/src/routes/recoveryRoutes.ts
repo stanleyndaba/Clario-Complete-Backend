@@ -151,7 +151,38 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
 
         logger.info('Submitting claim', { claimId: id, userId });
 
-        // First, try to get from detection_results
+        // First, check if this is a dispute_case that already exists
+        const { data: existingCase, error: caseError } = await supabaseAdmin
+            .from('dispute_cases')
+            .select('*')
+            .eq('id', id)
+            .single();
+
+        if (existingCase && !caseError) {
+            // Update existing dispute_case status to submitted
+            const { error: updateError } = await supabaseAdmin
+                .from('dispute_cases')
+                .update({
+                    status: 'Submitted',
+                    updated_at: new Date().toISOString()
+                })
+                .eq('id', id);
+
+            if (updateError) {
+                logger.error('Error updating dispute case status', { id, error: updateError.message });
+                return res.status(500).json({ success: false, error: 'Failed to submit case' });
+            }
+
+            logger.info('Case submitted successfully', { id, status: 'Submitted' });
+            return res.json({
+                success: true,
+                message: 'Case submitted successfully',
+                caseId: id,
+                status: 'Submitted'
+            });
+        }
+
+        // Next, try to get from detection_results
         let detectionResult: any = null;
         let claimRecord: any = null;
 
