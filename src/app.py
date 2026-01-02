@@ -50,7 +50,7 @@ from .api.sync import router as sync_router
 # from .api.websocket import router as websocket_router
 # from .api.evidence_prompts_proof_packets import router as evidence_prompts_router
 # from .api.websocket_endpoints import router as websocket_endpoints_router
-# from .api.dispute_submissions import router as dispute_submissions_router
+from .api.dispute_submissions import router as dispute_submissions_router
 # from .api.security import router as security_router
 # from .api.analytics import router as analytics_router
 # from .api.feature_flags import router as feature_flags_router
@@ -383,6 +383,7 @@ app.include_router(parser_router, tags=["parser"])  # Document parsing endpoints
 app.include_router(evidence_matching_router, tags=["evidence-matching"])
 app.include_router(sync_router, tags=["sync"])
 app.include_router(integrations_router, tags=["integrations"])
+app.include_router(dispute_submissions_router, tags=["disputes"])
 
 # Workflow orchestration is now handled by Node.js OrchestrationJobManager
 # Python services call Node.js orchestrator via HTTP: POST /api/v1/workflow/phase/:phaseNumber
