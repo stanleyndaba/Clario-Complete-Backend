@@ -47,7 +47,7 @@ class RefundFilingService {
   private retryDelayMs: number = 5000; // 5 seconds base delay
 
   constructor() {
-    this.pythonApiUrl = process.env.PYTHON_API_URL || 'http://localhost:8000';
+    this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-7tgl.onrender.com';
     this.maxRetries = parseInt(process.env.REFUND_FILING_MAX_RETRIES || '3', 10);
     this.retryDelayMs = parseInt(process.env.REFUND_FILING_RETRY_DELAY_MS || '5000', 10);
   }
@@ -142,17 +142,17 @@ class RefundFilingService {
    */
   async fileDisputeWithRetry(request: FilingRequest, retryCount: number = 0): Promise<FilingResult> {
     let lastError: any;
-    
+
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
         const result = await this.fileDispute(request);
-        
+
         if (result.success) {
           return result;
         }
-        
+
         lastError = new Error(result.error_message || 'Filing failed');
-        
+
         // Don't retry if it's a non-retryable error
         if (result.status === 'rejected' && attempt === 0) {
           // First attempt rejected - might need stronger evidence
@@ -161,7 +161,7 @@ class RefundFilingService {
             attempt: attempt + 1
           });
         }
-        
+
         if (attempt < this.maxRetries) {
           const delay = this.retryDelayMs * Math.pow(2, attempt);
           logger.warn(`🔄 [REFUND FILING] Retry attempt ${attempt + 1}/${this.maxRetries} after ${delay}ms`, {
@@ -172,7 +172,7 @@ class RefundFilingService {
         }
       } catch (error: any) {
         lastError = error;
-        
+
         if (attempt < this.maxRetries) {
           const delay = this.retryDelayMs * Math.pow(2, attempt);
           logger.warn(`🔄 [REFUND FILING] Retry attempt ${attempt + 1}/${this.maxRetries} after ${delay}ms`, {
@@ -184,7 +184,7 @@ class RefundFilingService {
         }
       }
     }
-    
+
     return {
       success: false,
       status: 'failed',
@@ -297,9 +297,9 @@ class RefundFilingService {
           const extracted = doc.extracted || {};
           const parsed = doc.parsed_metadata || {};
           const items = extracted.items || parsed.line_items || [];
-          
+
           // Check if any item matches our order details
-          return items.some((item: any) => 
+          return items.some((item: any) =>
             item.sku === sku || item.asin === asin || item.order_id === orderId
           ) || extracted.order_id === orderId || parsed.invoice_number === orderId;
         });
@@ -374,7 +374,7 @@ class RefundFilingService {
       'failed': 'failed',
       'retrying': 'pending'
     };
-    
+
     return statusMap[status.toLowerCase()] || 'pending';
   }
 
@@ -393,7 +393,7 @@ class RefundFilingService {
       'closed': 'closed',
       'paid': 'approved'
     };
-    
+
     return statusMap[status.toLowerCase()] || 'open';
   }
 }

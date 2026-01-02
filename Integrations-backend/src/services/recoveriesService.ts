@@ -41,7 +41,7 @@ class RecoveriesService {
   private reconciliationThreshold: number = 0.01; // 1 cent threshold
 
   constructor() {
-    this.pythonApiUrl = process.env.PYTHON_API_URL || 'http://localhost:8000';
+    this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-7tgl.onrender.com';
     this.reconciliationThreshold = parseFloat(process.env.RECONCILIATION_THRESHOLD || '0.01');
   }
 
@@ -79,9 +79,9 @@ class RecoveriesService {
       try {
         const { default: amazonService } = await import('./amazonService');
         const claims = await amazonService.fetchClaims(userId, startDate, endDate);
-        
+
         // Filter for approved/reimbursed claims
-        const payouts = (claims || []).filter((claim: any) => 
+        const payouts = (claims || []).filter((claim: any) =>
           claim.status === 'approved' || claim.status === 'paid'
         );
 
@@ -140,7 +140,7 @@ class RecoveriesService {
       // Try to match by provider_case_id first (most reliable)
       // Check if payout has amazonCaseId or if we can extract it from metadata
       const amazonCaseId = payout.amazonCaseId || payout.metadata?.amazon_case_id || payout.metadata?.case_id;
-      
+
       if (amazonCaseId) {
         const { data: disputeCase } = await supabaseAdmin
           .from('dispute_cases')
@@ -244,7 +244,7 @@ class RecoveriesService {
     const expectedAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
     const actualAmount = payout.amount;
     const discrepancy = Math.abs(expectedAmount - actualAmount);
-    
+
     let discrepancyType: 'none' | 'underpaid' | 'overpaid' = 'none';
     if (discrepancy > this.reconciliationThreshold) {
       discrepancyType = actualAmount < expectedAmount ? 'underpaid' : 'overpaid';
@@ -462,7 +462,7 @@ class RecoveriesService {
       // Try to match payout to this case
       for (const payout of payouts) {
         const match = await this.matchPayoutToClaim(payout, userId);
-        
+
         if (match && match.disputeId === disputeId) {
           // Found match - reconcile
           return await this.reconcilePayout(match, userId);

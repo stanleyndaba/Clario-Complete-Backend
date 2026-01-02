@@ -5,8 +5,8 @@
 
 const axios = require('axios');
 
-const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
-const PYTHON_URL = process.env.PYTHON_API_URL || 'http://localhost:8000';
+const BACKEND_URL = process.env.BACKEND_URL || 'https://opside-node-api-woco.onrender.com';
+const PYTHON_URL = process.env.PYTHON_API_URL || 'https://clario-complete-backend-7tgl.onrender.com';
 const TEST_USER_ID = 'demo-user';
 
 async function testAgent7() {
