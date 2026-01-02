@@ -261,4 +261,214 @@ router.post('/:id/deny', async (req, res) => {
   }
 });
 
+// POST /api/disputes/file-now
+// Trigger immediate filing for a pending case (Agent 7 manual trigger)
+router.post('/file-now', async (req, res) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
+    const { dispute_id, claim_id } = req.body;
+
+    if (!dispute_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'dispute_id is required'
+      });
+    }
+
+    // Import refund filing service
+    const refundFilingService = (await import('../services/refundFilingService')).default;
+
+    // Get the dispute case details
+    const { data: caseData, error: fetchError } = await supabaseAdmin
+      .from('dispute_cases')
+      .select('*')
+      .eq('id', dispute_id)
+      .single();
+
+    if (fetchError || !caseData) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dispute case not found'
+      });
+    }
+
+    // Update status to 'filing'
+    await supabaseAdmin
+      .from('dispute_cases')
+      .update({
+        filing_status: 'filing',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', dispute_id);
+
+    // Prepare filing request
+    const filingRequest = {
+      dispute_id,
+      user_id: userId,
+      order_id: caseData.order_id || '',
+      asin: caseData.asin || '',
+      sku: caseData.sku || '',
+      claim_type: caseData.case_type || caseData.dispute_type || 'unknown',
+      amount_claimed: caseData.claim_amount || caseData.amount || 0,
+      currency: caseData.currency || 'USD',
+      evidence_document_ids: caseData.evidence_document_ids || [],
+      confidence_score: caseData.confidence_score || 0.85
+    };
+
+    // File the dispute (async - don't wait for completion)
+    refundFilingService.fileDispute(filingRequest)
+      .then(async (result) => {
+        // Update case with result
+        await supabaseAdmin
+          .from('dispute_cases')
+          .update({
+            filing_status: result.success ? 'submitted' : 'failed',
+            provider_case_id: result.amazon_case_id || null,
+            filing_error: result.error_message || null,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', dispute_id);
+      })
+      .catch(async (err) => {
+        console.error('[file-now] Filing error:', err);
+        await supabaseAdmin
+          .from('dispute_cases')
+          .update({
+            filing_status: 'failed',
+            filing_error: err.message || 'Unknown error',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', dispute_id);
+      });
+
+    res.json({
+      success: true,
+      message: 'Filing initiated',
+      dispute_id,
+      filing_status: 'filing'
+    });
+
+  } catch (error: any) {
+    console.error('[file-now] Error:', error);
+    res.status(500).json({
+      success: false,
+      message: error?.message || 'Internal server error'
+    });
+  }
+});
+
+// POST /api/disputes/retry-filing
+// Retry a failed filing with stronger evidence (Agent 7 retry)
+router.post('/retry-filing', async (req, res) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
+    const { dispute_id, claim_id, collect_stronger_evidence } = req.body;
+
+    if (!dispute_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'dispute_id is required'
+      });
+    }
+
+    // Import services
+    const refundFilingService = (await import('../services/refundFilingService')).default;
+
+    // Get the dispute case details
+    const { data: caseData, error: fetchError } = await supabaseAdmin
+      .from('dispute_cases')
+      .select('*')
+      .eq('id', dispute_id)
+      .single();
+
+    if (fetchError || !caseData) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dispute case not found'
+      });
+    }
+
+    // Increment retry count
+    const newRetryCount = (caseData.retry_count || 0) + 1;
+
+    // Update status to 'retrying'
+    await supabaseAdmin
+      .from('dispute_cases')
+      .update({
+        filing_status: 'retrying',
+        retry_count: newRetryCount,
+        filing_error: null, // Clear previous error
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', dispute_id);
+
+    // Collect stronger evidence if requested
+    let evidenceIds = caseData.evidence_document_ids || [];
+    if (collect_stronger_evidence) {
+      try {
+        const additionalEvidence = await refundFilingService.collectStrongerEvidence(dispute_id, userId);
+        evidenceIds = [...new Set([...evidenceIds, ...additionalEvidence])];
+      } catch (err: any) {
+        console.warn('[retry-filing] Could not collect stronger evidence:', err.message);
+      }
+    }
+
+    // Prepare filing request with enhanced evidence
+    const filingRequest = {
+      dispute_id,
+      user_id: userId,
+      order_id: caseData.order_id || '',
+      asin: caseData.asin || '',
+      sku: caseData.sku || '',
+      claim_type: caseData.case_type || caseData.dispute_type || 'unknown',
+      amount_claimed: caseData.claim_amount || caseData.amount || 0,
+      currency: caseData.currency || 'USD',
+      evidence_document_ids: evidenceIds,
+      confidence_score: caseData.confidence_score || 0.85
+    };
+
+    // File the dispute with retry (async)
+    refundFilingService.fileDisputeWithRetry(filingRequest, newRetryCount)
+      .then(async (result) => {
+        await supabaseAdmin
+          .from('dispute_cases')
+          .update({
+            filing_status: result.success ? 'submitted' : 'failed',
+            provider_case_id: result.amazon_case_id || caseData.provider_case_id || null,
+            filing_error: result.error_message || null,
+            evidence_document_ids: evidenceIds,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', dispute_id);
+      })
+      .catch(async (err) => {
+        console.error('[retry-filing] Retry error:', err);
+        await supabaseAdmin
+          .from('dispute_cases')
+          .update({
+            filing_status: 'failed',
+            filing_error: err.message || 'Retry failed',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', dispute_id);
+      });
+
+    res.json({
+      success: true,
+      message: 'Retry initiated with enhanced evidence',
+      dispute_id,
+      filing_status: 'retrying',
+      retry_count: newRetryCount,
+      evidence_count: evidenceIds.length
+    });
+
+  } catch (error: any) {
+    console.error('[retry-filing] Error:', error);
+    res.status(500).json({
+      success: false,
+      message: error?.message || 'Internal server error'
+    });
+  }
+});
+
 export default router;
