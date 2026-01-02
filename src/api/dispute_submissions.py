@@ -20,6 +20,128 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
+# Pydantic model for direct dispute submission
+from pydantic import BaseModel
+
+class DirectDisputeSubmitRequest(BaseModel):
+    """Request model for direct dispute submission from Agent 7"""
+    dispute_id: str
+    user_id: str
+    order_id: Optional[str] = None
+    asin: Optional[str] = None
+    sku: Optional[str] = None
+    claim_type: str
+    amount_claimed: float
+    currency: str = "USD"
+    evidence_documents: List[Dict[str, Any]] = []
+    confidence_score: float = 0.85
+
+
+@router.post("/api/v1/disputes/submit")
+async def submit_dispute_direct(
+    request: DirectDisputeSubmitRequest,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user)
+):
+    """
+    Submit a dispute directly (used by TypeScript Agent 7 refundFilingWorker)
+    This endpoint handles direct dispute submissions with full payload.
+    """
+    
+    try:
+        user_id = user["user_id"]
+        logger.info(f"Submitting dispute directly for user {user_id}, dispute_id={request.dispute_id}")
+        
+        # Submit via SP-API service
+        from src.integrations.amazon_spapi_service import SPAPIClaim
+        
+        claim = SPAPIClaim(
+            claim_id=request.dispute_id,
+            order_id=request.order_id or "",
+            asin=request.asin or "",
+            sku=request.sku or "",
+            claim_type=request.claim_type,
+            amount=request.amount_claimed,
+            currency=request.currency,
+            evidence_documents=request.evidence_documents
+        )
+        
+        result = await amazon_spapi_service.submit_dispute(
+            claim=claim,
+            user_id=user_id,
+            evidence_documents=request.evidence_documents,
+            confidence_score=request.confidence_score
+        )
+        
+        if result.success:
+            return {
+                "ok": True,
+                "data": {
+                    "submission_id": result.submission_id,
+                    "amazon_case_id": result.amazon_case_id,
+                    "status": result.status,
+                    "message": "Dispute submitted successfully"
+                }
+            }
+        else:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Submission failed: {result.error}"
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to submit dispute directly: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to submit dispute: {str(e)}")
+
+
+@router.get("/api/v1/disputes/status/{submission_id}")
+async def get_dispute_status(
+    submission_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """
+    Get dispute status by submission ID (used by TypeScript Agent 7 for polling)
+    """
+    
+    try:
+        user_id = user["user_id"]
+        logger.info(f"Getting dispute status for submission {submission_id}, user {user_id}")
+        
+        # Check status with Amazon SP-API
+        result = await amazon_spapi_service.check_submission_status(
+            submission_id=submission_id,
+            user_id=user_id
+        )
+        
+        if result.get("success"):
+            return {
+                "ok": True,
+                "data": {
+                    "submission_id": submission_id,
+                    "status": result.get("status", "open"),
+                    "amazon_case_id": result.get("amazon_case_id"),
+                    "resolution": result.get("resolution"),
+                    "amount_approved": result.get("amount_approved"),
+                    "last_updated": result.get("last_updated")
+                }
+            }
+        else:
+            return {
+                "ok": True,
+                "data": {
+                    "submission_id": submission_id,
+                    "status": "open",
+                    "error": result.get("error", "Status check failed")
+                }
+            }
+        
+    except Exception as e:
+        logger.error(f"Failed to get dispute status: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get dispute status: {str(e)}")
+
 @router.post("/api/v1/disputes/submit/{match_id}")
 async def submit_dispute_match(
     match_id: str,
