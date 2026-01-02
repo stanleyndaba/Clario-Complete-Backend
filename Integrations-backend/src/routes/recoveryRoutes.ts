@@ -228,14 +228,14 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
         const detectionId = detectionResult?.id || claimRecord?.reference_id || id;
 
         // Check if already submitted (dispute_case exists)
-        const { data: existingCase } = await supabaseAdmin
+        const { data: alreadySubmittedCase } = await supabaseAdmin
             .from('dispute_cases')
             .select('id, status')
             .or(`detection_result_id.eq.${detectionId},claim_id.eq.${id}`)
             .single();
 
-        if (existingCase) {
-            logger.info('Claim already submitted', { id, existingCaseId: existingCase.id });
+        if (alreadySubmittedCase) {
+            logger.info('Claim already submitted', { id, existingCaseId: alreadySubmittedCase.id });
             return res.json({
                 success: true,
                 message: 'Claim already submitted',
