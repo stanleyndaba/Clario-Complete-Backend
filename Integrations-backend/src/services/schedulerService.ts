@@ -38,15 +38,15 @@ class SchedulerService {
      */
     async initialize(): Promise<void> {
         if (this.isRunning) {
-            logger.info('⏰ [SCHEDULER] Already running');
+            logger.info('[SCHEDULER] Already running');
             return;
         }
 
-        logger.info('⏰ [SCHEDULER] Initializing scheduled ingestion service');
+        logger.info('[SCHEDULER] Initializing scheduled ingestion service');
 
         // Hourly job - runs at minute 0 of every hour
         this.hourlyJob = cron.schedule('0 * * * *', async () => {
-            logger.info('⏰ [SCHEDULER] Running hourly ingestion job');
+            logger.info('[SCHEDULER] Running hourly ingestion job');
             await this.runScheduledIngestion('hourly');
         }, {
             scheduled: true,
@@ -57,7 +57,7 @@ class SchedulerService {
         for (const config of this.scheduleConfigs) {
             const cronExpression = `0 ${config.hour} * * *`;
             const job = cron.schedule(cronExpression, async () => {
-                logger.info(`⏰ [SCHEDULER] Running daily ingestion job (${config.label})`);
+                logger.info(`[SCHEDULER] Running daily ingestion job (${config.label})`);
                 await this.runScheduledIngestion(config.schedule);
             }, {
                 scheduled: true,
@@ -67,14 +67,14 @@ class SchedulerService {
         }
 
         this.isRunning = true;
-        logger.info('✅ [SCHEDULER] Scheduled ingestion service initialized', {
+        logger.info('[SCHEDULER] Scheduled ingestion service initialized', {
             hourlyJob: 'Every hour at :00',
             dailyJobs: this.scheduleConfigs.map(c => c.label).join(', ')
         });
 
         // Run an initial check on startup (after 30 seconds to let server settle)
         setTimeout(async () => {
-            logger.info('⏰ [SCHEDULER] Running startup ingestion check');
+            logger.info('[SCHEDULER] Running startup ingestion check');
             await this.runScheduledIngestion('all');
         }, 30000);
     }
@@ -92,7 +92,7 @@ class SchedulerService {
         }
         this.dailyJobs.clear();
         this.isRunning = false;
-        logger.info('⏹️ [SCHEDULER] Scheduler service stopped');
+        logger.info('[SCHEDULER] Scheduler service stopped');
     }
 
     /**
@@ -103,7 +103,7 @@ class SchedulerService {
             // Find all users with auto-collect enabled
             const users = await this.getScheduledUsers(scheduleType);
 
-            logger.info(`⏰ [SCHEDULER] Found ${users.length} users for ${scheduleType} ingestion`, {
+            logger.info(`[SCHEDULER] Found ${users.length} users for ${scheduleType} ingestion`, {
                 userCount: users.length,
                 scheduleType
             });
@@ -117,12 +117,12 @@ class SchedulerService {
                 await this.ingestForUser(user);
             }
 
-            logger.info(`✅ [SCHEDULER] Completed ${scheduleType} ingestion run`, {
+            logger.info(`[SCHEDULER] Completed ${scheduleType} ingestion run`, {
                 usersProcessed: users.length
             });
 
         } catch (error: any) {
-            logger.error('❌ [SCHEDULER] Error running scheduled ingestion', {
+            logger.error('[SCHEDULER] Error running scheduled ingestion', {
                 error: error?.message || String(error),
                 scheduleType
             });
@@ -143,7 +143,7 @@ class SchedulerService {
             const { data: sources, error } = await query;
 
             if (error) {
-                logger.error('❌ [SCHEDULER] Error fetching scheduled users', { error });
+                logger.error('[SCHEDULER] Error fetching scheduled users', { error });
                 return [];
             }
 
@@ -199,7 +199,7 @@ class SchedulerService {
     private async ingestForUser(user: ScheduledUser): Promise<void> {
         // Prevent concurrent ingestion for same user
         if (this.currentlyIngesting.has(user.userId)) {
-            logger.info('⏭️ [SCHEDULER] Skipping - ingestion already in progress for user', {
+            logger.info('[SCHEDULER] Skipping - ingestion already in progress for user', {
                 userId: user.userId
             });
             return;
@@ -208,7 +208,7 @@ class SchedulerService {
         this.currentlyIngesting.add(user.userId);
 
         try {
-            logger.info('🔄 [SCHEDULER] Starting scheduled ingestion for user', {
+            logger.info('[SCHEDULER] Starting scheduled ingestion for user', {
                 userId: user.userId,
                 schedule: user.schedule,
                 lastRun: user.lastRun?.toISOString()
@@ -239,7 +239,7 @@ class SchedulerService {
                 })
                 .eq('user_id', user.userId);
 
-            logger.info('✅ [SCHEDULER] Completed scheduled ingestion for user', {
+            logger.info('[SCHEDULER] Completed scheduled ingestion for user', {
                 userId: user.userId,
                 documentsIngested: result.documentsIngested,
                 emailsProcessed: result.emailsProcessed,
@@ -261,7 +261,7 @@ class SchedulerService {
             }
 
         } catch (error: any) {
-            logger.error('❌ [SCHEDULER] Error during scheduled ingestion for user', {
+            logger.error('[SCHEDULER] Error during scheduled ingestion for user', {
                 userId: user.userId,
                 error: error?.message || String(error)
             });
