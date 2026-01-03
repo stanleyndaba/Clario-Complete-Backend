@@ -78,6 +78,7 @@ import billingWorker from './workers/billingWorker';
 import notificationsWorker from './workers/notificationsWorker';
 import learningWorker from './workers/learningWorker';
 import scheduledSyncJob from './jobs/scheduledSyncJob';
+import { schedulerService } from './services/schedulerService';
 
 const app = express();
 const server = createServer(app);
@@ -502,6 +503,17 @@ server.listen(PORT, '0.0.0.0', () => {
         logger.info('Scheduled sync job initialized (auto-sync every 6 hours)');
       } else {
         logger.info('Scheduled sync job disabled (ENABLE_SCHEDULED_SYNC=false)');
+      }
+
+      // Start Scheduled Evidence Ingestion (auto-collect)
+      // Handles both hourly and daily scheduled ingestion based on user settings
+      if (process.env.ENABLE_SCHEDULED_INGESTION !== 'false') {
+        schedulerService.initialize().catch((error: any) => {
+          logger.error('Failed to initialize scheduler service', { error: error.message });
+        });
+        logger.info('Scheduled evidence ingestion initialized (hourly + daily at 02:00 UTC)');
+      } else {
+        logger.info('Scheduled evidence ingestion disabled (ENABLE_SCHEDULED_INGESTION=false)');
       }
 
       // Start detection job processor (processes detection jobs from queue)
