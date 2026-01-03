@@ -97,6 +97,10 @@ export class GmailIngestionService {
         case 'last_12_months':
           afterDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
           break;
+        case 'last_18_months':
+          // 18 months = Amazon's claimable window for reimbursements
+          afterDate = new Date(now.getTime() - 548 * 24 * 60 * 60 * 1000);
+          break;
         case 'since_last_sync':
           // Would need to track last sync time - for now use 7 days
           afterDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -133,6 +137,15 @@ export class GmailIngestionService {
       if (fileTypes.docs) {
         this.allowedFileTypes.add('application/msword');
         this.allowedFileTypes.add('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+      }
+      if (fileTypes.shipping) {
+        // Shipping documents can be PDF, images, or spreadsheets
+        this.allowedFileTypes.add('application/pdf');
+        this.allowedFileTypes.add('image/png');
+        this.allowedFileTypes.add('image/jpeg');
+        this.allowedFileTypes.add('image/tiff');
+        this.allowedFileTypes.add('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        this.allowedFileTypes.add('text/csv');
       }
     }
 
