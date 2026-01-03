@@ -34,6 +34,7 @@ export interface GmailDocument {
 export class GmailIngestionService {
   private gmailService: GmailService;
   private allowedFileTypes: Set<string> = new Set();
+  private fileNamePatterns: string[] = [];
 
   constructor() {
     this.gmailService = new GmailService();
@@ -149,8 +150,19 @@ export class GmailIngestionService {
       }
     }
 
+    // Store filename patterns for filtering during attachment processing
+    const fileNamePatterns = filters.fileNamePatterns || [];
+    if (Array.isArray(fileNamePatterns) && fileNamePatterns.length > 0) {
+      this.fileNamePatterns = fileNamePatterns.map((p: string) => p.toLowerCase().trim());
+      logger.info('[GMAIL INGESTION] Loaded filename patterns for filtering', {
+        patterns: this.fileNamePatterns
+      });
+    } else {
+      this.fileNamePatterns = []; // No filtering if empty
+    }
+
     const finalQuery = queryParts.join(' ');
-    logger.info('📋 [GMAIL INGESTION] Built query from filters', { query: finalQuery });
+    logger.info('[GMAIL INGESTION] Built query from filters', { query: finalQuery });
     return finalQuery;
   }
 
@@ -248,15 +260,28 @@ export class GmailIngestionService {
             continue;
           }
 
-          logger.info(`📎 [GMAIL INGESTION] Found ${attachments.length} attachments in email`, {
+          logger.info(`[GMAIL INGESTION] Found ${attachments.length} attachments in email`, {
             emailId: email.id,
             subject: email.subject,
             attachmentCount: attachments.length
           });
 
-          // Store each attachment as evidence document
+          // Store each attachment as evidence document (with filename filtering)
           for (const attachment of attachments) {
             try {
+              // Filter by filename patterns if configured
+              if (this.fileNamePatterns.length > 0) {
+                const filenameLower = attachment.filename.toLowerCase();
+                const matchesPattern = this.fileNamePatterns.some(pattern => filenameLower.includes(pattern));
+                if (!matchesPattern) {
+                  logger.debug('[GMAIL INGESTION] Attachment filename does not match any pattern, skipping', {
+                    filename: attachment.filename,
+                    patterns: this.fileNamePatterns
+                  });
+                  continue;
+                }
+              }
+
               const documentId = await this.storeEvidenceDocument(userId, email, attachment);
 
               if (documentId) {
