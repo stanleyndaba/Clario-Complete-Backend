@@ -33,14 +33,118 @@ export interface GmailDocument {
 
 export class GmailIngestionService {
   private gmailService: GmailService;
+  private allowedFileTypes: Set<string> = new Set();
 
   constructor() {
     this.gmailService = new GmailService();
   }
 
   /**
+   * Build Gmail search query from comprehensive filters
+   */
+  private buildGmailQueryFromFilters(filters: any): string {
+    const queryParts: string[] = [];
+
+    // Sender patterns (OR logic) - e.g., from:amazon.com OR from:alibaba.com
+    const senderPatterns = filters.senderPatterns || filters.includeSenders || [];
+    if (senderPatterns.length > 0) {
+      const senderQueries = senderPatterns
+        .map((s: string) => `from:${s.replace(/\*/g, '')}`)
+        .join(' OR ');
+      if (senderQueries) {
+        queryParts.push(`(${senderQueries})`);
+      }
+    }
+
+    // Subject keywords (OR logic) - e.g., subject:(invoice OR receipt)
+    const subjectKeywords = filters.subjectKeywords || [];
+    if (subjectKeywords.length > 0) {
+      const subjectQueries = subjectKeywords
+        .map((s: string) => s.includes(' ') ? `"${s}"` : s)
+        .join(' OR ');
+      queryParts.push(`subject:(${subjectQueries})`);
+    }
+
+    // Excluded senders (NOT logic) - e.g., -from:newsletter@
+    const excludeSenders = filters.excludeSenders || [];
+    for (const sender of excludeSenders) {
+      if (sender) {
+        queryParts.push(`-from:${sender.replace(/\*/g, '')}`);
+      }
+    }
+
+    // Excluded subjects (NOT logic) - e.g., -subject:unsubscribe
+    const excludeSubjects = filters.excludeSubjects || [];
+    for (const subject of excludeSubjects) {
+      if (subject) {
+        queryParts.push(`-subject:${subject}`);
+      }
+    }
+
+    // Date range filtering
+    const dateRange = filters.dateRange;
+    if (dateRange && dateRange !== 'all') {
+      const now = new Date();
+      let afterDate: Date | null = null;
+
+      switch (dateRange) {
+        case 'last_30':
+          afterDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+          break;
+        case 'last_90':
+          afterDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+          break;
+        case 'last_12_months':
+          afterDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+          break;
+        case 'since_last_sync':
+          // Would need to track last sync time - for now use 7 days
+          afterDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          break;
+      }
+
+      if (afterDate) {
+        const dateStr = afterDate.toISOString().split('T')[0].replace(/-/g, '/');
+        queryParts.push(`after:${dateStr}`);
+      }
+    }
+
+    // Always require attachments
+    queryParts.push('has:attachment');
+
+    // Store allowed file types for filtering during attachment processing
+    const fileTypes = filters.fileTypes;
+    if (fileTypes && typeof fileTypes === 'object') {
+      this.allowedFileTypes.clear();
+      if (fileTypes.pdf) {
+        this.allowedFileTypes.add('application/pdf');
+      }
+      if (fileTypes.images) {
+        this.allowedFileTypes.add('image/png');
+        this.allowedFileTypes.add('image/jpeg');
+        this.allowedFileTypes.add('image/jpg');
+        this.allowedFileTypes.add('image/tiff');
+      }
+      if (fileTypes.spreadsheets) {
+        this.allowedFileTypes.add('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        this.allowedFileTypes.add('application/vnd.ms-excel');
+        this.allowedFileTypes.add('text/csv');
+      }
+      if (fileTypes.docs) {
+        this.allowedFileTypes.add('application/msword');
+        this.allowedFileTypes.add('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+      }
+    }
+
+    const finalQuery = queryParts.join(' ');
+    logger.info('📋 [GMAIL INGESTION] Built query from filters', { query: finalQuery });
+    return finalQuery;
+  }
+
+  /**
    * Ingest evidence documents from Gmail
    * Searches for invoice/receipt emails and extracts attachments
+   * Now supports comprehensive 8-category filtering
    */
   async ingestEvidenceFromGmail(
     userId: string,
@@ -48,6 +152,7 @@ export class GmailIngestionService {
       query?: string;
       maxResults?: number;
       autoParse?: boolean;
+      filters?: any; // Optional inline filters
     } = {}
   ): Promise<GmailIngestionResult> {
     const startTime = Date.now();
@@ -62,14 +167,42 @@ export class GmailIngestionService {
         maxResults: options.maxResults || 50
       });
 
-      // Default query: search for invoices, receipts, FBA reports
-      const defaultQuery = options.query ||
+      // Load saved filters from database if not provided inline
+      let filters = options.filters;
+      if (!filters) {
+        try {
+          const { data: sourceData } = await supabase
+            .from('evidence_sources')
+            .select('metadata')
+            .eq('user_id', userId)
+            .eq('provider', 'gmail')
+            .maybeSingle();
+
+          if (sourceData?.metadata) {
+            filters = sourceData.metadata;
+            logger.info('📋 [GMAIL INGESTION] Loaded saved filters', { userId, filterKeys: Object.keys(filters) });
+          }
+        } catch (e) {
+          logger.debug('Could not load saved filters, using defaults');
+        }
+      }
+
+      // Build dynamic query from filters
+      let dynamicQuery = options.query;
+      if (!dynamicQuery && filters) {
+        dynamicQuery = this.buildGmailQueryFromFilters(filters);
+      }
+
+      // Default query if no filters configured
+      const finalQuery = dynamicQuery ||
         'from:amazon.com OR from:amazon.co.uk OR subject:(invoice OR receipt OR "FBA" OR "reimbursement" OR "refund") has:attachment';
+
+      logger.info('🔍 [GMAIL INGESTION] Using query', { userId, query: finalQuery.substring(0, 200) });
 
       // Fetch emails from Gmail
       const emails = await this.gmailService.fetchEmails(
         userId,
-        defaultQuery,
+        finalQuery,
         options.maxResults || 50
       );
 

@@ -701,7 +701,7 @@ router.post('/schedule', async (req: Request, res: Response) => {
 
 /**
  * POST /api/evidence/filters
- * Set evidence ingestion filters
+ * Set evidence ingestion filters (comprehensive 8-category format)
  */
 router.post('/filters', async (req: Request, res: Response) => {
   try {
@@ -714,20 +714,46 @@ router.post('/filters', async (req: Request, res: Response) => {
       });
     }
 
-    const { includeSenders, excludeSenders, fileTypes, folders } = req.body;
+    // Support both new comprehensive format and legacy format
+    const {
+      // New comprehensive format
+      senderPatterns,
+      subjectKeywords,
+      excludeSubjects,
+      fileTypes,
+      fileNamePatterns,
+      dateRange,
+      skipDuplicates,
+      skipExisting,
+      // Shared fields
+      excludeSenders,
+      folders,
+      // Legacy format (backward compatibility)
+      includeSenders
+    } = req.body;
+
+    // Build comprehensive filters object
+    const filters: Record<string, any> = {
+      // Use new format if provided, otherwise fall back to legacy
+      senderPatterns: senderPatterns || includeSenders || [],
+      excludeSenders: excludeSenders || [],
+      subjectKeywords: subjectKeywords || [],
+      excludeSubjects: excludeSubjects || [],
+      // Handle fileTypes - new format is object, legacy is array
+      fileTypes: typeof fileTypes === 'object' && !Array.isArray(fileTypes)
+        ? fileTypes
+        : { pdf: true, images: true, spreadsheets: true, docs: false },
+      fileNamePatterns: fileNamePatterns || [],
+      folders: folders || [],
+      dateRange: dateRange || 'last_90',
+      skipDuplicates: skipDuplicates !== false, // Default true
+      skipExisting: skipExisting !== false // Default true
+    };
 
     // Store filters in database (evidence_sources metadata)
     try {
       const { supabase } = await import('../database/supabaseClient');
       // Update evidence source metadata with filters
-      const filters = {
-        includeSenders: includeSenders || [],
-        excludeSenders: excludeSenders || [],
-        fileTypes: fileTypes || [],
-        folders: folders || []
-      };
-
-      // Update all evidence sources for user
       await supabase
         .from('evidence_sources')
         .update({
@@ -736,19 +762,14 @@ router.post('/filters', async (req: Request, res: Response) => {
         })
         .eq('user_id', userId);
 
-      logger.info('Evidence ingestion filters updated', { userId, filters });
+      logger.info('Evidence ingestion filters updated', { userId, filterKeys: Object.keys(filters) });
     } catch (dbError) {
-      logger.warn('Failed to update filters', { error: dbError });
+      logger.warn('Failed to update filters in database', { error: dbError });
     }
 
     res.json({
       ok: true,
-      filters: {
-        includeSenders: includeSenders || [],
-        excludeSenders: excludeSenders || [],
-        fileTypes: fileTypes || [],
-        folders: folders || []
-      },
+      filters,
       message: 'Filters updated successfully'
     });
   } catch (error: any) {
