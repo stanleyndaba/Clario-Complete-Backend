@@ -19,8 +19,18 @@ interface ScheduledUser {
 class SchedulerService {
     private isRunning: boolean = false;
     private hourlyJob: cron.ScheduledTask | null = null;
-    private dailyJob: cron.ScheduledTask | null = null;
+    private dailyJobs: Map<string, cron.ScheduledTask> = new Map();
     private currentlyIngesting: Set<string> = new Set();
+
+    // All supported daily schedules
+    private readonly scheduleConfigs = [
+        { schedule: 'daily_0200', hour: 2, label: '02:00 UTC' },
+        { schedule: 'daily_0600', hour: 6, label: '06:00 UTC' },
+        { schedule: 'daily_1000', hour: 10, label: '10:00 UTC' },
+        { schedule: 'daily_1400', hour: 14, label: '14:00 UTC' },
+        { schedule: 'daily_1800', hour: 18, label: '18:00 UTC' },
+        { schedule: 'daily_2200', hour: 22, label: '22:00 UTC' },
+    ];
 
     /**
      * Initialize the scheduler service
@@ -43,19 +53,23 @@ class SchedulerService {
             timezone: 'UTC'
         });
 
-        // Daily job - runs at 02:00 UTC
-        this.dailyJob = cron.schedule('0 2 * * *', async () => {
-            logger.info('⏰ [SCHEDULER] Running daily ingestion job (02:00 UTC)');
-            await this.runScheduledIngestion('daily_0200');
-        }, {
-            scheduled: true,
-            timezone: 'UTC'
-        });
+        // Set up daily jobs for all time slots
+        for (const config of this.scheduleConfigs) {
+            const cronExpression = `0 ${config.hour} * * *`;
+            const job = cron.schedule(cronExpression, async () => {
+                logger.info(`⏰ [SCHEDULER] Running daily ingestion job (${config.label})`);
+                await this.runScheduledIngestion(config.schedule);
+            }, {
+                scheduled: true,
+                timezone: 'UTC'
+            });
+            this.dailyJobs.set(config.schedule, job);
+        }
 
         this.isRunning = true;
         logger.info('✅ [SCHEDULER] Scheduled ingestion service initialized', {
             hourlyJob: 'Every hour at :00',
-            dailyJob: 'Daily at 02:00 UTC'
+            dailyJobs: this.scheduleConfigs.map(c => c.label).join(', ')
         });
 
         // Run an initial check on startup (after 30 seconds to let server settle)
@@ -73,10 +87,10 @@ class SchedulerService {
             this.hourlyJob.stop();
             this.hourlyJob = null;
         }
-        if (this.dailyJob) {
-            this.dailyJob.stop();
-            this.dailyJob = null;
+        for (const [, job] of this.dailyJobs) {
+            job.stop();
         }
+        this.dailyJobs.clear();
         this.isRunning = false;
         logger.info('⏹️ [SCHEDULER] Scheduler service stopped');
     }
@@ -84,7 +98,7 @@ class SchedulerService {
     /**
      * Run scheduled ingestion for users with matching schedule
      */
-    private async runScheduledIngestion(scheduleType: 'hourly' | 'daily_0200' | 'all'): Promise<void> {
+    private async runScheduledIngestion(scheduleType: string): Promise<void> {
         try {
             // Find all users with auto-collect enabled
             const users = await this.getScheduledUsers(scheduleType);
@@ -118,7 +132,7 @@ class SchedulerService {
     /**
      * Get users who have auto-collect enabled with matching schedule
      */
-    private async getScheduledUsers(scheduleType: 'hourly' | 'daily_0200' | 'all'): Promise<ScheduledUser[]> {
+    private async getScheduledUsers(scheduleType: string): Promise<ScheduledUser[]> {
         try {
             // Query evidence_sources for users with auto-collect enabled
             let query = supabase
@@ -282,11 +296,11 @@ class SchedulerService {
     /**
      * Get scheduler status
      */
-    getStatus(): { running: boolean; hourlyJob: boolean; dailyJob: boolean; currentlyIngesting: string[] } {
+    getStatus(): { running: boolean; hourlyJob: boolean; dailyJobs: string[]; currentlyIngesting: string[] } {
         return {
             running: this.isRunning,
             hourlyJob: this.hourlyJob !== null,
-            dailyJob: this.dailyJob !== null,
+            dailyJobs: Array.from(this.dailyJobs.keys()),
             currentlyIngesting: Array.from(this.currentlyIngesting)
         };
     }
