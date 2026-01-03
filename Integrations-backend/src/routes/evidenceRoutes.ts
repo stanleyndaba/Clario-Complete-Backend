@@ -664,8 +664,8 @@ router.post('/schedule', async (req: Request, res: Response) => {
 
     const { schedule } = req.body;
 
-    // Validate schedule
-    const validSchedules = ['daily_0200', 'daily_1200', 'hourly', 'weekly'];
+    // Validate schedule - support all daily time slots
+    const validSchedules = ['hourly', 'daily_0200', 'daily_0600', 'daily_1000', 'daily_1400', 'daily_1800', 'daily_2200'];
     if (schedule && !validSchedules.includes(schedule)) {
       return res.status(400).json({
         ok: false,
