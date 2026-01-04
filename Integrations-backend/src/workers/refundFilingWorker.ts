@@ -257,8 +257,89 @@ class RefundFilingWorker {
   }
 
   /**
-   * Run filing for all tenants
+   * DOUBLE-DIP PREVENTION: Check if item was already reimbursed
+   * This is CRITICAL to prevent filing claims for items Amazon already paid for
+   * 
+   * Amazon may auto-reimburse without seller noticing. Filing again = "Theft" accusation.
+   * 
+   * Logic:
+   * 1. Check financial_events for event_type = 'reimbursement'
+   * 2. Match by order_id, sku, or asin
+   * 3. If found in last 6 months, skip filing
+   * 
+   * @param orderId Amazon order ID
+   * @param sku Amazon SKU
+   * @param asin Amazon ASIN
+   * @param sellerId Seller/user ID
+   * @returns true if already reimbursed, false if safe to file
    */
+  private async wasAlreadyReimbursed(
+    orderId: string,
+    sku: string | undefined,
+    asin: string | undefined,
+    sellerId: string
+  ): Promise<boolean> {
+    // Need at least one identifier to check
+    if (!orderId && !sku && !asin) {
+      logger.warn('⚠️ [REFUND FILING] No identifiers for reimbursement check, proceeding with caution');
+      return false;
+    }
+
+    try {
+      // Check for reimbursements in the last 6 months
+      const sixMonthsAgo = new Date();
+      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+      // Build query - check by order_id first (most reliable)
+      let query = supabaseAdmin
+        .from('financial_events')
+        .select('id, amazon_order_id, amazon_sku, amount, event_date')
+        .eq('seller_id', sellerId)
+        .eq('event_type', 'reimbursement')
+        .gte('event_date', sixMonthsAgo.toISOString());
+
+      // Match by order_id if available
+      if (orderId) {
+        query = query.eq('amazon_order_id', orderId);
+      } else if (sku) {
+        // Fallback to SKU
+        query = query.eq('amazon_sku', sku);
+      }
+      // Note: asin match would require querying raw_payload JSONB, skip for now
+
+      const { data: reimbursements, error } = await query.limit(1);
+
+      if (error) {
+        logger.warn('⚠️ [REFUND FILING] Could not check reimbursement history, proceeding with caution', {
+          orderId,
+          error: error.message
+        });
+        return false; // Fail open
+      }
+
+      if (reimbursements && reimbursements.length > 0) {
+        const reimbursement = reimbursements[0];
+        logger.warn('💰 [REFUND FILING] ALREADY REIMBURSED - Amazon already paid for this item', {
+          orderId,
+          sku,
+          reimbursementId: reimbursement.id,
+          reimbursementAmount: reimbursement.amount,
+          reimbursementDate: reimbursement.event_date
+        });
+        return true; // Already reimbursed!
+      }
+
+      return false; // No prior reimbursement found, safe to file
+
+    } catch (error: any) {
+      logger.warn('⚠️ [REFUND FILING] Error checking reimbursement history', {
+        orderId,
+        error: error.message
+      });
+      return false; // Fail open
+    }
+  }
+
   async runFilingForAllTenants(): Promise<FilingStats> {
     const stats: FilingStats = {
       processed: 0,
@@ -386,6 +467,34 @@ class RefundFilingWorker {
 
               continue; // Skip to next case
             }
+          }
+
+          // 💰 DOUBLE-DIP PREVENTION: Check if item was already reimbursed
+          // Filing for something Amazon already paid = "Theft" accusation
+          const alreadyReimbursed = await this.wasAlreadyReimbursed(
+            orderId,
+            sku,
+            asin,
+            disputeCase.seller_id
+          );
+          if (alreadyReimbursed) {
+            logger.info('⏭️ [REFUND FILING] Skipping case - item already reimbursed by Amazon', {
+              disputeId: disputeCase.id,
+              orderId,
+              sku
+            });
+            stats.skipped++;
+
+            // Mark this case to prevent future processing
+            await supabaseAdmin
+              .from('dispute_cases')
+              .update({
+                filing_status: 'already_reimbursed',
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', disputeCase.id);
+
+            continue; // Skip to next case
           }
 
           // Get detection result for confidence score
