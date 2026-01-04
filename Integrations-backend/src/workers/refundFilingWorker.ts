@@ -22,201 +22,227 @@ import refundFilingService, { FilingRequest, FilingResult, CaseStatus } from '..
  * One claim in 3 min, next in 7 min, next in 4 min = looks human
  */
 function getJitterMs(minSeconds: number = 180, maxSeconds: number = 420): number {
- const jitterSeconds = Math.floor(Math.random() * (maxSeconds - minSeconds + 1)) + minSeconds;
- return jitterSeconds * 1000;
+  const jitterSeconds = Math.floor(Math.random() * (maxSeconds - minSeconds + 1)) + minSeconds;
+  return jitterSeconds * 1000;
 }
 
 async function sleepWithJitter(minSeconds: number = 180, maxSeconds: number = 420): Promise<void> {
- const jitterMs = getJitterMs(minSeconds, maxSeconds);
- const jitterSeconds = jitterMs / 1000;
- logger.debug(` [REFUND FILING] Sleeping for ${jitterSeconds.toFixed(0)}s (jitter: ${minSeconds}-${maxSeconds}s)`);
- await new Promise(resolve => setTimeout(resolve, jitterMs));
+  const jitterMs = getJitterMs(minSeconds, maxSeconds);
+  const jitterSeconds = jitterMs / 1000;
+  logger.debug(` [REFUND FILING] Sleeping for ${jitterSeconds.toFixed(0)}s (jitter: ${minSeconds}-${maxSeconds}s)`);
+  await new Promise(resolve => setTimeout(resolve, jitterMs));
 }
 
 // Retry logic with exponential backoff
 async function retryWithBackoff<T>(
- fn: () => Promise<T>,
- maxRetries: number = 3,
- baseDelay: number = 2000
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelay: number = 2000
 ): Promise<T> {
- let lastError: any;
+  let lastError: any;
 
- for (let attempt = 0; attempt <= maxRetries; attempt++) {
- try {
- return await fn();
- } catch (error: any) {
- lastError = error;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      lastError = error;
 
- if (attempt < maxRetries) {
- const delay = baseDelay * Math.pow(2, attempt);
- logger.warn(` [REFUND FILING] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, {
- error: error.message,
- delay
- });
- await new Promise(resolve => setTimeout(resolve, delay));
- }
- }
- }
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        logger.warn(` [REFUND FILING] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, {
+          error: error.message,
+          delay
+        });
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
 
- throw lastError;
+  throw lastError;
 }
 
 export interface FilingStats {
- processed: number;
- filed: number;
- failed: number;
- skipped: number; // Skipped due to duplicates or other reasons
- statusUpdated: number;
- retried: number;
- errors: string[];
+  processed: number;
+  filed: number;
+  failed: number;
+  skipped: number; // Skipped due to duplicates or other reasons
+  statusUpdated: number;
+  retried: number;
+  errors: string[];
 }
 
 class RefundFilingWorker {
- private schedule: string = '*/5 * * * *'; // Every 5 minutes
- private statusPollingSchedule: string = '*/10 * * * *'; // Every 10 minutes
- private cronJob: cron.ScheduledTask | null = null;
- private statusPollingJob: cron.ScheduledTask | null = null;
- private isRunning: boolean = false;
+  private schedule: string = '*/5 * * * *'; // Every 5 minutes
+  private statusPollingSchedule: string = '*/10 * * * *'; // Every 10 minutes
+  private cronJob: cron.ScheduledTask | null = null;
+  private statusPollingJob: cron.ScheduledTask | null = null;
+  private isRunning: boolean = false;
 
- /**
- * THROTTLE CONFIGURATION
- * Prevents flood-like behavior that triggers Amazon's bot detection
- * These values are conservative - can be increased after testing
- */
- private static readonly THROTTLE_CONFIG = {
- MAX_PER_RUN: 3, // Only process 3 claims per 5-minute run
- MAX_PER_HOUR: 12, // Max 12 claims per hour (soft limit)
- MAX_PER_DAY: 100, // Daily ceiling (for reference)
- };
+  /**
+  * THROTTLE CONFIGURATION
+  * Prevents flood-like behavior that triggers Amazon's bot detection
+  * These values are conservative - can be increased after testing
+  */
+  private static readonly THROTTLE_CONFIG = {
+    MAX_PER_RUN: 3, // Only process 3 claims per 5-minute run
+    MAX_PER_HOUR: 12, // Max 12 claims per hour (soft limit)
+    MAX_PER_DAY: 100, // Daily ceiling (for reference)
+  };
 
- /**
- * HIGH-VALUE CLAIM APPROVAL
- * LLMs can hallucinate - reading "10 units" as "100 units" on blurry documents.
- * To prevent fraud accusations from Amazon, high-value claims require human approval.
- * 
- * Rule: Claims over this threshold are flagged 'pending_approval' instead of auto-submitted.
- */
- private static readonly HIGH_VALUE_THRESHOLD = 500; // USD - adjust based on risk tolerance
+  /**
+  * HIGH-VALUE CLAIM APPROVAL
+  * LLMs can hallucinate - reading "10 units" as "100 units" on blurry documents.
+  * To prevent fraud accusations from Amazon, high-value claims require human approval.
+  * 
+  * Rule: Claims over this threshold are flagged 'pending_approval' instead of auto-submitted.
+  */
+  private static readonly HIGH_VALUE_THRESHOLD = 500; // USD - adjust based on risk tolerance
 
- /**
- * Start the worker
- */
- start(): void {
- if (this.cronJob) {
- logger.warn(' [REFUND FILING] Worker already started');
- return;
- }
+  /**
+  * KILL SWITCH - DANGEROUS DOCUMENT PATTERNS
+  * CRITICAL SAFETY FEATURE: Prevents credit notes, returns, and refunds from being submitted to Amazon.
+  * 
+  * The Risk: If Agent 7 submits a "Credit Note" (you owe money) as an "Invoice" (proof of ownership),
+  * Amazon will flag for FRAUD and immediately ban the Seller Account. Funds frozen. Game over.
+  * 
+  * Rule: If filename contains credit, return, refund, or similar terms, QUARANTINE the case.
+  * These documents must NEVER reach Amazon.
+  */
+  private static readonly DANGEROUS_DOCUMENT_PATTERNS = [
+    'credit',
+    'credit_note',
+    'credit-note',
+    'creditnote',
+    'return',
+    'returned',
+    'refund',
+    'refunded',
+    'rma', // Return Merchandise Authorization
+    'reversal',
+    'chargeback',
+    'debit_note',
+    'adjustment',
+  ];
 
- logger.info(' [REFUND FILING] Starting Refund Filing Worker', {
- schedule: this.schedule,
- statusPollingSchedule: this.statusPollingSchedule
- });
+  /**
+  * Start the worker
+  */
+  start(): void {
+    if (this.cronJob) {
+      logger.warn(' [REFUND FILING] Worker already started');
+      return;
+    }
 
- // Schedule filing job (every 5 minutes)
- this.cronJob = cron.schedule(this.schedule, async () => {
- if (this.isRunning) {
- logger.debug('⏸️ [REFUND FILING] Previous run still in progress, skipping');
- return;
- }
+    logger.info(' [REFUND FILING] Starting Refund Filing Worker', {
+      schedule: this.schedule,
+      statusPollingSchedule: this.statusPollingSchedule
+    });
 
- this.isRunning = true;
- try {
- await this.runFilingForAllTenants();
- } catch (error: any) {
- logger.error(' [REFUND FILING] Error in filing job', { error: error.message });
- } finally {
- this.isRunning = false;
- }
- });
+    // Schedule filing job (every 5 minutes)
+    this.cronJob = cron.schedule(this.schedule, async () => {
+      if (this.isRunning) {
+        logger.debug('⏸️ [REFUND FILING] Previous run still in progress, skipping');
+        return;
+      }
 
- // Schedule status polling job (every 10 minutes)
- this.statusPollingJob = cron.schedule(this.statusPollingSchedule, async () => {
- if (this.isRunning) {
- logger.debug('⏸️ [REFUND FILING] Previous run still in progress, skipping status polling');
- return;
- }
+      this.isRunning = true;
+      try {
+        await this.runFilingForAllTenants();
+      } catch (error: any) {
+        logger.error(' [REFUND FILING] Error in filing job', { error: error.message });
+      } finally {
+        this.isRunning = false;
+      }
+    });
 
- this.isRunning = true;
- try {
- await this.pollCaseStatuses();
- } catch (error: any) {
- logger.error(' [REFUND FILING] Error in status polling job', { error: error.message });
- } finally {
- this.isRunning = false;
- }
- });
+    // Schedule status polling job (every 10 minutes)
+    this.statusPollingJob = cron.schedule(this.statusPollingSchedule, async () => {
+      if (this.isRunning) {
+        logger.debug('⏸️ [REFUND FILING] Previous run still in progress, skipping status polling');
+        return;
+      }
 
- logger.info(' [REFUND FILING] Worker started successfully');
- }
+      this.isRunning = true;
+      try {
+        await this.pollCaseStatuses();
+      } catch (error: any) {
+        logger.error(' [REFUND FILING] Error in status polling job', { error: error.message });
+      } finally {
+        this.isRunning = false;
+      }
+    });
 
- /**
- * Stop the worker
- */
- stop(): void {
- if (this.cronJob) {
- this.cronJob.stop();
- this.cronJob = null;
- }
- if (this.statusPollingJob) {
- this.statusPollingJob.stop();
- this.statusPollingJob = null;
- }
- logger.info(' [REFUND FILING] Worker stopped');
- }
+    logger.info(' [REFUND FILING] Worker started successfully');
+  }
 
- /**
- * Check how many claims have been filed in the last hour
- * Used to enforce hourly rate limits
- */
- private async getFilingsInLastHour(): Promise<number> {
- try {
- const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  /**
+  * Stop the worker
+  */
+  stop(): void {
+    if (this.cronJob) {
+      this.cronJob.stop();
+      this.cronJob = null;
+    }
+    if (this.statusPollingJob) {
+      this.statusPollingJob.stop();
+      this.statusPollingJob = null;
+    }
+    logger.info(' [REFUND FILING] Worker stopped');
+  }
 
- const { count, error } = await supabaseAdmin
- .from('dispute_submissions')
- .select('*', { count: 'exact', head: true })
- .gte('created_at', oneHourAgo);
+  /**
+  * Check how many claims have been filed in the last hour
+  * Used to enforce hourly rate limits
+  */
+  private async getFilingsInLastHour(): Promise<number> {
+    try {
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
 
- if (error) {
- logger.warn(' [REFUND FILING] Could not check hourly filings, proceeding with caution', {
- error: error.message
- });
- return 0; // Assume 0 if we can't check (fail open, but log it)
- }
+      const { count, error } = await supabaseAdmin
+        .from('dispute_submissions')
+        .select('*', { count: 'exact', head: true })
+        .gte('created_at', oneHourAgo);
 
- return count || 0;
- } catch (error: any) {
- logger.warn(' [REFUND FILING] Error checking hourly filings', { error: error.message });
- return 0;
- }
- }
+      if (error) {
+        logger.warn(' [REFUND FILING] Could not check hourly filings, proceeding with caution', {
+          error: error.message
+        });
+        return 0; // Assume 0 if we can't check (fail open, but log it)
+      }
 
- /**
- * DUPLICATE PREVENTION: Check if order already has an active claim
- * This is CRITICAL to prevent Amazon from flagging as "Abuse of Seller Support"
- * 
- * Logic:
- * 1. Check dispute_cases for any case with same order_id
- * 2. If status is NOT closed/approved/rejected, there's an active case
- * 3. Do NOT file a new case - wait for the existing one to resolve
- * 
- * @param orderId The Amazon order ID to check
- * @param sellerId The seller/user ID (for scoping)
- * @returns true if there's an active case, false if safe to file
- */
- private async hasActiveClaimForOrder(orderId: string, sellerId: string): Promise<boolean> {
- if (!orderId) {
- // No order ID means we can't check for duplicates - log warning but allow
- logger.warn(' [REFUND FILING] No order_id provided, cannot check for duplicates');
- return false;
- }
+      return count || 0;
+    } catch (error: any) {
+      logger.warn(' [REFUND FILING] Error checking hourly filings', { error: error.message });
+      return 0;
+    }
+  }
 
- try {
- // Query for any active case (not closed, not approved, not rejected) for this order
- // We need to join with detection_results to check evidence->order_id
- const { data: activeCases, error } = await supabaseAdmin
- .from('dispute_cases')
- .select(`
+  /**
+  * DUPLICATE PREVENTION: Check if order already has an active claim
+  * This is CRITICAL to prevent Amazon from flagging as "Abuse of Seller Support"
+  * 
+  * Logic:
+  * 1. Check dispute_cases for any case with same order_id
+  * 2. If status is NOT closed/approved/rejected, there's an active case
+  * 3. Do NOT file a new case - wait for the existing one to resolve
+  * 
+  * @param orderId The Amazon order ID to check
+  * @param sellerId The seller/user ID (for scoping)
+  * @returns true if there's an active case, false if safe to file
+  */
+  private async hasActiveClaimForOrder(orderId: string, sellerId: string): Promise<boolean> {
+    if (!orderId) {
+      // No order ID means we can't check for duplicates - log warning but allow
+      logger.warn(' [REFUND FILING] No order_id provided, cannot check for duplicates');
+      return false;
+    }
+
+    try {
+      // Query for any active case (not closed, not approved, not rejected) for this order
+      // We need to join with detection_results to check evidence->order_id
+      const { data: activeCases, error } = await supabaseAdmin
+        .from('dispute_cases')
+        .select(`
  id,
  status,
  filing_status,
@@ -224,175 +250,237 @@ class RefundFilingWorker {
  evidence
  )
  `)
- .eq('seller_id', sellerId)
- .not('status', 'in', '(closed,approved,rejected)')
- .not('filing_status', 'in', '(failed)');
+        .eq('seller_id', sellerId)
+        .not('status', 'in', '(closed,approved,rejected)')
+        .not('filing_status', 'in', '(failed)');
 
- if (error) {
- logger.warn(' [REFUND FILING] Could not check for duplicates, proceeding with caution', {
- orderId,
- error: error.message
- });
- return false; // Fail open - if we can't check, proceed but log it
- }
+      if (error) {
+        logger.warn(' [REFUND FILING] Could not check for duplicates, proceeding with caution', {
+          orderId,
+          error: error.message
+        });
+        return false; // Fail open - if we can't check, proceed but log it
+      }
 
- if (!activeCases || activeCases.length === 0) {
- return false; // No active cases, safe to file
- }
+      if (!activeCases || activeCases.length === 0) {
+        return false; // No active cases, safe to file
+      }
 
- // Check if any active case matches this order_id
- for (const activeCase of activeCases) {
- const caseOrderId = (activeCase as any).detection_results?.evidence?.order_id;
- if (caseOrderId === orderId) {
- logger.warn(' [REFUND FILING] DUPLICATE DETECTED - Active case exists for order', {
- orderId,
- existingCaseId: activeCase.id,
- existingStatus: activeCase.status,
- existingFilingStatus: activeCase.filing_status
- });
- return true; // Duplicate found!
- }
- }
+      // Check if any active case matches this order_id
+      for (const activeCase of activeCases) {
+        const caseOrderId = (activeCase as any).detection_results?.evidence?.order_id;
+        if (caseOrderId === orderId) {
+          logger.warn(' [REFUND FILING] DUPLICATE DETECTED - Active case exists for order', {
+            orderId,
+            existingCaseId: activeCase.id,
+            existingStatus: activeCase.status,
+            existingFilingStatus: activeCase.filing_status
+          });
+          return true; // Duplicate found!
+        }
+      }
 
- return false; // No matching order_id in active cases
+      return false; // No matching order_id in active cases
 
- } catch (error: any) {
- logger.warn(' [REFUND FILING] Error checking for duplicates', {
- orderId,
- error: error.message
- });
- return false; // Fail open
- }
- }
+    } catch (error: any) {
+      logger.warn(' [REFUND FILING] Error checking for duplicates', {
+        orderId,
+        error: error.message
+      });
+      return false; // Fail open
+    }
+  }
 
- /**
- * DOUBLE-DIP PREVENTION: Check if item was already reimbursed
- * This is CRITICAL to prevent filing claims for items Amazon already paid for
- * 
- * Amazon may auto-reimburse without seller noticing. Filing again = "Theft" accusation.
- * 
- * Logic:
- * 1. Check financial_events for event_type = 'reimbursement'
- * 2. Match by order_id, sku, or asin
- * 3. If found in last 6 months, skip filing
- * 
- * @param orderId Amazon order ID
- * @param sku Amazon SKU
- * @param asin Amazon ASIN
- * @param sellerId Seller/user ID
- * @returns true if already reimbursed, false if safe to file
- */
- private async wasAlreadyReimbursed(
- orderId: string,
- sku: string | undefined,
- asin: string | undefined,
- sellerId: string
- ): Promise<boolean> {
- // Need at least one identifier to check
- if (!orderId && !sku && !asin) {
- logger.warn(' [REFUND FILING] No identifiers for reimbursement check, proceeding with caution');
- return false;
- }
+  /**
+  * DOUBLE-DIP PREVENTION: Check if item was already reimbursed
+  * This is CRITICAL to prevent filing claims for items Amazon already paid for
+  * 
+  * Amazon may auto-reimburse without seller noticing. Filing again = "Theft" accusation.
+  * 
+  * Logic:
+  * 1. Check financial_events for event_type = 'reimbursement'
+  * 2. Match by order_id, sku, or asin
+  * 3. If found in last 6 months, skip filing
+  * 
+  * @param orderId Amazon order ID
+  * @param sku Amazon SKU
+  * @param asin Amazon ASIN
+  * @param sellerId Seller/user ID
+  * @returns true if already reimbursed, false if safe to file
+  */
+  private async wasAlreadyReimbursed(
+    orderId: string,
+    sku: string | undefined,
+    asin: string | undefined,
+    sellerId: string
+  ): Promise<boolean> {
+    // Need at least one identifier to check
+    if (!orderId && !sku && !asin) {
+      logger.warn(' [REFUND FILING] No identifiers for reimbursement check, proceeding with caution');
+      return false;
+    }
 
- try {
- // Check for reimbursements in the last 6 months
- const sixMonthsAgo = new Date();
- sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    try {
+      // Check for reimbursements in the last 6 months
+      const sixMonthsAgo = new Date();
+      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
- // Build query - check by order_id first (most reliable)
- let query = supabaseAdmin
- .from('financial_events')
- .select('id, amazon_order_id, amazon_sku, amount, event_date')
- .eq('seller_id', sellerId)
- .eq('event_type', 'reimbursement')
- .gte('event_date', sixMonthsAgo.toISOString());
+      // Build query - check by order_id first (most reliable)
+      let query = supabaseAdmin
+        .from('financial_events')
+        .select('id, amazon_order_id, amazon_sku, amount, event_date')
+        .eq('seller_id', sellerId)
+        .eq('event_type', 'reimbursement')
+        .gte('event_date', sixMonthsAgo.toISOString());
 
- // Match by order_id if available
- if (orderId) {
- query = query.eq('amazon_order_id', orderId);
- } else if (sku) {
- // Fallback to SKU
- query = query.eq('amazon_sku', sku);
- }
- // Note: asin match would require querying raw_payload JSONB, skip for now
+      // Match by order_id if available
+      if (orderId) {
+        query = query.eq('amazon_order_id', orderId);
+      } else if (sku) {
+        // Fallback to SKU
+        query = query.eq('amazon_sku', sku);
+      }
+      // Note: asin match would require querying raw_payload JSONB, skip for now
 
- const { data: reimbursements, error } = await query.limit(1);
+      const { data: reimbursements, error } = await query.limit(1);
 
- if (error) {
- logger.warn(' [REFUND FILING] Could not check reimbursement history, proceeding with caution', {
- orderId,
- error: error.message
- });
- return false; // Fail open
- }
+      if (error) {
+        logger.warn(' [REFUND FILING] Could not check reimbursement history, proceeding with caution', {
+          orderId,
+          error: error.message
+        });
+        return false; // Fail open
+      }
 
- if (reimbursements && reimbursements.length > 0) {
- const reimbursement = reimbursements[0];
- logger.warn(' [REFUND FILING] ALREADY REIMBURSED - Amazon already paid for this item', {
- orderId,
- sku,
- reimbursementId: reimbursement.id,
- reimbursementAmount: reimbursement.amount,
- reimbursementDate: reimbursement.event_date
- });
- return true; // Already reimbursed!
- }
+      if (reimbursements && reimbursements.length > 0) {
+        const reimbursement = reimbursements[0];
+        logger.warn(' [REFUND FILING] ALREADY REIMBURSED - Amazon already paid for this item', {
+          orderId,
+          sku,
+          reimbursementId: reimbursement.id,
+          reimbursementAmount: reimbursement.amount,
+          reimbursementDate: reimbursement.event_date
+        });
+        return true; // Already reimbursed!
+      }
 
- return false; // No prior reimbursement found, safe to file
+      return false; // No prior reimbursement found, safe to file
 
- } catch (error: any) {
- logger.warn(' [REFUND FILING] Error checking reimbursement history', {
- orderId,
- error: error.message
- });
- return false; // Fail open
- }
- }
+    } catch (error: any) {
+      logger.warn(' [REFUND FILING] Error checking reimbursement history', {
+        orderId,
+        error: error.message
+      });
+      return false; // Fail open
+    }
+  }
 
- async runFilingForAllTenants(): Promise<FilingStats> {
- const stats: FilingStats = {
- processed: 0,
- filed: 0,
- failed: 0,
- skipped: 0,
- statusUpdated: 0,
- retried: 0,
- errors: []
- };
+  /**
+   * KILL SWITCH: Check if evidence documents contain dangerous files
+   * Credit notes, returns, refunds etc. MUST NEVER be submitted to Amazon
+   * 
+   * @param evidenceIds Array of evidence document IDs
+   * @param sellerId Seller/user ID
+   * @returns Object with hasDangerous flag and list of dangerous filenames
+   */
+  private async hasDangerousDocuments(
+    evidenceIds: string[],
+    sellerId: string
+  ): Promise<{ hasDangerous: boolean; dangerousFilenames: string[] }> {
+    if (!evidenceIds || evidenceIds.length === 0) {
+      return { hasDangerous: false, dangerousFilenames: [] };
+    }
 
- try {
- logger.info(' [REFUND FILING] Starting filing run for all tenants');
+    try {
+      // Query evidence documents by IDs
+      const { data: documents, error } = await supabaseAdmin
+        .from('evidence_documents')
+        .select('id, filename')
+        .in('id', evidenceIds)
+        .eq('seller_id', sellerId);
 
- // THROTTLE CHECK: Hourly rate limit
- const filingsLastHour = await this.getFilingsInLastHour();
- const remainingHourlyQuota = RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR - filingsLastHour;
+      if (error) {
+        logger.warn('[WARN] [REFUND FILING] Could not check document filenames, proceeding with caution', {
+          error: error.message
+        });
+        return { hasDangerous: false, dangerousFilenames: [] }; // Fail open but log
+      }
 
- if (remainingHourlyQuota <= 0) {
- logger.info(' [REFUND FILING] Hourly quota reached, skipping this run', {
- filingsLastHour,
- maxPerHour: RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR
- });
- return stats;
- }
+      if (!documents || documents.length === 0) {
+        return { hasDangerous: false, dangerousFilenames: [] };
+      }
 
- // Calculate how many we can process this run (min of per-run limit and remaining quota)
- const maxThisRun = Math.min(
- RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_RUN,
- remainingHourlyQuota
- );
+      const dangerousFilenames: string[] = [];
 
- logger.info(' [REFUND FILING] Throttle check passed', {
- filingsLastHour,
- remainingHourlyQuota,
- maxThisRun
- });
+      // Check each document filename against dangerous patterns
+      for (const doc of documents) {
+        const filename = (doc.filename || '').toLowerCase();
 
- // Get cases ready for filing (filing_status = 'pending' or 'retrying')
- // Only get cases that have evidence documents linked (via dispute_evidence_links)
- // Note: order_id, asin, sku come from detection_results.evidence JSONB, not dispute_cases
- const { data: casesToFile, error } = await supabaseAdmin
- .from('dispute_cases')
- .select(`
+        for (const pattern of RefundFilingWorker.DANGEROUS_DOCUMENT_PATTERNS) {
+          if (filename.includes(pattern)) {
+            dangerousFilenames.push(doc.filename);
+            break; // No need to check more patterns for this file
+          }
+        }
+      }
+
+      return {
+        hasDangerous: dangerousFilenames.length > 0,
+        dangerousFilenames
+      };
+
+    } catch (error: any) {
+      logger.warn('[WARN] [REFUND FILING] Error checking document filenames', {
+        error: error.message
+      });
+      return { hasDangerous: false, dangerousFilenames: [] }; // Fail open
+    }
+  }
+
+  async runFilingForAllTenants(): Promise<FilingStats> {
+    const stats: FilingStats = {
+      processed: 0,
+      filed: 0,
+      failed: 0,
+      skipped: 0,
+      statusUpdated: 0,
+      retried: 0,
+      errors: []
+    };
+
+    try {
+      logger.info(' [REFUND FILING] Starting filing run for all tenants');
+
+      // THROTTLE CHECK: Hourly rate limit
+      const filingsLastHour = await this.getFilingsInLastHour();
+      const remainingHourlyQuota = RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR - filingsLastHour;
+
+      if (remainingHourlyQuota <= 0) {
+        logger.info(' [REFUND FILING] Hourly quota reached, skipping this run', {
+          filingsLastHour,
+          maxPerHour: RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR
+        });
+        return stats;
+      }
+
+      // Calculate how many we can process this run (min of per-run limit and remaining quota)
+      const maxThisRun = Math.min(
+        RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_RUN,
+        remainingHourlyQuota
+      );
+
+      logger.info(' [REFUND FILING] Throttle check passed', {
+        filingsLastHour,
+        remainingHourlyQuota,
+        maxThisRun
+      });
+
+      // Get cases ready for filing (filing_status = 'pending' or 'retrying')
+      // Only get cases that have evidence documents linked (via dispute_evidence_links)
+      // Note: order_id, asin, sku come from detection_results.evidence JSONB, not dispute_cases
+      const { data: casesToFile, error } = await supabaseAdmin
+        .from('dispute_cases')
+        .select(`
  id, 
  seller_id, 
  detection_result_id, 
@@ -409,715 +497,738 @@ class RefundFilingWorker {
  evidence_document_id
  )
  `)
- .in('filing_status', ['pending', 'retrying'])
- .or('status.eq.pending,status.eq.submitted')
- .limit(maxThisRun); // THROTTLE: Only fetch what we're allowed to process
-
- if (error) {
- // If the error is about no rows, that's fine - just means no cases with evidence
- if (error.message?.includes('0 rows') || error.code === 'PGRST116') {
- logger.debug('[INFO] [REFUND FILING] No cases with evidence ready for filing');
- return stats;
- }
- logger.error(' [REFUND FILING] Failed to get cases to file', { error: error.message });
- stats.errors.push(`Failed to get cases: ${error.message}`);
- return stats;
- }
-
- if (!casesToFile || casesToFile.length === 0) {
- logger.debug('[INFO] [REFUND FILING] No cases with evidence ready for filing');
- return stats;
- }
-
- logger.info(` [REFUND FILING] Found ${casesToFile.length} cases with evidence ready for filing`);
-
- // Process each case
- for (const disputeCase of casesToFile) {
- try {
- stats.processed++;
-
- // Evidence documents are already joined - extract from the query result
- const evidenceLinksFromQuery = (disputeCase as any).dispute_evidence_links || [];
- const evidenceIds = evidenceLinksFromQuery.map((link: any) => link.evidence_document_id);
-
- // Double-check we have evidence (should always be true due to !inner join)
- if (evidenceIds.length === 0) {
- logger.debug('[INFO] [REFUND FILING] Skipping case without evidence', {
- disputeId: disputeCase.id
- });
- continue;
- }
-
- // Extract order details from detection_results.evidence JSONB
- const detectionEvidence = (disputeCase as any).detection_results?.evidence || {};
- const orderId = detectionEvidence.order_id || '';
- const asin = detectionEvidence.asin || undefined;
- const sku = detectionEvidence.sku || undefined;
-
- // DUPLICATE PREVENTION: Check if this order already has an active case
- // This is CRITICAL - filing duplicates = Amazon support abuse flag
- if (orderId) {
- const hasDuplicate = await this.hasActiveClaimForOrder(orderId, disputeCase.seller_id);
- if (hasDuplicate) {
- logger.info('[SKIP] [REFUND FILING] Skipping case - duplicate claim exists for order', {
- disputeId: disputeCase.id,
- orderId
- });
- stats.skipped++;
-
- // Mark this case as duplicate to prevent future processing
- await supabaseAdmin
- .from('dispute_cases')
- .update({
- filing_status: 'duplicate_blocked',
- updated_at: new Date().toISOString()
- })
- .eq('id', disputeCase.id);
-
- continue; // Skip to next case
- }
- }
-
- // DOUBLE-DIP PREVENTION: Check if item was already reimbursed
- // Filing for something Amazon already paid = "Theft" accusation
- const alreadyReimbursed = await this.wasAlreadyReimbursed(
- orderId,
- sku,
- asin,
- disputeCase.seller_id
- );
- if (alreadyReimbursed) {
- logger.info('[SKIP] [REFUND FILING] Skipping case - item already reimbursed by Amazon', {
- disputeId: disputeCase.id,
- orderId,
- sku
- });
- stats.skipped++;
-
- // Mark this case to prevent future processing
- await supabaseAdmin
- .from('dispute_cases')
- .update({
- filing_status: 'already_reimbursed',
- updated_at: new Date().toISOString()
- })
- .eq('id', disputeCase.id);
-
- continue; // Skip to next case
- }
-
- // Get detection result for confidence score
- const { data: detectionResult } = await supabaseAdmin
- .from('detection_results')
- .select('match_confidence')
- .eq('id', disputeCase.detection_result_id)
- .single();
-
- const confidenceScore = detectionResult?.match_confidence || 0.85;
-
- // Get claim amount for high-value check
- const claimAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
-
- // HIGH-VALUE CLAIM CHECK: Require human approval for large claims
- // LLMs can hallucinate (read 10 units as 100), causing fraud accusations
- // Claims over threshold must be manually reviewed before submission
- if (claimAmount > RefundFilingWorker.HIGH_VALUE_THRESHOLD) {
- logger.warn(' [REFUND FILING] HIGH-VALUE CLAIM - Requires manual approval', {
- disputeId: disputeCase.id,
- claimAmount: claimAmount,
- threshold: RefundFilingWorker.HIGH_VALUE_THRESHOLD,
- currency: disputeCase.currency || 'USD'
- });
- stats.skipped++;
-
- // Mark for manual approval instead of auto-filing
- await supabaseAdmin
- .from('dispute_cases')
- .update({
- filing_status: 'pending_approval',
- updated_at: new Date().toISOString()
- })
- .eq('id', disputeCase.id);
-
- continue; // Skip to next case - human must approve this one
- }
-
- // Prepare filing request
- const filingRequest: FilingRequest = {
- dispute_id: disputeCase.id,
- user_id: disputeCase.seller_id,
- order_id: orderId,
- asin: asin,
- sku: sku,
- claim_type: disputeCase.case_type,
- amount_claimed: parseFloat(disputeCase.claim_amount?.toString() || '0'),
- currency: disputeCase.currency || 'USD',
- evidence_document_ids: evidenceIds,
- confidence_score: confidenceScore
- };
-
- // Check if this is a retry (need stronger evidence)
- if (disputeCase.filing_status === 'retrying' && disputeCase.retry_count > 0) {
- logger.info(' [REFUND FILING] Retrying with stronger evidence', {
- disputeId: disputeCase.id,
- retryCount: disputeCase.retry_count
- });
-
- // Collect stronger evidence
- const strongerEvidenceIds = await refundFilingService.collectStrongerEvidence(
- disputeCase.id,
- disputeCase.seller_id
- );
-
- if (strongerEvidenceIds.length > evidenceIds.length) {
- filingRequest.evidence_document_ids = strongerEvidenceIds;
- stats.retried++;
- }
- }
-
- // File the dispute
- const result = await retryWithBackoff(
- () => refundFilingService.fileDispute(filingRequest),
- 3,
- 2000
- );
-
- if (result.success) {
- // Update case status
- await this.updateCaseAfterFiling(disputeCase.id, result);
- stats.filed++;
- } else {
- // Handle failure
- await this.handleFilingFailure(disputeCase.id, disputeCase.seller_id, result, disputeCase.retry_count || 0);
- stats.failed++;
- stats.errors.push(`Case ${disputeCase.id}: ${result.error_message}`);
- }
-
- } catch (error: any) {
- logger.error(' [REFUND FILING] Error processing case', {
- disputeId: disputeCase.id,
- error: error.message
- });
- await this.logError(disputeCase.id, disputeCase.seller_id, error.message);
- stats.failed++;
- stats.errors.push(`Case ${disputeCase.id}: ${error.message}`);
- }
-
- // VELOCITY LIMIT: Jittered delay between submissions (180-420 seconds = 3-7 minutes)
- // This mimics human behavior and avoids Amazon's pattern detection
- // A fixed interval (e.g., exactly 5 min) looks robotic; random intervals look human
- if (casesToFile.indexOf(disputeCase) < casesToFile.length - 1) {
- await sleepWithJitter(180, 420);
- }
- }
-
- logger.info(' [REFUND FILING] Filing run completed', stats);
- return stats;
-
- } catch (error: any) {
- logger.error(' [REFUND FILING] Fatal error in filing run', { error: error.message });
- stats.errors.push(`Fatal error: ${error.message}`);
- return stats;
- }
- }
-
- /**
- * Poll case statuses from Amazon
- */
- async pollCaseStatuses(): Promise<void> {
- try {
- logger.info(' [REFUND FILING] Starting case status polling');
-
- // Get cases that have been filed but not yet closed
- const { data: filedCases, error } = await supabaseAdmin
- .from('dispute_cases')
- .select('id, seller_id, filing_status')
- .eq('filing_status', 'filed')
- .not('status', 'in', '(approved,rejected,closed)')
- .limit(100);
-
- if (error) {
- logger.error(' [REFUND FILING] Failed to get filed cases', { error: error.message });
- return;
- }
-
- if (!filedCases || filedCases.length === 0) {
- logger.debug('[INFO] [REFUND FILING] No filed cases to poll');
- return;
- }
-
- logger.info(` [REFUND FILING] Polling status for ${filedCases.length} cases`);
-
- // Get submission IDs for these cases
- for (const disputeCase of filedCases) {
- try {
- const { data: submission } = await supabaseAdmin
- .from('dispute_submissions')
- .select('id, submission_id, status')
- .eq('dispute_id', disputeCase.id)
- .order('created_at', { ascending: false })
- .limit(1)
- .single();
-
- if (!submission || !submission.submission_id) {
- logger.debug(' [REFUND FILING] No submission ID found for case', {
- disputeId: disputeCase.id
- });
- continue;
- }
-
- // Check status from Amazon
- const statusResult = await refundFilingService.checkCaseStatus(
- submission.submission_id,
- disputeCase.seller_id
- );
-
- if (statusResult.success) {
- // Update case status
- await this.updateCaseStatus(disputeCase.id, statusResult);
-
- // If denied, mark for retry with stronger evidence
- if (statusResult.status === 'denied' && submission.status !== 'denied') {
- const rejectionReason = statusResult.error || statusResult.resolution || 'Unknown reason';
- logger.warn(' [REFUND FILING] Case denied, marking for retry', {
- disputeId: disputeCase.id,
- rejectionReason: rejectionReason
- });
-
- // AGENT 11 INTEGRATION: Process rejection for learning
- try {
- const learningWorker = (await import('./learningWorker')).default;
- await learningWorker.processRejection(
- disputeCase.seller_id,
- disputeCase.id,
- rejectionReason,
- statusResult.amazon_case_id
- );
- } catch (learnError: any) {
- logger.warn(' [REFUND FILING] Failed to process rejection for learning', {
- error: learnError.message
- });
- }
-
- // AGENT 11 INTEGRATION: Log filing denial event
- try {
- const agentEventLogger = (await import('../services/agentEventLogger')).default;
- await agentEventLogger.logRefundFiling({
- userId: disputeCase.seller_id,
- disputeId: disputeCase.id,
- success: false,
- status: 'denied',
- rejectionReason: rejectionReason,
- amazonCaseId: statusResult.amazon_case_id,
- duration: 0
- });
- } catch (logError: any) {
- logger.warn(' [REFUND FILING] Failed to log event', {
- error: logError.message
- });
- }
-
- await this.markForRetry(disputeCase.id, disputeCase.seller_id);
- }
- }
-
- } catch (error: any) {
- logger.error(' [REFUND FILING] Error polling case status', {
- disputeId: disputeCase.id,
- error: error.message
- });
- }
-
- // VELOCITY LIMIT: Jittered delay between status polls (30-90 seconds)
- // Less aggressive than filing, but still randomized to avoid patterns
- if (filedCases.indexOf(disputeCase) < filedCases.length - 1) {
- await sleepWithJitter(30, 90);
- }
- }
-
- logger.info(' [REFUND FILING] Status polling completed');
-
- } catch (error: any) {
- logger.error(' [REFUND FILING] Fatal error in status polling', { error: error.message });
- }
- }
-
- /**
- * Update case after successful filing
- */
- private async updateCaseAfterFiling(disputeId: string, result: FilingResult): Promise<void> {
- try {
- const updates: any = {
- filing_status: 'filed',
- status: 'auto_submitted',
- updated_at: new Date().toISOString()
- };
-
- if (result.amazon_case_id) {
- updates.provider_case_id = result.amazon_case_id;
- }
-
- const { error } = await supabaseAdmin
- .from('dispute_cases')
- .update(updates)
- .eq('id', disputeId);
-
- if (error) {
- logger.error(' [REFUND FILING] Failed to update case after filing', {
- disputeId,
- error: error.message
- });
- } else {
- // Create submission record
- const { data: disputeCase } = await supabaseAdmin
- .from('dispute_cases')
- .select('seller_id')
- .eq('id', disputeId)
- .single();
-
- await supabaseAdmin
- .from('dispute_submissions')
- .insert({
- dispute_id: disputeId,
- user_id: disputeCase?.seller_id,
- submission_id: result.submission_id,
- amazon_case_id: result.amazon_case_id,
- status: result.status,
- created_at: new Date().toISOString(),
- updated_at: new Date().toISOString()
- });
-
- logger.info(' [REFUND FILING] Case filed successfully', {
- disputeId,
- submissionId: result.submission_id,
- amazonCaseId: result.amazon_case_id
- });
-
- // AGENT 11 INTEGRATION: Log filing event
- try {
- const agentEventLogger = (await import('../services/agentEventLogger')).default;
- await agentEventLogger.logRefundFiling({
- userId: disputeCase.seller_id,
- disputeId,
- success: true,
- status: 'filed',
- amazonCaseId: result.amazon_case_id,
- duration: 0
- });
- } catch (logError: any) {
- logger.warn(' [REFUND FILING] Failed to log event', {
- error: logError.message
- });
- }
-
- // AGENT 10 INTEGRATION: Notify when case is filed
- try {
- const notificationHelper = (await import('../services/notificationHelper')).default;
- await notificationHelper.notifyCaseFiled(disputeCase.seller_id, {
- disputeId,
- caseId: result.submission_id,
- amazonCaseId: result.amazon_case_id,
- claimAmount: disputeCase.claim_amount || 0,
- currency: disputeCase.currency || 'usd',
- status: 'filed'
- });
- } catch (notifError: any) {
- logger.warn(' [REFUND FILING] Failed to send notification', {
- error: notifError.message
- });
- }
- }
-
- } catch (error: any) {
- logger.error(' [REFUND FILING] Error updating case after filing', {
- disputeId,
- error: error.message
- });
- }
- }
-
- /**
- * Handle filing failure
- */
- private async handleFilingFailure(
- disputeId: string,
- userId: string,
- result: FilingResult,
- currentRetryCount: number
- ): Promise<void> {
- const maxRetries = 3;
- const newRetryCount = currentRetryCount + 1;
-
- if (newRetryCount < maxRetries) {
- // Mark for retry
- await supabaseAdmin
- .from('dispute_cases')
- .update({
- filing_status: 'retrying',
- retry_count: newRetryCount,
- updated_at: new Date().toISOString()
- })
- .eq('id', disputeId);
-
- logger.warn(' [REFUND FILING] Marking case for retry', {
- disputeId,
- retryCount: newRetryCount,
- maxRetries
- });
- } else {
- // Max retries exceeded
- await supabaseAdmin
- .from('dispute_cases')
- .update({
- filing_status: 'failed',
- retry_count: newRetryCount,
- updated_at: new Date().toISOString()
- })
- .eq('id', disputeId);
-
- logger.error(' [REFUND FILING] Max retries exceeded for case', {
- disputeId,
- retryCount: newRetryCount
- });
- }
-
- await this.logError(disputeId, userId, result.error_message || 'Filing failed', newRetryCount, maxRetries);
- }
-
- /**
- * Update case status from polling
- */
- private async updateCaseStatus(disputeId: string, statusResult: CaseStatus): Promise<void> {
- try {
- const statusMap: Record<string, string> = {
- 'open': 'auto_submitted',
- 'in_progress': 'auto_submitted',
- 'approved': 'approved',
- 'denied': 'rejected',
- 'closed': 'closed'
- };
-
- const newStatus = statusMap[statusResult.status] || 'auto_submitted';
- const previousStatus = await this.getCurrentStatus(disputeId);
-
- const { data: disputeCase } = await supabaseAdmin
- .from('dispute_cases')
- .select('seller_id, recovery_status')
- .eq('id', disputeId)
- .single();
-
- const updates: any = {
- status: newStatus,
- updated_at: new Date().toISOString()
- };
-
- // AGENT 8 INTEGRATION: Mark for recovery detection when approved
- if (newStatus === 'approved' && previousStatus !== 'approved') {
- updates.recovery_status = 'pending';
- logger.info(' [REFUND FILING] Case approved, marked for recovery detection by Agent 8', {
- disputeId
- });
-
- // Fetch case data for logging and notifications
- const { data: caseData } = await supabaseAdmin
- .from('dispute_cases')
- .select('seller_id, claim_amount, currency, provider_case_id')
- .eq('id', disputeId)
- .single();
-
- // AGENT 11 INTEGRATION: Log approval event
- try {
- const agentEventLogger = (await import('../services/agentEventLogger')).default;
- await agentEventLogger.logRefundFiling({
- userId: caseData?.seller_id || disputeCase?.seller_id || '',
- disputeId,
- success: true,
- status: 'approved',
- amazonCaseId: statusResult.amazon_case_id || caseData?.provider_case_id,
- duration: 0
- });
- } catch (logError: any) {
- logger.warn(' [REFUND FILING] Failed to log event', {
- error: logError.message
- });
- }
-
- // AGENT 10 INTEGRATION: Notify when refund is approved
- try {
- const notificationHelper = (await import('../services/notificationHelper')).default;
-
- if (caseData) {
- await notificationHelper.notifyRefundApproved(caseData.seller_id, {
- disputeId,
- amazonCaseId: statusResult.amazon_case_id || caseData.provider_case_id,
- claimAmount: caseData.claim_amount || 0,
- currency: caseData.currency || 'usd',
- approvedAmount: statusResult.amount_approved || 0
- });
- }
- } catch (notifError: any) {
- logger.warn(' [REFUND FILING] Failed to send notification', {
- error: notifError.message
- });
- }
- }
-
- const { error } = await supabaseAdmin
- .from('dispute_cases')
- .update(updates)
- .eq('id', disputeId);
-
- if (error) {
- logger.error(' [REFUND FILING] Failed to update case status', {
- disputeId,
- error: error.message
- });
- } else {
- // Update submission status
- await supabaseAdmin
- .from('dispute_submissions')
- .update({
- status: statusResult.status,
- updated_at: new Date().toISOString()
- })
- .eq('dispute_id', disputeId);
-
- logger.info(' [REFUND FILING] Case status updated', {
- disputeId,
- status: statusResult.status
- });
-
- // Trigger recovery detection immediately if approved (non-blocking)
- if (newStatus === 'approved' && disputeCase?.seller_id) {
- this.triggerRecoveryDetection(disputeId, disputeCase.seller_id).catch((error: any) => {
- logger.warn(' [REFUND FILING] Failed to trigger recovery detection (non-critical)', {
- disputeId,
- error: error.message
- });
- });
- }
- }
-
- } catch (error: any) {
- logger.error(' [REFUND FILING] Error updating case status', {
- disputeId,
- error: error.message
- });
- }
- }
-
- /**
- * Get current status of dispute case
- */
- private async getCurrentStatus(disputeId: string): Promise<string | null> {
- try {
- const { data } = await supabaseAdmin
- .from('dispute_cases')
- .select('status')
- .eq('id', disputeId)
- .single();
-
- return data?.status || null;
- } catch {
- return null;
- }
- }
-
- /**
- * Trigger recovery detection for approved case (Agent 8)
- */
- private async triggerRecoveryDetection(disputeId: string, userId: string): Promise<void> {
- try {
- const { default: recoveriesWorker } = await import('./recoveriesWorker');
- await recoveriesWorker.processRecoveryForCase(disputeId, userId);
- } catch (error: any) {
- // Non-critical - recovery worker will pick it up in next run
- logger.debug(' [REFUND FILING] Recovery detection triggered (will retry in next run)', {
- disputeId,
- error: error.message
- });
- }
- }
-
- /**
- * Mark case for retry with stronger evidence
- */
- private async markForRetry(disputeId: string, userId: string): Promise<void> {
- try {
- const { data: caseData } = await supabaseAdmin
- .from('dispute_cases')
- .select('retry_count')
- .eq('id', disputeId)
- .single();
-
- const currentRetryCount = caseData?.retry_count || 0;
- const maxRetries = 3;
-
- if (currentRetryCount < maxRetries) {
- await supabaseAdmin
- .from('dispute_cases')
- .update({
- filing_status: 'retrying',
- retry_count: currentRetryCount + 1,
- updated_at: new Date().toISOString()
- })
- .eq('id', disputeId);
-
- logger.info(' [REFUND FILING] Marked case for retry with stronger evidence', {
- disputeId,
- retryCount: currentRetryCount + 1
- });
- } else {
- logger.warn(' [REFUND FILING] Max retries exceeded, not retrying', {
- disputeId,
- retryCount: currentRetryCount
- });
- }
-
- } catch (error: any) {
- logger.error(' [REFUND FILING] Error marking case for retry', {
- disputeId,
- error: error.message
- });
- }
- }
-
- /**
- * Log filing error
- */
- private async logError(
- disputeId: string,
- userId: string,
- errorMessage: string,
- retryCount: number = 0,
- maxRetries: number = 3
- ): Promise<void> {
- try {
- await supabaseAdmin
- .from('refund_filing_errors')
- .insert({
- user_id: userId,
- dispute_id: disputeId,
- error_type: 'filing_error',
- error_message: errorMessage,
- retry_count: retryCount,
- max_retries: maxRetries,
- created_at: new Date().toISOString()
- });
-
- logger.debug(' [REFUND FILING] Error logged', {
- disputeId,
- userId,
- errorMessage
- });
-
- } catch (error: any) {
- logger.error(' [REFUND FILING] Failed to log error', {
- disputeId,
- error: error.message
- });
- }
- }
+        .in('filing_status', ['pending', 'retrying'])
+        .or('status.eq.pending,status.eq.submitted')
+        .limit(maxThisRun); // THROTTLE: Only fetch what we're allowed to process
+
+      if (error) {
+        // If the error is about no rows, that's fine - just means no cases with evidence
+        if (error.message?.includes('0 rows') || error.code === 'PGRST116') {
+          logger.debug('[INFO] [REFUND FILING] No cases with evidence ready for filing');
+          return stats;
+        }
+        logger.error(' [REFUND FILING] Failed to get cases to file', { error: error.message });
+        stats.errors.push(`Failed to get cases: ${error.message}`);
+        return stats;
+      }
+
+      if (!casesToFile || casesToFile.length === 0) {
+        logger.debug('[INFO] [REFUND FILING] No cases with evidence ready for filing');
+        return stats;
+      }
+
+      logger.info(` [REFUND FILING] Found ${casesToFile.length} cases with evidence ready for filing`);
+
+      // Process each case
+      for (const disputeCase of casesToFile) {
+        try {
+          stats.processed++;
+
+          // Evidence documents are already joined - extract from the query result
+          const evidenceLinksFromQuery = (disputeCase as any).dispute_evidence_links || [];
+          const evidenceIds = evidenceLinksFromQuery.map((link: any) => link.evidence_document_id);
+
+          // Double-check we have evidence (should always be true due to !inner join)
+          if (evidenceIds.length === 0) {
+            logger.debug('[INFO] [REFUND FILING] Skipping case without evidence', {
+              disputeId: disputeCase.id
+            });
+            continue;
+          }
+
+          // KILL SWITCH: Check for dangerous documents (credit notes, returns, refunds)
+          // These MUST NEVER be submitted to Amazon - instant fraud flag
+          const dangerousDocCheck = await this.hasDangerousDocuments(evidenceIds, disputeCase.seller_id);
+          if (dangerousDocCheck.hasDangerous) {
+            logger.warn('[CRITICAL] [REFUND FILING] DANGEROUS DOCUMENT DETECTED - Quarantining case', {
+              disputeId: disputeCase.id,
+              dangerousFilenames: dangerousDocCheck.dangerousFilenames,
+              reason: 'Credit notes, returns, or refunds cannot be submitted as evidence - fraud risk'
+            });
+            stats.skipped++;
+
+            // Quarantine this case - it must NEVER be auto-submitted
+            await supabaseAdmin
+              .from('dispute_cases')
+              .update({
+                filing_status: 'quarantined_dangerous_doc',
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', disputeCase.id);
+
+            continue; // Skip to next case - this one is quarantined
+          }
+
+          // Extract order details from detection_results.evidence JSONB
+          const detectionEvidence = (disputeCase as any).detection_results?.evidence || {};
+          const orderId = detectionEvidence.order_id || '';
+          const asin = detectionEvidence.asin || undefined;
+          const sku = detectionEvidence.sku || undefined;
+
+          // DUPLICATE PREVENTION: Check if this order already has an active case
+          // This is CRITICAL - filing duplicates = Amazon support abuse flag
+          if (orderId) {
+            const hasDuplicate = await this.hasActiveClaimForOrder(orderId, disputeCase.seller_id);
+            if (hasDuplicate) {
+              logger.info('[SKIP] [REFUND FILING] Skipping case - duplicate claim exists for order', {
+                disputeId: disputeCase.id,
+                orderId
+              });
+              stats.skipped++;
+
+              // Mark this case as duplicate to prevent future processing
+              await supabaseAdmin
+                .from('dispute_cases')
+                .update({
+                  filing_status: 'duplicate_blocked',
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', disputeCase.id);
+
+              continue; // Skip to next case
+            }
+          }
+
+          // DOUBLE-DIP PREVENTION: Check if item was already reimbursed
+          // Filing for something Amazon already paid = "Theft" accusation
+          const alreadyReimbursed = await this.wasAlreadyReimbursed(
+            orderId,
+            sku,
+            asin,
+            disputeCase.seller_id
+          );
+          if (alreadyReimbursed) {
+            logger.info('[SKIP] [REFUND FILING] Skipping case - item already reimbursed by Amazon', {
+              disputeId: disputeCase.id,
+              orderId,
+              sku
+            });
+            stats.skipped++;
+
+            // Mark this case to prevent future processing
+            await supabaseAdmin
+              .from('dispute_cases')
+              .update({
+                filing_status: 'already_reimbursed',
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', disputeCase.id);
+
+            continue; // Skip to next case
+          }
+
+          // Get detection result for confidence score
+          const { data: detectionResult } = await supabaseAdmin
+            .from('detection_results')
+            .select('match_confidence')
+            .eq('id', disputeCase.detection_result_id)
+            .single();
+
+          const confidenceScore = detectionResult?.match_confidence || 0.85;
+
+          // Get claim amount for high-value check
+          const claimAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
+
+          // HIGH-VALUE CLAIM CHECK: Require human approval for large claims
+          // LLMs can hallucinate (read 10 units as 100), causing fraud accusations
+          // Claims over threshold must be manually reviewed before submission
+          if (claimAmount > RefundFilingWorker.HIGH_VALUE_THRESHOLD) {
+            logger.warn(' [REFUND FILING] HIGH-VALUE CLAIM - Requires manual approval', {
+              disputeId: disputeCase.id,
+              claimAmount: claimAmount,
+              threshold: RefundFilingWorker.HIGH_VALUE_THRESHOLD,
+              currency: disputeCase.currency || 'USD'
+            });
+            stats.skipped++;
+
+            // Mark for manual approval instead of auto-filing
+            await supabaseAdmin
+              .from('dispute_cases')
+              .update({
+                filing_status: 'pending_approval',
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', disputeCase.id);
+
+            continue; // Skip to next case - human must approve this one
+          }
+
+          // Prepare filing request
+          const filingRequest: FilingRequest = {
+            dispute_id: disputeCase.id,
+            user_id: disputeCase.seller_id,
+            order_id: orderId,
+            asin: asin,
+            sku: sku,
+            claim_type: disputeCase.case_type,
+            amount_claimed: parseFloat(disputeCase.claim_amount?.toString() || '0'),
+            currency: disputeCase.currency || 'USD',
+            evidence_document_ids: evidenceIds,
+            confidence_score: confidenceScore
+          };
+
+          // Check if this is a retry (need stronger evidence)
+          if (disputeCase.filing_status === 'retrying' && disputeCase.retry_count > 0) {
+            logger.info(' [REFUND FILING] Retrying with stronger evidence', {
+              disputeId: disputeCase.id,
+              retryCount: disputeCase.retry_count
+            });
+
+            // Collect stronger evidence
+            const strongerEvidenceIds = await refundFilingService.collectStrongerEvidence(
+              disputeCase.id,
+              disputeCase.seller_id
+            );
+
+            if (strongerEvidenceIds.length > evidenceIds.length) {
+              filingRequest.evidence_document_ids = strongerEvidenceIds;
+              stats.retried++;
+            }
+          }
+
+          // File the dispute
+          const result = await retryWithBackoff(
+            () => refundFilingService.fileDispute(filingRequest),
+            3,
+            2000
+          );
+
+          if (result.success) {
+            // Update case status
+            await this.updateCaseAfterFiling(disputeCase.id, result);
+            stats.filed++;
+          } else {
+            // Handle failure
+            await this.handleFilingFailure(disputeCase.id, disputeCase.seller_id, result, disputeCase.retry_count || 0);
+            stats.failed++;
+            stats.errors.push(`Case ${disputeCase.id}: ${result.error_message}`);
+          }
+
+        } catch (error: any) {
+          logger.error(' [REFUND FILING] Error processing case', {
+            disputeId: disputeCase.id,
+            error: error.message
+          });
+          await this.logError(disputeCase.id, disputeCase.seller_id, error.message);
+          stats.failed++;
+          stats.errors.push(`Case ${disputeCase.id}: ${error.message}`);
+        }
+
+        // VELOCITY LIMIT: Jittered delay between submissions (180-420 seconds = 3-7 minutes)
+        // This mimics human behavior and avoids Amazon's pattern detection
+        // A fixed interval (e.g., exactly 5 min) looks robotic; random intervals look human
+        if (casesToFile.indexOf(disputeCase) < casesToFile.length - 1) {
+          await sleepWithJitter(180, 420);
+        }
+      }
+
+      logger.info(' [REFUND FILING] Filing run completed', stats);
+      return stats;
+
+    } catch (error: any) {
+      logger.error(' [REFUND FILING] Fatal error in filing run', { error: error.message });
+      stats.errors.push(`Fatal error: ${error.message}`);
+      return stats;
+    }
+  }
+
+  /**
+  * Poll case statuses from Amazon
+  */
+  async pollCaseStatuses(): Promise<void> {
+    try {
+      logger.info(' [REFUND FILING] Starting case status polling');
+
+      // Get cases that have been filed but not yet closed
+      const { data: filedCases, error } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('id, seller_id, filing_status')
+        .eq('filing_status', 'filed')
+        .not('status', 'in', '(approved,rejected,closed)')
+        .limit(100);
+
+      if (error) {
+        logger.error(' [REFUND FILING] Failed to get filed cases', { error: error.message });
+        return;
+      }
+
+      if (!filedCases || filedCases.length === 0) {
+        logger.debug('[INFO] [REFUND FILING] No filed cases to poll');
+        return;
+      }
+
+      logger.info(` [REFUND FILING] Polling status for ${filedCases.length} cases`);
+
+      // Get submission IDs for these cases
+      for (const disputeCase of filedCases) {
+        try {
+          const { data: submission } = await supabaseAdmin
+            .from('dispute_submissions')
+            .select('id, submission_id, status')
+            .eq('dispute_id', disputeCase.id)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+
+          if (!submission || !submission.submission_id) {
+            logger.debug(' [REFUND FILING] No submission ID found for case', {
+              disputeId: disputeCase.id
+            });
+            continue;
+          }
+
+          // Check status from Amazon
+          const statusResult = await refundFilingService.checkCaseStatus(
+            submission.submission_id,
+            disputeCase.seller_id
+          );
+
+          if (statusResult.success) {
+            // Update case status
+            await this.updateCaseStatus(disputeCase.id, statusResult);
+
+            // If denied, mark for retry with stronger evidence
+            if (statusResult.status === 'denied' && submission.status !== 'denied') {
+              const rejectionReason = statusResult.error || statusResult.resolution || 'Unknown reason';
+              logger.warn(' [REFUND FILING] Case denied, marking for retry', {
+                disputeId: disputeCase.id,
+                rejectionReason: rejectionReason
+              });
+
+              // AGENT 11 INTEGRATION: Process rejection for learning
+              try {
+                const learningWorker = (await import('./learningWorker')).default;
+                await learningWorker.processRejection(
+                  disputeCase.seller_id,
+                  disputeCase.id,
+                  rejectionReason,
+                  statusResult.amazon_case_id
+                );
+              } catch (learnError: any) {
+                logger.warn(' [REFUND FILING] Failed to process rejection for learning', {
+                  error: learnError.message
+                });
+              }
+
+              // AGENT 11 INTEGRATION: Log filing denial event
+              try {
+                const agentEventLogger = (await import('../services/agentEventLogger')).default;
+                await agentEventLogger.logRefundFiling({
+                  userId: disputeCase.seller_id,
+                  disputeId: disputeCase.id,
+                  success: false,
+                  status: 'denied',
+                  rejectionReason: rejectionReason,
+                  amazonCaseId: statusResult.amazon_case_id,
+                  duration: 0
+                });
+              } catch (logError: any) {
+                logger.warn(' [REFUND FILING] Failed to log event', {
+                  error: logError.message
+                });
+              }
+
+              await this.markForRetry(disputeCase.id, disputeCase.seller_id);
+            }
+          }
+
+        } catch (error: any) {
+          logger.error(' [REFUND FILING] Error polling case status', {
+            disputeId: disputeCase.id,
+            error: error.message
+          });
+        }
+
+        // VELOCITY LIMIT: Jittered delay between status polls (30-90 seconds)
+        // Less aggressive than filing, but still randomized to avoid patterns
+        if (filedCases.indexOf(disputeCase) < filedCases.length - 1) {
+          await sleepWithJitter(30, 90);
+        }
+      }
+
+      logger.info(' [REFUND FILING] Status polling completed');
+
+    } catch (error: any) {
+      logger.error(' [REFUND FILING] Fatal error in status polling', { error: error.message });
+    }
+  }
+
+  /**
+  * Update case after successful filing
+  */
+  private async updateCaseAfterFiling(disputeId: string, result: FilingResult): Promise<void> {
+    try {
+      const updates: any = {
+        filing_status: 'filed',
+        status: 'auto_submitted',
+        updated_at: new Date().toISOString()
+      };
+
+      if (result.amazon_case_id) {
+        updates.provider_case_id = result.amazon_case_id;
+      }
+
+      const { error } = await supabaseAdmin
+        .from('dispute_cases')
+        .update(updates)
+        .eq('id', disputeId);
+
+      if (error) {
+        logger.error(' [REFUND FILING] Failed to update case after filing', {
+          disputeId,
+          error: error.message
+        });
+      } else {
+        // Create submission record
+        const { data: disputeCase } = await supabaseAdmin
+          .from('dispute_cases')
+          .select('seller_id')
+          .eq('id', disputeId)
+          .single();
+
+        await supabaseAdmin
+          .from('dispute_submissions')
+          .insert({
+            dispute_id: disputeId,
+            user_id: disputeCase?.seller_id,
+            submission_id: result.submission_id,
+            amazon_case_id: result.amazon_case_id,
+            status: result.status,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
+
+        logger.info(' [REFUND FILING] Case filed successfully', {
+          disputeId,
+          submissionId: result.submission_id,
+          amazonCaseId: result.amazon_case_id
+        });
+
+        // AGENT 11 INTEGRATION: Log filing event
+        try {
+          const agentEventLogger = (await import('../services/agentEventLogger')).default;
+          await agentEventLogger.logRefundFiling({
+            userId: disputeCase.seller_id,
+            disputeId,
+            success: true,
+            status: 'filed',
+            amazonCaseId: result.amazon_case_id,
+            duration: 0
+          });
+        } catch (logError: any) {
+          logger.warn(' [REFUND FILING] Failed to log event', {
+            error: logError.message
+          });
+        }
+
+        // AGENT 10 INTEGRATION: Notify when case is filed
+        try {
+          const notificationHelper = (await import('../services/notificationHelper')).default;
+          await notificationHelper.notifyCaseFiled(disputeCase.seller_id, {
+            disputeId,
+            caseId: result.submission_id,
+            amazonCaseId: result.amazon_case_id,
+            claimAmount: disputeCase.claim_amount || 0,
+            currency: disputeCase.currency || 'usd',
+            status: 'filed'
+          });
+        } catch (notifError: any) {
+          logger.warn(' [REFUND FILING] Failed to send notification', {
+            error: notifError.message
+          });
+        }
+      }
+
+    } catch (error: any) {
+      logger.error(' [REFUND FILING] Error updating case after filing', {
+        disputeId,
+        error: error.message
+      });
+    }
+  }
+
+  /**
+  * Handle filing failure
+  */
+  private async handleFilingFailure(
+    disputeId: string,
+    userId: string,
+    result: FilingResult,
+    currentRetryCount: number
+  ): Promise<void> {
+    const maxRetries = 3;
+    const newRetryCount = currentRetryCount + 1;
+
+    if (newRetryCount < maxRetries) {
+      // Mark for retry
+      await supabaseAdmin
+        .from('dispute_cases')
+        .update({
+          filing_status: 'retrying',
+          retry_count: newRetryCount,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', disputeId);
+
+      logger.warn(' [REFUND FILING] Marking case for retry', {
+        disputeId,
+        retryCount: newRetryCount,
+        maxRetries
+      });
+    } else {
+      // Max retries exceeded
+      await supabaseAdmin
+        .from('dispute_cases')
+        .update({
+          filing_status: 'failed',
+          retry_count: newRetryCount,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', disputeId);
+
+      logger.error(' [REFUND FILING] Max retries exceeded for case', {
+        disputeId,
+        retryCount: newRetryCount
+      });
+    }
+
+    await this.logError(disputeId, userId, result.error_message || 'Filing failed', newRetryCount, maxRetries);
+  }
+
+  /**
+  * Update case status from polling
+  */
+  private async updateCaseStatus(disputeId: string, statusResult: CaseStatus): Promise<void> {
+    try {
+      const statusMap: Record<string, string> = {
+        'open': 'auto_submitted',
+        'in_progress': 'auto_submitted',
+        'approved': 'approved',
+        'denied': 'rejected',
+        'closed': 'closed'
+      };
+
+      const newStatus = statusMap[statusResult.status] || 'auto_submitted';
+      const previousStatus = await this.getCurrentStatus(disputeId);
+
+      const { data: disputeCase } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('seller_id, recovery_status')
+        .eq('id', disputeId)
+        .single();
+
+      const updates: any = {
+        status: newStatus,
+        updated_at: new Date().toISOString()
+      };
+
+      // AGENT 8 INTEGRATION: Mark for recovery detection when approved
+      if (newStatus === 'approved' && previousStatus !== 'approved') {
+        updates.recovery_status = 'pending';
+        logger.info(' [REFUND FILING] Case approved, marked for recovery detection by Agent 8', {
+          disputeId
+        });
+
+        // Fetch case data for logging and notifications
+        const { data: caseData } = await supabaseAdmin
+          .from('dispute_cases')
+          .select('seller_id, claim_amount, currency, provider_case_id')
+          .eq('id', disputeId)
+          .single();
+
+        // AGENT 11 INTEGRATION: Log approval event
+        try {
+          const agentEventLogger = (await import('../services/agentEventLogger')).default;
+          await agentEventLogger.logRefundFiling({
+            userId: caseData?.seller_id || disputeCase?.seller_id || '',
+            disputeId,
+            success: true,
+            status: 'approved',
+            amazonCaseId: statusResult.amazon_case_id || caseData?.provider_case_id,
+            duration: 0
+          });
+        } catch (logError: any) {
+          logger.warn(' [REFUND FILING] Failed to log event', {
+            error: logError.message
+          });
+        }
+
+        // AGENT 10 INTEGRATION: Notify when refund is approved
+        try {
+          const notificationHelper = (await import('../services/notificationHelper')).default;
+
+          if (caseData) {
+            await notificationHelper.notifyRefundApproved(caseData.seller_id, {
+              disputeId,
+              amazonCaseId: statusResult.amazon_case_id || caseData.provider_case_id,
+              claimAmount: caseData.claim_amount || 0,
+              currency: caseData.currency || 'usd',
+              approvedAmount: statusResult.amount_approved || 0
+            });
+          }
+        } catch (notifError: any) {
+          logger.warn(' [REFUND FILING] Failed to send notification', {
+            error: notifError.message
+          });
+        }
+      }
+
+      const { error } = await supabaseAdmin
+        .from('dispute_cases')
+        .update(updates)
+        .eq('id', disputeId);
+
+      if (error) {
+        logger.error(' [REFUND FILING] Failed to update case status', {
+          disputeId,
+          error: error.message
+        });
+      } else {
+        // Update submission status
+        await supabaseAdmin
+          .from('dispute_submissions')
+          .update({
+            status: statusResult.status,
+            updated_at: new Date().toISOString()
+          })
+          .eq('dispute_id', disputeId);
+
+        logger.info(' [REFUND FILING] Case status updated', {
+          disputeId,
+          status: statusResult.status
+        });
+
+        // Trigger recovery detection immediately if approved (non-blocking)
+        if (newStatus === 'approved' && disputeCase?.seller_id) {
+          this.triggerRecoveryDetection(disputeId, disputeCase.seller_id).catch((error: any) => {
+            logger.warn(' [REFUND FILING] Failed to trigger recovery detection (non-critical)', {
+              disputeId,
+              error: error.message
+            });
+          });
+        }
+      }
+
+    } catch (error: any) {
+      logger.error(' [REFUND FILING] Error updating case status', {
+        disputeId,
+        error: error.message
+      });
+    }
+  }
+
+  /**
+  * Get current status of dispute case
+  */
+  private async getCurrentStatus(disputeId: string): Promise<string | null> {
+    try {
+      const { data } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('status')
+        .eq('id', disputeId)
+        .single();
+
+      return data?.status || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+  * Trigger recovery detection for approved case (Agent 8)
+  */
+  private async triggerRecoveryDetection(disputeId: string, userId: string): Promise<void> {
+    try {
+      const { default: recoveriesWorker } = await import('./recoveriesWorker');
+      await recoveriesWorker.processRecoveryForCase(disputeId, userId);
+    } catch (error: any) {
+      // Non-critical - recovery worker will pick it up in next run
+      logger.debug(' [REFUND FILING] Recovery detection triggered (will retry in next run)', {
+        disputeId,
+        error: error.message
+      });
+    }
+  }
+
+  /**
+  * Mark case for retry with stronger evidence
+  */
+  private async markForRetry(disputeId: string, userId: string): Promise<void> {
+    try {
+      const { data: caseData } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('retry_count')
+        .eq('id', disputeId)
+        .single();
+
+      const currentRetryCount = caseData?.retry_count || 0;
+      const maxRetries = 3;
+
+      if (currentRetryCount < maxRetries) {
+        await supabaseAdmin
+          .from('dispute_cases')
+          .update({
+            filing_status: 'retrying',
+            retry_count: currentRetryCount + 1,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', disputeId);
+
+        logger.info(' [REFUND FILING] Marked case for retry with stronger evidence', {
+          disputeId,
+          retryCount: currentRetryCount + 1
+        });
+      } else {
+        logger.warn(' [REFUND FILING] Max retries exceeded, not retrying', {
+          disputeId,
+          retryCount: currentRetryCount
+        });
+      }
+
+    } catch (error: any) {
+      logger.error(' [REFUND FILING] Error marking case for retry', {
+        disputeId,
+        error: error.message
+      });
+    }
+  }
+
+  /**
+  * Log filing error
+  */
+  private async logError(
+    disputeId: string,
+    userId: string,
+    errorMessage: string,
+    retryCount: number = 0,
+    maxRetries: number = 3
+  ): Promise<void> {
+    try {
+      await supabaseAdmin
+        .from('refund_filing_errors')
+        .insert({
+          user_id: userId,
+          dispute_id: disputeId,
+          error_type: 'filing_error',
+          error_message: errorMessage,
+          retry_count: retryCount,
+          max_retries: maxRetries,
+          created_at: new Date().toISOString()
+        });
+
+      logger.debug(' [REFUND FILING] Error logged', {
+        disputeId,
+        userId,
+        errorMessage
+      });
+
+    } catch (error: any) {
+      logger.error(' [REFUND FILING] Failed to log error', {
+        disputeId,
+        error: error.message
+      });
+    }
+  }
 }
 
 // Export singleton instance
