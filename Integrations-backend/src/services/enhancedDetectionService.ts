@@ -63,6 +63,10 @@ import {
 import { detectInboundAnomalies, runInboundDetection, storeInboundDetectionResults } from './detection/algorithms/inboundAlgorithms';
 import { detectRemovalAnomalies, runRemovalDetection, storeRemovalResults } from './detection/algorithms/removalAlgorithms';
 import { detectFraudAnomalies, runFraudDetection, storeFraudResults } from './detection/algorithms/fraudAlgorithms';
+// NEW 2025 Coverage Expansion Algorithms
+import { detectAllReimbursementAnomalies, ReimbursementSyncedData } from './detection/algorithms/reimbursementAuditAlgorithms';
+import { detectAll2025FBAFeeAnomalies, FBA2025SyncedData } from './detection/algorithms/feeAlgorithms2025';
+import { detectAllReturnAnomalies, ReturnSyncedData } from './detection/algorithms/returnAnomalyAlgorithms';
 
 // ============================================================================
 // Types
@@ -354,7 +358,68 @@ export class EnhancedDetectionService {
 
       // Combine ALL results from 9 algorithms
       const clusterResults = [...inboundResults, ...removalResults, ...fraudResults];
-      const finalResults = [...allResults, ...clusterResults];
+
+      // Step 15: RUN 2025 COVERAGE EXPANSION ALGORITHMS
+      logger.info('[AGENT3] Running 2025 Coverage Expansion Algorithms...', { userId, syncId });
+
+      // 15a: Reimbursement Audit
+      const reimbursementSyncedData: ReimbursementSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        reimbursement_events: reimbursementEvents as any[],
+        inventory_events: inventoryLedger as any[],
+        product_costs: new Map(productCatalog.map((p: any) => [p.sku, p.unit_cost || 15]))
+      };
+      const reimbursementAuditResults = detectAllReimbursementAnomalies(userId, syncId, reimbursementSyncedData);
+
+      logger.info('[AGENT3] Reimbursement Audit complete', {
+        count: reimbursementAuditResults.length,
+        value: reimbursementAuditResults.reduce((s, r) => s + r.estimated_value, 0)
+      });
+
+      // 15b: 2025 FBA Fee Detection
+      const fba2025SyncedData: FBA2025SyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        inventory_age_events: [],
+        low_inventory_events: [],
+        prep_fee_events: [],
+        inbound_placement_events: [],
+        storage_fee_events: feeEvents.filter((f: any) => f.fee_type?.toLowerCase().includes('storage'))
+      };
+      const fba2025Results = detectAll2025FBAFeeAnomalies(userId, syncId, fba2025SyncedData);
+
+      logger.info('[AGENT3] 2025 FBA Fee Audit complete', {
+        count: fba2025Results.length,
+        value: fba2025Results.reduce((s, r) => s + r.estimated_value, 0)
+      });
+
+      // 15c: Return Anomaly Detection
+      const returnSyncedData: ReturnSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        return_events: returnEvents as any[],
+        inventory_adjustments: inventoryLedger as any[],
+        refund_events: refundEvents as any[],
+        shipment_events: [],
+        removal_events: [],
+        product_costs: new Map(productCatalog.map((p: any) => [p.sku, p.unit_cost || 15]))
+      };
+      const returnAnomalyResults = detectAllReturnAnomalies(userId, syncId, returnSyncedData);
+
+      logger.info('[AGENT3] Return Anomaly Detection complete', {
+        count: returnAnomalyResults.length,
+        value: returnAnomalyResults.reduce((s, r) => s + r.estimated_value, 0)
+      });
+
+      // Store 2025 expansion results
+      const expansionResults = [...reimbursementAuditResults, ...fba2025Results, ...returnAnomalyResults];
+      if (expansionResults.length > 0) {
+        await storeDetectionResults(expansionResults as any[]);
+        logger.info('[AGENT3] 2025 Expansion results stored', { count: expansionResults.length });
+      }
+
+      const finalResults = [...allResults, ...clusterResults, ...expansionResults];
       const totalRecovery = finalResults.reduce((sum, r) => sum + r.estimated_value, 0);
 
       // PHASE 3: Apply ML Calibration to confidence scores
@@ -392,7 +457,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('🧠 [AGENT3] FULL 9-ALGORITHM + ML PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 12-ALGORITHM + ML PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -404,6 +469,10 @@ export class EnhancedDetectionService {
         inbound: inboundResults.length,
         removals: removalResults.length,
         fraud: fraudResults.length,
+        // 2025 Expansion
+        reimbursementAudit: reimbursementAuditResults.length,
+        fba2025Fees: fba2025Results.length,
+        returnAnomalies: returnAnomalyResults.length,
         totalRecovery
       });
 
@@ -411,7 +480,7 @@ export class EnhancedDetectionService {
         success: true,
         jobId,
         message: finalResults.length > 0
-          ? `🧠 Agent 3 ran 9 algorithms + ML calibration - Found ${finalResults.length} claims. Total recovery: $${totalRecovery.toFixed(2)}!`
+          ? `Agent 3 ran 12 algorithms + ML calibration - Found ${finalResults.length} claims. Total recovery: $${totalRecovery.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: finalResults.length,
         estimatedRecovery: totalRecovery
