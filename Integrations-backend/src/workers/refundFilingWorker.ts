@@ -90,6 +90,15 @@ class RefundFilingWorker {
   };
 
   /**
+   * HIGH-VALUE CLAIM APPROVAL
+   * LLMs can hallucinate - reading "10 units" as "100 units" on blurry documents.
+   * To prevent fraud accusations from Amazon, high-value claims require human approval.
+   * 
+   * Rule: Claims over this threshold are flagged 'pending_approval' instead of auto-submitted.
+   */
+  private static readonly HIGH_VALUE_THRESHOLD = 500; // USD - adjust based on risk tolerance
+
+  /**
    * Start the worker
    */
   start(): void {
@@ -505,6 +514,33 @@ class RefundFilingWorker {
             .single();
 
           const confidenceScore = detectionResult?.match_confidence || 0.85;
+
+          // Get claim amount for high-value check
+          const claimAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
+
+          // 🚨 HIGH-VALUE CLAIM CHECK: Require human approval for large claims
+          // LLMs can hallucinate (read 10 units as 100), causing fraud accusations
+          // Claims over threshold must be manually reviewed before submission
+          if (claimAmount > RefundFilingWorker.HIGH_VALUE_THRESHOLD) {
+            logger.warn('🚨 [REFUND FILING] HIGH-VALUE CLAIM - Requires manual approval', {
+              disputeId: disputeCase.id,
+              claimAmount: claimAmount,
+              threshold: RefundFilingWorker.HIGH_VALUE_THRESHOLD,
+              currency: disputeCase.currency || 'USD'
+            });
+            stats.skipped++;
+
+            // Mark for manual approval instead of auto-filing
+            await supabaseAdmin
+              .from('dispute_cases')
+              .update({
+                filing_status: 'pending_approval',
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', disputeCase.id);
+
+            continue; // Skip to next case - human must approve this one
+          }
 
           // Prepare filing request
           const filingRequest: FilingRequest = {
