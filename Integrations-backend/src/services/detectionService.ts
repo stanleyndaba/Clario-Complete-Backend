@@ -9,7 +9,7 @@ export interface DetectionJob {
   timestamp: string;
 }
 
-// All 64 Amazon Financial Event detection types
+// All 64+ Amazon Financial Event detection types (expanded for 2025)
 export type AnomalyType =
   // Original types (5)
   | 'missing_unit' | 'overcharge' | 'damaged_stock' | 'incorrect_fee' | 'duplicate_charge'
@@ -40,7 +40,15 @@ export type AnomalyType =
   | 'vine_enrollment_error' | 'imaging_services_error' | 'early_reviewer_error'
   | 'coupon_clip_fee' | 'seller_review_enrollment'
   // Tax Collection at Source - International (3)
-  | 'tcs_cgst' | 'tcs_sgst' | 'tcs_igst';
+  | 'tcs_cgst' | 'tcs_sgst' | 'tcs_igst'
+  // NEW Batch 7: 2025 FBA Fees & Surcharges (6)
+  | 'aged_inventory_surcharge' | 'low_inventory_fee' | 'labeling_prep_fee'
+  | 'mislabeling_penalty' | 'inbound_placement_fee' | 'seasonal_storage_peak'
+  // NEW Batch 8: Reimbursement Audit (5)
+  | 'partial_reimbursement' | 'misclassified_reimbursement' | 'reimbursement_short'
+  | 'reimbursement_delayed' | 'reimbursement_duplicate_missed'
+  // NEW Batch 9: Return Anomalies (4)
+  | 'return_not_restocked' | 'refund_exceeds_charge' | 'canceled_shipment_charged' | 'destroyed_without_consent';
 
 export interface DetectionResult {
   seller_id: string;
