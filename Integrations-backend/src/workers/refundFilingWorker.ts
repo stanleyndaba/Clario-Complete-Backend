@@ -65,6 +65,7 @@ export interface FilingStats {
   processed: number;
   filed: number;
   failed: number;
+  skipped: number;    // Skipped due to duplicates or other reasons
   statusUpdated: number;
   retried: number;
   errors: string[];
@@ -182,6 +183,80 @@ class RefundFilingWorker {
   }
 
   /**
+   * DUPLICATE PREVENTION: Check if order already has an active claim
+   * This is CRITICAL to prevent Amazon from flagging as "Abuse of Seller Support"
+   * 
+   * Logic:
+   * 1. Check dispute_cases for any case with same order_id
+   * 2. If status is NOT closed/approved/rejected, there's an active case
+   * 3. Do NOT file a new case - wait for the existing one to resolve
+   * 
+   * @param orderId The Amazon order ID to check
+   * @param sellerId The seller/user ID (for scoping)
+   * @returns true if there's an active case, false if safe to file
+   */
+  private async hasActiveClaimForOrder(orderId: string, sellerId: string): Promise<boolean> {
+    if (!orderId) {
+      // No order ID means we can't check for duplicates - log warning but allow
+      logger.warn('⚠️ [REFUND FILING] No order_id provided, cannot check for duplicates');
+      return false;
+    }
+
+    try {
+      // Query for any active case (not closed, not approved, not rejected) for this order
+      // We need to join with detection_results to check evidence->order_id
+      const { data: activeCases, error } = await supabaseAdmin
+        .from('dispute_cases')
+        .select(`
+          id,
+          status,
+          filing_status,
+          detection_results!inner (
+            evidence
+          )
+        `)
+        .eq('seller_id', sellerId)
+        .not('status', 'in', '(closed,approved,rejected)')
+        .not('filing_status', 'in', '(failed)');
+
+      if (error) {
+        logger.warn('⚠️ [REFUND FILING] Could not check for duplicates, proceeding with caution', {
+          orderId,
+          error: error.message
+        });
+        return false; // Fail open - if we can't check, proceed but log it
+      }
+
+      if (!activeCases || activeCases.length === 0) {
+        return false; // No active cases, safe to file
+      }
+
+      // Check if any active case matches this order_id
+      for (const activeCase of activeCases) {
+        const caseOrderId = (activeCase as any).detection_results?.evidence?.order_id;
+        if (caseOrderId === orderId) {
+          logger.warn('🚫 [REFUND FILING] DUPLICATE DETECTED - Active case exists for order', {
+            orderId,
+            existingCaseId: activeCase.id,
+            existingStatus: activeCase.status,
+            existingFilingStatus: activeCase.filing_status
+          });
+          return true; // Duplicate found!
+        }
+      }
+
+      return false; // No matching order_id in active cases
+
+    } catch (error: any) {
+      logger.warn('⚠️ [REFUND FILING] Error checking for duplicates', {
+        orderId,
+        error: error.message
+      });
+      return false; // Fail open
+    }
+  }
+
+  /**
    * Run filing for all tenants
    */
   async runFilingForAllTenants(): Promise<FilingStats> {
@@ -189,6 +264,7 @@ class RefundFilingWorker {
       processed: 0,
       filed: 0,
       failed: 0,
+      skipped: 0,
       statusUpdated: 0,
       retried: 0,
       errors: []
@@ -287,6 +363,30 @@ class RefundFilingWorker {
           const orderId = detectionEvidence.order_id || '';
           const asin = detectionEvidence.asin || undefined;
           const sku = detectionEvidence.sku || undefined;
+
+          // 🚫 DUPLICATE PREVENTION: Check if this order already has an active case
+          // This is CRITICAL - filing duplicates = Amazon support abuse flag
+          if (orderId) {
+            const hasDuplicate = await this.hasActiveClaimForOrder(orderId, disputeCase.seller_id);
+            if (hasDuplicate) {
+              logger.info('⏭️ [REFUND FILING] Skipping case - duplicate claim exists for order', {
+                disputeId: disputeCase.id,
+                orderId
+              });
+              stats.skipped++;
+
+              // Mark this case as duplicate to prevent future processing
+              await supabaseAdmin
+                .from('dispute_cases')
+                .update({
+                  filing_status: 'duplicate_blocked',
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', disputeCase.id);
+
+              continue; // Skip to next case
+            }
+          }
 
           // Get detection result for confidence score
           const { data: detectionResult } = await supabaseAdmin
