@@ -67,6 +67,10 @@ import { detectFraudAnomalies, runFraudDetection, storeFraudResults } from './de
 import { detectAllReimbursementAnomalies, ReimbursementSyncedData } from './detection/algorithms/reimbursementAuditAlgorithms';
 import { detectAll2025FBAFeeAnomalies, FBA2025SyncedData } from './detection/algorithms/feeAlgorithms2025';
 import { detectAllReturnAnomalies, ReturnSyncedData } from './detection/algorithms/returnAnomalyAlgorithms';
+// NEW Advanced Detection Algorithms (Deep Analysis)
+import { detectAllMicroLeaks, storeMicroLeakResults } from './detection/algorithms/microLeakDetector';
+import { runAllCorrelations, storeCorrelationResults } from './detection/correlationEngine';
+import { runClosedCaseAudit, storeClosedCaseAuditResults } from './detection/algorithms/closedCaseAuditor';
 
 // ============================================================================
 // Types
@@ -419,7 +423,43 @@ export class EnhancedDetectionService {
         logger.info('[AGENT3] 2025 Expansion results stored', { count: expansionResults.length });
       }
 
-      const finalResults = [...allResults, ...clusterResults, ...expansionResults];
+      // Step 16: RUN ADVANCED DETECTION ALGORITHMS (Deep Analysis)
+      logger.info('[AGENT3] Running Advanced Detection Algorithms...', { userId, syncId });
+
+      // 16a: Micro-Leak Detector (time-series pattern analysis)
+      const microLeakResults = await detectAllMicroLeaks(userId, syncId);
+      if (microLeakResults.length > 0) {
+        await storeMicroLeakResults(microLeakResults);
+        logger.info('[AGENT3] Micro-leak patterns detected', {
+          count: microLeakResults.length,
+          value: microLeakResults.reduce((s, r) => s + r.estimated_value, 0)
+        });
+      }
+
+      // 16b: Cross-Entity Correlation Engine
+      const correlationResults = await runAllCorrelations(userId, syncId);
+      if (correlationResults.length > 0) {
+        await storeCorrelationResults(correlationResults);
+        logger.info('[AGENT3] Cross-entity correlations found', {
+          count: correlationResults.length,
+          value: correlationResults.reduce((s, r) => s + r.estimated_value, 0)
+        });
+      }
+
+      // 16c: Closed Case Re-Auditor
+      const closedCaseResults = await runClosedCaseAudit(userId, syncId);
+      if (closedCaseResults.length > 0) {
+        await storeClosedCaseAuditResults(closedCaseResults);
+        logger.info('[AGENT3] Closed case underpayments found', {
+          count: closedCaseResults.length,
+          value: closedCaseResults.reduce((s, r) => s + r.estimated_value, 0)
+        });
+      }
+
+      // Combine ALL results: original 9 + 2025 expansion 3 + advanced 3 = 15 algorithms
+      const advancedResults = [...microLeakResults, ...correlationResults, ...closedCaseResults];
+      const finalResults = [...allResults, ...clusterResults, ...expansionResults, ...advancedResults];
+
       const totalRecovery = finalResults.reduce((sum, r) => sum + r.estimated_value, 0);
 
       // PHASE 3: Apply ML Calibration to confidence scores
@@ -457,7 +497,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('[AGENT3] FULL 12-ALGORITHM + ML PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 15-ALGORITHM + ML PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -473,6 +513,10 @@ export class EnhancedDetectionService {
         reimbursementAudit: reimbursementAuditResults.length,
         fba2025Fees: fba2025Results.length,
         returnAnomalies: returnAnomalyResults.length,
+        // Advanced Detection
+        microLeaks: microLeakResults.length,
+        correlations: correlationResults.length,
+        closedCaseAudits: closedCaseResults.length,
         totalRecovery
       });
 
@@ -480,7 +524,8 @@ export class EnhancedDetectionService {
         success: true,
         jobId,
         message: finalResults.length > 0
-          ? `Agent 3 ran 12 algorithms + ML calibration - Found ${finalResults.length} claims. Total recovery: $${totalRecovery.toFixed(2)}!`
+          ? `Agent 3 ran 15 algorithms + ML calibration - Found ${finalResults.length} claims. Total recovery: $${totalRecovery.toFixed(2)}!`
+
           : 'Detection complete. No discrepancies found.',
         detectionsFound: finalResults.length,
         estimatedRecovery: totalRecovery
