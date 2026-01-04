@@ -60,6 +60,31 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
       parseInt(limit as string, 10),
       parseInt(offset as string, 10)
     );
+
+    // Enhance results with document counts from dispute_evidence_links
+    const { supabase } = await import('../database/supabaseClient');
+    const detectionIds = results.map((r: any) => r.id);
+
+    if (detectionIds.length > 0) {
+      // Get document counts for all detections in one query
+      const { data: links } = await supabase
+        .from('dispute_evidence_links')
+        .select('claim_id, document_id')
+        .in('claim_id', detectionIds);
+
+      // Count documents per claim
+      const docCounts: Record<string, number> = {};
+      (links || []).forEach((link: any) => {
+        docCounts[link.claim_id] = (docCounts[link.claim_id] || 0) + 1;
+      });
+
+      // Add counts to results
+      results.forEach((r: any) => {
+        r.matched_document_ids = r.matched_document_ids || [];
+        r.matched_document_count = docCounts[r.id] || r.matched_document_ids?.length || 0;
+      });
+    }
+
     return res.json({ success: true, results, total: results.length });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
