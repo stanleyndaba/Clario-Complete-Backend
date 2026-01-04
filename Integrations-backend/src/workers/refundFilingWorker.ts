@@ -3,12 +3,35 @@
  * Automated background worker for filing disputes via Amazon SP-API (mock for MVP)
  * Runs every 5 minutes, files cases ready for submission, polls for status updates
  * Handles retry logic with stronger evidence for denied cases
+ * 
+ * ANTI-DETECTION: Uses jittered delays between submissions to mimic human behavior
+ * Amazon bans robotic patterns (e.g., exact 5-minute intervals). Jitter makes us look human.
  */
 
 import cron from 'node-cron';
 import logger from '../utils/logger';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import refundFilingService, { FilingRequest, FilingResult, CaseStatus } from '../services/refundFilingService';
+
+/**
+ * VELOCITY LIMIT JITTER
+ * Sleep for a random duration between min and max seconds.
+ * This prevents Amazon's pattern recognition from detecting bot behavior.
+ * 
+ * Example: getJitter(180, 420) returns 180-420 seconds (3-7 minutes)
+ * One claim in 3 min, next in 7 min, next in 4 min = looks human
+ */
+function getJitterMs(minSeconds: number = 180, maxSeconds: number = 420): number {
+  const jitterSeconds = Math.floor(Math.random() * (maxSeconds - minSeconds + 1)) + minSeconds;
+  return jitterSeconds * 1000;
+}
+
+async function sleepWithJitter(minSeconds: number = 180, maxSeconds: number = 420): Promise<void> {
+  const jitterMs = getJitterMs(minSeconds, maxSeconds);
+  const jitterSeconds = jitterMs / 1000;
+  logger.debug(`⏳ [REFUND FILING] Sleeping for ${jitterSeconds.toFixed(0)}s (jitter: ${minSeconds}-${maxSeconds}s)`);
+  await new Promise(resolve => setTimeout(resolve, jitterMs));
+}
 
 // Retry logic with exponential backoff
 async function retryWithBackoff<T>(
@@ -17,13 +40,13 @@ async function retryWithBackoff<T>(
   baseDelay: number = 2000
 ): Promise<T> {
   let lastError: any;
-  
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
     } catch (error: any) {
       lastError = error;
-      
+
       if (attempt < maxRetries) {
         const delay = baseDelay * Math.pow(2, attempt);
         logger.warn(`🔄 [REFUND FILING] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, {
@@ -34,7 +57,7 @@ async function retryWithBackoff<T>(
       }
     }
   }
-  
+
   throw lastError;
 }
 
@@ -273,8 +296,12 @@ class RefundFilingWorker {
           stats.errors.push(`Case ${disputeCase.id}: ${error.message}`);
         }
 
-        // Small delay between cases to respect rate limits
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // VELOCITY LIMIT: Jittered delay between submissions (180-420 seconds = 3-7 minutes)
+        // This mimics human behavior and avoids Amazon's pattern detection
+        // A fixed interval (e.g., exactly 5 min) looks robotic; random intervals look human
+        if (casesToFile.indexOf(disputeCase) < casesToFile.length - 1) {
+          await sleepWithJitter(180, 420);
+        }
       }
 
       logger.info('✅ [REFUND FILING] Filing run completed', stats);
@@ -394,8 +421,11 @@ class RefundFilingWorker {
           });
         }
 
-        // Small delay between polls
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // VELOCITY LIMIT: Jittered delay between status polls (30-90 seconds)
+        // Less aggressive than filing, but still randomized to avoid patterns
+        if (filedCases.indexOf(disputeCase) < filedCases.length - 1) {
+          await sleepWithJitter(30, 90);
+        }
       }
 
       logger.info('✅ [REFUND FILING] Status polling completed');
@@ -574,56 +604,56 @@ class RefundFilingWorker {
         updated_at: new Date().toISOString()
       };
 
-        // 🎯 AGENT 8 INTEGRATION: Mark for recovery detection when approved
-        if (newStatus === 'approved' && previousStatus !== 'approved') {
-          updates.recovery_status = 'pending';
-          logger.info('📝 [REFUND FILING] Case approved, marked for recovery detection by Agent 8', {
-            disputeId
+      // 🎯 AGENT 8 INTEGRATION: Mark for recovery detection when approved
+      if (newStatus === 'approved' && previousStatus !== 'approved') {
+        updates.recovery_status = 'pending';
+        logger.info('📝 [REFUND FILING] Case approved, marked for recovery detection by Agent 8', {
+          disputeId
+        });
+
+        // Fetch case data for logging and notifications
+        const { data: caseData } = await supabaseAdmin
+          .from('dispute_cases')
+          .select('seller_id, claim_amount, currency, provider_case_id')
+          .eq('id', disputeId)
+          .single();
+
+        // 🎯 AGENT 11 INTEGRATION: Log approval event
+        try {
+          const agentEventLogger = (await import('../services/agentEventLogger')).default;
+          await agentEventLogger.logRefundFiling({
+            userId: caseData?.seller_id || disputeCase?.seller_id || '',
+            disputeId,
+            success: true,
+            status: 'approved',
+            amazonCaseId: statusResult.amazon_case_id || caseData?.provider_case_id,
+            duration: 0
           });
-
-          // Fetch case data for logging and notifications
-          const { data: caseData } = await supabaseAdmin
-            .from('dispute_cases')
-            .select('seller_id, claim_amount, currency, provider_case_id')
-            .eq('id', disputeId)
-            .single();
-
-          // 🎯 AGENT 11 INTEGRATION: Log approval event
-          try {
-            const agentEventLogger = (await import('../services/agentEventLogger')).default;
-            await agentEventLogger.logRefundFiling({
-              userId: caseData?.seller_id || disputeCase?.seller_id || '',
-              disputeId,
-              success: true,
-              status: 'approved',
-              amazonCaseId: statusResult.amazon_case_id || caseData?.provider_case_id,
-              duration: 0
-            });
-          } catch (logError: any) {
-            logger.warn('⚠️ [REFUND FILING] Failed to log event', {
-              error: logError.message
-            });
-          }
-
-          // 🎯 AGENT 10 INTEGRATION: Notify when refund is approved
-          try {
-            const notificationHelper = (await import('../services/notificationHelper')).default;
-            
-            if (caseData) {
-              await notificationHelper.notifyRefundApproved(caseData.seller_id, {
-                disputeId,
-                amazonCaseId: statusResult.amazon_case_id || caseData.provider_case_id,
-                claimAmount: caseData.claim_amount || 0,
-                currency: caseData.currency || 'usd',
-                approvedAmount: statusResult.amount_approved || 0
-              });
-            }
-          } catch (notifError: any) {
-            logger.warn('⚠️ [REFUND FILING] Failed to send notification', {
-              error: notifError.message
-            });
-          }
+        } catch (logError: any) {
+          logger.warn('⚠️ [REFUND FILING] Failed to log event', {
+            error: logError.message
+          });
         }
+
+        // 🎯 AGENT 10 INTEGRATION: Notify when refund is approved
+        try {
+          const notificationHelper = (await import('../services/notificationHelper')).default;
+
+          if (caseData) {
+            await notificationHelper.notifyRefundApproved(caseData.seller_id, {
+              disputeId,
+              amazonCaseId: statusResult.amazon_case_id || caseData.provider_case_id,
+              claimAmount: caseData.claim_amount || 0,
+              currency: caseData.currency || 'usd',
+              approvedAmount: statusResult.amount_approved || 0
+            });
+          }
+        } catch (notifError: any) {
+          logger.warn('⚠️ [REFUND FILING] Failed to send notification', {
+            error: notifError.message
+          });
+        }
+      }
 
       const { error } = await supabaseAdmin
         .from('dispute_cases')
