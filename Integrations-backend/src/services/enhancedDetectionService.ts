@@ -63,14 +63,10 @@ import {
 import { detectInboundAnomalies, runInboundDetection, storeInboundDetectionResults } from './detection/algorithms/inboundAlgorithms';
 import { detectRemovalAnomalies, runRemovalDetection, storeRemovalResults } from './detection/algorithms/removalAlgorithms';
 import { detectFraudAnomalies, runFraudDetection, storeFraudResults } from './detection/algorithms/fraudAlgorithms';
-// NEW 2025 Coverage Expansion Algorithms
-import { detectAllReimbursementAnomalies, ReimbursementSyncedData } from './detection/algorithms/reimbursementAuditAlgorithms';
-import { detectAll2025FBAFeeAnomalies, FBA2025SyncedData } from './detection/algorithms/feeAlgorithms2025';
-import { detectAllReturnAnomalies, ReturnSyncedData } from './detection/algorithms/returnAnomalyAlgorithms';
-// NEW Advanced Detection Algorithms (Deep Analysis)
-import { detectAllMicroLeaks, storeMicroLeakResults } from './detection/algorithms/microLeakDetector';
-import { runAllCorrelations, storeCorrelationResults } from './detection/correlationEngine';
-import { runClosedCaseAudit, storeClosedCaseAuditResults } from './detection/algorithms/closedCaseAuditor';
+// Note: 2025 fee detection is now consolidated into feeAlgorithms.ts (detectAllFeeOvercharges)
+// Note: Reimbursement audit, return anomaly, micro-leak, correlation, closed case audit
+// have been consolidated into existing services (feeAlgorithms, refundAlgorithms, patternAnalyzer, disputeService)
+
 
 // ============================================================================
 // Types

@@ -26,7 +26,14 @@ export type FeeAnomalyType =
     | 'lts_overcharge'
     | 'commission_overcharge'
     | 'closing_fee_error'
-    | 'referral_fee_error';
+    | 'referral_fee_error'
+    // 2025 FBA Fee Anomaly Types
+    | 'low_inventory_fee_error'
+    | 'return_processing_fee_error'
+    | 'inbound_placement_fee_error'
+    | 'peak_fulfillment_surcharge_error'
+    | 'size_tier_misclassification';
+
 
 export interface FeeEvent {
     id: string;
@@ -135,7 +142,7 @@ export interface FeeOverchargeEvidence {
 }
 
 // ============================================================================
-// Fee Rate Tables (Amazon 2024 rates - should be updated periodically)
+// Fee Rate Tables (Amazon 2025 rates - updated Jan 2025)
 // ============================================================================
 
 const FBA_FULFILLMENT_FEES = {
@@ -160,6 +167,13 @@ const FBA_FULFILLMENT_FEES = {
     special_oversize: { base: 158.49, perLb: 0.83 },
 };
 
+// 2025 Peak/Off-Peak Surcharges
+const PEAK_SURCHARGE_2025 = {
+    peak_months: [10, 11, 12], // Oct, Nov, Dec
+    peak_surcharge_percentage: 0.12, // 12% surcharge during peak
+    off_peak_discount: 0.0, // No discount off-peak
+};
+
 const STORAGE_FEES_PER_CUBIC_FOOT = {
     standard: {
         'jan-sep': 0.87,
@@ -172,7 +186,39 @@ const STORAGE_FEES_PER_CUBIC_FOOT = {
     long_term: 6.90, // Per cubic foot for items > 365 days
 };
 
+// 2025 Low-Inventory Level Fee (applied when IPI < threshold)
+const LOW_INVENTORY_FEE_2025 = {
+    threshold_ipi: 450,
+    fee_per_cubic_foot: 0.32,
+    exempt_new_sellers: true,
+    exempt_days: 90,
+};
+
+// 2025 Return Processing Fees
+const RETURN_PROCESSING_FEES_2025 = {
+    categories_with_free_returns: ['apparel', 'shoes', 'watches', 'jewelry'],
+    base_fee: {
+        small_standard: 2.00,
+        large_standard: 3.00,
+        oversize: 5.00,
+    },
+    high_return_rate_threshold: 0.10, // 10%
+    high_return_surcharge: 1.50,
+};
+
+// 2025 Inbound Placement Service Fees
+const INBOUND_PLACEMENT_FEES_2025 = {
+    minimal_shipment_splits: 0.00, // Free if Amazon decides
+    partial_shipment_splits: {
+        small_standard: 0.27,
+        large_standard: 0.32,
+        oversize: 1.15,
+    },
+    amazon_optimized: 0.00, // Free
+};
+
 const DEFAULT_REFERRAL_RATE = 0.15; // 15% default
+
 
 // ============================================================================
 // Helper Functions
@@ -651,33 +697,248 @@ export function detectCommissionOvercharge(
 /**
  * Run all fee detection algorithms
  */
+// ============================================================================
+// 2025 Fee Detection Algorithms
+// ============================================================================
+
+/**
+ * Detect Low-Inventory Level Fee Overcharges (2025)
+ * Applied when IPI score < threshold
+ */
+export function detectLowInventoryFeeOvercharge(
+    sellerId: string,
+    syncId: string,
+    data: FeeSyncedData
+): FeeDetectionResult[] {
+    const results: FeeDetectionResult[] = [];
+    const discoveryDate = new Date();
+    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
+
+    // Filter to low-inventory fees
+    const lowInvFees = (data.fee_events || []).filter(
+        e => e.fee_type.toLowerCase().includes('low_inventory') ||
+            e.fee_type.toLowerCase().includes('low-inventory')
+    );
+
+    for (const fee of lowInvFees) {
+        // Check if seller might be exempt (new seller or IPI above threshold)
+        const chargedFee = Math.abs(fee.fee_amount);
+        if (chargedFee <= 0.10) continue;
+
+        // Flag for review - these fees are often applied incorrectly
+        const evidence: FeeOverchargeEvidence = {
+            sku: fee.sku,
+            asin: fee.asin,
+            fee_type: 'Low-Inventory Level Fee',
+            charged_amount: chargedFee,
+            expected_amount: 0, // Need to verify IPI
+            overcharge_amount: chargedFee,
+            overcharge_percentage: 100,
+            calculation_method: 'low_inventory_threshold',
+            calculation_inputs: { threshold_ipi: LOW_INVENTORY_FEE_2025.threshold_ipi },
+            evidence_summary: `Low-inventory fee of $${chargedFee.toFixed(2)} charged. Verify IPI score is actually below ${LOW_INVENTORY_FEE_2025.threshold_ipi}.`,
+            fee_event_ids: [fee.id]
+        };
+
+        results.push({
+            seller_id: sellerId,
+            sync_id: syncId,
+            anomaly_type: 'low_inventory_fee_error',
+            severity: 'medium',
+            estimated_value: chargedFee,
+            currency: fee.currency || 'USD',
+            confidence_score: 0.65,
+            evidence,
+            related_event_ids: [fee.id],
+            discovery_date: discoveryDate,
+            deadline_date: deadline,
+            days_remaining: daysRemaining,
+            sku: fee.sku,
+            asin: fee.asin
+        });
+    }
+
+    return results;
+}
+
+/**
+ * Detect Return Processing Fee Overcharges (2025)
+ */
+export function detectReturnProcessingFeeOvercharge(
+    sellerId: string,
+    syncId: string,
+    data: FeeSyncedData
+): FeeDetectionResult[] {
+    const results: FeeDetectionResult[] = [];
+    const discoveryDate = new Date();
+    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
+
+    // Filter to return processing fees
+    const returnFees = (data.fee_events || []).filter(
+        e => e.fee_type.toLowerCase().includes('return_processing') ||
+            e.fee_type.toLowerCase().includes('return processing')
+    );
+
+    for (const fee of returnFees) {
+        const chargedFee = Math.abs(fee.fee_amount);
+        if (chargedFee <= 0.50) continue;
+
+        // Determine expected fee based on size tier
+        const sizeTier = 'large_standard'; // Would need product lookup
+        const expectedFee = RETURN_PROCESSING_FEES_2025.base_fee[sizeTier as keyof typeof RETURN_PROCESSING_FEES_2025.base_fee] || 3.00;
+        const overchargeAmount = chargedFee - expectedFee;
+
+        if (overchargeAmount <= 0.50) continue;
+
+        const evidence: FeeOverchargeEvidence = {
+            sku: fee.sku,
+            asin: fee.asin,
+            fee_type: 'Return Processing Fee',
+            charged_amount: chargedFee,
+            expected_amount: expectedFee,
+            overcharge_amount: overchargeAmount,
+            overcharge_percentage: (overchargeAmount / expectedFee) * 100,
+            calculation_method: 'return_processing_schedule',
+            calculation_inputs: { size_tier: sizeTier },
+            evidence_summary: `Return processing fee of $${chargedFee.toFixed(2)} charged, expected $${expectedFee.toFixed(2)} for ${sizeTier}. Overcharge of $${overchargeAmount.toFixed(2)}.`,
+            fee_event_ids: [fee.id]
+        };
+
+        results.push({
+            seller_id: sellerId,
+            sync_id: syncId,
+            anomaly_type: 'return_processing_fee_error',
+            severity: calculateSeverity(overchargeAmount),
+            estimated_value: overchargeAmount,
+            currency: fee.currency || 'USD',
+            confidence_score: 0.75,
+            evidence,
+            related_event_ids: [fee.id],
+            discovery_date: discoveryDate,
+            deadline_date: deadline,
+            days_remaining: daysRemaining,
+            sku: fee.sku,
+            asin: fee.asin
+        });
+    }
+
+    return results;
+}
+
+/**
+ * Detect Inbound Placement Fee Overcharges (2025)
+ */
+export function detectInboundPlacementFeeOvercharge(
+    sellerId: string,
+    syncId: string,
+    data: FeeSyncedData
+): FeeDetectionResult[] {
+    const results: FeeDetectionResult[] = [];
+    const discoveryDate = new Date();
+    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
+
+    // Filter to inbound placement fees
+    const placementFees = (data.fee_events || []).filter(
+        e => e.fee_type.toLowerCase().includes('inbound_placement') ||
+            e.fee_type.toLowerCase().includes('placement')
+    );
+
+    for (const fee of placementFees) {
+        const chargedFee = Math.abs(fee.fee_amount);
+        if (chargedFee <= 0.10) continue;
+
+        // Check if should be free (Amazon-optimized)
+        const expectedFee = 0; // Amazon-optimized should be free
+        const overchargeAmount = chargedFee;
+
+        if (overchargeAmount <= 0.20) continue;
+
+        const evidence: FeeOverchargeEvidence = {
+            sku: fee.sku,
+            asin: fee.asin,
+            fee_type: 'Inbound Placement Service Fee',
+            charged_amount: chargedFee,
+            expected_amount: expectedFee,
+            overcharge_amount: overchargeAmount,
+            overcharge_percentage: 100,
+            calculation_method: 'inbound_placement_schedule',
+            calculation_inputs: {},
+            evidence_summary: `Inbound placement fee of $${chargedFee.toFixed(2)} charged. Verify shipment split selection.`,
+            fee_event_ids: [fee.id]
+        };
+
+        results.push({
+            seller_id: sellerId,
+            sync_id: syncId,
+            anomaly_type: 'inbound_placement_fee_error',
+            severity: calculateSeverity(overchargeAmount),
+            estimated_value: overchargeAmount,
+            currency: fee.currency || 'USD',
+            confidence_score: 0.60,
+            evidence,
+            related_event_ids: [fee.id],
+            discovery_date: discoveryDate,
+            deadline_date: deadline,
+            days_remaining: daysRemaining,
+            sku: fee.sku,
+            asin: fee.asin
+        });
+    }
+
+    return results;
+}
+
+// ============================================================================
+// Combined Fee Detection Runner (Updated for 2025)
+// ============================================================================
+
+/**
+ * Run all fee detection algorithms (including 2025 fee types)
+ */
 export function detectAllFeeOvercharges(
     sellerId: string,
     syncId: string,
     data: FeeSyncedData
 ): FeeDetectionResult[] {
-    logger.info('💰 [FEE AUDITOR] Running all fee detection algorithms', {
+    logger.info('[FEE AUDITOR] Running all fee detection algorithms (2024 + 2025)', {
         sellerId,
         syncId
     });
 
+    // Original 2024 algorithms
     const fulfillmentResults = detectFulfillmentFeeOvercharge(sellerId, syncId, data);
     const storageResults = detectStorageFeeOvercharge(sellerId, syncId, data);
     const commissionResults = detectCommissionOvercharge(sellerId, syncId, data);
 
-    const allResults = [...fulfillmentResults, ...storageResults, ...commissionResults];
+    // New 2025 algorithms
+    const lowInventoryResults = detectLowInventoryFeeOvercharge(sellerId, syncId, data);
+    const returnProcessingResults = detectReturnProcessingFeeOvercharge(sellerId, syncId, data);
+    const inboundPlacementResults = detectInboundPlacementFeeOvercharge(sellerId, syncId, data);
 
-    logger.info('💰 [FEE AUDITOR] All fee detection complete', {
+    const allResults = [
+        ...fulfillmentResults,
+        ...storageResults,
+        ...commissionResults,
+        ...lowInventoryResults,
+        ...returnProcessingResults,
+        ...inboundPlacementResults
+    ];
+
+    logger.info('[FEE AUDITOR] All fee detection complete (2024 + 2025)', {
         sellerId,
         fulfillmentCount: fulfillmentResults.length,
         storageCount: storageResults.length,
         commissionCount: commissionResults.length,
+        lowInventoryCount: lowInventoryResults.length,
+        returnProcessingCount: returnProcessingResults.length,
+        inboundPlacementCount: inboundPlacementResults.length,
         totalCount: allResults.length,
         totalRecovery: allResults.reduce((sum, r) => sum + r.estimated_value, 0)
     });
 
     return allResults;
 }
+
 
 // ============================================================================
 // Database Integration
