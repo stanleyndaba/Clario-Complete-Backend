@@ -78,6 +78,17 @@ class RefundFilingWorker {
   private isRunning: boolean = false;
 
   /**
+   * THROTTLE CONFIGURATION
+   * Prevents flood-like behavior that triggers Amazon's bot detection
+   * These values are conservative - can be increased after testing
+   */
+  private static readonly THROTTLE_CONFIG = {
+    MAX_PER_RUN: 3,        // Only process 3 claims per 5-minute run
+    MAX_PER_HOUR: 12,      // Max 12 claims per hour (soft limit)
+    MAX_PER_DAY: 100,      // Daily ceiling (for reference)
+  };
+
+  /**
    * Start the worker
    */
   start(): void {
@@ -144,6 +155,33 @@ class RefundFilingWorker {
   }
 
   /**
+   * Check how many claims have been filed in the last hour
+   * Used to enforce hourly rate limits
+   */
+  private async getFilingsInLastHour(): Promise<number> {
+    try {
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+      const { count, error } = await supabaseAdmin
+        .from('dispute_submissions')
+        .select('*', { count: 'exact', head: true })
+        .gte('created_at', oneHourAgo);
+
+      if (error) {
+        logger.warn('⚠️ [REFUND FILING] Could not check hourly filings, proceeding with caution', {
+          error: error.message
+        });
+        return 0; // Assume 0 if we can't check (fail open, but log it)
+      }
+
+      return count || 0;
+    } catch (error: any) {
+      logger.warn('⚠️ [REFUND FILING] Error checking hourly filings', { error: error.message });
+      return 0;
+    }
+  }
+
+  /**
    * Run filing for all tenants
    */
   async runFilingForAllTenants(): Promise<FilingStats> {
@@ -158,6 +196,30 @@ class RefundFilingWorker {
 
     try {
       logger.info('📝 [REFUND FILING] Starting filing run for all tenants');
+
+      // THROTTLE CHECK: Hourly rate limit
+      const filingsLastHour = await this.getFilingsInLastHour();
+      const remainingHourlyQuota = RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR - filingsLastHour;
+
+      if (remainingHourlyQuota <= 0) {
+        logger.info('🛑 [REFUND FILING] Hourly quota reached, skipping this run', {
+          filingsLastHour,
+          maxPerHour: RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR
+        });
+        return stats;
+      }
+
+      // Calculate how many we can process this run (min of per-run limit and remaining quota)
+      const maxThisRun = Math.min(
+        RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_RUN,
+        remainingHourlyQuota
+      );
+
+      logger.info('📊 [REFUND FILING] Throttle check passed', {
+        filingsLastHour,
+        remainingHourlyQuota,
+        maxThisRun
+      });
 
       // Get cases ready for filing (filing_status = 'pending' or 'retrying')
       // Only get cases that have evidence documents linked (via dispute_evidence_links)
@@ -183,7 +245,7 @@ class RefundFilingWorker {
         `)
         .in('filing_status', ['pending', 'retrying'])
         .or('status.eq.pending,status.eq.submitted')
-        .limit(50); // Process up to 50 cases per run
+        .limit(maxThisRun); // THROTTLE: Only fetch what we're allowed to process
 
       if (error) {
         // If the error is about no rows, that's fine - just means no cases with evidence
