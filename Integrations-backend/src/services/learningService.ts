@@ -53,7 +53,59 @@ export interface PatternAnalysis {
   rejectionPatterns: Record<string, { count: number; fixable: number; unclaimable: number }>;
   optimalSequences: Array<{ sequence: string[]; successRate: number }>;
   thresholdRecommendations: ThresholdUpdate[];
+  // NEW: Outcome-by-dimension tracking
+  outcomesByDimension?: OutcomesByDimension;
+  // NEW: Long tail patterns
+  longTailPatterns?: LongTailPattern[];
 }
+
+// NEW: Outcome tracking by dimension (claim type, marketplace, age, evidence)
+export interface OutcomesByDimension {
+  byClaimType: Record<string, OutcomeMetrics>;
+  byMarketplace: Record<string, OutcomeMetrics>;
+  byClaimAge: Record<string, OutcomeMetrics>;  // "0-7d", "8-30d", "31-60d"
+  byEvidenceQuality: Record<string, OutcomeMetrics>;  // "low", "medium", "high"
+}
+
+export interface OutcomeMetrics {
+  totalClaims: number;
+  approved: number;
+  denied: number;
+  pending: number;
+  approvalRate: number;
+  denialRate: number;
+  totalEstimated: number;
+  totalApproved: number;
+  recoveryRate: number;
+  avgTimeToResolution: number;
+}
+
+// NEW: Long tail pattern detection ($0.10-$2 x 1000s of units = big money)
+export interface LongTailPattern {
+  patternId: string;
+  patternType: 'fee_micro_overcharge' | 'recurring_adjustment' | 'systematic_shortage';
+  affectedSkus: string[];
+  perUnitAmount: number;
+  totalUnitsAffected: number;
+  aggregatedValue: number;
+  frequency: 'every_order' | 'daily' | 'weekly';
+  confidenceScore: number;
+  firstOccurrence: string;
+  lastOccurrence: string;
+  description: string;
+}
+
+// NEW: Detection threshold feedback
+export interface DetectionThresholdUpdate {
+  anomalyType: string;
+  dimension: 'value_threshold' | 'confidence_threshold' | 'frequency_threshold';
+  oldValue: number;
+  newValue: number;
+  reason: string;
+  basedOnOutcomes: number;
+  expectedImpact: string;
+}
+
 
 class LearningService {
   private pythonApiUrl: string;
@@ -502,7 +554,329 @@ class LearningService {
       throw error;
     }
   }
+
+  // ============================================================================
+  // NEW: Outcome-by-Dimension Analysis
+  // ============================================================================
+
+  /**
+   * Analyze outcomes by claim type, marketplace, claim age, and evidence quality
+   * Feeds back into detection thresholds
+   */
+  async analyzeOutcomesByDimension(userId: string): Promise<OutcomesByDimension> {
+    const results: OutcomesByDimension = {
+      byClaimType: {},
+      byMarketplace: {},
+      byClaimAge: {},
+      byEvidenceQuality: {}
+    };
+
+    try {
+      const { supabaseAdmin } = await import('../database/supabaseClient');
+
+      // Get all resolved cases for this user
+      const { data: cases, error } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('*')
+        .eq('seller_id', userId)
+        .in('status', ['approved', 'denied', 'closed', 'partial'])
+        .limit(2000);
+
+      if (error || !cases?.length) {
+        logger.info('[LEARNING] No cases to analyze for outcomes', { userId });
+        return results;
+      }
+
+      // Group and calculate metrics by claim type
+      const byType = this.groupCases(cases, 'case_type');
+      for (const [type, typeCases] of Object.entries(byType)) {
+        results.byClaimType[type] = this.calculateMetrics(typeCases as any[]);
+      }
+
+      // Group by marketplace
+      const byMarketplace = this.groupCases(cases, 'marketplace');
+      for (const [mp, mpCases] of Object.entries(byMarketplace)) {
+        results.byMarketplace[mp] = this.calculateMetrics(mpCases as any[]);
+      }
+
+      // Group by claim age
+      const casesWithAge = cases.map(c => ({
+        ...c,
+        age_bucket: this.getAgeBucket(c.created_at, c.updated_at)
+      }));
+      const byAge = this.groupCases(casesWithAge, 'age_bucket');
+      for (const [age, ageCases] of Object.entries(byAge)) {
+        results.byClaimAge[age] = this.calculateMetrics(ageCases as any[]);
+      }
+
+      // Group by evidence quality
+      const casesWithQuality = cases.map(c => ({
+        ...c,
+        evidence_quality: this.getEvidenceQuality(c.evidence_completeness || 0.5)
+      }));
+      const byQuality = this.groupCases(casesWithQuality, 'evidence_quality');
+      for (const [quality, qualityCases] of Object.entries(byQuality)) {
+        results.byEvidenceQuality[quality] = this.calculateMetrics(qualityCases as any[]);
+      }
+
+      logger.info('[LEARNING] Outcome-by-dimension analysis complete', {
+        userId,
+        totalCases: cases.length,
+        claimTypes: Object.keys(results.byClaimType).length,
+        marketplaces: Object.keys(results.byMarketplace).length
+      });
+
+    } catch (error: any) {
+      logger.error('[LEARNING] Error analyzing outcomes by dimension', { userId, error: error.message });
+    }
+
+    return results;
+  }
+
+  private groupCases(cases: any[], key: string): Record<string, any[]> {
+    const groups: Record<string, any[]> = {};
+    for (const c of cases) {
+      const value = c[key] || 'unknown';
+      if (!groups[value]) groups[value] = [];
+      groups[value].push(c);
+    }
+    return groups;
+  }
+
+  private calculateMetrics(cases: any[]): OutcomeMetrics {
+    const total = cases.length;
+    const approved = cases.filter(c => c.status === 'approved' || c.status === 'partial').length;
+    const denied = cases.filter(c => c.status === 'denied' || c.status === 'closed').length;
+    const pending = cases.filter(c => c.status === 'pending').length;
+
+    const totalEstimated = cases.reduce((s, c) => s + (c.estimated_value || 0), 0);
+    const totalApproved = cases.reduce((s, c) => s + (c.approved_amount || 0), 0);
+
+    const resolutionTimes = cases
+      .filter(c => c.created_at && c.updated_at)
+      .map(c => this.daysBetween(c.created_at, c.updated_at));
+    const avgTime = resolutionTimes.length > 0
+      ? resolutionTimes.reduce((s, t) => s + t, 0) / resolutionTimes.length
+      : 0;
+
+    return {
+      totalClaims: total,
+      approved,
+      denied,
+      pending,
+      approvalRate: total > 0 ? approved / total : 0,
+      denialRate: total > 0 ? denied / total : 0,
+      totalEstimated,
+      totalApproved,
+      recoveryRate: totalEstimated > 0 ? totalApproved / totalEstimated : 0,
+      avgTimeToResolution: avgTime
+    };
+  }
+
+  private getAgeBucket(created: string, resolved: string): string {
+    const days = this.daysBetween(created, resolved);
+    if (days <= 7) return '0-7d';
+    if (days <= 30) return '8-30d';
+    if (days <= 60) return '31-60d';
+    return '60+d';
+  }
+
+  private getEvidenceQuality(completeness: number): string {
+    if (completeness >= 0.8) return 'high';
+    if (completeness >= 0.5) return 'medium';
+    return 'low';
+  }
+
+  private daysBetween(start: string, end: string): number {
+    const s = new Date(start);
+    const e = new Date(end);
+    return Math.ceil((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24));
+  }
+
+  // ============================================================================
+  // NEW: Long Tail Pattern Explorer
+  // ============================================================================
+
+  /**
+   * Find long tail patterns: micro-overcharges that add up to significant value
+   * Example: $0.35 overcharge x 50,000 units = $17,500
+   */
+  async exploreLongTailPatterns(userId: string): Promise<LongTailPattern[]> {
+    const patterns: LongTailPattern[] = [];
+
+    try {
+      const { supabaseAdmin } = await import('../database/supabaseClient');
+
+      // Get fee events for the last 180 days
+      const lookbackDate = new Date();
+      lookbackDate.setDate(lookbackDate.getDate() - 180);
+
+      const { data: feeEvents, error } = await supabaseAdmin
+        .from('financial_events')
+        .select('*')
+        .eq('seller_id', userId)
+        .in('event_type', ['fba_fee', 'fulfillment_fee', 'service_fee'])
+        .gte('event_date', lookbackDate.toISOString())
+        .limit(10000);
+
+      if (error || !feeEvents?.length) {
+        return patterns;
+      }
+
+      // Group by SKU
+      const skuGroups = new Map<string, any[]>();
+      for (const event of feeEvents) {
+        const sku = event.amazon_sku || event.sku || 'unknown';
+        if (!skuGroups.has(sku)) skuGroups.set(sku, []);
+        skuGroups.get(sku)!.push(event);
+      }
+
+      // Analyze each SKU for patterns
+      for (const [sku, events] of skuGroups) {
+        if (events.length < 50) continue; // Need enough data
+
+        // Look for consistent small overcharges
+        const overcharges = events
+          .filter(e => e.expected_amount && e.amount)
+          .map(e => ({
+            date: e.event_date,
+            charged: Math.abs(e.amount),
+            expected: Math.abs(e.expected_amount || e.amount),
+            diff: Math.abs(e.amount) - Math.abs(e.expected_amount || e.amount)
+          }))
+          .filter(o => o.diff >= 0.05 && o.diff <= 2.00); // $0.05 to $2 range
+
+        if (overcharges.length < 25) continue;
+
+        // Check for consistency
+        const avgOvercharge = overcharges.reduce((s, o) => s + o.diff, 0) / overcharges.length;
+        const totalValue = avgOvercharge * overcharges.length;
+
+        // Only report if total value is significant ($100+)
+        if (totalValue >= 100) {
+          patterns.push({
+            patternId: `lt_${sku}_${userId.substring(0, 6)}`,
+            patternType: 'fee_micro_overcharge',
+            affectedSkus: [sku],
+            perUnitAmount: Math.round(avgOvercharge * 100) / 100,
+            totalUnitsAffected: overcharges.length,
+            aggregatedValue: Math.round(totalValue * 100) / 100,
+            frequency: 'every_order',
+            confidenceScore: Math.min(0.95, 0.6 + (overcharges.length / 500) * 0.35),
+            firstOccurrence: overcharges[overcharges.length - 1].date,
+            lastOccurrence: overcharges[0].date,
+            description: `SKU ${sku}: $${avgOvercharge.toFixed(2)} overcharge x ${overcharges.length} units = $${totalValue.toFixed(2)} potential recovery`
+          });
+        }
+      }
+
+      // Sort by aggregated value
+      patterns.sort((a, b) => b.aggregatedValue - a.aggregatedValue);
+
+      logger.info('[LEARNING] Long tail pattern exploration complete', {
+        userId,
+        patternsFound: patterns.length,
+        totalValue: patterns.reduce((s, p) => s + p.aggregatedValue, 0)
+      });
+
+    } catch (error: any) {
+      logger.error('[LEARNING] Error exploring long tail patterns', { userId, error: error.message });
+    }
+
+    return patterns;
+  }
+
+  // ============================================================================
+  // NEW: Detection Threshold Feedback
+  // ============================================================================
+
+  /**
+   * Generate detection threshold updates based on outcomes
+   * Feeds back into Agent 3 detection algorithms
+   */
+  async generateDetectionThresholdUpdates(userId: string): Promise<DetectionThresholdUpdate[]> {
+    const updates: DetectionThresholdUpdate[] = [];
+
+    try {
+      const outcomes = await this.analyzeOutcomesByDimension(userId);
+
+      // Analyze each claim type's performance
+      for (const [claimType, metrics] of Object.entries(outcomes.byClaimType)) {
+        if (metrics.totalClaims < 10) continue; // Need enough data
+
+        // If approval rate is high, we can lower the detection threshold (catch more)
+        if (metrics.approvalRate >= 0.8 && metrics.totalClaims >= 20) {
+          updates.push({
+            anomalyType: claimType,
+            dimension: 'value_threshold',
+            oldValue: 25, // Current min value
+            newValue: 15, // Lower threshold to catch more
+            reason: `High approval rate (${(metrics.approvalRate * 100).toFixed(0)}%) on ${claimType} claims - safe to lower detection threshold`,
+            basedOnOutcomes: metrics.totalClaims,
+            expectedImpact: 'Catch 20-30% more claims with high approval likelihood'
+          });
+        }
+
+        // If approval rate is low, raise the threshold (focus on quality)
+        if (metrics.approvalRate < 0.5 && metrics.totalClaims >= 20) {
+          updates.push({
+            anomalyType: claimType,
+            dimension: 'confidence_threshold',
+            oldValue: 0.6,
+            newValue: 0.75,
+            reason: `Low approval rate (${(metrics.approvalRate * 100).toFixed(0)}%) on ${claimType} claims - raise confidence threshold`,
+            basedOnOutcomes: metrics.totalClaims,
+            expectedImpact: 'Reduce false positives by 30-40%'
+          });
+        }
+
+        // If recovery rate is low (partial approvals), focus on evidence quality
+        if (metrics.recoveryRate < 0.6 && metrics.approvalRate >= 0.5) {
+          updates.push({
+            anomalyType: claimType,
+            dimension: 'frequency_threshold',
+            oldValue: 0,
+            newValue: 0,
+            reason: `Low recovery rate (${(metrics.recoveryRate * 100).toFixed(0)}%) suggests partial approvals - prioritize evidence quality for ${claimType}`,
+            basedOnOutcomes: metrics.totalClaims,
+            expectedImpact: 'Improve recovery rate by focusing on better documentation'
+          });
+        }
+      }
+
+      // Store threshold updates
+      if (updates.length > 0) {
+        const { supabaseAdmin } = await import('../database/supabaseClient');
+        for (const update of updates) {
+          await supabaseAdmin
+            .from('detection_threshold_updates')
+            .insert({
+              user_id: userId,
+              anomaly_type: update.anomalyType,
+              dimension: update.dimension,
+              old_value: update.oldValue,
+              new_value: update.newValue,
+              reason: update.reason,
+              based_on_outcomes: update.basedOnOutcomes,
+              expected_impact: update.expectedImpact,
+              created_at: new Date().toISOString()
+            });
+        }
+      }
+
+      logger.info('[LEARNING] Detection threshold updates generated', {
+        userId,
+        updatesCount: updates.length
+      });
+
+    } catch (error: any) {
+      logger.error('[LEARNING] Error generating detection threshold updates', { userId, error: error.message });
+    }
+
+    return updates;
+  }
 }
+
 
 // Export singleton instance
 const learningService = new LearningService();

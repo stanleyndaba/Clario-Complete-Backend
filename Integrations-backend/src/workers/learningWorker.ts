@@ -16,8 +16,14 @@ export interface LearningStats {
   thresholdsOptimized: number;
   modelRetrainingTriggered: number;
   insightsGenerated: number;
+  // NEW: Outcome and long tail tracking
+  outcomesAnalyzed: number;
+  longTailPatternsFound: number;
+  longTailTotalValue: number;
+  detectionThresholdsUpdated: number;
   errors: string[];
 }
+
 
 class LearningWorker {
   private schedule: string = '*/30 * * * *'; // Every 30 minutes
@@ -80,11 +86,15 @@ class LearningWorker {
       thresholdsOptimized: 0,
       modelRetrainingTriggered: 0,
       insightsGenerated: 0,
+      outcomesAnalyzed: 0,
+      longTailPatternsFound: 0,
+      longTailTotalValue: 0,
+      detectionThresholdsUpdated: 0,
       errors: []
     };
 
     try {
-      logger.info('🧠 [LEARNING] Starting learning cycle', {
+      logger.info('[LEARNING] Starting learning cycle', {
         timestamp: new Date().toISOString()
       });
 
@@ -93,7 +103,7 @@ class LearningWorker {
       stats.eventsCollected = events.length;
 
       if (events.length < this.minEventsForAnalysis) {
-        logger.debug('ℹ️ [LEARNING] Insufficient events for analysis', {
+        logger.debug('[LEARNING] Insufficient events for analysis', {
           eventCount: events.length,
           minRequired: this.minEventsForAnalysis
         });
@@ -118,11 +128,44 @@ class LearningWorker {
             }
           }
 
+          // NEW: Analyze outcomes by dimension (claim type, marketplace, age, evidence quality)
+          try {
+            const outcomes = await learningService.analyzeOutcomesByDimension(userId);
+            stats.outcomesAnalyzed++;
+
+            // Generate detection threshold updates based on outcomes
+            const thresholdUpdates = await learningService.generateDetectionThresholdUpdates(userId);
+            stats.detectionThresholdsUpdated += thresholdUpdates.length;
+          } catch (outcomeError: any) {
+            logger.debug('[LEARNING] Outcome analysis skipped', { userId, error: outcomeError.message });
+          }
+
+          // NEW: Explore long tail patterns (micro-overcharges that add up)
+          try {
+            const longTailPatterns = await learningService.exploreLongTailPatterns(userId);
+            stats.longTailPatternsFound += longTailPatterns.length;
+            stats.longTailTotalValue += longTailPatterns.reduce((s, p) => s + p.aggregatedValue, 0);
+
+            // Log significant long tail patterns
+            for (const pattern of longTailPatterns.filter(p => p.aggregatedValue >= 1000)) {
+              logger.info('[LEARNING] Significant long tail pattern found', {
+                userId,
+                patternId: pattern.patternId,
+                skus: pattern.affectedSkus,
+                perUnit: pattern.perUnitAmount,
+                totalUnits: pattern.totalUnitsAffected,
+                totalValue: pattern.aggregatedValue
+              });
+            }
+          } catch (ltError: any) {
+            logger.debug('[LEARNING] Long tail analysis skipped', { userId, error: ltError.message });
+          }
+
           // Check if enough events for retraining
           if (userEvents.length >= this.minEventsForRetraining) {
             // Check if retraining is needed (e.g., recent rejections, low success rate)
             const shouldRetrain = await this.shouldTriggerRetraining(userId, userEvents);
-            
+
             if (shouldRetrain) {
               const result = await learningService.triggerModelRetraining(userId, {
                 events: userEvents,
@@ -133,7 +176,7 @@ class LearningWorker {
 
               if (result.success) {
                 stats.modelRetrainingTriggered++;
-                logger.info('✅ [LEARNING] Model retraining triggered', {
+                logger.info('[LEARNING] Model retraining triggered', {
                   userId,
                   modelVersion: result.modelVersion,
                   improvement: result.improvement
@@ -150,7 +193,7 @@ class LearningWorker {
           await this.storeInsights(userId, insights);
 
         } catch (error: any) {
-          logger.error('❌ [LEARNING] Error processing user events', {
+          logger.error('[LEARNING] Error processing user events', {
             userId,
             error: error.message
           });
@@ -158,11 +201,11 @@ class LearningWorker {
         }
       }
 
-      logger.info('✅ [LEARNING] Learning cycle completed', stats);
+      logger.info('[LEARNING] Learning cycle completed', stats);
       return stats;
 
     } catch (error: any) {
-      logger.error('❌ [LEARNING] Fatal error in learning cycle', { error: error.message });
+      logger.error('[LEARNING] Fatal error in learning cycle', { error: error.message });
       stats.errors.push(`Fatal error: ${error.message}`);
       return stats;
     }
@@ -183,20 +226,21 @@ class LearningWorker {
         .gte('created_at', startDate.toISOString())
         .lte('created_at', endDate.toISOString())
         .order('created_at', { ascending: false })
-        .limit(1000); // Limit to prevent memory issues
+        .limit(1000);
 
       if (error) {
-        logger.error('❌ [LEARNING] Failed to collect events', { error: error.message });
+        logger.error('[LEARNING] Failed to collect events', { error: error.message });
         return [];
       }
 
       return events || [];
 
     } catch (error: any) {
-      logger.error('❌ [LEARNING] Error collecting events', { error: error.message });
+      logger.error('[LEARNING] Error collecting events', { error: error.message });
       return [];
     }
   }
+
 
   /**
    * Group events by user
@@ -248,7 +292,7 @@ class LearningWorker {
 
       // Check success rate
       const successRate = await agentEventLogger.getSuccessRate(AgentType.EVIDENCE_MATCHING, userId, 30);
-      
+
       // Trigger retraining if success rate is low (<70%)
       if (successRate < 0.7 && events.length >= this.minEventsForRetraining) {
         logger.info('🔄 [LEARNING] Low success rate detected, triggering retraining', {
