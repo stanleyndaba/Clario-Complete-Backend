@@ -7,6 +7,7 @@ import axios, { AxiosError } from 'axios';
 import logger from '../utils/logger';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import { buildPythonServiceAuthHeader } from '../utils/pythonServiceAuth';
+import mcdeService from './mcdeService';
 
 export interface ParsedDocumentData {
   supplier_name?: string;
@@ -290,6 +291,7 @@ class DocumentParsingService {
   /**
    * Parse document with retry logic and exponential backoff
    * Uses local pdfExtractor for PDFs (fast, no rate limits)
+   * Uses MCDE for images and scanned PDFs (OCR, Chinese support)
    * Falls back to Python API for other formats or if local parsing fails
    */
   async parseDocumentWithRetry(
@@ -297,11 +299,20 @@ class DocumentParsingService {
     userId: string,
     maxRetries: number = 3
   ): Promise<ParsedDocumentData | null> {
+    const client = supabaseAdmin || supabase;
+
+    // Get document info first to determine parsing strategy
+    const { data: doc } = await client
+      .from('evidence_documents')
+      .select('id, storage_path, content_type, filename')
+      .eq('id', documentId)
+      .single();
+
     // First, try local PDF parsing (no rate limits, faster)
     try {
       const localResult = await this.parseDocumentLocally(documentId, userId);
       if (localResult) {
-        logger.info('✅ [DOCUMENT PARSING] Parsed locally using pdfExtractor', {
+        logger.info('[DOCUMENT PARSING] Parsed locally using pdfExtractor', {
           documentId,
           userId,
           confidence: localResult.confidence_score
@@ -309,10 +320,86 @@ class DocumentParsingService {
         return localResult;
       }
     } catch (localError: any) {
-      logger.warn('⚠️ [DOCUMENT PARSING] Local parsing failed, will try Python API', {
+      logger.warn('[DOCUMENT PARSING] Local parsing failed, will try MCDE/Python API', {
         documentId,
         error: localError.message
       });
+    }
+
+    // Try MCDE for images and scanned PDFs (OCR support, Chinese invoices)
+    if (mcdeService.isEnabled() && doc?.filename) {
+      const needsOCR = mcdeService.needsOCR(doc.filename, doc.content_type);
+
+      if (needsOCR || doc.content_type?.includes('image')) {
+        try {
+          logger.info('[DOCUMENT PARSING] Trying MCDE OCR for image/scanned document', {
+            documentId,
+            filename: doc.filename
+          });
+
+          // Download file for MCDE
+          if (doc.storage_path) {
+            const { data: fileData } = await client
+              .storage
+              .from('evidence-documents')
+              .download(doc.storage_path);
+
+            if (fileData) {
+              const buffer = Buffer.from(await fileData.arrayBuffer());
+
+              // Upload to MCDE and extract with OCR
+              const uploadResult = await mcdeService.uploadDocument(
+                buffer,
+                doc.filename,
+                userId,
+                'invoice'
+              );
+
+              if (uploadResult?.document_id) {
+                const ocrResult = await mcdeService.extractWithOCR(
+                  uploadResult.document_id,
+                  userId
+                );
+
+                if (ocrResult && ocrResult.text) {
+                  logger.info('[DOCUMENT PARSING] MCDE OCR extraction successful', {
+                    documentId,
+                    confidence: ocrResult.confidence,
+                    hasCostComponents: !!ocrResult.cost_components
+                  });
+
+                  // Convert MCDE result to ParsedDocumentData
+                  const parsedData: ParsedDocumentData = {
+                    raw_text: ocrResult.text.substring(0, 5000),
+                    extraction_method: 'ocr',
+                    confidence_score: ocrResult.confidence,
+                    supplier_name: ocrResult.supplier_name,
+                    invoice_number: ocrResult.invoice_number,
+                    invoice_date: ocrResult.invoice_date,
+                    total_amount: ocrResult.total_amount,
+                    currency: ocrResult.currency,
+                    line_items: ocrResult.line_items,
+                  };
+
+                  // Add cost components if available
+                  if (ocrResult.cost_components) {
+                    (parsedData as any).cost_components = ocrResult.cost_components;
+                    (parsedData as any).unit_manufacturing_cost =
+                      ocrResult.cost_components.unit_manufacturing_cost;
+                  }
+
+                  return parsedData;
+                }
+              }
+            }
+          }
+        } catch (mcdeError: any) {
+          logger.warn('[DOCUMENT PARSING] MCDE OCR failed, falling back to Python API', {
+            documentId,
+            error: mcdeError.message
+          });
+        }
+      }
     }
 
     // Fallback to Python API (with retry logic)
