@@ -77,12 +77,12 @@ class NotificationHelper {
         amount
       });
 
-      let title = '💰 New Claim Detected';
-      let message = `A potential reimbursement claim of ${currencySymbol}${amount.toFixed(2)} has been detected${data.orderId ? ` for order ${data.orderId}` : ''}.`;
+      let title = 'Detected High-Probability Claim';
+      let message = `Margin identified a discrepancy Amazon likely owes you for. Reviewing and validating evidence now.`;
 
       if (isBulk) {
-        title = `💰 ${data.count} New Claims Detected`;
-        message = `We found ${data.count} new potential reimbursement claims totaling ${currencySymbol}${amount.toFixed(2)}.`;
+        title = `Detected ${data.count} High-Probability Claims`;
+        message = `Margin identified discrepancies Amazon likely owes you for. Reviewing and validating evidence now.`;
       }
 
       const event: NotificationEvent = {
@@ -134,12 +134,12 @@ class NotificationHelper {
         source: data.source
       });
 
-      let title = '📄 Evidence Document Found';
-      let message = `Evidence document "${data.fileName}" has been ${data.parsed ? 'parsed and is ready' : 'ingested'}`;
+      let title = 'Ingested Discovery Evidence';
+      let message = `Processed documents from ${data.source}. Reviewing for claim validation data.`;
 
       if (data.matchFound && data.disputeId) {
-        title = '✅ Evidence Matched to Claim';
-        message = `Evidence document "${data.fileName}" has been matched to your claim`;
+        title = 'Attached Supporting Evidence';
+        message = `Purchase invoices, delivery confirmations, and inventory trails linked to claims.`;
       }
 
       const event: NotificationEvent = {
@@ -192,10 +192,10 @@ class NotificationHelper {
       const event: NotificationEvent = {
         type: NotificationType.CASE_FILED,
         user_id: userId,
-        title: data.status === 'filed' ? '📋 Case Filed with Amazon' : '⏳ Case Filing in Progress',
+        title: data.status === 'filed' ? `Submitted ${data.caseId ? 'Claim' : 'Claims'} to Amazon` : 'Preparing Amazon Claim Filing',
         message: data.status === 'filed'
-          ? `Your dispute case for ${data.currency || '$'}${data.claimAmount.toFixed(2)} has been filed with Amazon${data.amazonCaseId ? ` (Case ID: ${data.amazonCaseId})` : ''}.`
-          : `Your dispute case for ${data.currency || '$'}${data.claimAmount.toFixed(2)} is being filed with Amazon.`,
+          ? `Filed with structured evidence packages and audit references.`
+          : `Preparing evidence packages and constructing audit trails for filing.`,
         priority: NotificationPriority.HIGH,
         channel: NotificationChannel.BOTH,
         payload: {
@@ -239,12 +239,14 @@ class NotificationHelper {
       });
 
       const approvedAmount = data.approvedAmount || data.claimAmount;
+      const currency = data.currency || 'USD';
+      const currencySymbol = currency === 'USD' ? '$' : currency + ' ';
 
       const event: NotificationEvent = {
         type: NotificationType.REFUND_APPROVED,
         user_id: userId,
-        title: '🎉 Refund Approved by Amazon!',
-        message: `🎉 ${data.currency || '$'}${approvedAmount.toFixed(2)} from your claim has been approved by Amazon${data.amazonCaseId ? ` (Case ID: ${data.amazonCaseId})` : ''}! We're now tracking the payout.`,
+        title: `Recovered ${currencySymbol}${approvedAmount.toFixed(2)}`,
+        message: `Amazon approved the reimbursement. Cleared and scheduled for payout.`,
         priority: NotificationPriority.URGENT,
         channel: NotificationChannel.BOTH,
         payload: {
@@ -262,8 +264,8 @@ class NotificationHelper {
       // Also send via WebSocket
       websocketService.sendNotificationToUser(userId, {
         type: 'success',
-        title: '🎉 Refund Approved!',
-        message: `🎉 ${data.currency || '$'}${approvedAmount.toFixed(2)} approved! Money is on its way.`,
+        title: `Recovered ${currencySymbol}${approvedAmount.toFixed(2)}`,
+        message: `Amazon approved the reimbursement. Cleared and scheduled for payout.`,
         data: event.payload
       });
 
@@ -290,7 +292,7 @@ class NotificationHelper {
       const currency = (data.currency || 'USD').toUpperCase();
       const currencySymbol = currency === 'USD' ? '$' : currency + ' ';
       const formattedAmount = `${currencySymbol}${data.amount.toFixed(2)}`;
-      let message = `**${formattedAmount}** has been deposited to your account`;
+      let message = `Funds have been cleared and deposited to your account.`;
 
       if (data.billingStatus === 'charged') {
         const platformFee = data.platformFee || (data.amount * 0.20);
@@ -301,8 +303,8 @@ class NotificationHelper {
       const event: NotificationEvent = {
         type: NotificationType.FUNDS_DEPOSITED,
         user_id: userId,
-        title,
-        message: message + '.',
+        title: `Deposit Confirmed: ${formattedAmount}`,
+        message: message,
         priority: NotificationPriority.URGENT,
         channel: NotificationChannel.BOTH,
         payload: {
@@ -375,6 +377,41 @@ class NotificationHelper {
         eventType,
         error: error.message
       });
+    }
+  }
+  /**
+   * Notify when Amazon challenges a claim (Realism Log)
+   */
+  async notifyAmazonChallenge(userId: string, data: { count?: number; disputeIds?: string[] }): Promise<void> {
+    try {
+      const count = data.count || (data.disputeIds ? data.disputeIds.length : 1);
+      const title = count > 1 ? `Amazon Challenged ${count} Claims — Escalating` : `Amazon Challenged Claim — Escalating`;
+      const message = `We’re reviewing their response and preparing counter-evidence.`;
+
+      const event: NotificationEvent = {
+        type: NotificationType.AMAZON_CHALLENGE,
+        user_id: userId,
+        title,
+        message,
+        priority: NotificationPriority.HIGH,
+        channel: NotificationChannel.BOTH,
+        payload: {
+          count,
+          disputeIds: data.disputeIds
+        },
+        immediate: true
+      };
+
+      await notificationService.createNotification(event);
+
+      websocketService.sendNotificationToUser(userId, {
+        type: 'warning',
+        title,
+        message,
+        data: event.payload
+      });
+    } catch (error: any) {
+      logger.error('❌ [NOTIFICATIONS] Failed to notify Amazon challenge', { userId, error: error.message });
     }
   }
 }

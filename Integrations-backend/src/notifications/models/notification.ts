@@ -34,7 +34,8 @@ export enum NotificationType {
   SYNC_COMPLETED = 'sync_completed',
   DISCREPANCY_FOUND = 'discrepancy_found',
   SYSTEM_ALERT = 'system_alert',
-  USER_ACTION_REQUIRED = 'user_action_required'
+  USER_ACTION_REQUIRED = 'user_action_required',
+  AMAZON_CHALLENGE = 'amazon_challenge'
 }
 
 export enum NotificationStatus {

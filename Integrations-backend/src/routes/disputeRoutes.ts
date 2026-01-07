@@ -248,6 +248,12 @@ router.post('/:id/deny', async (req, res) => {
       console.error('Failed to process rejection for learning:', err);
     });
 
+    // 3. Send "Realism" notification (Amazon Challenge)
+    const notificationHelper = (await import('../services/notificationHelper')).default;
+    notificationHelper.notifyAmazonChallenge(userId, { disputeIds: [id] }).catch((err: any) => {
+      console.error('Failed to notify Amazon challenge:', err);
+    });
+
     res.json({
       success: true,
       message: 'Case denied and logged for learning'
