@@ -346,8 +346,8 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
           source: 'recoveries',
           dataSource: isSandbox ? 'mock_recoveries' : 'live_recoveries',
           message: recoveryTotals.reconciled
-            ? `${recoveryTotals.reconciled} recoveries reconciled`
-            : 'Recoveries pending reconciliation'
+            ? `${recoveryTotals.reconciled} recoveries verified against Amazon financial records`
+            : 'Recoveries awaiting verification against Amazon records'
         });
       }
     } catch (recoveryCheckError: any) {
