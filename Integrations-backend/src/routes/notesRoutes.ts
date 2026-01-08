@@ -93,4 +93,41 @@ router.delete('/:id', async (req: any, res) => {
     }
 });
 
+/**
+ * @route PATCH /api/notes/:id
+ * @desc Update a note
+ */
+router.patch('/:id', async (req: any, res) => {
+    try {
+        const userId = req.userId || 'demo-user';
+        const { id } = req.params;
+        const { content } = req.body;
+
+        if (!content) {
+            return res.status(400).json({ success: false, error: 'Note content is required' });
+        }
+
+        const { data, error } = await supabase
+            .from('user_notes')
+            .update({
+                content,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', id)
+            .eq('user_id', userId)
+            .select()
+            .single();
+
+        if (error) {
+            logger.error('Error updating note', { error, id, userId });
+            return res.status(500).json({ success: false, error: 'Failed to update note' });
+        }
+
+        res.json({ success: true, data });
+    } catch (error: any) {
+        logger.error('Unexpected error in PATCH /api/notes', { error: error.message });
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 export default router;
