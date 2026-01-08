@@ -26,7 +26,8 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
     financial_events: [],
     notifications: [],
     recovery_lifecycle_logs: [],
-    detection_results: []
+    detection_results: [],
+    user_notes: []
   };
 
   logger.info('Using in-memory mock database for demo mode');
@@ -282,6 +283,14 @@ export interface TokenRecord {
 export interface User {
   id: string;
   email: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NoteRecord {
+  id: string;
+  user_id: string;
+  content: string;
   created_at: string;
   updated_at: string;
 }
