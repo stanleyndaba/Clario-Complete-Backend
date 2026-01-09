@@ -81,7 +81,7 @@ class NotificationHelper {
       let message = `Margin identified a discrepancy Amazon likely owes you for. Reviewing and validating evidence now.`;
 
       if (isBulk) {
-        title = `Detected ${data.count} High-Probability Claims`;
+        title = `Detected ${data.count} High-Probability Claims - ${currencySymbol}${amount.toLocaleString()}`;
         message = `Margin identified discrepancies Amazon likely owes you for. Reviewing and validating evidence now.`;
       }
 
