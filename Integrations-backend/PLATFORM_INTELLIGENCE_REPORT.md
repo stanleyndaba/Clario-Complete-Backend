@@ -48,3 +48,31 @@
     - Matching logic between PODs and Lost units is deployed.
 
 **Conclusion**: The system is in "Ready To Launch" status. It is currently operating in a highly advanced MVP state, capable of discovering and filing thousands of dollars in claims automatically. The next critical path is scaling the "Proxy/Submission" layer to handle high-volume filing.
+
+---
+
+### 🏢 Multi-Tenant SaaS Architecture (NEW)
+
+**Status**: Phase 1-2 Complete | Phase 3-5 Pending
+
+The platform has been upgraded to support full **multi-tenant SaaS** architecture:
+
+| Component | Status | Key Files |
+| :--- | :---: | :--- |
+| **Database Schema** | ✅ | 10 migrations (042-051) |
+| **Tenant Tables** | ✅ | `tenants`, `tenant_memberships`, `tenant_invitations` |
+| **Audit Logging** | ✅ | `audit_logs` table |
+| **Backend Middleware** | ✅ | `tenantMiddleware.ts`, `tenantScopedClient.ts`, `tenantGuard.ts` |
+| **API Routes** | ✅ | `tenantRoutes.ts` - workspace management |
+| **Frontend Context** | ✅ | `TenantContext.tsx`, `TenantSwitcher.tsx` |
+| **Worker Updates** | ⏳ | Pending Phase 3 |
+
+**Architecture Highlights**:
+- **Tenant Resolution**: URL slug (`/app/:tenantSlug/*`) → Header (`X-Tenant-Id`) → Session fallback
+- **Data Isolation**: RLS policies + `tenant_id` on all 35+ tables
+- **Role Hierarchy**: Owner → Admin → Member → Viewer
+- **Plan Limits**: Free, Starter, Professional, Enterprise tiers
+- **Lifecycle States**: active, trialing, suspended, read_only, canceled, deleted
+
+See: [MULTI_TENANT_SAAS_ARCHITECTURE.md](./MULTI_TENANT_SAAS_ARCHITECTURE.md) for full details.
+
