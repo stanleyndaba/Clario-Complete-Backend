@@ -23,6 +23,7 @@ import { validateEnvironmentOrFail } from './security/envValidation';
 
 // Import middleware
 import { userIdMiddleware } from './middleware/userIdMiddleware';
+import { tenantMiddleware } from './middleware/tenantMiddleware';
 
 // Import routes
 import amazonRoutes from './routes/amazonRoutes';
@@ -54,6 +55,7 @@ import recoveryRoutes from './routes/recoveryRoutes';
 import learningRoutes from './routes/learningRoutes';
 import inviteRoutes from './routes/inviteRoutes';
 import notesRoutes from './routes/notesRoutes';
+import tenantRoutes from './routes/tenantRoutes';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -179,13 +181,14 @@ app.use(cors({
     'X-Requested-With',
     'X-User-Id',
     'X-Forwarded-User-Id',
+    'X-Tenant-Id',
     'X-Frontend-URL',
     'Origin',
     'Referer',
     'Accept',
     'Cache-Control'
   ],
-  exposedHeaders: ['X-User-Id', 'X-Request-Id'],
+  exposedHeaders: ['X-User-Id', 'X-Request-Id', 'X-Tenant-Id'],
   maxAge: 86400 // 24 hours
 }));
 
@@ -215,6 +218,10 @@ app.use(morgan('combined', {
 // User ID extraction middleware (extracts user ID from headers/cookies)
 // This should be early in the pipeline so all routes have access to req.userId
 app.use(userIdMiddleware);
+
+// Tenant resolution middleware (resolves tenant from URL, headers, or user membership)
+// This provides req.tenant context for all authenticated routes
+app.use(tenantMiddleware);
 
 // Mount health routes (before other routes for fast health checks)
 app.use('/', healthRoutes);
@@ -355,6 +362,10 @@ logger.info('Invite routes registered at /api/invites');
 
 app.use('/api/notes', notesRoutes);
 logger.info('Notes routes registered at /api/notes');
+
+// Tenant management routes (multi-tenant SaaS)
+app.use('/api/tenant', tenantRoutes);
+logger.info('Tenant routes registered at /api/tenant');
 
 // Admin revenue routes (internal metrics)
 import adminRevenueRoutes from './routes/adminRevenueRoutes';
