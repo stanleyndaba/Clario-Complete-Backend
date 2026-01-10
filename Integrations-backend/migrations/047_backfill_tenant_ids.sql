@@ -53,7 +53,7 @@ BEGIN
 
   -- Access Tables
   UPDATE tokens SET tenant_id = default_tenant_id WHERE tenant_id IS NULL;
-  UPDATE users SET tenant_id = default_tenant_id WHERE tenant_id IS NULL;+
+  UPDATE users SET tenant_id = default_tenant_id WHERE tenant_id IS NULL;
 
   RAISE NOTICE 'Backfill completed for default tenant: %', default_tenant_id;
 END $$;
