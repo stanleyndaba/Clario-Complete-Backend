@@ -81,6 +81,7 @@ class LearningWorker {
 
   /**
    * Run a complete learning cycle
+   * MULTI-TENANT: Iterates through each tenant first, then processes events per tenant
    */
   async runLearningCycle(): Promise<LearningStats> {
     const stats: LearningStats = {
@@ -101,106 +102,47 @@ class LearningWorker {
         timestamp: new Date().toISOString()
       });
 
-      // Step 1: Collect events from all agents
-      const events = await this.collectAgentEvents();
-      stats.eventsCollected = events.length;
+      // MULTI-TENANT: Get all active tenants first
+      const { data: tenants, error: tenantError } = await supabaseAdmin
+        .from('tenants')
+        .select('id, name, status')
+        .in('status', ['active', 'trialing'])
+        .is('deleted_at', null);
 
-      if (events.length < this.minEventsForAnalysis) {
-        logger.debug('[LEARNING] Insufficient events for analysis', {
-          eventCount: events.length,
-          minRequired: this.minEventsForAnalysis
-        });
+      if (tenantError) {
+        logger.error('[LEARNING] Failed to get active tenants', { error: tenantError.message });
+        stats.errors.push(`Failed to get tenants: ${tenantError.message}`);
         return stats;
       }
 
-      // Step 2: Group events by user
-      const eventsByUser = this.groupEventsByUser(events);
+      if (!tenants || tenants.length === 0) {
+        logger.debug('[LEARNING] No active tenants found');
+        return stats;
+      }
 
-      // Step 3: Process each user's events
-      for (const [userId, userEvents] of eventsByUser.entries()) {
+      logger.info(`[LEARNING] Processing ${tenants.length} active tenants`);
+
+      // MULTI-TENANT: Process each tenant in isolation
+      for (const tenant of tenants) {
         try {
-          // Analyze patterns
-          const patterns = await learningService.analyzePatterns(userId, userEvents);
-          stats.patternsAnalyzed++;
-
-          // Optimize thresholds
-          if (patterns.thresholdRecommendations.length > 0) {
-            const updated = await learningService.updateThresholds(userId, patterns.thresholdRecommendations);
-            if (updated) {
-              stats.thresholdsOptimized += patterns.thresholdRecommendations.length;
-            }
-          }
-
-          // NEW: Analyze outcomes by dimension (claim type, marketplace, age, evidence quality)
-          try {
-            const outcomes = await learningService.analyzeOutcomesByDimension(userId);
-            stats.outcomesAnalyzed++;
-
-            // Generate detection threshold updates based on outcomes
-            const thresholdUpdates = await learningService.generateDetectionThresholdUpdates(userId);
-            stats.detectionThresholdsUpdated += thresholdUpdates.length;
-          } catch (outcomeError: any) {
-            logger.debug('[LEARNING] Outcome analysis skipped', { userId, error: outcomeError.message });
-          }
-
-          // NEW: Explore long tail patterns (micro-overcharges that add up)
-          try {
-            const longTailPatterns = await learningService.exploreLongTailPatterns(userId);
-            stats.longTailPatternsFound += longTailPatterns.length;
-            stats.longTailTotalValue += longTailPatterns.reduce((s, p) => s + p.aggregatedValue, 0);
-
-            // Log significant long tail patterns
-            for (const pattern of longTailPatterns.filter(p => p.aggregatedValue >= 1000)) {
-              logger.info('[LEARNING] Significant long tail pattern found', {
-                userId,
-                patternId: pattern.patternId,
-                skus: pattern.affectedSkus,
-                perUnit: pattern.perUnitAmount,
-                totalUnits: pattern.totalUnitsAffected,
-                totalValue: pattern.aggregatedValue
-              });
-            }
-          } catch (ltError: any) {
-            logger.debug('[LEARNING] Long tail analysis skipped', { userId, error: ltError.message });
-          }
-
-          // Check if enough events for retraining
-          if (userEvents.length >= this.minEventsForRetraining) {
-            // Check if retraining is needed (e.g., recent rejections, low success rate)
-            const shouldRetrain = await this.shouldTriggerRetraining(userId, userEvents);
-
-            if (shouldRetrain) {
-              const result = await learningService.triggerModelRetraining(userId, {
-                events: userEvents,
-                minSamples: 50,
-                includeEdgeCases: true,
-                recentDays: 90
-              });
-
-              if (result.success) {
-                stats.modelRetrainingTriggered++;
-                logger.info('[LEARNING] Model retraining triggered', {
-                  userId,
-                  modelVersion: result.modelVersion,
-                  improvement: result.improvement
-                });
-              }
-            }
-          }
-
-          // Generate insights
-          const insights = await learningService.getLearningInsights(userId, 30);
-          stats.insightsGenerated++;
-
-          // Store insights
-          await this.storeInsights(userId, insights);
-
+          const tenantStats = await this.runLearningForTenant(tenant.id);
+          stats.eventsCollected += tenantStats.eventsCollected;
+          stats.patternsAnalyzed += tenantStats.patternsAnalyzed;
+          stats.thresholdsOptimized += tenantStats.thresholdsOptimized;
+          stats.modelRetrainingTriggered += tenantStats.modelRetrainingTriggered;
+          stats.insightsGenerated += tenantStats.insightsGenerated;
+          stats.outcomesAnalyzed += tenantStats.outcomesAnalyzed;
+          stats.longTailPatternsFound += tenantStats.longTailPatternsFound;
+          stats.longTailTotalValue += tenantStats.longTailTotalValue;
+          stats.detectionThresholdsUpdated += tenantStats.detectionThresholdsUpdated;
+          stats.errors.push(...tenantStats.errors);
         } catch (error: any) {
-          logger.error('[LEARNING] Error processing user events', {
-            userId,
+          logger.error('[LEARNING] Error processing tenant', {
+            tenantId: tenant.id,
+            tenantName: tenant.name,
             error: error.message
           });
-          stats.errors.push(`User ${userId}: ${error.message}`);
+          stats.errors.push(`Tenant ${tenant.id}: ${error.message}`);
         }
       }
 
@@ -215,7 +157,161 @@ class LearningWorker {
   }
 
   /**
-   * Collect events from all agents
+   * MULTI-TENANT: Run learning for a specific tenant
+   * All database queries are scoped to this tenant only
+   */
+  private async runLearningForTenant(tenantId: string): Promise<LearningStats> {
+    const stats: LearningStats = {
+      eventsCollected: 0,
+      patternsAnalyzed: 0,
+      thresholdsOptimized: 0,
+      modelRetrainingTriggered: 0,
+      insightsGenerated: 0,
+      outcomesAnalyzed: 0,
+      longTailPatternsFound: 0,
+      longTailTotalValue: 0,
+      detectionThresholdsUpdated: 0,
+      errors: []
+    };
+
+    // Collect events for this tenant
+    const events = await this.collectAgentEventsForTenant(tenantId);
+    stats.eventsCollected = events.length;
+
+    if (events.length < this.minEventsForAnalysis) {
+      logger.debug('[LEARNING] Insufficient events for analysis', {
+        tenantId,
+        eventCount: events.length,
+        minRequired: this.minEventsForAnalysis
+      });
+      return stats;
+    }
+
+    // Step 2: Group events by user
+    const eventsByUser = this.groupEventsByUser(events);
+
+    // Step 3: Process each user's events
+    for (const [userId, userEvents] of eventsByUser.entries()) {
+      try {
+        // Analyze patterns
+        const patterns = await learningService.analyzePatterns(userId, userEvents);
+        stats.patternsAnalyzed++;
+
+        // Optimize thresholds
+        if (patterns.thresholdRecommendations.length > 0) {
+          const updated = await learningService.updateThresholds(userId, patterns.thresholdRecommendations);
+          if (updated) {
+            stats.thresholdsOptimized += patterns.thresholdRecommendations.length;
+          }
+        }
+
+        // NEW: Analyze outcomes by dimension (claim type, marketplace, age, evidence quality)
+        try {
+          const outcomes = await learningService.analyzeOutcomesByDimension(userId);
+          stats.outcomesAnalyzed++;
+
+          // Generate detection threshold updates based on outcomes
+          const thresholdUpdates = await learningService.generateDetectionThresholdUpdates(userId);
+          stats.detectionThresholdsUpdated += thresholdUpdates.length;
+        } catch (outcomeError: any) {
+          logger.debug('[LEARNING] Outcome analysis skipped', { userId, error: outcomeError.message });
+        }
+
+        // NEW: Explore long tail patterns (micro-overcharges that add up)
+        try {
+          const longTailPatterns = await learningService.exploreLongTailPatterns(userId);
+          stats.longTailPatternsFound += longTailPatterns.length;
+          stats.longTailTotalValue += longTailPatterns.reduce((s, p) => s + p.aggregatedValue, 0);
+
+          // Log significant long tail patterns
+          for (const pattern of longTailPatterns.filter(p => p.aggregatedValue >= 1000)) {
+            logger.info('[LEARNING] Significant long tail pattern found', {
+              userId,
+              patternId: pattern.patternId,
+              skus: pattern.affectedSkus,
+              perUnit: pattern.perUnitAmount,
+              totalUnits: pattern.totalUnitsAffected,
+              totalValue: pattern.aggregatedValue
+            });
+          }
+        } catch (ltError: any) {
+          logger.debug('[LEARNING] Long tail analysis skipped', { userId, error: ltError.message });
+        }
+
+        // Check if enough events for retraining
+        if (userEvents.length >= this.minEventsForRetraining) {
+          // Check if retraining is needed (e.g., recent rejections, low success rate)
+          const shouldRetrain = await this.shouldTriggerRetraining(userId, userEvents);
+
+          if (shouldRetrain) {
+            const result = await learningService.triggerModelRetraining(userId, {
+              events: userEvents,
+              minSamples: 50,
+              includeEdgeCases: true,
+              recentDays: 90
+            });
+
+            if (result.success) {
+              stats.modelRetrainingTriggered++;
+              logger.info('[LEARNING] Model retraining triggered', {
+                userId,
+                modelVersion: result.modelVersion,
+                improvement: result.improvement
+              });
+            }
+          }
+        }
+
+        // Generate insights
+        const insights = await learningService.getLearningInsights(userId, 30);
+        stats.insightsGenerated++;
+
+        // Store insights
+        await this.storeInsights(userId, insights);
+
+      } catch (error: any) {
+        logger.error('[LEARNING] Error processing user events', {
+          userId,
+          error: error.message
+        });
+        stats.errors.push(`User ${userId}: ${error.message}`);
+      }
+    }
+
+    logger.info('[LEARNING] Tenant learning completed', { tenantId, stats });
+    return stats;
+  }
+
+  /**
+   * MULTI-TENANT: Collect events for a specific tenant
+   */
+  private async collectAgentEventsForTenant(tenantId: string): Promise<any[]> {
+    try {
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setHours(startDate.getHours() - 24); // Last 24 hours
+
+      const tenantQuery = createTenantScopedQueryById(tenantId, 'agent_events');
+      const { data: events, error } = await tenantQuery
+        .select('*')
+        .gte('created_at', startDate.toISOString())
+        .lte('created_at', endDate.toISOString())
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        logger.warn('[LEARNING] Error fetching events for tenant', { tenantId, error: error.message });
+        return [];
+      }
+
+      return events || [];
+    } catch (error: any) {
+      logger.error('[LEARNING] Error collecting events for tenant', { tenantId, error: error.message });
+      return [];
+    }
+  }
+
+  /**
+   * Collect events from all agents (global - for backwards compatibility)
    */
   private async collectAgentEvents(): Promise<any[]> {
     try {

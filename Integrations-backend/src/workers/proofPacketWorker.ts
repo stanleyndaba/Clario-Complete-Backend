@@ -12,20 +12,26 @@ import logger from '../utils/logger';
 
 /**
  * Skeleton worker that bundles evidence for a dispute and creates a proof packet.
+ * MULTI-TENANT: Uses tenant-scoped queries for data isolation
  * Replace the packetUrl creation with real PDF generation + storage upload.
  */
-export async function generateProofPacketForDispute(disputeId: string, sellerId: string): Promise<string | null> {
+export async function generateProofPacketForDispute(
+  disputeId: string,
+  sellerId: string,
+  tenantId: string // MULTI-TENANT: Required for data isolation
+): Promise<string | null> {
   try {
-    // Load dispute basics and linked evidence
-    const { data: dispute } = await supabase
-      .from('dispute_cases')
+    // MULTI-TENANT: Load dispute basics with tenant-scoped query
+    const disputeQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+    const { data: dispute } = await disputeQuery
       .select('id, resolution_amount, resolution_date, expected_amount, expected_paid_date, status')
       .eq('id', disputeId)
       .eq('seller_id', sellerId)
       .single();
 
-    const { data: links } = await supabase
-      .from('dispute_evidence_links')
+    // MULTI-TENANT: Load evidence links with tenant-scoped query
+    const linksQuery = createTenantScopedQueryById(tenantId, 'dispute_evidence_links');
+    const { data: links } = await linksQuery
       .select('evidence_document_id')
       .eq('dispute_case_id', disputeId);
 
@@ -50,7 +56,7 @@ export async function generateProofPacketForDispute(disputeId: string, sellerId:
     const id = await proofPacketService.createPacket(input);
     return id;
   } catch (error) {
-    logger.error('generateProofPacketForDispute failed', { error, disputeId, sellerId });
+    logger.error('generateProofPacketForDispute failed', { error, disputeId, sellerId, tenantId });
     return null;
   }
 }

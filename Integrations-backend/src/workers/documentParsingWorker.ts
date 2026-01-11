@@ -113,6 +113,7 @@ export class DocumentParsingWorker {
 
   /**
    * Run document parsing for all tenants
+   * MULTI-TENANT: Iterates through each tenant first, then processes documents per tenant
    */
   private async runDocumentParsingForAllTenants(): Promise<void> {
     const runStartTime = Date.now();
@@ -122,20 +123,26 @@ export class DocumentParsingWorker {
         timestamp: new Date().toISOString()
       });
 
-      // Get documents that need parsing
-      const documents = await this.getPendingDocuments();
+      // MULTI-TENANT: Get all active tenants first
+      const { data: tenants, error: tenantError } = await supabaseAdmin
+        .from('tenants')
+        .select('id, name, status')
+        .in('status', ['active', 'trialing'])
+        .is('deleted_at', null);
 
-      if (documents.length === 0) {
-        logger.info('ℹ️ [DOCUMENT PARSING WORKER] No documents pending parsing');
+      if (tenantError) {
+        logger.error('❌ [DOCUMENT PARSING WORKER] Failed to get active tenants', { error: tenantError.message });
         return;
       }
 
-      logger.info(`📊 [DOCUMENT PARSING WORKER] Processing ${documents.length} documents`, {
-        documentCount: documents.length
-      });
+      if (!tenants || tenants.length === 0) {
+        logger.info('ℹ️ [DOCUMENT PARSING WORKER] No active tenants found');
+        return;
+      }
 
-      // Process each document (with rate limiting)
-      const stats: ParsingStats = {
+      logger.info(`📊 [DOCUMENT PARSING WORKER] Processing ${tenants.length} active tenants`);
+
+      const totalStats: ParsingStats = {
         processed: 0,
         succeeded: 0,
         failed: 0,
@@ -143,45 +150,34 @@ export class DocumentParsingWorker {
         errors: []
       };
 
-      for (let i = 0; i < documents.length; i++) {
-        const document = documents[i];
-
-        // Stagger processing to avoid rate limits
-        if (i > 0) {
-          await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second between documents
-        }
-
+      // MULTI-TENANT: Process each tenant in isolation
+      for (const tenant of tenants) {
         try {
-          const result = await this.parseDocument(document);
-          stats.processed++;
-
-          if (result.success) {
-            stats.succeeded++;
-          } else {
-            stats.failed++;
-            if (result.error) {
-              stats.errors.push(`Document ${document.id}: ${result.error}`);
-            }
-          }
+          const tenantStats = await this.runParsingForTenant(tenant.id);
+          totalStats.processed += tenantStats.processed;
+          totalStats.succeeded += tenantStats.succeeded;
+          totalStats.failed += tenantStats.failed;
+          totalStats.skipped += tenantStats.skipped;
+          totalStats.errors.push(...tenantStats.errors);
         } catch (error: any) {
-          stats.failed++;
-          stats.errors.push(`Document ${document.id}: ${error.message}`);
-          logger.error(`❌ [DOCUMENT PARSING WORKER] Failed to parse document ${document.id}`, {
-            error: error.message,
-            documentId: document.id
+          logger.error('❌ [DOCUMENT PARSING WORKER] Error processing tenant', {
+            tenantId: tenant.id,
+            tenantName: tenant.name,
+            error: error.message
           });
+          totalStats.errors.push(`Tenant ${tenant.id}: ${error.message}`);
         }
       }
 
       const runDuration = Date.now() - runStartTime;
 
       logger.info('✅ [DOCUMENT PARSING WORKER] Scheduled document parsing completed', {
-        documentCount: documents.length,
-        processed: stats.processed,
-        succeeded: stats.succeeded,
-        failed: stats.failed,
-        skipped: stats.skipped,
-        errors: stats.errors.length,
+        tenantCount: tenants.length,
+        processed: totalStats.processed,
+        succeeded: totalStats.succeeded,
+        failed: totalStats.failed,
+        skipped: totalStats.skipped,
+        errors: totalStats.errors.length,
         duration: `${runDuration}ms`
       });
 
@@ -190,6 +186,107 @@ export class DocumentParsingWorker {
         error: error.message,
         stack: error.stack
       });
+    }
+  }
+
+  /**
+   * MULTI-TENANT: Run parsing for a specific tenant
+   * All database queries are scoped to this tenant only
+   */
+  private async runParsingForTenant(tenantId: string): Promise<ParsingStats> {
+    const stats: ParsingStats = {
+      processed: 0,
+      succeeded: 0,
+      failed: 0,
+      skipped: 0,
+      errors: []
+    };
+
+    // Get documents for this tenant only
+    const documents = await this.getPendingDocumentsForTenant(tenantId);
+
+    if (documents.length === 0) {
+      logger.debug('ℹ️ [DOCUMENT PARSING WORKER] No pending documents for tenant', { tenantId });
+      return stats;
+    }
+
+    logger.info(`📊 [DOCUMENT PARSING WORKER] Processing ${documents.length} documents for tenant`, { tenantId, documentCount: documents.length });
+
+    for (let i = 0; i < documents.length; i++) {
+      const document = documents[i];
+
+      // Stagger processing to avoid rate limits
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second between documents
+      }
+
+      try {
+        const result = await this.parseDocument(document);
+        stats.processed++;
+
+        if (result.success) {
+          stats.succeeded++;
+        } else {
+          stats.failed++;
+          if (result.error) {
+            stats.errors.push(`Document ${document.id}: ${result.error}`);
+          }
+        }
+      } catch (error: any) {
+        stats.failed++;
+        stats.errors.push(`Document ${document.id}: ${error.message}`);
+        logger.error(`❌ [DOCUMENT PARSING WORKER] Failed to parse document ${document.id}`, {
+          error: error.message,
+          documentId: document.id,
+          tenantId
+        });
+      }
+    }
+
+    return stats;
+  }
+
+  /**
+   * MULTI-TENANT: Get pending documents for a specific tenant
+   */
+  private async getPendingDocumentsForTenant(tenantId: string): Promise<Array<{ id: string; seller_id: string; filename: string; content_type: string }>> {
+    try {
+      const tenantQuery = createTenantScopedQueryById(tenantId, 'evidence_documents');
+      const { data: documents, error } = await tenantQuery
+        .select('id, seller_id, filename, content_type')
+        .is('parsed_metadata', null)
+        .or('content_type.ilike.%pdf%,content_type.eq.application/pdf,filename.ilike.%.pdf')
+        .limit(50)
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        logger.warn('❌ [DOCUMENT PARSING WORKER] Error fetching pending documents for tenant', {
+          tenantId,
+          error: error.message
+        });
+        return [];
+      }
+
+      // Additional filter for parsable docs
+      const parsableDocs = (documents || []).filter((doc: any) => {
+        const contentType = doc.content_type?.toLowerCase() || '';
+        const filename = doc.filename?.toLowerCase() || '';
+        return contentType.includes('pdf') || filename.endsWith('.pdf') ||
+          contentType.includes('text') || filename.endsWith('.txt');
+      });
+
+      return parsableDocs.map((doc: any) => ({
+        id: doc.id,
+        seller_id: doc.seller_id,
+        filename: doc.filename,
+        content_type: doc.content_type
+      }));
+    } catch (error: any) {
+      logger.error('❌ [DOCUMENT PARSING WORKER] Error getting pending documents for tenant', {
+        tenantId,
+        error: error.message
+      });
+      return [];
     }
   }
 

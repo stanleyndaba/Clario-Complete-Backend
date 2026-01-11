@@ -280,6 +280,7 @@ export class EvidenceIngestionWorker {
 
   /**
    * Run evidence ingestion for all tenants
+   * MULTI-TENANT: Iterates through each tenant first, then processes users per tenant
    */
   private async runEvidenceIngestionForAllTenants(): Promise<void> {
     const runStartTime = Date.now();
@@ -289,58 +290,58 @@ export class EvidenceIngestionWorker {
         timestamp: new Date().toISOString()
       });
 
-      // Get all users with connected evidence sources
-      const userIds = await this.getActiveUserIds();
+      // MULTI-TENANT: Get all active tenants first
+      const { data: tenants, error: tenantError } = await supabaseAdmin
+        .from('tenants')
+        .select('id, name, status')
+        .in('status', ['active', 'trialing'])
+        .is('deleted_at', null);
 
-      if (userIds.length === 0) {
-        logger.info('ℹ️ [EVIDENCE WORKER] No users with connected evidence sources found');
+      if (tenantError) {
+        logger.error('❌ [EVIDENCE WORKER] Failed to get active tenants', { error: tenantError.message });
         return;
       }
 
-      logger.info(`📊 [EVIDENCE WORKER] Processing ${userIds.length} users`, {
-        userCount: userIds.length
-      });
+      if (!tenants || tenants.length === 0) {
+        logger.info('ℹ️ [EVIDENCE WORKER] No active tenants found');
+        return;
+      }
 
-      // Process each user (with rate limiting)
-      const stats: IngestionStats = {
+      logger.info(`📊 [EVIDENCE WORKER] Processing ${tenants.length} active tenants`);
+
+      const totalStats: IngestionStats = {
         ingested: 0,
         skipped: 0,
         failed: 0,
         errors: []
       };
 
-      for (let i = 0; i < userIds.length; i++) {
-        const userId = userIds[i];
-
-        // Stagger processing to avoid rate limits
-        if (i > 0) {
-          await new Promise(resolve => setTimeout(resolve, 2000)); // 2 seconds between users
-        }
-
+      // MULTI-TENANT: Process each tenant in isolation
+      for (const tenant of tenants) {
         try {
-          const userStats = await this.ingestForUser(userId);
-          stats.ingested += userStats.ingested;
-          stats.skipped += userStats.skipped;
-          stats.failed += userStats.failed;
-          stats.errors.push(...userStats.errors);
+          const tenantStats = await this.runIngestionForTenant(tenant.id);
+          totalStats.ingested += tenantStats.ingested;
+          totalStats.skipped += tenantStats.skipped;
+          totalStats.failed += tenantStats.failed;
+          totalStats.errors.push(...tenantStats.errors);
         } catch (error: any) {
-          stats.failed++;
-          stats.errors.push(`User ${userId}: ${error.message}`);
-          logger.error(`❌ [EVIDENCE WORKER] Failed to ingest for user ${userId}`, {
-            error: error.message,
-            userId
+          logger.error('❌ [EVIDENCE WORKER] Error processing tenant', {
+            tenantId: tenant.id,
+            tenantName: tenant.name,
+            error: error.message
           });
+          totalStats.errors.push(`Tenant ${tenant.id}: ${error.message}`);
         }
       }
 
       const runDuration = Date.now() - runStartTime;
 
       logger.info('✅ [EVIDENCE WORKER] Scheduled evidence ingestion completed', {
-        userCount: userIds.length,
-        ingested: stats.ingested,
-        skipped: stats.skipped,
-        failed: stats.failed,
-        errors: stats.errors.length,
+        tenantCount: tenants.length,
+        ingested: totalStats.ingested,
+        skipped: totalStats.skipped,
+        failed: totalStats.failed,
+        errors: totalStats.errors.length,
         duration: `${runDuration}ms`
       });
 
@@ -350,6 +351,56 @@ export class EvidenceIngestionWorker {
         stack: error.stack
       });
     }
+  }
+
+  /**
+   * MULTI-TENANT: Run ingestion for a specific tenant
+   * All database queries are scoped to this tenant only
+   */
+  private async runIngestionForTenant(tenantId: string): Promise<IngestionStats> {
+    const stats: IngestionStats = {
+      ingested: 0,
+      skipped: 0,
+      failed: 0,
+      errors: []
+    };
+
+    // Get users with connected evidence sources for this tenant
+    const userIds = await this.getActiveUserIdsForTenant(tenantId);
+
+    if (userIds.length === 0) {
+      logger.debug('ℹ️ [EVIDENCE WORKER] No users with connected sources for tenant', { tenantId });
+      return stats;
+    }
+
+    logger.info(`📊 [EVIDENCE WORKER] Processing ${userIds.length} users for tenant`, { tenantId, userCount: userIds.length });
+
+    for (let i = 0; i < userIds.length; i++) {
+      const userId = userIds[i];
+
+      // Stagger processing to avoid rate limits
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 2000)); // 2 seconds between users
+      }
+
+      try {
+        const userStats = await this.ingestForUser(userId);
+        stats.ingested += userStats.ingested;
+        stats.skipped += userStats.skipped;
+        stats.failed += userStats.failed;
+        stats.errors.push(...userStats.errors);
+      } catch (error: any) {
+        stats.failed++;
+        stats.errors.push(`User ${userId}: ${error.message}`);
+        logger.error(`❌ [EVIDENCE WORKER] Failed to ingest for user ${userId}`, {
+          error: error.message,
+          userId,
+          tenantId
+        });
+      }
+    }
+
+    return stats;
   }
 
   /**
@@ -388,6 +439,39 @@ export class EvidenceIngestionWorker {
       return userIds.filter((id: any): id is string => typeof id === 'string' && id.length > 0);
     } catch (error: any) {
       logger.error('❌ [EVIDENCE WORKER] Error getting active user IDs', {
+        error: error.message
+      });
+      return [];
+    }
+  }
+
+  /**
+   * MULTI-TENANT: Get list of active user IDs for a specific tenant
+   * Uses tenant-scoped query to only get users belonging to this tenant
+   */
+  private async getActiveUserIdsForTenant(tenantId: string): Promise<string[]> {
+    try {
+      // Use tenant-scoped query to get evidence sources for this tenant only
+      const tenantQuery = createTenantScopedQueryById(tenantId, 'evidence_sources');
+      const { data: sources, error } = await tenantQuery
+        .select('user_id, seller_id')
+        .eq('status', 'connected')
+        .in('provider', ['gmail', 'outlook', 'gdrive', 'dropbox']);
+
+      if (error) {
+        logger.error('❌ [EVIDENCE WORKER] Error fetching active user IDs for tenant', {
+          tenantId,
+          error: error.message
+        });
+        return [];
+      }
+
+      // Extract unique user IDs
+      const userIds = [...new Set((sources || []).map((s: any) => s.user_id || s.seller_id))];
+      return userIds.filter((id: any): id is string => typeof id === 'string' && id.length > 0);
+    } catch (error: any) {
+      logger.error('❌ [EVIDENCE WORKER] Error getting active user IDs for tenant', {
+        tenantId,
         error: error.message
       });
       return [];

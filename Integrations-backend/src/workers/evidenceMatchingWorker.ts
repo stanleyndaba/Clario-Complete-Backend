@@ -137,6 +137,7 @@ export class EvidenceMatchingWorker {
 
   /**
    * Run evidence matching for all tenants
+   * MULTI-TENANT: Iterates through each tenant first, then processes users per tenant
    */
   private async runEvidenceMatchingForAllTenants(): Promise<void> {
     const runStartTime = Date.now();
@@ -146,20 +147,26 @@ export class EvidenceMatchingWorker {
         timestamp: new Date().toISOString()
       });
 
-      // Get active users with pending claims or newly parsed documents
-      const activeUsers = await this.getActiveUsersNeedingMatching();
+      // MULTI-TENANT: Get all active tenants first
+      const { data: tenants, error: tenantError } = await supabaseAdmin
+        .from('tenants')
+        .select('id, name, status')
+        .in('status', ['active', 'trialing'])
+        .is('deleted_at', null);
 
-      if (activeUsers.length === 0) {
-        logger.info('ℹ️ [EVIDENCE MATCHING WORKER] No users need matching');
+      if (tenantError) {
+        logger.error('❌ [EVIDENCE MATCHING WORKER] Failed to get active tenants', { error: tenantError.message });
         return;
       }
 
-      logger.info(`📊 [EVIDENCE MATCHING WORKER] Processing ${activeUsers.length} users`, {
-        userCount: activeUsers.length
-      });
+      if (!tenants || tenants.length === 0) {
+        logger.info('ℹ️ [EVIDENCE MATCHING WORKER] No active tenants found');
+        return;
+      }
 
-      // Process each user (with rate limiting)
-      const stats: MatchingStats = {
+      logger.info(`📊 [EVIDENCE MATCHING WORKER] Processing ${tenants.length} active tenants`);
+
+      const totalStats: MatchingStats = {
         processed: 0,
         matched: 0,
         autoSubmitted: 0,
@@ -169,51 +176,38 @@ export class EvidenceMatchingWorker {
         errors: []
       };
 
-      for (let i = 0; i < activeUsers.length; i++) {
-        const userId = activeUsers[i];
-
-        // Stagger processing to avoid rate limits (5 seconds between users)
-        // This helps prevent 429 errors from the Python API
-        if (i > 0) {
-          await new Promise(resolve => setTimeout(resolve, 5000)); // 5 seconds between users
-        }
-
+      // MULTI-TENANT: Process each tenant in isolation
+      for (const tenant of tenants) {
         try {
-          const result = await this.matchEvidenceForUser(userId);
-          stats.processed++;
-
-          if (result.success) {
-            stats.matched += result.matches || 0;
-            stats.autoSubmitted += result.autoSubmitted || 0;
-            stats.smartPromptsCreated += result.smartPromptsCreated || 0;
-            stats.held += result.held || 0;
-          } else {
-            stats.failed++;
-            if (result.error) {
-              stats.errors.push(`User ${userId}: ${result.error}`);
-            }
-          }
+          const tenantStats = await this.runMatchingForTenant(tenant.id);
+          totalStats.processed += tenantStats.processed;
+          totalStats.matched += tenantStats.matched;
+          totalStats.autoSubmitted += tenantStats.autoSubmitted;
+          totalStats.smartPromptsCreated += tenantStats.smartPromptsCreated;
+          totalStats.held += tenantStats.held;
+          totalStats.failed += tenantStats.failed;
+          totalStats.errors.push(...tenantStats.errors);
         } catch (error: any) {
-          stats.failed++;
-          stats.errors.push(`User ${userId}: ${error.message}`);
-          logger.error(`❌ [EVIDENCE MATCHING WORKER] Failed to match evidence for user ${userId}`, {
-            error: error.message,
-            userId
+          logger.error('❌ [EVIDENCE MATCHING WORKER] Error processing tenant', {
+            tenantId: tenant.id,
+            tenantName: tenant.name,
+            error: error.message
           });
+          totalStats.errors.push(`Tenant ${tenant.id}: ${error.message}`);
         }
       }
 
       const runDuration = Date.now() - runStartTime;
 
       logger.info('✅ [EVIDENCE MATCHING WORKER] Scheduled evidence matching completed', {
-        userCount: activeUsers.length,
-        processed: stats.processed,
-        matched: stats.matched,
-        autoSubmitted: stats.autoSubmitted,
-        smartPromptsCreated: stats.smartPromptsCreated,
-        held: stats.held,
-        failed: stats.failed,
-        errors: stats.errors.length,
+        tenantCount: tenants.length,
+        processed: totalStats.processed,
+        matched: totalStats.matched,
+        autoSubmitted: totalStats.autoSubmitted,
+        smartPromptsCreated: totalStats.smartPromptsCreated,
+        held: totalStats.held,
+        failed: totalStats.failed,
+        errors: totalStats.errors.length,
         duration: `${runDuration}ms`
       });
 
@@ -222,6 +216,115 @@ export class EvidenceMatchingWorker {
         error: error.message,
         stack: error.stack
       });
+    }
+  }
+
+  /**
+   * MULTI-TENANT: Run matching for a specific tenant
+   * All database queries are scoped to this tenant only
+   */
+  private async runMatchingForTenant(tenantId: string): Promise<MatchingStats> {
+    const stats: MatchingStats = {
+      processed: 0,
+      matched: 0,
+      autoSubmitted: 0,
+      smartPromptsCreated: 0,
+      held: 0,
+      failed: 0,
+      errors: []
+    };
+
+    // Get users needing matching for this tenant
+    const userIds = await this.getActiveUsersForTenant(tenantId);
+
+    if (userIds.length === 0) {
+      logger.debug('ℹ️ [EVIDENCE MATCHING WORKER] No users need matching for tenant', { tenantId });
+      return stats;
+    }
+
+    logger.info(`📊 [EVIDENCE MATCHING WORKER] Processing ${userIds.length} users for tenant`, { tenantId, userCount: userIds.length });
+
+    for (let i = 0; i < userIds.length; i++) {
+      const userId = userIds[i];
+
+      // Stagger processing to avoid rate limits
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 5000)); // 5 seconds between users
+      }
+
+      try {
+        const result = await this.matchEvidenceForUser(userId);
+        stats.processed++;
+
+        if (result.success) {
+          stats.matched += result.matches || 0;
+          stats.autoSubmitted += result.autoSubmitted || 0;
+          stats.smartPromptsCreated += result.smartPromptsCreated || 0;
+          stats.held += result.held || 0;
+        } else {
+          stats.failed++;
+          if (result.error) {
+            stats.errors.push(`User ${userId}: ${result.error}`);
+          }
+        }
+      } catch (error: any) {
+        stats.failed++;
+        stats.errors.push(`User ${userId}: ${error.message}`);
+        logger.error(`❌ [EVIDENCE MATCHING WORKER] Failed to match evidence for user ${userId}`, {
+          error: error.message,
+          userId,
+          tenantId
+        });
+      }
+    }
+
+    return stats;
+  }
+
+  /**
+   * MULTI-TENANT: Get users needing matching for a specific tenant
+   */
+  private async getActiveUsersForTenant(tenantId: string): Promise<string[]> {
+    try {
+      const userIds = new Set<string>();
+
+      // Get users with pending claims for this tenant
+      const claimsQuery = createTenantScopedQueryById(tenantId, 'detection_results');
+      const { data: pendingClaims, error: claimsError } = await claimsQuery
+        .select('seller_id')
+        .eq('status', 'pending')
+        .limit(100);
+
+      if (!claimsError && pendingClaims) {
+        pendingClaims.forEach((claim: any) => {
+          if (claim.seller_id) {
+            userIds.add(claim.seller_id);
+          }
+        });
+      }
+
+      // Get users with newly parsed documents for this tenant
+      const docsQuery = createTenantScopedQueryById(tenantId, 'evidence_documents');
+      const { data: parsedDocs, error: docsError } = await docsQuery
+        .select('user_id, seller_id')
+        .eq('parser_status', 'completed')
+        .not('parsed_metadata', 'is', null)
+        .limit(100);
+
+      if (!docsError && parsedDocs) {
+        parsedDocs.forEach((doc: any) => {
+          if (doc.user_id) userIds.add(doc.user_id);
+          if (doc.seller_id) userIds.add(doc.seller_id);
+        });
+      }
+
+      return Array.from(userIds);
+    } catch (error: any) {
+      logger.error('❌ [EVIDENCE MATCHING WORKER] Error getting active users for tenant', {
+        tenantId,
+        error: error.message
+      });
+      return [];
     }
   }
 

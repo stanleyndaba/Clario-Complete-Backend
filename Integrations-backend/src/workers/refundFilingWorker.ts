@@ -454,278 +454,47 @@ class RefundFilingWorker {
     try {
       logger.info(' [REFUND FILING] Starting filing run for all tenants');
 
-      // THROTTLE CHECK: Hourly rate limit
-      const filingsLastHour = await this.getFilingsInLastHour();
-      const remainingHourlyQuota = RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR - filingsLastHour;
+      // MULTI-TENANT: Get all active tenants first
+      const { data: tenants, error: tenantError } = await supabaseAdmin
+        .from('tenants')
+        .select('id, name, status')
+        .in('status', ['active', 'trialing'])
+        .is('deleted_at', null);
 
-      if (remainingHourlyQuota <= 0) {
-        logger.info(' [REFUND FILING] Hourly quota reached, skipping this run', {
-          filingsLastHour,
-          maxPerHour: RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR
-        });
+      if (tenantError) {
+        logger.error(' [REFUND FILING] Failed to get active tenants', { error: tenantError.message });
+        stats.errors.push(`Failed to get tenants: ${tenantError.message}`);
         return stats;
       }
 
-      // Calculate how many we can process this run (min of per-run limit and remaining quota)
-      const maxThisRun = Math.min(
-        RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_RUN,
-        remainingHourlyQuota
-      );
-
-      logger.info(' [REFUND FILING] Throttle check passed', {
-        filingsLastHour,
-        remainingHourlyQuota,
-        maxThisRun
-      });
-
-      // Get cases ready for filing (filing_status = 'pending' or 'retrying')
-      // Only get cases that have evidence documents linked (via dispute_evidence_links)
-      // Note: order_id, asin, sku come from detection_results.evidence JSONB, not dispute_cases
-      const { data: casesToFile, error } = await supabaseAdmin
-        .from('dispute_cases')
-        .select(`
- id, 
- seller_id, 
- detection_result_id, 
- case_type, 
- claim_amount, 
- currency, 
- status, 
- filing_status, 
- retry_count,
- detection_results!inner (
- evidence
- ),
- dispute_evidence_links!inner (
- evidence_document_id
- )
- `)
-        .in('filing_status', ['pending', 'retrying'])
-        .or('status.eq.pending,status.eq.submitted')
-        .limit(maxThisRun); // THROTTLE: Only fetch what we're allowed to process
-
-      if (error) {
-        // If the error is about no rows, that's fine - just means no cases with evidence
-        if (error.message?.includes('0 rows') || error.code === 'PGRST116') {
-          logger.debug('[INFO] [REFUND FILING] No cases with evidence ready for filing');
-          return stats;
-        }
-        logger.error(' [REFUND FILING] Failed to get cases to file', { error: error.message });
-        stats.errors.push(`Failed to get cases: ${error.message}`);
+      if (!tenants || tenants.length === 0) {
+        logger.debug('[INFO] [REFUND FILING] No active tenants found');
         return stats;
       }
 
-      if (!casesToFile || casesToFile.length === 0) {
-        logger.debug('[INFO] [REFUND FILING] No cases with evidence ready for filing');
-        return stats;
-      }
+      logger.info(` [REFUND FILING] Processing ${tenants.length} active tenants`);
 
-      logger.info(` [REFUND FILING] Found ${casesToFile.length} cases with evidence ready for filing`);
-
-      // Process each case
-      for (const disputeCase of casesToFile) {
+      // MULTI-TENANT: Process each tenant in isolation
+      for (const tenant of tenants) {
         try {
-          stats.processed++;
-
-          // Evidence documents are already joined - extract from the query result
-          const evidenceLinksFromQuery = (disputeCase as any).dispute_evidence_links || [];
-          const evidenceIds = evidenceLinksFromQuery.map((link: any) => link.evidence_document_id);
-
-          // Double-check we have evidence (should always be true due to !inner join)
-          if (evidenceIds.length === 0) {
-            logger.debug('[INFO] [REFUND FILING] Skipping case without evidence', {
-              disputeId: disputeCase.id
-            });
-            continue;
-          }
-
-          // KILL SWITCH: Check for dangerous documents (credit notes, returns, refunds)
-          // These MUST NEVER be submitted to Amazon - instant fraud flag
-          const dangerousDocCheck = await this.hasDangerousDocuments(evidenceIds, disputeCase.seller_id);
-          if (dangerousDocCheck.hasDangerous) {
-            logger.warn('[CRITICAL] [REFUND FILING] DANGEROUS DOCUMENT DETECTED - Quarantining case', {
-              disputeId: disputeCase.id,
-              dangerousFilenames: dangerousDocCheck.dangerousFilenames,
-              reason: 'Credit notes, returns, or refunds cannot be submitted as evidence - fraud risk'
-            });
-            stats.skipped++;
-
-            // Quarantine this case - it must NEVER be auto-submitted
-            await supabaseAdmin
-              .from('dispute_cases')
-              .update({
-                filing_status: 'quarantined_dangerous_doc',
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', disputeCase.id);
-
-            continue; // Skip to next case - this one is quarantined
-          }
-
-          // Extract order details from detection_results.evidence JSONB
-          const detectionEvidence = (disputeCase as any).detection_results?.evidence || {};
-          const orderId = detectionEvidence.order_id || '';
-          const asin = detectionEvidence.asin || undefined;
-          const sku = detectionEvidence.sku || undefined;
-
-          // DUPLICATE PREVENTION: Check if this order already has an active case
-          // This is CRITICAL - filing duplicates = Amazon support abuse flag
-          if (orderId) {
-            const hasDuplicate = await this.hasActiveClaimForOrder(orderId, disputeCase.seller_id);
-            if (hasDuplicate) {
-              logger.info('[SKIP] [REFUND FILING] Skipping case - duplicate claim exists for order', {
-                disputeId: disputeCase.id,
-                orderId
-              });
-              stats.skipped++;
-
-              // Mark this case as duplicate to prevent future processing
-              await supabaseAdmin
-                .from('dispute_cases')
-                .update({
-                  filing_status: 'duplicate_blocked',
-                  updated_at: new Date().toISOString()
-                })
-                .eq('id', disputeCase.id);
-
-              continue; // Skip to next case
-            }
-          }
-
-          // DOUBLE-DIP PREVENTION: Check if item was already reimbursed
-          // Filing for something Amazon already paid = "Theft" accusation
-          const alreadyReimbursed = await this.wasAlreadyReimbursed(
-            orderId,
-            sku,
-            asin,
-            disputeCase.seller_id
-          );
-          if (alreadyReimbursed) {
-            logger.info('[SKIP] [REFUND FILING] Skipping case - item already reimbursed by Amazon', {
-              disputeId: disputeCase.id,
-              orderId,
-              sku
-            });
-            stats.skipped++;
-
-            // Mark this case to prevent future processing
-            await supabaseAdmin
-              .from('dispute_cases')
-              .update({
-                filing_status: 'already_reimbursed',
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', disputeCase.id);
-
-            continue; // Skip to next case
-          }
-
-          // Get detection result for confidence score
-          const { data: detectionResult } = await supabaseAdmin
-            .from('detection_results')
-            .select('match_confidence')
-            .eq('id', disputeCase.detection_result_id)
-            .single();
-
-          const confidenceScore = detectionResult?.match_confidence || 0.85;
-
-          // Get claim amount for high-value check
-          const claimAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
-
-          // HIGH-VALUE CLAIM CHECK: Require human approval for large claims
-          // LLMs can hallucinate (read 10 units as 100), causing fraud accusations
-          // Claims over threshold must be manually reviewed before submission
-          if (claimAmount > RefundFilingWorker.HIGH_VALUE_THRESHOLD) {
-            logger.warn(' [REFUND FILING] HIGH-VALUE CLAIM - Requires manual approval', {
-              disputeId: disputeCase.id,
-              claimAmount: claimAmount,
-              threshold: RefundFilingWorker.HIGH_VALUE_THRESHOLD,
-              currency: disputeCase.currency || 'USD'
-            });
-            stats.skipped++;
-
-            // Mark for manual approval instead of auto-filing
-            await supabaseAdmin
-              .from('dispute_cases')
-              .update({
-                filing_status: 'pending_approval',
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', disputeCase.id);
-
-            continue; // Skip to next case - human must approve this one
-          }
-
-          // Prepare filing request
-          const filingRequest: FilingRequest = {
-            dispute_id: disputeCase.id,
-            user_id: disputeCase.seller_id,
-            order_id: orderId,
-            asin: asin,
-            sku: sku,
-            claim_type: disputeCase.case_type,
-            amount_claimed: parseFloat(disputeCase.claim_amount?.toString() || '0'),
-            currency: disputeCase.currency || 'USD',
-            evidence_document_ids: evidenceIds,
-            confidence_score: confidenceScore
-          };
-
-          // Check if this is a retry (need stronger evidence)
-          if (disputeCase.filing_status === 'retrying' && disputeCase.retry_count > 0) {
-            logger.info(' [REFUND FILING] Retrying with stronger evidence', {
-              disputeId: disputeCase.id,
-              retryCount: disputeCase.retry_count
-            });
-
-            // Collect stronger evidence
-            const strongerEvidenceIds = await refundFilingService.collectStrongerEvidence(
-              disputeCase.id,
-              disputeCase.seller_id
-            );
-
-            if (strongerEvidenceIds.length > evidenceIds.length) {
-              filingRequest.evidence_document_ids = strongerEvidenceIds;
-              stats.retried++;
-            }
-          }
-
-          // File the dispute
-          const result = await retryWithBackoff(
-            () => refundFilingService.fileDispute(filingRequest),
-            3,
-            2000
-          );
-
-          if (result.success) {
-            // Update case status
-            await this.updateCaseAfterFiling(disputeCase.id, result);
-            stats.filed++;
-          } else {
-            // Handle failure
-            await this.handleFilingFailure(disputeCase.id, disputeCase.seller_id, result, disputeCase.retry_count || 0);
-            stats.failed++;
-            stats.errors.push(`Case ${disputeCase.id}: ${result.error_message}`);
-          }
-
+          const tenantStats = await this.runFilingForTenant(tenant.id);
+          stats.processed += tenantStats.processed;
+          stats.filed += tenantStats.filed;
+          stats.failed += tenantStats.failed;
+          stats.skipped += tenantStats.skipped;
+          stats.retried += tenantStats.retried;
+          stats.errors.push(...tenantStats.errors);
         } catch (error: any) {
-          logger.error(' [REFUND FILING] Error processing case', {
-            disputeId: disputeCase.id,
+          logger.error(' [REFUND FILING] Error processing tenant', {
+            tenantId: tenant.id,
+            tenantName: tenant.name,
             error: error.message
           });
-          await this.logError(disputeCase.id, disputeCase.seller_id, error.message);
-          stats.failed++;
-          stats.errors.push(`Case ${disputeCase.id}: ${error.message}`);
-        }
-
-        // VELOCITY LIMIT: Jittered delay between submissions (180-420 seconds = 3-7 minutes)
-        // This mimics human behavior and avoids Amazon's pattern detection
-        // A fixed interval (e.g., exactly 5 min) looks robotic; random intervals look human
-        if (casesToFile.indexOf(disputeCase) < casesToFile.length - 1) {
-          await sleepWithJitter(180, 420);
+          stats.errors.push(`Tenant ${tenant.id}: ${error.message}`);
         }
       }
 
-      logger.info(' [REFUND FILING] Filing run completed', stats);
+      logger.info(' [REFUND FILING] Filing run completed for all tenants', stats);
       return stats;
 
     } catch (error: any) {
@@ -736,8 +505,327 @@ class RefundFilingWorker {
   }
 
   /**
-  * Poll case statuses from Amazon
-  */
+   * MULTI-TENANT: Run filing for a specific tenant
+   * All database queries are scoped to this tenant only
+   */
+  async runFilingForTenant(tenantId: string): Promise<FilingStats> {
+    const stats: FilingStats = {
+      processed: 0,
+      filed: 0,
+      failed: 0,
+      skipped: 0,
+      statusUpdated: 0,
+      retried: 0,
+      errors: []
+    };
+
+    // THROTTLE CHECK: Hourly rate limit (per-tenant)
+    const filingsLastHour = await this.getFilingsInLastHourForTenant(tenantId);
+    const remainingHourlyQuota = RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR - filingsLastHour;
+
+    if (remainingHourlyQuota <= 0) {
+      logger.info(' [REFUND FILING] Hourly quota reached for tenant, skipping', {
+        tenantId,
+        filingsLastHour,
+        maxPerHour: RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR
+      });
+      return stats;
+    }
+
+    // Calculate how many we can process this run (min of per-run limit and remaining quota)
+    const maxThisRun = Math.min(
+      RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_RUN,
+      remainingHourlyQuota
+    );
+
+    logger.info(' [REFUND FILING] Throttle check passed for tenant', {
+      tenantId,
+      filingsLastHour,
+      remainingHourlyQuota,
+      maxThisRun
+    });
+
+    // MULTI-TENANT: Get cases for this tenant only using tenant-scoped query
+    const tenantQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+
+    const { data: casesToFile, error } = await tenantQuery
+      .select(`
+        id, 
+        seller_id, 
+        tenant_id,
+        detection_result_id, 
+        case_type, 
+        claim_amount, 
+        currency, 
+        status, 
+        filing_status, 
+        retry_count,
+        detection_results!inner (
+          evidence
+        ),
+        dispute_evidence_links!inner (
+          evidence_document_id
+        )
+      `)
+      .in('filing_status', ['pending', 'retrying'])
+      .or('status.eq.pending,status.eq.submitted')
+      .limit(maxThisRun);
+
+    if (error) {
+      if (error.message?.includes('0 rows') || error.code === 'PGRST116') {
+        logger.debug('[INFO] [REFUND FILING] No cases with evidence ready for filing', { tenantId });
+        return stats;
+      }
+      logger.error(' [REFUND FILING] Failed to get cases to file', { tenantId, error: error.message });
+      stats.errors.push(`Failed to get cases: ${error.message}`);
+      return stats;
+    }
+
+    if (!casesToFile || casesToFile.length === 0) {
+      logger.debug('[INFO] [REFUND FILING] No cases with evidence ready for filing', { tenantId });
+      return stats;
+    }
+
+    logger.info(` [REFUND FILING] Found ${casesToFile.length} cases with evidence ready for filing`, { tenantId });
+
+    // Process each case
+    for (const disputeCase of casesToFile) {
+      try {
+        stats.processed++;
+
+        // Evidence documents are already joined - extract from the query result
+        const evidenceLinksFromQuery = (disputeCase as any).dispute_evidence_links || [];
+        const evidenceIds = evidenceLinksFromQuery.map((link: any) => link.evidence_document_id);
+
+        // Double-check we have evidence (should always be true due to !inner join)
+        if (evidenceIds.length === 0) {
+          logger.debug('[INFO] [REFUND FILING] Skipping case without evidence', {
+            disputeId: disputeCase.id
+          });
+          continue;
+        }
+
+        // KILL SWITCH: Check for dangerous documents (credit notes, returns, refunds)
+        // These MUST NEVER be submitted to Amazon - instant fraud flag
+        const dangerousDocCheck = await this.hasDangerousDocuments(evidenceIds, disputeCase.seller_id);
+        if (dangerousDocCheck.hasDangerous) {
+          logger.warn('[CRITICAL] [REFUND FILING] DANGEROUS DOCUMENT DETECTED - Quarantining case', {
+            disputeId: disputeCase.id,
+            dangerousFilenames: dangerousDocCheck.dangerousFilenames,
+            reason: 'Credit notes, returns, or refunds cannot be submitted as evidence - fraud risk'
+          });
+          stats.skipped++;
+
+          // Quarantine this case - it must NEVER be auto-submitted (tenant-scoped)
+          const quarantineQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+          await quarantineQuery
+            .update({
+              filing_status: 'quarantined_dangerous_doc',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', disputeCase.id);
+
+          continue; // Skip to next case - this one is quarantined
+        }
+
+        // Extract order details from detection_results.evidence JSONB
+        const detectionEvidence = (disputeCase as any).detection_results?.evidence || {};
+        const orderId = detectionEvidence.order_id || '';
+        const asin = detectionEvidence.asin || undefined;
+        const sku = detectionEvidence.sku || undefined;
+
+        // DUPLICATE PREVENTION: Check if this order already has an active case
+        // This is CRITICAL - filing duplicates = Amazon support abuse flag
+        if (orderId) {
+          const hasDuplicate = await this.hasActiveClaimForOrder(orderId, disputeCase.seller_id);
+          if (hasDuplicate) {
+            logger.info('[SKIP] [REFUND FILING] Skipping case - duplicate claim exists for order', {
+              disputeId: disputeCase.id,
+              orderId
+            });
+            stats.skipped++;
+
+            // Mark this case as duplicate to prevent future processing (tenant-scoped)
+            const duplicateQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+            await duplicateQuery
+              .update({
+                filing_status: 'duplicate_blocked',
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', disputeCase.id);
+
+            continue; // Skip to next case
+          }
+        }
+
+        // DOUBLE-DIP PREVENTION: Check if item was already reimbursed
+        // Filing for something Amazon already paid = "Theft" accusation
+        const alreadyReimbursed = await this.wasAlreadyReimbursed(
+          orderId,
+          sku,
+          asin,
+          disputeCase.seller_id
+        );
+        if (alreadyReimbursed) {
+          logger.info('[SKIP] [REFUND FILING] Skipping case - item already reimbursed by Amazon', {
+            disputeId: disputeCase.id,
+            orderId,
+            sku
+          });
+          stats.skipped++;
+
+          // Mark this case to prevent future processing (tenant-scoped)
+          const reimbursedQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+          await reimbursedQuery
+            .update({
+              filing_status: 'already_reimbursed',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', disputeCase.id);
+
+          continue; // Skip to next case
+        }
+
+        // Get detection result for confidence score (tenant-scoped)
+        const detectionQuery = createTenantScopedQueryById(tenantId, 'detection_results');
+        const { data: detectionResult } = await detectionQuery
+          .select('match_confidence')
+          .eq('id', disputeCase.detection_result_id)
+          .single();
+
+        const confidenceScore = detectionResult?.match_confidence || 0.85;
+
+        // Get claim amount for high-value check
+        const claimAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
+
+        // HIGH-VALUE CLAIM CHECK: Require human approval for large claims
+        // LLMs can hallucinate (read 10 units as 100), causing fraud accusations
+        // Claims over threshold must be manually reviewed before submission
+        if (claimAmount > RefundFilingWorker.HIGH_VALUE_THRESHOLD) {
+          logger.warn(' [REFUND FILING] HIGH-VALUE CLAIM - Requires manual approval', {
+            disputeId: disputeCase.id,
+            claimAmount: claimAmount,
+            threshold: RefundFilingWorker.HIGH_VALUE_THRESHOLD,
+            currency: disputeCase.currency || 'USD'
+          });
+          stats.skipped++;
+
+          // Mark for manual approval instead of auto-filing (tenant-scoped)
+          const approvalQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+          await approvalQuery
+            .update({
+              filing_status: 'pending_approval',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', disputeCase.id);
+
+          continue; // Skip to next case - human must approve this one
+        }
+
+        // Prepare filing request
+        const filingRequest: FilingRequest = {
+          dispute_id: disputeCase.id,
+          user_id: disputeCase.seller_id,
+          order_id: orderId,
+          asin: asin,
+          sku: sku,
+          claim_type: disputeCase.case_type,
+          amount_claimed: parseFloat(disputeCase.claim_amount?.toString() || '0'),
+          currency: disputeCase.currency || 'USD',
+          evidence_document_ids: evidenceIds,
+          confidence_score: confidenceScore
+        };
+
+        // Check if this is a retry (need stronger evidence)
+        if (disputeCase.filing_status === 'retrying' && disputeCase.retry_count > 0) {
+          logger.info(' [REFUND FILING] Retrying with stronger evidence', {
+            disputeId: disputeCase.id,
+            retryCount: disputeCase.retry_count
+          });
+
+          // Collect stronger evidence
+          const strongerEvidenceIds = await refundFilingService.collectStrongerEvidence(
+            disputeCase.id,
+            disputeCase.seller_id
+          );
+
+          if (strongerEvidenceIds.length > evidenceIds.length) {
+            filingRequest.evidence_document_ids = strongerEvidenceIds;
+            stats.retried++;
+          }
+        }
+
+        // File the dispute
+        const result = await retryWithBackoff(
+          () => refundFilingService.fileDispute(filingRequest),
+          3,
+          2000
+        );
+
+        if (result.success) {
+          // Update case status
+          await this.updateCaseAfterFiling(disputeCase.id, result);
+          stats.filed++;
+        } else {
+          // Handle failure
+          await this.handleFilingFailure(disputeCase.id, disputeCase.seller_id, result, disputeCase.retry_count || 0);
+          stats.failed++;
+          stats.errors.push(`Case ${disputeCase.id}: ${result.error_message}`);
+        }
+
+      } catch (error: any) {
+        logger.error(' [REFUND FILING] Error processing case', {
+          disputeId: disputeCase.id,
+          error: error.message
+        });
+        await this.logError(disputeCase.id, disputeCase.seller_id, error.message);
+        stats.failed++;
+        stats.errors.push(`Case ${disputeCase.id}: ${error.message}`);
+      }
+
+      // VELOCITY LIMIT: Jittered delay between submissions (180-420 seconds = 3-7 minutes)
+      // This mimics human behavior and avoids Amazon's pattern detection
+      // A fixed interval (e.g., exactly 5 min) looks robotic; random intervals look human
+      if (casesToFile.indexOf(disputeCase) < casesToFile.length - 1) {
+        await sleepWithJitter(180, 420);
+      }
+    }
+
+    logger.info(' [REFUND FILING] Tenant filing run completed', { tenantId, stats });
+    return stats;
+  }
+
+  /**
+   * MULTI-TENANT: Get filings in last hour for a specific tenant
+   */
+  private async getFilingsInLastHourForTenant(tenantId: string): Promise<number> {
+    try {
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const tenantQuery = createTenantScopedQueryById(tenantId, 'dispute_submissions');
+
+      const { count, error } = await tenantQuery
+        .select('*', { count: 'exact', head: true })
+        .gte('created_at', oneHourAgo);
+
+      if (error) {
+        logger.warn(' [REFUND FILING] Could not check hourly filings for tenant', {
+          tenantId,
+          error: error.message
+        });
+        return 0;
+      }
+
+      return count || 0;
+    } catch (error: any) {
+      logger.warn(' [REFUND FILING] Error checking hourly filings for tenant', { tenantId, error: error.message });
+      return 0;
+    }
+  }
+
+  /**
+   * Poll case statuses from Amazon
+   * MULTI-TENANT: Processes each tenant in isolation
+   */
   async pollCaseStatuses(): Promise<void> {
     try {
       logger.info(' [REFUND FILING] Starting case status polling');
