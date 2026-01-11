@@ -94,6 +94,109 @@ router.get('/list', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/tenant/create
+ * Create a new tenant/workspace
+ * Current user becomes the owner
+ */
+router.post('/create', async (req: Request, res: Response) => {
+    try {
+        const userId = (req as any).userId;
+        const { name, slug } = req.body;
+
+        if (!name || name.trim().length < 2) {
+            return res.status(400).json({ error: 'Workspace name must be at least 2 characters' });
+        }
+
+        // Generate slug if not provided
+        const tenantSlug = slug || name
+            .toLowerCase()
+            .replace(/[^a-z0-9]/g, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-|-$/g, '')
+            .substring(0, 50);
+
+        // Check if slug already exists
+        const { data: existing } = await supabaseAdmin
+            .from('tenants')
+            .select('id')
+            .eq('slug', tenantSlug)
+            .single();
+
+        if (existing) {
+            return res.status(409).json({ error: 'Workspace slug already exists' });
+        }
+
+        // Create the tenant
+        const { data: tenant, error: tenantError } = await supabaseAdmin
+            .from('tenants')
+            .insert({
+                name: name.trim(),
+                slug: tenantSlug,
+                plan: 'free',
+                status: 'active',
+                created_by: userId
+            })
+            .select()
+            .single();
+
+        if (tenantError || !tenant) {
+            logger.error('Failed to create tenant', { error: tenantError, userId });
+            return res.status(500).json({ error: 'Failed to create workspace' });
+        }
+
+        // Create owner membership
+        const { error: membershipError } = await supabaseAdmin
+            .from('tenant_memberships')
+            .insert({
+                tenant_id: tenant.id,
+                user_id: userId,
+                role: 'owner',
+                is_active: true,
+                accepted_at: new Date().toISOString()
+            });
+
+        if (membershipError) {
+            logger.error('Failed to create owner membership', { error: membershipError, tenantId: tenant.id, userId });
+            // Rollback: delete the tenant
+            await supabaseAdmin.from('tenants').delete().eq('id', tenant.id);
+            return res.status(500).json({ error: 'Failed to set up workspace ownership' });
+        }
+
+        // Update user's last active tenant
+        await supabaseAdmin
+            .from('users')
+            .update({ last_active_tenant_id: tenant.id })
+            .eq('id', userId);
+
+        // Log audit
+        logAuditFromRequest(req, AuditActions.TENANT_CREATED, 'tenant', tenant.id, {
+            metadata: {
+                tenantName: tenant.name,
+                tenantSlug: tenant.slug
+            }
+        });
+
+        logger.info('Tenant created', { tenantId: tenant.id, tenantSlug: tenant.slug, userId });
+
+        res.status(201).json({
+            success: true,
+            tenant: {
+                id: tenant.id,
+                name: tenant.name,
+                slug: tenant.slug,
+                plan: tenant.plan,
+                status: tenant.status,
+                role: 'owner'
+            },
+            message: 'Workspace created successfully'
+        });
+    } catch (error: any) {
+        logger.error('Failed to create tenant', { error: error.message });
+        res.status(500).json({ error: 'Failed to create workspace' });
+    }
+});
+
+/**
  * POST /api/tenant/switch
  * Switch to a different tenant
  */
