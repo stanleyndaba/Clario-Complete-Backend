@@ -2,11 +2,14 @@
  * Notifications Worker
  * Automated background worker for processing queued notifications
  * Runs every 1-2 minutes, processes pending notifications, and delivers via WebSocket + Email
+ * 
+ * MULTI-TENANT: Uses tenant-scoped queries for data isolation
  */
 
 import cron from 'node-cron';
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
+import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import { notificationService } from '../notifications/services/notification_service';
 import Notification, { NotificationStatus } from '../notifications/models/notification';
 
@@ -70,6 +73,7 @@ class NotificationsWorker {
 
   /**
    * Process pending notifications
+   * MULTI-TENANT: Fetches active tenants and processes each in isolation
    */
   async processPendingNotifications(): Promise<NotificationStats> {
     const stats: NotificationStats = {
@@ -83,93 +87,39 @@ class NotificationsWorker {
     try {
       logger.info('📬 [NOTIFICATIONS] Starting notification processing run');
 
-      // Get pending notifications
-      const { data: pendingNotifications, error } = await supabaseAdmin
-        .from('notifications')
-        .select('*')
-        .eq('status', NotificationStatus.PENDING)
-        .order('created_at', { ascending: true })
-        .limit(50); // Process up to 50 notifications per run
+      // Get all active tenants
+      const { data: tenants, error: tenantError } = await supabaseAdmin
+        .from('tenants')
+        .select('id, name')
+        .in('status', ['active', 'trialing'])
+        .is('deleted_at', null);
 
-      if (error) {
-        logger.error('❌ [NOTIFICATIONS] Failed to get pending notifications', { error: error.message });
-        stats.errors.push(`Failed to get notifications: ${error.message}`);
+      if (tenantError) {
+        logger.error('❌ [NOTIFICATIONS] Failed to get active tenants', { error: tenantError.message });
+        stats.errors.push(`Failed to get tenants: ${tenantError.message}`);
         return stats;
       }
 
-      if (!pendingNotifications || pendingNotifications.length === 0) {
-        logger.debug('ℹ️ [NOTIFICATIONS] No pending notifications to process');
+      if (!tenants || tenants.length === 0) {
+        logger.debug('ℹ️ [NOTIFICATIONS] No active tenants found');
         return stats;
       }
 
-      logger.info(`📋 [NOTIFICATIONS] Found ${pendingNotifications.length} pending notifications`);
-
-      // Process each notification
-      for (const notificationData of pendingNotifications) {
+      // Process each tenant's notifications
+      for (const tenant of tenants) {
         try {
-          stats.processed++;
-
-          const notification = new Notification(notificationData);
-
-          // Skip expired notifications
-          if (notification.isExpired()) {
-            await notification.update({ status: NotificationStatus.EXPIRED });
-            logger.debug('⏭️ [NOTIFICATIONS] Notification expired, skipping', {
-              id: notification.id
-            });
-            continue;
-          }
-
-          // Deliver notification
-          const delivered = await this.deliverNotification(notification);
-
-          if (delivered) {
-            stats.delivered++;
-            logger.info('✅ [NOTIFICATIONS] Notification delivered', {
-              id: notification.id,
-              type: notification.type,
-              userId: notification.user_id
-            });
-          } else {
-            stats.failed++;
-            stats.errors.push(`Notification ${notification.id}: Delivery failed`);
-
-            // Check retry count
-            const retryCount = (notification.payload?.retryCount as number) || 0;
-            if (retryCount < this.maxRetries) {
-              stats.retried++;
-              // Update retry count and keep as pending for retry
-              await notification.update({
-                payload: {
-                  ...notification.payload,
-                  retryCount: retryCount + 1,
-                  lastRetryAt: new Date().toISOString()
-                }
-              });
-              logger.warn('🔄 [NOTIFICATIONS] Notification will be retried', {
-                id: notification.id,
-                retryCount: retryCount + 1
-              });
-            } else {
-              // Max retries exceeded, mark as failed
-              await notification.markAsFailed();
-              logger.error('❌ [NOTIFICATIONS] Notification failed after max retries', {
-                id: notification.id,
-                maxRetries: this.maxRetries
-              });
-            }
-          }
-
-          // Small delay between notifications
-          await new Promise(resolve => setTimeout(resolve, 100));
-
+          const tenantStats = await this.processTenantNotifications(tenant.id);
+          stats.processed += tenantStats.processed;
+          stats.delivered += tenantStats.delivered;
+          stats.failed += tenantStats.failed;
+          stats.retried += tenantStats.retried;
+          stats.errors.push(...tenantStats.errors);
         } catch (error: any) {
-          logger.error('❌ [NOTIFICATIONS] Error processing notification', {
-            notificationId: notificationData.id,
+          logger.error('❌ [NOTIFICATIONS] Error processing tenant', {
+            tenantId: tenant.id,
             error: error.message
           });
-          stats.failed++;
-          stats.errors.push(`Notification ${notificationData.id}: ${error.message}`);
+          stats.errors.push(`Tenant ${tenant.id}: ${error.message}`);
         }
       }
 
@@ -181,6 +131,114 @@ class NotificationsWorker {
       stats.errors.push(`Fatal error: ${error.message}`);
       return stats;
     }
+  }
+
+  /**
+   * Process notifications for a specific tenant
+   * MULTI-TENANT: Uses tenant-scoped queries
+   */
+  async processTenantNotifications(tenantId: string): Promise<NotificationStats> {
+    const stats: NotificationStats = {
+      processed: 0,
+      delivered: 0,
+      failed: 0,
+      retried: 0,
+      errors: []
+    };
+
+    const tenantQuery = createTenantScopedQueryById(tenantId, 'notifications');
+
+    // Get pending notifications for this tenant
+    const { data: pendingNotifications, error } = await tenantQuery
+      .select('*')
+      .eq('status', NotificationStatus.PENDING)
+      .order('created_at', { ascending: true })
+      .limit(50);
+
+    if (error) {
+      logger.error('❌ [NOTIFICATIONS] Failed to get pending notifications', { tenantId, error: error.message });
+      stats.errors.push(`Failed to get notifications: ${error.message}`);
+      return stats;
+    }
+
+    if (!pendingNotifications || pendingNotifications.length === 0) {
+      logger.debug('ℹ️ [NOTIFICATIONS] No pending notifications to process', { tenantId });
+      return stats;
+    }
+
+    logger.info(`📋 [NOTIFICATIONS] Found ${pendingNotifications.length} pending notifications`, { tenantId });
+
+    // Process each notification
+    for (const notificationData of pendingNotifications) {
+      try {
+        stats.processed++;
+
+        const notification = new Notification(notificationData);
+
+        // Skip expired notifications
+        if (notification.isExpired()) {
+          await notification.update({ status: NotificationStatus.EXPIRED });
+          logger.debug('⏭️ [NOTIFICATIONS] Notification expired, skipping', {
+            id: notification.id
+          });
+          continue;
+        }
+
+        // Deliver notification
+        const delivered = await this.deliverNotification(notification);
+
+        if (delivered) {
+          stats.delivered++;
+          logger.info('✅ [NOTIFICATIONS] Notification delivered', {
+            id: notification.id,
+            type: notification.type,
+            userId: notification.user_id
+          });
+        } else {
+          stats.failed++;
+          stats.errors.push(`Notification ${notification.id}: Delivery failed`);
+
+          // Check retry count
+          const retryCount = (notification.payload?.retryCount as number) || 0;
+          if (retryCount < this.maxRetries) {
+            stats.retried++;
+            // Update retry count and keep as pending for retry
+            await notification.update({
+              payload: {
+                ...notification.payload,
+                retryCount: retryCount + 1,
+                lastRetryAt: new Date().toISOString()
+              }
+            });
+            logger.warn('🔄 [NOTIFICATIONS] Notification will be retried', {
+              id: notification.id,
+              retryCount: retryCount + 1
+            });
+          } else {
+            // Max retries exceeded, mark as failed
+            await notification.markAsFailed();
+            logger.error('❌ [NOTIFICATIONS] Notification failed after max retries', {
+              id: notification.id,
+              maxRetries: this.maxRetries
+            });
+          }
+        }
+
+        // Small delay between notifications
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+      } catch (error: any) {
+        logger.error('❌ [NOTIFICATIONS] Error processing notification', {
+          notificationId: notificationData.id,
+          error: error.message
+        });
+        stats.failed++;
+        stats.errors.push(`Notification ${notificationData.id}: ${error.message}`);
+      }
+    }
+
+    logger.info('✅ [NOTIFICATIONS] Tenant notification processing completed', { tenantId, stats });
+    return stats;
   }
 
   /**

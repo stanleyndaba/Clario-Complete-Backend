@@ -2,11 +2,14 @@
  * Billing Worker
  * Automated background worker for charging users after money is recovered
  * Runs every 5 minutes, processes reconciled recoveries, and charges 20% platform fee
+ * 
+ * MULTI-TENANT: Processes each tenant's data in isolation
  */
 
 import cron from 'node-cron';
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
+import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import billingService, { BillingRequest, BillingResult } from '../services/billingService';
 
 export interface BillingStats {
@@ -68,6 +71,7 @@ class BillingWorker {
 
   /**
    * Run billing for all tenants
+   * MULTI-TENANT: Fetches active tenants and processes each in isolation
    */
   async runBillingForAllTenants(): Promise<BillingStats> {
     const stats: BillingStats = {
@@ -81,107 +85,42 @@ class BillingWorker {
     try {
       logger.info('💳 [BILLING] Starting billing run for all tenants');
 
-      // Get reconciled cases that need billing
-      const { data: casesNeedingBilling, error } = await supabaseAdmin
-        .from('dispute_cases')
-        .select(`
-          id,
-          seller_id,
-          claim_amount,
-          actual_payout_amount,
-          currency,
-          recovery_status,
-          billing_status,
-          billing_retry_count
-        `)
-        .eq('recovery_status', 'reconciled')
-        .or('billing_status.is.null,billing_status.eq.pending')
-        .limit(50); // Process up to 50 cases per run
+      // Get all active tenants
+      const { data: tenants, error: tenantError } = await supabaseAdmin
+        .from('tenants')
+        .select('id, name, status')
+        .in('status', ['active', 'trialing'])
+        .is('deleted_at', null);
 
-      if (error) {
-        logger.error('❌ [BILLING] Failed to get cases needing billing', { error: error.message });
-        stats.errors.push(`Failed to get cases: ${error.message}`);
+      if (tenantError) {
+        logger.error('❌ [BILLING] Failed to get active tenants', { error: tenantError.message });
+        stats.errors.push(`Failed to get tenants: ${tenantError.message}`);
         return stats;
       }
 
-      if (!casesNeedingBilling || casesNeedingBilling.length === 0) {
-        logger.debug('ℹ️ [BILLING] No reconciled cases needing billing');
+      if (!tenants || tenants.length === 0) {
+        logger.debug('ℹ️ [BILLING] No active tenants found');
         return stats;
       }
 
-      logger.info(`📋 [BILLING] Found ${casesNeedingBilling.length} cases needing billing`);
+      logger.info(`📋 [BILLING] Processing ${tenants.length} active tenants`);
 
-      // Process each case
-      for (const disputeCase of casesNeedingBilling) {
+      // Process each tenant in isolation
+      for (const tenant of tenants) {
         try {
-          stats.processed++;
-
-          // Skip if already charged
-          if (disputeCase.billing_status === 'charged') {
-            stats.skipped++;
-            logger.debug('⏭️ [BILLING] Case already charged', { disputeId: disputeCase.id });
-            continue;
-          }
-
-          // Skip if max retries exceeded
-          if ((disputeCase.billing_retry_count || 0) >= 3) {
-            stats.skipped++;
-            logger.warn('⏭️ [BILLING] Max retries exceeded, skipping', {
-              disputeId: disputeCase.id,
-              retryCount: disputeCase.billing_retry_count
-            });
-            continue;
-          }
-
-          // Get actual payout amount (use actual_payout_amount if available, otherwise claim_amount)
-          const amountRecovered = disputeCase.actual_payout_amount || disputeCase.claim_amount;
-          if (!amountRecovered || amountRecovered <= 0) {
-            stats.skipped++;
-            logger.warn('⏭️ [BILLING] Invalid amount, skipping', {
-              disputeId: disputeCase.id,
-              amountRecovered
-            });
-            continue;
-          }
-
-          // Convert to cents
-          const amountRecoveredCents = Math.round(amountRecovered * 100);
-
-          // Get recovery ID if exists
-          const { data: recovery } = await supabaseAdmin
-            .from('recoveries')
-            .select('id')
-            .eq('dispute_id', disputeCase.id)
-            .limit(1)
-            .single();
-
-          // Process billing
-          const result = await this.processBillingForRecovery(
-            disputeCase.id,
-            recovery?.id || null,
-            disputeCase.seller_id,
-            amountRecoveredCents,
-            disputeCase.currency || 'usd',
-            disputeCase.billing_retry_count || 0
-          );
-
-          if (result.success) {
-            stats.charged++;
-          } else {
-            stats.failed++;
-            stats.errors.push(`Case ${disputeCase.id}: ${result.error}`);
-          }
-
-          // Small delay between cases
-          await new Promise(resolve => setTimeout(resolve, 500));
-
+          const tenantStats = await this.runBillingForTenant(tenant.id);
+          stats.processed += tenantStats.processed;
+          stats.charged += tenantStats.charged;
+          stats.failed += tenantStats.failed;
+          stats.skipped += tenantStats.skipped;
+          stats.errors.push(...tenantStats.errors);
         } catch (error: any) {
-          logger.error('❌ [BILLING] Error processing case', {
-            disputeId: disputeCase.id,
+          logger.error('❌ [BILLING] Error processing tenant', {
+            tenantId: tenant.id,
+            tenantName: tenant.name,
             error: error.message
           });
-          stats.failed++;
-          stats.errors.push(`Case ${disputeCase.id}: ${error.message}`);
+          stats.errors.push(`Tenant ${tenant.id}: ${error.message}`);
         }
       }
 
@@ -194,6 +133,130 @@ class BillingWorker {
       return stats;
     }
   }
+
+  /**
+   * Run billing for a specific tenant
+   * MULTI-TENANT: Uses tenant-scoped queries for isolation
+   */
+  async runBillingForTenant(tenantId: string): Promise<BillingStats> {
+    const stats: BillingStats = {
+      processed: 0,
+      charged: 0,
+      failed: 0,
+      skipped: 0,
+      errors: []
+    };
+
+    const tenantQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+
+    // Get reconciled cases that need billing for this tenant
+    const { data: casesNeedingBilling, error } = await tenantQuery
+      .select(`
+        id,
+        seller_id,
+        claim_amount,
+        actual_payout_amount,
+        currency,
+        recovery_status,
+        billing_status,
+        billing_retry_count,
+        tenant_id
+      `)
+      .eq('recovery_status', 'reconciled')
+      .or('billing_status.is.null,billing_status.eq.pending')
+      .limit(50);
+
+    if (error) {
+      logger.error('❌ [BILLING] Failed to get cases needing billing', { tenantId, error: error.message });
+      stats.errors.push(`Failed to get cases: ${error.message}`);
+      return stats;
+    }
+
+    if (!casesNeedingBilling || casesNeedingBilling.length === 0) {
+      logger.debug('ℹ️ [BILLING] No reconciled cases needing billing', { tenantId });
+      return stats;
+    }
+
+    logger.info(`📋 [BILLING] Found ${casesNeedingBilling.length} cases needing billing`, { tenantId });
+
+    // Process each case
+    for (const disputeCase of casesNeedingBilling) {
+      try {
+        stats.processed++;
+
+        // Skip if already charged
+        if (disputeCase.billing_status === 'charged') {
+          stats.skipped++;
+          logger.debug('⏭️ [BILLING] Case already charged', { disputeId: disputeCase.id });
+          continue;
+        }
+
+        // Skip if max retries exceeded
+        if ((disputeCase.billing_retry_count || 0) >= 3) {
+          stats.skipped++;
+          logger.warn('⏭️ [BILLING] Max retries exceeded, skipping', {
+            disputeId: disputeCase.id,
+            retryCount: disputeCase.billing_retry_count
+          });
+          continue;
+        }
+
+        // Get actual payout amount (use actual_payout_amount if available, otherwise claim_amount)
+        const amountRecovered = disputeCase.actual_payout_amount || disputeCase.claim_amount;
+        if (!amountRecovered || amountRecovered <= 0) {
+          stats.skipped++;
+          logger.warn('⏭️ [BILLING] Invalid amount, skipping', {
+            disputeId: disputeCase.id,
+            amountRecovered
+          });
+          continue;
+        }
+
+        // Convert to cents
+        const amountRecoveredCents = Math.round(amountRecovered * 100);
+
+        // Get recovery ID if exists (tenant-scoped)
+        const recoveryQuery = createTenantScopedQueryById(tenantId, 'recoveries');
+        const { data: recovery } = await recoveryQuery
+          .select('id')
+          .eq('dispute_id', disputeCase.id)
+          .limit(1)
+          .single();
+
+        // Process billing
+        const result = await this.processBillingForRecovery(
+          disputeCase.id,
+          recovery?.id || null,
+          disputeCase.seller_id,
+          amountRecoveredCents,
+          disputeCase.currency || 'usd',
+          disputeCase.billing_retry_count || 0
+        );
+
+        if (result.success) {
+          stats.charged++;
+        } else {
+          stats.failed++;
+          stats.errors.push(`Case ${disputeCase.id}: ${result.error}`);
+        }
+
+        // Small delay between cases
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+      } catch (error: any) {
+        logger.error('❌ [BILLING] Error processing case', {
+          disputeId: disputeCase.id,
+          error: error.message
+        });
+        stats.failed++;
+        stats.errors.push(`Case ${disputeCase.id}: ${error.message}`);
+      }
+    }
+
+    logger.info('✅ [BILLING] Tenant billing run completed', { tenantId, stats });
+    return stats;
+  }
+
 
   /**
    * Process billing for a single recovery
