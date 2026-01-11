@@ -2,11 +2,14 @@
  * Evidence Ingestion Worker
  * Automated background worker for continuous evidence ingestion from all connected sources
  * Runs every 5 minutes, ingests from Gmail, Outlook, Google Drive, and Dropbox
+ * 
+ * MULTI-TENANT: Uses tenant-scoped queries for data isolation
  */
 
 import cron from 'node-cron';
 import logger from '../utils/logger';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
+import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import { unifiedIngestionService } from '../services/unifiedIngestionService';
 import { gmailIngestionService } from '../services/gmailIngestionService';
 import { outlookIngestionService } from '../services/outlookIngestionService';

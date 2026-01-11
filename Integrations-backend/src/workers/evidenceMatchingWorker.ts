@@ -3,11 +3,14 @@
  * Automated background worker for continuous evidence matching
  * Runs every 3 minutes, matches claims (detection_results) to parsed documents
  * Routes based on confidence thresholds: >=0.85 auto-submit, 0.5-0.85 smart prompt, <0.5 hold
+ * 
+ * MULTI-TENANT: Uses tenant-scoped queries for data isolation
  */
 
 import cron from 'node-cron';
 import logger from '../utils/logger';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
+import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import evidenceMatchingService, { ClaimData, MatchingResult } from '../services/evidenceMatchingService';
 import sseHub from '../utils/sseHub';
 

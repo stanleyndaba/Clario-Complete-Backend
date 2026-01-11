@@ -4,6 +4,8 @@
  * Runs every 5 minutes, files cases ready for submission, polls for status updates
  * Handles retry logic with stronger evidence for denied cases
  * 
+ * MULTI-TENANT: Processes each tenant's data in isolation using tenant-scoped queries
+ * 
  * ANTI-DETECTION: Uses jittered delays between submissions to mimic human behavior
  * Amazon bans robotic patterns (e.g., exact 5-minute intervals). Jitter makes us look human.
  */
@@ -11,6 +13,7 @@
 import cron from 'node-cron';
 import logger from '../utils/logger';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
+import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import refundFilingService, { FilingRequest, FilingResult, CaseStatus } from '../services/refundFilingService';
 
 /**

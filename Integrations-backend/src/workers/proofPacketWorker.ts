@@ -1,5 +1,13 @@
+/**
+ * Proof Packet Worker
+ * Bundles evidence for a dispute and creates a proof packet.
+ * 
+ * MULTI-TENANT: Uses tenant-scoped queries for data isolation
+ */
+
 import proofPacketService, { ProofPacketInput } from '../services/proofPacketService';
 import { supabase } from '../database/supabaseClient';
+import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import logger from '../utils/logger';
 
 /**

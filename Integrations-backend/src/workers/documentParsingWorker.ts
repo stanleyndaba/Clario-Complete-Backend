@@ -3,11 +3,14 @@
  * Automated background worker for continuous document parsing
  * Runs every 2 minutes, processes documents with parser_status = 'pending'
  * Wraps Python API parser with retry logic and error handling
+ * 
+ * MULTI-TENANT: Uses tenant-scoped queries for data isolation
  */
 
 import cron from 'node-cron';
 import logger from '../utils/logger';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
+import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import documentParsingService, { ParsedDocumentData } from '../services/documentParsingService';
 import sseHub from '../utils/sseHub';
 

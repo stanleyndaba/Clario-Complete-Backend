@@ -2,11 +2,14 @@
  * Learning Worker
  * Automated background worker for continuous learning and improvement
  * Collects events from Agents 4-10, analyzes patterns, optimizes thresholds, and triggers model retraining
+ * 
+ * MULTI-TENANT: Uses tenant-scoped queries for data isolation
  */
 
 import cron from 'node-cron';
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
+import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import agentEventLogger, { AgentType, EventType } from '../services/agentEventLogger';
 import learningService from '../services/learningService';
 
