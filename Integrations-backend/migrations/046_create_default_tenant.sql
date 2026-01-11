@@ -20,8 +20,8 @@ INSERT INTO tenants (
   'default',
   'active',
   'enterprise',  -- Give full access to existing users
-  '{"migrated": true, "migration_date": "' || NOW()::TEXT || '"}',
-  '{"is_default_tenant": true, "created_by": "migration"}'
+  jsonb_build_object('migrated', true, 'migration_date', NOW()::TEXT),
+  jsonb_build_object('is_default_tenant', true, 'created_by', 'migration')
 ) ON CONFLICT (id) DO NOTHING;
 
 -- Also insert with slug conflict handling

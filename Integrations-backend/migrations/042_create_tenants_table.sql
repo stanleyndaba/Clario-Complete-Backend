@@ -3,6 +3,15 @@
 -- Multi-Tenant SaaS: Core Tenant Model
 -- ========================================
 
+-- Ensure the updated_at trigger function exists
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 -- Tenants table with full lifecycle states
 CREATE TABLE IF NOT EXISTS tenants (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -148,11 +157,13 @@ CREATE POLICY "Admins can create invitations" ON tenant_invitations
     )
   );
 
--- Trigger for updated_at
+-- Trigger for updated_at (drop first for idempotency)
+DROP TRIGGER IF EXISTS update_tenants_updated_at ON tenants;
 CREATE TRIGGER update_tenants_updated_at 
   BEFORE UPDATE ON tenants 
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_tenant_memberships_updated_at ON tenant_memberships;
 CREATE TRIGGER update_tenant_memberships_updated_at 
   BEFORE UPDATE ON tenant_memberships 
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

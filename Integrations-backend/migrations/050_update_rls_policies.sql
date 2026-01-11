@@ -168,11 +168,13 @@ INSERT INTO audit_logs (
   actor_type,
   action,
   resource_type,
+  event_type,
   metadata
 ) VALUES (
   '00000000-0000-0000-0000-000000000001',
   'system',
   'migration.rls_update',
   'database',
-  '{"migration": "050_update_rls_policies", "timestamp": "' || NOW()::TEXT || '"}'
+  'migration',
+  jsonb_build_object('migration', '050_update_rls_policies', 'timestamp', NOW()::TEXT)
 );

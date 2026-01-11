@@ -212,11 +212,13 @@ INSERT INTO audit_logs (
   actor_type,
   action,
   resource_type,
+  event_type,
   metadata
 ) VALUES (
   '00000000-0000-0000-0000-000000000001',
   'system',
   'migration.lifecycle_triggers',
   'database',
-  '{"migration": "051_create_lifecycle_triggers", "timestamp": "' || NOW()::TEXT || '", "status": "complete"}'
+  'migration',
+  jsonb_build_object('migration', '051_create_lifecycle_triggers', 'timestamp', NOW()::TEXT, 'status', 'complete')
 );
