@@ -584,18 +584,20 @@ export function tenantGuard(tenantId: string | undefined): asserts tenantId is s
 
 ## Migration Execution Order
 
-| # | File | Description |
-| :--- | :--- | :--- |
-| 1 | `042_create_tenants_table.sql` | Create tenants + memberships + invitations tables |
-| 2 | `043_create_audit_logs.sql` | Create audit_logs table |
-| 3 | `044_add_tenant_id_columns.sql` | Add nullable tenant_id to all 35 tables |
-| 4 | `045_add_soft_delete_columns.sql` | Add deleted_at to critical tables |
-| 5 | `046_create_default_tenant.sql` | Insert default tenant |
-| 6 | `047_backfill_tenant_ids.sql` | Populate existing records with default tenant |
-| 7 | `048_add_tenant_constraints.sql` | Add NOT NULL + FK constraints |
-| 8 | `049_add_tenant_indexes.sql` | Create all indexes |
-| 9 | `050_update_rls_policies.sql` | Update all RLS policies for tenant isolation |
-| 10 | `051_create_lifecycle_triggers.sql` | Add lifecycle enforcement triggers |
+| # | File | Description | Status |
+| :--- | :--- | :--- | :---: |
+| 1 | `042_create_tenants_table.sql` | Create tenants + memberships + invitations tables | ✅ |
+| 2 | `043_create_audit_logs.sql` | Create audit_logs table | ✅ |
+| 3 | `044_add_tenant_id_columns.sql` | Add nullable tenant_id to all 35 tables | ✅ |
+| 4 | `045_add_soft_delete_columns.sql` | Add deleted_at to critical tables | ✅ |
+| 5 | `046_create_default_tenant.sql` | Insert default tenant | ✅ |
+| 6 | `047_backfill_tenant_ids.sql` | Populate existing records with default tenant | ✅ |
+| 7 | `048_add_tenant_constraints.sql` | Add NOT NULL + FK constraints | ✅ |
+| 8 | `049_add_tenant_indexes.sql` | Create all indexes | ✅ |
+| 9 | `050_update_rls_policies.sql` | Update all RLS policies for tenant isolation | ✅ |
+| 10 | `051_create_lifecycle_triggers.sql` | Add lifecycle enforcement triggers | ✅ |
+
+> **All migrations completed successfully on 2026-01-11**
 
 ---
 
