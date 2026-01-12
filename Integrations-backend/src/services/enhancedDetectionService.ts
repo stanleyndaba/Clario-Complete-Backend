@@ -101,7 +101,14 @@ import {
   storeReturnAbuseResults,
   ReturnAbuseSyncedData
 } from './detection/algorithms/returnAbuseAlgorithm';
-// 2025 reimbursement overhaul: underpayment, delay, duplicate/missed, false closure, SLA breach, return abuse
+import {
+  detectInventoryShrinkageDrift,
+  fetchInventorySnapshots,
+  fetchInventoryEvents,
+  storeShrinkageDriftResults,
+  ShrinkageSyncedData
+} from './detection/algorithms/inventoryShrinkageDriftAlgorithm';
+// 2025 overhaul: underpayment, delay, duplicate/missed, false closure, SLA breach, return abuse, shrinkage drift
 
 
 // ============================================================================
@@ -628,7 +635,46 @@ export class EnhancedDetectionService {
         });
       }
 
-      // Step 21: RUN ADVANCED PATTERN ANALYSIS
+      // Step 21: RUN INVENTORY SHRINKAGE DRIFT DETECTOR 📊 (Time-Series Intelligence)
+      logger.info('📊 [AGENT3] Running Inventory Shrinkage Drift Detector...', { userId, syncId });
+
+      const [inventorySnapshots, inventoryEvents] = await Promise.all([
+        fetchInventorySnapshots(userId, { lookbackDays: 90 }),
+        fetchInventoryEvents(userId, { lookbackDays: 90 })
+      ]);
+
+      const shrinkageSyncedData: ShrinkageSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        snapshots: inventorySnapshots,
+        events: inventoryEvents
+      };
+
+      const shrinkageDriftResults = await detectInventoryShrinkageDrift(
+        userId,
+        syncId,
+        shrinkageSyncedData
+      );
+
+      logger.info('📊 [AGENT3] Shrinkage Drift Detector complete!', {
+        userId,
+        syncId,
+        snapshotsAnalyzed: inventorySnapshots.length,
+        driftDetected: shrinkageDriftResults.length,
+        systematicLeakage: shrinkageDriftResults.filter(r => r.is_systematic).length,
+        acceleratingLoss: shrinkageDriftResults.filter(r => r.is_accelerating).length,
+        projectedAnnualLoss: shrinkageDriftResults.reduce((sum, r) => sum + r.projected_annual_loss, 0).toFixed(2)
+      });
+
+      // Store shrinkage drift results
+      if (shrinkageDriftResults.length > 0) {
+        await storeShrinkageDriftResults(shrinkageDriftResults);
+        logger.info('📊 [AGENT3] Shrinkage drift detection results stored', {
+          count: shrinkageDriftResults.length
+        });
+      }
+
+      // Step 22: RUN ADVANCED PATTERN ANALYSIS
       // Consolidated into patternAnalyzer and pattern matching engine.
 
       // Combine ALL results from 9 primary algorithms
@@ -671,7 +717,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('[AGENT3] FULL 15-ALGORITHM PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 16-ALGORITHM PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -696,23 +742,26 @@ export class EnhancedDetectionService {
         slaCompensationOwed: slaBreachResults.reduce((sum, r) => sum + r.expected_compensation, 0),
         returnAbuse: returnAbuseResults.length,
         returnAbuseRecovery: returnAbuseResults.reduce((sum, r) => sum + r.expected_recovery, 0),
+        shrinkageDrift: shrinkageDriftResults.length,
+        projectedAnnualLoss: shrinkageDriftResults.reduce((sum, r) => sum + r.projected_annual_loss, 0),
         totalRecovery
       });
 
-      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length;
+      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length;
       const totalRecoveryValue = totalRecovery +
         underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0) +
         delayResults.reduce((sum, r) => sum + r.reimbursement_amount, 0) +
         sentinelResults.reduce((sum, r) => sum + r.estimated_recovery, 0) +
         falseClosureResults.reduce((sum, r) => sum + r.shortfall, 0) +
         slaBreachResults.reduce((sum, r) => sum + r.expected_compensation, 0) +
-        returnAbuseResults.reduce((sum, r) => sum + r.expected_recovery, 0);
+        returnAbuseResults.reduce((sum, r) => sum + r.expected_recovery, 0) +
+        shrinkageDriftResults.reduce((sum, r) => sum + r.total_loss_value, 0);
 
       return {
         success: true,
         jobId,
         message: totalAlgoResults > 0
-          ? `Agent 3 ran 15 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
+          ? `Agent 3 ran 16 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: totalAlgoResults,
         estimatedRecovery: totalRecoveryValue
