@@ -122,7 +122,14 @@ import {
   storeRefundPriceShortfallResults,
   RefundPriceSyncedData
 } from './detection/algorithms/refundPriceShortfallAlgorithm';
-// 2025 overhaul: 9 new algorithms - underpayment, delay, sentinel, false closure, SLA, return, shrinkage, fee, refund price
+import {
+  detectPhantomRefunds,
+  fetchRefundEventsWithReturns,
+  fetchInventoryAdjustmentsForPhantom,
+  storePhantomRefundResults,
+  PhantomRefundSyncedData
+} from './detection/algorithms/phantomRefundAlgorithm';
+// 2025 overhaul: 10 new algorithms - underpayment to phantom refund
 
 
 // ============================================================================
@@ -763,7 +770,45 @@ export class EnhancedDetectionService {
         });
       }
 
-      // Step 24: RUN ADVANCED PATTERN ANALYSIS
+      // Step 24: RUN PHANTOM REFUND DETECTOR 👻 (Quiet Leak Stopper)
+      logger.info('👻 [AGENT3] Running Phantom Refund Detector...', { userId, syncId });
+
+      const [refundEventsWithReturns, inventoryAdjustmentsForPhantom] = await Promise.all([
+        fetchRefundEventsWithReturns(userId, { lookbackDays: 90 }),
+        fetchInventoryAdjustmentsForPhantom(userId, { lookbackDays: 90 })
+      ]);
+
+      const phantomRefundSyncedData: PhantomRefundSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        refund_events: refundEventsWithReturns,
+        inventory_adjustments: inventoryAdjustmentsForPhantom
+      };
+
+      const phantomRefundResults = await detectPhantomRefunds(
+        userId,
+        syncId,
+        phantomRefundSyncedData
+      );
+
+      logger.info('👻 [AGENT3] Phantom Refund Detector complete!', {
+        userId,
+        syncId,
+        refundsAnalyzed: refundEventsWithReturns.length,
+        phantomsFound: phantomRefundResults.length,
+        totalPhantomQty: phantomRefundResults.reduce((sum, r) => sum + r.phantom_quantity, 0),
+        totalPhantomLoss: phantomRefundResults.reduce((sum, r) => sum + r.phantom_loss_value, 0).toFixed(2)
+      });
+
+      // Store phantom refund results
+      if (phantomRefundResults.length > 0) {
+        await storePhantomRefundResults(phantomRefundResults);
+        logger.info('👻 [AGENT3] Phantom refund detection results stored', {
+          count: phantomRefundResults.length
+        });
+      }
+
+      // Step 25: RUN ADVANCED PATTERN ANALYSIS
       // Consolidated into patternAnalyzer and pattern matching engine.
 
       // Combine ALL results from 9 primary algorithms
@@ -806,7 +851,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('[AGENT3] FULL 18-ALGORITHM PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 19-ALGORITHM PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -837,10 +882,12 @@ export class EnhancedDetectionService {
         feeMisclassOvercharge: feeMisclassResults.reduce((sum, r) => sum + r.total_overcharge, 0),
         refundPrice: refundPriceResults.length,
         refundPriceShortfall: refundPriceResults.reduce((sum, r) => sum + r.total_shortfall, 0),
+        phantomRefunds: phantomRefundResults.length,
+        phantomLoss: phantomRefundResults.reduce((sum, r) => sum + r.phantom_loss_value, 0),
         totalRecovery
       });
 
-      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length + feeMisclassResults.length + refundPriceResults.length;
+      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length + feeMisclassResults.length + refundPriceResults.length + phantomRefundResults.length;
       const totalRecoveryValue = totalRecovery +
         underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0) +
         delayResults.reduce((sum, r) => sum + r.reimbursement_amount, 0) +
@@ -850,13 +897,14 @@ export class EnhancedDetectionService {
         returnAbuseResults.reduce((sum, r) => sum + r.expected_recovery, 0) +
         shrinkageDriftResults.reduce((sum, r) => sum + r.total_loss_value, 0) +
         feeMisclassResults.reduce((sum, r) => sum + r.total_overcharge, 0) +
-        refundPriceResults.reduce((sum, r) => sum + r.total_shortfall, 0);
+        refundPriceResults.reduce((sum, r) => sum + r.total_shortfall, 0) +
+        phantomRefundResults.reduce((sum, r) => sum + r.phantom_loss_value, 0);
 
       return {
         success: true,
         jobId,
         message: totalAlgoResults > 0
-          ? `Agent 3 ran 18 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
+          ? `Agent 3 ran 19 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: totalAlgoResults,
         estimatedRecovery: totalRecoveryValue
