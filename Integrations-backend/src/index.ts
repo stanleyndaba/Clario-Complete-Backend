@@ -269,23 +269,48 @@ app.get('/api/auth/status', (req: any, res) => {
 app.get('/api/metrics/recoveries', async (req: any, res) => {
   try {
     const userId = req.userId || 'demo-user';
-    // Try to get from database, fallback to default
+    const tenantId = req.tenantId;
+
+    // Query real data from database
+    let totalClaimsQuery = supabaseAdmin.from('dispute_cases').select('*', { count: 'exact', head: true });
+    let pendingQuery = supabaseAdmin.from('dispute_cases').select('*', { count: 'exact', head: true }).eq('status', 'pending');
+    let approvedQuery = supabaseAdmin.from('dispute_cases').select('*', { count: 'exact', head: true }).eq('status', 'approved');
+    let inProgressQuery = supabaseAdmin.from('dispute_cases').select('*', { count: 'exact', head: true }).eq('status', 'in_progress');
+    let valueQuery = supabaseAdmin.from('dispute_cases').select('claimed_amount').in('status', ['pending', 'in_progress']);
+
+    // Apply tenant filtering if available
+    if (tenantId) {
+      totalClaimsQuery = totalClaimsQuery.eq('tenant_id', tenantId);
+      pendingQuery = pendingQuery.eq('tenant_id', tenantId);
+      approvedQuery = approvedQuery.eq('tenant_id', tenantId);
+      inProgressQuery = inProgressQuery.eq('tenant_id', tenantId);
+      valueQuery = valueQuery.eq('tenant_id', tenantId);
+    }
+
+    const [totalResult, pendingResult, approvedResult, inProgressResult, valueResult] = await Promise.all([
+      totalClaimsQuery,
+      pendingQuery,
+      approvedQuery,
+      inProgressQuery,
+      valueQuery
+    ]);
+
+    // Calculate value in progress
+    const valueInProgress = valueResult.data?.reduce((sum, row) => sum + (parseFloat(row.claimed_amount) || 0), 0) || 0;
+
     res.json({
       success: true,
-      totalClaimsFound: 68,
-      valueInProgress: 6893.20,
-      currentlyInProgress: 34,
-      successRate30d: 82,
-      avgDaysToRecovery: 14,
-      pendingCount: 26,
-      approvedCount: 42,
-      monthlyTrend: [
-        { month: 'Oct', value: 1200 },
-        { month: 'Nov', value: 2800 },
-        { month: 'Dec', value: 6893 }
-      ]
+      totalClaimsFound: totalResult.count || 0,
+      valueInProgress: valueInProgress,
+      currentlyInProgress: inProgressResult.count || 0,
+      successRate30d: approvedResult.count && totalResult.count ? Math.round((approvedResult.count / totalResult.count) * 100) : 0,
+      avgDaysToRecovery: 14, // TODO: Calculate from actual data
+      pendingCount: pendingResult.count || 0,
+      approvedCount: approvedResult.count || 0,
+      monthlyTrend: [] // TODO: Calculate from actual data
     });
   } catch (error: any) {
+    logger.error('Error fetching recoveries metrics:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
