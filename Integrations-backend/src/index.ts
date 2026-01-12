@@ -15,6 +15,7 @@ import config from './config/env';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './utils/errorHandler';
 import { requestMetricsMiddleware, captureException } from './utils/monitoring';
+import { supabaseAdmin } from './database/supabaseClient';
 
 // Import security utilities (must be imported first)
 import { securityHeadersMiddleware, enforceHttpsMiddleware, validateTlsMiddleware } from './security/securityHeaders';
