@@ -14,8 +14,8 @@
  * - Confidence-scored (only recommend filing at ≥0.75)
  */
 
-import { supabaseAdmin } from '../../database/supabaseClient';
-import logger from '../../utils/logger';
+import { supabaseAdmin } from '../../../database/supabaseClient';
+import logger from '../../../utils/logger';
 
 // ============================================================================
 // Types
@@ -765,11 +765,7 @@ export async function detectMissingDocumentation(
 }
 
 // ============================================================================
-// Exports
+// Exports - Constants only (functions already exported inline above)
 // ============================================================================
 
-export {
-    detectReimbursementUnderpayments,
-    THRESHOLD_SHOW_TO_USER,
-    THRESHOLD_RECOMMEND_FILING
-};
+export { THRESHOLD_SHOW_TO_USER, THRESHOLD_RECOMMEND_FILING };
