@@ -88,7 +88,13 @@ import {
   storeClosedCaseResults,
   ClosedCaseSyncedData
 } from './detection/algorithms/falseClosedCaseAlgorithm';
-// Note: 2025 reimbursement overhaul: underpayment, delay, duplicate/missed, false closure
+import {
+  detectSLABreaches,
+  fetchCaseTimelines,
+  storeSLABreachResults,
+  SLABreachSyncedData
+} from './detection/algorithms/slaBreachCompensationAlgorithm';
+// 2025 reimbursement overhaul: underpayment, delay, duplicate/missed, false closure, SLA breach
 
 
 // ============================================================================
@@ -543,7 +549,40 @@ export class EnhancedDetectionService {
         });
       }
 
-      // Step 19: RUN ADVANCED PATTERN ANALYSIS
+      // Step 19: RUN SLA BREACH COMPENSATION DETECTOR ⏱️ (Policy-Backed Money)
+      logger.info('⏱️ [AGENT3] Running SLA Breach Compensation Detector...', { userId, syncId });
+
+      const caseTimelines = await fetchCaseTimelines(userId, { lookbackDays: 180 });
+      const slaSyncedData: SLABreachSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        case_timelines: caseTimelines
+      };
+
+      const slaBreachResults = await detectSLABreaches(
+        userId,
+        syncId,
+        slaSyncedData
+      );
+
+      logger.info('⏱️ [AGENT3] SLA Breach Detector complete!', {
+        userId,
+        syncId,
+        casesAnalyzed: caseTimelines.length,
+        breachesFound: slaBreachResults.length,
+        criticalBreaches: slaBreachResults.filter(r => r.severity === 'critical').length,
+        totalCompensationOwed: slaBreachResults.reduce((sum, r) => sum + r.expected_compensation, 0).toFixed(2)
+      });
+
+      // Store SLA breach results
+      if (slaBreachResults.length > 0) {
+        await storeSLABreachResults(slaBreachResults);
+        logger.info('⏱️ [AGENT3] SLA breach detection results stored', {
+          count: slaBreachResults.length
+        });
+      }
+
+      // Step 20: RUN ADVANCED PATTERN ANALYSIS
       // Consolidated into patternAnalyzer and pattern matching engine.
 
       // Combine ALL results from 9 primary algorithms
@@ -586,7 +625,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('[AGENT3] FULL 13-ALGORITHM PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 14-ALGORITHM PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -607,21 +646,24 @@ export class EnhancedDetectionService {
         sentinelClawbackRisk: sentinelResults.reduce((sum, r) => sum + r.clawback_risk_value, 0),
         falseClosures: falseClosureResults.length,
         falseClosureRecovery: falseClosureResults.reduce((sum, r) => sum + r.shortfall, 0),
+        slaBreaches: slaBreachResults.length,
+        slaCompensationOwed: slaBreachResults.reduce((sum, r) => sum + r.expected_compensation, 0),
         totalRecovery
       });
 
-      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length;
+      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length;
       const totalRecoveryValue = totalRecovery +
         underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0) +
         delayResults.reduce((sum, r) => sum + r.reimbursement_amount, 0) +
         sentinelResults.reduce((sum, r) => sum + r.estimated_recovery, 0) +
-        falseClosureResults.reduce((sum, r) => sum + r.shortfall, 0);
+        falseClosureResults.reduce((sum, r) => sum + r.shortfall, 0) +
+        slaBreachResults.reduce((sum, r) => sum + r.expected_compensation, 0);
 
       return {
         success: true,
         jobId,
         message: totalAlgoResults > 0
-          ? `Agent 3 ran 13 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
+          ? `Agent 3 ran 14 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: totalAlgoResults,
         estimatedRecovery: totalRecoveryValue
