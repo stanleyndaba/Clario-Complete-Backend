@@ -94,7 +94,14 @@ import {
   storeSLABreachResults,
   SLABreachSyncedData
 } from './detection/algorithms/slaBreachCompensationAlgorithm';
-// 2025 reimbursement overhaul: underpayment, delay, duplicate/missed, false closure, SLA breach
+import {
+  detectReturnAbuse,
+  fetchRefundEvents as fetchRefundEventsForAbuse,
+  fetchReturnEvents as fetchReturnEventsForAbuse,
+  storeReturnAbuseResults,
+  ReturnAbuseSyncedData
+} from './detection/algorithms/returnAbuseAlgorithm';
+// 2025 reimbursement overhaul: underpayment, delay, duplicate/missed, false closure, SLA breach, return abuse
 
 
 // ============================================================================
@@ -582,7 +589,46 @@ export class EnhancedDetectionService {
         });
       }
 
-      // Step 20: RUN ADVANCED PATTERN ANALYSIS
+      // Step 20: RUN RETURN ABUSE DETECTOR 🔄 (Non-Return Reimbursement)
+      logger.info('🔄 [AGENT3] Running Return Abuse Detector...', { userId, syncId });
+
+      const [refundEventsForAbuse, returnEventsForAbuse] = await Promise.all([
+        fetchRefundEventsForAbuse(userId, { lookbackDays: 90 }),
+        fetchReturnEventsForAbuse(userId, { lookbackDays: 90 })
+      ]);
+
+      const returnAbuseSyncedData: ReturnAbuseSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        refund_events: refundEventsForAbuse,
+        return_events: returnEventsForAbuse
+      };
+
+      const returnAbuseResults = await detectReturnAbuse(
+        userId,
+        syncId,
+        returnAbuseSyncedData
+      );
+
+      logger.info('🔄 [AGENT3] Return Abuse Detector complete!', {
+        userId,
+        syncId,
+        refundsAnalyzed: refundEventsForAbuse.length,
+        abuseDetected: returnAbuseResults.length,
+        noReturnCases: returnAbuseResults.filter(r => r.abuse_type === 'refund_no_return').length,
+        wrongItemCases: returnAbuseResults.filter(r => r.abuse_type === 'wrong_item_returned').length,
+        totalRecovery: returnAbuseResults.reduce((sum, r) => sum + r.expected_recovery, 0).toFixed(2)
+      });
+
+      // Store return abuse results
+      if (returnAbuseResults.length > 0) {
+        await storeReturnAbuseResults(returnAbuseResults);
+        logger.info('🔄 [AGENT3] Return abuse detection results stored', {
+          count: returnAbuseResults.length
+        });
+      }
+
+      // Step 21: RUN ADVANCED PATTERN ANALYSIS
       // Consolidated into patternAnalyzer and pattern matching engine.
 
       // Combine ALL results from 9 primary algorithms
@@ -625,7 +671,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('[AGENT3] FULL 14-ALGORITHM PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 15-ALGORITHM PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -648,22 +694,25 @@ export class EnhancedDetectionService {
         falseClosureRecovery: falseClosureResults.reduce((sum, r) => sum + r.shortfall, 0),
         slaBreaches: slaBreachResults.length,
         slaCompensationOwed: slaBreachResults.reduce((sum, r) => sum + r.expected_compensation, 0),
+        returnAbuse: returnAbuseResults.length,
+        returnAbuseRecovery: returnAbuseResults.reduce((sum, r) => sum + r.expected_recovery, 0),
         totalRecovery
       });
 
-      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length;
+      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length;
       const totalRecoveryValue = totalRecovery +
         underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0) +
         delayResults.reduce((sum, r) => sum + r.reimbursement_amount, 0) +
         sentinelResults.reduce((sum, r) => sum + r.estimated_recovery, 0) +
         falseClosureResults.reduce((sum, r) => sum + r.shortfall, 0) +
-        slaBreachResults.reduce((sum, r) => sum + r.expected_compensation, 0);
+        slaBreachResults.reduce((sum, r) => sum + r.expected_compensation, 0) +
+        returnAbuseResults.reduce((sum, r) => sum + r.expected_recovery, 0);
 
       return {
         success: true,
         jobId,
         message: totalAlgoResults > 0
-          ? `Agent 3 ran 14 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
+          ? `Agent 3 ran 15 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: totalAlgoResults,
         estimatedRecovery: totalRecoveryValue
