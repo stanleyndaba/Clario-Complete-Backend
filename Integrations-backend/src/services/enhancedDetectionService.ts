@@ -162,7 +162,12 @@ import {
   storeAccountHealthImpactResults,
   AccountHealthIssue
 } from './detection/algorithms/accountHealthImpactAlgorithm';
-// 2025 COMPLETE: 15 new algorithms (10-24) - Agent 3 now runs 24 algorithms + ML
+import {
+  detectSilentSuppression,
+  fetchListingPerformance,
+  storeSuppressionResults
+} from './detection/algorithms/silentSuppressionAlgorithm';
+// 2025 COMPLETE: 16 new algorithms (10-25) - Agent 3 now runs 25 algorithms + ML
 
 
 // ============================================================================
@@ -955,7 +960,24 @@ export class EnhancedDetectionService {
         healthImpacts: healthImpactResults.length
       });
 
-      // Step 30: RUN ADVANCED PATTERN ANALYSIS
+      // Step 30: RUN SILENT SUPPRESSION DETECTOR 🔇 (Visibility Intelligence)
+      logger.info('🔇 [AGENT3] Running Silent Suppression Detector...', { userId, syncId });
+
+      const listingPerformance = await fetchListingPerformance(userId, { lookbackDays: 60 });
+      const suppressionResults = await detectSilentSuppression(userId, syncId, listingPerformance);
+
+      if (suppressionResults.length > 0) {
+        await storeSuppressionResults(suppressionResults);
+        logger.info('🔇 [AGENT3] Suppression detection results stored', { count: suppressionResults.length });
+      }
+
+      logger.info('🏆 [AGENT3] ALL 25 ALGORITHMS COMPLETE!', {
+        userId, syncId,
+        suppressionsFound: suppressionResults.length,
+        weeklyLoss: suppressionResults.reduce((sum, r) => sum + r.estimated_weekly_loss, 0).toFixed(2)
+      });
+
+      // Step 31: RUN ADVANCED PATTERN ANALYSIS
       // Consolidated into patternAnalyzer and pattern matching engine.
 
       // Combine ALL results from 9 primary algorithms
@@ -998,7 +1020,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('[AGENT3] FULL 24-ALGORITHM PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 25-ALGORITHM PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -1038,10 +1060,12 @@ export class EnhancedDetectionService {
         orderDiscrepancies: orderDiscrepancyResults.length,
         transferLosses: transferLossResults.length,
         healthImpacts: healthImpactResults.length,
+        suppressions: suppressionResults.length,
+        suppressionWeeklyLoss: suppressionResults.reduce((sum, r) => sum + r.estimated_weekly_loss, 0),
         totalRecovery
       });
 
-      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length + feeMisclassResults.length + refundPriceResults.length + phantomRefundResults.length + delayRevenueResults.length + feeDriftResults.length + orderDiscrepancyResults.length + transferLossResults.length + healthImpactResults.length;
+      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length + feeMisclassResults.length + refundPriceResults.length + phantomRefundResults.length + delayRevenueResults.length + feeDriftResults.length + orderDiscrepancyResults.length + transferLossResults.length + healthImpactResults.length + suppressionResults.length;
       const totalRecoveryValue = totalRecovery +
         underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0) +
         delayResults.reduce((sum, r) => sum + r.reimbursement_amount, 0) +
@@ -1057,13 +1081,14 @@ export class EnhancedDetectionService {
         feeDriftResults.reduce((sum, r) => sum + r.projected_annual_impact, 0) +
         orderDiscrepancyResults.reduce((sum, r) => sum + r.discrepancy_amount, 0) +
         transferLossResults.reduce((sum, r) => sum + r.loss_value, 0) +
-        healthImpactResults.reduce((sum, r) => sum + r.total_financial_impact, 0);
+        healthImpactResults.reduce((sum, r) => sum + r.total_financial_impact, 0) +
+        suppressionResults.reduce((sum, r) => sum + r.estimated_weekly_loss * 4, 0);
 
       return {
         success: true,
         jobId,
         message: totalAlgoResults > 0
-          ? `Agent 3 ran 24 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
+          ? `Agent 3 ran 25 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: totalAlgoResults,
         estimatedRecovery: totalRecoveryValue
