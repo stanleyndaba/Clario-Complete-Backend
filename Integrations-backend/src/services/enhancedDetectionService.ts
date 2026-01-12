@@ -115,7 +115,14 @@ import {
   storeFeeMisclassResults,
   FeeMisclassSyncedData
 } from './detection/algorithms/feeMisclassificationAlgorithm';
-// 2025 overhaul: underpayment, delay, duplicate/missed, false closure, SLA, return abuse, shrinkage, fee misclass
+import {
+  detectRefundPriceShortfall,
+  fetchRefundEventsForPricing,
+  fetchPriceHistoryForRefunds,
+  storeRefundPriceShortfallResults,
+  RefundPriceSyncedData
+} from './detection/algorithms/refundPriceShortfallAlgorithm';
+// 2025 overhaul: 9 new algorithms - underpayment, delay, sentinel, false closure, SLA, return, shrinkage, fee, refund price
 
 
 // ============================================================================
@@ -719,7 +726,44 @@ export class EnhancedDetectionService {
         });
       }
 
-      // Step 23: RUN ADVANCED PATTERN ANALYSIS
+      // Step 23: RUN REFUND PRICE SHORTFALL DETECTOR 💵 (Fair Refund Pricing)
+      logger.info('💵 [AGENT3] Running Refund Price Shortfall Detector...', { userId, syncId });
+
+      const refundEventsForPricing = await fetchRefundEventsForPricing(userId, { lookbackDays: 90 });
+      const skusToPrice = [...new Set(refundEventsForPricing.map(e => e.sku))];
+      const priceHistoryMap = await fetchPriceHistoryForRefunds(userId, skusToPrice);
+
+      const refundPriceSyncedData: RefundPriceSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        refund_events: refundEventsForPricing,
+        price_history: priceHistoryMap
+      };
+
+      const refundPriceResults = await detectRefundPriceShortfall(
+        userId,
+        syncId,
+        refundPriceSyncedData
+      );
+
+      logger.info('💵 [AGENT3] Refund Price Shortfall Detector complete!', {
+        userId,
+        syncId,
+        refundsAnalyzed: refundEventsForPricing.length,
+        shortfallsFound: refundPriceResults.length,
+        systematicCases: refundPriceResults.filter(r => r.is_systematic).length,
+        totalShortfall: refundPriceResults.reduce((sum, r) => sum + r.total_shortfall, 0).toFixed(2)
+      });
+
+      // Store refund price shortfall results
+      if (refundPriceResults.length > 0) {
+        await storeRefundPriceShortfallResults(refundPriceResults);
+        logger.info('💵 [AGENT3] Refund price shortfall detection results stored', {
+          count: refundPriceResults.length
+        });
+      }
+
+      // Step 24: RUN ADVANCED PATTERN ANALYSIS
       // Consolidated into patternAnalyzer and pattern matching engine.
 
       // Combine ALL results from 9 primary algorithms
@@ -762,7 +806,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('[AGENT3] FULL 17-ALGORITHM PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 18-ALGORITHM PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -791,10 +835,12 @@ export class EnhancedDetectionService {
         projectedAnnualLoss: shrinkageDriftResults.reduce((sum, r) => sum + r.projected_annual_loss, 0),
         feeMisclass: feeMisclassResults.length,
         feeMisclassOvercharge: feeMisclassResults.reduce((sum, r) => sum + r.total_overcharge, 0),
+        refundPrice: refundPriceResults.length,
+        refundPriceShortfall: refundPriceResults.reduce((sum, r) => sum + r.total_shortfall, 0),
         totalRecovery
       });
 
-      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length + feeMisclassResults.length;
+      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length + feeMisclassResults.length + refundPriceResults.length;
       const totalRecoveryValue = totalRecovery +
         underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0) +
         delayResults.reduce((sum, r) => sum + r.reimbursement_amount, 0) +
@@ -803,13 +849,14 @@ export class EnhancedDetectionService {
         slaBreachResults.reduce((sum, r) => sum + r.expected_compensation, 0) +
         returnAbuseResults.reduce((sum, r) => sum + r.expected_recovery, 0) +
         shrinkageDriftResults.reduce((sum, r) => sum + r.total_loss_value, 0) +
-        feeMisclassResults.reduce((sum, r) => sum + r.total_overcharge, 0);
+        feeMisclassResults.reduce((sum, r) => sum + r.total_overcharge, 0) +
+        refundPriceResults.reduce((sum, r) => sum + r.total_shortfall, 0);
 
       return {
         success: true,
         jobId,
         message: totalAlgoResults > 0
-          ? `Agent 3 ran 17 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
+          ? `Agent 3 ran 18 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: totalAlgoResults,
         estimatedRecovery: totalRecoveryValue
