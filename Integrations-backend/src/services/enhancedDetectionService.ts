@@ -167,7 +167,12 @@ import {
   fetchListingPerformance,
   storeSuppressionResults
 } from './detection/algorithms/silentSuppressionAlgorithm';
-// 2025 COMPLETE: 16 new algorithms (10-25) - Agent 3 now runs 25 algorithms + ML
+import {
+  detectClaimWorkflowGaps,
+  fetchClaimRecords,
+  storeClaimGapResults
+} from './detection/algorithms/policyClaimGapsAlgorithm';
+// 2025 COMPLETE: 17 new algorithms (10-26) - Agent 3 now runs 26 algorithms + ML
 
 
 // ============================================================================
@@ -977,7 +982,25 @@ export class EnhancedDetectionService {
         weeklyLoss: suppressionResults.reduce((sum, r) => sum + r.estimated_weekly_loss, 0).toFixed(2)
       });
 
-      // Step 31: RUN ADVANCED PATTERN ANALYSIS
+      // Step 31: RUN POLICY/CLAIM WORKFLOW GAPS DETECTOR 📋 (Claims Process Intelligence)
+      logger.info('📋 [AGENT3] Running Policy/Claim Workflow Gaps Detector...', { userId, syncId });
+
+      const claimRecords = await fetchClaimRecords(userId, { lookbackDays: 180 });
+      const claimGapResults = await detectClaimWorkflowGaps(userId, syncId, claimRecords);
+
+      if (claimGapResults.length > 0) {
+        await storeClaimGapResults(claimGapResults);
+        logger.info('📋 [AGENT3] Claim workflow gap results stored', { count: claimGapResults.length });
+      }
+
+      logger.info('🏆 [AGENT3] ALL 26 ALGORITHMS COMPLETE!', {
+        userId, syncId,
+        claimGapsFound: claimGapResults.length,
+        urgentGaps: claimGapResults.filter(r => r.action_priority === 'urgent').length,
+        totalRecoveryOpportunity: claimGapResults.reduce((sum, r) => sum + r.expected_recovery, 0).toFixed(2)
+      });
+
+      // Step 32: RUN ADVANCED PATTERN ANALYSIS
       // Consolidated into patternAnalyzer and pattern matching engine.
 
       // Combine ALL results from 9 primary algorithms
@@ -1020,7 +1043,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('[AGENT3] FULL 25-ALGORITHM PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 26-ALGORITHM PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -1062,10 +1085,12 @@ export class EnhancedDetectionService {
         healthImpacts: healthImpactResults.length,
         suppressions: suppressionResults.length,
         suppressionWeeklyLoss: suppressionResults.reduce((sum, r) => sum + r.estimated_weekly_loss, 0),
+        claimGaps: claimGapResults.length,
+        claimGapRecovery: claimGapResults.reduce((sum, r) => sum + r.expected_recovery, 0),
         totalRecovery
       });
 
-      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length + feeMisclassResults.length + refundPriceResults.length + phantomRefundResults.length + delayRevenueResults.length + feeDriftResults.length + orderDiscrepancyResults.length + transferLossResults.length + healthImpactResults.length + suppressionResults.length;
+      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length + feeMisclassResults.length + refundPriceResults.length + phantomRefundResults.length + delayRevenueResults.length + feeDriftResults.length + orderDiscrepancyResults.length + transferLossResults.length + healthImpactResults.length + suppressionResults.length + claimGapResults.length;
       const totalRecoveryValue = totalRecovery +
         underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0) +
         delayResults.reduce((sum, r) => sum + r.reimbursement_amount, 0) +
@@ -1082,13 +1107,14 @@ export class EnhancedDetectionService {
         orderDiscrepancyResults.reduce((sum, r) => sum + r.discrepancy_amount, 0) +
         transferLossResults.reduce((sum, r) => sum + r.loss_value, 0) +
         healthImpactResults.reduce((sum, r) => sum + r.total_financial_impact, 0) +
-        suppressionResults.reduce((sum, r) => sum + r.estimated_weekly_loss * 4, 0);
+        suppressionResults.reduce((sum, r) => sum + r.estimated_weekly_loss * 4, 0) +
+        claimGapResults.reduce((sum, r) => sum + r.expected_recovery, 0);
 
       return {
         success: true,
         jobId,
         message: totalAlgoResults > 0
-          ? `Agent 3 ran 25 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
+          ? `Agent 3 ran 26 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: totalAlgoResults,
         estimatedRecovery: totalRecoveryValue
