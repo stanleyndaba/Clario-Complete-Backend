@@ -111,7 +111,7 @@ class LearningService {
   private pythonApiUrl: string;
 
   constructor() {
-    this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-7tgl.onrender.com';
+    this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-backend-jb6c.onrender.com';
   }
 
   private buildServiceHeaders(

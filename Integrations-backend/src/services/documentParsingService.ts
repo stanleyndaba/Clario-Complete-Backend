@@ -69,7 +69,7 @@ class DocumentParsingService {
     this.pythonApiUrl =
       process.env.PYTHON_API_URL ||
       process.env.API_URL ||
-      'https://clario-complete-backend-7tgl.onrender.com';
+      'https://python-api-backend-jb6c.onrender.com';
 
     logger.info('📄 [DOCUMENT PARSING] Service initialized', {
       pythonApiUrl: this.pythonApiUrl

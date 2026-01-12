@@ -88,7 +88,7 @@ export interface DetectionResultRecord {
 
 export class DetectionService {
   private readonly queueName = 'detection_queue';
-  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-7tgl.onrender.com';
+  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-backend-jb6c.onrender.com';
 
   /**
    * Enqueue a detection job after sync completion
@@ -2140,7 +2140,7 @@ export class DetectionService {
     results: DetectionResult[]
   ): Promise<void> {
     try {
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-7tgl.onrender.com';
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-backend-jb6c.onrender.com';
 
       // Transform detection results to claims format for evidence matching
       const claims = results.map((result, index) => ({
@@ -2192,7 +2192,7 @@ export class DetectionService {
     results: DetectionResult[]
   ): Promise<void> {
     try {
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-7tgl.onrender.com';
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-backend-jb6c.onrender.com';
 
       // Transform results to claims format
       const claims = results.map((result, index) => ({
