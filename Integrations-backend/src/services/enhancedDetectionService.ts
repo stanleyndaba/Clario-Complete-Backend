@@ -129,7 +129,14 @@ import {
   storePhantomRefundResults,
   PhantomRefundSyncedData
 } from './detection/algorithms/phantomRefundAlgorithm';
-// 2025 overhaul: 10 new algorithms - underpayment to phantom refund
+import {
+  calculateDelayedRevenueImpact,
+  fetchDelayEvents,
+  fetchSalesVelocity,
+  storeDelayedRevenueResults,
+  DelayRevenueImpactSyncedData
+} from './detection/algorithms/delayedRevenueImpactAlgorithm';
+// 2025 overhaul: 11 new algorithms - underpayment to delayed revenue impact
 
 
 // ============================================================================
@@ -808,7 +815,45 @@ export class EnhancedDetectionService {
         });
       }
 
-      // Step 25: RUN ADVANCED PATTERN ANALYSIS
+      // Step 25: RUN DELAYED REVENUE IMPACT CALCULATOR 📉 (Enterprise Justification)
+      logger.info('📉 [AGENT3] Running Delayed Revenue Impact Calculator...', { userId, syncId });
+
+      const delayEvents = await fetchDelayEvents(userId, { lookbackDays: 90 });
+      const delaySkus = [...new Set(delayEvents.map(e => e.sku))];
+      const salesVelocityMap = await fetchSalesVelocity(userId, delaySkus);
+
+      const delayRevenueData: DelayRevenueImpactSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        delay_events: delayEvents,
+        sales_velocity: salesVelocityMap
+      };
+
+      const delayRevenueResults = await calculateDelayedRevenueImpact(
+        userId,
+        syncId,
+        delayRevenueData
+      );
+
+      logger.info('📉 [AGENT3] Delayed Revenue Impact Calculator complete!', {
+        userId,
+        syncId,
+        delaysAnalyzed: delayEvents.length,
+        impactsFound: delayRevenueResults.length,
+        ongoingDelays: delayRevenueResults.filter(r => r.is_ongoing).length,
+        totalLostRevenue: delayRevenueResults.reduce((sum, r) => sum + r.lost_revenue, 0).toFixed(2),
+        totalFinancialHarm: delayRevenueResults.reduce((sum, r) => sum + r.total_financial_harm, 0).toFixed(2)
+      });
+
+      // Store delayed revenue results
+      if (delayRevenueResults.length > 0) {
+        await storeDelayedRevenueResults(delayRevenueResults);
+        logger.info('📉 [AGENT3] Delayed revenue impact results stored', {
+          count: delayRevenueResults.length
+        });
+      }
+
+      // Step 26: RUN ADVANCED PATTERN ANALYSIS
       // Consolidated into patternAnalyzer and pattern matching engine.
 
       // Combine ALL results from 9 primary algorithms
@@ -851,7 +896,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('[AGENT3] FULL 19-ALGORITHM PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 20-ALGORITHM PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -884,10 +929,12 @@ export class EnhancedDetectionService {
         refundPriceShortfall: refundPriceResults.reduce((sum, r) => sum + r.total_shortfall, 0),
         phantomRefunds: phantomRefundResults.length,
         phantomLoss: phantomRefundResults.reduce((sum, r) => sum + r.phantom_loss_value, 0),
+        delayedRevenue: delayRevenueResults.length,
+        delayedRevenueHarm: delayRevenueResults.reduce((sum, r) => sum + r.total_financial_harm, 0),
         totalRecovery
       });
 
-      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length + feeMisclassResults.length + refundPriceResults.length + phantomRefundResults.length;
+      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length + feeMisclassResults.length + refundPriceResults.length + phantomRefundResults.length + delayRevenueResults.length;
       const totalRecoveryValue = totalRecovery +
         underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0) +
         delayResults.reduce((sum, r) => sum + r.reimbursement_amount, 0) +
@@ -898,13 +945,14 @@ export class EnhancedDetectionService {
         shrinkageDriftResults.reduce((sum, r) => sum + r.total_loss_value, 0) +
         feeMisclassResults.reduce((sum, r) => sum + r.total_overcharge, 0) +
         refundPriceResults.reduce((sum, r) => sum + r.total_shortfall, 0) +
-        phantomRefundResults.reduce((sum, r) => sum + r.phantom_loss_value, 0);
+        phantomRefundResults.reduce((sum, r) => sum + r.phantom_loss_value, 0) +
+        delayRevenueResults.reduce((sum, r) => sum + r.total_financial_harm, 0);
 
       return {
         success: true,
         jobId,
         message: totalAlgoResults > 0
-          ? `Agent 3 ran 19 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
+          ? `Agent 3 ran 20 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: totalAlgoResults,
         estimatedRecovery: totalRecoveryValue
