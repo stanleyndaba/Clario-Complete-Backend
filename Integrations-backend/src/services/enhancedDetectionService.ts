@@ -108,7 +108,14 @@ import {
   storeShrinkageDriftResults,
   ShrinkageSyncedData
 } from './detection/algorithms/inventoryShrinkageDriftAlgorithm';
-// 2025 overhaul: underpayment, delay, duplicate/missed, false closure, SLA breach, return abuse, shrinkage drift
+import {
+  detectFeeMisclassification,
+  fetchProductDimensions,
+  fetchFeeTransactions,
+  storeFeeMisclassResults,
+  FeeMisclassSyncedData
+} from './detection/algorithms/feeMisclassificationAlgorithm';
+// 2025 overhaul: underpayment, delay, duplicate/missed, false closure, SLA, return abuse, shrinkage, fee misclass
 
 
 // ============================================================================
@@ -674,7 +681,45 @@ export class EnhancedDetectionService {
         });
       }
 
-      // Step 22: RUN ADVANCED PATTERN ANALYSIS
+      // Step 22: RUN FEE MISCLASSIFICATION DETECTOR 💲 (Recurring Leakage)
+      logger.info('💲 [AGENT3] Running Fee Misclassification Detector...', { userId, syncId });
+
+      const [productDimensions, feeTransactions] = await Promise.all([
+        fetchProductDimensions(userId),
+        fetchFeeTransactions(userId, { lookbackDays: 90 })
+      ]);
+
+      const feeMisclassSyncedData: FeeMisclassSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        dimensions: productDimensions,
+        fee_transactions: feeTransactions
+      };
+
+      const feeMisclassResults = await detectFeeMisclassification(
+        userId,
+        syncId,
+        feeMisclassSyncedData
+      );
+
+      logger.info('💲 [AGENT3] Fee Misclassification Detector complete!', {
+        userId,
+        syncId,
+        skusAnalyzed: productDimensions.length,
+        misclassificationsFound: feeMisclassResults.length,
+        totalOvercharge: feeMisclassResults.reduce((sum, r) => sum + r.total_overcharge, 0).toFixed(2),
+        projectedAnnualSavings: feeMisclassResults.reduce((sum, r) => sum + r.projected_annual_savings, 0).toFixed(2)
+      });
+
+      // Store fee misclassification results
+      if (feeMisclassResults.length > 0) {
+        await storeFeeMisclassResults(feeMisclassResults);
+        logger.info('💲 [AGENT3] Fee misclassification detection results stored', {
+          count: feeMisclassResults.length
+        });
+      }
+
+      // Step 23: RUN ADVANCED PATTERN ANALYSIS
       // Consolidated into patternAnalyzer and pattern matching engine.
 
       // Combine ALL results from 9 primary algorithms
@@ -717,7 +762,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('[AGENT3] FULL 16-ALGORITHM PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 17-ALGORITHM PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -744,10 +789,12 @@ export class EnhancedDetectionService {
         returnAbuseRecovery: returnAbuseResults.reduce((sum, r) => sum + r.expected_recovery, 0),
         shrinkageDrift: shrinkageDriftResults.length,
         projectedAnnualLoss: shrinkageDriftResults.reduce((sum, r) => sum + r.projected_annual_loss, 0),
+        feeMisclass: feeMisclassResults.length,
+        feeMisclassOvercharge: feeMisclassResults.reduce((sum, r) => sum + r.total_overcharge, 0),
         totalRecovery
       });
 
-      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length;
+      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length + feeMisclassResults.length;
       const totalRecoveryValue = totalRecovery +
         underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0) +
         delayResults.reduce((sum, r) => sum + r.reimbursement_amount, 0) +
@@ -755,13 +802,14 @@ export class EnhancedDetectionService {
         falseClosureResults.reduce((sum, r) => sum + r.shortfall, 0) +
         slaBreachResults.reduce((sum, r) => sum + r.expected_compensation, 0) +
         returnAbuseResults.reduce((sum, r) => sum + r.expected_recovery, 0) +
-        shrinkageDriftResults.reduce((sum, r) => sum + r.total_loss_value, 0);
+        shrinkageDriftResults.reduce((sum, r) => sum + r.total_loss_value, 0) +
+        feeMisclassResults.reduce((sum, r) => sum + r.total_overcharge, 0);
 
       return {
         success: true,
         jobId,
         message: totalAlgoResults > 0
-          ? `Agent 3 ran 16 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
+          ? `Agent 3 ran 17 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: totalAlgoResults,
         estimatedRecovery: totalRecoveryValue
