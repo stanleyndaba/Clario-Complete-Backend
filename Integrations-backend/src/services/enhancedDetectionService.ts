@@ -75,8 +75,14 @@ import {
   storeDelayResults,
   DelaySyncedData
 } from './detection/algorithms/reimbursementDelayAlgorithm';
-// Note: 2025 fee detection is now consolidated into feeAlgorithms.ts (detectAllFeeOvercharges)
-// Reimbursement underpayment + delay detection are the 2025 reimbursement overhaul algorithms
+import {
+  detectDuplicateMissedReimbursements,
+  fetchLossEvents,
+  fetchReimbursementEventsForSentinel,
+  storeSentinelResults,
+  SentinelSyncedData
+} from './detection/algorithms/duplicateMissedReimbursementAlgorithm';
+// Note: 2025 reimbursement overhaul algorithms: underpayment, delay, duplicate/missed
 
 
 // ============================================================================
@@ -459,7 +465,46 @@ export class EnhancedDetectionService {
         });
       }
 
-      // Step 17: RUN ADVANCED DETECTION ALGORITHMS (Deep Analysis)
+      // Step 17: RUN DUPLICATE/MISSED REIMBURSEMENT SENTINEL 🔍 (Recovery Lifecycle)
+      logger.info('🔍 [AGENT3] Running Duplicate/Missed Reimbursement Sentinel...', { userId, syncId });
+
+      const [lossEvents, sentinelReimbEvents] = await Promise.all([
+        fetchLossEvents(userId, { lookbackDays: 180 }),
+        fetchReimbursementEventsForSentinel(userId, { lookbackDays: 180 })
+      ]);
+
+      const sentinelSyncedData: SentinelSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        loss_events: lossEvents,
+        reimbursement_events: sentinelReimbEvents
+      };
+
+      const sentinelResults = await detectDuplicateMissedReimbursements(
+        userId,
+        syncId,
+        sentinelSyncedData
+      );
+
+      logger.info('🔍 [AGENT3] Sentinel detection complete!', {
+        userId,
+        syncId,
+        missedReimbursements: sentinelResults.filter(r => r.detection_type === 'missed_reimbursement').length,
+        duplicates: sentinelResults.filter(r => r.detection_type === 'duplicate_reimbursement').length,
+        clawbackRisks: sentinelResults.filter(r => r.detection_type === 'clawback_risk').length,
+        totalRecoveryOpportunity: sentinelResults.reduce((sum, r) => sum + r.estimated_recovery, 0).toFixed(2),
+        clawbackRiskValue: sentinelResults.reduce((sum, r) => sum + r.clawback_risk_value, 0).toFixed(2)
+      });
+
+      // Store sentinel results
+      if (sentinelResults.length > 0) {
+        await storeSentinelResults(sentinelResults);
+        logger.info('🔍 [AGENT3] Sentinel detection results stored', {
+          count: sentinelResults.length
+        });
+      }
+
+      // Step 18: RUN ADVANCED PATTERN ANALYSIS
       // Consolidated into patternAnalyzer and pattern matching engine.
 
       // Combine ALL results from 9 primary algorithms
@@ -502,7 +547,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('[AGENT3] FULL 11-ALGORITHM PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 12-ALGORITHM PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -518,19 +563,23 @@ export class EnhancedDetectionService {
         underpaymentShortfall: underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0),
         delays: delayResults.length,
         totalDelayCost: delayResults.reduce((sum, r) => sum + r.total_delay_cost, 0),
+        sentinel: sentinelResults.length,
+        sentinelRecovery: sentinelResults.reduce((sum, r) => sum + r.estimated_recovery, 0),
+        sentinelClawbackRisk: sentinelResults.reduce((sum, r) => sum + r.clawback_risk_value, 0),
         totalRecovery
       });
 
-      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length;
+      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length;
       const totalRecoveryValue = totalRecovery +
         underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0) +
-        delayResults.reduce((sum, r) => sum + r.reimbursement_amount, 0);
+        delayResults.reduce((sum, r) => sum + r.reimbursement_amount, 0) +
+        sentinelResults.reduce((sum, r) => sum + r.estimated_recovery, 0);
 
       return {
         success: true,
         jobId,
         message: totalAlgoResults > 0
-          ? `Agent 3 ran 11 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
+          ? `Agent 3 ran 12 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: totalAlgoResults,
         estimatedRecovery: totalRecoveryValue
