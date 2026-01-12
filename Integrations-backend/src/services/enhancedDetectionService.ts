@@ -63,6 +63,12 @@ import {
 import { detectInboundAnomalies, runInboundDetection, storeInboundDetectionResults } from './detection/algorithms/inboundAlgorithms';
 import { detectRemovalAnomalies, runRemovalDetection, storeRemovalResults } from './detection/algorithms/removalAlgorithms';
 import { detectFraudAnomalies, runFraudDetection, storeFraudResults } from './detection/algorithms/fraudAlgorithms';
+import {
+  detectReimbursementUnderpayments,
+  storeUnderpaymentResults,
+  detectMissingDocumentation,
+  UnderpaymentSyncedData
+} from './detection/algorithms/reimbursementUnderpaymentAlgorithm';
 // Note: 2025 fee detection is now consolidated into feeAlgorithms.ts (detectAllFeeOvercharges)
 // Note: Reimbursement audit, return anomaly, micro-leak, correlation, closed case audit
 // have been consolidated into existing services (feeAlgorithms, refundAlgorithms, patternAnalyzer, disputeService)
@@ -359,10 +365,62 @@ export class EnhancedDetectionService {
       // Combine ALL results from 9 algorithms
       const clusterResults = [...inboundResults, ...removalResults, ...fraudResults];
 
-      // Step 15: RUN 2025 COVERAGE EXPANSION ALGORITHMS
-      // Note: 2025 FBA fees are already included in detectAllFeeOvercharges (Step 6)
-      // Additional 2025 algorithms (Reimbursement Audit, Return Anomaly) are consolidated 
-      // into existing services or pending implementation.
+      // Step 15: RUN REIMBURSEMENT UNDERPAYMENT DETECTOR 💰📉 (2025 Policy Aware)
+      logger.info('💰📉 [AGENT3] Running Reimbursement Underpayment Detector...', { userId, syncId });
+
+      // Build underpayment synced data from existing reimbursement events
+      const underpaymentSyncedData: UnderpaymentSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        reimbursement_events: reimbursementEvents.map(r => ({
+          id: r.id || `reimb-${Date.now()}`,
+          seller_id: userId,
+          order_id: r.order_id,
+          sku: r.sku,
+          asin: r.asin,
+          fnsku: r.fnsku,
+          quantity: (r as any).quantity || 1,
+          reimbursement_amount: r.reimbursement_amount || 0,
+          currency: r.currency || 'USD',
+          reimbursement_date: r.reimbursement_date || new Date().toISOString(),
+          reimbursement_type: r.reimbursement_type || 'UNKNOWN',
+          reason: (r as any).reason
+        }))
+      };
+
+      const underpaymentResults = await detectReimbursementUnderpayments(
+        userId,
+        syncId,
+        underpaymentSyncedData
+      );
+
+      logger.info('💰📉 [AGENT3] Reimbursement Underpayment Detector complete!', {
+        userId,
+        syncId,
+        detectionsFound: underpaymentResults.length,
+        totalShortfall: underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0),
+        highSeverity: underpaymentResults.filter(r => r.severity === 'high' || r.severity === 'critical').length
+      });
+
+      // Store underpayment results
+      if (underpaymentResults.length > 0) {
+        await storeUnderpaymentResults(underpaymentResults);
+        logger.info('💰📉 [AGENT3] Underpayment detection results stored', {
+          count: underpaymentResults.length
+        });
+      }
+
+      // Check for missing documentation (non-blocking alert)
+      detectMissingDocumentation(userId).then(docStatus => {
+        if (docStatus.alertMessage) {
+          logger.info('📋 [AGENT3] Missing documentation alert', {
+            userId,
+            alert: docStatus.alertMessage,
+            skusWithoutCogs: docStatus.skusWithoutCogs,
+            potentialAtRisk: docStatus.potentialRecoveryAtRisk
+          });
+        }
+      }).catch(() => { });
 
       // Step 16: RUN ADVANCED DETECTION ALGORITHMS (Deep Analysis)
       // Consolidated into patternAnalyzer and pattern matching engine.
@@ -407,7 +465,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('[AGENT3] FULL 9-ALGORITHM PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 10-ALGORITHM PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -419,14 +477,16 @@ export class EnhancedDetectionService {
         inbound: inboundResults.length,
         removals: removalResults.length,
         fraud: fraudResults.length,
+        underpayments: underpaymentResults.length,
+        underpaymentShortfall: underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0),
         totalRecovery
       });
 
       return {
         success: true,
         jobId,
-        message: finalResults.length > 0
-          ? `Agent 3 ran 9 algorithms + ML calibration - Found ${finalResults.length} claims. Total recovery: $${totalRecovery.toFixed(2)}!`
+        message: finalResults.length > 0 || underpaymentResults.length > 0
+          ? `Agent 3 ran 10 algorithms + ML calibration - Found ${finalResults.length + underpaymentResults.length} claims. Total recovery: $${(totalRecovery + underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0)).toFixed(2)}!`
 
           : 'Detection complete. No discrepancies found.',
         detectionsFound: finalResults.length,
