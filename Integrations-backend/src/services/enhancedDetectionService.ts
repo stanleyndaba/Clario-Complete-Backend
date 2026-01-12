@@ -136,7 +136,33 @@ import {
   storeDelayedRevenueResults,
   DelayRevenueImpactSyncedData
 } from './detection/algorithms/delayedRevenueImpactAlgorithm';
-// 2025 overhaul: 11 new algorithms - underpayment to delayed revenue impact
+import {
+  detectFeeDriftTrend,
+  fetchFeeHistoryForDrift,
+  storeFeeDriftResults,
+  FeeDriftSyncedData
+} from './detection/algorithms/feeDriftTrendAlgorithm';
+// 2025 overhaul: 12 new algorithms - underpayment to fee drift trend
+import {
+  detectOrderLevelDiscrepancies,
+  fetchOrdersForDiscrepancy,
+  storeOrderDiscrepancyResults,
+  OrderRecord
+} from './detection/algorithms/orderDiscrepancyAlgorithm';
+import {
+  detectWarehouseTransferLoss,
+  fetchTransferRecords,
+  storeTransferLossResults,
+  TransferRecord
+} from './detection/algorithms/warehouseTransferLossAlgorithm';
+import {
+  detectAccountHealthImpact,
+  fetchAccountHealthIssues,
+  fetchInventoryValues,
+  storeAccountHealthImpactResults,
+  AccountHealthIssue
+} from './detection/algorithms/accountHealthImpactAlgorithm';
+// 2025 COMPLETE: 15 new algorithms (10-24) - Agent 3 now runs 24 algorithms + ML
 
 
 // ============================================================================
@@ -853,7 +879,83 @@ export class EnhancedDetectionService {
         });
       }
 
-      // Step 26: RUN ADVANCED PATTERN ANALYSIS
+      // Step 26: RUN FEE DRIFT TREND DETECTOR 📈 (Slow Overcharge Prevention)
+      logger.info('📈 [AGENT3] Running Fee Drift Trend Detector...', { userId, syncId });
+
+      const feeHistoryForDrift = await fetchFeeHistoryForDrift(userId, { lookbackDays: 180 });
+
+      const feeDriftSyncedData: FeeDriftSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        fee_history: feeHistoryForDrift
+      };
+
+      const feeDriftResults = await detectFeeDriftTrend(
+        userId,
+        syncId,
+        feeDriftSyncedData
+      );
+
+      logger.info('📈 [AGENT3] Fee Drift Trend Detector complete!', {
+        userId,
+        syncId,
+        feePointsAnalyzed: feeHistoryForDrift.length,
+        driftsFound: feeDriftResults.length,
+        criticalDrifts: feeDriftResults.filter(r => r.severity === 'critical').length,
+        totalAnnualImpact: feeDriftResults.reduce((sum, r) => sum + r.projected_annual_impact, 0).toFixed(2)
+      });
+
+      // Store fee drift results
+      if (feeDriftResults.length > 0) {
+        await storeFeeDriftResults(feeDriftResults);
+        logger.info('📈 [AGENT3] Fee drift trend results stored', {
+          count: feeDriftResults.length
+        });
+      }
+
+      // Step 27: RUN ORDER LEVEL DISCREPANCY DETECTOR 📋 (Transaction Integrity)
+      logger.info('📋 [AGENT3] Running Order Level Discrepancy Detector...', { userId, syncId });
+
+      const ordersForDiscrepancy = await fetchOrdersForDiscrepancy(userId, { lookbackDays: 90 });
+      const orderDiscrepancyResults = await detectOrderLevelDiscrepancies(userId, syncId, ordersForDiscrepancy);
+
+      if (orderDiscrepancyResults.length > 0) {
+        await storeOrderDiscrepancyResults(orderDiscrepancyResults);
+        logger.info('📋 [AGENT3] Order discrepancy results stored', { count: orderDiscrepancyResults.length });
+      }
+
+      // Step 28: RUN WAREHOUSE TRANSFER LOSS DETECTOR 🏭 (FC Transfer Integrity)
+      logger.info('🏭 [AGENT3] Running Warehouse Transfer Loss Detector...', { userId, syncId });
+
+      const transferRecords = await fetchTransferRecords(userId, { lookbackDays: 90 });
+      const transferLossResults = await detectWarehouseTransferLoss(userId, syncId, transferRecords);
+
+      if (transferLossResults.length > 0) {
+        await storeTransferLossResults(transferLossResults);
+        logger.info('🏭 [AGENT3] Transfer loss results stored', { count: transferLossResults.length });
+      }
+
+      // Step 29: RUN ACCOUNT HEALTH IMPACT DETECTOR ⚠️ (Risk Intelligence)
+      logger.info('⚠️ [AGENT3] Running Account Health Impact Detector...', { userId, syncId });
+
+      const healthIssues = await fetchAccountHealthIssues(userId, { lookbackDays: 90 });
+      const inventoryValuesMap = await fetchInventoryValues(userId);
+      const healthImpactResults = await detectAccountHealthImpact(userId, syncId, healthIssues, inventoryValuesMap);
+
+      if (healthImpactResults.length > 0) {
+        await storeAccountHealthImpactResults(healthImpactResults);
+        logger.info('⚠️ [AGENT3] Account health impact results stored', { count: healthImpactResults.length });
+      }
+
+      logger.info('🎯 [AGENT3] ALL 24 ALGORITHMS COMPLETE!', {
+        userId, syncId,
+        feeDriftResults: feeDriftResults.length,
+        orderDiscrepancies: orderDiscrepancyResults.length,
+        transferLosses: transferLossResults.length,
+        healthImpacts: healthImpactResults.length
+      });
+
+      // Step 30: RUN ADVANCED PATTERN ANALYSIS
       // Consolidated into patternAnalyzer and pattern matching engine.
 
       // Combine ALL results from 9 primary algorithms
@@ -896,7 +998,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('[AGENT3] FULL 20-ALGORITHM PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 24-ALGORITHM PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -931,10 +1033,15 @@ export class EnhancedDetectionService {
         phantomLoss: phantomRefundResults.reduce((sum, r) => sum + r.phantom_loss_value, 0),
         delayedRevenue: delayRevenueResults.length,
         delayedRevenueHarm: delayRevenueResults.reduce((sum, r) => sum + r.total_financial_harm, 0),
+        feeDrifts: feeDriftResults.length,
+        feeDriftAnnual: feeDriftResults.reduce((sum, r) => sum + r.projected_annual_impact, 0),
+        orderDiscrepancies: orderDiscrepancyResults.length,
+        transferLosses: transferLossResults.length,
+        healthImpacts: healthImpactResults.length,
         totalRecovery
       });
 
-      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length + feeMisclassResults.length + refundPriceResults.length + phantomRefundResults.length + delayRevenueResults.length;
+      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length + feeMisclassResults.length + refundPriceResults.length + phantomRefundResults.length + delayRevenueResults.length + feeDriftResults.length + orderDiscrepancyResults.length + transferLossResults.length + healthImpactResults.length;
       const totalRecoveryValue = totalRecovery +
         underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0) +
         delayResults.reduce((sum, r) => sum + r.reimbursement_amount, 0) +
@@ -946,13 +1053,17 @@ export class EnhancedDetectionService {
         feeMisclassResults.reduce((sum, r) => sum + r.total_overcharge, 0) +
         refundPriceResults.reduce((sum, r) => sum + r.total_shortfall, 0) +
         phantomRefundResults.reduce((sum, r) => sum + r.phantom_loss_value, 0) +
-        delayRevenueResults.reduce((sum, r) => sum + r.total_financial_harm, 0);
+        delayRevenueResults.reduce((sum, r) => sum + r.total_financial_harm, 0) +
+        feeDriftResults.reduce((sum, r) => sum + r.projected_annual_impact, 0) +
+        orderDiscrepancyResults.reduce((sum, r) => sum + r.discrepancy_amount, 0) +
+        transferLossResults.reduce((sum, r) => sum + r.loss_value, 0) +
+        healthImpactResults.reduce((sum, r) => sum + r.total_financial_impact, 0);
 
       return {
         success: true,
         jobId,
         message: totalAlgoResults > 0
-          ? `Agent 3 ran 20 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
+          ? `Agent 3 ran 24 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: totalAlgoResults,
         estimatedRecovery: totalRecoveryValue
