@@ -69,9 +69,14 @@ import {
   detectMissingDocumentation,
   UnderpaymentSyncedData
 } from './detection/algorithms/reimbursementUnderpaymentAlgorithm';
+import {
+  detectReimbursementDelays,
+  fetchPendingReimbursements,
+  storeDelayResults,
+  DelaySyncedData
+} from './detection/algorithms/reimbursementDelayAlgorithm';
 // Note: 2025 fee detection is now consolidated into feeAlgorithms.ts (detectAllFeeOvercharges)
-// Note: Reimbursement audit, return anomaly, micro-leak, correlation, closed case audit
-// have been consolidated into existing services (feeAlgorithms, refundAlgorithms, patternAnalyzer, disputeService)
+// Reimbursement underpayment + delay detection are the 2025 reimbursement overhaul algorithms
 
 
 // ============================================================================
@@ -422,7 +427,39 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      // Step 16: RUN ADVANCED DETECTION ALGORITHMS (Deep Analysis)
+      // Step 16: RUN REIMBURSEMENT DELAY DETECTOR ⏰ (Cashflow Theft Detection)
+      logger.info('⏰ [AGENT3] Running Reimbursement Delay Detector...', { userId, syncId });
+
+      const pendingReimbursements = await fetchPendingReimbursements(userId);
+      const delaySyncedData: DelaySyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        pending_reimbursements: pendingReimbursements
+      };
+
+      const delayResults = await detectReimbursementDelays(
+        userId,
+        syncId,
+        delaySyncedData
+      );
+
+      logger.info('⏰ [AGENT3] Reimbursement Delay Detector complete!', {
+        userId,
+        syncId,
+        overdueFound: delayResults.length,
+        totalDelayCost: delayResults.reduce((sum, r) => sum + r.total_delay_cost, 0).toFixed(2),
+        criticalCount: delayResults.filter(r => r.severity === 'critical').length
+      });
+
+      // Store delay results
+      if (delayResults.length > 0) {
+        await storeDelayResults(delayResults);
+        logger.info('⏰ [AGENT3] Delay detection results stored', {
+          count: delayResults.length
+        });
+      }
+
+      // Step 17: RUN ADVANCED DETECTION ALGORITHMS (Deep Analysis)
       // Consolidated into patternAnalyzer and pattern matching engine.
 
       // Combine ALL results from 9 primary algorithms
@@ -465,7 +502,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('[AGENT3] FULL 10-ALGORITHM PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 11-ALGORITHM PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -479,18 +516,24 @@ export class EnhancedDetectionService {
         fraud: fraudResults.length,
         underpayments: underpaymentResults.length,
         underpaymentShortfall: underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0),
+        delays: delayResults.length,
+        totalDelayCost: delayResults.reduce((sum, r) => sum + r.total_delay_cost, 0),
         totalRecovery
       });
+
+      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length;
+      const totalRecoveryValue = totalRecovery +
+        underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0) +
+        delayResults.reduce((sum, r) => sum + r.reimbursement_amount, 0);
 
       return {
         success: true,
         jobId,
-        message: finalResults.length > 0 || underpaymentResults.length > 0
-          ? `Agent 3 ran 10 algorithms + ML calibration - Found ${finalResults.length + underpaymentResults.length} claims. Total recovery: $${(totalRecovery + underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0)).toFixed(2)}!`
-
+        message: totalAlgoResults > 0
+          ? `Agent 3 ran 11 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
-        detectionsFound: finalResults.length,
-        estimatedRecovery: totalRecovery
+        detectionsFound: totalAlgoResults,
+        estimatedRecovery: totalRecoveryValue
       };
 
     } catch (error: any) {
