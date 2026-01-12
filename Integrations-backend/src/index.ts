@@ -269,7 +269,20 @@ app.get('/api/auth/status', (req: any, res) => {
 app.get('/api/metrics/recoveries', async (req: any, res) => {
   try {
     const userId = req.userId || 'demo-user';
-    const tenantId = req.tenantId;
+    const tenantSlug = req.query.tenant as string | undefined;
+
+    // Look up tenant_id from slug if provided
+    let tenantId: string | null = req.tenantId || null;
+    if (tenantSlug && !tenantId) {
+      const { data: tenantData } = await supabaseAdmin
+        .from('tenants')
+        .select('id')
+        .eq('slug', tenantSlug)
+        .single();
+      if (tenantData) {
+        tenantId = tenantData.id;
+      }
+    }
 
     // Query real data from database
     let totalClaimsQuery = supabaseAdmin.from('dispute_cases').select('*', { count: 'exact', head: true });
