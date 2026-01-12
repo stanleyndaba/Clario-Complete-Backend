@@ -82,7 +82,13 @@ import {
   storeSentinelResults,
   SentinelSyncedData
 } from './detection/algorithms/duplicateMissedReimbursementAlgorithm';
-// Note: 2025 reimbursement overhaul algorithms: underpayment, delay, duplicate/missed
+import {
+  detectFalseClosedCases,
+  fetchClosedCases,
+  storeClosedCaseResults,
+  ClosedCaseSyncedData
+} from './detection/algorithms/falseClosedCaseAlgorithm';
+// Note: 2025 reimbursement overhaul: underpayment, delay, duplicate/missed, false closure
 
 
 // ============================================================================
@@ -504,7 +510,40 @@ export class EnhancedDetectionService {
         });
       }
 
-      // Step 18: RUN ADVANCED PATTERN ANALYSIS
+      // Step 18: RUN FALSE CLOSED CASE DETECTOR ⚖️ (Amazon Decision Analysis)
+      logger.info('⚖️ [AGENT3] Running False Closed Case Detector...', { userId, syncId });
+
+      const closedCases = await fetchClosedCases(userId, { lookbackDays: 180 });
+      const closedCaseSyncedData: ClosedCaseSyncedData = {
+        seller_id: userId,
+        sync_id: syncId,
+        closed_cases: closedCases
+      };
+
+      const falseClosureResults = await detectFalseClosedCases(
+        userId,
+        syncId,
+        closedCaseSyncedData
+      );
+
+      logger.info('⚖️ [AGENT3] False Closed Case Detector complete!', {
+        userId,
+        syncId,
+        analyzedCases: closedCases.length,
+        falseClosuresDetected: falseClosureResults.length,
+        stronglyRecommendedRefiling: falseClosureResults.filter(r => r.dispute_worthiness === 'strongly_recommended').length,
+        totalRecoveryPotential: falseClosureResults.reduce((sum, r) => sum + r.shortfall, 0).toFixed(2)
+      });
+
+      // Store false closure results
+      if (falseClosureResults.length > 0) {
+        await storeClosedCaseResults(falseClosureResults);
+        logger.info('⚖️ [AGENT3] False closure detection results stored', {
+          count: falseClosureResults.length
+        });
+      }
+
+      // Step 19: RUN ADVANCED PATTERN ANALYSIS
       // Consolidated into patternAnalyzer and pattern matching engine.
 
       // Combine ALL results from 9 primary algorithms
@@ -547,7 +586,7 @@ export class EnhancedDetectionService {
         }
       }).catch(() => { });
 
-      logger.info('[AGENT3] FULL 12-ALGORITHM PIPELINE COMPLETE!', {
+      logger.info('[AGENT3] FULL 13-ALGORITHM PIPELINE COMPLETE!', {
         userId,
         syncId,
         totalClaims: finalResults.length,
@@ -566,20 +605,23 @@ export class EnhancedDetectionService {
         sentinel: sentinelResults.length,
         sentinelRecovery: sentinelResults.reduce((sum, r) => sum + r.estimated_recovery, 0),
         sentinelClawbackRisk: sentinelResults.reduce((sum, r) => sum + r.clawback_risk_value, 0),
+        falseClosures: falseClosureResults.length,
+        falseClosureRecovery: falseClosureResults.reduce((sum, r) => sum + r.shortfall, 0),
         totalRecovery
       });
 
-      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length;
+      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length;
       const totalRecoveryValue = totalRecovery +
         underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0) +
         delayResults.reduce((sum, r) => sum + r.reimbursement_amount, 0) +
-        sentinelResults.reduce((sum, r) => sum + r.estimated_recovery, 0);
+        sentinelResults.reduce((sum, r) => sum + r.estimated_recovery, 0) +
+        falseClosureResults.reduce((sum, r) => sum + r.shortfall, 0);
 
       return {
         success: true,
         jobId,
         message: totalAlgoResults > 0
-          ? `Agent 3 ran 12 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
+          ? `Agent 3 ran 13 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
           : 'Detection complete. No discrepancies found.',
         detectionsFound: totalAlgoResults,
         estimatedRecovery: totalRecoveryValue
