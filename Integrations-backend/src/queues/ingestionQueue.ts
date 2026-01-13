@@ -40,9 +40,6 @@ export const ingestionQueue = new Queue<InitialSyncJobData>(QUEUE_NAME, {
             type: 'exponential',
             delay: 5000  // 5s → 10s → 20s
         },
-        // ✅ 1.3: Hard Timeout - 5 minutes max per job
-        // Kills hung processes so worker slots don't get stuck
-        timeout: 5 * 60 * 1000,
         removeOnComplete: {
             count: 100  // Keep last 100 completed jobs for debugging
         },
@@ -103,7 +100,7 @@ export async function addSyncJob(
     }
 ): Promise<string | null> {
     try {
-        const job = await ingestionQueue.add('initial-sync', {
+        const job = await ingestionQueue.add('initial-sync' as any, {
             userId,
             sellerId,
             companyName: options?.companyName,
@@ -176,7 +173,13 @@ export async function getQueueMetrics(): Promise<{
         'failed',
         'delayed'
     );
-    return counts;
+    return {
+        waiting: counts.waiting || 0,
+        active: counts.active || 0,
+        completed: counts.completed || 0,
+        failed: counts.failed || 0,
+        delayed: counts.delayed || 0
+    };
 }
 
 // ============================================================================

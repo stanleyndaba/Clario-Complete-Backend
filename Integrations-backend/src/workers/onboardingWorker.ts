@@ -145,6 +145,9 @@ export function startOnboardingWorker(): Worker<InitialSyncJobData> {
     worker = new Worker<InitialSyncJobData>('onboarding-sync', processSyncJob, {
         connection,
         concurrency,
+        // ✅ Job timeout: 5 minutes max per job
+        // If a job takes longer, it's considered stalled and retried
+        lockDuration: 5 * 60 * 1000,
         // Limiter to prevent overwhelming Amazon SP-API
         limiter: {
             max: 10,       // Max 10 jobs
