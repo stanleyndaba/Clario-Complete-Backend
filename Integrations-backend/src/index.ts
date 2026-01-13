@@ -415,6 +415,11 @@ import adminRoutes from './routes/adminRoutes';
 app.use('/api/admin', adminRoutes);
 logger.info('Admin routes registered at /api/admin');
 
+// Admin queue monitoring routes (BullMQ)
+import adminQueueRoutes from './routes/adminQueueRoutes';
+app.use('/api/admin', adminQueueRoutes);
+logger.info('Admin queue routes registered at /api/admin/queue-stats');
+
 // Test evidence routes (for E2E testing of evidence matching)
 import testEvidenceRoutes from './routes/testEvidence';
 app.use('/api/test', testEvidenceRoutes);
@@ -548,6 +553,19 @@ server.listen(PORT, '0.0.0.0', () => {
         logger.info('Learning worker initialized');
       } else {
         logger.info('Learning worker disabled (ENABLE_LEARNING_WORKER=false)');
+      }
+
+      // Start Onboarding Worker (BullMQ - processes initial sync after OAuth)
+      // This is the "Factory" that picks up jobs from ingestionQueue
+      if (process.env.ENABLE_ONBOARDING_WORKER !== 'false') {
+        import('./workers/onboardingWorker').then((module) => {
+          module.startOnboardingWorker();
+          logger.info('Onboarding worker initialized (BullMQ)');
+        }).catch((error: any) => {
+          logger.warn('Failed to start onboarding worker (non-critical)', { error: error.message });
+        });
+      } else {
+        logger.info('Onboarding worker disabled (ENABLE_ONBOARDING_WORKER=false)');
       }
 
       // Start Scheduled Sync Job - Agent 2: The Radar Always On
