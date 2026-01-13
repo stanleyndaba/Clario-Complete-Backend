@@ -5,18 +5,13 @@
  * This is the "Connection Moment" queue that bridges Agent 1 → Agent 2/7.
  * 
  * HARDENING FEATURES:
+ * ✅ LAZY INITIALIZATION - Queue only connects when first used (prevents startup crash)
  * ✅ 1.1: Redis Health Check - Verifies Redis is responding before operations
  * ✅ 1.2: Deduplication - Uses userId as jobId, prevents double-click issues
- * ✅ 1.3: Job Timeout - 5 min hard timeout kills hung processes
  * ✅ Exponential backoff retry (5s → 10s → 20s)
- * 
- * Job Types:
- * - 'initial-sync': Triggered after OAuth callback, initiates full 18-month data sync
- * - 'manual-sync': Triggered by user action, initiates on-demand sync
  */
 
 import { Queue, QueueEvents } from 'bullmq';
-import { connection } from './connectionConfig';
 import logger from '../utils/logger';
 
 const QUEUE_NAME = 'onboarding-sync';
@@ -31,23 +26,96 @@ export interface InitialSyncJobData {
     jobType: 'initial-sync' | 'manual-sync';
 }
 
-// Create the hardened ingestion queue
-export const ingestionQueue = new Queue<InitialSyncJobData>(QUEUE_NAME, {
-    connection,
-    defaultJobOptions: {
-        attempts: 3,
-        backoff: {
-            type: 'exponential',
-            delay: 5000  // 5s → 10s → 20s
-        },
-        removeOnComplete: {
-            count: 100  // Keep last 100 completed jobs for debugging
-        },
-        removeOnFail: {
-            count: 500  // Keep last 500 failed jobs for DLQ review
+// ============================================================================
+// LAZY QUEUE INITIALIZATION
+// Queue is only created when first accessed - prevents crash if Redis unavailable
+// ============================================================================
+
+let _ingestionQueue: Queue<InitialSyncJobData> | null = null;
+let _queueEvents: QueueEvents | null = null;
+let _initializationAttempted = false;
+
+/**
+ * Get connection config (parsed lazily to avoid startup issues)
+ */
+function getConnection(): { host: string; port: number; password?: string; tls?: object } {
+    const redisUrl = process.env.REDIS_URL;
+
+    if (redisUrl) {
+        try {
+            const parsed = new URL(redisUrl);
+            return {
+                host: parsed.hostname,
+                port: parseInt(parsed.port, 10) || 6379,
+                ...(parsed.password && { password: decodeURIComponent(parsed.password) }),
+                // Enable TLS for rediss:// URLs
+                ...(parsed.protocol === 'rediss:' && { tls: {} })
+            };
+        } catch (error) {
+            logger.warn('Failed to parse REDIS_URL, using defaults');
         }
     }
-});
+
+    return {
+        host: process.env.REDIS_HOST || 'localhost',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10)
+    };
+}
+
+/**
+ * Get queue instance (lazy initialization)
+ * Returns null if initialization fails - caller must handle gracefully
+ */
+function getQueue(): Queue<InitialSyncJobData> | null {
+    if (_ingestionQueue) {
+        return _ingestionQueue;
+    }
+
+    if (_initializationAttempted) {
+        // Already tried and failed, don't retry
+        return null;
+    }
+
+    _initializationAttempted = true;
+
+    try {
+        const connection = getConnection();
+
+        logger.info('Initializing BullMQ queue', {
+            host: connection.host,
+            port: connection.port,
+            hasTls: !!(connection as any).tls
+        });
+
+        _ingestionQueue = new Queue<InitialSyncJobData>(QUEUE_NAME, {
+            connection,
+            defaultJobOptions: {
+                attempts: 3,
+                backoff: {
+                    type: 'exponential',
+                    delay: 5000  // 5s → 10s → 20s
+                },
+                removeOnComplete: {
+                    count: 100
+                },
+                removeOnFail: {
+                    count: 500
+                }
+            }
+        });
+
+        logger.info('✅ BullMQ queue initialized successfully');
+        return _ingestionQueue;
+    } catch (error: any) {
+        logger.error('❌ Failed to initialize BullMQ queue', { error: error.message });
+        return null;
+    }
+}
+
+// Export for backward compatibility
+export const ingestionQueue = {
+    get instance() { return getQueue(); }
+};
 
 // ============================================================================
 // HEALTH CHECK
@@ -55,14 +123,17 @@ export const ingestionQueue = new Queue<InitialSyncJobData>(QUEUE_NAME, {
 
 /**
  * ✅ 1.1: Redis Health Check
- * Returns true if Redis is responding, false if down.
- * Usage: Call this before queue.add() to decide on fallback.
- * 
- * @returns {Promise<boolean>} true if Redis responds with PONG
+ * Returns true if Redis is responding, false if down or queue not initialized.
  */
 export async function isQueueHealthy(): Promise<boolean> {
     try {
-        const client = await ingestionQueue.client;
+        const queue = getQueue();
+        if (!queue) {
+            logger.warn('[QUEUE] Queue not initialized, health check failed');
+            return false;
+        }
+
+        const client = await queue.client;
         const ping = await client.ping();
         return ping === 'PONG';
     } catch (error: any) {
@@ -77,19 +148,7 @@ export async function isQueueHealthy(): Promise<boolean> {
 
 /**
  * ✅ 1.2: Add sync job with deduplication
- * 
- * Uses userId as jobId - if a job with this ID exists (active/waiting),
- * this call does NOTHING. Prevents "double-click" issues.
- * 
- * The "Panic Click" Protection:
- * When API is slow, users click "Connect" 5 times. 
- * With jobId: sync-${userId}, BullMQ ignores clicks 2, 3, 4, 5.
- * You save 400% server resources.
- * 
- * @param userId - User ID for deduplication key
- * @param sellerId - Amazon seller ID
- * @param options - Optional company name and marketplaces
- * @returns Job ID if added, null if duplicate was rejected
+ * Returns Job ID if added, null if queue unavailable or duplicate rejected
  */
 export async function addSyncJob(
     userId: string,
@@ -100,7 +159,13 @@ export async function addSyncJob(
     }
 ): Promise<string | null> {
     try {
-        const job = await ingestionQueue.add('initial-sync' as any, {
+        const queue = getQueue();
+        if (!queue) {
+            logger.warn('[QUEUE] Queue not available, cannot add job');
+            return null;
+        }
+
+        const job = await queue.add('initial-sync' as any, {
             userId,
             sellerId,
             companyName: options?.companyName,
@@ -108,9 +173,6 @@ export async function addSyncJob(
             triggeredAt: new Date().toISOString(),
             jobType: 'initial-sync'
         }, {
-            // ✅ DEDUPLICATION KEY
-            // Uses userId - only ONE job per user at a time
-            // If job exists (active/waiting), this is silently ignored by BullMQ
             jobId: `sync-${userId}`
         });
 
@@ -123,32 +185,25 @@ export async function addSyncJob(
 
         return job.id || null;
     } catch (error: any) {
-        // Check if this is a duplicate job error
         if (error.message?.includes('Job already exists')) {
-            logger.info('🔄 [QUEUE] Duplicate job rejected (user already has pending sync)', {
-                userId,
-                sellerId
-            });
+            logger.info('🔄 [QUEUE] Duplicate job rejected', { userId, sellerId });
             return null;
         }
-        throw error;
+        logger.error('[QUEUE] Failed to add job', { error: error.message });
+        return null;
     }
 }
 
 /**
  * Legacy helper - wraps addSyncJob for backward compatibility
- * @deprecated Use addSyncJob instead
  */
 export async function queueInitialSync(
     userId: string,
     sellerId: string,
-    options?: {
-        companyName?: string;
-        marketplaces?: string[];
-    }
+    options?: { companyName?: string; marketplaces?: string[] }
 ): Promise<string> {
     const jobId = await addSyncJob(userId, sellerId, options);
-    return jobId || `duplicate-${userId}`;
+    return jobId || `fallback-${userId}`;
 }
 
 // ============================================================================
@@ -157,7 +212,6 @@ export async function queueInitialSync(
 
 /**
  * Get queue job counts for monitoring
- * @returns Object with waiting, active, completed, failed, delayed counts
  */
 export async function getQueueMetrics(): Promise<{
     waiting: number;
@@ -166,52 +220,30 @@ export async function getQueueMetrics(): Promise<{
     failed: number;
     delayed: number;
 }> {
-    const counts = await ingestionQueue.getJobCounts(
-        'waiting',
-        'active',
-        'completed',
-        'failed',
-        'delayed'
-    );
-    return {
-        waiting: counts.waiting || 0,
-        active: counts.active || 0,
-        completed: counts.completed || 0,
-        failed: counts.failed || 0,
-        delayed: counts.delayed || 0
-    };
-}
-
-// ============================================================================
-// QUEUE EVENTS (OPTIONAL)
-// ============================================================================
-
-let queueEvents: QueueEvents | null = null;
-
-/**
- * Initialize queue events listener (for debugging/monitoring)
- */
-export async function initQueueEvents(): Promise<void> {
-    if (process.env.ENABLE_QUEUE_EVENTS === 'true') {
-        try {
-            queueEvents = new QueueEvents(QUEUE_NAME, { connection });
-
-            queueEvents.on('completed', ({ jobId }) => {
-                logger.debug('[QUEUE] Job completed', { jobId });
-            });
-
-            queueEvents.on('failed', ({ jobId, failedReason }) => {
-                logger.warn('[QUEUE] Job failed', { jobId, failedReason });
-            });
-
-            queueEvents.on('stalled', ({ jobId }) => {
-                logger.warn('[QUEUE] Job stalled (will be retried)', { jobId });
-            });
-
-            logger.info('Queue events listener initialized');
-        } catch (error: any) {
-            logger.warn('Failed to initialize queue events (non-critical)', { error: error.message });
+    try {
+        const queue = getQueue();
+        if (!queue) {
+            return { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 };
         }
+
+        const counts = await queue.getJobCounts(
+            'waiting',
+            'active',
+            'completed',
+            'failed',
+            'delayed'
+        );
+
+        return {
+            waiting: counts.waiting || 0,
+            active: counts.active || 0,
+            completed: counts.completed || 0,
+            failed: counts.failed || 0,
+            delayed: counts.delayed || 0
+        };
+    } catch (error: any) {
+        logger.error('[QUEUE] Failed to get metrics', { error: error.message });
+        return { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 };
     }
 }
 
@@ -219,19 +251,20 @@ export async function initQueueEvents(): Promise<void> {
 // GRACEFUL SHUTDOWN
 // ============================================================================
 
-/**
- * Close queue connections gracefully
- */
 export async function closeQueue(): Promise<void> {
     try {
-        await ingestionQueue.close();
-        if (queueEvents) {
-            await queueEvents.close();
+        if (_ingestionQueue) {
+            await _ingestionQueue.close();
+            _ingestionQueue = null;
+        }
+        if (_queueEvents) {
+            await _queueEvents.close();
+            _queueEvents = null;
         }
         logger.info('Ingestion queue closed');
     } catch (error: any) {
-        logger.error('Error closing ingestion queue', { error: error.message });
+        logger.error('Error closing queue', { error: error.message });
     }
 }
 
-export default ingestionQueue;
+export default { isQueueHealthy, addSyncJob, queueInitialSync, getQueueMetrics, closeQueue };
