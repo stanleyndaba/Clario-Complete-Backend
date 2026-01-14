@@ -128,6 +128,37 @@ class RefundFilingWorker {
   ];
 
   /**
+   * CONTENT-BASED DETECTION PATTERNS
+   * These phrases appear INSIDE credit notes, returns, and refunds.
+   * Used when the filename doesn't reveal the document type.
+   * 
+   * Example: "invoice_12345.pdf" looks safe but contains "We have credited your account"
+   */
+  private static readonly DANGEROUS_CONTENT_PATTERNS = [
+    // Credit note indicators
+    'credit note', 'credit memo', 'credit advice',
+    'we have credited', 'credited to your account', 'amount credited',
+    'this is a credit', 'credit issued',
+
+    // Return indicators
+    'return authorization', 'return merchandise authorization', 'rma number',
+    'return to sender', 'returned goods', 'goods returned',
+    'return request approved', 'please return',
+
+    // Refund indicators
+    'refund confirmation', 'refund issued', 'refund processed',
+    'we have refunded', 'your refund', 'refund amount',
+    'refund request', 'refund approved',
+
+    // Chargeback/dispute indicators
+    'chargeback notification', 'dispute resolution',
+    'amount reversed', 'reversal notification',
+
+    // Debit note indicators (opposite of invoice)
+    'debit note', 'debit memo', 'we are debiting',
+  ];
+
+  /**
   * Start the worker
   */
   start(): void {
@@ -440,6 +471,116 @@ class RefundFilingWorker {
     }
   }
 
+  /**
+   * CONTENT-BASED KILL SWITCH: Check if evidence documents contain dangerous content
+   * This scans the ACTUAL TEXT inside documents, not just filenames.
+   * 
+   * Catches cases like: "invoice_12345.pdf" that actually contains "CREDIT NOTE" text inside.
+   * 
+   * Uses on-demand parsing if document hasn't been parsed yet.
+   * 
+   * @param evidenceIds Array of evidence document IDs
+   * @param sellerId Seller/user ID
+   * @returns Object with hasDangerous flag and list of dangerous findings
+   */
+  private async hasDangerousContent(
+    evidenceIds: string[],
+    sellerId: string
+  ): Promise<{ hasDangerous: boolean; dangerousFindings: Array<{ filename: string; pattern: string }> }> {
+    if (!evidenceIds || evidenceIds.length === 0) {
+      return { hasDangerous: false, dangerousFindings: [] };
+    }
+
+    const dangerousFindings: Array<{ filename: string; pattern: string }> = [];
+
+    try {
+      // Import document parsing service for on-demand parsing
+      const documentParsingService = (await import('../services/documentParsingService')).default;
+
+      // Query evidence documents with parsed content
+      const { data: documents, error } = await supabaseAdmin
+        .from('evidence_documents')
+        .select('id, filename, parsed_content')
+        .in('id', evidenceIds)
+        .eq('seller_id', sellerId);
+
+      if (error) {
+        logger.warn('[WARN] [REFUND FILING] Could not fetch documents for content check', {
+          error: error.message
+        });
+        return { hasDangerous: false, dangerousFindings: [] }; // Fail open but log
+      }
+
+      if (!documents || documents.length === 0) {
+        return { hasDangerous: false, dangerousFindings: [] };
+      }
+
+      // Check each document's content
+      for (const doc of documents) {
+        let rawText: string | undefined;
+
+        // Try to get raw_text from parsed_content
+        const parsedContent = doc.parsed_content as any;
+        if (parsedContent?.raw_text) {
+          rawText = parsedContent.raw_text;
+        }
+
+        // If no parsed content, try on-demand parsing
+        if (!rawText && doc.id) {
+          try {
+            logger.info('[REFUND FILING] Document not parsed, triggering on-demand parsing', {
+              documentId: doc.id,
+              filename: doc.filename
+            });
+
+            const parsedData = await documentParsingService.parseDocumentWithRetry(doc.id, sellerId, 2);
+            if (parsedData?.raw_text) {
+              rawText = parsedData.raw_text;
+            }
+          } catch (parseError: any) {
+            logger.warn('[WARN] [REFUND FILING] On-demand parsing failed, skipping content check for doc', {
+              documentId: doc.id,
+              error: parseError.message
+            });
+            // Continue to next document - don't block entire filing
+          }
+        }
+
+        // If we have raw text, check for dangerous patterns
+        if (rawText) {
+          const textLower = rawText.toLowerCase();
+
+          for (const pattern of RefundFilingWorker.DANGEROUS_CONTENT_PATTERNS) {
+            if (textLower.includes(pattern)) {
+              dangerousFindings.push({
+                filename: doc.filename || 'unknown',
+                pattern: pattern
+              });
+              logger.warn('[CRITICAL] [REFUND FILING] DANGEROUS CONTENT DETECTED in document', {
+                documentId: doc.id,
+                filename: doc.filename,
+                detectedPattern: pattern,
+                reason: 'Document content contains credit/refund/return language'
+              });
+              break; // One match is enough to flag this document
+            }
+          }
+        }
+      }
+
+      return {
+        hasDangerous: dangerousFindings.length > 0,
+        dangerousFindings
+      };
+
+    } catch (error: any) {
+      logger.warn('[WARN] [REFUND FILING] Error checking document content', {
+        error: error.message
+      });
+      return { hasDangerous: false, dangerousFindings: [] }; // Fail open
+    }
+  }
+
   async runFilingForAllTenants(): Promise<FilingStats> {
     const stats: FilingStats = {
       processed: 0,
@@ -605,14 +746,14 @@ class RefundFilingWorker {
           continue;
         }
 
-        // KILL SWITCH: Check for dangerous documents (credit notes, returns, refunds)
+        // KILL SWITCH LAYER 1: Check for dangerous filenames (credit notes, returns, refunds)
         // These MUST NEVER be submitted to Amazon - instant fraud flag
         const dangerousDocCheck = await this.hasDangerousDocuments(evidenceIds, disputeCase.seller_id);
         if (dangerousDocCheck.hasDangerous) {
-          logger.warn('[CRITICAL] [REFUND FILING] DANGEROUS DOCUMENT DETECTED - Quarantining case', {
+          logger.warn('[CRITICAL] [REFUND FILING] DANGEROUS FILENAME DETECTED - Quarantining case', {
             disputeId: disputeCase.id,
             dangerousFilenames: dangerousDocCheck.dangerousFilenames,
-            reason: 'Credit notes, returns, or refunds cannot be submitted as evidence - fraud risk'
+            reason: 'Filename contains credit/return/refund keywords - fraud risk'
           });
           stats.skipped++;
 
@@ -621,6 +762,33 @@ class RefundFilingWorker {
           await quarantineQuery
             .update({
               filing_status: 'quarantined_dangerous_doc',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', disputeCase.id);
+
+          continue; // Skip to next case - this one is quarantined
+        }
+
+        // KILL SWITCH LAYER 2: Check document CONTENT for dangerous patterns
+        // This catches cases like "invoice_12345.pdf" that contains "CREDIT NOTE" inside
+        const dangerousContentCheck = await this.hasDangerousContent(evidenceIds, disputeCase.seller_id);
+        if (dangerousContentCheck.hasDangerous) {
+          logger.warn('[CRITICAL] [REFUND FILING] DANGEROUS CONTENT DETECTED - Quarantining case', {
+            disputeId: disputeCase.id,
+            dangerousFindings: dangerousContentCheck.dangerousFindings,
+            reason: 'Document content contains credit/refund/return language'
+          });
+          stats.skipped++;
+
+          // Quarantine this case - it must NEVER be auto-submitted (tenant-scoped)
+          const quarantineQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+          await quarantineQuery
+            .update({
+              filing_status: 'quarantined_dangerous_doc',
+              metadata: {
+                quarantine_reason: 'dangerous_content',
+                dangerous_findings: dangerousContentCheck.dangerousFindings
+              },
               updated_at: new Date().toISOString()
             })
             .eq('id', disputeCase.id);
