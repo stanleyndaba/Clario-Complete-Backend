@@ -477,4 +477,79 @@ router.post('/retry-filing', async (req, res) => {
   }
 });
 
+// POST /api/disputes/approve-filing
+// Approve a high-value claim that was flagged for manual review (Agent 7 approval)
+router.post('/approve-filing', async (req, res) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
+    const { dispute_id, claim_id } = req.body;
+
+    if (!dispute_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'dispute_id is required'
+      });
+    }
+
+    // Get the dispute case details
+    const { data: caseData, error: fetchError } = await supabaseAdmin
+      .from('dispute_cases')
+      .select('*')
+      .eq('id', dispute_id)
+      .single();
+
+    if (fetchError || !caseData) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dispute case not found'
+      });
+    }
+
+    // Verify case is pending_approval
+    if (caseData.filing_status !== 'pending_approval') {
+      return res.status(400).json({
+        success: false,
+        message: `Case is not pending approval (current status: ${caseData.filing_status})`
+      });
+    }
+
+    // Update status from pending_approval to pending (ready for filing)
+    const { error: updateError } = await supabaseAdmin
+      .from('dispute_cases')
+      .update({
+        filing_status: 'pending',
+        metadata: {
+          ...(caseData.metadata || {}),
+          approved_by: userId,
+          approved_at: new Date().toISOString(),
+          original_status: 'pending_approval'
+        },
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', dispute_id);
+
+    if (updateError) {
+      throw updateError;
+    }
+
+    // Log the approval
+    console.log(`[approve-filing] User ${userId} approved high-value claim ${dispute_id}`);
+
+    res.json({
+      success: true,
+      message: 'Claim approved and queued for filing',
+      dispute_id,
+      filing_status: 'pending',
+      approved_by: userId
+    });
+
+  } catch (error: any) {
+    console.error('[approve-filing] Error:', error);
+    res.status(500).json({
+      success: false,
+      message: error?.message || 'Internal server error'
+    });
+  }
+});
+
 export default router;

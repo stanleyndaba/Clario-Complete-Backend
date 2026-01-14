@@ -37,10 +37,12 @@ CREATE INDEX IF NOT EXISTS idx_seller_proxy_status ON seller_proxy_assignments(s
 ALTER TABLE seller_proxy_assignments ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policy: Service role can manage all assignments
+DROP POLICY IF EXISTS "Service can manage proxy assignments" ON seller_proxy_assignments;
 CREATE POLICY "Service can manage proxy assignments" ON seller_proxy_assignments
   FOR ALL USING (true);
 
 -- Trigger for updated_at
+DROP TRIGGER IF EXISTS update_seller_proxy_assignments_updated_at ON seller_proxy_assignments;
 CREATE TRIGGER update_seller_proxy_assignments_updated_at 
   BEFORE UPDATE ON seller_proxy_assignments 
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
