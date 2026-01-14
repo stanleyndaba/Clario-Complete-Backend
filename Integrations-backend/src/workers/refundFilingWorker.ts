@@ -90,7 +90,17 @@ class RefundFilingWorker {
     MAX_PER_RUN: 3, // Only process 3 claims per 5-minute run
     MAX_PER_HOUR: 12, // Max 12 claims per hour (soft limit)
     MAX_PER_DAY: 100, // Daily ceiling (for reference)
+    MAX_PER_SELLER_PER_DAY: 10, // Per-seller limit to prevent one seller exhausting quota
   };
+
+  /**
+   * CLAIM AMOUNT VALIDATION
+   * Cross-validate claim amount against parsed invoice total.
+   * If claim amount differs from invoice by more than this %, flag for review.
+   * 
+   * This catches LLM hallucinations (reading "10 units" as "100 units").
+   */
+  private static readonly AMOUNT_VARIANCE_THRESHOLD = 0.15; // 15% variance allowed
 
   /**
   * HIGH-VALUE CLAIM APPROVAL
@@ -581,6 +591,131 @@ class RefundFilingWorker {
     }
   }
 
+  /**
+   * PER-SELLER DAILY LIMIT: Check how many claims a specific seller has filed today
+   * Prevents one seller from exhausting the tenant's daily quota
+   * 
+   * @param sellerId The seller/user ID
+   * @param tenantId The tenant ID
+   * @returns Number of filings for this seller in the last 24 hours
+   */
+  private async getFilingsInLastDayForSeller(sellerId: string, tenantId: string): Promise<number> {
+    try {
+      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+      const { count, error } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('*', { count: 'exact', head: true })
+        .eq('seller_id', sellerId)
+        .eq('tenant_id', tenantId)
+        .in('filing_status', ['filed', 'submitted', 'filing'])
+        .gte('updated_at', oneDayAgo);
+
+      if (error) {
+        logger.warn('[WARN] [REFUND FILING] Could not check seller daily filings', {
+          sellerId,
+          error: error.message
+        });
+        return 0; // Fail open
+      }
+
+      return count || 0;
+    } catch (error: any) {
+      logger.warn('[WARN] [REFUND FILING] Error checking seller daily filings', {
+        sellerId,
+        error: error.message
+      });
+      return 0; // Fail open
+    }
+  }
+
+  /**
+   * CLAIM AMOUNT VALIDATION: Cross-validate claim amount against parsed invoice total
+   * Catches LLM hallucinations where detection claims $1000 but invoice shows $100.
+   * 
+   * @param claimAmount The amount we're about to claim
+   * @param evidenceIds Evidence document IDs
+   * @param sellerId Seller/user ID
+   * @returns Object with isValid flag, invoice amount found, and variance
+   */
+  private async validateClaimAmount(
+    claimAmount: number,
+    evidenceIds: string[],
+    sellerId: string
+  ): Promise<{ isValid: boolean; invoiceAmount?: number; variance?: number; reason?: string }> {
+    if (!claimAmount || claimAmount <= 0) {
+      return { isValid: true, reason: 'No claim amount to validate' };
+    }
+
+    if (!evidenceIds || evidenceIds.length === 0) {
+      return { isValid: true, reason: 'No evidence to cross-validate' };
+    }
+
+    try {
+      // Get parsed content from evidence documents
+      const { data: documents, error } = await supabaseAdmin
+        .from('evidence_documents')
+        .select('id, filename, parsed_content')
+        .in('id', evidenceIds)
+        .eq('seller_id', sellerId);
+
+      if (error || !documents || documents.length === 0) {
+        return { isValid: true, reason: 'Could not retrieve documents for validation' };
+      }
+
+      // Look for total_amount in parsed content
+      let foundInvoiceAmount: number | undefined;
+      let sourceFilename: string | undefined;
+
+      for (const doc of documents) {
+        const parsedContent = doc.parsed_content as any;
+        if (parsedContent?.total_amount && typeof parsedContent.total_amount === 'number') {
+          foundInvoiceAmount = parsedContent.total_amount;
+          sourceFilename = doc.filename;
+          break; // Use first valid amount found
+        }
+      }
+
+      // If no invoice amount found, we can't validate - allow to proceed
+      if (foundInvoiceAmount === undefined) {
+        return { isValid: true, reason: 'No invoice total found in parsed documents' };
+      }
+
+      // Calculate variance
+      const variance = Math.abs(claimAmount - foundInvoiceAmount) / foundInvoiceAmount;
+
+      if (variance > RefundFilingWorker.AMOUNT_VARIANCE_THRESHOLD) {
+        logger.warn('[WARN] [REFUND FILING] CLAIM AMOUNT MISMATCH - Variance exceeds threshold', {
+          claimAmount,
+          invoiceAmount: foundInvoiceAmount,
+          variance: `${(variance * 100).toFixed(1)}%`,
+          threshold: `${(RefundFilingWorker.AMOUNT_VARIANCE_THRESHOLD * 100)}%`,
+          sourceDocument: sourceFilename
+        });
+
+        return {
+          isValid: false,
+          invoiceAmount: foundInvoiceAmount,
+          variance,
+          reason: `Claim amount ($${claimAmount}) differs from invoice ($${foundInvoiceAmount}) by ${(variance * 100).toFixed(1)}%`
+        };
+      }
+
+      return {
+        isValid: true,
+        invoiceAmount: foundInvoiceAmount,
+        variance,
+        reason: 'Amount validated successfully'
+      };
+
+    } catch (error: any) {
+      logger.warn('[WARN] [REFUND FILING] Error validating claim amount', {
+        error: error.message
+      });
+      return { isValid: true, reason: 'Validation error - allowing to proceed' }; // Fail open
+    }
+  }
+
   async runFilingForAllTenants(): Promise<FilingStats> {
     const stats: FilingStats = {
       processed: 0,
@@ -863,8 +998,52 @@ class RefundFilingWorker {
 
         const confidenceScore = detectionResult?.match_confidence || 0.85;
 
-        // Get claim amount for high-value check
+        // Get claim amount for validation checks
         const claimAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
+
+        // PER-SELLER DAILY LIMIT: Prevent one seller from exhausting tenant quota
+        const sellerFilingsToday = await this.getFilingsInLastDayForSeller(disputeCase.seller_id, tenantId);
+        if (sellerFilingsToday >= RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_SELLER_PER_DAY) {
+          logger.info('[SKIP] [REFUND FILING] Seller daily limit reached', {
+            disputeId: disputeCase.id,
+            sellerId: disputeCase.seller_id,
+            filedToday: sellerFilingsToday,
+            maxPerSellerPerDay: RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_SELLER_PER_DAY
+          });
+          stats.skipped++;
+          continue; // Skip this case - seller hit their daily limit
+        }
+
+        // CLAIM AMOUNT VALIDATION: Cross-check against parsed invoice total
+        // Catches LLM hallucinations where detection says $1000 but invoice shows $100
+        const amountValidation = await this.validateClaimAmount(claimAmount, evidenceIds, disputeCase.seller_id);
+        if (!amountValidation.isValid) {
+          logger.warn('[WARN] [REFUND FILING] CLAIM AMOUNT MISMATCH - Flagging for review', {
+            disputeId: disputeCase.id,
+            claimAmount,
+            invoiceAmount: amountValidation.invoiceAmount,
+            variance: amountValidation.variance,
+            reason: amountValidation.reason
+          });
+          stats.skipped++;
+
+          // Flag for manual review due to amount mismatch
+          const mismatchQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+          await mismatchQuery
+            .update({
+              filing_status: 'pending_approval',
+              metadata: {
+                approval_reason: 'amount_mismatch',
+                claim_amount: claimAmount,
+                invoice_amount: amountValidation.invoiceAmount,
+                variance: amountValidation.variance
+              },
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', disputeCase.id);
+
+          continue; // Skip to next case - needs human review
+        }
 
         // HIGH-VALUE CLAIM CHECK: Require human approval for large claims
         // LLMs can hallucinate (read 10 units as 100), causing fraud accusations
