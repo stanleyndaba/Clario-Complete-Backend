@@ -328,65 +328,96 @@ export class AmazonService {
         // The user can still use existing token if they have it
       }
 
-      // Get client ID (checks both variable names for consistency)
+      // CRITICAL: For SP-API apps, we need APPLICATION_ID, not CLIENT_ID
+      // application_id = Seller Central App ID (amzn1.sellerapps.app.xxxx)
+      // client_id = LWA Security Profile ID (used for token exchange, not consent)
+      const applicationId = process.env.AMAZON_APP_ID || process.env.AMAZON_APPLICATION_ID;
       const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
 
-      if (!clientId || clientId.trim() === '') {
-        logger.warn('Amazon client ID not configured, returning mock URL');
-        return {
-          authUrl: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?code=mock_auth_code&state=mock_state`,
-          message: 'Mock OAuth URL (credentials not configured)'
-        };
+      if (!applicationId || applicationId.trim() === '') {
+        // Fallback to old LWA flow if no application_id (for backward compatibility)
+        // But log warning that this may not work for Draft apps
+        if (!clientId || clientId.trim() === '') {
+          logger.warn('Neither AMAZON_APP_ID nor AMAZON_CLIENT_ID configured, returning mock URL');
+          return {
+            authUrl: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?code=mock_auth_code&state=mock_state`,
+            message: 'Mock OAuth URL (credentials not configured)'
+          };
+        }
+
+        logger.warn('AMAZON_APP_ID not configured - using legacy LWA flow. This may fail for Draft/Beta apps.');
+        // Fall through to legacy flow
       }
 
       // Generate state for CSRF protection
       const state = crypto.randomBytes(32).toString('hex');
 
-      // Get redirect URI from environment or use default
+      // Get redirect URI from environment
       const redirectUri = process.env.AMAZON_REDIRECT_URI ||
         process.env.AMAZON_SPAPI_REDIRECT_URI ||
         `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/amazon/auth/callback`;
 
-      // Amazon OAuth URL (same for sandbox and production)
-      const oauthBase = 'https://www.amazon.com/ap/oa';
+      let authUrl: string;
+      let flowType: 'seller_central' | 'lwa';
 
-      // For SP-API OAuth, scope should NOT be included
-      // Amazon SP-API uses permissions granted in Seller Central, not OAuth scopes
-      // Including scope parameter can cause "unknown scope" errors, especially in sandbox
-      // The redirect URI MUST match exactly what's configured in Amazon Developer Console
-      // Build OAuth URL WITHOUT scope parameter
-      const authUrl = `${oauthBase}?` +
-        `client_id=${encodeURIComponent(clientId)}&` +
-        `response_type=code&` +
-        `redirect_uri=${encodeURIComponent(redirectUri)}&` +
-        `state=${state}`;
+      if (applicationId && applicationId.trim() !== '') {
+        // ============================================
+        // RECOMMENDED: Seller Central Consent Flow
+        // This is the correct flow for SP-API apps
+        // ============================================
+        const oauthBase = 'https://sellercentral.amazon.com/apps/authorize/consent';
 
-      // Note: Do NOT include scope parameter for Amazon SP-API
-      // If you get "unknown scope" error, check Amazon Developer Console Security Profile:
-      // 1. Go to https://developer.amazon.com/
-      // 2. Login with Amazon → Your Security Profile
-      // 3. Web Settings → Ensure no scopes are configured/required
-      // 4. The Security Profile should be configured for SP-API, not LWA with scopes
+        // Build URL with application_id (NOT client_id)
+        // CRITICAL: version=beta is MANDATORY for Draft/Private Beta apps
+        authUrl = `${oauthBase}?` +
+          `application_id=${encodeURIComponent(applicationId)}&` +
+          `state=${state}&` +
+          `redirect_uri=${encodeURIComponent(redirectUri)}&` +
+          `version=beta`; // <-- MANDATORY for Draft apps
+
+        flowType = 'seller_central';
+
+        logger.info('Generated Seller Central consent URL (Draft Mode compatible)', {
+          hasApplicationId: !!applicationId,
+          applicationIdPrefix: applicationId.substring(0, 20) + '...',
+          redirectUri,
+          stateLength: state.length,
+          versionBeta: true,
+          flowType: 'seller_central',
+          note: 'Using Seller Central consent flow with version=beta for Draft/Private Beta apps'
+        });
+      } else {
+        // ============================================
+        // LEGACY: LWA OAuth Flow (may fail for Draft apps)
+        // ============================================
+        const oauthBase = 'https://www.amazon.com/ap/oa';
+
+        authUrl = `${oauthBase}?` +
+          `client_id=${encodeURIComponent(clientId!)}&` +
+          `response_type=code&` +
+          `redirect_uri=${encodeURIComponent(redirectUri)}&` +
+          `state=${state}`;
+
+        flowType = 'lwa';
+
+        logger.warn('Using legacy LWA OAuth flow (NOT recommended for Draft apps)', {
+          hasClientId: !!clientId,
+          redirectUri,
+          stateLength: state.length,
+          flowType: 'lwa',
+          warning: 'This flow may fail for Draft/Private Beta apps. Set AMAZON_APP_ID to use Seller Central flow.'
+        });
+      }
 
       const isSandboxMode = this.isSandbox();
-
-      logger.info('Generated Amazon OAuth URL', {
-        hasClientId: !!clientId,
-        redirectUri,
-        stateLength: state.length,
-        authUrlLength: authUrl.length,
-        isSandboxMode,
-        note: isSandboxMode
-          ? 'SANDBOX MODE: If you get "unknown scope" error, this is likely due to Security Profile configuration in Amazon Developer Console. For sandbox testing, use bypass flow (?bypass=true) instead.'
-          : 'OAuth URL generated - ensure Security Profile is configured correctly in Amazon Developer Console'
-      });
 
       return {
         authUrl,
         state,
         sandboxMode: isSandboxMode,
-        warning: isSandboxMode
-          ? 'For sandbox testing, using bypass flow (?bypass=true) is recommended if refresh token exists. OAuth flow requires proper Security Profile configuration in Amazon Developer Console.'
+        flowType,
+        warning: flowType === 'lwa'
+          ? 'Using legacy LWA flow. For Draft/Beta apps, set AMAZON_APP_ID to use Seller Central consent flow.'
           : undefined
       };
     } catch (error: any) {

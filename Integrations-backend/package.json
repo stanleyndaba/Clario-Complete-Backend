@@ -80,6 +80,7 @@
   "author": "Opside Team",
   "license": "MIT",
   "dependencies": {
+    "@aws-sdk/client-sts": "^3.968.0",
     "@sendgrid/mail": "^8.1.6",
     "@sentry/node": "^7.120.4",
     "@supabase/supabase-js": "^2.80.0",
@@ -88,6 +89,7 @@
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
     "aws-sdk": "^2.1489.0",
+    "aws4": "^1.13.2",
     "axios": "^1.6.0",
     "bcryptjs": "^2.4.3",
     "bull": "^4.16.5",
