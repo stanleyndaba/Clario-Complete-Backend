@@ -91,6 +91,13 @@ async function processSyncJob(job: Job<InitialSyncJobData>): Promise<void> {
             });
         } catch (e) { /* SSE non-critical */ }
 
+        // Invalidate user caches after successful sync
+        try {
+            const cacheService = (await import('../services/cacheService')).default;
+            await cacheService.invalidateUserCaches(userId);
+            logger.debug('[WORKER] User caches invalidated after sync', { userId });
+        } catch (e) { /* Cache non-critical */ }
+
         await job.updateProgress(100);
 
     } catch (error: any) {
@@ -133,7 +140,7 @@ export function startOnboardingWorker(): Worker<InitialSyncJobData> | null {
 
     try {
         const connection = getConnection();
-        const concurrency = parseInt(process.env.ONBOARDING_WORKER_CONCURRENCY || '5', 10);
+        const concurrency = parseInt(process.env.ONBOARDING_WORKER_CONCURRENCY || '10', 10);
 
         logger.info('[WORKER] Starting onboarding worker...', {
             host: connection.host,
