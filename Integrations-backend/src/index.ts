@@ -415,10 +415,14 @@ import adminRoutes from './routes/adminRoutes';
 app.use('/api/admin', adminRoutes);
 logger.info('Admin routes registered at /api/admin');
 
-// Admin queue monitoring routes (BullMQ)
 import adminQueueRoutes from './routes/adminQueueRoutes';
 app.use('/api/admin', adminQueueRoutes);
 logger.info('Admin queue routes registered at /api/admin/queue-stats');
+
+// Metrics and observability routes (Platform Intelligence Layer)
+import metricsRoutes from './routes/metricsRoutes';
+app.use('/api/metrics', metricsRoutes);
+logger.info('Metrics routes registered at /api/metrics');
 
 // Test evidence routes (for E2E testing of evidence matching)
 import testEvidenceRoutes from './routes/testEvidence';

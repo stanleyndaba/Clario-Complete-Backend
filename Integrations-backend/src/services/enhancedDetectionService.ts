@@ -9,6 +9,7 @@
 
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
+import { financialImpactService, ImpactStatus } from './financialImpactService';
 import { calculateCalibratedConfidence, calibrateBatch, getCalibrationStats } from './detection/confidenceCalibrator';
 import { analyzeSellerPatterns, generateInsights } from './detection/patternAnalyzer';
 import {
@@ -1109,6 +1110,37 @@ export class EnhancedDetectionService {
         healthImpactResults.reduce((sum, r) => sum + r.total_financial_impact, 0) +
         suppressionResults.reduce((sum, r) => sum + r.estimated_weekly_loss * 4, 0) +
         claimGapResults.reduce((sum, r) => sum + r.expected_recovery, 0);
+
+      // PLATFORM INTELLIGENCE: Record financial impact for all detections
+      if (totalAlgoResults > 0) {
+        try {
+          // Emit aggregate impact event
+          await financialImpactService.recordImpact({
+            userId,
+            detectionId: jobId,
+            status: ImpactStatus.DETECTED,
+            estimatedAmount: totalRecoveryValue,
+            currency: 'USD',
+            confidence: 0.85, // Average confidence
+            anomalyType: 'multi_algorithm_detection',
+            timestamp: new Date().toISOString()
+          });
+
+          // Also emit user metrics update via SSE
+          await financialImpactService.emitMetricsUpdate(userId);
+
+          logger.info('💰 [AGENT3] Financial impact recorded', {
+            userId,
+            jobId,
+            totalDetections: totalAlgoResults,
+            totalRecovery: totalRecoveryValue
+          });
+        } catch (impactError: any) {
+          logger.warn('[AGENT3] Financial impact recording failed (non-blocking)', {
+            error: impactError.message
+          });
+        }
+      }
 
       return {
         success: true,
