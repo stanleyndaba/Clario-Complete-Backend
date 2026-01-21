@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { supabaseAdmin } from '../database/supabaseClient';
 import logger from '../utils/logger';
+import { invoicePdfService } from '../services/invoicePdfService';
 
 const router = Router();
 
@@ -125,6 +126,35 @@ router.get('/status', async (req, res) => {
     } catch (error: any) {
         logger.error('Failed to fetch billing status', { error: error.message });
         res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Download invoice as PDF
+router.get('/invoices/:invoiceId/pdf', async (req, res) => {
+    try {
+        const { invoiceId } = req.params;
+        const userId = req.query.userId as string || (req as any).userId;
+
+        if (!userId) {
+            return res.status(400).json({ success: false, error: 'User ID required' });
+        }
+
+        if (!invoiceId) {
+            return res.status(400).json({ success: false, error: 'Invoice ID required' });
+        }
+
+        logger.info('[BILLING] Generating PDF invoice', { invoiceId, userId });
+
+        const pdfBuffer = await invoicePdfService.generateInvoicePdf(invoiceId, userId);
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="invoice-${invoiceId}.pdf"`);
+        res.setHeader('Content-Length', pdfBuffer.length);
+        res.send(pdfBuffer);
+
+    } catch (error: any) {
+        logger.error('Failed to generate invoice PDF', { error: error.message, invoiceId: req.params.invoiceId });
+        res.status(500).json({ success: false, error: 'Failed to generate invoice PDF' });
     }
 });
 
