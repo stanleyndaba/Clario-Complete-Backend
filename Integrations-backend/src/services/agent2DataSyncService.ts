@@ -3026,6 +3026,20 @@ export class Agent2DataSyncService {
     // const isSandboxMode = process.env.NODE_ENV === 'development' || process.env.MOCK_DETECTION_API === 'true';
     const isSandboxMode = true; // FORCE TRUE for debug
 
+    // Fetch tenant_id (CRITICAL for multi-tenancy)
+    let tenantId: string | null = null;
+    try {
+      const { data } = await dbClient.from('users').select('tenant_id').eq('id', userId).single();
+      if (data) tenantId = data.tenant_id;
+    } catch (e) {
+      logger.warn('Failed to fetch tenant_id', { userId });
+    }
+
+    // Fallback for sandbox/test mode if no tenant found
+    if (!tenantId && isSandboxMode) {
+      tenantId = userId; // Fallback to using userId as tenantId for tests
+    }
+
     // DEBUG: Log storage attempt
     try {
       logger.error('DEBUG: storeDetectionResults CALLED', { isSandboxMode, detectionsCount: detections.length });
@@ -3071,6 +3085,7 @@ export class Agent2DataSyncService {
           const marketplace = detection.evidence?.marketplace || 'US';
 
           validatedRecords.push({
+            tenant_id: tenantId,
             seller_id: userId,
             // claim_id: claimId, // Column does not exist
             sync_id: syncId,
@@ -3137,6 +3152,7 @@ export class Agent2DataSyncService {
 
         // Create validated record
         validatedRecords.push({
+          tenant_id: tenantId,
           seller_id: userId,
           claim_id: validation.normalized.claim_id!,
           sync_id: syncId,

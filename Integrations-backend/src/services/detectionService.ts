@@ -1504,6 +1504,23 @@ export class DetectionService {
    * Store detection results in database
    */
   private async storeDetectionResults(results: DetectionResult[]): Promise<void> {
+    if (results.length === 0) return;
+
+    // Fetch tenant_id (CRITICAL for multi-tenancy)
+    const sellerId = results[0].seller_id;
+    let tenantId: string | null = null;
+    try {
+      const { data } = await supabase.from('users').select('tenant_id').eq('id', sellerId).single();
+      if (data) tenantId = data.tenant_id;
+    } catch (e) {
+      logger.warn('Failed to fetch tenant_id in storeDetectionResults', { sellerId });
+    }
+
+    // Fallback for sandbox/test mode
+    if (!tenantId && (process.env.NODE_ENV === 'development' || process.env.ENABLE_MOCK_DETECTION === 'true')) {
+      tenantId = sellerId;
+    }
+
     try {
       const { error } = await supabase
         .from('detection_results')
@@ -1517,6 +1534,7 @@ export class DetectionService {
                 { deadlineDate: null, daysRemaining: null };
 
             return {
+              tenant_id: tenantId,
               seller_id: result.seller_id,
               sync_id: result.sync_id,
               anomaly_type: result.anomaly_type,

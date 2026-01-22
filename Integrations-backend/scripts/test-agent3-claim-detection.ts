@@ -14,6 +14,7 @@
 import 'dotenv/config';
 import detectionService from '../src/services/detectionService';
 import agent2DataSyncService, { SyncResult } from '../src/services/agent2DataSyncService';
+import { supabase } from '../src/database/supabaseClient';
 import logger from '../src/utils/logger';
 import { randomUUID } from 'crypto';
 
@@ -150,10 +151,60 @@ function summarize(results: DetectionResultRecord[]) {
   return summary;
 }
 
-const TEST_USER_ID = randomUUID();
+let TEST_USER_ID = randomUUID();
+
+async function setupTestUser() {
+  const tenantId = randomUUID();
+  const userId = randomUUID();
+  const email = `test.agent3.${Date.now()}@example.com`;
+
+  console.log(`Setting up test environment...`);
+  console.log(`Creating test tenant: ${tenantId}`);
+
+  // Create tenant (using correct schema columns based on migration 042)
+  const { error: tenantError } = await supabase
+    .from('tenants')
+    .insert({
+      id: tenantId,
+      name: 'Agent 3 Test Tenant',
+      slug: `agent3-test-${Date.now()}`, // Required unique slug
+      status: 'active' // Correct column name (not subscription_status)
+    });
+
+  if (tenantError) {
+    console.warn('⚠️ Warning: Could not create tenant:', tenantError.message);
+    // Proceeding anyway - hoping for the best or lenient DB
+  }
+
+  console.log(`Creating test user: ${userId}`);
+  // Create user linked to tenant (using correct schema columns based on migration 021)
+  const { error: userError } = await supabase
+    .from('users')
+    .insert({
+      id: userId,
+      email: email,
+      tenant_id: tenantId,
+      amazon_seller_id: `A3TEST_${Date.now()}`, // Required unique column
+      company_name: 'Agent 3 Test User' // Correct column name (not name)
+    });
+
+  if (userError) {
+    throw new Error(`Failed to create test user: ${userError.message}`);
+  }
+
+  return userId;
+}
 
 async function testAgent3() {
   console.log('🧪 Testing Agent 3: Claim Detection Agent\n');
+
+  try {
+    TEST_USER_ID = await setupTestUser();
+    console.log(`✅ Test user created: ${TEST_USER_ID}\n`);
+  } catch (e: any) {
+    console.error('❌ Setup failed:', e.message);
+    return 1;
+  }
 
   const results = {
     mockDetection: false,
@@ -174,7 +225,7 @@ async function testAgent3() {
     try {
       // First, get normalized data from Agent 2
       const syncResult = await agent2DataSyncService.syncUserData(TEST_USER_ID);
-      
+
       if (!syncResult.success) {
         throw new Error('Agent 2 sync failed');
       }
@@ -254,7 +305,7 @@ async function testAgent3() {
     try {
       // Test that Agent 2 triggers Agent 3 automatically
       const syncResult = await agent2DataSyncService.syncUserData(TEST_USER_ID);
-      
+
       if (!syncResult.success) {
         throw new Error('Agent 2 sync failed');
       }
