@@ -424,7 +424,10 @@ export class AmazonService {
 
         if (marketplaceId) {
           const region = MARKETPLACE_TO_REGION[marketplaceId];
-          if (region?.includes('eu')) {
+          if (marketplaceId === 'ARE699S9C6Y0F') {
+            // Specific local authority for South Africa to avoid .com navigation errors
+            oauthBase = 'https://sellercentral.amazon.co.za/apps/authorize/consent';
+          } else if (region?.includes('eu')) {
             oauthBase = 'https://sellercentral-europe.amazon.com/apps/authorize/consent';
           } else if (region?.includes('fe')) {
             oauthBase = 'https://sellercentral-japan.amazon.co.jp/apps/authorize/consent';
