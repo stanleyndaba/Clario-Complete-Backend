@@ -14,6 +14,7 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
 
     // Get marketplace ID and frontend URL from request (query param, header, or referer)
     const marketplaceId = (req as any).query?.marketplaceId as string;
+    const tenantSlug = (req as any).query?.tenant_slug as string || (req as any).query?.tenant as string;
     const frontendUrlFromQuery = (req as any).query?.frontend_url as string;
     const frontendUrlFromHeader = (req as any).headers?.['x-frontend-url'] as string;
     const referer = (req as any).headers?.referer as string;
@@ -286,11 +287,13 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
 
     // Store frontend URL and user ID with OAuth state for later redirect
     if (result.state) {
-      await oauthStateStore.setState(result.state, userId || 'anonymous', frontendUrl);
-      logger.info('Stored frontend URL with OAuth state', {
+      await oauthStateStore.setState(result.state, userId || 'anonymous', frontendUrl, tenantSlug, marketplaceId);
+      logger.info('Stored context with OAuth state', {
         state: result.state,
         frontendUrl,
-        userId: userId || 'anonymous'
+        userId: userId || 'anonymous',
+        tenantSlug,
+        marketplaceId
       });
     }
 
@@ -766,23 +769,51 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       logger.warn('No OAuth state provided, using default FRONTEND_URL', { frontendUrl });
     }
 
-    // Determine redirect URL based on frontend URL
-    // Preserve the full frontend URL path if it exists (e.g., /integrations-hub)
+    // Determine redirect URL based on frontend URL and tenant context
     let redirectUrl: string;
     const successMessage = result?.message || 'Connected successfully';
+
+    // Default path is /integrations-hub (to trigger the success toast before moving to /sync)
+    let targetPath = '/integrations-hub';
+    let marketplaceIdForRedirect: string | undefined = undefined;
+
+    if (state) {
+      try {
+        const storedState = await oauthStateStore.get(state);
+        if (storedState) {
+          frontendUrl = storedState.frontendUrl || frontendUrl;
+          marketplaceIdForRedirect = storedState.marketplaceId;
+
+          // Construct tenant-scoped path if tenantSlug is available
+          if (storedState.tenantSlug) {
+            targetPath = `/app/${storedState.tenantSlug}/integrations-hub`;
+          }
+
+          logger.info('Retrieved context from OAuth state for redirect', {
+            state,
+            tenantSlug: storedState.tenantSlug,
+            targetPath,
+            marketplaceId: storedState.marketplaceId
+          });
+
+          // Clean up stored state (one-time use)
+          await oauthStateStore.delete(state);
+        }
+      } catch (err) {
+        logger.warn('Error retrieving OAuth state for redirect', { err });
+      }
+    }
+
     try {
       const frontendUrlObj = new URL(frontendUrl);
-      // If frontend URL already has a path, preserve it; otherwise use default
-      if (frontendUrlObj.pathname && frontendUrlObj.pathname !== '/') {
-        // Frontend URL already includes path (e.g., /integrations-hub)
-        redirectUrl = `${frontendUrl}?amazon_connected=true&message=${encodeURIComponent(successMessage)}`;
-      } else {
-        // Frontend URL is just domain, use default path
-        redirectUrl = `${frontendUrl}/integrations-hub?amazon_connected=true&message=${encodeURIComponent(successMessage)}`;
-      }
+      const baseUrl = `${frontendUrlObj.protocol}//${frontendUrlObj.host}`;
+
+      // Append marketplaceId if available to help frontend "Select Region" logic (if needed)
+      const marketplaceParam = marketplaceIdForRedirect ? `&marketplaceId=${marketplaceIdForRedirect}` : '';
+
+      redirectUrl = `${baseUrl}${targetPath}?amazon_connected=true&message=${encodeURIComponent(successMessage)}${marketplaceParam}`;
     } catch {
-      // If URL parsing fails, construct simple redirect
-      redirectUrl = `${frontendUrl}/integrations-hub?amazon_connected=true&message=${encodeURIComponent(successMessage)}`;
+      redirectUrl = `${frontendUrl}${targetPath}?amazon_connected=true&message=${encodeURIComponent(successMessage)}`;
     }
 
     // Set session cookie if we have tokens
