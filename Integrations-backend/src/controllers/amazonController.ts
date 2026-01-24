@@ -773,6 +773,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     let targetPath = '/auth/success';
     let marketplaceIdForRedirect: string | undefined = undefined;
     let tenantSlug = '';
+    let redirectUrl = `${frontendUrl}${targetPath}`;
 
     if (state) {
       try {
