@@ -769,13 +769,10 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       logger.warn('No OAuth state provided, using default FRONTEND_URL', { frontendUrl });
     }
 
-    // Determine redirect URL based on frontend URL and tenant context
-    let redirectUrl: string;
-    const successMessage = result?.message || 'Connected successfully';
-
-    // Default path is /integrations-hub (to trigger the success toast before moving to /sync)
-    let targetPath = '/integrations-hub';
+    // Redirect to the dedicated Authorised Successfully page
+    let targetPath = '/auth/success';
     let marketplaceIdForRedirect: string | undefined = undefined;
+    let tenantSlug = '';
 
     if (state) {
       try {
@@ -783,24 +780,19 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         if (storedState) {
           frontendUrl = storedState.frontendUrl || frontendUrl;
           marketplaceIdForRedirect = storedState.marketplaceId;
+          tenantSlug = storedState.tenantSlug || '';
 
-          // Construct tenant-scoped path if tenantSlug is available
-          if (storedState.tenantSlug) {
-            targetPath = `/app/${storedState.tenantSlug}/integrations-hub`;
-          }
-
-          logger.info('Retrieved context from OAuth state for redirect', {
+          logger.info('Retrieved context from OAuth state for success redirect', {
             state,
-            tenantSlug: storedState.tenantSlug,
-            targetPath,
-            marketplaceId: storedState.marketplaceId
+            tenantSlug,
+            marketplaceId: marketplaceIdForRedirect
           });
 
           // Clean up stored state (one-time use)
           await oauthStateStore.delete(state);
         }
       } catch (err) {
-        logger.warn('Error retrieving OAuth state for redirect', { err });
+        logger.warn('Error retrieving OAuth state for success redirect', { err });
       }
     }
 
@@ -808,12 +800,15 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       const frontendUrlObj = new URL(frontendUrl);
       const baseUrl = `${frontendUrlObj.protocol}//${frontendUrlObj.host}`;
 
-      // Append marketplaceId if available to help frontend "Select Region" logic (if needed)
-      const marketplaceParam = marketplaceIdForRedirect ? `&marketplaceId=${marketplaceIdForRedirect}` : '';
+      const successParams = new URLSearchParams();
+      successParams.append('status', 'ok');
+      successParams.append('provider', 'amazon');
+      if (tenantSlug) successParams.append('tenant_slug', tenantSlug);
+      if (marketplaceIdForRedirect) successParams.append('marketplaceId', marketplaceIdForRedirect);
 
-      redirectUrl = `${baseUrl}${targetPath}?amazon_connected=true&message=${encodeURIComponent(successMessage)}${marketplaceParam}`;
+      redirectUrl = `${baseUrl}${targetPath}?${successParams.toString()}`;
     } catch {
-      redirectUrl = `${frontendUrl}${targetPath}?amazon_connected=true&message=${encodeURIComponent(successMessage)}`;
+      redirectUrl = `${frontendUrl}${targetPath}?status=ok&provider=amazon&tenant_slug=${tenantSlug}`;
     }
 
     // Set session cookie if we have tokens
