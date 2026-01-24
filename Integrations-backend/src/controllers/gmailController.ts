@@ -13,10 +13,10 @@ const GMAIL_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 export const initiateGmailOAuth = async (req: Request, res: Response) => {
   try {
     // Get user ID from authenticated request or X-User-Id header (for testing)
-    const userId = (req as any).user?.id || (req as any).userId || 
-                   (req as any).headers['x-user-id'] || 
-                   (req as any).headers['x-forwarded-user-id'];
-    
+    const userId = (req as any).user?.id || (req as any).userId ||
+      (req as any).headers['x-user-id'] ||
+      (req as any).headers['x-forwarded-user-id'];
+
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -28,14 +28,14 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
     const frontendUrlFromQuery = (req as any).query?.frontend_url as string;
     const frontendUrlFromHeader = (req as any).headers?.['x-frontend-url'] as string;
     const referer = (req as any).headers?.referer as string;
-    
+
     // Determine frontend URL: query param > header > referer > env var > default
-    let frontendUrl = frontendUrlFromQuery || 
-                     frontendUrlFromHeader || 
-                     (referer ? new URL(referer).origin : null) ||
-                     process.env.FRONTEND_URL || 
-                     'http://localhost:3000';
-    
+    let frontendUrl = frontendUrlFromQuery ||
+      frontendUrlFromHeader ||
+      (referer ? new URL(referer).origin : null) ||
+      process.env.FRONTEND_URL ||
+      'http://localhost:3000';
+
     // Normalize frontend URL (remove trailing slash, handle paths)
     try {
       const url = new URL(frontendUrl);
@@ -46,13 +46,13 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
     }
 
     const clientId = config.GMAIL_CLIENT_ID || process.env.GMAIL_CLIENT_ID;
-    const redirectUri = config.GMAIL_REDIRECT_URI || process.env.GMAIL_REDIRECT_URI || 
-                       `${process.env.INTEGRATIONS_URL || process.env.VITE_API_BASE_URL || 'http://localhost:3001'}/api/v1/integrations/gmail/callback`;
+    const redirectUri = config.GMAIL_REDIRECT_URI || process.env.GMAIL_REDIRECT_URI ||
+      `${process.env.INTEGRATIONS_URL || process.env.VITE_API_BASE_URL || 'http://localhost:3001'}/api/v1/integrations/gmail/callback`;
 
     if (!clientId || !config.GMAIL_CLIENT_SECRET) {
       logger.warn('Gmail credentials not configured, returning sandbox mock URL');
       const mockAuthUrl = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=mock-client-id&redirect_uri=' + encodeURIComponent(redirectUri) + '&response_type=code&scope=https://www.googleapis.com/auth/gmail.readonly';
-      
+
       return res.json({
         success: true,
         authUrl: mockAuthUrl,
@@ -64,7 +64,7 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
     // Generate state for CSRF protection and store it with user ID and frontend URL
     const state = crypto.randomBytes(32).toString('hex');
     await oauthStateStore.setState(state, userId, frontendUrl);
-    
+
     // Gmail OAuth scopes
     const scopes = [
       'https://www.googleapis.com/auth/gmail.readonly',
@@ -125,8 +125,8 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
 
     const clientId = config.GMAIL_CLIENT_ID || process.env.GMAIL_CLIENT_ID;
     const clientSecret = config.GMAIL_CLIENT_SECRET || process.env.GMAIL_CLIENT_SECRET;
-    const redirectUri = config.GMAIL_REDIRECT_URI || process.env.GMAIL_REDIRECT_URI || 
-                       `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/gmail/callback`;
+    const redirectUri = config.GMAIL_REDIRECT_URI || process.env.GMAIL_REDIRECT_URI ||
+      `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/gmail/callback`;
 
     if (!clientId || !clientSecret) {
       logger.warn('Gmail credentials not configured, returning sandbox mock response');
@@ -189,9 +189,9 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
     // Get user ID and frontend URL from state store
     let userId: string | null = null;
     let frontendUrl: string | null = null;
-    
+
     if (typeof state === 'string') {
-      const stateData = oauthStateStore.get(state);
+      const stateData = await oauthStateStore.get(state);
       if (stateData) {
         userId = stateData.userId || null;
         frontendUrl = stateData.frontendUrl || null;
@@ -205,7 +205,7 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
       const defaultFrontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
       return res.redirect(`${defaultFrontendUrl}/auth/error?reason=${encodeURIComponent('invalid_state')}`);
     }
-    
+
     // Store tokens in token manager
     try {
       await tokenManager.saveToken(userId, 'gmail', {
@@ -225,14 +225,14 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
     // Redirect to integrations-hub instead of /dashboard (which may not exist)
     // This route exists and shows the integrations status
     const redirectUrl = `${redirectFrontendUrl}/integrations-hub?gmail_connected=true&email=${encodeURIComponent(userEmail)}`;
-    
+
     logger.info('Redirecting to frontend after Gmail OAuth success', {
       userId,
       frontendUrl: redirectFrontendUrl,
       email: userEmail,
       redirectPath: '/integrations-hub'
     });
-    
+
     res.redirect(302, redirectUrl);
   } catch (error: any) {
     logger.error('Gmail OAuth callback error:', {
@@ -240,7 +240,7 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
       status: error.response?.status,
       data: error.response?.data
     });
-    
+
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const errorUrl = `${frontendUrl}/auth/error?reason=${encodeURIComponent(error.response?.data?.error_description || error.message || 'gmail_oauth_failed')}`;
     res.redirect(302, errorUrl);
@@ -250,10 +250,10 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
 export const connectGmail = async (req: Request, res: Response) => {
   try {
     // Get user ID from authenticated request or X-User-Id header (for testing)
-    const userId = (req as any).user?.id || (req as any).userId || 
-                   (req as any).headers['x-user-id'] || 
-                   (req as any).headers['x-forwarded-user-id'];
-    
+    const userId = (req as any).user?.id || (req as any).userId ||
+      (req as any).headers['x-user-id'] ||
+      (req as any).headers['x-forwarded-user-id'];
+
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -285,10 +285,10 @@ export const connectGmail = async (req: Request, res: Response) => {
 export const getGmailEmails = async (_req: Request, res: Response) => {
   try {
     const userId = (_req as any).user?.id || 'default-user';
-    
+
     // Get access token from token manager
     const tokenData = await tokenManager.getToken(userId, 'gmail');
-    
+
     if (!tokenData || !tokenData.accessToken) {
       return res.status(401).json({
         success: false,
@@ -311,7 +311,7 @@ export const getGmailEmails = async (_req: Request, res: Response) => {
     );
 
     const messages = response.data.messages || [];
-    
+
     // Fetch full message details for each message
     const emailPromises = messages.slice(0, 10).map(async (msg: any) => {
       try {
@@ -351,7 +351,7 @@ export const getGmailEmails = async (_req: Request, res: Response) => {
     });
   } catch (error: any) {
     logger.error('Gmail emails error:', error);
-    
+
     // If token expired, return mock data
     if (error.response?.status === 401) {
       logger.warn('Gmail token expired, returning mock data');
@@ -381,7 +381,7 @@ export const searchGmailEmails = async (req: Request, res: Response) => {
   try {
     const { query } = req.query;
     const userId = (req as any).user?.id || 'default-user';
-    
+
     if (!query || typeof query !== 'string') {
       return res.status(400).json({
         success: false,
@@ -391,7 +391,7 @@ export const searchGmailEmails = async (req: Request, res: Response) => {
 
     // Get access token
     const tokenData = await tokenManager.getToken(userId, 'gmail');
-    
+
     if (!tokenData || !tokenData.accessToken) {
       return res.status(401).json({
         success: false,
@@ -415,7 +415,7 @@ export const searchGmailEmails = async (req: Request, res: Response) => {
     );
 
     const messages = response.data.messages || [];
-    
+
     res.json({
       success: true,
       query: query,
@@ -426,7 +426,7 @@ export const searchGmailEmails = async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     logger.error('Gmail search error:', error);
-    
+
     // Return mock data if API fails
     const queryParam = req.query.query as string;
     res.json({
@@ -449,7 +449,7 @@ export const getGmailStatus = async (req: Request, res: Response) => {
   try {
     // Support both userIdMiddleware (req.userId) and auth middleware (req.user.id)
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    
+
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -467,11 +467,11 @@ export const getGmailStatus = async (req: Request, res: Response) => {
     }
 
     const isConnected = !!tokenData && !!tokenData.accessToken;
-    
+
     // If connected, try to verify token by getting user profile
     let email: string | undefined;
     let lastSync: string | undefined;
-    
+
     if (isConnected && tokenData.accessToken) {
       try {
         const profileResponse = await axios.get(
@@ -484,7 +484,7 @@ export const getGmailStatus = async (req: Request, res: Response) => {
           }
         );
         email = profileResponse.data.emailAddress;
-        
+
         // Get last sync time from evidence_sources table
         try {
           const { supabase } = await import('../database/supabaseClient');
@@ -495,7 +495,7 @@ export const getGmailStatus = async (req: Request, res: Response) => {
             .eq('provider', 'gmail')
             .eq('status', 'connected')
             .maybeSingle();
-          
+
           if (source?.last_sync_at) {
             lastSync = source.last_sync_at;
           }
@@ -517,7 +517,7 @@ export const getGmailStatus = async (req: Request, res: Response) => {
         logger.warn('Failed to verify Gmail token:', error.message);
       }
     }
-    
+
     // Return response matching frontend expectations
     res.json({
       connected: isConnected && !!email,
@@ -537,7 +537,7 @@ export const disconnectGmail = async (req: Request, res: Response) => {
   try {
     // Support both userIdMiddleware (req.userId) and auth middleware (req.user.id)
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    
+
     if (!userId) {
       return res.status(401).json({
         success: false,

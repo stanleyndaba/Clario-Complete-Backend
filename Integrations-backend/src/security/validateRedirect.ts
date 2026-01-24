@@ -140,7 +140,7 @@ export async function validateState(
   }
 
   // Retrieve stored state (oauthStateStore.get() handles expiration)
-  const storedState = oauthStateStore.get(state);
+  const storedState = await oauthStateStore.get(state);
   if (!storedState) {
     return {
       valid: false,

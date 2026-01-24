@@ -175,14 +175,14 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
     }
 
     // Verify state
-    const stateData = oauthStateStore.get(state as string);
+    const stateData = await oauthStateStore.get(state as string);
     if (!stateData || !stateData.userId) {
       return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?error=invalid_state`);
     }
 
     const userId = stateData.userId;
     const frontendUrl = stateData.frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
-    oauthStateStore.delete(state as string);
+    await oauthStateStore.delete(state as string);
 
     // Get OAuth configuration
     const oauthConfig = getOAuthConfig(provider);

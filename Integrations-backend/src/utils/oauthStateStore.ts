@@ -6,6 +6,7 @@
  */
 
 import logger from './logger';
+import { getRedisClient, isRedisAvailable } from './redisClient';
 
 interface OAuthStateData {
   frontendUrl: string;
@@ -24,25 +25,42 @@ class InMemoryOAuthStateStore {
   /**
    * Store OAuth state with frontend URL
    */
-  set(state: string, data: OAuthStateData): void {
-    this.states.set(state, {
+  async set(state: string, data: OAuthStateData): Promise<void> {
+    const stateData = {
       ...data,
       timestamp: Date.now()
-    });
+    };
 
-    // Auto-cleanup after TTL
+    // Store in memory (fallback)
+    this.states.set(state, stateData);
+
+    // Auto-cleanup memory after TTL
     setTimeout(() => {
-      this.delete(state);
+      this.states.delete(state);
     }, this.TTL_MS);
 
-    logger.debug('OAuth state stored', { state, frontendUrl: data.frontendUrl, userId: data.userId });
+    // Store in Redis if available (Persistence for production)
+    try {
+      if (isRedisAvailable()) {
+        const client = await getRedisClient();
+        const redisKey = `oauth_state:${state}`;
+        await client.set(redisKey, JSON.stringify(stateData), {
+          EX: Math.floor(this.TTL_MS / 1000) // TTL in seconds
+        });
+        logger.info('OAuth state stored in Redis', { state, userId: data.userId });
+      }
+    } catch (err: any) {
+      logger.warn('Failed to store OAuth state in Redis (falling back to memory)', { error: err.message });
+    }
+
+    logger.debug('OAuth state stored in memory', { state, frontendUrl: data.frontendUrl, userId: data.userId });
   }
 
   /**
    * Store OAuth state with user ID (convenience method)
    */
-  setState(state: string, userId: string, frontendUrl?: string): void {
-    this.set(state, {
+  async setState(state: string, userId: string, frontendUrl?: string): Promise<void> {
+    await this.set(state, {
       userId,
       frontendUrl: frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000',
       timestamp: Date.now()
@@ -52,40 +70,60 @@ class InMemoryOAuthStateStore {
   /**
    * Get user ID from state
    */
-  getUserId(state: string): string | null {
-    const data = this.get(state);
+  async getUserId(state: string): Promise<string | null> {
+    const data = await this.get(state);
     return data?.userId || null;
   }
 
   /**
    * Get frontend URL from state
    */
-  getFrontendUrl(state: string): string | null {
-    const data = this.get(state);
+  async getFrontendUrl(state: string): Promise<string | null> {
+    const data = await this.get(state);
     return data?.frontendUrl || null;
   }
 
   /**
    * Remove state (alias for delete)
    */
-  removeState(state: string): boolean {
-    return this.delete(state);
+  async removeState(state: string): Promise<boolean> {
+    return await this.delete(state);
   }
 
   /**
    * Get OAuth state data
    */
-  get(state: string): OAuthStateData | null {
-    const data = this.states.get(state);
-    
+  async get(state: string): Promise<OAuthStateData | null> {
+    // 1. Try Memory first
+    let data = this.states.get(state);
+
+    // 2. If not in memory, try Redis (If available)
+    if (!data) {
+      try {
+        if (isRedisAvailable()) {
+          const client = await getRedisClient();
+          const redisKey = `oauth_state:${state}`;
+          const cached = await client.get(redisKey);
+          if (cached) {
+            data = JSON.parse(cached);
+            logger.info('OAuth state recovered from Redis', { state });
+            // Sync back to memory to speed up subsequent requests
+            if (data) this.states.set(state, data);
+          }
+        }
+      } catch (err: any) {
+        logger.warn('Failed to get OAuth state from Redis', { error: err.message });
+      }
+    }
+
     if (!data) {
       return null;
     }
 
-    // Check if expired
+    // Check if expired (Memory check)
     const age = Date.now() - data.timestamp;
     if (age > this.TTL_MS) {
-      this.delete(state);
+      await this.delete(state);
       logger.warn('OAuth state expired', { state, age });
       return null;
     }
@@ -96,12 +134,27 @@ class InMemoryOAuthStateStore {
   /**
    * Delete OAuth state (one-time use)
    */
-  delete(state: string): boolean {
-    const deleted = this.states.delete(state);
-    if (deleted) {
-      logger.debug('OAuth state deleted', { state });
+  async delete(state: string): Promise<boolean> {
+    // Delete from memory
+    const deletedMemory = this.states.delete(state);
+
+    // Delete from Redis if available
+    let deletedRedis = false;
+    try {
+      if (isRedisAvailable()) {
+        const client = await getRedisClient();
+        const redisKey = `oauth_state:${state}`;
+        const result = await client.del(redisKey);
+        deletedRedis = result > 0;
+      }
+    } catch (err: any) {
+      logger.warn('Failed to delete OAuth state from Redis', { error: err.message });
     }
-    return deleted;
+
+    if (deletedMemory || deletedRedis) {
+      logger.debug('OAuth state deleted', { state, deletedMemory, deletedRedis });
+    }
+    return deletedMemory || deletedRedis;
   }
 
   /**

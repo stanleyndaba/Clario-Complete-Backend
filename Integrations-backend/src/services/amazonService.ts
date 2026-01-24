@@ -371,7 +371,7 @@ export class AmazonService {
     }
   }
 
-  async startOAuth() {
+  async startOAuth(marketplaceId?: string) {
     try {
       // Check if we already have a refresh token - if so, we can skip OAuth
       const existingRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
@@ -418,7 +418,19 @@ export class AmazonService {
         // RECOMMENDED: Seller Central Consent Flow
         // This is the correct flow for SP-API apps
         // ============================================
-        const oauthBase = 'https://sellercentral.amazon.com/apps/authorize/consent';
+
+        // Determine regional OAuth base URL
+        let oauthBase = 'https://sellercentral.amazon.com/apps/authorize/consent';
+
+        if (marketplaceId) {
+          const region = MARKETPLACE_TO_REGION[marketplaceId];
+          if (region?.includes('eu')) {
+            oauthBase = 'https://sellercentral-europe.amazon.com/apps/authorize/consent';
+          } else if (region?.includes('fe')) {
+            oauthBase = 'https://sellercentral-japan.amazon.co.jp/apps/authorize/consent';
+          }
+          logger.info('Using regional OAuth base URL', { marketplaceId, region, oauthBase });
+        }
 
         // Build URL with application_id (NOT client_id)
         // CRITICAL: version=beta is MANDATORY for Draft/Private Beta apps
@@ -443,7 +455,16 @@ export class AmazonService {
         // ============================================
         // LEGACY: LWA OAuth Flow (may fail for Draft apps)
         // ============================================
-        const oauthBase = 'https://www.amazon.com/ap/oa';
+        let oauthBase = 'https://www.amazon.com/ap/oa';
+
+        if (marketplaceId) {
+          const region = MARKETPLACE_TO_REGION[marketplaceId];
+          if (region?.includes('eu')) {
+            oauthBase = 'https://eu.account.amazon.com/ap/oa';
+          } else if (region?.includes('fe')) {
+            oauthBase = 'https://apac.account.amazon.com/ap/oa';
+          }
+        }
 
         authUrl = `${oauthBase}?` +
           `client_id=${encodeURIComponent(clientId!)}&` +

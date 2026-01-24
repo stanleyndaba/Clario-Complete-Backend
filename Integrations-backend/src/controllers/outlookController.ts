@@ -180,7 +180,7 @@ export const handleOutlookCallback = async (req: Request, res: Response) => {
         let frontendUrl: string | null = null;
 
         if (typeof state === 'string') {
-            const stateData = oauthStateStore.get(state);
+            const stateData = await oauthStateStore.get(state);
             if (stateData) {
                 userId = stateData.userId || null;
                 frontendUrl = stateData.frontendUrl || null;

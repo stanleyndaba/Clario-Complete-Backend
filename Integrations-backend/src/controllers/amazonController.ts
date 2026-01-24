@@ -385,7 +385,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         const stateFromQuery = req.query.state as string;
         let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
         if (stateFromQuery) {
-          const storedState = oauthStateStore.get(stateFromQuery);
+          const storedState = await oauthStateStore.get(stateFromQuery);
           if (storedState?.frontendUrl) {
             frontendUrl = storedState.frontendUrl;
           }
@@ -434,7 +434,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         const stateFromQuery = req.query.state as string;
         let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
         if (stateFromQuery) {
-          const storedState = oauthStateStore.get(stateFromQuery);
+          const storedState = await oauthStateStore.get(stateFromQuery);
           if (storedState?.frontendUrl) {
             frontendUrl = storedState.frontendUrl;
           }
@@ -768,7 +768,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       const stateFromQuery = req.query.state as string;
       let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
       if (stateFromQuery) {
-        const storedState = oauthStateStore.get(stateFromQuery);
+        const storedState = await oauthStateStore.get(stateFromQuery);
         if (storedState?.frontendUrl) {
           frontendUrl = storedState.frontendUrl;
         }
@@ -806,7 +806,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
 
     if (state) {
-      const storedState = oauthStateStore.get(state);
+      const storedState = await oauthStateStore.get(state);
       if (storedState?.frontendUrl) {
         frontendUrl = storedState.frontendUrl;
         logger.info('Retrieved frontend URL from OAuth state', {
@@ -882,7 +882,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     const stateFromQuery = req.query.state as string;
     let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     if (stateFromQuery) {
-      const storedState = oauthStateStore.get(stateFromQuery);
+      const storedState = await oauthStateStore.get(stateFromQuery);
       if (storedState?.frontendUrl) {
         frontendUrl = storedState.frontendUrl;
       }
