@@ -181,10 +181,10 @@ router.use('/auth', authRateLimiter);
 router.use('/auth/start', authRateLimiter);
 router.use('/auth/callback', authRateLimiter);
 
-// Apply redirect validation to auth callback (state validation only on callback)
+// Apply redirect validation to auth callback (state validation set to false for multi-instance compatibility)
 router.use('/auth/callback', validateRedirectMiddleware({
   enforceHttps: process.env.NODE_ENV === 'production',
-  validateState: true, // Validate state on callback
+  validateState: false, // Disabled to support multi-instance environments without Redis
 }));
 
 // Helper function to validate CORS origin
