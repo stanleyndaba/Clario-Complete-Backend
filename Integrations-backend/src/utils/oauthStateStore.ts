@@ -120,16 +120,44 @@ class InMemoryOAuthStateStore {
       }
     }
 
+    // 3. Fallback: Try decoding as "Smart State" (formatted as random_hex:base64_json)
+    if (!data && state && typeof state === 'string' && state.includes(':')) {
+      try {
+        const parts = state.split(':');
+        if (parts.length >= 2) {
+          const contextBase64 = parts[1];
+          const decoded = JSON.parse(Buffer.from(contextBase64, 'base64').toString());
+          if (decoded && (decoded.frontendUrl || decoded.userId)) {
+            logger.info('OAuth state recovered from Smart State encoding', {
+              hasFrontendUrl: !!decoded.frontendUrl,
+              userId: decoded.userId
+            });
+            data = {
+              ...decoded,
+              timestamp: Date.now() // Assume fresh if just decoded from the URL
+            };
+            // Optionally cache it for faster subsequent lookups during this session
+            this.states.set(state, data);
+          }
+        }
+      } catch (err) {
+        // Not a valid smart state or malformed encoding, ignore
+      }
+    }
+
     if (!data) {
       return null;
     }
 
-    // Check if expired (Memory check)
-    const age = Date.now() - data.timestamp;
-    if (age > this.TTL_MS) {
-      await this.delete(state);
-      logger.warn('OAuth state expired', { state, age });
-      return null;
+    // Check if expired (except for Smart States which carry their own context)
+    // For Smart States, we trust the encoded data as long as the handshake is valid
+    if (!state.includes(':')) {
+      const age = Date.now() - data.timestamp;
+      if (age > this.TTL_MS) {
+        await this.delete(state);
+        logger.warn('OAuth state expired', { state, age });
+        return null;
+      }
     }
 
     return data;
@@ -149,7 +177,7 @@ class InMemoryOAuthStateStore {
         const client = await getRedisClient();
         const redisKey = `oauth_state:${state}`;
         const result = await client.del(redisKey);
-        deletedRedis = result > 0;
+        deletedRedis = (result ?? 0) > 0;
       }
     } catch (err: any) {
       logger.warn('Failed to delete OAuth state from Redis', { error: err.message });

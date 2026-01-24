@@ -371,101 +371,83 @@ export class AmazonService {
     }
   }
 
-  async startOAuth(marketplaceId?: string) {
+  /**
+ * Start Amazon OAuth flow
+ * @param marketplaceId Optional marketplace ID for regional selection
+ * @param context Optional context to encode in state
+ */
+  async startOAuth(marketplaceId?: string, context?: any) {
     try {
-      // Check if we already have a refresh token - if so, we can skip OAuth
+      // Check if we already have a refresh token
       const existingRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
       if (existingRefreshToken && existingRefreshToken.trim() !== '') {
-        logger.info('Refresh token already exists - OAuth may not be needed if token is valid');
-        // Continue with OAuth URL generation anyway, but note that token exists
-        // The user can still use existing token if they have it
+        logger.info('Refresh token already exists - OAuth may not be needed');
       }
 
-      // CRITICAL: For SP-API apps, we need APPLICATION_ID, not CLIENT_ID
-      // application_id = Seller Central App ID (amzn1.sellerapps.app.xxxx)
-      // client_id = LWA Security Profile ID (used for token exchange, not consent)
+      // Get Application ID and Client ID
       const applicationId = process.env.AMAZON_APP_ID || process.env.AMAZON_APPLICATION_ID;
       const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
 
       if (!applicationId || applicationId.trim() === '') {
-        // Fallback to old LWA flow if no application_id (for backward compatibility)
-        // But log warning that this may not work for Draft apps
         if (!clientId || clientId.trim() === '') {
-          logger.warn('Neither AMAZON_APP_ID nor AMAZON_CLIENT_ID configured, returning mock URL');
+          logger.warn('Neither AMAZON_APP_ID nor AMAZON_CLIENT_ID configured');
           return {
             authUrl: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?code=mock_auth_code&state=mock_state`,
+            state: 'mock_state',
             message: 'Mock OAuth URL (credentials not configured)'
           };
         }
-
-        logger.warn('AMAZON_APP_ID not configured - using legacy LWA flow. This may fail for Draft/Beta apps.');
-        // Fall through to legacy flow
+        logger.warn('AMAZON_APP_ID not configured - using legacy LWA flow');
       }
 
-      // Generate state for CSRF protection
-      const state = crypto.randomBytes(32).toString('hex');
+      // Generate base state
+      let state = crypto.randomBytes(16).toString('hex');
 
-      // Get redirect URI from environment
+      // ✅ SMART STATE: Encode context directly into state to survive multi-instance swaps
+      // Format: random_hex:base64_json
+      if (context) {
+        try {
+          const contextStr = Buffer.from(JSON.stringify(context)).toString('base64');
+          state = `${state}:${contextStr}`;
+        } catch (err) {
+          logger.warn('Failed to encode context into OAuth state', { err });
+        }
+      }
+
+      // Get redirect URI
       const redirectUri = process.env.AMAZON_REDIRECT_URI ||
         process.env.AMAZON_SPAPI_REDIRECT_URI ||
         `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/amazon/auth/callback`;
 
       let authUrl: string;
-      let flowType: 'seller_central' | 'lwa';
 
       if (applicationId && applicationId.trim() !== '') {
-        // ============================================
-        // RECOMMENDED: Seller Central Consent Flow
-        // This is the correct flow for SP-API apps
-        // ============================================
-
-        // Determine regional OAuth base URL
+        // Seller Central flow (SP-API)
         let oauthBase = 'https://sellercentral.amazon.com/apps/authorize/consent';
 
         if (marketplaceId) {
           const region = MARKETPLACE_TO_REGION[marketplaceId];
           if (marketplaceId === 'ARE699S9C6Y0F') {
-            // Specific local authority for South Africa to avoid .com navigation errors
             oauthBase = 'https://sellercentral.amazon.co.za/apps/authorize/consent';
           } else if (region?.includes('eu')) {
             oauthBase = 'https://sellercentral-europe.amazon.com/apps/authorize/consent';
           } else if (region?.includes('fe')) {
             oauthBase = 'https://sellercentral-japan.amazon.co.jp/apps/authorize/consent';
           }
-          logger.info('Using regional OAuth base URL', { marketplaceId, region, oauthBase });
         }
 
-        // Build URL with application_id (NOT client_id)
-        // CRITICAL: version=beta is MANDATORY for Draft/Private Beta apps
         authUrl = `${oauthBase}?` +
           `application_id=${encodeURIComponent(applicationId)}&` +
           `state=${state}&` +
           `redirect_uri=${encodeURIComponent(redirectUri)}&` +
-          `version=beta`; // <-- MANDATORY for Draft apps
-
-        flowType = 'seller_central';
-
-        const sanitizedUrl = authUrl.replace(/application_id=[^&]+/, 'application_id=REDACTED');
-        logger.info('Generated Seller Central consent URL (Draft Mode compatible)', {
-          redirectUri,
-          stateLength: state.length,
-          versionBeta: true,
-          flowType: 'seller_central',
-          authUrl: sanitizedUrl
-        });
+          `version=beta`;
       } else {
-        // ============================================
-        // LEGACY: LWA OAuth Flow (may fail for Draft apps)
-        // ============================================
+        // Legacy LWA flow
         let oauthBase = 'https://www.amazon.com/ap/oa';
-
         if (marketplaceId) {
           const region = MARKETPLACE_TO_REGION[marketplaceId];
-          if (region?.includes('eu')) {
-            oauthBase = 'https://eu.account.amazon.com/ap/oa';
-          } else if (region?.includes('fe')) {
-            oauthBase = 'https://apac.account.amazon.com/ap/oa';
-          }
+          if (region?.includes('eu')) oauthBase = 'https://eu.account.amazon.com/ap/oa';
+          else if (region?.includes('fe')) oauthBase = 'https://apac.account.amazon.com/ap/oa';
         }
 
         authUrl = `${oauthBase}?` +
@@ -473,29 +455,9 @@ export class AmazonService {
           `response_type=code&` +
           `redirect_uri=${encodeURIComponent(redirectUri)}&` +
           `state=${state}`;
-
-        flowType = 'lwa';
-
-        logger.warn('Using legacy LWA OAuth flow (NOT recommended for Draft apps)', {
-          hasClientId: !!clientId,
-          redirectUri,
-          stateLength: state.length,
-          flowType: 'lwa',
-          warning: 'This flow may fail for Draft/Private Beta apps. Set AMAZON_APP_ID to use Seller Central flow.'
-        });
       }
 
-      const isSandboxMode = this.isSandbox();
-
-      return {
-        authUrl,
-        state,
-        sandboxMode: isSandboxMode,
-        flowType,
-        warning: flowType === 'lwa'
-          ? 'Using legacy LWA flow. For Draft/Beta apps, set AMAZON_APP_ID to use Seller Central consent flow.'
-          : undefined
-      };
+      return { authUrl, state };
     } catch (error: any) {
       logger.error('Error generating OAuth URL:', error);
       throw new Error(`Failed to generate OAuth URL: ${error.message}`);

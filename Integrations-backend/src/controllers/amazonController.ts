@@ -276,7 +276,12 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
       marketplaceId
     });
 
-    const result = await amazonService.startOAuth(marketplaceId);
+    const result = await amazonService.startOAuth(marketplaceId, {
+      userId: userId || 'anonymous',
+      frontendUrl,
+      tenantSlug,
+      marketplaceId
+    });
 
     // Set CORS headers explicitly for OAuth response
     const origin = req.headers.origin;
@@ -746,34 +751,10 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     }
 
     // For GET requests, redirect to frontend
-    // Retrieve stored frontend URL from OAuth state (if available)
+    // Retrieve stored context from OAuth state (supports Smart State decoding)
     let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-
-    if (state) {
-      const storedState = await oauthStateStore.get(state);
-      if (storedState?.frontendUrl) {
-        frontendUrl = storedState.frontendUrl;
-        logger.info('Retrieved frontend URL from OAuth state', {
-          state,
-          frontendUrl
-        });
-        // Clean up stored state (one-time use)
-        oauthStateStore.delete(state);
-      } else {
-        logger.warn('OAuth state not found or expired, using default FRONTEND_URL', {
-          state,
-          frontendUrl
-        });
-      }
-    } else {
-      logger.warn('No OAuth state provided, using default FRONTEND_URL', { frontendUrl });
-    }
-
-    // Redirect to the dedicated Authorised Successfully page
-    let targetPath = '/auth/success';
     let marketplaceIdForRedirect: string | undefined = undefined;
     let tenantSlug = '';
-    let redirectUrl = `${frontendUrl}${targetPath}`;
 
     if (state) {
       try {
@@ -784,18 +765,24 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           tenantSlug = storedState.tenantSlug || '';
 
           logger.info('Retrieved context from OAuth state for success redirect', {
-            state,
+            state: state.includes(':') ? state.split(':')[0] : state,
             tenantSlug,
             marketplaceId: marketplaceIdForRedirect
           });
 
           // Clean up stored state (one-time use)
           await oauthStateStore.delete(state);
+        } else {
+          logger.warn('OAuth state not found or expired for success redirect');
         }
       } catch (err) {
-        logger.warn('Error retrieving OAuth state for success redirect', { err });
+        logger.error('Error retrieving OAuth state context', { error: err });
       }
     }
+
+    // Redirect to the dedicated Authorised Successfully page
+    const targetPath = '/auth/success';
+    let redirectUrl = `${frontendUrl}${targetPath}`;
 
     try {
       const frontendUrlObj = new URL(frontendUrl);
@@ -808,7 +795,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       if (marketplaceIdForRedirect) successParams.append('marketplaceId', marketplaceIdForRedirect);
 
       redirectUrl = `${baseUrl}${targetPath}?${successParams.toString()}`;
-    } catch {
+    } catch (urlErr) {
       redirectUrl = `${frontendUrl}${targetPath}?status=ok&provider=amazon&tenant_slug=${tenantSlug}`;
     }
 
