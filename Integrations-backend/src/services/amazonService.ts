@@ -442,14 +442,13 @@ export class AmazonService {
 
         flowType = 'seller_central';
 
+        const sanitizedUrl = authUrl.replace(/application_id=[^&]+/, 'application_id=REDACTED');
         logger.info('Generated Seller Central consent URL (Draft Mode compatible)', {
-          hasApplicationId: !!applicationId,
-          applicationIdPrefix: applicationId.substring(0, 20) + '...',
           redirectUri,
           stateLength: state.length,
           versionBeta: true,
           flowType: 'seller_central',
-          note: 'Using Seller Central consent flow with version=beta for Draft/Private Beta apps'
+          authUrl: sanitizedUrl
         });
       } else {
         // ============================================

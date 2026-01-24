@@ -350,103 +350,44 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     }
 
     if (!code) {
-      logger.warn('Amazon callback called without authorization code', {
+      // Log incoming request details for debugging
+      logger.info('Amazon OAuth callback reached without code', {
         method: req.method,
-        path: req.path,
-        query: req.query,
-        body: req.body,
+        hasState: !!state,
+        hasError: !!req.query.error,
         referer: req.headers.referer,
-        origin: req.headers.origin
+        params: Object.keys(req.query),
+        stateMatch: !!(req as any).oauthState
       });
 
-      // Try to generate OAuth URL and redirect/return it
-      let oauthResult;
-      try {
-        oauthResult = await amazonService.startOAuth();
-      } catch (oauthError: any) {
-        logger.error('Failed to generate OAuth URL in callback error handler', { error: oauthError });
-        const errorResponse = {
-          ok: false,
-          connected: false,
-          success: false,
-          error: 'OAuth configuration error',
-          message: 'Failed to generate OAuth URL. Please check backend configuration.',
-          oauthStartEndpoint: '/api/v1/integrations/amazon/auth/start'
-        };
-
-        if (req.method === 'POST') {
-          const origin = req.headers.origin || '*';
-          res.header('Access-Control-Allow-Origin', origin);
-          res.header('Access-Control-Allow-Credentials', 'true');
-          return res.status(500).json(errorResponse);
-        }
-
-        // Try to get frontend URL from state if available
-        const stateFromQuery = req.query.state as string;
-        let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-        if (stateFromQuery) {
-          const storedState = await oauthStateStore.get(stateFromQuery);
-          if (storedState?.frontendUrl) {
-            frontendUrl = storedState.frontendUrl;
-          }
-        }
-        const errorUrl = `${frontendUrl}/dashboard?error=${encodeURIComponent('oauth_config_error')}&amazon_error=true`;
-        return res.redirect(302, errorUrl);
-      }
-
-      // For POST requests, return JSON with authUrl for frontend to redirect
-      if (req.method === 'POST') {
-        const origin = req.headers.origin || '*';
-        res.header('Access-Control-Allow-Origin', origin);
-        res.header('Access-Control-Allow-Credentials', 'true');
-        res.header('Content-Type', 'application/json');
-
-        // Return 200 with redirect info (not 400) so frontend can handle it
-        return res.status(200).json({
-          ok: false,
-          connected: false,
-          success: false,
-          needsOAuth: true,
-          error: 'OAuth flow not started',
-          message: 'Please start the OAuth flow by redirecting to the authUrl below.',
-          authUrl: oauthResult.authUrl,
-          redirectTo: oauthResult.authUrl,
-          hint: 'The frontend should call GET /api/v1/integrations/amazon/auth/start, redirect the user to the returned authUrl, and let Amazon redirect back to this callback endpoint with the authorization code.'
-        });
-      }
-
-      // For GET requests, check if this looks like a direct call (not from Amazon)
-      const referer = req.headers.referer || '';
-      const isFromAmazon = referer.includes('amazon.com') || referer.includes('amzn.to');
-
-      if (!isFromAmazon) {
-        // Direct call - automatically redirect to OAuth URL
-        logger.info('Callback called directly without Amazon redirect, redirecting to OAuth URL');
-        return res.redirect(302, oauthResult.authUrl);
-      }
-
-      // Looks like it might be from Amazon but missing code - could be an error
-      // Check if there's an error parameter in the query
       const errorParam = req.query.error as string;
-      if (errorParam) {
-        logger.error('Amazon OAuth error received', { error: errorParam, errorDescription: req.query.error_description });
-        // Try to get frontend URL from state if available
-        const stateFromQuery = req.query.state as string;
-        let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-        if (stateFromQuery) {
+      const errorDescription = req.query.error_description as string;
+      const stateFromQuery = (req.query.state as string) || state;
+      let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+      // Try to recover frontendUrl from state
+      if (stateFromQuery) {
+        try {
           const storedState = await oauthStateStore.get(stateFromQuery);
           if (storedState?.frontendUrl) {
             frontendUrl = storedState.frontendUrl;
           }
+        } catch (err) {
+          logger.warn('Failed to retrieve state for error redirect');
         }
-        const errorUrl = `${frontendUrl}/dashboard?error=${encodeURIComponent(errorParam)}&amazon_error=true&error_description=${encodeURIComponent(req.query.error_description as string || '')}`;
+      }
+
+      // Handle cases where Amazon returns an explicit error
+      if (errorParam) {
+        logger.error('Amazon OAuth error received in callback', { error: errorParam, description: errorDescription });
+        const errorUrl = `${frontendUrl}/dashboard?error=${encodeURIComponent(errorParam)}&amazon_error=true${errorDescription ? `&error_description=${encodeURIComponent(errorDescription)}` : ''}`;
         return res.redirect(302, errorUrl);
       }
 
-      // No code, no error param, but from Amazon - might be a partial redirect
-      // Redirect to OAuth start to restart the flow
-      logger.warn('Amazon callback received without code or error - redirecting to restart OAuth');
-      return res.redirect(302, oauthResult.authUrl);
+      // Handle cases where code is simply missing (user cancel or config error)
+      logger.warn('Amazon OAuth callback missing code and error parameter');
+      const errorUrl = `${frontendUrl}/dashboard?error=missing_auth_code&amazon_error=true`;
+      return res.redirect(302, errorUrl);
     }
 
     logger.info('Amazon OAuth callback received', {
