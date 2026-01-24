@@ -12,7 +12,8 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
     // Get user ID from authenticated request (if available)
     const userId = (req as any).user?.id || (req as any).user?.user_id || null;
 
-    // Get frontend URL from request (query param, header, or referer)
+    // Get marketplace ID and frontend URL from request (query param, header, or referer)
+    const marketplaceId = (req as any).query?.marketplaceId as string;
     const frontendUrlFromQuery = (req as any).query?.frontend_url as string;
     const frontendUrlFromHeader = (req as any).headers?.['x-frontend-url'] as string;
     const referer = (req as any).headers?.referer as string;
@@ -36,9 +37,7 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
 
     // SECURITY: Disable OAuth bypass in production
     const isProduction = process.env.NODE_ENV === 'production';
-    const isSandboxMode = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') ||
-      !process.env.AMAZON_SPAPI_BASE_URL ||
-      process.env.NODE_ENV === 'development';
+    const isSandboxMode = amazonService.isSandbox();
 
     // Check if we already have a refresh token - if so, we can skip OAuth
     // SECURITY: Only allow bypass in non-production environments
@@ -272,10 +271,11 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
       userId,
       frontendUrl,
       source: frontendUrlFromQuery ? 'query' : frontendUrlFromHeader ? 'header' : referer ? 'referer' : req.headers.origin ? 'origin' : 'env',
-      hasExistingRefreshToken: !!existingRefreshToken
+      hasExistingRefreshToken: !!existingRefreshToken,
+      marketplaceId
     });
 
-    const result = await amazonService.startOAuth();
+    const result = await amazonService.startOAuth(marketplaceId);
 
     // Set CORS headers explicitly for OAuth response
     const origin = req.headers.origin;

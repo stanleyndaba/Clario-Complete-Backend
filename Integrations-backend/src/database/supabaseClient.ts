@@ -337,7 +337,8 @@ export const tokenManager = {
     provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
     accessTokenEnc: { iv: string; data: string },
     refreshTokenEnc?: { iv: string; data: string },
-    expiresAt?: Date
+    expiresAt?: Date,
+    tenantId?: string
   ): Promise<void> {
     try {
       if (typeof supabase.from !== 'function') {
@@ -360,6 +361,7 @@ export const tokenManager = {
         .upsert({
           user_id: dbUserId,
           provider,
+          tenant_id: tenantId || null, // Include tenant_id for multi-tenant support
           access_token_iv: accessTokenEnc.iv,
           access_token_data: accessTokenEnc.data,
           refresh_token_iv: refreshTokenEnc?.iv || null,
@@ -438,7 +440,8 @@ export const tokenManager = {
     provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
     accessTokenEnc: { iv: string; data: string },
     refreshTokenEnc?: { iv: string; data: string },
-    expiresAt?: Date
+    expiresAt?: Date,
+    tenantId?: string
   ): Promise<void> {
     try {
       if (typeof supabase.from !== 'function') {
@@ -460,6 +463,7 @@ export const tokenManager = {
           refresh_token_iv: refreshTokenEnc?.iv || null,
           refresh_token_data: refreshTokenEnc?.data || null,
           expires_at: expiresAt ? expiresAt.toISOString() : null,
+          tenant_id: tenantId || undefined,
           updated_at: new Date().toISOString()
         })
         .eq('user_id', dbUserId)

@@ -88,6 +88,7 @@ export class SettlementsService {
       // Get access token (should use tokenManager)
       const accessToken = await this.getAccessToken(userId);
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
+      const regionalBaseUrl = (await import('./amazonService')).default.getRegionalBaseUrl(marketplaceId);
 
       const postedAfter = startDate || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
       const postedBefore = endDate || new Date();
@@ -99,7 +100,7 @@ export class SettlementsService {
       };
 
       // Fetch financial events
-      const response = await axios.get(`${this.baseUrl}/finances/v0/financialEvents`, {
+      const response = await axios.get(`${regionalBaseUrl}/finances/v0/financialEvents`, {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'x-amz-access-token': accessToken,

@@ -68,7 +68,8 @@ export class TokenManager {
   async saveToken(
     userId: string,
     provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
-    tokenData: TokenData
+    tokenData: TokenData,
+    tenantId?: string
   ): Promise<void> {
     try {
       const encryptedAccessToken = this.encrypt(tokenData.accessToken);
@@ -79,7 +80,8 @@ export class TokenManager {
         provider,
         encryptedAccessToken,
         encryptedRefreshToken,
-        tokenData.expiresAt
+        tokenData.expiresAt,
+        tenantId
       );
 
       logger.info('Token saved successfully', { userId, provider });
@@ -193,7 +195,8 @@ export class TokenManager {
   async refreshToken(
     userId: string,
     provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
-    newTokenData: TokenData
+    newTokenData: TokenData,
+    tenantId?: string
   ): Promise<void> {
     try {
       const encryptedAccessToken = this.encrypt(newTokenData.accessToken);
@@ -204,7 +207,8 @@ export class TokenManager {
         provider,
         encryptedAccessToken,
         encryptedRefreshToken,
-        newTokenData.expiresAt
+        newTokenData.expiresAt,
+        tenantId
       );
 
       logger.info('Token refreshed successfully', { userId, provider });

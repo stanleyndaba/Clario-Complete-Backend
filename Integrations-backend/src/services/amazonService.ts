@@ -30,6 +30,42 @@ export interface AmazonFee {
   amount: number;
 }
 
+/**
+ * Amazon Marketplace ID to SP-API Region mapping
+ * Sources: 
+ * - North America: https://sellingpartnerapi-na.amazon.com
+ * - Europe: https://sellingpartnerapi-eu.amazon.com
+ * - Far East: https://sellingpartnerapi-fe.amazon.com
+ */
+const MARKETPLACE_TO_REGION: Record<string, string> = {
+  // North America
+  'ATVPDKIKX0DER': 'https://sellingpartnerapi-na.amazon.com', // US
+  'A2EUQ1WTGCTBG2': 'https://sellingpartnerapi-na.amazon.com', // Canada
+  'A1AM78C64UM0Y8': 'https://sellingpartnerapi-na.amazon.com', // Mexico
+  'A2Q3Y263D00KWC': 'https://sellingpartnerapi-na.amazon.com', // Brazil
+
+  // Europe
+  'A1PA6795UKMFR9': 'https://sellingpartnerapi-eu.amazon.com', // Germany
+  'A1RKKUPIHCS9HS': 'https://sellingpartnerapi-eu.amazon.com', // Spain
+  'A13V1IB3VIYZZH': 'https://sellingpartnerapi-eu.amazon.com', // France
+  'A1F8U5RK5QF0S': 'https://sellingpartnerapi-eu.amazon.com',  // UK
+  'A1805IZSGTT6HS': 'https://sellingpartnerapi-eu.amazon.com', // Netherlands
+  'APJ6JRA9NG5V4': 'https://sellingpartnerapi-eu.amazon.com',  // Italy
+  'A2NODRK3121SI7': 'https://sellingpartnerapi-eu.amazon.com', // Sweden
+  'A1C3SOSTU6KVOK': 'https://sellingpartnerapi-eu.amazon.com', // Poland
+  'A33AVAJ2PDY3EV': 'https://sellingpartnerapi-eu.amazon.com', // Turkey
+  'ARBP9OOSHTCHU': 'https://sellingpartnerapi-eu.amazon.com',  // Egypt
+  'A1HE1Q3U7G66W': 'https://sellingpartnerapi-eu.amazon.com',  // Saudi Arabia
+  'A2VIGQ35RCS4UG': 'https://sellingpartnerapi-eu.amazon.com', // UAE
+  'A21TJ7U6ET9TOA': 'https://sellingpartnerapi-eu.amazon.com', // Belgium
+  'ARE699S9C6Y0F': 'https://sellingpartnerapi-eu.amazon.com',  // South Africa
+
+  // Far East
+  'A1VC38T7YXB528': 'https://sellingpartnerapi-fe.amazon.com', // Japan
+  'A19970868YG99F': 'https://sellingpartnerapi-fe.amazon.com', // Australia
+  'A39IBJ9S0P3S3G': 'https://sellingpartnerapi-fe.amazon.com', // Singapore
+};
+
 interface AccessTokenResponse {
   access_token: string;
   token_type: string;
@@ -98,21 +134,38 @@ export class AmazonService {
   }
 
   /**
+   * Get the regional SP-API base URL for a given marketplace ID
+   */
+  getRegionalBaseUrl(marketplaceId?: string): string {
+    if (!marketplaceId) {
+      return this.baseUrl;
+    }
+
+    const regionalUrl = MARKETPLACE_TO_REGION[marketplaceId];
+    if (regionalUrl) {
+      // If we are in sandbox mode, use the sandbox version of the regional URL
+      if (this.isSandbox()) {
+        return regionalUrl.replace('https://', 'https://sandbox.');
+      }
+      return regionalUrl;
+    }
+
+    return this.baseUrl;
+  }
+
+  /**
    * Check if we're using sandbox environment
    */
   isSandbox(): boolean {
-    // Check if baseUrl contains 'sandbox'
-    if (this.baseUrl.includes('sandbox')) {
-      return true;
-    }
-
     // Check environment variable explicitly
-    if (process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox')) {
+    const spapiUrl = process.env.AMAZON_SPAPI_BASE_URL;
+
+    if (spapiUrl?.includes('sandbox')) {
       return true;
     }
 
-    // If NODE_ENV is development and no explicit production URL, assume sandbox
-    if (process.env.NODE_ENV === 'development' && !process.env.AMAZON_SPAPI_BASE_URL) {
+    // Default to sandbox if no URL is provided OR we are in development
+    if (!spapiUrl || process.env.NODE_ENV === 'development') {
       return true;
     }
 
@@ -535,7 +588,15 @@ export class AmazonService {
   }
 
   async syncData(userId: string) {
+    const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
+    const regionalBaseUrl = this.getRegionalBaseUrl(marketplaceId);
+
     try {
+      logger.info(`Starting Amazon data sync for user ${userId}`, {
+        marketplaceId,
+        regionalBaseUrl,
+        isSandbox: this.isSandbox()
+      });
       const inventory = await this.fetchInventory(userId);
       const claims = await this.fetchClaims(userId);
       const fees = await this.fetchFees(userId);
@@ -583,6 +644,7 @@ export class AmazonService {
     const postedAfter = startDate || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
     const postedBefore = endDate || new Date();
     const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
+    const regionalBaseUrl = this.getRegionalBaseUrl(marketplaceId);
 
     // Use Financial Events API to get reimbursements (claims)
     // Financial Events includes: Reimbursement events, Adjustments, etc.
@@ -695,7 +757,7 @@ export class AmazonService {
         }
 
         const response = await axios.get(
-          `${this.baseUrl}/finances/v0/financialEvents`,
+          `${regionalBaseUrl}/finances/v0/financialEvents`,
           {
             headers: {
               'Authorization': `Bearer ${accessToken}`,
@@ -1356,6 +1418,9 @@ export class AmazonService {
   async getSellersInfo(userId?: string): Promise<any> {
     try {
       const accessToken = await this.getAccessToken(userId);
+      // For getSellersInfo, we first try the default baseUrl, then fall back to regional if that fails
+      // or we can just use the provided marketplace if known.
+      // But usually this is the FIRST call, so we use the default.
       const sellersUrl = `${this.baseUrl}/sellers/v1/marketplaceParticipations`;
 
       logger.info('Fetching seller information from SP-API', {
@@ -1572,6 +1637,7 @@ export class AmazonService {
       let allFees: any[] = [];
       let nextToken: string | undefined = undefined;
       const rateLimitDelay = this.getRateLimitDelay();
+      const regionalBaseUrl = this.getRegionalBaseUrl(marketplaceId);
 
       // Paginate through all financial events
       do {
@@ -1580,7 +1646,7 @@ export class AmazonService {
         }
 
         const response = await axios.get(
-          `${this.baseUrl}/finances/v0/financialEvents`,
+          `${regionalBaseUrl}/finances/v0/financialEvents`,
           {
             headers: {
               'Authorization': `Bearer ${accessToken}`,
@@ -1812,6 +1878,7 @@ export class AmazonService {
     try {
       const accessToken = await this.getAccessToken(userId);
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
+      const regionalBaseUrl = this.getRegionalBaseUrl(marketplaceId);
 
       // Default to last 18 months for Phase 1 (first sync)
       // If no dates provided, fetch 18 months of historical data
@@ -1833,7 +1900,7 @@ export class AmazonService {
         CreatedBefore: createdBefore.toISOString()
       };
 
-      const response = await axios.get(`${this.baseUrl}/orders/v0/orders`, {
+      const response = await axios.get(`${regionalBaseUrl}/orders/v0/orders`, {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'x-amz-access-token': accessToken,

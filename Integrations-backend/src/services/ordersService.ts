@@ -71,6 +71,7 @@ export class OrdersService {
       const createdAfter = startDate || new Date(Date.now() - 18 * 30 * 24 * 60 * 60 * 1000);
       const createdBefore = endDate || new Date();
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
+      const regionalBaseUrl = (await import('./amazonService')).default.getRegionalBaseUrl(marketplaceId);
 
       const params: any = {
         MarketplaceIds: marketplaceId,
@@ -100,7 +101,7 @@ export class OrdersService {
       const accessToken = await this.getAccessToken(userId);
 
       // Fetch orders from SP-API
-      const response = await axios.get(`${this.baseUrl}/orders/v0/orders`, {
+      const response = await axios.get(`${regionalBaseUrl}/orders/v0/orders`, {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'x-amz-access-token': accessToken,
