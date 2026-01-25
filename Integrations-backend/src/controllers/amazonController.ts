@@ -790,6 +790,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
 
       url.searchParams.append('status', 'ok');
       url.searchParams.append('provider', 'amazon');
+      url.searchParams.append('auth_bridge', 'true'); // Signal for frontend to bypass immediate auth-guard
       if (tenantSlug) url.searchParams.append('tenant_slug', tenantSlug);
       if (marketplaceIdForRedirect) url.searchParams.append('marketplaceId', marketplaceIdForRedirect);
 
