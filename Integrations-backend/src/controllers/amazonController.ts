@@ -433,8 +433,32 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     // ATOMIC OAuth Callback Flow - All steps must succeed or all fail
     // ============================================================================
     let result: any;
-    let userId: string;
+    let userId: string | undefined;
     let sellerId: string;
+    let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    let marketplaceIdFromState: string | undefined = undefined;
+    let tenantSlug = '';
+
+    // Retrieve stored context from OAuth state EARLY to provide context for fallbacks
+    if (state) {
+      try {
+        const storedState = await oauthStateStore.get(state);
+        if (storedState) {
+          frontendUrl = storedState.frontendUrl || frontendUrl;
+          marketplaceIdFromState = storedState.marketplaceId;
+          tenantSlug = storedState.tenantSlug || '';
+          userId = storedState.userId;
+
+          logger.info('Retrieved context from OAuth state early', {
+            tenantSlug,
+            userId,
+            marketplaceId: marketplaceIdFromState
+          });
+        }
+      } catch (err) {
+        logger.error('Error retrieving OAuth state context early', { error: err });
+      }
+    }
 
     // MOCK MODE: For testing without real Amazon credentials
     // If code is "mock_auth_code" or "test_code", use mock responses
@@ -480,11 +504,33 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           sellerName: 'Test Seller'
         };
       } else {
-        profile = await amazonService.getSellerProfile(access_token);
+        try {
+          profile = await amazonService.getSellerProfile(access_token);
+        } catch (profileError: any) {
+          logger.warn('⚠️ Non-fatal: Failed to fetch seller profile from SP-API. Using fallback.', {
+            error: profileError.message,
+            status: profileError.response?.status
+          });
+
+          // Use fallback profile based on state or placeholder
+          // We must have a sellerId to proceed with database entries
+          // We'll use a sanitized version of the userId or a generic prefix
+          // In Draft mode, the user might not have granted permission to the Sellers API 
+          // but we still want to store the tokens.
+          profile = {
+            sellerId: `UNRESOLVED_${userId || Date.now()}`,
+            marketplaces: [marketplaceIdFromState || process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER'],
+            companyName: 'Amazon Seller',
+            sellerName: 'Amazon Seller'
+          };
+        }
       }
-      if (!profile?.sellerId) {
-        throw new Error('Unable to retrieve sellerId from Amazon');
-      }
+
+      // We proceed even if profile.sellerId is a fallback
+      logger.info('Seller profile status', {
+        sellerId: profile.sellerId,
+        isFallback: profile.sellerId.startsWith('UNRESOLVED_')
+      });
 
       logger.info('Retrieved seller profile from Amazon', {
         sellerId: profile.sellerId,
@@ -775,38 +821,16 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     }
 
     // For GET requests, redirect to frontend
-    // Retrieve stored context from OAuth state (supports Smart State decoding)
-    let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    let marketplaceIdForRedirect: string | undefined = undefined;
-    let tenantSlug = '';
-
+    // Cleanup stored state (one-time use)
     if (state) {
-      try {
-        const storedState = await oauthStateStore.get(state);
-        if (storedState) {
-          frontendUrl = storedState.frontendUrl || frontendUrl;
-          marketplaceIdForRedirect = storedState.marketplaceId;
-          tenantSlug = storedState.tenantSlug || '';
-
-          logger.info('Retrieved context from OAuth state for success redirect', {
-            state: state.includes(':') ? state.split(':')[0] : state,
-            tenantSlug,
-            marketplaceId: marketplaceIdForRedirect
-          });
-
-          // Clean up stored state (one-time use)
-          await oauthStateStore.delete(state);
-        } else {
-          logger.warn('OAuth state not found or expired for success redirect');
-        }
-      } catch (err) {
-        logger.error('Error retrieving OAuth state context', { error: err });
-      }
+      await oauthStateStore.delete(state).catch(e => logger.warn('Failed to delete state', { e }));
     }
 
     // Finalize the redirect URL
     const targetPath = '/auth/success';
     let finalRedirectUrl: string;
+    const marketplaceIdForRedirect = marketplaceIdFromState || profile.marketplaces[0];
+
     try {
       // Use URL constructor to handle base and path correctly (prevents double slashes)
       const cleanBase = frontendUrl.endsWith('/') ? frontendUrl.slice(0, -1) : frontendUrl;
