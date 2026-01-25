@@ -531,6 +531,9 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         throw new Error('Seller profile initialization failed');
       }
 
+      // Sync top-level sellerId for logging and response
+      sellerId = profile.sellerId;
+
       // Step 4: Upsert user/tenant in Supabase (use supabaseAdmin to bypass RLS)
       const { supabaseAdmin } = await import('../database/supabaseClient');
       let userEmail: string | null = null;
