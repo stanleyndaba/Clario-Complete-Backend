@@ -385,16 +385,15 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         }
       }
 
-      // Handle cases where Amazon returns an explicit error
       if (errorParam) {
         logger.error('Amazon OAuth error received in callback', { error: errorParam, description: errorDescription });
-        const errorUrl = `${frontendUrl}/dashboard?error=${encodeURIComponent(errorParam)}&amazon_error=true${errorDescription ? `&error_description=${encodeURIComponent(errorDescription)}` : ''}`;
+        const errorUrl = `${frontendUrl}/auth/success?status=error&error=${encodeURIComponent(errorParam)}&amazon_error=true${errorDescription ? `&error_description=${encodeURIComponent(errorDescription)}` : ''}&auth_bridge=true`;
         return res.redirect(302, errorUrl);
       }
 
       // Handle cases where code is simply missing (user cancel or config error)
       logger.warn('Amazon OAuth callback missing code and error parameter');
-      const errorUrl = `${frontendUrl}/dashboard?error=missing_auth_code&amazon_error=true`;
+      const errorUrl = `${frontendUrl}/auth/success?status=error&error=missing_auth_code&amazon_error=true&auth_bridge=true`;
       return res.redirect(302, errorUrl);
     }
 
@@ -722,7 +721,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           frontendUrl = storedState.frontendUrl;
         }
       }
-      const errorUrl = `${frontendUrl}/dashboard?error=${encodeURIComponent(callbackError.message || 'oauth_failed')}&amazon_error=true`;
+      const errorUrl = `${frontendUrl}/auth/success?status=error&error=${encodeURIComponent(callbackError.message || 'oauth_failed')}&amazon_error=true&auth_bridge=true`;
       return res.redirect(302, errorUrl);
     }
 
@@ -836,7 +835,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     }
 
     const cleanBase = frontendUrl.endsWith('/') ? frontendUrl.slice(0, -1) : frontendUrl;
-    const errorUrl = `${cleanBase}/auth/success?status=error&error=${encodeURIComponent(error.message || 'oauth_failed')}&amazon_error=true`;
+    const errorUrl = `${cleanBase}/auth/success?status=error&error=${encodeURIComponent(error.message || 'oauth_failed')}&amazon_error=true&auth_bridge=true`;
 
     return res.redirect(302, errorUrl);
   }
