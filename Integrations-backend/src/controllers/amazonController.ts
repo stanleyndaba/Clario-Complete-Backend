@@ -781,6 +781,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     }
 
     // Finalize the redirect URL
+    const targetPath = '/auth/success';
     let finalRedirectUrl: string;
     try {
       // Use URL constructor to handle base and path correctly (prevents double slashes)

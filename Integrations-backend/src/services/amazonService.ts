@@ -394,6 +394,7 @@ export class AmazonService {
           return {
             authUrl: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?code=mock_auth_code&state=mock_state`,
             state: 'mock_state',
+            sandboxMode: true, // Mock URL is always sandbox-like
             message: 'Mock OAuth URL (credentials not configured)'
           };
         }
@@ -457,7 +458,11 @@ export class AmazonService {
           `state=${state}`;
       }
 
-      return { authUrl, state };
+      return {
+        authUrl,
+        state,
+        sandboxMode: this.isSandbox()
+      };
     } catch (error: any) {
       logger.error('Error generating OAuth URL:', error);
       throw new Error(`Failed to generate OAuth URL: ${error.message}`);
