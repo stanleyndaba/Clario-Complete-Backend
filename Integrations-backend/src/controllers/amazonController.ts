@@ -539,11 +539,11 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       let userEmail: string | null = null;
       let stripeCustomerId: number | null = null;
 
-      // Try to find existing user by seller_id (if column exists)
+      // Try to find existing user by seller_id OR by userId from state
       const { data: existingUser } = await supabaseAdmin
         .from('users')
-        .select('id, seller_id, amazon_seller_id, company_name, email, stripe_customer_id')
-        .or(`seller_id.eq.${profile.sellerId},amazon_seller_id.eq.${profile.sellerId}`)
+        .select('id, seller_id, amazon_seller_id, company_name, email, stripe_customer_id, tenant_id')
+        .or(`seller_id.eq.${profile.sellerId},amazon_seller_id.eq.${profile.sellerId}${userId ? `,id.eq.${userId}` : ''}`)
         .maybeSingle();
 
       if (existingUser?.id) {
@@ -564,8 +564,47 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
 
         logger.info('Updated existing user', { userId, sellerId: profile.sellerId });
       } else {
+        // Step 4a: Resolve or Create Tenant
+        let tenantIdToUse = '00000000-0000-0000-0000-000000000001'; // Default fallback
+
+        // 1. Try to find tenant by slug from state
+        if (tenantSlug) {
+          const { data: t } = await supabaseAdmin
+            .from('tenants')
+            .select('id')
+            .eq('slug', tenantSlug)
+            .maybeSingle();
+          if (t) tenantIdToUse = t.id;
+        }
+
+        // 2. If no tenant found by slug, try to find or create one for this seller
+        if (tenantIdToUse === '00000000-0000-0000-0000-000000000001') {
+          const sellerSlug = `seller-${profile.sellerId.toLowerCase()}`.substring(0, 50);
+          const { data: st } = await supabaseAdmin
+            .from('tenants')
+            .select('id')
+            .eq('slug', sellerSlug)
+            .maybeSingle();
+
+          if (st) {
+            tenantIdToUse = st.id;
+          } else {
+            // Create new tenant
+            const { data: nt } = await supabaseAdmin
+              .from('tenants')
+              .insert({
+                name: profile.companyName || profile.sellerName || 'Amazon Seller',
+                slug: sellerSlug,
+                plan: 'free',
+                status: 'active'
+              })
+              .select('id')
+              .single();
+            if (nt) tenantIdToUse = nt.id;
+          }
+        }
+
         // Create new user/tenant
-        // Note: users table may require email - we'll use seller_id as email if needed
         const placeholderEmail = `${profile.sellerId}@amazon.seller`;
         const { data: newUser, error: createErr } = await supabaseAdmin
           .from('users')
@@ -573,6 +612,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
             email: placeholderEmail,
             seller_id: profile.sellerId,
             amazon_seller_id: profile.sellerId,
+            tenant_id: tenantIdToUse,
             company_name: profile.companyName || profile.sellerName || null,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
@@ -586,7 +626,21 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
 
         userId = newUser.id;
         userEmail = newUser.email || placeholderEmail;
-        logger.info('Created new user', { userId, sellerId: profile.sellerId });
+
+        // Step 4b: Ensure membership exists for the new user
+        await supabaseAdmin
+          .from('tenant_memberships')
+          .upsert({
+            tenant_id: tenantIdToUse,
+            user_id: userId,
+            role: 'owner',
+            is_active: true,
+            accepted_at: new Date().toISOString()
+          }, {
+            onConflict: 'tenant_id,user_id'
+          });
+
+        logger.info('Created new user and linked to tenant', { userId, tenantId: tenantIdToUse, sellerId: profile.sellerId });
       }
 
       // Step 4b: Ensure Stripe customer mapping exists (Agent 1 → Agent 9 bridge)
