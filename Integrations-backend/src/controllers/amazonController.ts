@@ -539,11 +539,13 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       let userEmail: string | null = null;
       let stripeCustomerId: number | null = null;
 
-      // Try to find existing user by seller_id OR by userId from state
+      const placeholderEmail = `${profile.sellerId}@amazon.seller`;
+
+      // Try to find existing user by seller_id OR by email OR by userId from state
       const { data: existingUser } = await supabaseAdmin
         .from('users')
         .select('id, seller_id, amazon_seller_id, company_name, email, stripe_customer_id, tenant_id')
-        .or(`seller_id.eq.${profile.sellerId},amazon_seller_id.eq.${profile.sellerId}${userId ? `,id.eq.${userId}` : ''}`)
+        .or(`seller_id.eq.${profile.sellerId},amazon_seller_id.eq.${profile.sellerId},email.eq.${placeholderEmail}${userId ? `,id.eq.${userId}` : ''}`)
         .maybeSingle();
 
       let tenantIdToUse = existingUser?.tenant_id || null;
@@ -607,7 +609,6 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         }
 
         // Create new user/tenant
-        const placeholderEmail = `${profile.sellerId}@amazon.seller`;
         const { data: newUser, error: createErr } = await supabaseAdmin
           .from('users')
           .insert({
