@@ -434,7 +434,8 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     // ============================================================================
     let result: any;
     let userId: string | undefined;
-    let sellerId: string;
+    let sellerId: string | undefined;
+    let profile: { sellerId: string; marketplaces: string[]; companyName?: string; sellerName?: string } | undefined;
     let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     let marketplaceIdFromState: string | undefined = undefined;
     let tenantSlug = '';
@@ -493,7 +494,6 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       const { access_token, refresh_token, expires_in } = result.data;
 
       // Step 3: Get seller_id / profile from Amazon SP-API (or use mock in test mode)
-      let profile: { sellerId: string; marketplaces: string[]; companyName?: string; sellerName?: string };
 
       if (isMockMode) {
         logger.info('🧪 MOCK MODE: Using mock seller profile');
@@ -829,7 +829,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     // Finalize the redirect URL
     const targetPath = '/auth/success';
     let finalRedirectUrl: string;
-    const marketplaceIdForRedirect = marketplaceIdFromState || profile.marketplaces[0];
+    const marketplaceIdForRedirect = marketplaceIdFromState || profile?.marketplaces?.[0] || process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
 
     try {
       // Use URL constructor to handle base and path correctly (prevents double slashes)
