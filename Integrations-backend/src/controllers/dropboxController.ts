@@ -210,15 +210,25 @@ export const handleDropboxCallback = async (req: Request, res: Response) => {
 
         // Redirect to frontend
         const redirectFrontendUrl = frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
-        const redirectUrl = `${redirectFrontendUrl}/integrations-hub?dropbox_connected=true&email=${encodeURIComponent(userEmail)}`;
+        const cleanBase = redirectFrontendUrl.endsWith('/') ? redirectFrontendUrl.slice(0, -1) : redirectFrontendUrl;
+        const successPath = '/auth/success';
 
-        logger.info('Redirecting to frontend after Dropbox OAuth success', {
-            userId,
-            frontendUrl: redirectFrontendUrl,
-            email: userEmail
-        });
+        try {
+            const url = new URL(successPath, cleanBase);
+            url.searchParams.append('status', 'ok');
+            url.searchParams.append('provider', 'dropbox');
+            url.searchParams.append('email', userEmail);
+            url.searchParams.append('auth_bridge', 'true');
+            url.searchParams.append('dropbox_connected', 'true');
 
-        res.redirect(302, redirectUrl);
+            const finalUrl = url.toString();
+            logger.info('Redirecting to success page after Dropbox OAuth', { finalUrl });
+            return res.redirect(302, finalUrl);
+        } catch (err) {
+            // Fallback redirect
+            const redirectUrl = `${cleanBase}${successPath}?status=ok&provider=dropbox&dropbox_connected=true&email=${encodeURIComponent(userEmail)}&auth_bridge=true`;
+            return res.redirect(302, redirectUrl);
+        }
     } catch (error: any) {
         logger.error('Dropbox OAuth callback error:', {
             error: error.message,
@@ -227,10 +237,23 @@ export const handleDropboxCallback = async (req: Request, res: Response) => {
         });
 
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-        const errorUrl = `${frontendUrl}/auth/error?reason=${encodeURIComponent(error.response?.data?.error_description || error.message || 'dropbox_oauth_failed')}`;
-        res.redirect(302, errorUrl);
+        const cleanBase = frontendUrl.endsWith('/') ? frontendUrl.slice(0, -1) : frontendUrl;
+        const successPath = '/auth/success';
+
+        try {
+            const url = new URL(successPath, cleanBase);
+            url.searchParams.append('status', 'error');
+            url.searchParams.append('error', error.response?.data?.error_description || error.message || 'dropbox_oauth_failed');
+            url.searchParams.append('auth_bridge', 'true');
+            url.searchParams.append('provider', 'dropbox');
+
+            return res.redirect(302, url.toString());
+        } catch (err) {
+            const errorUrl = `${cleanBase}${successPath}?status=error&error=${encodeURIComponent('dropbox_oauth_failed')}&provider=dropbox&auth_bridge=true`;
+            res.redirect(302, errorUrl);
+        }
     }
-};
+}
 
 export const getDropboxStatus = async (req: Request, res: Response) => {
     try {

@@ -358,6 +358,13 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       state = body.state || body.amazon_state || req.query.state || req.query.amazon_state;
     }
 
+    // Check if we should allow mock/sandbox auth if code is missing
+    const isSandboxPath = req.path.includes('sandbox') || req.path.includes('test');
+    if (!code && isSandboxPath) {
+      logger.info('Sandbox callback reached without code, using mock_auth_code');
+      code = 'mock_auth_code';
+    }
+
     if (!code) {
       // Log incoming request details for debugging
       logger.info('Amazon OAuth callback reached without code', {
@@ -386,16 +393,33 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         }
       }
 
-      if (errorParam) {
-        logger.error('Amazon OAuth error received in callback', { error: errorParam, description: errorDescription });
-        const errorUrl = `${frontendUrl}/auth/success?status=error&error=${encodeURIComponent(errorParam)}&amazon_error=true${errorDescription ? `&error_description=${encodeURIComponent(errorDescription)}` : ''}&auth_bridge=true`;
+      // Solidify redirection URL construction (ensures ?status=... is correct)
+      const cleanBase = frontendUrl.endsWith('/') ? frontendUrl.slice(0, -1) : frontendUrl;
+      const successPath = '/auth/success';
+
+      try {
+        // Use URL constructor for absolute reliability
+        const url = new URL(successPath, cleanBase);
+        url.searchParams.append('status', 'error');
+        url.searchParams.append('amazon_error', 'true');
+        url.searchParams.append('auth_bridge', 'true');
+
+        if (errorParam) {
+          url.searchParams.append('error', errorParam);
+          if (errorDescription) url.searchParams.append('error_description', errorDescription);
+        } else {
+          url.searchParams.append('error', 'missing_auth_code');
+        }
+
+        const finalUrl = url.toString();
+        logger.error('Redirecting to error page (missing code)', { finalUrl });
+        return res.redirect(302, finalUrl);
+      } catch (err) {
+        // Fallback for malformed base URLs
+        const errorUrl = `${cleanBase}${successPath}?status=error&error=${encodeURIComponent(errorParam || 'missing_auth_code')}&amazon_error=true&auth_bridge=true`;
+        logger.error('Redirecting to error page (fallback construction)', { errorUrl });
         return res.redirect(302, errorUrl);
       }
-
-      // Handle cases where code is simply missing (user cancel or config error)
-      logger.warn('Amazon OAuth callback missing code and error parameter');
-      const errorUrl = `${frontendUrl}/auth/success?status=error&error=missing_auth_code&amazon_error=true&auth_bridge=true`;
-      return res.redirect(302, errorUrl);
     }
 
     logger.info('Amazon OAuth callback received', {
@@ -836,9 +860,22 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     }
 
     const cleanBase = frontendUrl.endsWith('/') ? frontendUrl.slice(0, -1) : frontendUrl;
-    const errorUrl = `${cleanBase}/auth/success?status=error&error=${encodeURIComponent(error.message || 'oauth_failed')}&amazon_error=true&auth_bridge=true`;
+    const successPath = '/auth/success';
 
-    return res.redirect(302, errorUrl);
+    try {
+      const url = new URL(successPath, cleanBase);
+      url.searchParams.append('status', 'error');
+      url.searchParams.append('error', error.message || 'oauth_failed');
+      url.searchParams.append('amazon_error', 'true');
+      url.searchParams.append('auth_bridge', 'true');
+
+      const finalUrl = url.toString();
+      logger.error('Catch-all redirect to error page', { finalUrl });
+      return res.redirect(302, finalUrl);
+    } catch (urlErr) {
+      const errorUrl = `${cleanBase}${successPath}?status=error&error=${encodeURIComponent(error.message || 'oauth_failed')}&amazon_error=true&auth_bridge=true`;
+      return res.redirect(302, errorUrl);
+    }
   }
 };
 
