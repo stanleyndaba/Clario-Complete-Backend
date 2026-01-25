@@ -348,13 +348,14 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
 
     if (req.method === 'GET') {
       // GET request - read from query params
-      code = req.query.code as string;
-      state = req.query.state as string;
+      // Support both 'code' (LWA) and 'spapi_oauth_code' (SP-API)
+      code = (req.query.spapi_oauth_code || req.query.code) as string;
+      state = (req.query.state || req.query.amazon_state) as string;
     } else if (req.method === 'POST') {
       // POST request - read from JSON body
       const body = req.body || {};
-      code = body.code || req.query.code;
-      state = body.state || req.query.state;
+      code = body.spapi_oauth_code || body.code || req.query.spapi_oauth_code || req.query.code;
+      state = body.state || body.amazon_state || req.query.state || req.query.amazon_state;
     }
 
     if (!code) {
