@@ -546,6 +546,8 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         .or(`seller_id.eq.${profile.sellerId},amazon_seller_id.eq.${profile.sellerId}${userId ? `,id.eq.${userId}` : ''}`)
         .maybeSingle();
 
+      let tenantIdToUse = existingUser?.tenant_id || null;
+
       if (existingUser?.id) {
         userId = existingUser.id;
         userEmail = existingUser.email || `${profile.sellerId}@amazon.seller`;
@@ -565,7 +567,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         logger.info('Updated existing user', { userId, sellerId: profile.sellerId });
       } else {
         // Step 4a: Resolve or Create Tenant
-        let tenantIdToUse = '00000000-0000-0000-0000-000000000001'; // Default fallback
+        if (!tenantIdToUse) tenantIdToUse = '00000000-0000-0000-0000-000000000001'; // Default fallback
 
         // 1. Try to find tenant by slug from state
         if (tenantSlug) {
@@ -679,7 +681,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         accessToken: access_token,
         refreshToken: refresh_token || '',
         expiresAt
-      });
+      }, tenantIdToUse || undefined);
 
       logger.info('Successfully stored Amazon tokens in database', {
         userId,
@@ -695,6 +697,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           provider: 'amazon',
           status: 'connected',
           display_name: profile.companyName || `Amazon Seller ${profile.sellerId}`,
+          tenant_id: tenantIdToUse,
           metadata: {
             marketplaces: profile.marketplaces,
             seller_name: profile.sellerName,
