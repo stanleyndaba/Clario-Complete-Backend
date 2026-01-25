@@ -780,43 +780,35 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       }
     }
 
-    // Redirect to the dedicated Authorised Successfully page
-    const targetPath = '/auth/success';
-    let redirectUrl = `${frontendUrl}${targetPath}`;
-
+    // Finalize the redirect URL
+    let finalRedirectUrl: string;
     try {
-      const frontendUrlObj = new URL(frontendUrl);
-      const baseUrl = `${frontendUrlObj.protocol}//${frontendUrlObj.host}`;
+      // Use URL constructor to handle base and path correctly (prevents double slashes)
+      const cleanBase = frontendUrl.endsWith('/') ? frontendUrl.slice(0, -1) : frontendUrl;
+      const url = new URL(targetPath, cleanBase);
 
-      const successParams = new URLSearchParams();
-      successParams.append('status', 'ok');
-      successParams.append('provider', 'amazon');
-      if (tenantSlug) successParams.append('tenant_slug', tenantSlug);
-      if (marketplaceIdForRedirect) successParams.append('marketplaceId', marketplaceIdForRedirect);
+      url.searchParams.append('status', 'ok');
+      url.searchParams.append('provider', 'amazon');
+      if (tenantSlug) url.searchParams.append('tenant_slug', tenantSlug);
+      if (marketplaceIdForRedirect) url.searchParams.append('marketplaceId', marketplaceIdForRedirect);
 
-      redirectUrl = `${baseUrl}${targetPath}?${successParams.toString()}`;
+      finalRedirectUrl = url.toString();
     } catch (urlErr) {
-      redirectUrl = `${frontendUrl}${targetPath}?status=ok&provider=amazon&tenant_slug=${tenantSlug}`;
+      // Fallback construction if URL parsing fails
+      const cleanBase = frontendUrl.endsWith('/') ? frontendUrl.slice(0, -1) : frontendUrl;
+      finalRedirectUrl = `${cleanBase}${targetPath}?status=ok&provider=amazon&tenant_slug=${tenantSlug}`;
     }
 
-    // Set session cookie if we have tokens
-    if (result?.data?.refresh_token) {
-      // In production, you would create a proper session here
-      // For now, just redirect to frontend
-      logger.info('Tokens obtained, redirecting to frontend', { frontendUrl, redirectUrl });
-    }
+    logger.info('✅ OAuth callback successful, redirecting to success page', {
+      userId,
+      redirectUrl: finalRedirectUrl
+    });
 
-    res.redirect(302, redirectUrl);
+    return res.redirect(302, finalRedirectUrl);
   } catch (error: any) {
-    logger.error('OAuth callback error', {
+    logger.error('❌ OAuth callback error catch-all', {
       error: error.message,
-      stack: error.stack,
-      code: (req.query.code as string)?.substring(0, 20),
-      state: req.query.state,
-      method: req.method,
-      path: req.path,
-      query: req.query,
-      body: req.body
+      userId: (req as any).userId || (req as any).user?.id || 'unknown'
     });
 
     // For POST requests, return JSON error
@@ -826,14 +818,12 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       res.header('Access-Control-Allow-Credentials', 'true');
       return res.status(400).json({
         ok: false,
-        connected: false,
-        success: false,
         error: error.message || 'OAuth callback failed'
       });
     }
 
-    // For GET requests, redirect to error page
-    // Try to get frontend URL from state if available
+    // For GET requests, redirect to success page with error status
+    // AVOID redirecting to /dashboard because the frontend redirects /dashboard to /
     const stateFromQuery = req.query.state as string;
     let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     if (stateFromQuery) {
@@ -842,10 +832,11 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         frontendUrl = storedState.frontendUrl;
       }
     }
-    // Redirect to a page that can handle the error (not /auth/analyzing which doesn't load)
-    // Use dashboard or a proper error page
-    const errorUrl = `${frontendUrl}/dashboard?error=${encodeURIComponent(error.message || 'oauth_failed')}&amazon_error=true`;
-    res.redirect(302, errorUrl);
+
+    const cleanBase = frontendUrl.endsWith('/') ? frontendUrl.slice(0, -1) : frontendUrl;
+    const errorUrl = `${cleanBase}/auth/success?status=error&error=${encodeURIComponent(error.message || 'oauth_failed')}&amazon_error=true`;
+
+    return res.redirect(302, errorUrl);
   }
 };
 
