@@ -526,17 +526,10 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         }
       }
 
-      // We proceed even if profile.sellerId is a fallback
-      logger.info('Seller profile status', {
-        sellerId: profile.sellerId,
-        isFallback: profile.sellerId.startsWith('UNRESOLVED_')
-      });
-
-      logger.info('Retrieved seller profile from Amazon', {
-        sellerId: profile.sellerId,
-        marketplaces: profile.marketplaces,
-        companyName: profile.companyName
-      });
+      // Critical: Ensure profile is available before proceeding to Step 4
+      if (!profile) {
+        throw new Error('Seller profile initialization failed');
+      }
 
       // Step 4: Upsert user/tenant in Supabase (use supabaseAdmin to bypass RLS)
       const { supabaseAdmin } = await import('../database/supabaseClient');
