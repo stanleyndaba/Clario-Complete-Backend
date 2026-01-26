@@ -539,14 +539,28 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       let userEmail: string | null = null;
       let stripeCustomerId: number | null = null;
 
-      const placeholderEmail = `${profile.sellerId}@amazon.seller`;
+      const placeholderEmail = `${profile.sellerId}@amazon.seller`.toLowerCase();
 
-      // Try to find existing user by seller_id OR by email OR by userId from state
-      const { data: existingUser } = await supabaseAdmin
+      // Sanitize userId if it's not a valid UUID (e.g. from state or session)
+      const { convertUserIdToUuid } = await import('../database/supabaseClient');
+      const sanitizedUserId = userId ? convertUserIdToUuid(userId) : null;
+
+      // Try to find existing user by seller_id OR by email OR by sanitized userId
+      let { data: existingUser } = await supabaseAdmin
         .from('users')
         .select('id, seller_id, amazon_seller_id, company_name, email, stripe_customer_id, tenant_id')
-        .or(`seller_id.eq.${profile.sellerId},amazon_seller_id.eq.${profile.sellerId},email.eq.${placeholderEmail}${userId ? `,id.eq.${userId}` : ''}`)
+        .or(`seller_id.eq.${profile.sellerId},amazon_seller_id.eq.${profile.sellerId},email.eq.${placeholderEmail}${sanitizedUserId ? `,id.eq.${sanitizedUserId}` : ''}`)
         .maybeSingle();
+
+      // Second-chance lookup by email only if broader lookup failed (case sensitivity or PostgREST 'or' edge cases)
+      if (!existingUser) {
+        const { data: emailMatch } = await supabaseAdmin
+          .from('users')
+          .select('id, seller_id, amazon_seller_id, company_name, email, stripe_customer_id, tenant_id')
+          .eq('email', placeholderEmail)
+          .maybeSingle();
+        if (emailMatch) existingUser = emailMatch;
+      }
 
       let tenantIdToUse = existingUser?.tenant_id || null;
 
@@ -608,13 +622,13 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           }
         }
 
-        // Create new user/tenant
+        // Create new user record
         const { data: newUser, error: createErr } = await supabaseAdmin
           .from('users')
           .insert({
             email: placeholderEmail,
-            seller_id: profile.sellerId,
             amazon_seller_id: profile.sellerId,
+            seller_id: profile.sellerId,
             tenant_id: tenantIdToUse,
             company_name: profile.companyName || profile.sellerName || null,
             created_at: new Date().toISOString(),
@@ -623,12 +637,27 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           .select('id, email')
           .single();
 
-        if (createErr || !newUser?.id) {
-          throw new Error(`Failed to create user: ${createErr?.message || 'Unknown error'}`);
+        if (createErr) {
+          // Final fallback: If insert still fails with duplicate, try one last fetch
+          if (createErr.code === '23505') {
+            const { data: lastChanceUser } = await supabaseAdmin
+              .from('users')
+              .select('id, email')
+              .eq('email', placeholderEmail)
+              .single();
+            if (lastChanceUser) {
+              userId = lastChanceUser.id;
+              userEmail = lastChanceUser.email;
+            } else {
+              throw new Error(`Failed to create user (collision): ${createErr.message}`);
+            }
+          } else {
+            throw new Error(`Failed to create user: ${createErr.message}`);
+          }
+        } else if (newUser?.id) {
+          userId = newUser.id;
+          userEmail = newUser.email || placeholderEmail;
         }
-
-        userId = newUser.id;
-        userEmail = newUser.email || placeholderEmail;
 
         // Step 4b: Ensure membership exists for the new user
         await supabaseAdmin
