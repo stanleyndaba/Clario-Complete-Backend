@@ -8,6 +8,7 @@ export interface RateLimitOptions {
   maxHits: number;
   redisClient: RedisClientType;
   getKey?: (req: Request) => string;
+  onLimitExceeded?: (req: Request, res: Response, info: { currentHits: number; limit: number; key: string }) => void;
 }
 
 export interface RateLimitResult {
@@ -32,13 +33,13 @@ export function rateLimit(options: RateLimitOptions) {
 
       // Use Redis pipeline for atomic operations
       const pipeline = redisClient.multi();
-      
+
       // Increment counter and set expiry
       pipeline.incr(redisKey);
       pipeline.expire(redisKey, windowSec);
-      
+
       const results = await pipeline.exec();
-      
+
       if (!results || results.length < 2) {
         logger.error('Rate limit Redis operation failed', { key });
         // Fail open - allow request if Redis is unavailable
@@ -65,7 +66,7 @@ export function rateLimit(options: RateLimitOptions) {
       if (currentHits > limit) {
         const retryAfter = windowSec;
         res.set('Retry-After', retryAfter.toString());
-        
+
         logger.warn('Rate limit exceeded', {
           key,
           currentHits,
@@ -74,6 +75,10 @@ export function rateLimit(options: RateLimitOptions) {
           ip: req.ip,
           userAgent: req.get('User-Agent')
         });
+
+        if (options.onLimitExceeded) {
+          options.onLimitExceeded(req, res, { currentHits, limit, key });
+        }
 
         res.status(429).json({
           error: 'Too many requests',
@@ -99,7 +104,7 @@ export function rateLimit(options: RateLimitOptions) {
         keyPrefix,
         ip: req.ip
       });
-      
+
       // Fail open - allow request if rate limiting fails
       next();
     }
@@ -107,12 +112,25 @@ export function rateLimit(options: RateLimitOptions) {
 }
 
 /**
+ * Get client IP address from request with proxy support
+ */
+function getClientIp(req: Request): string {
+  return (
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+    (req.headers['x-real-ip'] as string) ||
+    req.socket.remoteAddress ||
+    req.ip ||
+    'unknown'
+  );
+}
+
+/**
  * Generate default rate limit key based on IP and user ID
  */
 function generateDefaultKey(req: Request, keyPrefix: string): string {
-  const ip = req.ip || req.connection.remoteAddress || 'unknown';
-  const userId = (req as any).user?.id || 'anonymous';
-  
+  const ip = getClientIp(req);
+  const userId = (req as any).userId || (req as any).user?.id || 'anonymous';
+
   return `${keyPrefix}:${userId}:${ip}`;
 }
 
@@ -189,14 +207,14 @@ export async function getRateLimitStatus(
     const redisKey = `rate_limit:${key}`;
     const currentHits = await redisClient.get(redisKey);
     const ttl = await redisClient.ttl(redisKey);
-    
+
     if (currentHits === null) {
       return null;
     }
-    
+
     const hits = parseInt(currentHits, 10);
     const reset = Math.floor(Date.now() / 1000) + ttl;
-    
+
     return {
       limit: 0, // Would need to be passed in or stored
       remaining: Math.max(0, 0 - hits),
