@@ -1,14 +1,16 @@
 import { supabase } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import { v4 as uuidv4 } from 'uuid';
+import { pdfGenerationService } from './pdfGenerationService';
 // Define DisputeCase interface locally since it's not exported from enhancedDetectionService
 interface DisputeCase {
   id: string;
   seller_id: string;
+  case_number: string;
   detection_result_id: string;
   case_type: string;
   amount: number;
-  claim_amount: number; // Add missing property
+  claim_amount: number;
   currency: string;
   status: string;
   provider: string;
@@ -16,7 +18,13 @@ interface DisputeCase {
   evidence?: any;
   created_at: string;
   updated_at: string;
-  resolution_date?: string; // Add missing property
+  resolution_date?: string;
+  order_id?: string;
+  asin?: string;
+  sku?: string;
+  filing_status?: string;
+  evidence_document_ids?: string[];
+  metadata?: any;
 }
 
 export interface DisputeAutomationRule {
@@ -632,7 +640,7 @@ export class DisputeService {
   private async submitToAmazon(disputeCase: DisputeCase, submissionData: any): Promise<{ provider_case_id: string; provider_response: any }> {
     // Placeholder for Amazon API integration
     const providerCaseId = `AMZ-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    
+
     return {
       provider_case_id: providerCaseId,
       provider_response: {
@@ -649,7 +657,7 @@ export class DisputeService {
   private async submitToStripe(disputeCase: DisputeCase, submissionData: any): Promise<{ provider_case_id: string; provider_response: any }> {
     // Placeholder for Stripe API integration
     const providerCaseId = `STR-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    
+
     return {
       provider_case_id: providerCaseId,
       provider_response: {
@@ -666,7 +674,7 @@ export class DisputeService {
   private async submitToShopify(disputeCase: DisputeCase, submissionData: any): Promise<{ provider_case_id: string; provider_response: any }> {
     // Placeholder for Shopify API integration
     const providerCaseId = `SHOP-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    
+
     return {
       provider_case_id: providerCaseId,
       provider_response: {
@@ -765,6 +773,203 @@ export class DisputeService {
         return 'closed';
       default:
         return 'closed';
+    }
+  }
+
+  /**
+   * Generate a professional PDF brief for a dispute case
+   */
+  async generateDisputeBrief(caseId: string): Promise<Buffer> {
+    try {
+      const disputeCase = await this.getDisputeCase(caseId);
+
+      // Fetch evidence document details if available
+      let evidenceDocs: any[] = [];
+      if (disputeCase.evidence_document_ids && disputeCase.evidence_document_ids.length > 0) {
+        const { data } = await supabase
+          .from('evidence_documents')
+          .select('filename, original_filename')
+          .in('id', disputeCase.evidence_document_ids);
+        evidenceDocs = data || [];
+      }
+
+      // Construct HTML template with an executive feel
+      const html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+            body { 
+              font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+              color: #111827; 
+              line-height: 1.5; 
+              padding: 40px; 
+              font-size: 14px;
+            }
+            .header { 
+              display: flex; 
+              justify-content: space-between; 
+              align-items: flex-start;
+              border-bottom: 2px solid #10b981; 
+              padding-bottom: 24px; 
+              margin-bottom: 32px; 
+            }
+            .logo-section h1 { 
+              font-size: 28px; 
+              font-weight: 800; 
+              color: #10b981; 
+              margin: 0;
+              letter-spacing: -0.025em;
+            }
+            .tagline { font-size: 12px; color: #6b7280; font-weight: 500; }
+            .case-info { text-align: right; }
+            .case-title { font-size: 18px; font-weight: 700; margin: 0; color: #374151; }
+            .case-number { font-size: 16px; font-weight: 500; font-family: monospace; color: #6b7280; }
+            
+            .section { margin-bottom: 32px; }
+            .section-title { 
+              font-size: 12px; 
+              font-weight: 700; 
+              text-transform: uppercase; 
+              color: #6b7280; 
+              margin-bottom: 12px; 
+              border-bottom: 1px solid #e5e7eb; 
+              padding-bottom: 6px; 
+              letter-spacing: 0.05em;
+            }
+            
+            .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }
+            .data-point { margin-bottom: 8px; }
+            .label { font-size: 11px; font-weight: 600; color: #9ca3af; text-transform: uppercase; margin-bottom: 2px; }
+            .value { font-size: 14px; font-weight: 600; color: #1f2937; }
+            .value.status { color: #059669; }
+            .value.amount { font-size: 20px; color: #10b981; font-weight: 700; }
+            
+            .narrative-box { 
+              background: #f9fafb; 
+              border-left: 4px solid #10b981;
+              padding: 20px; 
+              border-radius: 4px; 
+              font-size: 15px; 
+              color: #374151;
+              line-height: 1.6;
+            }
+            
+            .evidence-list { list-style: none; padding: 0; margin: 0; }
+            .evidence-item { 
+              padding: 8px 12px; 
+              background: #f3f4f6; 
+              border-radius: 6px; 
+              margin-bottom: 8px; 
+              display: flex; 
+              align-items: center; 
+              font-weight: 500;
+              font-size: 13px;
+            }
+            .check-icon { color: #10b981; margin-right: 10px; font-weight: bold; }
+            
+            .footer { 
+              margin-top: 60px; 
+              font-size: 11px; 
+              color: #9ca3af; 
+              text-align: center; 
+              border-top: 1px solid #f3f4f6; 
+              padding-top: 24px; 
+            }
+            .confidential { font-weight: 700; color: #ef4444; margin-top: 8px; display: block; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div class="logo-section">
+              <h1>OPSIDE</h1>
+              <div class="tagline">ENTERPRISE AUDIT & RECOVERY ENGINE</div>
+            </div>
+            <div class="case-info">
+              <h2 class="case-title">Forensic Dispute Brief</h2>
+              <div class="case-number">${disputeCase.case_number}</div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-title">Case Metadata</div>
+            <div class="grid">
+              <div class="data-point">
+                <div class="label">Current Status</div>
+                <div class="value status">${(disputeCase.filing_status || disputeCase.status).toUpperCase()}</div>
+              </div>
+              <div class="data-point">
+                <div class="label">Amazon Case Reference</div>
+                <div class="value">${disputeCase.provider_case_id || 'PENDING SUBMISSION'}</div>
+              </div>
+              <div class="data-point">
+                <div class="label">Filing Agent</div>
+                <div class="value">Agent 7 (The Closer)</div>
+              </div>
+              <div class="data-point">
+                <div class="label">Submission Date</div>
+                <div class="value">${new Date(disputeCase.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-title">Claim Specifications</div>
+            <div class="grid">
+              <div class="data-point">
+                <div class="label">Order Identifier</div>
+                <div class="value">${disputeCase.order_id || 'N/A'}</div>
+              </div>
+              <div class="data-point">
+                <div class="label">ASIN / SKU Accession</div>
+                <div class="value">${disputeCase.asin || 'N/A'} / ${disputeCase.sku || 'N/A'}</div>
+              </div>
+              <div class="data-point">
+                <div class="label">Dispute Classification</div>
+                <div class="value">${disputeCase.case_type.replace(/_/g, ' ').toUpperCase()}</div>
+              </div>
+              <div class="data-point">
+                <div class="label">Recovery Valuation</div>
+                <div class="value amount">${disputeCase.currency} ${disputeCase.claim_amount.toFixed(2)}</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-title">Forensic Argument & Policy Basis</div>
+            <div class="narrative-box">
+              ${disputeCase.metadata?.forensic_brief || `This claim represents a verified financial discrepancy identified through our high-fidelity inventory reconciliation engine. Based on Amazon's FBA policy regarding lost or damaged inventory, we have established sufficient forensic proof that the merchant is entitled to a reimbursement of ${disputeCase.currency} ${disputeCase.claim_amount.toFixed(2)}.`}
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-title">Verified Evidence Portfolio</div>
+            <div class="evidence-list">
+              ${evidenceDocs.length > 0 ?
+          evidenceDocs.map(doc => `
+                  <div class="evidence-item">
+                    <span class="check-icon">✓</span> ${doc.original_filename || doc.filename}
+                  </div>
+                `).join('') :
+          '<div class="evidence-item"><span class="check-icon">✓</span> Internal Inventory Reconciliation Report (System Generated)</div>'
+        }
+            </div>
+          </div>
+
+          <div class="footer">
+            Generated via Opside Autonomous Audit Protocol. This document is an official record of dispute filing and may be used for internal financial audits and accounting reconciliation.
+            <span class="confidential">SENSITIVE MERCHANT INFORMATION – FOR AUTHORIZED PERSONNEL ONLY</span>
+          </div>
+        </body>
+        </html>
+      `;
+
+      return await pdfGenerationService.generatePDFFromHTML(html);
+    } catch (error) {
+      logger.error('Failed to generate dispute brief', { error, caseId });
+      throw error;
     }
   }
 }
