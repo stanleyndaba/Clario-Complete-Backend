@@ -580,7 +580,7 @@ export class OutlookIngestionService {
    */
   private async triggerParsingPipeline(documentId: string, userId: string): Promise<void> {
     try {
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-backend-jb6c.onrender.com';
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
 
       await axios.post(
         `${pythonApiUrl}/api/documents/${documentId}/parse`,

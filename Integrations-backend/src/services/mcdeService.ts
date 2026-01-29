@@ -78,7 +78,7 @@ class MCDEService {
         this.pythonApiUrl =
             process.env.PYTHON_API_URL ||
             process.env.API_URL ||
-            'https://python-api-backend-jb6c.onrender.com';
+            'https://docker-api-13.onrender.com';
 
         this.mcdeEndpoint = `${this.pythonApiUrl}/api/v1/mcde`;
         this.enabled = process.env.ENABLE_MCDE_INTEGRATION === 'true';

@@ -672,7 +672,7 @@ export class OrchestrationJobManager {
       }
 
       // Step 1: Trigger evidence matching automatically
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-backend-jb6c.onrender.com';
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
 
       try {
         // Trigger evidence matching via Python API
@@ -859,7 +859,7 @@ export class OrchestrationJobManager {
       const amazonCaseId = metadata?.amazon_case_id || metadata?.case_id;
 
       // Log rejection for learning
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-backend-jb6c.onrender.com';
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
 
       try {
         await axios.post(
@@ -950,7 +950,7 @@ export class OrchestrationJobManager {
       }
 
       // Generate proof packet (call Python API)
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-backend-jb6c.onrender.com';
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
       let proofPacketId = null;
       try {
         const proofPacketResponse = await axios.post(

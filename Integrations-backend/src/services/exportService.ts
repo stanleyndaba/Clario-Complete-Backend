@@ -131,7 +131,7 @@ export class ExportService {
     logger.info('Fetching documents for export', { documentIds });
 
     // Try to fetch from Python backend first
-    const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-backend-jb6c.onrender.com';
+    const pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
 
     try {
       // Fetch documents from Python backend

@@ -58,7 +58,7 @@ class EvidenceMatchingService {
 
   constructor() {
     // Get Python API URL from environment
-    const pythonApiUrl = process.env.PYTHON_API_URL || 'https://python-api-backend-jb6c.onrender.com';
+    const pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
     this.pythonApiUrl = pythonApiUrl;
 
     // Get thresholds from environment (optional)
