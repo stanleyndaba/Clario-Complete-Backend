@@ -263,6 +263,12 @@ class DatabaseManager:
     @contextmanager
     def _connection(self):
         """Context manager that yields a connection and safely returns/closes it."""
+        if os.getenv("DISABLE_DB", "").lower() in ("true", "1", "yes"):
+            # Return a mock connection object for DISABLE_DB mode
+            from unittest.mock import MagicMock
+            yield MagicMock()
+            return
+
         if self.is_postgresql and self.connection_pool:
             conn = self.connection_pool.getconn()
             try:
@@ -291,6 +297,11 @@ class DatabaseManager:
     
     def _execute_query(self, query: str, params: tuple = (), fetch: bool = False, fetch_one: bool = False):
         """Execute query with proper connection handling"""
+        if os.getenv("DISABLE_DB", "").lower() in ("true", "1", "yes"):
+            if fetch:
+                return [] if not fetch_one else None
+            return
+
         if self.is_postgresql:
             with self._connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cursor:

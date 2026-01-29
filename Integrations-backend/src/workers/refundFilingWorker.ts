@@ -271,10 +271,11 @@ class RefundFilingWorker {
   * 3. Do NOT file a new case - wait for the existing one to resolve
   * 
   * @param orderId The Amazon order ID to check
-  * @param sellerId The seller/user ID (for scoping)
-  * @returns true if there's an active case, false if safe to file
-  */
-  private async hasActiveClaimForOrder(orderId: string, sellerId: string): Promise<boolean> {
+   * @param sellerId The seller/user ID (for scoping)
+   * @param excludeCaseId Optional case ID to exclude (current case being processed)
+   * @returns true if there's an active case, false if safe to file
+   */
+  private async hasActiveClaimForOrder(orderId: string, sellerId: string, excludeCaseId?: string): Promise<boolean> {
     if (!orderId) {
       // No order ID means we can't check for duplicates - log warning but allow
       logger.warn(' [REFUND FILING] No order_id provided, cannot check for duplicates');
@@ -312,6 +313,9 @@ class RefundFilingWorker {
 
       // Check if any active case matches this order_id
       for (const activeCase of activeCases) {
+        if (excludeCaseId && activeCase.id === excludeCaseId) {
+          continue; // Skip the current case
+        }
         const caseOrderId = (activeCase as any).detection_results?.evidence?.order_id;
         if (caseOrderId === orderId) {
           logger.warn(' [REFUND FILING] DUPLICATE DETECTED - Active case exists for order', {
@@ -459,9 +463,11 @@ class RefundFilingWorker {
       // Check each document filename against dangerous patterns
       for (const doc of documents) {
         const filename = (doc.filename || '').toLowerCase();
+        console.log(`DEBUG: Checking filename "${filename}" against patterns...`);
 
         for (const pattern of RefundFilingWorker.DANGEROUS_DOCUMENT_PATTERNS) {
           if (filename.includes(pattern)) {
+            console.log(`DEBUG: DANGEROUS PATTERN "${pattern}" MATCHED in "${filename}"`);
             dangerousFilenames.push(doc.filename);
             break; // No need to check more patterns for this file
           }
@@ -510,7 +516,7 @@ class RefundFilingWorker {
       // Query evidence documents with parsed content
       const { data: documents, error } = await supabaseAdmin
         .from('evidence_documents')
-        .select('id, filename, parsed_content')
+        .select('id, filename, raw_text, extracted')
         .in('id', evidenceIds)
         .eq('seller_id', sellerId);
 
@@ -527,12 +533,12 @@ class RefundFilingWorker {
 
       // Check each document's content
       for (const doc of documents) {
-        let rawText: string | undefined;
+        let rawText: string | undefined = (doc as any).raw_text;
 
-        // Try to get raw_text from parsed_content
-        const parsedContent = doc.parsed_content as any;
-        if (parsedContent?.raw_text) {
-          rawText = parsedContent.raw_text;
+        // Try to get from extracted if raw_text is empty
+        if (!rawText) {
+          const extracted = (doc as any).extracted || {};
+          rawText = extracted.raw_text || extracted.text;
         }
 
         // If no parsed content, try on-demand parsing
@@ -863,6 +869,7 @@ class RefundFilingWorker {
     }
 
     logger.info(` [REFUND FILING] Found ${casesToFile.length} cases with evidence ready for filing`, { tenantId });
+    console.log(`\nDEBUG: Found ${casesToFile.length} cases for tenant ${tenantId}`);
 
     // Process each case
     for (const disputeCase of casesToFile) {
@@ -870,8 +877,18 @@ class RefundFilingWorker {
         stats.processed++;
 
         // Evidence documents are already joined - extract from the query result
+        logger.info(` [DEBUG] Processing case ${disputeCase.id}`, {
+          keys: Object.keys(disputeCase),
+          evidenceLinkRaw: (disputeCase as any).dispute_evidence_links,
+          detectionResultRaw: (disputeCase as any).detection_results
+        });
+
         const evidenceLinksFromQuery = (disputeCase as any).dispute_evidence_links || [];
-        const evidenceIds = evidenceLinksFromQuery.map((link: any) => link.evidence_document_id);
+        const evidenceIds = Array.isArray(evidenceLinksFromQuery)
+          ? evidenceLinksFromQuery.map((link: any) => link.evidence_document_id)
+          : [(evidenceLinksFromQuery as any).evidence_document_id].filter(Boolean);
+
+        logger.info(` [DEBUG] Case ${disputeCase.id} evidenceIds:`, { evidenceIds });
 
         // Double-check we have evidence (should always be true due to !inner join)
         if (evidenceIds.length === 0) {
@@ -894,12 +911,18 @@ class RefundFilingWorker {
 
           // Quarantine this case - it must NEVER be auto-submitted (tenant-scoped)
           const quarantineQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-          await quarantineQuery
+          const { error: qErr } = await quarantineQuery
             .update({
               filing_status: 'quarantined_dangerous_doc',
               updated_at: new Date().toISOString()
             })
             .eq('id', disputeCase.id);
+
+          if (qErr) {
+            logger.error('[ERROR] [REFUND FILING] Failed to quarantine dangerous case', { disputeId: disputeCase.id, error: qErr.message });
+          } else {
+            console.log(`DEBUG: Successfully quarantined case ${disputeCase.id}`);
+          }
 
           continue; // Skip to next case - this one is quarantined
         }
@@ -917,7 +940,7 @@ class RefundFilingWorker {
 
           // Quarantine this case - it must NEVER be auto-submitted (tenant-scoped)
           const quarantineQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-          await quarantineQuery
+          const { error: qErr } = await quarantineQuery
             .update({
               filing_status: 'quarantined_dangerous_doc',
               metadata: {
@@ -927,6 +950,12 @@ class RefundFilingWorker {
               updated_at: new Date().toISOString()
             })
             .eq('id', disputeCase.id);
+
+          if (qErr) {
+            logger.error('[ERROR] [REFUND FILING] Failed to quarantine dangerous content case', { disputeId: disputeCase.id, error: qErr.message });
+          } else {
+            console.log(`DEBUG: Successfully quarantined dangerous content case ${disputeCase.id}`);
+          }
 
           continue; // Skip to next case - this one is quarantined
         }
@@ -940,7 +969,7 @@ class RefundFilingWorker {
         // DUPLICATE PREVENTION: Check if this order already has an active case
         // This is CRITICAL - filing duplicates = Amazon support abuse flag
         if (orderId) {
-          const hasDuplicate = await this.hasActiveClaimForOrder(orderId, disputeCase.seller_id);
+          const hasDuplicate = await this.hasActiveClaimForOrder(orderId, disputeCase.seller_id, disputeCase.id);
           if (hasDuplicate) {
             logger.info('[SKIP] [REFUND FILING] Skipping case - duplicate claim exists for order', {
               disputeId: disputeCase.id,
@@ -950,12 +979,18 @@ class RefundFilingWorker {
 
             // Mark this case as duplicate to prevent future processing (tenant-scoped)
             const duplicateQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-            await duplicateQuery
+            const { error: dErr } = await duplicateQuery
               .update({
                 filing_status: 'duplicate_blocked',
                 updated_at: new Date().toISOString()
               })
               .eq('id', disputeCase.id);
+
+            if (dErr) {
+              logger.error('[ERROR] [REFUND FILING] Failed to mark case as duplicate', { disputeId: disputeCase.id, error: dErr.message });
+            } else {
+              console.log(`DEBUG: Successfully marked duplicate case ${disputeCase.id}`);
+            }
 
             continue; // Skip to next case
           }
@@ -979,12 +1014,18 @@ class RefundFilingWorker {
 
           // Mark this case to prevent future processing (tenant-scoped)
           const reimbursedQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-          await reimbursedQuery
+          const { error: rErr } = await reimbursedQuery
             .update({
               filing_status: 'already_reimbursed',
               updated_at: new Date().toISOString()
             })
             .eq('id', disputeCase.id);
+
+          if (rErr) {
+            logger.error('[ERROR] [REFUND FILING] Failed to mark case as already reimbursed', { disputeId: disputeCase.id, error: rErr.message });
+          } else {
+            console.log(`DEBUG: Successfully marked reimbursed case ${disputeCase.id}`);
+          }
 
           continue; // Skip to next case
         }
@@ -1029,7 +1070,7 @@ class RefundFilingWorker {
 
           // Flag for manual review due to amount mismatch
           const mismatchQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-          await mismatchQuery
+          const { error: mErr } = await mismatchQuery
             .update({
               filing_status: 'pending_approval',
               metadata: {
@@ -1041,6 +1082,12 @@ class RefundFilingWorker {
               updated_at: new Date().toISOString()
             })
             .eq('id', disputeCase.id);
+
+          if (mErr) {
+            logger.error('[ERROR] [REFUND FILING] Failed to mark case for approval due to amount mismatch', { disputeId: disputeCase.id, error: mErr.message });
+          } else {
+            console.log(`DEBUG: Successfully marked amount mismatch case ${disputeCase.id} for approval`);
+          }
 
           continue; // Skip to next case - needs human review
         }
@@ -1059,12 +1106,18 @@ class RefundFilingWorker {
 
           // Mark for manual approval instead of auto-filing (tenant-scoped)
           const approvalQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-          await approvalQuery
+          const { error: aErr } = await approvalQuery
             .update({
               filing_status: 'pending_approval',
               updated_at: new Date().toISOString()
             })
             .eq('id', disputeCase.id);
+
+          if (aErr) {
+            logger.error('[ERROR] [REFUND FILING] Failed to mark case for approval', { disputeId: disputeCase.id, error: aErr.message });
+          } else {
+            console.log(`DEBUG: Successfully marked high-value case ${disputeCase.id} for approval`);
+          }
 
           continue; // Skip to next case - human must approve this one
         }

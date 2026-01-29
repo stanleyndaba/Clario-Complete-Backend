@@ -1,13 +1,31 @@
+import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import request from 'supertest';
 import app from '../src/index';
 import { supabase } from '../src/database/supabaseClient';
 import enhancedDetectionService from '../src/services/enhancedDetectionService';
+import detectionService from '../src/services/detectionService';
 import disputeService from '../src/services/disputeService';
 
 // Mock authentication middleware
 jest.mock('../src/middleware/authMiddleware', () => ({
+  authenticateToken: (req: any, res: any, next: any) => {
+    req.user = { id: 'test-user-123', email: 'test@example.com' };
+    next();
+  },
   authenticateUser: (req: any, res: any, next: any) => {
     req.user = { id: 'test-user-123' };
+    next();
+  },
+  optionalAuth: (req: any, res: any, next: any) => {
+    req.userId = 'test-user-123';
+    next();
+  }
+}));
+
+// Mock userIdMiddleware
+jest.mock('../src/middleware/userIdMiddleware', () => ({
+  userIdMiddleware: (req: any, res: any, next: any) => {
+    req.userId = 'test-user-123';
     next();
   }
 }));
@@ -100,14 +118,15 @@ describe('Enhanced Detection System', () => {
         enhancedDetectionService.triggerDetectionPipeline(
           'test-user-123',
           'sync-456',
-          'inventory'
+          'inventory',
+          {}
         )
       ).rejects.toThrow('Failed to create sync detection trigger: Database error');
     });
 
     it('should determine correct priority based on trigger type', () => {
       const service = enhancedDetectionService as any;
-      
+
       expect(service.determinePriority('financial')).toBe('critical');
       expect(service.determinePriority('inventory')).toBe('high');
       expect(service.determinePriority('product')).toBe('normal');
@@ -118,12 +137,14 @@ describe('Enhanced Detection System', () => {
   describe('Detection Job Processing', () => {
     it('should process detection jobs with priority ordering', async () => {
       const mockRedis = {
-        zpopmax: jest.fn(() => Promise.resolve([{ member: JSON.stringify({
-          id: 'job-123',
-          seller_id: 'test-user-123',
-          sync_id: 'sync-456',
-          priority: 'high'
-        }) }]))
+        zpopmax: jest.fn(() => Promise.resolve([{
+          member: JSON.stringify({
+            id: 'job-123',
+            seller_id: 'test-user-123',
+            sync_id: 'sync-456',
+            priority: 'high'
+          })
+        }]))
       };
 
       const mockSupabase = supabase as any;
@@ -152,21 +173,23 @@ describe('Enhanced Detection System', () => {
       const { getRedisClient } = require('../src/utils/redisClient');
       getRedisClient.mockResolvedValue(mockRedis);
 
-      await enhancedDetectionService.processDetectionJobs();
+      await detectionService.processDetectionJobs();
 
       expect(mockRedis.zpopmax).toHaveBeenCalled();
     });
 
     it('should handle job processing errors and implement retry logic', async () => {
       const mockRedis = {
-        zpopmax: jest.fn(() => Promise.resolve([{ member: JSON.stringify({
-          id: 'job-123',
-          seller_id: 'test-user-123',
-          sync_id: 'sync-456',
-          priority: 'high',
-          attempts: 0,
-          max_attempts: 3
-        }) }]))
+        zpopmax: jest.fn(() => Promise.resolve([{
+          member: JSON.stringify({
+            id: 'job-123',
+            seller_id: 'test-user-123',
+            sync_id: 'sync-456',
+            priority: 'high',
+            attempts: 0,
+            max_attempts: 3
+          })
+        }]))
       };
 
       const mockSupabase = supabase as any;
@@ -196,10 +219,10 @@ describe('Enhanced Detection System', () => {
       getRedisClient.mockResolvedValue(mockRedis);
 
       // Mock the detection algorithms to throw an error
-      const service = enhancedDetectionService as any;
-      jest.spyOn(service, 'runEnhancedDetectionAlgorithms').mockRejectedValue(new Error('Detection failed'));
+      const service = detectionService as any;
+      jest.spyOn(service, 'runDetectionAlgorithms').mockRejectedValue(new Error('Detection failed'));
 
-      await enhancedDetectionService.processDetectionJobs();
+      await detectionService.processDetectionJobs();
 
       expect(mockSupabase.from).toHaveBeenCalled();
     });
@@ -349,7 +372,7 @@ describe('Enhanced Detection System', () => {
 
     it('should evaluate rule conditions correctly', async () => {
       const service = disputeService as any;
-      
+
       const rule = {
         conditions: {
           case_type: 'amazon_fba',
@@ -369,7 +392,7 @@ describe('Enhanced Detection System', () => {
 
     it('should execute rule actions when conditions are met', async () => {
       const service = disputeService as any;
-      
+
       const rule = {
         id: 'rule-123',
         rule_name: 'Test Rule',
@@ -705,7 +728,7 @@ describe('Enhanced Detection System', () => {
     it('should handle authentication errors', async () => {
       // Test without authentication middleware
       const appWithoutAuth = require('../src/index');
-      
+
       const response = await request(appWithoutAuth)
         .get('/api/enhanced-detection/results');
 
@@ -738,7 +761,7 @@ describe('Enhanced Detection System', () => {
 
     it('should process jobs with correct priority ordering', async () => {
       const service = enhancedDetectionService as any;
-      
+
       expect(service.getPriorityScore('critical')).toBe(4);
       expect(service.getPriorityScore('high')).toBe(3);
       expect(service.getPriorityScore('normal')).toBe(2);

@@ -13,6 +13,9 @@ import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import { buildPythonServiceAuthHeader } from '../utils/pythonServiceAuth';
 import { createSellerHttpClient } from './sellerHttpClient';
+import { briefGeneratorService } from './briefGeneratorService';
+import * as fs from 'fs';
+import * as path from 'path';
 
 export interface FilingRequest {
     dispute_id: string;
@@ -25,6 +28,8 @@ export interface FilingRequest {
     currency: string;
     evidence_document_ids: string[];
     confidence_score: number;
+    subject?: string;
+    body?: string;
 }
 
 export interface FilingResult {
@@ -87,6 +92,20 @@ class RefundFilingService {
             const evidenceDocuments = await this.getEvidenceDocuments(request.evidence_document_ids, request.user_id);
 
             // Prepare payload for Python API
+            const context = {
+                caseType: request.claim_type,
+                amount: request.amount_claimed,
+                currency: request.currency,
+                orderId: request.order_id,
+                shipmentId: (request as any).shipment_id || request.order_id, // Fallback if shipment_id not provided
+                asin: request.asin,
+                sku: request.sku,
+                evidenceFilenames: evidenceDocuments.map(d => d.filename),
+                quantity: (request as any).quantity || 1
+            };
+
+            const brief = briefGeneratorService.generateBrief(context);
+
             const payload = {
                 dispute_id: request.dispute_id,
                 user_id: request.user_id,
@@ -97,8 +116,33 @@ class RefundFilingService {
                 amount_claimed: request.amount_claimed,
                 currency: request.currency,
                 evidence_documents: evidenceDocuments,
-                confidence_score: request.confidence_score
+                confidence_score: request.confidence_score,
+                subject: brief.subject,
+                body: brief.body,
+                policy_cited: brief.policyCited
             };
+
+            // DRY RUN Support: Write to local file instead of calling API
+            if (process.env.DRY_RUN === 'true' || (global as any).DRY_RUN === true) {
+                const outputDir = path.join(process.cwd(), 'test_output');
+                if (!fs.existsSync(outputDir)) {
+                    fs.mkdirSync(outputDir, { recursive: true });
+                }
+
+                const fileName = `case_payload_${request.dispute_id.slice(0, 8)}.json`;
+                const filePath = path.join(outputDir, fileName);
+
+                fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+
+                logger.info('[DRY RUN] Case payload saved safely', { filePath });
+
+                return {
+                    success: true,
+                    submission_id: `DRY-RUN-${request.dispute_id.slice(0, 8)}`,
+                    amazon_case_id: `MOCK-${request.dispute_id.slice(0, 8)}`,
+                    status: 'submitted'
+                };
+            }
 
             // Use seller-specific HTTP client for IP isolation
             const httpClient = createSellerHttpClient(request.user_id);
@@ -111,7 +155,7 @@ class RefundFilingService {
                         'Content-Type': 'application/json',
                         'X-User-Id': request.user_id
                     }),
-                    timeout: 60000 // 60 seconds
+                    timeout: 120000 // 120 seconds
                 }
             );
 

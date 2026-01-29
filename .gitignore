@@ -76,3 +76,10 @@ dump.rdb
 # Misc
 .cache/
 *.cache
+
+# Debug and Test Output
+debug_trace.txt
+detection_debug.txt
+Integrations-backend/test-brief.pdf
+Integrations-backend/verify-pdf.ts
+Integrations-backend/test_output/

@@ -32,17 +32,29 @@ class SubmissionStatus(str, Enum):
 @dataclass
 class SPAPIClaim:
     """Amazon SP-API claim data structure"""
-    order_id: str
-    asin: str
-    sku: str
-    claim_type: str
-    amount_claimed: float
-    currency: str
-    invoice_number: str
-    invoice_date: str
-    supporting_documents: List[Dict[str, Any]]
-    evidence_summary: str
+    order_id: str = ""
+    asin: str = ""
+    sku: str = ""
+    claim_type: str = ""
+    amount_claimed: float = 0.0
+    currency: str = "USD"
+    invoice_number: str = ""
+    invoice_date: str = ""
+    supporting_documents: List[Dict[str, Any]] = None
+    evidence_summary: str = ""
     seller_notes: Optional[str] = None
+    claim_id: Optional[str] = None
+    amount: Optional[float] = None  # Alias for amount_claimed
+    evidence_documents: Optional[List[Dict[str, Any]]] = None  # Alias for supporting_documents
+
+    def __post_init__(self):
+        # Sync aliases if provided
+        if self.amount is not None and (self.amount_claimed == 0.0 or self.amount_claimed is None):
+            self.amount_claimed = self.amount
+        if self.evidence_documents is not None and not self.supporting_documents:
+            self.supporting_documents = self.evidence_documents
+        if self.supporting_documents is None:
+            self.supporting_documents = []
 
 @dataclass
 class SubmissionResult:
@@ -54,6 +66,10 @@ class SubmissionResult:
     error_message: Optional[str] = None
     retry_after: Optional[datetime] = None
     submission_timestamp: Optional[datetime] = None
+
+    @property
+    def error(self) -> Optional[str]:
+        return self.error_message
 
 class AmazonSPAPIService:
     """Service for Amazon SP-API dispute submission"""
@@ -68,6 +84,9 @@ class AmazonSPAPIService:
         self.access_token = None
         self.token_expires_at = None
         self.rate_limiter = RateLimiter()
+        self.use_mock = os.getenv("USE_MOCK_SPAPI", "false").lower() == "true"
+        if self.use_mock:
+            logger.info("Initializing AmazonSPAPIService in MOCK MODE")
         
     async def submit_dispute(
         self, 
@@ -88,7 +107,20 @@ class AmazonSPAPIService:
             payload = await self._prepare_submission_payload(claim, evidence_documents)
             
             # Submit to SP-API
-            response = await self._submit_to_spapi(payload, user_id)
+            if self.use_mock:
+                logger.info(f"MOCK SP-API: Filing dispute for claim {claim.claim_id or 'unknown'}")
+                # Deterministic mock response
+                submission_id = f"mock-sub-{uuid.uuid4().hex[:8]}"
+                case_id = f"149{uuid.uuid4().int % 10000000:07d}"
+                response = {
+                    "success": True,
+                    "submission_id": submission_id,
+                    "amazon_case_id": case_id,
+                    "status": "submitted",
+                    "message": "Mock dispute submitted successfully"
+                }
+            else:
+                response = await self._submit_to_spapi(payload, user_id)
             
             if response["success"]:
                 # Log successful submission

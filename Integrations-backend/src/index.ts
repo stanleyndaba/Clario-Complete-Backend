@@ -450,222 +450,226 @@ app.use(errorHandler);
 
 const PORT = config.PORT || 3001;
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log('Server running on port ' + PORT);
-  console.log('Environment: ' + config.NODE_ENV);
+// Only start the server and background jobs if not in test mode
+if (process.env.NODE_ENV !== 'test') {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log('Server running on port ' + PORT);
+    console.log('Environment: ' + config.NODE_ENV);
 
-  // Log all registered routes for debugging
-  logger.info('All routes registered', {
-    workflow: '/api/v1/workflow',
-    proxy: '/ (proxyRoutes)',
-    routeCount: 'See logs above for details'
-  });
+    // Log all registered routes for debugging
+    logger.info('All routes registered', {
+      workflow: '/api/v1/workflow',
+      proxy: '/ (proxyRoutes)',
+      routeCount: 'See logs above for details'
+    });
 
-  // Initialize background jobs asynchronously (don't block server startup)
-  setImmediate(() => {
-    try {
-      // Initialize orchestration job manager (sets up queue processors)
-      OrchestrationJobManager.initialize();
-      logger.info('Orchestration job manager initialized');
+    // Initialize background jobs asynchronously (don't block server startup)
+    setImmediate(() => {
+      try {
+        // Initialize orchestration job manager (sets up queue processors)
+        OrchestrationJobManager.initialize();
+        logger.info('Orchestration job manager initialized');
 
-      // Start background jobs (non-blocking)
-      deadlineMonitoringJob.start();
+        // Start background jobs (non-blocking)
+        deadlineMonitoringJob.start();
 
-      // Start Phase 2 background sync worker (if enabled)
-      if (process.env.ENABLE_BACKGROUND_SYNC !== 'false') {
-        backgroundSyncWorker.start().catch((error: any) => {
-          logger.error('Failed to start background sync worker', { error: error.message });
-        });
-        logger.info('Phase 2 background sync worker initialized');
-      } else {
-        logger.info('Phase 2 background sync worker disabled (ENABLE_BACKGROUND_SYNC=false)');
-      }
+        // Start Phase 2 background sync worker (if enabled)
+        if (process.env.ENABLE_BACKGROUND_SYNC !== 'false') {
+          backgroundSyncWorker.start().catch((error: any) => {
+            logger.error('Failed to start background sync worker', { error: error.message });
+          });
+          logger.info('Phase 2 background sync worker initialized');
+        } else {
+          logger.info('Phase 2 background sync worker disabled (ENABLE_BACKGROUND_SYNC=false)');
+        }
 
-      // Start Evidence Ingestion Worker (if enabled)
-      if (process.env.ENABLE_EVIDENCE_INGESTION_WORKER !== 'false') {
-        evidenceIngestionWorker.start().catch((error: any) => {
-          logger.error('Failed to start evidence ingestion worker', { error: error.message });
-        });
-        logger.info('Evidence ingestion worker initialized');
-      } else {
-        logger.info('Evidence ingestion worker disabled (ENABLE_EVIDENCE_INGESTION_WORKER=false)');
-      }
+        // Start Evidence Ingestion Worker (if enabled)
+        if (process.env.ENABLE_EVIDENCE_INGESTION_WORKER !== 'false') {
+          evidenceIngestionWorker.start().catch((error: any) => {
+            logger.error('Failed to start evidence ingestion worker', { error: error.message });
+          });
+          logger.info('Evidence ingestion worker initialized');
+        } else {
+          logger.info('Evidence ingestion worker disabled (ENABLE_EVIDENCE_INGESTION_WORKER=false)');
+        }
 
-      // Start Document Parsing Worker (if enabled)
-      if (process.env.ENABLE_DOCUMENT_PARSING_WORKER !== 'false') {
-        documentParsingWorker.start().catch((error: any) => {
-          logger.error('Failed to start document parsing worker', { error: error.message });
-        });
-        logger.info('Document parsing worker initialized');
-      } else {
-        logger.info('Document parsing worker disabled (ENABLE_DOCUMENT_PARSING_WORKER=false)');
-      }
+        // Start Document Parsing Worker (if enabled)
+        if (process.env.ENABLE_DOCUMENT_PARSING_WORKER !== 'false') {
+          documentParsingWorker.start().catch((error: any) => {
+            logger.error('Failed to start document parsing worker', { error: error.message });
+          });
+          logger.info('Document parsing worker initialized');
+        } else {
+          logger.info('Document parsing worker disabled (ENABLE_DOCUMENT_PARSING_WORKER=false)');
+        }
 
-      // Start Evidence Matching Worker (if enabled)
-      if (process.env.ENABLE_EVIDENCE_MATCHING_WORKER !== 'false') {
-        evidenceMatchingWorker.start().catch((error: any) => {
-          logger.error('Failed to start evidence matching worker', { error: error.message });
-        });
-        logger.info('Evidence matching worker initialized');
-      } else {
-        logger.info('Evidence matching worker disabled (ENABLE_EVIDENCE_MATCHING_WORKER=false)');
-      }
+        // Start Evidence Matching Worker (if enabled)
+        if (process.env.ENABLE_EVIDENCE_MATCHING_WORKER !== 'false') {
+          evidenceMatchingWorker.start().catch((error: any) => {
+            logger.error('Failed to start evidence matching worker', { error: error.message });
+          });
+          logger.info('Evidence matching worker initialized');
+        } else {
+          logger.info('Evidence matching worker disabled (ENABLE_EVIDENCE_MATCHING_WORKER=false)');
+        }
 
-      // Start Refund Filing Worker (if enabled)
-      if (process.env.ENABLE_REFUND_FILING_WORKER !== 'false') {
-        refundFilingWorker.start();
-        logger.info('Refund filing worker initialized');
-      } else {
-        logger.info('Refund filing worker disabled (ENABLE_REFUND_FILING_WORKER=false)');
-      }
+        // Start Refund Filing Worker (if enabled)
+        if (process.env.ENABLE_REFUND_FILING_WORKER !== 'false') {
+          refundFilingWorker.start();
+          logger.info('Refund filing worker initialized');
+        } else {
+          logger.info('Refund filing worker disabled (ENABLE_REFUND_FILING_WORKER=false)');
+        }
 
-      // Start Recoveries Worker (if enabled)
-      if (process.env.ENABLE_RECOVERIES_WORKER !== 'false') {
-        recoveriesWorker.start();
-        logger.info('Recoveries worker initialized');
-      } else {
-        logger.info('Recoveries worker disabled (ENABLE_RECOVERIES_WORKER=false)');
-      }
+        // Start Recoveries Worker (if enabled)
+        if (process.env.ENABLE_RECOVERIES_WORKER !== 'false') {
+          recoveriesWorker.start();
+          logger.info('Recoveries worker initialized');
+        } else {
+          logger.info('Recoveries worker disabled (ENABLE_RECOVERIES_WORKER=false)');
+        }
 
-      // Start Billing Worker (requires Stripe payments configuration)
-      const billingWorkerEnabled = process.env.ENABLE_BILLING_WORKER !== 'false';
-      const stripePaymentsConfigured = Boolean(process.env.STRIPE_PAYMENTS_URL);
-      if (billingWorkerEnabled && stripePaymentsConfigured) {
-        billingWorker.start();
-        logger.info('Billing worker initialized');
-      } else {
-        logger.info('Billing worker disabled', {
-          enabledEnv: billingWorkerEnabled,
-          stripePaymentsConfigured,
-          reason: billingWorkerEnabled
-            ? 'STRIPE_PAYMENTS_URL not configured'
-            : 'ENABLE_BILLING_WORKER=false'
-        });
-      }
+        // Start Billing Worker (requires Stripe payments configuration)
+        const billingWorkerEnabled = process.env.ENABLE_BILLING_WORKER !== 'false';
+        const stripePaymentsConfigured = Boolean(process.env.STRIPE_PAYMENTS_URL);
+        if (billingWorkerEnabled && stripePaymentsConfigured) {
+          billingWorker.start();
+          logger.info('Billing worker initialized');
+        } else {
+          logger.info('Billing worker disabled', {
+            enabledEnv: billingWorkerEnabled,
+            stripePaymentsConfigured,
+            reason: billingWorkerEnabled
+              ? 'STRIPE_PAYMENTS_URL not configured'
+              : 'ENABLE_BILLING_WORKER=false'
+          });
+        }
 
-      // Start Notifications Worker (if enabled)
-      if (process.env.ENABLE_NOTIFICATIONS_WORKER !== 'false') {
-        notificationsWorker.start();
-        logger.info('Notifications worker initialized');
-      } else {
-        logger.info('Notifications worker disabled (ENABLE_NOTIFICATIONS_WORKER=false)');
-      }
+        // Start Notifications Worker (if enabled)
+        if (process.env.ENABLE_NOTIFICATIONS_WORKER !== 'false') {
+          notificationsWorker.start();
+          logger.info('Notifications worker initialized');
+        } else {
+          logger.info('Notifications worker disabled (ENABLE_NOTIFICATIONS_WORKER=false)');
+        }
 
-      // Start Learning Worker (Agent 11)
-      if (process.env.ENABLE_LEARNING_WORKER !== 'false') {
-        learningWorker.start();
-        logger.info('Learning worker initialized');
-      } else {
-        logger.info('Learning worker disabled (ENABLE_LEARNING_WORKER=false)');
-      }
+        // Start Learning Worker (Agent 11)
+        if (process.env.ENABLE_LEARNING_WORKER !== 'false') {
+          learningWorker.start();
+          logger.info('Learning worker initialized');
+        } else {
+          logger.info('Learning worker disabled (ENABLE_LEARNING_WORKER=false)');
+        }
 
-      // Start Onboarding Worker (BullMQ - processes initial sync after OAuth)
-      // This is the "Factory" that picks up jobs from ingestionQueue
-      if (process.env.ENABLE_ONBOARDING_WORKER !== 'false') {
-        import('./workers/onboardingWorker').then((module) => {
-          module.startOnboardingWorker();
-          logger.info('Onboarding worker initialized (BullMQ)');
-        }).catch((error: any) => {
-          logger.warn('Failed to start onboarding worker (non-critical)', { error: error.message });
-        });
-      } else {
-        logger.info('Onboarding worker disabled (ENABLE_ONBOARDING_WORKER=false)');
-      }
+        // Start Onboarding Worker (BullMQ - processes initial sync after OAuth)
+        // This is the "Factory" that picks up jobs from ingestionQueue
+        if (process.env.ENABLE_ONBOARDING_WORKER !== 'false') {
+          import('./workers/onboardingWorker').then((module) => {
+            module.startOnboardingWorker();
+            logger.info('Onboarding worker initialized (BullMQ)');
+          }).catch((error: any) => {
+            logger.warn('Failed to start onboarding worker (non-critical)', { error: error.message });
+          });
+        } else {
+          logger.info('Onboarding worker disabled (ENABLE_ONBOARDING_WORKER=false)');
+        }
 
-      // Start Scheduled Sync Job - Agent 2: The Radar Always On
-      // Automatically syncs all users every 6 hours (configurable via AUTO_SYNC_INTERVAL_HOURS)
-      if (process.env.ENABLE_SCHEDULED_SYNC !== 'false') {
-        scheduledSyncJob.start();
-        logger.info('Scheduled sync job initialized (auto-sync every 6 hours)');
-      } else {
-        logger.info('Scheduled sync job disabled (ENABLE_SCHEDULED_SYNC=false)');
-      }
+        // Start Scheduled Sync Job - Agent 2: The Radar Always On
+        // Automatically syncs all users every 6 hours (configurable via AUTO_SYNC_INTERVAL_HOURS)
+        if (process.env.ENABLE_SCHEDULED_SYNC !== 'false') {
+          scheduledSyncJob.start();
+          logger.info('Scheduled sync job initialized (auto-sync every 6 hours)');
+        } else {
+          logger.info('Scheduled sync job disabled (ENABLE_SCHEDULED_SYNC=false)');
+        }
 
-      // Start Scheduled Evidence Ingestion (auto-collect)
-      // Handles both hourly and daily scheduled ingestion based on user settings
-      if (process.env.ENABLE_SCHEDULED_INGESTION !== 'false') {
-        schedulerService.initialize().catch((error: any) => {
-          logger.error('Failed to initialize scheduler service', { error: error.message });
-        });
-        logger.info('Scheduled evidence ingestion initialized (hourly + daily at 02:00 UTC)');
-      } else {
-        logger.info('Scheduled evidence ingestion disabled (ENABLE_SCHEDULED_INGESTION=false)');
-      }
+        // Start Scheduled Evidence Ingestion (auto-collect)
+        // Handles both hourly and daily scheduled ingestion based on user settings
+        if (process.env.ENABLE_SCHEDULED_INGESTION !== 'false') {
+          schedulerService.initialize().catch((error: any) => {
+            logger.error('Failed to initialize scheduler service', { error: error.message });
+          });
+          logger.info('Scheduled evidence ingestion initialized (hourly + daily at 02:00 UTC)');
+        } else {
+          logger.info('Scheduled evidence ingestion disabled (ENABLE_SCHEDULED_INGESTION=false)');
+        }
 
-      // Start detection job processor (processes detection jobs from queue)
-      // This runs continuously to process detection jobs queued after sync
-      // Note: Will silently skip if Redis is not available (no log spam)
-      const startDetectionProcessor = async () => {
-        try {
-          // Attempt to get Redis client - if it fails, we'll use mock client
-          // This allows the processor to start but will skip processing if Redis is unavailable
+        // Start detection job processor (processes detection jobs from queue)
+        // This runs continuously to process detection jobs queued after sync
+        // Note: Will silently skip if Redis is not available (no log spam)
+        const startDetectionProcessor = async () => {
           try {
-            const { getRedisClient } = await import('./utils/redisClient');
-            await getRedisClient(); // This will return mock client if Redis is unavailable
-          } catch (error: any) {
-            // Redis connection failed - this is OK, we'll skip processing
-            logger.info('Redis not available - detection job processor will skip (this is OK if Redis is not configured)');
-          }
-
-          // Process detection jobs in a loop (non-blocking)
-          // The processDetectionJobs method will check Redis availability internally
-          const processLoop = async () => {
+            // Attempt to get Redis client - if it fails, we'll use mock client
+            // This allows the processor to start but will skip processing if Redis is unavailable
             try {
-              await detectionService.processDetectionJobs();
+              const { getRedisClient } = await import('./utils/redisClient');
+              await getRedisClient(); // This will return mock client if Redis is unavailable
             } catch (error: any) {
-              // Suppress Redis connection errors - they're handled in redisClient.ts
-              if (error?.message?.includes('ECONNREFUSED') || error?.message?.includes('Redis') || error?.message?.includes('connection')) {
-                // Redis unavailable - continue loop but skip processing
-                // Don't log to avoid spam
-              } else {
-                logger.error('Error in detection job processor', { error: error?.message || error });
-              }
+              // Redis connection failed - this is OK, we'll skip processing
+              logger.info('Redis not available - detection job processor will skip (this is OK if Redis is not configured)');
             }
-            // Schedule next processing (every 5 seconds)
-            setTimeout(processLoop, 5000);
-          };
-          processLoop();
-          logger.info('Detection job processor started (will skip if Redis unavailable)');
-        } catch (error: any) {
-          // Suppress Redis connection errors on startup
-          if (error?.message?.includes('ECONNREFUSED') || error?.message?.includes('Redis') || error?.message?.includes('connection')) {
-            logger.info('Detection job processor started in degraded mode - Redis not available (this is OK if Redis is not configured)');
-            // Start processor anyway - it will handle Redis unavailability gracefully
+
+            // Process detection jobs in a loop (non-blocking)
+            // The processDetectionJobs method will check Redis availability internally
             const processLoop = async () => {
               try {
                 await detectionService.processDetectionJobs();
-              } catch (err: any) {
-                // Suppress all errors - processor will skip if Redis unavailable
+              } catch (error: any) {
+                // Suppress Redis connection errors - they're handled in redisClient.ts
+                if (error?.message?.includes('ECONNREFUSED') || error?.message?.includes('Redis') || error?.message?.includes('connection')) {
+                  // Redis unavailable - continue loop but skip processing
+                  // Don't log to avoid spam
+                } else {
+                  logger.error('Error in detection job processor', { error: error?.message || error });
+                }
               }
+              // Schedule next processing (every 5 seconds)
               setTimeout(processLoop, 5000);
             };
             processLoop();
-            return;
+            logger.info('Detection job processor started (will skip if Redis unavailable)');
+          } catch (error: any) {
+            // Suppress Redis connection errors on startup
+            if (error?.message?.includes('ECONNREFUSED') || error?.message?.includes('Redis') || error?.message?.includes('connection')) {
+              logger.info('Detection job processor started in degraded mode - Redis not available (this is OK if Redis is not configured)');
+              // Start processor anyway - it will handle Redis unavailability gracefully
+              const processLoop = async () => {
+                try {
+                  await detectionService.processDetectionJobs();
+                } catch (err: any) {
+                  // Suppress all errors - processor will skip if Redis unavailable
+                }
+                setTimeout(processLoop, 5000);
+              };
+              processLoop();
+              return;
+            }
+            logger.error('Failed to start detection job processor', { error: error?.message || error });
           }
-          logger.error('Failed to start detection job processor', { error: error?.message || error });
-        }
-      };
-      startDetectionProcessor();
+        };
+        startDetectionProcessor();
 
-      logger.info('Background jobs started', {
-        deadline_monitoring: 'started',
-        detection_processor: 'started',
-        evidence_ingestion_worker: process.env.ENABLE_EVIDENCE_INGESTION_WORKER !== 'false' ? 'started' : 'disabled',
-        document_parsing_worker: process.env.ENABLE_DOCUMENT_PARSING_WORKER !== 'false' ? 'started' : 'disabled',
-        evidence_matching_worker: process.env.ENABLE_EVIDENCE_MATCHING_WORKER !== 'false' ? 'started' : 'disabled',
-        refund_filing_worker: process.env.ENABLE_REFUND_FILING_WORKER !== 'false' ? 'started' : 'disabled',
-        recoveries_worker: process.env.ENABLE_RECOVERIES_WORKER !== 'false' ? 'started' : 'disabled',
-        billing_worker: process.env.ENABLE_BILLING_WORKER !== 'false' ? 'started' : 'disabled',
-        notifications_worker: process.env.ENABLE_NOTIFICATIONS_WORKER !== 'false' ? 'started' : 'disabled',
-        learning_worker: process.env.ENABLE_LEARNING_WORKER !== 'false' ? 'started' : 'disabled'
-      });
-    } catch (error: any) {
-      logger.error('Error starting background jobs (non-blocking)', {
-        error: error?.message || String(error),
-        note: 'Server will continue to run without background jobs'
-      });
-    }
+        logger.info('Background jobs started', {
+          deadline_monitoring: 'started',
+          detection_processor: 'started',
+          evidence_ingestion_worker: process.env.ENABLE_EVIDENCE_INGESTION_WORKER !== 'false' ? 'started' : 'disabled',
+          document_parsing_worker: process.env.ENABLE_DOCUMENT_PARSING_WORKER !== 'false' ? 'started' : 'disabled',
+          evidence_matching_worker: process.env.ENABLE_EVIDENCE_MATCHING_WORKER !== 'false' ? 'started' : 'disabled',
+          refund_filing_worker: process.env.ENABLE_REFUND_FILING_WORKER !== 'false' ? 'started' : 'disabled',
+          recoveries_worker: process.env.ENABLE_RECOVERIES_WORKER !== 'false' ? 'started' : 'disabled',
+          billing_worker: process.env.ENABLE_BILLING_WORKER !== 'false' ? 'started' : 'disabled',
+          notifications_worker: process.env.ENABLE_NOTIFICATIONS_WORKER !== 'false' ? 'started' : 'disabled',
+          learning_worker: process.env.ENABLE_LEARNING_WORKER !== 'false' ? 'started' : 'disabled'
+        });
+      } catch (error: any) {
+        logger.error('Error starting background jobs (non-blocking)', {
+          error: error?.message || String(error),
+          note: 'Server will continue to run without background jobs'
+        });
+      }
+    });
   });
-});
+}
 
 
+export default app;
