@@ -80,9 +80,28 @@ export class PDFGenerationService {
         ]
       };
 
-      // On Render, try using system Chrome if available
-      // This allows Puppeteer to work even if bundled Chrome wasn't downloaded
-      if (process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD === 'true' || process.env.RENDER) {
+      // On Render, try using local Chrome from .cache if available
+      if (process.env.RENDER || process.env.NODE_ENV === 'production') {
+        const path = require('path');
+        const localChromePath = path.join(process.cwd(), '.cache', 'puppeteer', 'chrome');
+
+        // Find the actual executable inside the cache directory
+        // Puppeteer installs it in a versioned subfolder
+        const fg = require('fast-glob');
+        try {
+          const pattern = path.join(localChromePath, '**', 'chrome');
+          const matches = fg.sync(pattern);
+          if (matches && matches.length > 0) {
+            launchOptions.executablePath = matches[0];
+            logger.info(`Using local cached Chrome at ${matches[0]}`);
+          }
+        } catch (e) {
+          logger.debug('No local cached Chrome found via glob');
+        }
+      }
+
+      // Fallback to system Chrome if local cache not found or not on Render
+      if (!launchOptions.executablePath && (process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD === 'true' || process.env.RENDER)) {
         // Try common Chrome locations on Render/Linux systems
         const possibleChromePaths = [
           '/usr/bin/google-chrome',
