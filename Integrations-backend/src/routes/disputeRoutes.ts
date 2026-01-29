@@ -56,6 +56,30 @@ router.get('/', async (req, res) => {
   }
 });
 
+
+/**
+ * GET /api/v1/disputes/:id/brief
+ * Generate a PDF brief for a dispute case
+ */
+router.get('/:id/brief', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const disputeService = (await import('../services/disputeService')).default;
+
+    const pdfBuffer = await disputeService.generateDisputeBrief(id);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=dispute-brief-${id}.pdf`);
+    res.send(pdfBuffer);
+  } catch (error: any) {
+    console.error('[dispute-brief] Error:', error);
+    res.status(500).json({
+      success: false,
+      message: error?.message || 'Internal server error'
+    });
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -552,27 +576,5 @@ router.post('/approve-filing', async (req, res) => {
   }
 });
 
-/**
- * GET /api/v1/disputes/:id/brief
- * Generate a PDF brief for a dispute case
- */
-router.get('/:id/brief', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const disputeService = (await import('../services/disputeService')).default;
-
-    const pdfBuffer = await disputeService.generateDisputeBrief(id);
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=dispute-brief-${id}.pdf`);
-    res.send(pdfBuffer);
-  } catch (error: any) {
-    console.error('[dispute-brief] Error:', error);
-    res.status(500).json({
-      success: false,
-      message: error?.message || 'Internal server error'
-    });
-  }
-});
 
 export default router;
