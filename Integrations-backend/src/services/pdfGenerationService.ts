@@ -192,7 +192,7 @@ export class PDFGenerationService {
       await page.close();
       logger.info('PDF generated successfully');
 
-      return pdfBuffer;
+      return Buffer.from(pdfBuffer);
     } catch (error: any) {
       logger.error('Failed to generate PDF:', error);
       throw new Error(`PDF generation failed: ${error.message}`);
