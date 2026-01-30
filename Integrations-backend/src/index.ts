@@ -57,6 +57,7 @@ import learningRoutes from './routes/learningRoutes';
 import inviteRoutes from './routes/inviteRoutes';
 import notesRoutes from './routes/notesRoutes';
 import tenantRoutes from './routes/tenantRoutes';
+import storeRoutes from './routes/storeRoutes';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -183,13 +184,14 @@ app.use(cors({
     'X-User-Id',
     'X-Forwarded-User-Id',
     'X-Tenant-Id',
+    'X-Store-Id',
     'X-Frontend-URL',
     'Origin',
     'Referer',
     'Accept',
     'Cache-Control'
   ],
-  exposedHeaders: ['X-User-Id', 'X-Request-Id', 'X-Tenant-Id'],
+  exposedHeaders: ['X-User-Id', 'X-Request-Id', 'X-Tenant-Id', 'X-Store-Id'],
   maxAge: 86400 // 24 hours
 }));
 
@@ -405,6 +407,9 @@ logger.info('Notes routes registered at /api/notes');
 // Tenant management routes (multi-tenant SaaS)
 app.use('/api/tenant', tenantRoutes);
 logger.info('Tenant routes registered at /api/tenant');
+
+app.use('/api/v1/stores', storeRoutes);
+logger.info('Store routes registered at /api/v1/stores');
 
 // Admin revenue routes (internal metrics)
 import adminRevenueRoutes from './routes/adminRevenueRoutes';
