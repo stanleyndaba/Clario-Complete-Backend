@@ -197,6 +197,7 @@ class RecoveriesWorker {
         provider_case_id,
         detection_result_id,
         tenant_id,
+        store_id,
         detection_results (
           evidence
         )
@@ -246,6 +247,7 @@ class RecoveriesWorker {
         const payouts = await retryWithBackoff(
           () => recoveriesService.detectPayouts(
             userId,
+            undefined, // storeId
             new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
             new Date()
           ),

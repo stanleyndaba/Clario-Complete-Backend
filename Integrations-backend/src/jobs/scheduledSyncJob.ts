@@ -213,8 +213,9 @@ class ScheduledSyncJob {
             // syncUserData handles all data fetching and detection
             const result = await agent2DataSyncService.syncUserData(
                 userId,
-                undefined, // startDate - use defaults
-                undefined, // endDate - use defaults
+                undefined, // storeId
+                undefined, // startDate
+                undefined, // endDate
                 syncId     // parentSyncId for tracking
             );
 

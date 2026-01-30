@@ -4,9 +4,9 @@
  * Tests the store-scoped query builder and route protection.
  */
 
-import { createStoreScopedQueryById } from './database/storeScopedClient';
-import { supabaseAdmin } from './database/supabaseClient';
-import logger from './utils/logger';
+import { createStoreScopedQueryById } from '../database/storeScopedClient';
+import { supabaseAdmin } from '../database/supabaseClient';
+import logger from '../utils/logger';
 
 async function verifyIsolation() {
     const TEST_TENANT = '00000000-0000-0000-0000-000000000001';

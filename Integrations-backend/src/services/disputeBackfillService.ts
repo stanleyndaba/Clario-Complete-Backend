@@ -24,6 +24,7 @@ type DisputeCaseRow = {
   resolution_date?: string | null;
   case_number?: string | null;
   created_at?: string | null;
+  store_id?: string | null;
 };
 
 const CASE_PREFIX = 'CASE';
