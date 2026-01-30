@@ -65,7 +65,6 @@ export class PDFGenerationService {
     try {
       logger.info('Initializing PDF Generation Service with Puppeteer...');
 
-      // Try to use system Chrome if Puppeteer's bundled Chrome isn't available
       const launchOptions: any = {
         headless: 'new',
         args: [
@@ -83,45 +82,58 @@ export class PDFGenerationService {
       // On Render, try using local Chrome from .cache if available
       if (process.env.RENDER || process.env.NODE_ENV === 'production') {
         const path = require('path');
+        const fs = require('fs');
         const localChromePath = path.join(process.cwd(), '.cache', 'puppeteer', 'chrome');
 
+        logger.info(`Checking for local cached Chrome in: ${localChromePath}`);
+
         // Find the actual executable inside the cache directory
-        // Puppeteer installs it in a versioned subfolder
         const fg = require('fast-glob');
         try {
           const pattern = path.join(localChromePath, '**', 'chrome');
           const matches = fg.sync(pattern);
           if (matches && matches.length > 0) {
-            launchOptions.executablePath = matches[0];
-            logger.info(`Using local cached Chrome at ${matches[0]}`);
+            const possibleExecutable = matches[0];
+            try {
+              fs.accessSync(possibleExecutable, fs.constants.X_OK);
+              launchOptions.executablePath = possibleExecutable;
+              logger.info(`✅ Successfully found local cached Chrome at: ${possibleExecutable}`);
+            } catch (e) {
+              logger.warn(`Found Chrome at ${possibleExecutable} but it's not executable`);
+            }
           }
         } catch (e) {
           logger.debug('No local cached Chrome found via glob');
         }
       }
 
-      // Fallback to system Chrome if local cache not found or not on Render
-      if (!launchOptions.executablePath && (process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD === 'true' || process.env.RENDER)) {
-        // Try common Chrome locations on Render/Linux systems
-        const possibleChromePaths = [
+      // Fallback to absolute paths commonly used in Render environments
+      if (!launchOptions.executablePath && (process.env.RENDER || process.env.NODE_ENV === 'production')) {
+        const fallbackPaths = [
           '/usr/bin/google-chrome',
           '/usr/bin/google-chrome-stable',
           '/usr/bin/chromium',
-          '/usr/bin/chromium-browser'
+          '/usr/bin/chromium-browser',
+          '/opt/render/project/src/.cache/puppeteer/chrome/linux-114.0.5735.133/chrome-linux/chrome'
         ];
 
-        for (const path of possibleChromePaths) {
+        logger.info('Searching for Chrome in system fallback paths...');
+        for (const p of fallbackPaths) {
           try {
             const fs = require('fs');
-            if (fs.existsSync(path)) {
-              launchOptions.executablePath = path;
-              logger.info(`Using system Chrome at ${path}`);
+            if (fs.existsSync(p)) {
+              launchOptions.executablePath = p;
+              logger.info(`✅ Found system Chrome at: ${p}`);
               break;
             }
           } catch (e) {
-            // Continue checking other paths
+            // Ignore
           }
         }
+      }
+
+      if (!launchOptions.executablePath) {
+        logger.warn('⚠️ No Chrome executable found. Launching Puppeteer with default options.');
       }
 
       this.browser = await puppeteer.launch(launchOptions);
