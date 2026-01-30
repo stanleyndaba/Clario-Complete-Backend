@@ -173,8 +173,8 @@ export class PDFGenerationService {
 
       // Set content with proper waiting for production stability
       await page.setContent(html, {
-        waitUntil: ['domcontentloaded', 'networkidle2'],
-        timeout: 60000 // Increased to 60s for Render production
+        waitUntil: 'load',
+        timeout: 60000 // High timeout, but 'load' will trigger much faster
       });
 
       // Generate PDF
