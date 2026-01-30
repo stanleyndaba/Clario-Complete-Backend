@@ -171,10 +171,10 @@ export class PDFGenerationService {
     try {
       const page = await this.browser.newPage();
 
-      // Set content with proper waiting
+      // Set content with proper waiting for production stability
       await page.setContent(html, {
-        waitUntil: 'networkidle0',
-        timeout: 30000
+        waitUntil: ['domcontentloaded', 'networkidle2'],
+        timeout: 60000 // Increased to 60s for Render production
       });
 
       // Generate PDF
