@@ -276,6 +276,7 @@ export interface TokenRecord {
   access_token?: string | EncryptedToken;
   refresh_token?: string | EncryptedToken;
   expires_at: string;
+  store_id?: string;
   created_at: string;
   updated_at: string;
 }
@@ -338,7 +339,8 @@ export const tokenManager = {
     accessTokenEnc: { iv: string; data: string },
     refreshTokenEnc?: { iv: string; data: string },
     expiresAt?: Date,
-    tenantId?: string
+    tenantId?: string,
+    storeId?: string
   ): Promise<void> {
     try {
       if (typeof supabase.from !== 'function') {
@@ -362,6 +364,7 @@ export const tokenManager = {
           user_id: dbUserId,
           provider,
           tenant_id: tenantId || null, // Include tenant_id for multi-tenant support
+          store_id: storeId || null, // Associate with specific store
           access_token_iv: accessTokenEnc.iv,
           access_token_data: accessTokenEnc.data,
           refresh_token_iv: refreshTokenEnc?.iv || null,
@@ -369,7 +372,7 @@ export const tokenManager = {
           expires_at: expiresAt ? expiresAt.toISOString() : null,
           updated_at: new Date().toISOString()
         }, {
-          onConflict: 'user_id,provider'
+          onConflict: 'user_id,provider,store_id'
         });
 
       if (error) {
@@ -386,7 +389,8 @@ export const tokenManager = {
 
   async getToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox'
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    storeId?: string
   ): Promise<TokenRecord | null> {
     try {
       if (typeof supabase.from !== 'function') {
@@ -400,12 +404,19 @@ export const tokenManager = {
       // Convert non-UUID user IDs to the same deterministic UUID format used in saveToken
       const dbUserId = convertUserIdToUuid(userId);
 
-      const { data, error } = await adminClient
+      const query = adminClient
         .from('tokens')
         .select('*')
         .eq('user_id', dbUserId)
-        .eq('provider', provider)
-        .maybeSingle();
+        .eq('provider', provider);
+
+      if (storeId) {
+        query.eq('store_id', storeId);
+      } else {
+        query.is('store_id', null);
+      }
+
+      const { data, error } = await query.maybeSingle();
 
       if (error && error.code !== 'PGRST116') { // PGRST116 is "not found"
         logger.error('Error getting token', { error, userId, provider });
@@ -441,7 +452,8 @@ export const tokenManager = {
     accessTokenEnc: { iv: string; data: string },
     refreshTokenEnc?: { iv: string; data: string },
     expiresAt?: Date,
-    tenantId?: string
+    tenantId?: string,
+    storeId?: string
   ): Promise<void> {
     try {
       if (typeof supabase.from !== 'function') {
@@ -464,6 +476,7 @@ export const tokenManager = {
           refresh_token_data: refreshTokenEnc?.data || null,
           expires_at: expiresAt ? expiresAt.toISOString() : null,
           tenant_id: tenantId || undefined,
+          store_id: storeId || undefined,
           updated_at: new Date().toISOString()
         })
         .eq('user_id', dbUserId)
@@ -483,7 +496,8 @@ export const tokenManager = {
 
   async deleteToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox'
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    storeId?: string
   ): Promise<void> {
     try {
       if (typeof supabase.from !== 'function') {
@@ -494,11 +508,19 @@ export const tokenManager = {
       // Convert non-UUID user IDs to deterministic UUID
       const dbUserId = convertUserIdToUuid(userId);
 
-      const { error } = await supabase
+      const query = supabase
         .from('tokens')
         .delete()
         .eq('user_id', dbUserId)
         .eq('provider', provider);
+
+      if (storeId) {
+        query.eq('store_id', storeId);
+      } else {
+        query.is('store_id', null);
+      }
+
+      const { error } = await query;
 
       if (error) {
         logger.error('Error deleting token', { error, userId, provider });

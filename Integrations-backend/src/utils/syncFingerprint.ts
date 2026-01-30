@@ -26,7 +26,8 @@ export function createSyncFingerprint(
     userId: string,
     startDate: Date,
     endDate: Date,
-    timeWindowMinutes: number = 5
+    timeWindowMinutes: number = 5,
+    storeId?: string
 ): string {
     // Round to time window for idempotency
     const now = new Date();
@@ -34,6 +35,7 @@ export function createSyncFingerprint(
 
     const data = {
         userId,
+        storeId: storeId || null,
         startDate: startDate.toISOString().split('T')[0], // Date only
         endDate: endDate.toISOString().split('T')[0],
         window: windowStart.toISOString()

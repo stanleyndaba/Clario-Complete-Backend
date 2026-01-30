@@ -51,7 +51,8 @@ export class OrdersService {
   async fetchOrders(
     userId: string,
     startDate?: Date,
-    endDate?: Date
+    endDate?: Date,
+    storeId?: string
   ): Promise<{ success: boolean; data: NormalizedOrder[]; message: string }> {
     const environment = this.isSandbox() ? 'SANDBOX' : 'PRODUCTION';
     const dataType = this.isSandbox() ? 'SANDBOX_TEST_DATA' : 'LIVE_PRODUCTION_DATA';
@@ -97,8 +98,8 @@ export class OrdersService {
       }
 
       // Get access token (this should be handled by amazonService, but for now we'll use a placeholder)
-      // In production, this should use the tokenManager
-      const accessToken = await this.getAccessToken(userId);
+      // Get access token via store-aware helper
+      const accessToken = await this.getAccessToken(userId, storeId);
 
       // Fetch orders from SP-API
       const response = await axios.get(`${regionalBaseUrl}/orders/v0/orders`, {
@@ -230,7 +231,7 @@ export class OrdersService {
   /**
    * Save normalized orders to database
    */
-  async saveOrdersToDatabase(userId: string, orders: NormalizedOrder[]): Promise<void> {
+  async saveOrdersToDatabase(userId: string, orders: NormalizedOrder[], storeId?: string): Promise<void> {
     try {
       logger.info('Saving orders to database', { userId, count: orders.length });
 
@@ -263,7 +264,8 @@ export class OrdersService {
         sync_timestamp: new Date().toISOString(),
         is_sandbox: this.isSandbox(),
         created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
+        store_id: storeId || null
       }));
 
       // Check for existing orders to avoid duplicates
@@ -273,6 +275,7 @@ export class OrdersService {
           .from('orders')
           .select('order_id')
           .eq('user_id', userId)
+          .eq('store_id', storeId || null)
           .in('order_id', orderIds);
 
         if (fetchError) {
@@ -316,6 +319,7 @@ export class OrdersService {
                   updated_at: order.updated_at
                 })
                 .eq('user_id', userId)
+                .eq('store_id', storeId || null)
                 .eq('order_id', order.order_id);
 
               if (updateError) {
@@ -360,9 +364,9 @@ export class OrdersService {
   /**
    * Get access token from amazonService
    */
-  private async getAccessToken(userId: string): Promise<string> {
+  private async getAccessToken(userId: string, storeId?: string): Promise<string> {
     const amazonService = (await import('./amazonService')).default;
-    return amazonService.getAccessTokenForService(userId);
+    return amazonService.getAccessTokenForService(userId, storeId);
   }
 }
 

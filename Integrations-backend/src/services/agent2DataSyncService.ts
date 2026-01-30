@@ -133,6 +133,7 @@ export class Agent2DataSyncService {
    */
   async syncUserData(
     userId: string,
+    storeId?: string,
     startDate?: Date,
     endDate?: Date,
     parentSyncId?: string
@@ -154,7 +155,7 @@ export class Agent2DataSyncService {
     });
 
     // Check if user has valid Amazon token from Agent 1
-    const isConnected = await tokenManager.isTokenValid(userId, 'amazon');
+    const isConnected = await tokenManager.isTokenValid(userId, 'amazon', storeId);
 
     // ===============================================
     // SIMPLIFIED MODE LOGIC (Single Source of Truth)
@@ -250,7 +251,7 @@ export class Agent2DataSyncService {
         });
         logger.info('📦 [AGENT 2] Fetching orders...', { userId, syncId });
 
-        const ordersResult = await this.syncOrders(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId);
+        const ordersResult = await this.syncOrders(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, storeId);
         result.normalized.orders = ordersResult.data || [];
         result.summary.ordersCount = result.normalized.orders.length;
 
@@ -325,7 +326,7 @@ export class Agent2DataSyncService {
         });
         logger.info('🚚 [AGENT 2] Fetching shipments...', { userId, syncId });
 
-        const shipmentsResult = await this.syncShipments(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId);
+        const shipmentsResult = await this.syncShipments(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, storeId);
         result.normalized.shipments = shipmentsResult.data || [];
         result.summary.shipmentsCount = result.normalized.shipments.length;
 
@@ -380,7 +381,7 @@ export class Agent2DataSyncService {
         });
         logger.info('↩️ [AGENT 2] Fetching returns...', { userId, syncId });
 
-        const returnsResult = await this.syncReturns(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId);
+        const returnsResult = await this.syncReturns(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, storeId);
         result.normalized.returns = returnsResult.data || [];
         result.summary.returnsCount = result.normalized.returns.length;
 
@@ -429,7 +430,7 @@ export class Agent2DataSyncService {
         });
         logger.info('💰 [AGENT 2] Fetching settlements...', { userId, syncId });
 
-        const settlementsResult = await this.syncSettlements(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId);
+        const settlementsResult = await this.syncSettlements(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, storeId);
         result.normalized.settlements = settlementsResult.data || [];
         result.summary.settlementsCount = result.normalized.settlements.length;
 
@@ -504,7 +505,7 @@ export class Agent2DataSyncService {
         });
         logger.info('📊 [AGENT 2] Fetching inventory...', { userId, syncId });
 
-        const inventoryResult = await this.syncInventory(userId, useMockGenerator, mockScenario, syncId);
+        const inventoryResult = await this.syncInventory(userId, useMockGenerator, mockScenario, syncId, storeId);
         result.normalized.inventory = inventoryResult.data || [];
         result.summary.inventoryCount = result.normalized.inventory.length;
 
@@ -578,7 +579,7 @@ export class Agent2DataSyncService {
         });
         logger.info('🎯 [AGENT 2] Fetching claims...', { userId, syncId });
 
-        const claimsResult = await this.syncClaims(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId);
+        const claimsResult = await this.syncClaims(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, storeId);
         result.normalized.claims = claimsResult.data || [];
         result.summary.claimsCount = result.normalized.claims.length;
 
@@ -673,7 +674,8 @@ export class Agent2DataSyncService {
             detectionId,
             result.normalized,
             detectionSyncId,
-            useMockGenerator
+            useMockGenerator,
+            storeId
           );
 
           // Add detection results to the sync result
@@ -770,7 +772,8 @@ export class Agent2DataSyncService {
     endDate: Date,
     useMockGenerator: boolean,
     mockScenario: MockScenario,
-    syncId?: string
+    syncId?: string,
+    storeId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // SIMPLE LOGIC: Mock mode = generate, Real mode = SP-API
     if (useMockGenerator) {
@@ -782,7 +785,7 @@ export class Agent2DataSyncService {
     logger.info('📦 [AGENT 2] Using REAL SP-API for orders (with retry)', { userId, syncId });
 
     const result = await withRetry(
-      () => this.ordersService.fetchOrders(userId, startDate, endDate),
+      () => this.ordersService.fetchOrders(userId, startDate, endDate, storeId),
       {
         maxRetries: 3,
         initialDelayMs: 1000,
@@ -818,7 +821,8 @@ export class Agent2DataSyncService {
     endDate: Date,
     useMockGenerator: boolean,
     mockScenario: MockScenario,
-    syncId?: string
+    syncId?: string,
+    storeId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // SIMPLE LOGIC: Mock mode = generate, Real mode = SP-API
     if (useMockGenerator) {
@@ -830,7 +834,7 @@ export class Agent2DataSyncService {
     logger.info('🚚 [AGENT 2] Using REAL SP-API for shipments (with retry)', { userId, syncId });
 
     const result = await withRetry(
-      () => this.shipmentsService.fetchShipments(userId, startDate, endDate),
+      () => this.shipmentsService.fetchShipments(userId, startDate, endDate, storeId),
       {
         maxRetries: 3,
         initialDelayMs: 1000,
@@ -861,7 +865,8 @@ export class Agent2DataSyncService {
     endDate: Date,
     useMockGenerator: boolean,
     mockScenario: MockScenario,
-    syncId?: string
+    syncId?: string,
+    storeId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // SIMPLE LOGIC: Mock mode = generate, Real mode = SP-API
     if (useMockGenerator) {
@@ -873,7 +878,7 @@ export class Agent2DataSyncService {
     logger.info('↩️ [AGENT 2] Using REAL SP-API for returns (with retry)', { userId, syncId });
 
     const result = await withRetry(
-      () => this.returnsService.fetchReturns(userId, startDate, endDate),
+      () => this.returnsService.fetchReturns(userId, startDate, endDate, storeId),
       {
         maxRetries: 3,
         initialDelayMs: 1000,
@@ -904,7 +909,8 @@ export class Agent2DataSyncService {
     endDate: Date,
     useMockGenerator: boolean,
     mockScenario: MockScenario,
-    syncId?: string
+    syncId?: string,
+    storeId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // SIMPLE LOGIC: Mock mode = generate, Real mode = SP-API
     if (useMockGenerator) {
@@ -916,7 +922,7 @@ export class Agent2DataSyncService {
     logger.info('💰 [AGENT 2] Using REAL SP-API for settlements (with retry)', { userId, syncId });
 
     const result = await withRetry(
-      () => this.settlementsService.fetchSettlements(userId, startDate, endDate),
+      () => this.settlementsService.fetchSettlements(userId, startDate, endDate, storeId),
       {
         maxRetries: 3,
         initialDelayMs: 1000,
@@ -945,7 +951,8 @@ export class Agent2DataSyncService {
     userId: string,
     useMockGenerator: boolean,
     mockScenario: MockScenario,
-    syncId?: string
+    syncId?: string,
+    storeId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     // SIMPLE LOGIC: Mock mode = generate, Real mode = SP-API
     if (useMockGenerator) {
@@ -954,8 +961,8 @@ export class Agent2DataSyncService {
     }
 
     // Production: Use real SP-API
-    logger.info('📦 [AGENT 2] Using REAL SP-API for inventory', { userId, syncId });
-    const inventoryResult = await amazonService.fetchInventory(userId);
+    logger.info('📦 [AGENT 2] Using REAL SP-API for inventory', { userId, syncId, storeId });
+    const inventoryResult = await amazonService.fetchInventory(userId, storeId);
     const inventory = inventoryResult.data || inventoryResult;
     return {
       success: true,
@@ -973,13 +980,14 @@ export class Agent2DataSyncService {
     endDate: Date,
     useMockGenerator: boolean,
     mockScenario: MockScenario,
-    syncId?: string
+    syncId?: string,
+    storeId?: string
   ): Promise<{ success: boolean; data: any[]; message: string }> {
     if (useMockGenerator) {
       return this.generateMockClaims(userId, startDate, endDate, mockScenario, syncId);
     }
 
-    const claimsResult = await amazonService.fetchClaims(userId, startDate, endDate);
+    const claimsResult = await amazonService.fetchClaims(userId, startDate, endDate, storeId);
     const claims = claimsResult.data || claimsResult;
     return {
       success: true,
@@ -1786,7 +1794,8 @@ export class Agent2DataSyncService {
       claims?: any[];
     },
     parentSyncId?: string,
-    useMockGenerator = false
+    useMockGenerator = false,
+    storeId?: string
   ): Promise<{ totalDetected: number }> {
     const storageSyncId = parentSyncId || syncId;
 
@@ -2444,7 +2453,7 @@ export class Agent2DataSyncService {
       });
 
       // Store detection results (no log needed - happens immediately)
-      await this.storeDetectionResults(detectionResults, userId, storageSyncId);
+      await this.storeDetectionResults(detectionResults, userId, storageSyncId, storeId);
     }
 
     // Step 7: Signal completion
@@ -3005,7 +3014,8 @@ export class Agent2DataSyncService {
   private async storeDetectionResults(
     detections: any[],
     userId: string,
-    syncId: string
+    syncId: string,
+    storeId?: string
   ): Promise<void> {
     // Use supabaseAdmin if available, otherwise fall back to regular supabase client
     // CRITICAL: We must NOT skip storage - use whichever client is available
@@ -3087,6 +3097,7 @@ export class Agent2DataSyncService {
           validatedRecords.push({
             tenant_id: tenantId,
             seller_id: userId,
+            store_id: storeId,
             // claim_id: claimId, // Column does not exist
             sync_id: syncId,
             anomaly_type: detection.anomaly_type || 'fee_error',
@@ -3154,6 +3165,7 @@ export class Agent2DataSyncService {
         validatedRecords.push({
           tenant_id: tenantId,
           seller_id: userId,
+          store_id: storeId,
           claim_id: validation.normalized.claim_id!,
           sync_id: syncId,
           anomaly_type: detection.anomaly_type,

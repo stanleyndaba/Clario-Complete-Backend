@@ -705,16 +705,65 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         }
       }
 
+      // Step 4c: Resolve or Create Store (Multi-Store Control Plane)
+      let storeId: string | null = null;
+      try {
+        const marketplace = profile.marketplaces[0] || marketplaceIdFromState || 'amazon_us';
+        const storeName = profile.companyName || profile.sellerName || `Amazon - ${profile.sellerId}`;
+
+        // Try to find existing store for this tenant and seller_id
+        const { data: existingStore } = await supabaseAdmin
+          .from('stores')
+          .select('id')
+          .eq('tenant_id', tenantIdToUse)
+          .eq('seller_id', profile.sellerId)
+          .eq('marketplace', marketplace)
+          .is('deleted_at', null)
+          .maybeSingle();
+
+        if (existingStore) {
+          storeId = existingStore.id;
+          logger.info('Found existing store for seller', { storeId, sellerId: profile.sellerId });
+        } else {
+          // Create new store
+          const { data: newStore, error: storeErr } = await supabaseAdmin
+            .from('stores')
+            .insert({
+              tenant_id: tenantIdToUse,
+              name: storeName,
+              marketplace: marketplace,
+              seller_id: profile.sellerId,
+              is_active: true,
+              metadata: {
+                amazon_profile: profile
+              }
+            })
+            .select('id')
+            .single();
+
+          if (storeErr) {
+            logger.error('Failed to create store during OAuth', { error: storeErr, sellerId: profile.sellerId });
+            // Don't fail the whole flow, but we won't have a storeId
+          } else if (newStore) {
+            storeId = newStore.id;
+            logger.info('Created new store for seller', { storeId, sellerId: profile.sellerId });
+          }
+        }
+      } catch (storeResolverError: any) {
+        logger.error('Error resolving store during OAuth', { error: storeResolverError.message });
+      }
+
       // Step 5: Encrypt tokens and save using tokenManager
       const expiresAt = new Date(Date.now() + (expires_in || 3600) * 1000);
       await tokenManager.saveToken(userId, 'amazon', {
         accessToken: access_token,
         refreshToken: refresh_token || '',
         expiresAt
-      }, tenantIdToUse || undefined);
+      }, tenantIdToUse || undefined, storeId || undefined);
 
       logger.info('Successfully stored Amazon tokens in database', {
         userId,
+        storeId,
         sellerId: profile.sellerId,
         hasRefreshToken: !!refresh_token
       });
@@ -728,6 +777,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           status: 'connected',
           display_name: profile.companyName || `Amazon Seller ${profile.sellerId}`,
           tenant_id: tenantIdToUse,
+          store_id: storeId, // Link to the specific store
           metadata: {
             marketplaces: profile.marketplaces,
             seller_name: profile.sellerName,
@@ -736,7 +786,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         }, {
-          onConflict: 'seller_id,provider'
+          onConflict: 'seller_id,provider,store_id'
         });
 
       if (evidenceError) {
@@ -764,6 +814,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         if (queueAvailable) {
           // ✅ Step 2: Add with Deduplication (userId-based, prevents double-click)
           const jobId = await addSyncJob(userId, profile.sellerId, {
+            storeId: storeId || undefined,
             companyName: profile.companyName,
             marketplaces: profile.marketplaces
           });
@@ -783,23 +834,24 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           }
         } else {
           // ✅ Redis is down - run inline sync
-          logger.warn('⚠️ [AGENT 1] Redis down, running inline sync', { userId });
-          await runInlineSync(userId);
+          logger.warn('⚠️ [AGENT 1] Redis down, running inline sync', { userId, storeId });
+          await runInlineSync(userId, storeId || undefined);
         }
       } catch (queueError: any) {
         // Queue operation failed - fall back to inline sync
         logger.warn('⚠️ [AGENT 1] Queue operation failed, running inline sync', {
           error: queueError.message,
-          userId
+          userId,
+          storeId
         });
-        await runInlineSync(userId);
+        await runInlineSync(userId, storeId || undefined);
       }
 
       // Helper: Run inline sync (degraded mode)
-      async function runInlineSync(uid: string): Promise<void> {
+      async function runInlineSync(uid: string, sid?: string): Promise<void> {
         try {
           const agent2DataSyncService = (await import('../services/agent2DataSyncService')).default;
-          agent2DataSyncService.syncUserData(uid).then((syncResult) => {
+          agent2DataSyncService.syncUserData(uid, sid).then((syncResult) => {
             logger.info('✅ [AGENT 1→2] Inline sync completed', {
               userId: uid,
               syncId: syncResult.syncId,
@@ -808,7 +860,8 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           }).catch((syncError: any) => {
             logger.error('❌ [AGENT 1→2] Inline sync failed', {
               error: syncError.message,
-              userId: uid
+              userId: uid,
+              storeId: sid
             });
           });
         } catch (fallbackError: any) {
@@ -990,12 +1043,13 @@ export const syncAmazonData = async (req: Request, res: Response) => {
   try {
     // Get user ID from request (set by auth middleware if available)
     const userId = (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    const storeId = req.query.storeId as string || req.body.storeId as string;
 
     logger.info(`🔄 Starting Amazon data sync for user: ${userId}`);
     logger.info(`📡 This will fetch data from SP-API sandbox (if connected)`);
 
     // Use syncJobManager for async processing - returns immediately with syncId
-    const syncResult = await syncJobManager.startSync(userId);
+    const syncResult = await syncJobManager.startSync(userId, storeId);
 
     logger.info(`✅ Sync job started for user ${userId}:`, {
       syncId: syncResult.syncId,
@@ -1101,7 +1155,8 @@ export const getAmazonClaims = async (req: Request, res: Response): Promise<void
 export const getAmazonInventory = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user?.id || 'demo-user';
-    const result = await amazonService.fetchInventory(userId);
+    const storeId = req.query.storeId as string;
+    const result = await amazonService.fetchInventory(userId, storeId);
 
     res.json({
       success: true,

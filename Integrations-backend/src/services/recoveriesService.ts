@@ -48,7 +48,7 @@ class RecoveriesService {
   /**
    * Detect payouts from Amazon SP-API for a user
    */
-  async detectPayouts(userId: string, startDate?: Date, endDate?: Date): Promise<any[]> {
+  async detectPayouts(userId: string, storeId?: string, startDate?: Date, endDate?: Date): Promise<any[]> {
     try {
       logger.info('🔍 [RECOVERIES] Detecting payouts from Amazon', {
         userId,
@@ -57,10 +57,16 @@ class RecoveriesService {
       });
 
       // Fetch financial events from SP-API (reimbursements)
-      const { data: financialEvents, error } = await supabaseAdmin
+      const query = supabaseAdmin
         .from('financial_events')
         .select('*')
-        .eq('seller_id', userId)
+        .eq('seller_id', userId);
+
+      if (storeId) {
+        query.eq('store_id', storeId);
+      }
+
+      const { data: financialEvents, error } = await query
         .eq('event_type', 'Reimbursement')
         .gte('event_date', startDate?.toISOString() || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
         .lte('event_date', endDate?.toISOString() || new Date().toISOString())
@@ -78,7 +84,7 @@ class RecoveriesService {
       // Also try fetching from Amazon Service (if available)
       try {
         const { default: amazonService } = await import('./amazonService');
-        const claims = await amazonService.fetchClaims(userId, startDate, endDate);
+        const claims = await amazonService.fetchClaims(userId, startDate, endDate, storeId);
 
         // Filter for approved/reimbursed claims
         const payouts = (claims || []).filter((claim: any) =>
@@ -270,7 +276,7 @@ class RecoveriesService {
   /**
    * Reconcile payout with expected claim amount
    */
-  async reconcilePayout(match: PayoutMatch, userId: string): Promise<ReconciliationResult> {
+  async reconcilePayout(match: PayoutMatch, userId: string, storeId?: string): Promise<ReconciliationResult> {
     try {
       logger.info('💰 [RECOVERIES] Reconciling payout', {
         userId,
@@ -292,6 +298,7 @@ class RecoveriesService {
         .insert({
           dispute_id: match.disputeId,
           user_id: userId,
+          store_id: storeId || null,
           amazon_case_id: match.amazonCaseId,
           expected_amount: match.expectedAmount,
           actual_amount: match.actualAmount,
@@ -455,6 +462,7 @@ class RecoveriesService {
       // Detect payouts for this user (last 30 days)
       const payouts = await this.detectPayouts(
         userId,
+        disputeCase.store_id || undefined,
         new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
         new Date()
       );
@@ -465,7 +473,7 @@ class RecoveriesService {
 
         if (match && match.disputeId === disputeId) {
           // Found match - reconcile
-          return await this.reconcilePayout(match, userId);
+          return await this.reconcilePayout(match, userId, disputeCase.store_id || undefined);
         }
       }
 

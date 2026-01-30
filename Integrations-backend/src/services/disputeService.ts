@@ -86,7 +86,8 @@ export class DisputeService {
     caseType: 'amazon_fba' | 'stripe_dispute' | 'shopify_refund',
     claimAmount: number,
     currency: string = 'USD',
-    evidence?: any
+    evidence?: any,
+    storeId?: string
   ): Promise<DisputeCase> {
     try {
       logger.info('Creating dispute case', {
@@ -103,6 +104,7 @@ export class DisputeService {
         .from('dispute_cases')
         .insert({
           seller_id: sellerId,
+          store_id: storeId,
           detection_result_id: detectionResultId,
           case_number: caseNumber,
           status: 'pending',
@@ -282,6 +284,7 @@ export class DisputeService {
       status?: string;
       caseType?: string;
       provider?: string;
+      storeId?: string;
       dateFrom?: string;
       dateTo?: string;
     },
@@ -313,6 +316,9 @@ export class DisputeService {
       }
       if (filters?.provider) {
         query = query.eq('provider', filters.provider);
+      }
+      if (filters?.storeId) {
+        query = query.eq('store_id', filters.storeId);
       }
       if (filters?.dateFrom) {
         query = query.gte('created_at', filters.dateFrom);
@@ -378,7 +384,7 @@ export class DisputeService {
   /**
    * Get dispute case statistics for a seller
    */
-  async getDisputeStatistics(sellerId: string): Promise<{
+  async getDisputeStatistics(sellerId: string, storeId?: string): Promise<{
     total_cases: number;
     total_claimed: number;
     total_resolved: number;
@@ -389,10 +395,16 @@ export class DisputeService {
     average_resolution_time: number;
   }> {
     try {
-      const { data, error } = await supabase
+      const query = supabase
         .from('dispute_cases')
         .select('*')
         .eq('seller_id', sellerId);
+
+      if (storeId) {
+        query.eq('store_id', storeId);
+      }
+
+      const { data, error } = await query;
 
       if (error) {
         throw new Error(`Failed to fetch dispute statistics: ${error.message}`);

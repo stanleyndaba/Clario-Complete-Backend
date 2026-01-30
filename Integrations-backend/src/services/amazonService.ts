@@ -214,25 +214,25 @@ export class AmazonService {
     return this.isSandbox() ? 1000 : 2000;
   }
 
-  private async getAccessToken(userId?: string): Promise<string> {
+  private async getAccessToken(userId?: string, storeId?: string): Promise<string> {
     // Return token if still valid
     if (this.accessToken && this.tokenExpiry && this.tokenExpiry > new Date()) {
       return this.accessToken;
     }
 
     // Refresh token (will try database first if userId provided)
-    await this.refreshAccessToken(userId);
+    await this.refreshAccessToken(userId, storeId);
     return this.accessToken!;
   }
 
   /**
    * Public method to get access token for use by other services
    */
-  async getAccessTokenForService(userId?: string): Promise<string> {
-    return this.getAccessToken(userId);
+  async getAccessTokenForService(userId?: string, storeId?: string): Promise<string> {
+    return this.getAccessToken(userId, storeId);
   }
 
-  private async refreshAccessToken(userId?: string): Promise<void> {
+  private async refreshAccessToken(userId?: string, storeId?: string): Promise<void> {
     try {
       let refreshToken: string | undefined;
 
@@ -240,11 +240,11 @@ export class AmazonService {
       if (userId) {
         try {
           const tokenManager = (await import('../utils/tokenManager')).default;
-          const tokenData = await tokenManager.getToken(userId, 'amazon');
+          const tokenData = await tokenManager.getToken(userId, 'amazon', storeId);
 
           if (tokenData && tokenData.refreshToken) {
             refreshToken = tokenData.refreshToken;
-            logger.info('Using refresh token from database for user', { userId });
+            logger.info('Using refresh token from database for user', { userId, storeId });
           }
         } catch (dbError: any) {
           logger.warn('Could not get token from database, falling back to env vars', {
@@ -577,7 +577,7 @@ export class AmazonService {
     }
   }
 
-  async syncData(userId: string) {
+  async syncData(userId: string, storeId?: string) {
     const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
     const regionalBaseUrl = this.getRegionalBaseUrl(marketplaceId);
 
@@ -587,9 +587,9 @@ export class AmazonService {
         regionalBaseUrl,
         isSandbox: this.isSandbox()
       });
-      const inventory = await this.fetchInventory(userId);
-      const claims = await this.fetchClaims(userId);
-      const fees = await this.fetchFees(userId);
+      const inventory = await this.fetchInventory(userId, storeId);
+      const claims = await this.fetchClaims(userId, undefined, undefined, storeId);
+      const fees = await this.fetchFees(userId, undefined, undefined, storeId);
 
       // Calculate totals from actual data
       const totalRecovered = claims.data.reduce((sum: number, claim: any) =>
@@ -624,7 +624,7 @@ export class AmazonService {
     return {};
   }
 
-  async fetchClaims(accountId: string, startDate?: Date, endDate?: Date): Promise<any> {
+  async fetchClaims(accountId: string, startDate?: Date, endDate?: Date, storeId?: string): Promise<any> {
     // Determine environment and data type once at the start
     const isSandboxMode = this.isSandbox();
     const environment = isSandboxMode ? 'SANDBOX' : 'PRODUCTION';
@@ -704,7 +704,7 @@ export class AmazonService {
     }
 
     try {
-      const accessToken = await this.getAccessToken(accountId);
+      const accessToken = await this.getAccessToken(accountId, storeId);
 
       logger.info(`Fetching claims/reimbursements for account ${accountId} from SP-API ${environment}`, {
         baseUrl: this.baseUrl,
@@ -1082,7 +1082,7 @@ export class AmazonService {
     }
   }
 
-  async fetchInventory(accountId: string): Promise<any> {
+  async fetchInventory(accountId: string, storeId?: string): Promise<any> {
     try {
       // Check if using mock SP-API (Bypass credentials check)
       if (process.env.USE_MOCK_SPAPI === 'true') {
@@ -1115,7 +1115,7 @@ export class AmazonService {
         };
       }
 
-      const accessToken = await this.getAccessToken(accountId);
+      const accessToken = await this.getAccessToken(accountId, storeId);
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
 
       logger.info(`Fetching inventory for account ${accountId} from SP-API SANDBOX`, {
@@ -1405,9 +1405,9 @@ export class AmazonService {
    * Get seller information and marketplace participations from Amazon SP-API
    * Handles both production and sandbox response formats
    */
-  async getSellersInfo(userId?: string): Promise<any> {
+  async getSellersInfo(userId?: string, storeId?: string): Promise<any> {
     try {
-      const accessToken = await this.getAccessToken(userId);
+      const accessToken = await this.getAccessToken(userId, storeId);
       // For getSellersInfo, we first try the default baseUrl, then fall back to regional if that fails
       // or we can just use the provided marketplace if known.
       // But usually this is the FIRST call, so we use the default.
@@ -1518,9 +1518,9 @@ export class AmazonService {
     }
   }
 
-  async fetchFees(accountId: string, startDate?: Date, endDate?: Date): Promise<any> {
+  async fetchFees(accountId: string, startDate?: Date, endDate?: Date, storeId?: string): Promise<any> {
     try {
-      const accessToken = await this.getAccessToken(accountId);
+      const accessToken = await this.getAccessToken(accountId, storeId);
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
 
       // Default to last 18 months for Phase 1 (first sync)

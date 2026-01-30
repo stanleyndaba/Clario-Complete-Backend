@@ -11,6 +11,7 @@ export interface DetectionForDispute {
   anomaly_type?: string | null;
   created_at?: string | null;
   sync_id?: string | null;
+  store_id?: string | null;
 }
 
 type DisputeCaseRow = {
@@ -104,6 +105,7 @@ export async function upsertDisputesAndRecoveriesFromDetections(
 
     return {
       seller_id: detection.seller_id,
+      store_id: detection.store_id || null,
       detection_result_id: detection.id,
       case_number: deriveCaseNumber(detection, index),
       status,
@@ -130,7 +132,7 @@ export async function upsertDisputesAndRecoveriesFromDetections(
   const { data: batchResult, error: batchError } = await supabaseAdmin
     .from('dispute_cases')
     .insert(disputePayload)
-    .select('id, detection_result_id, seller_id, status, claim_amount, currency, resolution_date, case_number, created_at');
+    .select('id, detection_result_id, seller_id, store_id, status, claim_amount, currency, resolution_date, case_number, created_at');
 
   if (batchError) {
     // If batch fails (likely duplicates), try inserting one by one
@@ -144,7 +146,7 @@ export async function upsertDisputesAndRecoveriesFromDetections(
           const { data: single, error: singleError } = await supabaseAdmin
             .from('dispute_cases')
             .insert(dispute)
-            .select('id, detection_result_id, seller_id, status, claim_amount, currency, resolution_date, case_number, created_at')
+            .select('id, detection_result_id, seller_id, store_id, status, claim_amount, currency, resolution_date, case_number, created_at')
             .single();
 
           if (single && !singleError) {
@@ -203,6 +205,7 @@ const buildRecoveryPayload = (disputes: DisputeCaseRow[], existingIds: Set<strin
       return {
         dispute_id: dispute.id,
         user_id: dispute.seller_id,
+        store_id: dispute.store_id || null,
         expected_amount: amount,
         actual_amount: amount,
         discrepancy: 0,

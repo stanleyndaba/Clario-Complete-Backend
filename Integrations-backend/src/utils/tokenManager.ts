@@ -69,7 +69,8 @@ export class TokenManager {
     userId: string,
     provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
     tokenData: TokenData,
-    tenantId?: string
+    tenantId?: string,
+    storeId?: string
   ): Promise<void> {
     try {
       const encryptedAccessToken = this.encrypt(tokenData.accessToken);
@@ -81,7 +82,8 @@ export class TokenManager {
         encryptedAccessToken,
         encryptedRefreshToken,
         tokenData.expiresAt,
-        tenantId
+        tenantId,
+        storeId
       );
 
       logger.info('Token saved successfully', { userId, provider });
@@ -93,10 +95,11 @@ export class TokenManager {
 
   async getToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox'
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    storeId?: string
   ): Promise<TokenData | null> {
     try {
-      const tokenStatus = await this.getTokenWithStatus(userId, provider);
+      const tokenStatus = await this.getTokenWithStatus(userId, provider, storeId);
 
       if (!tokenStatus) {
         return null;
@@ -116,10 +119,11 @@ export class TokenManager {
 
   async getTokenWithStatus(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox'
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    storeId?: string
   ): Promise<TokenWithStatus | null> {
     try {
-      const tokenRecord = await dbTokenManager.getToken(userId, provider);
+      const tokenRecord = await dbTokenManager.getToken(userId, provider, storeId);
 
       if (!tokenRecord) {
         return null;
@@ -196,7 +200,8 @@ export class TokenManager {
     userId: string,
     provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
     newTokenData: TokenData,
-    tenantId?: string
+    tenantId?: string,
+    storeId?: string
   ): Promise<void> {
     try {
       const encryptedAccessToken = this.encrypt(newTokenData.accessToken);
@@ -208,7 +213,8 @@ export class TokenManager {
         encryptedAccessToken,
         encryptedRefreshToken,
         newTokenData.expiresAt,
-        tenantId
+        tenantId,
+        storeId
       );
 
       logger.info('Token refreshed successfully', { userId, provider });
@@ -220,10 +226,11 @@ export class TokenManager {
 
   async revokeToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox'
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    storeId?: string
   ): Promise<void> {
     try {
-      await dbTokenManager.deleteToken(userId, provider);
+      await dbTokenManager.deleteToken(userId, provider, storeId);
       logger.info('Token revoked successfully', { userId, provider });
     } catch (error) {
       logger.error('Error revoking token', { error, userId, provider });
@@ -233,11 +240,12 @@ export class TokenManager {
 
   async isTokenValid(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox'
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    storeId?: string
   ): Promise<boolean> {
     try {
       // First check database
-      const tokenStatus = await this.getTokenWithStatus(userId, provider);
+      const tokenStatus = await this.getTokenWithStatus(userId, provider, storeId);
       if (tokenStatus && !tokenStatus.isExpired) {
         return true;
       }

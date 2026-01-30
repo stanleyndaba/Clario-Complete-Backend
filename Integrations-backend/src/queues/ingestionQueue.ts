@@ -20,6 +20,7 @@ const QUEUE_NAME = 'onboarding-sync';
 export interface InitialSyncJobData {
     userId: string;
     sellerId: string;
+    storeId?: string;
     companyName?: string;
     marketplaces?: string[];
     triggeredAt: string;
@@ -154,6 +155,7 @@ export async function addSyncJob(
     userId: string,
     sellerId: string,
     options?: {
+        storeId?: string;
         companyName?: string;
         marketplaces?: string[];
     }
@@ -168,12 +170,13 @@ export async function addSyncJob(
         const job = await queue.add('initial-sync' as any, {
             userId,
             sellerId,
+            storeId: options?.storeId,
             companyName: options?.companyName,
             marketplaces: options?.marketplaces,
             triggeredAt: new Date().toISOString(),
             jobType: 'initial-sync'
         }, {
-            jobId: `sync-${userId}`
+            jobId: `sync-${userId}${options?.storeId ? `-${options.storeId}` : ''}`
         });
 
         logger.info('🎯 [QUEUE] Sync job added', {

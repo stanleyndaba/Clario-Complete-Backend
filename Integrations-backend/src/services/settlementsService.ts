@@ -50,7 +50,8 @@ export class SettlementsService {
   async fetchSettlements(
     userId: string,
     startDate?: Date,
-    endDate?: Date
+    endDate?: Date,
+    storeId?: string
   ): Promise<{ success: boolean; data: NormalizedSettlement[]; message: string }> {
     const environment = this.isSandbox() ? 'SANDBOX' : 'PRODUCTION';
     const dataType = this.isSandbox() ? 'SANDBOX_TEST_DATA' : 'LIVE_PRODUCTION_DATA';
@@ -86,7 +87,7 @@ export class SettlementsService {
       }
 
       // Get access token (should use tokenManager)
-      const accessToken = await this.getAccessToken(userId);
+      const accessToken = await this.getAccessToken(userId, storeId);
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
       const regionalBaseUrl = (await import('./amazonService')).default.getRegionalBaseUrl(marketplaceId);
 
@@ -271,7 +272,7 @@ export class SettlementsService {
   /**
    * Save normalized settlements to database
    */
-  async saveSettlementsToDatabase(userId: string, settlements: NormalizedSettlement[]): Promise<void> {
+  async saveSettlementsToDatabase(userId: string, settlements: NormalizedSettlement[], storeId?: string): Promise<void> {
     try {
       logger.info('Saving settlements to database', { userId, count: settlements.length });
 
@@ -300,7 +301,8 @@ export class SettlementsService {
         sync_timestamp: new Date().toISOString(),
         is_sandbox: this.isSandbox(),
         created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
+        store_id: storeId || null
       }));
 
       // Check for existing settlements (using composite key: settlement_id + transaction_type)
@@ -310,7 +312,7 @@ export class SettlementsService {
       const { error: insertError } = await supabase
         .from('settlements')
         .upsert(settlementsToInsert, {
-          onConflict: 'user_id,settlement_id,transaction_type',
+          onConflict: 'user_id,settlement_id,transaction_type,store_id',
           ignoreDuplicates: false
         });
 
@@ -336,9 +338,9 @@ export class SettlementsService {
   /**
    * Get access token from amazonService
    */
-  private async getAccessToken(userId: string): Promise<string> {
+  private async getAccessToken(userId: string, storeId?: string): Promise<string> {
     const amazonService = (await import('./amazonService')).default;
-    return amazonService.getAccessTokenForService(userId);
+    return amazonService.getAccessTokenForService(userId, storeId);
   }
 }
 

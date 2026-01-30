@@ -19,6 +19,7 @@ export type SyncStatus = 'idle' | 'running' | 'detecting' | 'completed' | 'faile
 export interface SyncJobStatus {
   syncId: string;
   userId: string;
+  storeId?: string; // Track which store this sync belongs to
   status: SyncStatus;
   progress: number;
   message: string;
@@ -58,11 +59,11 @@ class SyncJobManager {
   /**
    * Start a new sync job asynchronously
    */
-  async startSync(userId: string): Promise<{ syncId: string; status: string }> {
+  async startSync(userId: string, storeId?: string): Promise<{ syncId: string; status: string }> {
     const syncId = `sync_${userId}_${Date.now()}`;
 
     // Check if user has Amazon connection (database or environment variables)
-    const isConnected = await tokenManager.isTokenValid(userId, 'amazon');
+    const isConnected = await tokenManager.isTokenValid(userId, 'amazon', storeId);
     if (!isConnected) {
       // Double-check environment variables as fallback (for sandbox mode)
       const envRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
@@ -171,7 +172,7 @@ class SyncJobManager {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - defaultSyncDays);
     const endDate = new Date();
-    const syncFingerprint = createSyncFingerprint(userId, startDate, endDate, 5);
+    const syncFingerprint = createSyncFingerprint(userId, startDate, endDate, 5, storeId);
 
     const { data: recentSync } = await supabase
       .from('sync_progress')
@@ -246,10 +247,10 @@ class SyncJobManager {
       });
     }
 
-    // Initialize sync status (use 'running' to match database)
     const syncStatus: SyncJobStatus = {
       syncId,
       userId,
+      storeId,
       status: 'running',
       progress: 0,
       message: 'Sync starting...',
@@ -317,7 +318,7 @@ class SyncJobManager {
     this.sendProgressUpdate(userId, syncStatus);
 
     // Start async sync (don't await)
-    this.runSync(syncId, userId, () => cancelled).catch((error) => {
+    this.runSync(syncId, userId, () => cancelled, storeId).catch((error) => {
       logger.error(`Sync job ${syncId} failed:`, error);
       syncStatus.status = 'failed';
       syncStatus.error = error.message;
@@ -362,7 +363,7 @@ class SyncJobManager {
   /**
    * Run the actual sync job asynchronously with timeout protection
    */
-  private async runSync(syncId: string, userId: string, isCancelled: () => boolean): Promise<void> {
+  private async runSync(syncId: string, userId: string, isCancelled: () => boolean, storeId?: string): Promise<void> {
     // Set timeout for sync operation (configurable, default 300 seconds - allows ML detection to complete)
     // Can be overridden via SYNC_TIMEOUT_MS environment variable
     const SYNC_TIMEOUT_MS = config.SYNC_TIMEOUT_MS; // Default: 300 seconds (5 minutes)
@@ -424,9 +425,9 @@ class SyncJobManager {
 
         // Run Agent 2 Data Sync Service (comprehensive data sync with normalization)
         // CRITICAL: This must complete quickly to meet 30s timeout
-        logger.info('🔄 [SYNC JOB MANAGER] Starting Agent 2 data sync', { userId, syncId });
+        logger.info('🔄 [SYNC JOB MANAGER] Starting Agent 2 data sync', { userId, syncId, storeId });
         const agent2StartTime = Date.now();
-        syncResult = await agent2DataSyncService.syncUserData(userId, undefined, undefined, syncId);
+        syncResult = await agent2DataSyncService.syncUserData(userId, storeId, undefined, undefined, syncId);
         const agent2Duration = Date.now() - agent2StartTime;
         logger.info('⏱️ [SYNC JOB MANAGER] Agent 2 sync duration', {
           userId,

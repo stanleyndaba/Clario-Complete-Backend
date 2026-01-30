@@ -48,7 +48,8 @@ export class ReturnsService {
   async fetchReturns(
     userId: string,
     startDate?: Date,
-    endDate?: Date
+    endDate?: Date,
+    storeId?: string
   ): Promise<{ success: boolean; data: NormalizedReturn[]; message: string }> {
     const environment = this.isSandbox() ? 'SANDBOX' : 'PRODUCTION';
     const dataType = this.isSandbox() ? 'SANDBOX_TEST_DATA' : 'LIVE_PRODUCTION_DATA';
@@ -159,7 +160,7 @@ export class ReturnsService {
   /**
    * Save normalized returns to database
    */
-  async saveReturnsToDatabase(userId: string, returns: NormalizedReturn[]): Promise<void> {
+  async saveReturnsToDatabase(userId: string, returns: NormalizedReturn[], storeId?: string): Promise<void> {
     try {
       logger.info('Saving returns to database', { userId, count: returns.length });
 
@@ -189,7 +190,8 @@ export class ReturnsService {
         sync_timestamp: new Date().toISOString(),
         is_sandbox: this.isSandbox(),
         created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
+        store_id: storeId || null
       }));
 
       // Check for existing returns
@@ -199,6 +201,7 @@ export class ReturnsService {
           .from('returns')
           .select('return_id')
           .eq('user_id', userId)
+          .eq('store_id', storeId || null)
           .in('return_id', returnIds);
 
         if (!fetchError && existingReturns) {
@@ -230,6 +233,7 @@ export class ReturnsService {
                 updated_at: returnData.updated_at
               })
               .eq('user_id', userId)
+              .eq('store_id', storeId || null)
               .eq('return_id', returnData.return_id);
 
             if (updateError) {

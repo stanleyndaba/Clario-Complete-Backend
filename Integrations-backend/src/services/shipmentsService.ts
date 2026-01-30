@@ -51,7 +51,8 @@ export class ShipmentsService {
   async fetchShipments(
     userId: string,
     startDate?: Date,
-    endDate?: Date
+    endDate?: Date,
+    storeId?: string
   ): Promise<{ success: boolean; data: NormalizedShipment[]; message: string }> {
     const environment = this.isSandbox() ? 'SANDBOX' : 'PRODUCTION';
     const dataType = this.isSandbox() ? 'SANDBOX_TEST_DATA' : 'LIVE_PRODUCTION_DATA';
@@ -188,7 +189,7 @@ export class ShipmentsService {
   /**
    * Save normalized shipments to database
    */
-  async saveShipmentsToDatabase(userId: string, shipments: NormalizedShipment[]): Promise<void> {
+  async saveShipmentsToDatabase(userId: string, shipments: NormalizedShipment[], storeId?: string): Promise<void> {
     try {
       logger.info('Saving shipments to database', { userId, count: shipments.length });
 
@@ -221,7 +222,8 @@ export class ShipmentsService {
         sync_timestamp: new Date().toISOString(),
         is_sandbox: this.isSandbox(),
         created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
+        store_id: storeId || null
       }));
 
       // Check for existing shipments
@@ -231,6 +233,7 @@ export class ShipmentsService {
           .from('shipments')
           .select('shipment_id')
           .eq('user_id', userId)
+          .eq('store_id', storeId || null)
           .in('shipment_id', shipmentIds);
 
         if (!fetchError && existingShipments) {
@@ -264,6 +267,7 @@ export class ShipmentsService {
                 updated_at: shipment.updated_at
               })
               .eq('user_id', userId)
+              .eq('store_id', storeId || null)
               .eq('shipment_id', shipment.shipment_id);
 
             if (updateError) {
