@@ -32,21 +32,21 @@ import asyncio
 import logging
 import os
 
-# Temporarily comment out all imports to debug routing
-# from .cdd.router import router as detect_router
-# from .acg.router import router as filing_router
-# from .ml_detector.router import router as ml_router
+# Core API routers - Enable for MVP
 from .api.auth_sandbox import router as auth_router
 from .api.integrations import router as integrations_router
 from .api.detections import router as detections_router
 from .api.recoveries import router as recoveries_router
+from .api.metrics import router as metrics_router
+from .api.sync import router as sync_router
+
+# Optional routers - Enable as needed
+# from .cdd.router import router as detect_router
+# from .acg.router import router as filing_router
+# from .ml_detector.router import router as ml_router
 from .api.evidence import router as evidence_router
-# from .api.evidence_sources import router as evidence_sources_router
 from .api.parser import router as parser_router
 from .api.evidence_matching import router as evidence_matching_router
-# from .api.zero_effort_evidence import router as zero_effort_evidence_router
-# from .api.metrics import router as metrics_router
-from .api.sync import router as sync_router
 # from .api.websocket import router as websocket_router
 # from .api.evidence_prompts_proof_packets import router as evidence_prompts_router
 # from .api.websocket_endpoints import router as websocket_endpoints_router
@@ -262,6 +262,7 @@ async def health():
         "timestamp": datetime.utcnow().isoformat()
     }
 
+<<<<<<< Updated upstream
 @app.get("/healthz")
 async def healthz():
     """Comprehensive health check endpoint (checks database and API keys)"""
@@ -384,6 +385,7 @@ app.include_router(evidence_matching_router, tags=["evidence-matching"])
 app.include_router(sync_router, tags=["sync"])
 app.include_router(integrations_router, tags=["integrations"])
 app.include_router(dispute_submissions_router, tags=["disputes"])
+app.include_router(metrics_router, tags=["metrics"])
 
 # Workflow orchestration is now handled by Node.js OrchestrationJobManager
 # Python services call Node.js orchestrator via HTTP: POST /api/v1/workflow/phase/:phaseNumber
@@ -393,7 +395,6 @@ app.include_router(mcde_router)
 app.include_router(claim_detector_router)
 app.include_router(evidence_engine_router)
 app.include_router(test_service_router)
-
 
 
 @app.get("/api/services/status")

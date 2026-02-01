@@ -213,3 +213,4 @@ After running a sync, you should see:
 
 **The integration is ready! Just run a sync to see Agent 3 detections on the Recoveries page!** 🎉
 
+

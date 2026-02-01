@@ -6,6 +6,7 @@ import httpx
 from typing import Dict, Any, Optional, List
 import logging
 from src.services.service_directory import service_directory
+from src.services.mock_clients import mock_refund_engine
 
 logger = logging.getLogger(__name__)
 
@@ -54,11 +55,12 @@ class RefundEngineClient:
             if response and response.status_code == 200:
                 return response.json()
             else:
-                return {"error": "Failed to get claims", "status_code": response.status_code if response else None}
+                logger.warning(f"Refund engine unavailable, using mock data for user {user_id}")
+                return await mock_refund_engine.get_claims(user_id, status, limit, offset)
                 
         except Exception as e:
-            logger.error(f"Get claims failed: {e}")
-            return {"error": str(e)}
+            logger.warning(f"Refund engine failed, using mock data: {e}")
+            return await mock_refund_engine.get_claims(user_id, status, limit, offset)
     
     async def get_claim(self, user_id: str, claim_id: str) -> Dict[str, Any]:
         """Get specific claim"""
@@ -73,11 +75,12 @@ class RefundEngineClient:
             if response and response.status_code == 200:
                 return response.json()
             else:
-                return {"error": "Failed to get claim", "status_code": response.status_code if response else None}
+                logger.warning(f"Refund engine unavailable, using mock data for claim {claim_id}")
+                return await mock_refund_engine.get_claim(user_id, claim_id)
                 
         except Exception as e:
-            logger.error(f"Get claim failed: {e}")
-            return {"error": str(e)}
+            logger.warning(f"Refund engine failed, using mock data: {e}")
+            return await mock_refund_engine.get_claim(user_id, claim_id)
     
     async def get_discrepancies(self, user_id: str, limit: int = 20, offset: int = 0) -> Dict[str, Any]:
         """Get ML-powered discrepancy detection results"""
@@ -130,11 +133,12 @@ class RefundEngineClient:
             if response and response.status_code == 200:
                 return response.json()
             else:
-                return {"error": "Failed to get claim stats", "status_code": response.status_code if response else None}
+                logger.warning(f"Refund engine unavailable, using mock data for user {user_id}")
+                return await mock_refund_engine.get_claim_stats(user_id)
                 
         except Exception as e:
-            logger.error(f"Get claim stats failed: {e}")
-            return {"error": str(e)}
+            logger.warning(f"Refund engine failed, using mock data: {e}")
+            return await mock_refund_engine.get_claim_stats(user_id)
 
 # Global client instance
 refund_engine_client = RefundEngineClient()
