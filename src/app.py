@@ -262,7 +262,6 @@ async def health():
         "timestamp": datetime.utcnow().isoformat()
     }
 
-<<<<<<< Updated upstream
 @app.get("/healthz")
 async def healthz():
     """Comprehensive health check endpoint (checks database and API keys)"""
