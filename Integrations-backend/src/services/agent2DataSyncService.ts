@@ -3097,7 +3097,7 @@ export class Agent2DataSyncService {
           validatedRecords.push({
             tenant_id: tenantId,
             seller_id: userId,
-            store_id: storeId,
+            // store_id intentionally omitted - column not in DB schema yet
             // claim_id: claimId, // Column does not exist
             sync_id: syncId,
             anomaly_type: detection.anomaly_type || 'fee_error',
@@ -3165,7 +3165,7 @@ export class Agent2DataSyncService {
         validatedRecords.push({
           tenant_id: tenantId,
           seller_id: userId,
-          store_id: storeId,
+          // store_id intentionally omitted - column not in DB schema yet
           claim_id: validation.normalized.claim_id!,
           sync_id: syncId,
           anomaly_type: detection.anomaly_type,
