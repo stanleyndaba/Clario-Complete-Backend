@@ -301,8 +301,7 @@ export class SettlementsService {
         sync_timestamp: new Date().toISOString(),
         is_sandbox: this.isSandbox(),
         created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        store_id: storeId || null
+        updated_at: new Date().toISOString()
       }));
 
       // Check for existing settlements (using composite key: settlement_id + transaction_type)
@@ -312,7 +311,7 @@ export class SettlementsService {
       const { error: insertError } = await supabase
         .from('settlements')
         .upsert(settlementsToInsert, {
-          onConflict: 'user_id,settlement_id,transaction_type,store_id',
+          onConflict: 'user_id,settlement_id,transaction_type',
           ignoreDuplicates: false
         });
 

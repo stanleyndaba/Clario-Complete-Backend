@@ -12,9 +12,9 @@ const createMockRedisClient = (): RedisClientType => {
   return {
     isReady: false,
     isOpen: false,
-    connect: async () => {},
-    disconnect: async () => {},
-    quit: async () => {},
+    connect: async () => { },
+    disconnect: async () => { },
+    quit: async () => { },
     lPush: async () => 0,
     rPush: async () => 0,
     lPop: async () => null,
@@ -44,10 +44,10 @@ export async function createRedisClient(): Promise<RedisClientType> {
 
   // Check if Redis URL is configured
   // If not set or set to localhost/default, disable Redis (common in production without Redis)
-  if (!config.REDIS_URL || 
-      config.REDIS_URL === 'redis://localhost:6379' || 
-      config.REDIS_URL.includes('localhost') ||
-      config.REDIS_URL.includes('127.0.0.1')) {
+  if (!config.REDIS_URL ||
+    config.REDIS_URL === 'redis://localhost:6379' ||
+    config.REDIS_URL.includes('localhost') ||
+    config.REDIS_URL.includes('127.0.0.1')) {
     if (!redisErrorLogged) {
       logger.warn('Redis URL not configured or pointing to localhost - Redis features will be disabled. Set REDIS_URL environment variable to enable Redis features.');
       redisErrorLogged = true;
@@ -63,6 +63,7 @@ export async function createRedisClient(): Promise<RedisClientType> {
     redisClient = createClient({
       url: config.REDIS_URL,
       socket: {
+        tls: config.REDIS_URL.startsWith('rediss://'),
         reconnectStrategy: (retries) => {
           if (retries > 3) {
             // After 3 retries, give up and use mock client
@@ -108,7 +109,7 @@ export async function createRedisClient(): Promise<RedisClientType> {
     // Attempt connection with timeout
     await Promise.race([
       redisClient.connect(),
-      new Promise((_, reject) => 
+      new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Redis connection timeout')), 5000)
       )
     ]).catch((error) => {

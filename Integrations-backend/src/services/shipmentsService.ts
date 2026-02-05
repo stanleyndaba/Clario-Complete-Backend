@@ -222,8 +222,8 @@ export class ShipmentsService {
         sync_timestamp: new Date().toISOString(),
         is_sandbox: this.isSandbox(),
         created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        store_id: storeId || null
+        updated_at: new Date().toISOString()
+        // store_id intentionally omitted - column not in DB schema yet
       }));
 
       // Check for existing shipments
@@ -233,7 +233,6 @@ export class ShipmentsService {
           .from('shipments')
           .select('shipment_id')
           .eq('user_id', userId)
-          .eq('store_id', storeId || null)
           .in('shipment_id', shipmentIds);
 
         if (!fetchError && existingShipments) {
@@ -267,7 +266,6 @@ export class ShipmentsService {
                 updated_at: shipment.updated_at
               })
               .eq('user_id', userId)
-              .eq('store_id', storeId || null)
               .eq('shipment_id', shipment.shipment_id);
 
             if (updateError) {

@@ -264,8 +264,8 @@ export class OrdersService {
         sync_timestamp: new Date().toISOString(),
         is_sandbox: this.isSandbox(),
         created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        store_id: storeId || null
+        updated_at: new Date().toISOString()
+        // store_id intentionally omitted - column not in DB schema yet
       }));
 
       // Check for existing orders to avoid duplicates
@@ -275,7 +275,6 @@ export class OrdersService {
           .from('orders')
           .select('order_id')
           .eq('user_id', userId)
-          .eq('store_id', storeId || null)
           .in('order_id', orderIds);
 
         if (fetchError) {
@@ -319,7 +318,6 @@ export class OrdersService {
                   updated_at: order.updated_at
                 })
                 .eq('user_id', userId)
-                .eq('store_id', storeId || null)
                 .eq('order_id', order.order_id);
 
               if (updateError) {

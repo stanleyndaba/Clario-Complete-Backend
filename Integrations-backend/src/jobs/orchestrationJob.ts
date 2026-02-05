@@ -53,8 +53,12 @@ function initializeQueues(): void {
   try {
     // Create queues - Bull Queue accepts Redis URL string directly
     // It will attempt to connect, but we'll handle errors gracefully
-    orchestrationQueue = new Queue<OrchestrationJobData>('orchestration', REDIS_URL);
-    syncProgressQueue = new Queue<OrchestrationJobData>('sync-progress', REDIS_URL);
+    const queueOptions: any = REDIS_URL.startsWith('rediss://')
+      ? { redis: { tls: { rejectUnauthorized: false } } }
+      : {};
+
+    orchestrationQueue = new Queue<OrchestrationJobData>('orchestration', REDIS_URL, queueOptions);
+    syncProgressQueue = new Queue<OrchestrationJobData>('sync-progress', REDIS_URL, queueOptions);
 
     // Track error counts to suppress repeated errors
     let orchestrationErrorCount = 0;

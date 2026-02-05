@@ -190,8 +190,7 @@ export class ReturnsService {
         sync_timestamp: new Date().toISOString(),
         is_sandbox: this.isSandbox(),
         created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        store_id: storeId || null
+        updated_at: new Date().toISOString()
       }));
 
       // Check for existing returns
@@ -201,7 +200,6 @@ export class ReturnsService {
           .from('returns')
           .select('return_id')
           .eq('user_id', userId)
-          .eq('store_id', storeId || null)
           .in('return_id', returnIds);
 
         if (!fetchError && existingReturns) {
@@ -233,7 +231,6 @@ export class ReturnsService {
                 updated_at: returnData.updated_at
               })
               .eq('user_id', userId)
-              .eq('store_id', storeId || null)
               .eq('return_id', returnData.return_id);
 
             if (updateError) {
