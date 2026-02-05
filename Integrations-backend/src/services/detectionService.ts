@@ -964,6 +964,10 @@ export class DetectionService {
         .limit(500);
 
       if (error) {
+        // Suppress log spam for missing table in demo/sandbox mode
+        if (error.code === '42P01') {
+          return [];
+        }
         logger.error('Error fetching inventory discrepancies', { error, userId });
         return [];
       }
