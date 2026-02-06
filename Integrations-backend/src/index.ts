@@ -58,6 +58,7 @@ import inviteRoutes from './routes/inviteRoutes';
 import notesRoutes from './routes/notesRoutes';
 import tenantRoutes from './routes/tenantRoutes';
 import storeRoutes from './routes/storeRoutes';
+import waitlistRoutes from './routes/waitlistRoutes';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -369,6 +370,7 @@ import phase1DiagnosticRoutes from './routes/phase1DiagnosticRoutes';
 app.use('/api/phase1', phase1DiagnosticRoutes);
 logger.info('Phase 1 diagnostic routes registered at /api/phase1');
 app.use('/api/auth', authRoutes);
+app.use('/api/waitlist', waitlistRoutes);
 app.use('/api/v1/integrations/sync', syncAliasRoutes);
 app.use('/api/v1/integrations', integrationRoutes);
 app.use('/api/detections', detectionRoutes);

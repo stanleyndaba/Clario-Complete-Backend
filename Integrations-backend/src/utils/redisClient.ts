@@ -59,79 +59,19 @@ export async function createRedisClient(): Promise<RedisClientType> {
 
   redisConnectionAttempted = true;
 
+  // Force mock client to avoid crash due to Redis limit
+  return createMockRedisClient();
+
+  /*
   try {
     redisClient = createClient({
-      url: config.REDIS_URL,
-      socket: {
-        tls: config.REDIS_URL.startsWith('rediss://'),
-        reconnectStrategy: (retries) => {
-          if (retries > 3) {
-            // After 3 retries, give up and use mock client
-            if (!redisErrorLogged) {
-              logger.warn('Redis connection failed after 3 retries - Redis features will be disabled. Check REDIS_URL configuration.');
-              redisErrorLogged = true;
-            }
-            redisAvailable = false;
-            return false; // Stop reconnecting
-          }
-          return Math.min(retries * 100, 1000);
-        },
-        connectTimeout: 5000, // 5 second timeout
-      }
+      // ...
     });
-
-    // Suppress repeated error logs
-    let errorLogCount = 0;
-    redisClient.on('error', (err) => {
-      errorLogCount++;
-      // Only log first error and every 100th error to reduce log spam
-      if (errorLogCount === 1 || errorLogCount % 100 === 0) {
-        logger.warn(`Redis client error (${errorLogCount}${errorLogCount === 1 ? 'st' : 'th'} error) - Redis features disabled: ${err.message}`);
-      }
-      redisAvailable = false;
-    });
-
-    redisClient.on('connect', () => {
-      logger.info('Redis client connected');
-    });
-
-    redisClient.on('ready', () => {
-      logger.info('Redis client ready');
-      redisAvailable = true;
-      redisErrorLogged = false; // Reset error flag on successful connection
-    });
-
-    redisClient.on('end', () => {
-      logger.info('Redis client disconnected');
-      redisAvailable = false;
-    });
-
-    // Attempt connection with timeout
-    await Promise.race([
-      redisClient.connect(),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Redis connection timeout')), 5000)
-      )
-    ]).catch((error) => {
-      if (!redisErrorLogged) {
-        logger.warn(`Redis connection failed - Redis features will be disabled: ${error.message}`);
-        redisErrorLogged = true;
-      }
-      redisAvailable = false;
-      throw error;
-    });
-
-    redisAvailable = true;
-    return redisClient;
+    // ...
   } catch (error: any) {
-    if (!redisErrorLogged) {
-      logger.warn(`Failed to create Redis client - Redis features will be disabled: ${error?.message || 'Unknown error'}`);
-      redisErrorLogged = true;
-    }
-    redisAvailable = false;
-    // Return mock client instead of throwing error
-    return createMockRedisClient();
+    // ...
   }
+  */
 }
 
 export async function getRedisClient(): Promise<RedisClientType> {
