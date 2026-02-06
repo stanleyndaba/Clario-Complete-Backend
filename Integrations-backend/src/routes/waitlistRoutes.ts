@@ -9,7 +9,19 @@ const router = Router();
  * Register a new user for the waitlist
  */
 router.post('/', async (req: Request, res: Response) => {
-    const { email, full_name, company_name, monthly_volume, referral_source } = req.body;
+    const {
+        email,
+        user_type,
+        brand_count,
+        annual_revenue,
+        contact_handle,
+        primary_goal,
+        // Legacy fields (optional)
+        full_name,
+        company_name,
+        monthly_volume,
+        referral_source
+    } = req.body;
 
     if (!email) {
         return res.status(400).json({
@@ -19,22 +31,35 @@ router.post('/', async (req: Request, res: Response) => {
     }
 
     try {
-        logger.info('📝 [WAITLIST] New signup request', { email, company_name });
+        logger.info('📝 [WAITLIST] New "Velvet Rope" signup request', { email, user_type, annual_revenue });
+
+        // Sorting Logic (Scenario A: Agency + $10M+)
+        const isWhale = (user_type === 'agency' && annual_revenue === 'enterprise') || annual_revenue === 'enterprise';
+        const priority = isWhale ? 'high' : 'standard';
 
         // Insert into waitlist table using admin client to bypass RLS
         const { data, error } = await supabaseAdmin
             .from('waitlist')
             .insert({
                 email,
-                full_name,
-                company_name,
-                monthly_volume,
-                referral_source,
+                user_type,
+                brand_count: brand_count || null,
+                annual_revenue,
+                contact_handle: contact_handle || null,
+                primary_goal,
+                // Legacy fields mapping
+                full_name: full_name || null,
+                company_name: company_name || null,
+                monthly_volume: annual_revenue || monthly_volume || null,
+                referral_source: referral_source || null,
                 status: 'pending',
                 metadata: {
                     signup_at: new Date().toISOString(),
                     user_agent: req.headers['user-agent'],
-                    ip: req.ip
+                    ip: req.ip,
+                    priority,
+                    is_whale: isWhale,
+                    redesign_version: 'velvet_rope_v1'
                 }
             })
             .select()
