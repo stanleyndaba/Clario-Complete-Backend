@@ -390,6 +390,16 @@ class SyncJobManager {
         syncStatus.message = 'Establishing secure connection...';
         this.updateSyncStatus(syncStatus);
         this.sendProgressUpdate(userId, syncStatus);
+
+        // Indicate Demo Mode in logs if enabled
+        if (process.env.DEMO_MODE === 'true') {
+          this.sendLogEvent(userId, syncId, {
+            type: 'info',
+            category: 'system',
+            message: `🧪 [DEMO MODE] Initializing with generated enterprise dataset (${process.env.MOCK_SCENARIO || 'realistic'})`
+          });
+        }
+
         this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Connecting to Amazon SP-API Secure Tunnel...' });
         this.sendLogEvent(userId, syncId, { type: 'success', category: 'system', message: '[CONNECTED] Secure tunnel established' });
 
