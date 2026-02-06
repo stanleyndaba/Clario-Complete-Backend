@@ -24,7 +24,7 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
         const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
         const finalUserId = convertUserIdToUuid(userId);
 
-        const files = (req as any).files as Express.Multer.File[];
+        const files = (req as any).files as any[];
 
         if (!files || files.length === 0) {
             return res.status(400).json({
