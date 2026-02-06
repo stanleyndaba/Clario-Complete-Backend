@@ -73,6 +73,7 @@ import { deadlineMonitoringJob } from './jobs/deadlineMonitoringJob';
 import OrchestrationJobManager from './jobs/orchestrationJob';
 import websocketService from './services/websocketService';
 import detectionService from './services/detectionService';
+import financialImpactService from './services/financialImpactService';
 import backgroundSyncWorker from './jobs/backgroundSyncWorker';
 import evidenceIngestionWorker from './workers/evidenceIngestionWorker';
 import documentParsingWorker from './workers/documentParsingWorker';
@@ -314,6 +315,9 @@ app.get('/api/metrics/recoveries', async (req: any, res) => {
     // Calculate value in progress
     const valueInProgress = valueResult.data?.reduce((sum, row) => sum + (parseFloat(row.claimed_amount) || 0), 0) || 0;
 
+    // Get extended recovery metrics for the dashboard
+    const dashboardMetrics = await financialImpactService.getRecoveryMetricsExtended(userId, tenantId || undefined);
+
     res.json({
       success: true,
       totalClaimsFound: totalResult.count || 0,
@@ -323,7 +327,8 @@ app.get('/api/metrics/recoveries', async (req: any, res) => {
       avgDaysToRecovery: 14, // TODO: Calculate from actual data
       pendingCount: pendingResult.count || 0,
       approvedCount: approvedResult.count || 0,
-      monthlyTrend: [] // TODO: Calculate from actual data
+      monthlyTrend: [], // TODO: Calculate from actual data
+      dashboard: dashboardMetrics
     });
   } catch (error: any) {
     logger.error('Error fetching recoveries metrics:', error);

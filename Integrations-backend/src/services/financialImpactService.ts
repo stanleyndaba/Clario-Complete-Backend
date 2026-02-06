@@ -56,6 +56,18 @@ export interface UserFinancialMetrics {
     updatedAt: string;
 }
 
+// Dashboard-specific recovery metrics
+export interface DashboardRecoveryMetrics {
+    today: number;
+    todayGrowth: number;
+    thisWeek: number;
+    thisWeekGrowth: number;
+    thisMonth: number;
+    thisMonthGrowth: number;
+    currency: string;
+    updatedAt: string;
+}
+
 class FinancialImpactService {
     private readonly CACHE_TTL = 30; // 30 seconds for real-time feel
 
@@ -96,6 +108,7 @@ class FinancialImpactService {
 
             // 2. Invalidate user cache
             await cacheService.invalidateUserCaches(event.userId, event.tenantId);
+            await cacheService.del(`impact:dashboard:${event.tenantId || 'default'}:${event.userId}`);
 
             // 3. Emit real-time SSE event
             this.emitImpactEvent(event);
@@ -174,6 +187,112 @@ class FinancialImpactService {
             style: 'currency',
             currency
         }).format(amount);
+    }
+
+    /**
+     * Get extended recovery metrics for the dashboard (Today, 7D, 30D + Growth)
+     */
+    async getRecoveryMetricsExtended(userId: string, tenantId?: string): Promise<DashboardRecoveryMetrics> {
+        const cacheKey = `impact:dashboard:${tenantId || 'default'}:${userId}`;
+
+        // Cache for 10 minutes for dashboard performance, but SSE will push updates
+        const cached = await cacheService.get<DashboardRecoveryMetrics>(cacheKey);
+        if (cached) return cached;
+
+        try {
+            // Get all resolved dispute cases for this user
+            // We use resolution_date to determine when the recovery actually happened
+            const { data: disputes } = await supabaseAdmin
+                .from('dispute_cases')
+                .select('claim_amount, resolution_amount, resolution_date, status')
+                .eq('user_id', userId)
+                .in('status', ['approved', 'paid', 'reconciled']);
+
+            const now = new Date();
+            const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const startOfYesterday = new Date(startOfToday.getTime() - 24 * 60 * 60 * 1000);
+
+            const startOfThisWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+            const startOfLastWeek = new Date(startOfThisWeek.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+            const startOfThisMonth = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+            const startOfLastMonth = new Date(startOfThisMonth.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+            const metrics: DashboardRecoveryMetrics = {
+                today: 0,
+                todayGrowth: 0,
+                thisWeek: 0,
+                thisWeekGrowth: 0,
+                thisMonth: 0,
+                thisMonthGrowth: 0,
+                currency: 'USD',
+                updatedAt: now.toISOString()
+            };
+
+            let yesterdayAmount = 0;
+            let lastWeekAmount = 0;
+            let lastMonthAmount = 0;
+
+            if (disputes && disputes.length > 0) {
+                for (const d of disputes) {
+                    const resDate = d.resolution_date ? new Date(d.resolution_date) : null;
+                    if (!resDate) continue;
+
+                    const amount = parseFloat(String(d.resolution_amount || d.claim_amount || 0));
+
+                    // Today
+                    if (resDate >= startOfToday) {
+                        metrics.today += amount;
+                    }
+                    // Yesterday (for growth)
+                    else if (resDate >= startOfYesterday && resDate < startOfToday) {
+                        yesterdayAmount += amount;
+                    }
+
+                    // This Week
+                    if (resDate >= startOfThisWeek) {
+                        metrics.thisWeek += amount;
+                    }
+                    // Last Week (for growth)
+                    else if (resDate >= startOfLastWeek && resDate < startOfThisWeek) {
+                        lastWeekAmount += amount;
+                    }
+
+                    // This Month
+                    if (resDate >= startOfThisMonth) {
+                        metrics.thisMonth += amount;
+                    }
+                    // Last Month (for growth)
+                    else if (resDate >= startOfLastMonth && resDate < startOfThisMonth) {
+                        lastMonthAmount += amount;
+                    }
+                }
+            }
+
+            // Calculate growth percentages
+            metrics.todayGrowth = yesterdayAmount > 0 ? ((metrics.today - yesterdayAmount) / yesterdayAmount) * 100 : 0;
+            metrics.thisWeekGrowth = lastWeekAmount > 0 ? ((metrics.thisWeek - lastWeekAmount) / lastWeekAmount) * 100 : 0;
+            metrics.thisMonthGrowth = lastMonthAmount > 0 ? ((metrics.thisMonth - lastMonthAmount) / lastMonthAmount) * 100 : 0;
+
+            // Round to 1 decimal place
+            metrics.todayGrowth = parseFloat(metrics.todayGrowth.toFixed(1));
+            metrics.thisWeekGrowth = parseFloat(metrics.thisWeekGrowth.toFixed(1));
+            metrics.thisMonthGrowth = parseFloat(metrics.thisMonthGrowth.toFixed(1));
+
+            // Cache result
+            await cacheService.set(cacheKey, metrics, 600); // 10 minutes
+
+            return metrics;
+        } catch (error: any) {
+            logger.error('[IMPACT] Failed to calculate dashboard metrics', { userId, error: error.message });
+            return {
+                today: 0, todayGrowth: 0,
+                thisWeek: 0, thisWeekGrowth: 0,
+                thisMonth: 0, thisMonthGrowth: 0,
+                currency: 'USD',
+                updatedAt: new Date().toISOString()
+            };
+        }
     }
 
     /**
