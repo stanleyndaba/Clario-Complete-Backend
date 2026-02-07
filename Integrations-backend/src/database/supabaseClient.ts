@@ -10,6 +10,9 @@ const supabaseServiceRoleKey = config.SUPABASE_SERVICE_ROLE_KEY;
 let supabase: SupabaseClient | any;
 let supabaseAdmin: SupabaseClient | any; // Service role client for admin operations
 
+// Multi-tenant defaults
+const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+
 if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
   logger.warn('Using demo Supabase client - no real database connection');
 
@@ -363,7 +366,7 @@ export const tokenManager = {
         .upsert({
           user_id: dbUserId,
           provider,
-          tenant_id: tenantId || null, // Include tenant_id for multi-tenant support
+          tenant_id: tenantId || DEFAULT_TENANT_ID, // Include tenant_id for multi-tenant support
           store_id: storeId || null, // Associate with specific store
           access_token_iv: accessTokenEnc.iv,
           access_token_data: accessTokenEnc.data,
@@ -475,7 +478,7 @@ export const tokenManager = {
           refresh_token_iv: refreshTokenEnc?.iv || null,
           refresh_token_data: refreshTokenEnc?.data || null,
           expires_at: expiresAt ? expiresAt.toISOString() : null,
-          tenant_id: tenantId || undefined,
+          tenant_id: tenantId || DEFAULT_TENANT_ID,
           store_id: storeId || undefined,
           updated_at: new Date().toISOString()
         })
