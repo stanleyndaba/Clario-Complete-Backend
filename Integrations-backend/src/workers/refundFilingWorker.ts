@@ -1154,25 +1154,30 @@ class RefundFilingWorker {
             stats.retried++;
           }
         }
+        // 🎯 AGENT 7: Automated Submission Protocol
+        // Use the new Automator to handle the full filing loop autonomously
+        const automator = (await import('../services/AmazonSubmissionAutomator')).default;
 
-        // File the dispute
-        const result = await retryWithBackoff(
-          () => refundFilingService.fileDispute(filingRequest),
-          3,
-          2000
-        );
+        try {
+          const amazonCaseId = await automator.executeFullSubmission(disputeCase.id, disputeCase.seller_id);
+          if (amazonCaseId) {
+            logger.info(`🎯 [AGENT 7] Fully autonomous submission complete`, { disputeId: disputeCase.id, amazonCaseId });
+            stats.filed++;
+          }
+        } catch (automatorError: any) {
+          logger.error(`❌ [AGENT 7] Automator failed, falling back to legacy filing`, { disputeId: disputeCase.id, error: automatorError.message });
 
-        if (result.success) {
-          // Update case status
-          await this.updateCaseAfterFiling(disputeCase.id, result);
-          stats.filed++;
-        } else {
-          // Handle failure
-          await this.handleFilingFailure(disputeCase.id, disputeCase.seller_id, result, disputeCase.retry_count || 0);
-          stats.failed++;
-          stats.errors.push(`Case ${disputeCase.id}: ${result.error_message}`);
+          // Legacy Fallback
+          const filingResult = await retryWithBackoff(() => refundFilingService.fileDispute(filingRequest));
+          if (filingResult.success) {
+            await this.updateCaseAfterFiling(disputeCase.id, filingResult);
+            stats.filed++;
+          } else {
+            await this.handleFilingFailure(disputeCase.id, disputeCase.seller_id, filingResult, disputeCase.retry_count || 0);
+            stats.failed++;
+            stats.errors.push(`Case ${disputeCase.id}: ${filingResult.error_message || 'Filing failed'}`);
+          }
         }
-
       } catch (error: any) {
         logger.error(' [REFUND FILING] Error processing case', {
           disputeId: disputeCase.id,
