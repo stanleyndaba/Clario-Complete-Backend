@@ -41,18 +41,31 @@ export class AmazonSubmissionAutomator {
 
             // 3. Open case via best method (API Implementation)
             logger.info(`✍️ [AGENT 7] Opening Amazon Seller Central case via SP-API`);
+
+            // Get evidence document IDs from the links
+            const evidenceDocumentIds = evidence
+                .map((link: any) => link.evidence_documents?.id)
+                .filter(Boolean);
+
             const filingResult = await refundFilingService.fileDispute({
-                caseId: caseId,
-                sellerId: sellerId,
-                amount: caseData.amount,
-                reason: caseData.reason || 'Inventory Loss Post-Receive'
+                dispute_id: caseId,
+                user_id: sellerId,
+                order_id: caseData.detection_results?.evidence?.order_id || '',
+                asin: caseData.detection_results?.evidence?.asin,
+                sku: caseData.detection_results?.evidence?.sku,
+                claim_type: caseData.case_type || 'inventory_loss',
+                amount_claimed: parseFloat(caseData.claim_amount?.toString() || '0'),
+                currency: caseData.currency || 'USD',
+                evidence_document_ids: evidenceDocumentIds,
+                confidence_score: caseData.detection_results?.match_confidence || 0.85
             });
 
             if (!filingResult.success) {
-                throw new Error(`Filing failed: ${filingResult.error}`);
+                throw new Error(`Filing failed: ${filingResult.error_message}`);
             }
 
-            const amazonCaseId = filingResult.amazonCaseId;
+            const amazonCaseId = filingResult.amazon_case_id;
+
 
             // 4. Update tracking info
             await this.updateClaimWithCaseInfo(caseId, amazonCaseId);
