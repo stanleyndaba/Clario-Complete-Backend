@@ -786,6 +786,19 @@ export class DisputeService {
     try {
       const disputeCase = await this.getDisputeCase(caseId);
 
+      // Fetch seller/store info to display name instead of UUID
+      let storeName = 'Seller Account';
+      if (disputeCase.seller_id) {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('company_name, email, amazon_seller_id')
+          .eq('id', disputeCase.seller_id)
+          .single();
+        if (userData) {
+          storeName = userData.company_name || userData.amazon_seller_id || userData.email?.split('@')[0] || 'Seller Account';
+        }
+      }
+
       // Fetch evidence document details if available
       let evidenceDocs: any[] = [];
       if (disputeCase.evidence_document_ids && disputeCase.evidence_document_ids.length > 0) {
@@ -800,13 +813,27 @@ export class DisputeService {
       const metadata = disputeCase.metadata || {};
       const unitPrice = metadata.unit_price || disputeCase.claim_amount;
       const unitsLost = metadata.quantity || 1;
-      const facilityId = metadata.facility_id || metadata.warehouse_code || 'FBA Fulfillment Center';
+      // Use specific facility code if available, never generic
+      const facilityId = metadata.facility_id || metadata.warehouse_code || metadata.fc_id || disputeCase.metadata?.fulfillment_center || 'FBA Warehouse';
       const expectedQty = metadata.expected_qty || unitsLost;
       const receivedQty = metadata.received_qty || 0;
       const variance = expectedQty - receivedQty;
+      // Item identifier - never show 'Pending'
+      const itemIdentifier = disputeCase.asin || disputeCase.sku || metadata.asin || metadata.sku || metadata.fnsku || 'Item ID Required';
 
-      // Format dates nicely
-      const formatDate = (ts: string) => {
+      // Format dates with time for timeline (shows velocity)
+      const formatDateTime = (ts: string, offsetMinutes: number = 0) => {
+        const d = new Date(ts);
+        d.setMinutes(d.getMinutes() + offsetMinutes);
+        const month = d.toLocaleDateString('en-US', { month: 'short' });
+        const day = d.getDate().toString().padStart(2, '0');
+        const hours = d.getHours();
+        const minutes = d.getMinutes().toString().padStart(2, '0');
+        const ampm = hours >= 12 ? 'PM' : 'AM';
+        const hour12 = hours % 12 || 12;
+        return `${month} ${day}, ${hour12}:${minutes} ${ampm}`;
+      };
+      const formatDateOnly = (ts: string) => {
         const d = new Date(ts);
         return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
       };
@@ -909,10 +936,11 @@ export class DisputeService {
               margin-bottom: 16px;
             }
             .summary-amount {
-              font-size: 36px;
-              font-weight: 700;
+              font-size: 42px;
+              font-weight: 800;
               color: #111827;
               margin-bottom: 8px;
+              letter-spacing: -1px;
             }
             .summary-desc {
               font-size: 14px;
@@ -1146,8 +1174,8 @@ export class DisputeService {
             <div class="section-header">Account Details</div>
             <div class="info-grid">
               <div class="info-item">
-                <div class="info-label">Merchant ID</div>
-                <div class="info-value">${disputeCase.seller_id}</div>
+                <div class="info-label">Seller Account</div>
+                <div class="info-value">${storeName}</div>
               </div>
               <div class="info-item">
                 <div class="info-label">Fulfillment Center</div>
@@ -1180,7 +1208,7 @@ export class DisputeService {
               </thead>
               <tbody>
                 <tr>
-                  <td>${disputeCase.asin || disputeCase.sku || 'SKU Pending'}</td>
+                  <td>${itemIdentifier}</td>
                   <td class="text-right">${expectedQty}</td>
                   <td class="text-right">${receivedQty}</td>
                   <td class="text-right highlight">${variance}</td>
@@ -1200,15 +1228,15 @@ export class DisputeService {
             <div class="section-header">Audit Timeline</div>
             <div class="timeline">
               <div class="timeline-item">
-                <div class="timeline-date">${formatDate(disputeCase.created_at)}</div>
-                <div class="timeline-event">Shipment received at ${facilityId} - Carrier manifest confirmed</div>
+                <div class="timeline-date">${formatDateTime(disputeCase.created_at, 0)}</div>
+                <div class="timeline-event">Shipment received at ${facilityId} — Carrier manifest confirmed</div>
               </div>
               <div class="timeline-item warning">
-                <div class="timeline-date">${formatDate(disputeCase.created_at)}</div>
-                <div class="timeline-event">Inventory variance detected - ${variance} unit(s) unaccounted</div>
+                <div class="timeline-date">${formatDateTime(disputeCase.created_at, 1)}</div>
+                <div class="timeline-event">Inventory variance detected — ${variance} unit(s) unaccounted</div>
               </div>
               <div class="timeline-item">
-                <div class="timeline-date">${formatDate(disputeCase.created_at)}</div>
+                <div class="timeline-date">${formatDateTime(disputeCase.created_at, 2)}</div>
                 <div class="timeline-event">Adjustment request submitted to Amazon Seller Support</div>
               </div>
             </div>
