@@ -95,4 +95,54 @@ router.post('/', async (req: Request, res: Response) => {
     }
 });
 
+/**
+ * GET /api/waitlist
+ * Get all waitlist entries (admin only)
+ */
+router.get('/', async (req: Request, res: Response) => {
+    try {
+        const limit = parseInt(req.query.limit as string) || 100;
+        const offset = parseInt(req.query.offset as string) || 0;
+
+        logger.info('📋 [WAITLIST] Admin fetching waitlist entries', { limit, offset });
+
+        const { data, error, count } = await supabaseAdmin
+            .from('waitlist')
+            .select('*', { count: 'exact' })
+            .order('created_at', { ascending: false })
+            .range(offset, offset + limit - 1);
+
+        if (error) {
+            logger.error('❌ [WAITLIST] Failed to fetch waitlist', { error: error.message });
+            throw error;
+        }
+
+        // Sort by priority (whales first)
+        const sorted = (data || []).sort((a: any, b: any) => {
+            const aWhale = a.metadata?.is_whale || false;
+            const bWhale = b.metadata?.is_whale || false;
+            if (aWhale && !bWhale) return -1;
+            if (!aWhale && bWhale) return 1;
+            return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        });
+
+        logger.info('✅ [WAITLIST] Fetched waitlist entries', { count: data?.length || 0, total: count });
+
+        return res.json({
+            success: true,
+            entries: sorted,
+            total: count || 0,
+            limit,
+            offset
+        });
+    } catch (error: any) {
+        logger.error('❌ [WAITLIST] Server error fetching waitlist', { error: error.message });
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to fetch waitlist entries'
+        });
+    }
+});
+
 export default router;
+
