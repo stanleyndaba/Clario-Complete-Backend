@@ -98,28 +98,70 @@ router.post('/evidence/schedule', async (req: Request, res: Response) => {
 
 /**
  * GET /api/admin/users
- * Get all users (admin only)
+ * Get all users with enhanced stats (admin only)
  */
 router.get('/users', async (req: Request, res: Response) => {
     try {
+        // Get all users
         const { data: users, error } = await supabaseAdmin
             .from('users')
-            .select('id, email, role, status, created_at, last_login_at')
+            .select('id, email, role, status, created_at, last_login_at, amazon_seller_id, tenant_id')
             .order('created_at', { ascending: false });
 
         if (error) throw error;
 
-        // Map to expected format
-        const mappedUsers = (users || []).map(u => ({
-            id: u.id,
-            email: u.email || 'No email',
-            role: u.role || 'user',
-            status: u.status || 'active',
-            created_at: u.created_at,
-            last_login: u.last_login_at
-        }));
+        // Get integration counts per user
+        const { data: integrations } = await supabaseAdmin
+            .from('oauth_tokens')
+            .select('user_id, provider');
 
-        return res.json({ success: true, users: mappedUsers });
+        // Get dispute case stats per user
+        const { data: cases } = await supabaseAdmin
+            .from('dispute_cases')
+            .select('seller_id, status, actual_payout_amount');
+
+        // Build integration map: user_id -> providers array
+        const integrationMap = new Map<string, string[]>();
+        (integrations || []).forEach((i: any) => {
+            const existing = integrationMap.get(i.user_id) || [];
+            if (!existing.includes(i.provider)) {
+                existing.push(i.provider);
+            }
+            integrationMap.set(i.user_id, existing);
+        });
+
+        // Build case stats map: seller_id -> { count, recovered }
+        const caseStatsMap = new Map<string, { count: number; recovered: number }>();
+        (cases || []).forEach((c: any) => {
+            const existing = caseStatsMap.get(c.seller_id) || { count: 0, recovered: 0 };
+            existing.count += 1;
+            if (c.status === 'approved' || c.status === 'resolved') {
+                existing.recovered += parseFloat(c.actual_payout_amount || 0);
+            }
+            caseStatsMap.set(c.seller_id, existing);
+        });
+
+        // Map to enhanced format
+        const mappedUsers = (users || []).map(u => {
+            const integs = integrationMap.get(u.id) || [];
+            const caseStats = caseStatsMap.get(u.id) || { count: 0, recovered: 0 };
+
+            return {
+                id: u.id,
+                email: u.email || 'No email',
+                role: u.role || 'user',
+                status: u.status || 'active',
+                created_at: u.created_at,
+                last_login: u.last_login_at,
+                amazon_connected: !!u.amazon_seller_id,
+                integrations: integs,
+                integrations_count: integs.length + (u.amazon_seller_id ? 1 : 0),
+                cases_count: caseStats.count,
+                total_recovered: caseStats.recovered
+            };
+        });
+
+        return res.json({ success: true, users: mappedUsers, total: mappedUsers.length });
     } catch (error: any) {
         logger.error('Error fetching users', { error: error.message });
         return res.status(500).json({ error: 'Failed to fetch users' });
