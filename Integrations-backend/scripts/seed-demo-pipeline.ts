@@ -125,6 +125,46 @@ async function ensureTenant(): Promise<string> {
     return newTenant.id;
 }
 
+async function ensureDemoUser(): Promise<string> {
+    console.log('👤 Ensuring demo user exists...');
+
+    // Check if user exists
+    const { data: existingUser } = await supabase
+        .from('users')
+        .select('id')
+        .eq('id', DEMO_USER_ID)
+        .single();
+
+    if (existingUser) {
+        console.log(`   ✅ Demo user ${DEMO_USER_ID} already exists`);
+        return DEMO_USER_ID;
+    }
+
+    // Create demo user with required fields (amazon_seller_id + tenant_id)
+    const { data: newUser, error } = await supabase
+        .from('users')
+        .insert({
+            id: DEMO_USER_ID,
+            email: 'demo@margin.com',
+            tenant_id: DEMO_TENANT_ID,
+            amazon_seller_id: 'DEMO_SELLER_001',
+            seller_id: DEMO_USER_ID,
+            company_name: 'Demo Business',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        })
+        .select('id')
+        .single();
+
+    if (error) {
+        console.log(`   ⚠️ Could not create demo user: ${error.message}`);
+        return DEMO_USER_ID;  // Return anyway, let evidence seeding handle it gracefully
+    }
+
+    console.log(`   ✅ Created demo user: ${newUser.id}`);
+    return newUser.id;
+}
+
 async function clearDemoData(tenantId: string) {
     console.log('🧹 Clearing existing demo data...');
 
@@ -397,6 +437,7 @@ async function main() {
 
     try {
         const tenantId = await ensureTenant();
+        await ensureDemoUser();  // Create demo user for evidence FK constraint
         await clearDemoData(tenantId);
         const evidenceIds = await seedEvidenceDocuments(tenantId);
         const detectionIds = await seedDetectionResults(tenantId);
