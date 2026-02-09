@@ -8,7 +8,9 @@
  * - evidence_documents (Agent 4/5 docs)
  * - dispute_evidence_links (Evidence matching)
  * 
- * Run: npx ts-node scripts/seed-demo-pipeline.ts
+ * Run: npx ts-node scripts/seed-demo-pipeline.ts [userId]
+ * 
+ * If userId is not provided, will auto-detect from database
  */
 
 import { createClient } from '@supabase/supabase-js';
@@ -28,9 +30,68 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Demo user - use existing or create
-const DEMO_USER_ID = process.env.TEST_USER_ID || '00000000-0000-0000-0000-000000000001';
-const DEMO_TENANT_ID = process.env.DEMO_TENANT_ID || DEMO_USER_ID;
+// User ID from CLI arg or auto-detect
+let DEMO_USER_ID = process.argv[2] || process.env.TEST_USER_ID || '';
+let DEMO_TENANT_ID = '';
+
+// Auto-detect user ID from database if not provided
+async function getTargetUserId(): Promise<{ userId: string; tenantId: string }> {
+    // If provided via CLI arg, use that
+    if (DEMO_USER_ID && DEMO_USER_ID !== '00000000-0000-0000-0000-000000000001') {
+        console.log(`🎯 Using provided user ID: ${DEMO_USER_ID}`);
+        const { data: user } = await supabase.from('users').select('id, tenant_id').eq('id', DEMO_USER_ID).single();
+        return {
+            userId: DEMO_USER_ID,
+            tenantId: user?.tenant_id || DEMO_USER_ID
+        };
+    }
+
+    // Auto-detect: find the most recent real user (not demo user)
+    console.log('🔍 Auto-detecting user from database...');
+
+    const { data: users, error } = await supabase
+        .from('users')
+        .select('id, email, tenant_id, amazon_seller_id')
+        .neq('email', 'demo@margin.com')
+        .order('created_at', { ascending: false })
+        .limit(5);
+
+    if (error) {
+        console.log(`   ⚠️ Error querying users: ${error.message}`);
+    }
+
+    if (users && users.length > 0) {
+        // Use the most recently created real user
+        const realUser = users[0];
+        console.log(`   ✅ Found real user: ${realUser.email || realUser.id}`);
+        return {
+            userId: realUser.id,
+            tenantId: realUser.tenant_id || realUser.id
+        };
+    }
+
+    // Fallback: check if demo user exists
+    const { data: demoUser } = await supabase
+        .from('users')
+        .select('id, tenant_id')
+        .eq('id', '00000000-0000-0000-0000-000000000001')
+        .single();
+
+    if (demoUser) {
+        console.log(`   ✅ Using demo user: ${demoUser.id}`);
+        return {
+            userId: demoUser.id,
+            tenantId: demoUser.tenant_id || demoUser.id
+        };
+    }
+
+    // Create demo user if nothing exists
+    console.log(`   ⚠️ No users found - will create demo user`);
+    return {
+        userId: '00000000-0000-0000-0000-000000000001',
+        tenantId: '00000000-0000-0000-0000-000000000001'
+    };
+}
 
 // Map frontend claim types to database anomaly_type
 const CLAIM_SCENARIOS = [
@@ -294,6 +355,8 @@ async function seedDisputeCases(detectionIds: string[], tenantId: string): Promi
     let pendingTotal = 0;
     let caseCounter = 100000;
 
+    const timestamp = Date.now().toString().slice(-6);  // Last 6 digits for uniqueness
+
     for (let i = 0; i < detectionIds.length; i++) {
         const detectionId = detectionIds[i];
         const statusInfo = pickWeightedStatus();
@@ -314,7 +377,7 @@ async function seedDisputeCases(detectionIds: string[], tenantId: string): Promi
             seller_id: DEMO_USER_ID,
             tenant_id: tenantId,
             detection_result_id: detectionId,
-            case_number: `AMZ-${caseCounter}`,
+            case_number: `AMZ-${timestamp}-${caseCounter}`,  // Unique with timestamp
             status: statusInfo.disputeStatus,  // Use correct enum: pending|submitted|approved|rejected|closed
             claim_amount: amount,
             currency: 'USD',
@@ -436,14 +499,22 @@ async function main() {
     console.log('This will populate all tables for end-to-end demo visibility.\n');
 
     try {
-        const tenantId = await ensureTenant();
+        // Auto-detect or use provided user ID
+        const { userId, tenantId } = await getTargetUserId();
+        DEMO_USER_ID = userId;
+        DEMO_TENANT_ID = tenantId;
+
+        console.log(`\n📌 Target User ID: ${DEMO_USER_ID}`);
+        console.log(`📌 Target Tenant ID: ${DEMO_TENANT_ID}\n`);
+
+        const finalTenantId = await ensureTenant();
         await ensureDemoUser();  // Create demo user for evidence FK constraint
-        await clearDemoData(tenantId);
-        const evidenceIds = await seedEvidenceDocuments(tenantId);
-        const detectionIds = await seedDetectionResults(tenantId);
-        const caseIds = await seedDisputeCases(detectionIds, tenantId);
-        await seedEvidenceLinks(caseIds, evidenceIds, tenantId);
-        await printSummary(tenantId);
+        await clearDemoData(finalTenantId);
+        const evidenceIds = await seedEvidenceDocuments(finalTenantId);
+        const detectionIds = await seedDetectionResults(finalTenantId);
+        const caseIds = await seedDisputeCases(detectionIds, finalTenantId);
+        await seedEvidenceLinks(caseIds, evidenceIds, finalTenantId);
+        await printSummary(finalTenantId);
     } catch (error: any) {
         console.error('\n❌ FATAL ERROR:', error.message);
         process.exit(1);
@@ -451,3 +522,4 @@ async function main() {
 }
 
 main();
+
