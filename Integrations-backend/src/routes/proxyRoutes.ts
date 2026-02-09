@@ -267,7 +267,7 @@ router.post('/api/documents/upload', upload.any(), async (req: Request, res: Res
 });
 
 // Metrics endpoints
-router.get('/api/metrics/recoveries', (req, res) => proxyToPython(req, res, '/api/metrics/recoveries'));
+// NOTE: /api/metrics/recoveries is handled by metricsRoutes.ts (for dashboard time-based metrics)
 router.get('/api/metrics/dashboard', (req, res) => proxyToPython(req, res, '/api/metrics/dashboard'));
 
 // Integrations status endpoint - proxy to Python API
