@@ -800,368 +800,469 @@ export class DisputeService {
       const metadata = disputeCase.metadata || {};
       const unitPrice = metadata.unit_price || disputeCase.claim_amount;
       const unitsLost = metadata.quantity || 1;
-      const facilityId = metadata.facility_id || metadata.warehouse_code || 'FBA_FACILITY';
-      const receivedAt = metadata.received_at || disputeCase.created_at;
-      const closedAt = metadata.closed_at || new Date().toISOString();
+      const facilityId = metadata.facility_id || metadata.warehouse_code || 'FBA Fulfillment Center';
       const expectedQty = metadata.expected_qty || unitsLost;
       const receivedQty = metadata.received_qty || 0;
       const variance = expectedQty - receivedQty;
 
-      // Format dates
-      const formatTimestamp = (ts: string) => {
+      // Format dates nicely
+      const formatDate = (ts: string) => {
         const d = new Date(ts);
-        return `${d.toISOString().split('T')[0]} ${d.toTimeString().split(' ')[0]}`;
+        return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
       };
 
-      // Construct HTML template - AFFIDAVIT STYLE
+      // Construct HTML template - CORPORATE BANK STATEMENT STYLE
       const html = `
         <!DOCTYPE html>
         <html>
         <head>
           <meta charset="UTF-8">
           <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+            
             @page { margin: 0; }
             body { 
-              font-family: 'Courier New', Courier, monospace;
-              color: #000; 
-              line-height: 1.4; 
+              font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+              color: #1f2937; 
+              line-height: 1.5; 
               padding: 48px 56px; 
-              font-size: 11px;
+              font-size: 13px;
               background: #fff;
             }
             
-            /* Header - Legal Authority Block */
-            .doc-header {
-              border: 3px double #000;
-              padding: 20px 24px;
-              margin-bottom: 24px;
-              text-align: center;
+            /* Header - Clean Corporate */
+            .header {
+              display: flex;
+              justify-content: space-between;
+              align-items: flex-start;
+              padding-bottom: 24px;
+              border-bottom: 1px solid #e5e7eb;
+              margin-bottom: 32px;
+            }
+            .brand {
+              font-size: 24px;
+              font-weight: 700;
+              color: #111827;
+              letter-spacing: -0.5px;
+            }
+            .brand-sub {
+              font-size: 12px;
+              color: #6b7280;
+              margin-top: 4px;
+            }
+            .doc-info {
+              text-align: right;
             }
             .doc-title {
               font-size: 16px;
-              font-weight: bold;
-              letter-spacing: 4px;
-              margin: 0 0 4px 0;
+              font-weight: 600;
+              color: #111827;
+              margin-bottom: 8px;
             }
-            .doc-subtitle {
+            .doc-meta {
               font-size: 12px;
-              letter-spacing: 2px;
-              margin: 0;
+              color: #6b7280;
             }
-            .doc-ref {
-              font-size: 10px;
-              margin-top: 12px;
-              color: #444;
+            .doc-meta span {
+              display: block;
+              margin-bottom: 2px;
             }
             
-            /* Claimant Identity Block */
-            .claimant-block {
-              border: 1px solid #000;
-              padding: 16px 20px;
-              margin-bottom: 20px;
-              background: #f8f8f8;
+            /* Status Badge */
+            .status-badge {
+              display: inline-block;
+              padding: 4px 12px;
+              border-radius: 20px;
+              font-size: 11px;
+              font-weight: 600;
+              text-transform: uppercase;
+              letter-spacing: 0.5px;
+              margin-top: 8px;
             }
-            .claimant-title {
-              font-size: 10px;
-              font-weight: bold;
-              letter-spacing: 2px;
-              margin-bottom: 12px;
-              border-bottom: 1px solid #000;
-              padding-bottom: 6px;
+            .status-pending {
+              background: #fef3c7;
+              color: #92400e;
             }
-            .claimant-row {
-              display: flex;
-              margin-bottom: 4px;
+            .status-filed {
+              background: #dbeafe;
+              color: #1e40af;
             }
-            .claimant-label {
-              width: 180px;
-              font-weight: bold;
+            .status-approved {
+              background: #d1fae5;
+              color: #065f46;
             }
-            .claimant-value {
-              flex: 1;
+            
+            /* Summary Card */
+            .summary-card {
+              background: #f9fafb;
+              border: 1px solid #e5e7eb;
+              border-radius: 8px;
+              padding: 24px;
+              margin-bottom: 32px;
+            }
+            .summary-title {
+              font-size: 12px;
+              font-weight: 600;
+              color: #6b7280;
+              text-transform: uppercase;
+              letter-spacing: 0.5px;
+              margin-bottom: 16px;
+            }
+            .summary-amount {
+              font-size: 36px;
+              font-weight: 700;
+              color: #111827;
+              margin-bottom: 8px;
+            }
+            .summary-desc {
+              font-size: 14px;
+              color: #6b7280;
             }
             
             /* Section Headers */
             .section {
-              margin-bottom: 24px;
+              margin-bottom: 28px;
             }
             .section-header {
-              font-size: 11px;
-              font-weight: bold;
-              letter-spacing: 2px;
-              border-bottom: 2px solid #000;
-              padding-bottom: 4px;
-              margin-bottom: 12px;
+              font-size: 14px;
+              font-weight: 600;
+              color: #111827;
+              margin-bottom: 16px;
+              padding-bottom: 8px;
+              border-bottom: 1px solid #e5e7eb;
             }
             
-            /* Variance Calculation Table */
+            /* Info Grid */
+            .info-grid {
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 16px;
+              margin-bottom: 24px;
+            }
+            .info-item {
+              padding: 12px 16px;
+              background: #f9fafb;
+              border-radius: 6px;
+            }
+            .info-label {
+              font-size: 11px;
+              font-weight: 500;
+              color: #6b7280;
+              text-transform: uppercase;
+              letter-spacing: 0.3px;
+              margin-bottom: 4px;
+            }
+            .info-value {
+              font-size: 14px;
+              font-weight: 500;
+              color: #111827;
+            }
+            
+            /* Variance Table - Clean Excel Style */
             .variance-table {
               width: 100%;
               border-collapse: collapse;
               margin-bottom: 16px;
-              font-family: 'Courier New', monospace;
             }
             .variance-table th {
-              background: #000;
-              color: #fff;
-              padding: 8px 12px;
+              background: #f3f4f6;
+              color: #374151;
+              padding: 12px 16px;
               text-align: left;
-              font-size: 10px;
-              letter-spacing: 1px;
+              font-size: 11px;
+              font-weight: 600;
+              text-transform: uppercase;
+              letter-spacing: 0.3px;
+              border-bottom: 2px solid #e5e7eb;
             }
             .variance-table td {
-              border: 1px solid #000;
-              padding: 10px 12px;
-              font-size: 11px;
+              padding: 14px 16px;
+              font-size: 13px;
+              border-bottom: 1px solid #e5e7eb;
+            }
+            .variance-table .text-right {
+              text-align: right;
             }
             .variance-table .total-row {
-              background: #f0f0f0;
-              font-weight: bold;
+              background: #f9fafb;
+              font-weight: 600;
             }
-            .variance-table .amount {
-              text-align: right;
-              font-weight: bold;
+            .variance-table .total-row td {
+              border-bottom: 2px solid #e5e7eb;
             }
-            .variance-table .liability {
-              background: #000;
-              color: #fff;
-              font-size: 14px;
-              font-weight: bold;
+            .highlight {
+              color: #dc2626;
+              font-weight: 600;
+            }
+            .amount-due {
+              font-size: 16px;
+              font-weight: 700;
+              color: #111827;
             }
             
-            /* API Dump / Receiving Log */
-            .api-dump {
-              background: #0a0a0a;
-              color: #00ff00;
-              padding: 16px 20px;
-              font-family: 'Courier New', monospace;
-              font-size: 10px;
-              line-height: 1.6;
-              border: 1px solid #000;
-              margin-bottom: 16px;
+            /* Timeline */
+            .timeline {
+              position: relative;
+              padding-left: 24px;
             }
-            .api-dump .log-header {
-              color: #888;
+            .timeline::before {
+              content: '';
+              position: absolute;
+              left: 6px;
+              top: 8px;
+              bottom: 8px;
+              width: 2px;
+              background: #e5e7eb;
+            }
+            .timeline-item {
+              position: relative;
+              padding-bottom: 16px;
+            }
+            .timeline-item::before {
+              content: '';
+              position: absolute;
+              left: -20px;
+              top: 6px;
+              width: 10px;
+              height: 10px;
+              border-radius: 50%;
+              background: #10b981;
+              border: 2px solid #fff;
+              box-shadow: 0 0 0 2px #10b981;
+            }
+            .timeline-item.warning::before {
+              background: #f59e0b;
+              box-shadow: 0 0 0 2px #f59e0b;
+            }
+            .timeline-date {
+              font-size: 11px;
+              color: #6b7280;
+              margin-bottom: 2px;
+            }
+            .timeline-event {
+              font-size: 13px;
+              color: #111827;
+            }
+            
+            /* Policy Note */
+            .policy-note {
+              background: #eff6ff;
+              border: 1px solid #bfdbfe;
+              border-radius: 8px;
+              padding: 20px;
+              margin-bottom: 24px;
+            }
+            .policy-note-title {
+              font-size: 13px;
+              font-weight: 600;
+              color: #1e40af;
               margin-bottom: 8px;
             }
-            .api-dump .log-line {
-              margin: 2px 0;
-            }
-            .api-dump .log-warn {
-              color: #ff6600;
-            }
-            .api-dump .log-error {
-              color: #ff0000;
-            }
-            .api-dump .log-ok {
-              color: #00ff00;
-            }
-            
-            /* Policy Demand Block */
-            .policy-block {
-              border: 2px solid #000;
-              padding: 20px 24px;
-              margin-bottom: 20px;
-              background: #fff;
-            }
-            .policy-title {
-              font-size: 11px;
-              font-weight: bold;
-              letter-spacing: 2px;
-              margin-bottom: 12px;
-              text-align: center;
-            }
-            .policy-text {
-              font-size: 11px;
+            .policy-note-text {
+              font-size: 13px;
+              color: #1e3a8a;
               line-height: 1.6;
-              text-align: justify;
-            }
-            .policy-ref {
-              font-size: 10px;
-              font-style: italic;
-              margin-top: 12px;
-              color: #444;
             }
             
             /* Evidence List */
+            .evidence-list {
+              list-style: none;
+              padding: 0;
+              margin: 0;
+            }
             .evidence-item {
-              padding: 6px 0;
-              border-bottom: 1px dotted #ccc;
-              font-size: 10px;
+              display: flex;
+              align-items: center;
+              padding: 10px 0;
+              border-bottom: 1px solid #f3f4f6;
+              font-size: 13px;
             }
             .evidence-item:last-child {
               border-bottom: none;
             }
+            .evidence-check {
+              width: 18px;
+              height: 18px;
+              background: #d1fae5;
+              border-radius: 50%;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              margin-right: 12px;
+              color: #065f46;
+              font-size: 10px;
+            }
             
             /* Footer */
             .footer {
-              margin-top: 40px;
-              padding-top: 20px;
-              border-top: 2px solid #000;
-              font-size: 9px;
-              text-align: center;
-            }
-            .footer-warning {
-              font-weight: bold;
-              letter-spacing: 1px;
-              margin-top: 8px;
-            }
-            .signature-block {
-              margin-top: 24px;
+              margin-top: 48px;
+              padding-top: 24px;
+              border-top: 1px solid #e5e7eb;
               display: flex;
               justify-content: space-between;
+              align-items: flex-end;
             }
-            .signature-line {
-              width: 200px;
-              border-top: 1px solid #000;
-              padding-top: 4px;
-              font-size: 9px;
-              text-align: center;
+            .footer-left {
+              font-size: 11px;
+              color: #9ca3af;
+            }
+            .footer-right {
+              text-align: right;
+              font-size: 11px;
+              color: #9ca3af;
             }
           </style>
         </head>
         <body>
-          <!-- HEADER: Authority Block -->
-          <div class="doc-header">
-            <h1 class="doc-title">CERTIFIED DISPUTE AFFIDAVIT</h1>
-            <p class="doc-subtitle">NOTICE OF DEFICIENCY & REIMBURSEMENT DEMAND</p>
-            <p class="doc-ref">
-              CASE REF: ${disputeCase.case_number} | 
-              AMAZON CASE: ${disputeCase.provider_case_id || 'PENDING'} | 
-              DATE: ${new Date().toISOString().split('T')[0]}
-            </p>
-          </div>
-          
-          <!-- CLAIMANT IDENTITY BLOCK -->
-          <div class="claimant-block">
-            <div class="claimant-title">CLAIMANT IDENTITY & JURISDICTION</div>
-            <div class="claimant-row">
-              <span class="claimant-label">MERCHANT ID:</span>
-              <span class="claimant-value">${disputeCase.seller_id}</span>
+          <!-- HEADER -->
+          <div class="header">
+            <div>
+              <div class="brand">Margin</div>
+              <div class="brand-sub">Inventory Audit & Recovery</div>
             </div>
-            <div class="claimant-row">
-              <span class="claimant-label">FACILITY CODE:</span>
-              <span class="claimant-value">${facilityId}</span>
-            </div>
-            <div class="claimant-row">
-              <span class="claimant-label">AUDIT AGENT ID:</span>
-              <span class="claimant-value">AGT-7-AUTO (Autonomous Filing Protocol)</span>
-            </div>
-            <div class="claimant-row">
-              <span class="claimant-label">DETECTION ENGINE:</span>
-              <span class="claimant-value">AGT-3-RECON (26-Algorithm Inventory Audit)</span>
-            </div>
-            <div class="claimant-row">
-              <span class="claimant-label">CLAIM CLASSIFICATION:</span>
-              <span class="claimant-value">${(disputeCase.case_type || 'INVENTORY_DISCREPANCY').replace(/_/g, ' ').toUpperCase()}</span>
+            <div class="doc-info">
+              <div class="doc-title">FBA Inventory Reconciliation Record</div>
+              <div class="doc-meta">
+                <span>Reference: ${disputeCase.case_number}</span>
+                <span>Date: ${formatDate(disputeCase.created_at)}</span>
+              </div>
+              <span class="status-badge ${disputeCase.status === 'approved' ? 'status-approved' : disputeCase.filing_status === 'filed' ? 'status-filed' : 'status-pending'}">
+                ${(disputeCase.filing_status || disputeCase.status || 'pending').replace(/_/g, ' ')}
+              </span>
             </div>
           </div>
           
-          <!-- SECTION 1: VARIANCE CALCULATION -->
+          <!-- SUMMARY CARD -->
+          <div class="summary-card">
+            <div class="summary-title">Adjustment Request</div>
+            <div class="summary-amount">${disputeCase.currency} ${disputeCase.claim_amount.toFixed(2)}</div>
+            <div class="summary-desc">
+              Discrepancy identified between Carrier Manifest and FBA Ledger at ${facilityId}.
+            </div>
+          </div>
+          
+          <!-- ACCOUNT DETAILS -->
           <div class="section">
-            <div class="section-header">SECTION 1: VARIANCE CALCULATION (RECONCILIATION AUDIT)</div>
+            <div class="section-header">Account Details</div>
+            <div class="info-grid">
+              <div class="info-item">
+                <div class="info-label">Merchant ID</div>
+                <div class="info-value">${disputeCase.seller_id}</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Fulfillment Center</div>
+                <div class="info-value">${facilityId}</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Amazon Case ID</div>
+                <div class="info-value">${disputeCase.provider_case_id || 'Pending Assignment'}</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Processed By</div>
+                <div class="info-value">Margin Audit Systems (Automated)</div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- VARIANCE CALCULATION -->
+          <div class="section">
+            <div class="section-header">Variance Calculation</div>
             <table class="variance-table">
               <thead>
                 <tr>
-                  <th>ITEM IDENTIFIER</th>
-                  <th>EXPECTED QTY</th>
-                  <th>RECEIVED QTY</th>
-                  <th>VARIANCE</th>
-                  <th>UNIT COST</th>
-                  <th>TOTAL LIABILITY</th>
+                  <th>Item</th>
+                  <th class="text-right">Expected</th>
+                  <th class="text-right">Received</th>
+                  <th class="text-right">Variance</th>
+                  <th class="text-right">Unit Cost</th>
+                  <th class="text-right">Amount</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>${disputeCase.asin || disputeCase.sku || 'SKU_PENDING'}</td>
-                  <td class="amount">${expectedQty}</td>
-                  <td class="amount">${receivedQty}</td>
-                  <td class="amount" style="color: #c00;">${variance}</td>
-                  <td class="amount">${disputeCase.currency} ${unitPrice.toFixed(2)}</td>
-                  <td class="amount liability">${disputeCase.currency} ${disputeCase.claim_amount.toFixed(2)}</td>
+                  <td>${disputeCase.asin || disputeCase.sku || 'SKU Pending'}</td>
+                  <td class="text-right">${expectedQty}</td>
+                  <td class="text-right">${receivedQty}</td>
+                  <td class="text-right highlight">${variance}</td>
+                  <td class="text-right">${disputeCase.currency} ${unitPrice.toFixed(2)}</td>
+                  <td class="text-right">${disputeCase.currency} ${disputeCase.claim_amount.toFixed(2)}</td>
                 </tr>
                 <tr class="total-row">
-                  <td colspan="5" style="text-align: right; font-weight: bold;">TOTAL REIMBURSEMENT DUE:</td>
-                  <td class="amount liability">${disputeCase.currency} ${disputeCase.claim_amount.toFixed(2)}</td>
+                  <td colspan="5" style="text-align: right;">Total Adjustment Requested</td>
+                  <td class="text-right amount-due">${disputeCase.currency} ${disputeCase.claim_amount.toFixed(2)}</td>
                 </tr>
               </tbody>
             </table>
           </div>
           
-          <!-- SECTION 2: OFFICIAL RECEIVING LOG (API DUMP) -->
+          <!-- AUDIT TIMELINE -->
           <div class="section">
-            <div class="section-header">SECTION 2: OFFICIAL RECEIVING LOG (API DATA EXTRACTION)</div>
-            <div class="api-dump">
-              <div class="log-header">// MARGIN AUDIT SYSTEM - INVENTORY LEDGER EXTRACT</div>
-              <div class="log-header">// FACILITY: ${facilityId} | CASE: ${disputeCase.case_number}</div>
-              <div class="log-line">──────────────────────────────────────────────────────────</div>
-              <div class="log-line log-ok">[CHECKED_IN]  ${formatTimestamp(receivedAt)}  CARRIER_MANIFEST_CONFIRMED</div>
-              <div class="log-line log-ok">[RECEIVING]   ${formatTimestamp(receivedAt)}  SCAN_GATE_ENTRY: ${facilityId}</div>
-              <div class="log-line log-warn">[INVENTORY]   ${formatTimestamp(closedAt)}  LEDGER_SYNC: QTY_MISMATCH_DETECTED</div>
-              <div class="log-line log-error">[VARIANCE]    EXPECTED: ${expectedQty} | ACTUAL: ${receivedQty} | DELTA: ${variance}</div>
-              <div class="log-line log-error">[LIABILITY]   ${disputeCase.currency} ${disputeCase.claim_amount.toFixed(2)} UNACCOUNTED</div>
-              <div class="log-line">──────────────────────────────────────────────────────────</div>
-              <div class="log-line log-warn">[AUDIT_FLAG]  POST_RECEIVING_LOSS_CONFIRMED</div>
-              <div class="log-line log-ok">[CASE_FILED]  ${formatTimestamp(disputeCase.created_at)}  AGT-7-AUTO</div>
-            </div>
-          </div>
-          
-          <!-- SECTION 3: CERTIFICATION & POLICY DEMAND -->
-          <div class="section">
-            <div class="section-header">SECTION 3: CERTIFICATION OF NON-RECEIPT & POLICY DEMAND</div>
-            <div class="policy-block">
-              <div class="policy-title">FORMAL REIMBURSEMENT DEMAND</div>
-              <div class="policy-text">
-                Pursuant to the <strong>Amazon FBA Lost and Damaged Inventory Reimbursement Policy</strong> 
-                (Reference: G200213130), this affidavit certifies that the assets enumerated in Section 1 
-                were tendered to Amazon custody at facility <strong>${facilityId}</strong> and subsequently 
-                lost, damaged, or otherwise unaccounted for within Amazon's fulfillment network.
-                <br><br>
-                The claimant has demonstrated through forensic inventory reconciliation that a variance 
-                of <strong>${variance} unit(s)</strong> exists between carrier-confirmed shipment quantities 
-                and Amazon's inventory ledger. As per FBA policy Section 4.7, Amazon is liable for 
-                reimbursement of inventory lost after receiving scan confirmation.
-                <br><br>
-                <strong>TOTAL REIMBURSEMENT DEMANDED: ${disputeCase.currency} ${disputeCase.claim_amount.toFixed(2)}</strong>
+            <div class="section-header">Audit Timeline</div>
+            <div class="timeline">
+              <div class="timeline-item">
+                <div class="timeline-date">${formatDate(disputeCase.created_at)}</div>
+                <div class="timeline-event">Shipment received at ${facilityId} - Carrier manifest confirmed</div>
               </div>
-              <div class="policy-ref">
-                Policy Reference: Amazon FBA Lost/Damaged Inventory §4.7 | 
-                Claim Window: 60 Days | 
-                Response Required: 14 Business Days
+              <div class="timeline-item warning">
+                <div class="timeline-date">${formatDate(disputeCase.created_at)}</div>
+                <div class="timeline-event">Inventory variance detected - ${variance} unit(s) unaccounted</div>
+              </div>
+              <div class="timeline-item">
+                <div class="timeline-date">${formatDate(disputeCase.created_at)}</div>
+                <div class="timeline-event">Adjustment request submitted to Amazon Seller Support</div>
               </div>
             </div>
           </div>
           
-          <!-- SECTION 4: EVIDENCE PORTFOLIO -->
+          <!-- POLICY REFERENCE -->
           <div class="section">
-            <div class="section-header">SECTION 4: VERIFIED EVIDENCE PORTFOLIO</div>
-            ${evidenceDocs.length > 0 ?
-          evidenceDocs.map((doc, i) => `
-                <div class="evidence-item">
-                  [${String(i + 1).padStart(2, '0')}] ${doc.original_filename || doc.filename}
-                </div>
+            <div class="policy-note">
+              <div class="policy-note-title">Policy Reference</div>
+              <div class="policy-note-text">
+                Per Amazon FBA Lost and Damaged Inventory Reimbursement Policy (§4.7), sellers are eligible 
+                for reimbursement when inventory is lost or damaged after receiving confirmation at an 
+                Amazon fulfillment center. This adjustment request has been filed within the 60-day claim window.
+              </div>
+            </div>
+          </div>
+          
+          <!-- SUPPORTING DOCUMENTS -->
+          <div class="section">
+            <div class="section-header">Supporting Documents</div>
+            <ul class="evidence-list">
+              ${evidenceDocs.length > 0 ?
+          evidenceDocs.map((doc) => `
+                <li class="evidence-item">
+                  <span class="evidence-check">✓</span>
+                  ${doc.original_filename || doc.filename}
+                </li>
               `).join('') :
-          `<div class="evidence-item">[01] INTERNAL_INVENTORY_RECONCILIATION_REPORT (SYSTEM_GENERATED)</div>
-               <div class="evidence-item">[02] CARRIER_MANIFEST_CONFIRMATION (API_EXTRACTED)</div>
-               <div class="evidence-item">[03] AMAZON_LEDGER_VARIANCE_LOG (API_EXTRACTED)</div>`
+          `<li class="evidence-item">
+                 <span class="evidence-check">✓</span>
+                 Inventory Reconciliation Report
+               </li>
+               <li class="evidence-item">
+                 <span class="evidence-check">✓</span>
+                 Carrier Manifest Confirmation
+               </li>
+               <li class="evidence-item">
+                 <span class="evidence-check">✓</span>
+                 FBA Ledger Extract
+               </li>`
         }
+            </ul>
           </div>
           
           <!-- FOOTER -->
           <div class="footer">
-            <div class="signature-block">
-              <div class="signature-line">AUDIT AGENT: AGT-7-AUTO</div>
-              <div class="signature-line">DETECTION: AGT-3-RECON</div>
-              <div class="signature-line">GENERATED: ${new Date().toISOString()}</div>
+            <div class="footer-left">
+              This document is an official record of the adjustment request.<br>
+              Generated by Margin Audit Systems on ${new Date().toISOString().split('T')[0]}.
             </div>
-            <p style="margin-top: 16px;">
-              This document constitutes an official record of dispute filing generated by the 
-              Margin Autonomous Audit Protocol. It is valid for financial audits, accounting 
-              reconciliation, and regulatory compliance purposes.
-            </p>
-            <p class="footer-warning">
-              CONFIDENTIAL MERCHANT DATA — FOR AUTHORIZED PERSONNEL ONLY
-            </p>
+            <div class="footer-right">
+              Case Reference: ${disputeCase.case_number}<br>
+              For support: support@marginrecovery.com
+            </div>
           </div>
         </body>
         </html>
