@@ -1152,7 +1152,7 @@ export class DisputeService {
               <div class="doc-title">FBA Inventory Reconciliation Record</div>
               <div class="doc-meta">
                 <span>Reference: ${disputeCase.case_number}</span>
-                <span>Date: ${formatDate(disputeCase.created_at)}</span>
+                <span>Date: ${formatDateOnly(disputeCase.created_at)}</span>
               </div>
               <span class="status-badge ${disputeCase.status === 'approved' ? 'status-approved' : disputeCase.filing_status === 'filed' ? 'status-filed' : 'status-pending'}">
                 ${(disputeCase.filing_status || disputeCase.status || 'pending').replace(/_/g, ' ')}
