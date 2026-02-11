@@ -862,18 +862,18 @@ export class DisputeService {
       }
       hash = hash.substring(0, 64).padEnd(64, '0');
 
-      // Build evidence checklist items
-      const evidenceChecklist = evidenceDocs.length > 0
-        ? evidenceDocs.map(doc => {
+      // Build evidentiary exhibits items
+      const evidentiaryExhibits = evidenceDocs.length > 0
+        ? evidenceDocs.map((doc, index) => {
           const fname = doc.original_filename || doc.filename;
-          const label = fname.toUpperCase().replace(/\.[^.]+$/, '').replace(/[^A-Z0-9]/g, '_');
-          return `<div class="checklist-item">[X] ${label}: ${fname}</div>`;
+          const exhibitLetter = String.fromCharCode(65 + index); // A, B, C...
+          return `<div class="checklist-item">EXHIBIT ${exhibitLetter}: ${fname}</div>`;
         }).join('')
-        : `<div class="checklist-item">[X] INVENTORY_RECONCILIATION: reconciliation_report.pdf</div>
-           <div class="checklist-item">[X] CARRIER_MANIFEST: ${carrierTracking}.pdf</div>
-           <div class="checklist-item">[X] FBA_LEDGER_EXTRACT: fba_ledger_${disputeDate}.csv</div>
-           <div class="checklist-item">[X] SHIPMENT_CONFIRMATION: ${shipmentId}_confirmation.pdf</div>
-           <div class="checklist-item">[X] SYSTEM_DISCREPANCY_LOG: receiving_variance_${disputeCase.id.substring(0, 8)}.png</div>`;
+        : `<div class="checklist-item">EXHIBIT A: reconciliation_report.pdf</div>
+           <div class="checklist-item">EXHIBIT B: ${carrierTracking}.pdf</div>
+           <div class="checklist-item">EXHIBIT C: fba_ledger_${disputeDate}.csv</div>
+           <div class="checklist-item">EXHIBIT D: ${shipmentId}_confirmation.pdf</div>
+           <div class="checklist-item">EXHIBIT E: receiving_variance_${disputeCase.id.substring(0, 8)}.png</div>`;
 
       // Build evidence log timeline events
       const baseDate = new Date(disputeCase.created_at);
@@ -1033,6 +1033,10 @@ export class DisputeService {
               font-size: 13px;
               font-weight: bold;
             }
+            .liability-val.discrepancy {
+              color: #D0021B;
+              font-weight: bold;
+            }
             .liability-val.claim {
               font-family: Georgia, 'Times New Roman', Times, serif;
               font-size: 22px;
@@ -1125,13 +1129,31 @@ export class DisputeService {
               flex: 1;
             }
             .checklist-item {
-              font-family: 'Courier New', Courier, monospace;
-              font-size: 8px;
+              font-family: 'Inter', Arial, sans-serif;
+              font-size: 8.5px;
               line-height: 2;
               color: #555;
               border-bottom: 0.5px solid #e8e8e8;
             }
             .checklist-item:last-child { border-bottom: none; }
+
+            /* ═══ STATUS STAMP ═══ */
+            .status-stamp {
+              font-family: 'Courier New', Courier, monospace;
+              font-size: 8px;
+              line-height: 1.6;
+              color: #1a1a1a;
+              border: 1px solid #1a1a1a;
+              padding: 8px 12px;
+              text-transform: uppercase;
+              letter-spacing: 0.5px;
+              background: #fff;
+              display: inline-block;
+            }
+            .status-stamp-line {
+              display: flex;
+              gap: 8px;
+            }
 
             /* ═══ FOOTER ═══ */
             .footer-block {
@@ -1188,7 +1210,7 @@ export class DisputeService {
               <div class="section-label">Liability Summary</div>
               <div class="liability-row"><span class="liability-key">Expected</span><span class="liability-val big">${expectedQty} units</span></div>
               <div class="liability-row"><span class="liability-key">Received</span><span class="liability-val big">${receivedQty} units</span></div>
-              <div class="liability-row"><span class="liability-key">Discrepancy</span><span class="liability-val big">${variance} units</span></div>
+              <div class="liability-row"><span class="liability-key">Discrepancy</span><span class="liability-val big discrepancy">${variance > 0 ? '-' : ''}${Math.abs(variance)} units</span></div>
               <div class="liability-row"><span class="liability-key">Unit Value</span><span class="liability-val">$${unitPrice.toFixed(2)}</span></div>
               <div class="liability-row"><span class="liability-key">Total Claim</span><span class="liability-val claim">$${disputeCase.claim_amount.toFixed(2)}</span></div>
               <div class="liability-row"><span class="liability-key">Policy</span><span class="liability-val policy-ref">${policyCode}</span></div>
@@ -1225,24 +1247,33 @@ export class DisputeService {
 
           <hr class="section-divider">
 
-          <!-- STATUS MATRIX (left) + EVIDENCE CHECKLIST (right) -->
+          <!-- STATUS STAMP + EVIDENTIARY EXHIBITS -->
           <div class="bottom-row">
 
             <div class="status-matrix">
-              <div class="section-label">Status Matrix</div>
-              <div class="status-row"><span class="status-key">Error Type</span><span class="status-val">${errorType.toUpperCase().replace(/[- ]/g, '_')}</span></div>
-              <div class="status-row"><span class="status-key">Error Code</span><span class="status-val">${errorCode.toUpperCase().replace(/[- ]/g, '_')}</span></div>
-              ${amazonWeight ? `<div class="status-row"><span class="status-key">Amazon Weight</span><span class="status-val">${amazonWeight} lbs</span></div>` : ''}
-              ${actualWeight ? `<div class="status-row"><span class="status-key">Actual Weight</span><span class="status-val">${actualWeight} lbs (CERTIFIED)</span></div>` : ''}
-              <div class="status-row"><span class="status-key">Discrepancy Rate</span><span class="status-val">${discrepancyRate}%</span></div>
-              <div class="status-row"><span class="status-key">Affected Units</span><span class="status-val">${expectedQty}</span></div>
-              <div class="status-row"><span class="status-key">Affected FCs</span><span class="status-val">${affectedFCs}</span></div>
-              <div class="status-row"><span class="status-key">Filing Status</span><span class="status-val">${(disputeCase.filing_status || 'PENDING').toUpperCase()}</span></div>
+              <div class="section-label">Audit Classification Stamp</div>
+              <div class="status-stamp">
+                <div class="status-stamp-line">
+                  <span>ERROR TYPE: ${errorType.toUpperCase().replace(/[- ]/g, '_')}</span>
+                  <span>|</span>
+                  <span>CODE: ${errorCode.toUpperCase().replace(/[- ]/g, '_')}</span>
+                </div>
+                <div class="status-stamp-line">
+                  <span>SEVERITY: CRITICAL</span>
+                  <span>|</span>
+                  <span>DISCREPANCY: ${discrepancyRate}%</span>
+                </div>
+                <div class="status-stamp-line">
+                  <span>AFFECTED UNITS: ${expectedQty}</span>
+                  <span>|</span>
+                  <span>FC: ${affectedFCs}</span>
+                </div>
+              </div>
             </div>
 
             <div class="evidence-checklist">
-              <div class="section-label">Supporting Documents</div>
-              ${evidenceChecklist}
+              <div class="section-label">Attached Evidentiary Exhibits</div>
+              ${evidentiaryExhibits}
             </div>
 
           </div>
