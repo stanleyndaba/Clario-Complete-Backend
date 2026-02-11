@@ -930,18 +930,71 @@ export class DisputeService {
               margin-bottom: 28px;
             }
             .letterhead-left {
-              font-size: 9px;
+              font-family: 'Inter', Arial, sans-serif;
+              text-align: left;
+            }
+            .letterhead-title {
+              font-size: 11px;
               font-weight: 700;
               letter-spacing: 3px;
               text-transform: uppercase;
               color: #1a1a1a;
+              line-height: 1.2;
             }
-            .letterhead-right {
-              font-size: 8px;
+            .letterhead-sub {
+              font-size: 7.5px;
               font-weight: 500;
-              letter-spacing: 2px;
+              letter-spacing: 1.5px;
               text-transform: uppercase;
               color: #888;
+              margin-top: 2px;
+            }
+            .letterhead-right {
+              text-align: right;
+            }
+            .letterhead-status {
+              font-size: 8px;
+              font-weight: 600;
+              letter-spacing: 2px;
+              text-transform: uppercase;
+              color: #1a1a1a;
+              line-height: 1.2;
+            }
+            .letterhead-hash {
+              font-family: 'Courier New', Courier, monospace;
+              font-size: 7px;
+              color: #888;
+              margin-top: 2px;
+              letter-spacing: 0.5px;
+            }
+
+            /* ═══ COMMAND STRIP ═══ */
+            .command-strip {
+              background: #f8f8f8;
+              border-left: 4px solid #1a1a1a;
+              padding: 8px 16px;
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 8px;
+            }
+            .command-strip-left, .command-strip-right {
+              font-family: 'Inter', Arial, sans-serif;
+              font-size: 8.5px;
+              font-weight: 700;
+              letter-spacing: 1px;
+              text-transform: uppercase;
+              color: #1a1a1a;
+            }
+            .legal-basis-line {
+              font-family: 'Inter', Arial, sans-serif;
+              font-size: 7.5px;
+              font-weight: 600;
+              letter-spacing: 1px;
+              text-transform: uppercase;
+              color: #1a1a1a;
+              margin-bottom: 24px;
+              padding-left: 4px;
             }
 
             /* ═══ SECTION LABELS (small caps, sans-serif, spaced) ═══ */
@@ -1188,9 +1241,22 @@ export class DisputeService {
 
           <!-- LETTERHEAD -->
           <div class="letterhead">
-            <div class="letterhead-left">Margin Audit Systems</div>
-            <div class="letterhead-right">Confidential Claim Filing</div>
+            <div class="letterhead-left">
+              <div class="letterhead-title">Margin Audit Systems</div>
+              <div class="letterhead-sub">Revenue Integrity Infrastructure</div>
+            </div>
+            <div class="letterhead-right">
+              <div class="letterhead-status">Confidential Claim Filing</div>
+              <div class="letterhead-hash">(DATA_INTEGRITY SHA256: ${hash.substring(0, 16)}...)</div>
+            </div>
           </div>
+
+          <!-- COMMAND STRIP -->
+          <div class="command-strip">
+            <div class="command-strip-left">ISSUE DETECTED: INBOUND SHIPMENT VARIANCE (SHORTAGE)</div>
+            <div class="command-strip-right">ACTION REQUIRED: LEDGER RECONCILIATION & REIMBURSEMENT</div>
+          </div>
+          <div class="legal-basis-line">LEGAL BASIS: FILED PURSUANT TO FBA POLICY G200213130</div>
 
           <!-- CLAIM DETAILS (left) + THE MONEY (right) -->
           <div class="claim-row">
@@ -1282,7 +1348,6 @@ export class DisputeService {
           <div class="footer-block">
             <div class="policy-line">REF: Amazon FBA Reimbursement Policy ${policyCode} §4.2(b) — "Sellers must be reimbursed for inventory discrepancies confirmed by FBA receiving scans."</div>
             <div class="policy-line">REF: Amazon Seller Agreement §9.3 — "Amazon is responsible for accurate measurement data in fulfillment systems."</div>
-            <div class="hash-line">DATA_INTEGRITY  SHA256: ${hash}</div>
             <div class="gen-line">Generated ${new Date().toISOString()} · Margin Audit Systems · Document ${disputeCase.id}</div>
           </div>
 
