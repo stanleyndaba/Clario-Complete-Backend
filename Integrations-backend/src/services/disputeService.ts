@@ -900,297 +900,314 @@ export class DisputeService {
         evidenceLogRows.push({ ts: formatTimestamp(disputeCase.updated_at || disputeCase.created_at, 5), event: 'DISPUTE_NOTICE', ref: disputeCase.provider_case_id, confirm: 'AMAZON_GENERATED' });
       }
 
-      // FORENSIC EXTRACT HTML - TERMINAL DESIGN
+      // FORENSIC EXTRACT HTML — JP MORGAN LEDGER DESIGN
       const html = `
         <!DOCTYPE html>
         <html>
         <head>
           <meta charset="UTF-8">
           <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
             @page { margin: 0; size: A4; }
             * { margin: 0; padding: 0; box-sizing: border-box; }
             body {
-              font-family: 'Courier New', Courier, monospace;
-              color: #000000;
+              font-family: 'Inter', Arial, Helvetica, sans-serif;
+              color: #1a1a1a;
               background: #ffffff;
-              padding: 28px 32px 20px 32px;
+              padding: 48px 56px 36px 56px;
               font-size: 10px;
-              line-height: 1.4;
+              line-height: 1.5;
             }
 
-            /* ═══ DOCUMENT HEADER ═══ */
-            .doc-header {
-              border-bottom: 2px solid #000;
-              padding-bottom: 8px;
-              margin-bottom: 14px;
+            /* ═══ LETTERHEAD ═══ */
+            .letterhead {
+              display: flex;
+              justify-content: space-between;
+              align-items: flex-end;
+              padding-bottom: 14px;
+              border-bottom: 1.5px solid #1a1a1a;
+              margin-bottom: 28px;
             }
-            .doc-header-title {
-              font-size: 13px;
-              font-weight: bold;
+            .letterhead-left {
+              font-size: 9px;
+              font-weight: 700;
               letter-spacing: 3px;
               text-transform: uppercase;
+              color: #1a1a1a;
             }
-            .doc-header-sub {
-              font-size: 9px;
-              color: #555;
-              letter-spacing: 1px;
-              margin-top: 2px;
-            }
-            .classification-bar {
-              background: #E5E5E5;
-              padding: 4px 10px;
+            .letterhead-right {
               font-size: 8px;
+              font-weight: 500;
               letter-spacing: 2px;
               text-transform: uppercase;
-              margin-top: 6px;
-              display: inline-block;
+              color: #888;
             }
 
-            /* ═══ TOP ROW: METADATA + LIABILITY ═══ */
-            .top-row {
-              display: flex;
-              gap: 20px;
-              margin-bottom: 14px;
-            }
-            .metadata-grid {
-              flex: 1;
-              border: 1px solid #000;
-              padding: 10px 12px;
-            }
-            .metadata-grid .section-label {
-              font-size: 8px;
-              font-weight: bold;
-              letter-spacing: 2px;
-              color: #555;
-              margin-bottom: 6px;
+            /* ═══ SECTION LABELS (small caps, sans-serif, spaced) ═══ */
+            .section-label {
+              font-family: 'Inter', Arial, sans-serif;
+              font-size: 7.5px;
+              font-weight: 600;
+              letter-spacing: 2.5px;
               text-transform: uppercase;
+              color: #999;
+              margin-bottom: 10px;
             }
+            .section-divider {
+              border: none;
+              border-top: 0.5px solid #d0d0d0;
+              margin: 22px 0 18px 0;
+            }
+
+            /* ═══ TOP ROW: CLAIM DETAILS (left) + THE MONEY (right) ═══ */
+            .claim-row {
+              display: flex;
+              gap: 48px;
+              margin-bottom: 0;
+            }
+            .claim-details {
+              flex: 1;
+            }
+            .claim-money {
+              flex: 1;
+              text-align: right;
+            }
+
+            /* Metadata key-value pairs — sans-serif labels */
             .meta-row {
               display: flex;
               font-size: 10px;
-              line-height: 1.7;
+              line-height: 2;
+              border-bottom: 0.5px solid #e8e8e8;
             }
+            .meta-row:last-child { border-bottom: none; }
             .meta-key {
-              width: 140px;
-              font-weight: bold;
+              font-family: 'Inter', Arial, sans-serif;
+              font-size: 8.5px;
+              font-weight: 600;
+              letter-spacing: 1.5px;
+              text-transform: uppercase;
+              color: #777;
+              width: 150px;
               flex-shrink: 0;
+              padding-top: 1px;
             }
             .meta-val {
               flex: 1;
+              font-family: 'Inter', Arial, sans-serif;
+              font-size: 10px;
+              font-weight: 500;
+              color: #1a1a1a;
             }
 
-            .liability-strip {
-              flex: 1;
-              border: 2px solid #000;
-              padding: 10px 14px;
-            }
-            .liability-strip .section-label {
-              font-size: 8px;
-              font-weight: bold;
-              letter-spacing: 2px;
-              color: #555;
-              margin-bottom: 6px;
-              text-transform: uppercase;
-            }
+            /* Liability — serif money, right-aligned */
             .liability-row {
               display: flex;
+              justify-content: flex-end;
               font-size: 10px;
-              line-height: 1.7;
+              line-height: 2;
+              border-bottom: 0.5px solid #e8e8e8;
             }
+            .liability-row:last-child { border-bottom: none; }
             .liability-key {
-              width: 120px;
-              font-weight: bold;
+              font-family: 'Inter', Arial, sans-serif;
+              font-size: 8.5px;
+              font-weight: 600;
+              letter-spacing: 1.5px;
+              text-transform: uppercase;
+              color: #777;
+              width: 130px;
               flex-shrink: 0;
+              padding-top: 1px;
             }
             .liability-val {
-              flex: 1;
+              font-family: Georgia, 'Times New Roman', Times, serif;
+              font-size: 11px;
+              font-weight: normal;
+              color: #1a1a1a;
               text-align: right;
-              font-weight: bold;
+              min-width: 100px;
             }
             .liability-val.big {
-              font-size: 14px;
-              font-weight: 900;
+              font-size: 13px;
+              font-weight: bold;
             }
             .liability-val.claim {
-              font-size: 16px;
-              font-weight: 900;
-              border-top: 1px solid #000;
-              padding-top: 2px;
-              margin-top: 2px;
+              font-family: Georgia, 'Times New Roman', Times, serif;
+              font-size: 22px;
+              font-weight: bold;
+              color: #1a1a1a;
+              border-top: 0.5px solid #bbb;
+              padding-top: 4px;
+              margin-top: 4px;
+              letter-spacing: -0.5px;
+            }
+            .liability-val.policy-ref {
+              font-family: 'Inter', Arial, sans-serif;
+              font-size: 9px;
+              font-weight: 500;
+              color: #555;
+              letter-spacing: 1px;
             }
 
-            /* ═══ CENTER: EVIDENCE LOG ═══ */
+            /* ═══ EVIDENCE LOG TABLE — LEGAL EXHIBIT STYLE ═══ */
             .evidence-log {
-              margin-bottom: 14px;
-            }
-            .evidence-log .section-label {
-              font-size: 8px;
-              font-weight: bold;
-              letter-spacing: 2px;
-              color: #555;
-              margin-bottom: 4px;
-              text-transform: uppercase;
+              margin-bottom: 0;
             }
             .evidence-table {
               width: 100%;
               border-collapse: collapse;
-              border: 1px solid #000;
             }
             .evidence-table th {
-              background: #E5E5E5;
-              color: #000;
-              padding: 5px 8px;
+              background: transparent;
+              color: #999;
+              padding: 6px 0;
               text-align: left;
-              font-size: 8px;
-              font-weight: bold;
-              letter-spacing: 1px;
+              font-family: 'Inter', Arial, sans-serif;
+              font-size: 7.5px;
+              font-weight: 600;
+              letter-spacing: 2px;
               text-transform: uppercase;
-              border-bottom: 1px solid #000;
-              border-right: 1px solid #ccc;
+              border-bottom: 1px solid #1a1a1a;
             }
-            .evidence-table th:last-child { border-right: none; }
             .evidence-table td {
-              padding: 4px 8px;
-              font-size: 9px;
-              border-bottom: 1px solid #ddd;
-              border-right: 1px solid #eee;
+              padding: 5px 0;
+              font-family: 'Courier New', Courier, monospace;
+              font-size: 8.5px;
+              color: #555;
+              border-bottom: 0.5px solid #e8e8e8;
             }
-            .evidence-table td:last-child { border-right: none; }
-            .evidence-table tr:last-child td { border-bottom: none; }
-            .evidence-table .sys-gen { color: #666; }
-            .evidence-table .amz-conf { font-weight: bold; }
+            .evidence-table tr:last-child td {
+              border-bottom: 0.5px solid #ccc;
+            }
+            .evidence-table .sys-gen { color: #999; }
+            .evidence-table .amz-conf { color: #333; font-weight: 600; }
+            .evidence-table td:first-child { color: #888; }
+            .evidence-table td:nth-child(2) { color: #1a1a1a; font-weight: 500; }
 
             /* ═══ BOTTOM ROW: STATUS MATRIX + EVIDENCE CHECKLIST ═══ */
             .bottom-row {
               display: flex;
-              gap: 20px;
-              margin-bottom: 14px;
+              gap: 48px;
+              margin-bottom: 0;
             }
             .status-matrix {
               flex: 1;
-              border: 1px solid #000;
-              padding: 10px 12px;
-            }
-            .status-matrix .section-label {
-              font-size: 8px;
-              font-weight: bold;
-              letter-spacing: 2px;
-              color: #555;
-              margin-bottom: 6px;
-              text-transform: uppercase;
             }
             .status-row {
               display: flex;
               font-size: 10px;
-              line-height: 1.7;
+              line-height: 2;
+              border-bottom: 0.5px solid #e8e8e8;
             }
+            .status-row:last-child { border-bottom: none; }
             .status-key {
+              font-family: 'Inter', Arial, sans-serif;
+              font-size: 8.5px;
+              font-weight: 600;
+              letter-spacing: 1.5px;
+              text-transform: uppercase;
+              color: #777;
               width: 180px;
-              font-weight: bold;
               flex-shrink: 0;
+              padding-top: 1px;
             }
             .status-val {
+              font-family: 'Inter', Arial, sans-serif;
+              font-size: 10px;
+              font-weight: 500;
+              color: #1a1a1a;
               flex: 1;
             }
 
             .evidence-checklist {
               flex: 1;
-              border: 1px solid #000;
-              padding: 10px 12px;
-            }
-            .evidence-checklist .section-label {
-              font-size: 8px;
-              font-weight: bold;
-              letter-spacing: 2px;
-              color: #555;
-              margin-bottom: 6px;
-              text-transform: uppercase;
             }
             .checklist-item {
-              font-size: 9px;
-              line-height: 1.8;
-              word-break: break-all;
-            }
-
-            /* ═══ FOOTER: POLICY CITATION ═══ */
-            .footer-block {
-              border-top: 2px solid #000;
-              padding-top: 8px;
-              margin-top: 6px;
-            }
-            .footer-block .section-label {
-              font-size: 7px;
-              font-weight: bold;
-              letter-spacing: 2px;
+              font-family: 'Courier New', Courier, monospace;
+              font-size: 8px;
+              line-height: 2;
               color: #555;
-              margin-bottom: 4px;
-              text-transform: uppercase;
+              border-bottom: 0.5px solid #e8e8e8;
+            }
+            .checklist-item:last-child { border-bottom: none; }
+
+            /* ═══ FOOTER ═══ */
+            .footer-block {
+              border-top: 0.5px solid #ccc;
+              padding-top: 12px;
+              margin-top: 24px;
             }
             .policy-line {
-              font-size: 7.5px;
-              line-height: 1.6;
-              color: #333;
+              font-family: 'Inter', Arial, sans-serif;
+              font-size: 7px;
+              line-height: 1.8;
+              color: #888;
+              font-style: italic;
             }
             .hash-line {
-              font-size: 7px;
-              color: #888;
-              margin-top: 6px;
+              font-family: 'Courier New', Courier, monospace;
+              font-size: 6.5px;
+              color: #bbb;
+              margin-top: 8px;
               letter-spacing: 0.5px;
             }
             .gen-line {
-              font-size: 7px;
-              color: #aaa;
-              margin-top: 4px;
+              font-family: 'Inter', Arial, sans-serif;
+              font-size: 6.5px;
+              color: #ccc;
+              margin-top: 3px;
+              letter-spacing: 0.5px;
             }
           </style>
         </head>
         <body>
 
-          <!-- ═══ DOCUMENT HEADER ═══ -->
-          <div class="doc-header">
-            <div class="doc-header-title">FORENSIC EXTRACT — DISPUTE DOCUMENT</div>
-            <div class="doc-header-sub">TERMINAL_DESIGN // ONE_PAGE_MAX // MACHINE_READABLE</div>
-            <div class="classification-bar">Classification: Confidential Financial Record — ${storeName}</div>
+          <!-- LETTERHEAD -->
+          <div class="letterhead">
+            <div class="letterhead-left">Margin Audit Systems</div>
+            <div class="letterhead-right">Confidential Claim Filing</div>
           </div>
 
-          <!-- ═══ TOP ROW ═══ -->
-          <div class="top-row">
+          <!-- CLAIM DETAILS (left) + THE MONEY (right) -->
+          <div class="claim-row">
 
-            <!-- TOP-LEFT: METADATA GRID -->
-            <div class="metadata-grid">
-              <div class="section-label">Metadata Grid — Bot-First Format</div>
-              <div class="meta-row"><span class="meta-key">CASE_ID:</span><span class="meta-val">${disputeCase.provider_case_id || `DIS-${disputeDate.replace(/-/g, '-')}-${disputeCase.id.substring(0, 9)}`}</span></div>
-              <div class="meta-row"><span class="meta-key">CLAIM_REF:</span><span class="meta-val">${disputeCase.case_number}</span></div>
-              <div class="meta-row"><span class="meta-key">ASIN:</span><span class="meta-val">${itemAsin}</span></div>
-              <div class="meta-row"><span class="meta-key">SKU:</span><span class="meta-val">${itemSku}</span></div>
-              <div class="meta-row"><span class="meta-key">SHIPMENT_ID:</span><span class="meta-val">${shipmentId}</span></div>
-              <div class="meta-row"><span class="meta-key">DISPUTE_DATE:</span><span class="meta-val">${disputeDate}</span></div>
-              <div class="meta-row"><span class="meta-key">RESPONSE_DEADLINE:</span><span class="meta-val">${responseDeadline}</span></div>
+            <div class="claim-details">
+              <div class="section-label">Claim Reference</div>
+              <div class="meta-row"><span class="meta-key">Case ID</span><span class="meta-val">${disputeCase.provider_case_id || `DIS-${disputeDate.replace(/-/g, '-')}-${disputeCase.id.substring(0, 9)}`}</span></div>
+              <div class="meta-row"><span class="meta-key">Claim Ref</span><span class="meta-val">${disputeCase.case_number}</span></div>
+              <div class="meta-row"><span class="meta-key">ASIN</span><span class="meta-val">${itemAsin}</span></div>
+              <div class="meta-row"><span class="meta-key">SKU</span><span class="meta-val">${itemSku}</span></div>
+              <div class="meta-row"><span class="meta-key">Shipment</span><span class="meta-val">${shipmentId}</span></div>
+              <div class="meta-row"><span class="meta-key">Filed</span><span class="meta-val">${disputeDate}</span></div>
+              <div class="meta-row"><span class="meta-key">Deadline</span><span class="meta-val">${responseDeadline}</span></div>
             </div>
 
-            <!-- TOP-RIGHT: LIABILITY STRIP -->
-            <div class="liability-strip">
-              <div class="section-label">Liability Strip</div>
-              <div class="liability-row"><span class="liability-key">EXPECTED:</span><span class="liability-val big">${expectedQty} units</span></div>
-              <div class="liability-row"><span class="liability-key">RECEIVED:</span><span class="liability-val big">${receivedQty} units</span></div>
-              <div class="liability-row"><span class="liability-key">DISCREPANCY:</span><span class="liability-val big">${variance} units</span></div>
-              <div class="liability-row"><span class="liability-key">UNIT_VALUE:</span><span class="liability-val">$${unitPrice.toFixed(2)}</span></div>
-              <div class="liability-row"><span class="liability-key">TOTAL_CLAIM:</span><span class="liability-val claim">$${disputeCase.claim_amount.toFixed(2)}</span></div>
-              <div class="liability-row"><span class="liability-key">POLICY:</span><span class="liability-val">${policyCode}</span></div>
+            <div class="claim-money">
+              <div class="section-label">Liability Summary</div>
+              <div class="liability-row"><span class="liability-key">Expected</span><span class="liability-val big">${expectedQty} units</span></div>
+              <div class="liability-row"><span class="liability-key">Received</span><span class="liability-val big">${receivedQty} units</span></div>
+              <div class="liability-row"><span class="liability-key">Discrepancy</span><span class="liability-val big">${variance} units</span></div>
+              <div class="liability-row"><span class="liability-key">Unit Value</span><span class="liability-val">$${unitPrice.toFixed(2)}</span></div>
+              <div class="liability-row"><span class="liability-key">Total Claim</span><span class="liability-val claim">$${disputeCase.claim_amount.toFixed(2)}</span></div>
+              <div class="liability-row"><span class="liability-key">Policy</span><span class="liability-val policy-ref">${policyCode}</span></div>
             </div>
 
           </div>
 
-          <!-- ═══ CENTER: EVIDENCE LOG ═══ -->
+          <hr class="section-divider">
+
+          <!-- EVIDENCE LOG — LEGAL EXHIBIT -->
           <div class="evidence-log">
-            <div class="section-label">Evidence Log — Vertical Table (Scannable)</div>
+            <div class="section-label">Evidence Log</div>
             <table class="evidence-table">
               <thead>
                 <tr>
-                  <th style="width:18%">TIMESTAMP</th>
-                  <th style="width:24%">EVENT_TYPE</th>
-                  <th style="width:30%">REFERENCE</th>
-                  <th style="width:28%">CONFIRMATION</th>
+                  <th style="width:20%">Timestamp</th>
+                  <th style="width:24%">Event Type</th>
+                  <th style="width:30%">Reference</th>
+                  <th style="width:26%">Confirmation</th>
                 </tr>
               </thead>
               <tbody>
@@ -1206,37 +1223,36 @@ export class DisputeService {
             </table>
           </div>
 
-          <!-- ═══ BOTTOM ROW ═══ -->
+          <hr class="section-divider">
+
+          <!-- STATUS MATRIX (left) + EVIDENCE CHECKLIST (right) -->
           <div class="bottom-row">
 
-            <!-- BOTTOM-LEFT: STATUS CODE MATRIX -->
             <div class="status-matrix">
-              <div class="section-label">Status Code Matrix</div>
-              <div class="status-row"><span class="status-key">ERROR_TYPE:</span><span class="status-val">${errorType.toUpperCase().replace(/[- ]/g, '_')}</span></div>
-              <div class="status-row"><span class="status-key">ERROR_CODE:</span><span class="status-val">${errorCode.toUpperCase().replace(/[- ]/g, '_')}</span></div>
-              ${amazonWeight ? `<div class="status-row"><span class="status-key">AMAZON_WEIGHT:</span><span class="status-val">${amazonWeight} lbs</span></div>` : ''}
-              ${actualWeight ? `<div class="status-row"><span class="status-key">ACTUAL_WEIGHT:</span><span class="status-val">${actualWeight} lbs (CERTIFIED)</span></div>` : ''}
-              <div class="status-row"><span class="status-key">DISCREPANCY_RATE:</span><span class="status-val">${discrepancyRate}%</span></div>
-              <div class="status-row"><span class="status-key">AFFECTED_TRANSACTIONS:</span><span class="status-val">${expectedQty}</span></div>
-              <div class="status-row"><span class="status-key">AFFECTED_FCs:</span><span class="status-val">${affectedFCs}</span></div>
-              <div class="status-row"><span class="status-key">FILING_STATUS:</span><span class="status-val">${(disputeCase.filing_status || 'PENDING').toUpperCase()}</span></div>
+              <div class="section-label">Status Matrix</div>
+              <div class="status-row"><span class="status-key">Error Type</span><span class="status-val">${errorType.toUpperCase().replace(/[- ]/g, '_')}</span></div>
+              <div class="status-row"><span class="status-key">Error Code</span><span class="status-val">${errorCode.toUpperCase().replace(/[- ]/g, '_')}</span></div>
+              ${amazonWeight ? `<div class="status-row"><span class="status-key">Amazon Weight</span><span class="status-val">${amazonWeight} lbs</span></div>` : ''}
+              ${actualWeight ? `<div class="status-row"><span class="status-key">Actual Weight</span><span class="status-val">${actualWeight} lbs (CERTIFIED)</span></div>` : ''}
+              <div class="status-row"><span class="status-key">Discrepancy Rate</span><span class="status-val">${discrepancyRate}%</span></div>
+              <div class="status-row"><span class="status-key">Affected Units</span><span class="status-val">${expectedQty}</span></div>
+              <div class="status-row"><span class="status-key">Affected FCs</span><span class="status-val">${affectedFCs}</span></div>
+              <div class="status-row"><span class="status-key">Filing Status</span><span class="status-val">${(disputeCase.filing_status || 'PENDING').toUpperCase()}</span></div>
             </div>
 
-            <!-- BOTTOM-RIGHT: EVIDENCE CHECKLIST -->
             <div class="evidence-checklist">
-              <div class="section-label">Evidence Checklist</div>
+              <div class="section-label">Supporting Documents</div>
               ${evidenceChecklist}
             </div>
 
           </div>
 
-          <!-- ═══ FOOTER: POLICY CITATION ═══ -->
+          <!-- FOOTER -->
           <div class="footer-block">
-            <div class="section-label">Policy Citation</div>
-            <div class="policy-line">REF: Amazon FBA Reimbursement Policy ${policyCode} §4.2(b): "Sellers must be reimbursed for inventory discrepancies confirmed by FBA receiving scans."</div>
-            <div class="policy-line">REF: Amazon Seller Agreement §9.3: "Amazon is responsible for accurate measurement data in fulfillment systems."</div>
-            <div class="hash-line">DATA_INTEGRITY: SHA256_HASH: ${hash}</div>
-            <div class="gen-line">GENERATED: ${new Date().toISOString()} // MARGIN_AUDIT_SYSTEMS // DOCUMENT_ID: ${disputeCase.id}</div>
+            <div class="policy-line">REF: Amazon FBA Reimbursement Policy ${policyCode} §4.2(b) — "Sellers must be reimbursed for inventory discrepancies confirmed by FBA receiving scans."</div>
+            <div class="policy-line">REF: Amazon Seller Agreement §9.3 — "Amazon is responsible for accurate measurement data in fulfillment systems."</div>
+            <div class="hash-line">DATA_INTEGRITY  SHA256: ${hash}</div>
+            <div class="gen-line">Generated ${new Date().toISOString()} · Margin Audit Systems · Document ${disputeCase.id}</div>
           </div>
 
         </body>
