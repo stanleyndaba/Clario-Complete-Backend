@@ -1058,6 +1058,7 @@ export class DisputeService {
             .liability-row {
               display: flex;
               justify-content: flex-end;
+              align-items: baseline;
               font-size: 10px;
               line-height: 2;
               border-bottom: 0.5px solid #e8e8e8;
@@ -1095,9 +1096,9 @@ export class DisputeService {
               font-size: 22px;
               font-weight: bold;
               color: #1a1a1a;
-              border-top: 0.5px solid #bbb;
-              padding-top: 4px;
-              margin-top: 4px;
+              border-top: none;
+              padding-top: 0;
+              margin-top: 0;
               letter-spacing: -0.5px;
             }
             .liability-val.policy-ref {
