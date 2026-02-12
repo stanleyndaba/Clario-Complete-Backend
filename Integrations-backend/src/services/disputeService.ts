@@ -1009,7 +1009,7 @@ export class DisputeService {
             }
             .section-divider {
               border: none;
-              border-top: 0.5px solid #d0d0d0;
+              border-top: 0.05pt solid #d0d0d0;
               margin: 22px 0 18px 0;
             }
 
@@ -1032,7 +1032,7 @@ export class DisputeService {
               display: flex;
               font-size: 10px;
               line-height: 2;
-              border-bottom: 0.5px solid #e8e8e8;
+              border-bottom: 0.05pt solid #e8e8e8;
             }
             .meta-row:last-child { border-bottom: none; }
             .meta-key {
@@ -1061,7 +1061,7 @@ export class DisputeService {
               align-items: baseline;
               font-size: 10px;
               line-height: 2;
-              border-bottom: 0.5px solid #e8e8e8;
+              border-bottom: 0.05pt solid #e8e8e8;
             }
             .liability-row:last-child { border-bottom: none; }
             .liability-key {
@@ -1127,17 +1127,17 @@ export class DisputeService {
               font-weight: 600;
               letter-spacing: 2px;
               text-transform: uppercase;
-              border-bottom: 1px solid #1a1a1a;
+              border-bottom: 0.05pt solid #1a1a1a;
             }
             .evidence-table td {
               padding: 5px 0;
               font-family: 'Courier New', Courier, monospace;
               font-size: 8.5px;
               color: #555;
-              border-bottom: 0.5px solid #e8e8e8;
+              border-bottom: 0.05pt solid #e8e8e8;
             }
             .evidence-table tr:last-child td {
-              border-bottom: 0.5px solid #ccc;
+              border-bottom: 0.05pt solid #ccc;
             }
             .evidence-table .sys-gen { color: #999; }
             .evidence-table .amz-conf { color: #333; font-weight: 600; }
@@ -1157,7 +1157,7 @@ export class DisputeService {
               display: flex;
               font-size: 10px;
               line-height: 2;
-              border-bottom: 0.5px solid #e8e8e8;
+              border-bottom: 0.05pt solid #e8e8e8;
             }
             .status-row:last-child { border-bottom: none; }
             .status-key {
@@ -1187,7 +1187,7 @@ export class DisputeService {
               font-size: 8.5px;
               line-height: 2;
               color: #555;
-              border-bottom: 0.5px solid #e8e8e8;
+              border-bottom: 0.05pt solid #e8e8e8;
             }
             .checklist-item:last-child { border-bottom: none; }
 
@@ -1197,7 +1197,7 @@ export class DisputeService {
               font-size: 8px;
               line-height: 1.6;
               color: #1a1a1a;
-              border: 1px solid #1a1a1a;
+              border: 0.05pt solid #1a1a1a;
               padding: 8px 12px;
               text-transform: uppercase;
               letter-spacing: 0.5px;
@@ -1211,7 +1211,7 @@ export class DisputeService {
 
             /* ═══ FOOTER ═══ */
             .footer-block {
-              border-top: 0.5px solid #ccc;
+              border-top: 0.05pt solid #ccc;
               padding-top: 12px;
               margin-top: 24px;
             }
