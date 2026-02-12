@@ -217,33 +217,29 @@ router.post('/payments/report', async (req, res) => {
           }
           .mono { font-family: 'Roboto Mono', monospace; }
 
-          /* RETENTION FOOTER (REFINED) */
-          .retention-foot {
-            border: 1.5pt double #000;
-            padding: 30px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-top: 60px;
+          /* PROJECTIONS SECTION - CLEAN VERTICAL */
+          .projections-section {
+            margin-top: 50px;
+            margin-bottom: 50px;
           }
-          .whale-item {
-            display: flex;
-            flex-direction: column;
-          }
-          .whale-label {
-            font-size: 9px;
+          .projections-title {
+            font-size: 10px;
             font-weight: 800;
             color: #000;
             text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 8px;
+            letter-spacing: 1.5px;
+            margin-bottom: 20px;
+            border-bottom: 0.2pt solid #eee;
+            padding-bottom: 8px;
+            width: 100%;
           }
-          .whale-val {
-            font-family: 'Roboto Mono', monospace;
-            font-size: 18pt;
-            font-weight: 500;
-            color: #333333;
+          .projection-item {
+            font-size: 11px;
+            margin-bottom: 12px;
+            color: #333;
           }
+          .projection-item b { font-weight: 700; color: #000; }
+          .projection-item .mono { font-family: 'Roboto Mono', monospace; margin-left: 5px; }
 
           /* SYSTEM FOOTER */
           .system-foot {
@@ -305,16 +301,11 @@ router.post('/payments/report', async (req, res) => {
           <div class="summary-line bold"><span>Total Potential Asset Value</span> <span class="mono">${formatMoney(clientNet + activePipeline)}</span></div>
         </div>
 
-        <!-- RETENTION HOOK -->
-        <div class="retention-foot">
-          <div class="whale-item">
-            <div class="whale-label">CURRENT WIN RATE</div>
-            <div class="whale-val">${winRate}</div>
-          </div>
-          <div class="whale-item" style="text-align: right;">
-            <div class="whale-label">PROJECTED ANNUAL SAVINGS</div>
-            <div class="whale-val">${formatMoney(Number(annualSavings.replace(/,/g, '')))}</div>
-          </div>
+        <!-- PROJECTIONS (CLEAN VERTICAL) -->
+        <div class="projections-section">
+          <div class="projections-title">PROJECTIONS</div>
+          <div class="projection-item">CURRENT WIN RATE - <span class="mono">${winRate}</span></div>
+          <div class="projection-item">PROJECTED ANNUAL SAVINGS - <span class="mono">${formatMoney(Number(annualSavings.replace(/,/g, '')))}</span></div>
         </div>
 
         <!-- LEGAL FOOTER -->
