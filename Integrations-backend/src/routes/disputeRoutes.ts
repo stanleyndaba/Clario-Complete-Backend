@@ -145,36 +145,20 @@ router.post('/payments/report', async (req, res) => {
           }
           .doc-title { font-weight: 800; color: #000; margin-bottom: 2px; }
 
-          /* QUIET HERO BOX - THE "REPORTING" BOX */
-          .hero-box {
-            background: #F5F5F5;
-            padding: 50px 0;
-            text-align: center;
-            margin-bottom: 40px;
+          /* HERO STRIP - QUIET & PREMIUM */
+          .hero-strip {
+            background: #F9F9F9;
+            padding: 12px 20px;
+            margin-bottom: 35px;
+            font-size: 10.5px;
+            color: #000;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border: 0.2pt solid #eee;
           }
-          .hero-top-label {
-            font-size: 9px;
-            font-weight: 700;
-            color: #888;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            margin-bottom: 20px;
-          }
-          .hero-amount {
-            font-family: 'Roboto Mono', monospace;
-            font-size: 32pt;
-            font-weight: 500;
-            color: #333333; /* Dark Charcoal */
-            letter-spacing: -1px;
-          }
-          .hero-ref {
-            font-family: 'Roboto Mono', monospace;
-            font-size: 8px;
-            color: #AAA;
-            text-transform: uppercase;
-            margin-top: 20px;
-            letter-spacing: 1px;
-          }
+          .hero-strip b { font-weight: 800; letter-spacing: 0.5px; }
+          .hero-strip .mono { font-family: 'Roboto Mono', monospace; font-size: 11px; }
 
           /* RECEIPT STYLE MATH STRIP */
           .math-strip {
@@ -290,11 +274,10 @@ router.post('/payments/report', async (req, res) => {
           </div>
         </div>
 
-        <!-- HERO BOX (QUIET CONFIDENCE) -->
-        <div class="hero-box">
-          <div class="hero-top-label">NET LIQUIDITY SETTLED</div>
-          <div class="hero-amount">${formatMoney(clientNet)}</div>
-          <div class="hero-ref">REF: SET-20260212-8421</div>
+        <!-- HERO STRIP (QUIET & PREMIUM) -->
+        <div class="hero-strip">
+          <span><b>NET LIQUIDITY SETTLED:</b> <span class="mono">${formatMoney(clientNet)}</span></span>
+          <span><b>REF:</b> <span class="mono">${refId}</span></span>
         </div>
 
         <!-- RECEIPT MATH STRIP -->
