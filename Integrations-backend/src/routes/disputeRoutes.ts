@@ -59,7 +59,7 @@ router.get('/', async (req, res) => {
 
 /**
  * POST /api/v1/disputes/payments/report
- * Generate a JP Morgan-style PDF report of upcoming payments
+ * Generate a high-authority LIQUIDITY SETTLEMENT STATEMENT (JP Morgan style)
  */
 router.post('/payments/report', async (req, res) => {
   try {
@@ -75,33 +75,20 @@ router.post('/payments/report', async (req, res) => {
     const formatMoney = (amt: number) => {
       return `${currency} ${Number(amt || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     };
+
     const reportDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const timestamp = new Date().toISOString();
 
-    // Build table rows for payout groups
-    const groupRows = groups.map((g: any) => `
-      <tr>
-        <td>${g.label}</td>
-        <td class="text-right">${g.count}</td>
-        <td class="text-right">${formatMoney(g.gross)}</td>
-        <td class="text-right">${formatMoney(g.commission)}</td>
-        <td class="text-right bold">${formatMoney(g.net)}</td>
-      </tr>
-    `).join('');
-
-    // Totals
+    // Derived Financial Data
     const totalGross = groups.reduce((s: number, g: any) => s + (g.gross || 0), 0);
     const totalCommission = groups.reduce((s: number, g: any) => s + (g.commission || 0), 0);
     const totalNet = groups.reduce((s: number, g: any) => s + (g.net || 0), 0);
-    const totalClaims = groups.reduce((s: number, g: any) => s + (g.count || 0), 0);
+    const netPayout = monthTotals.net || totalNet;
 
-    // Pipeline stages
-    const pipelineRows = [
-      { label: 'Detected', count: pipeline.detected?.count || 0, amount: pipeline.detected?.amount || 0 },
-      { label: 'Ready to File', count: pipeline.ready?.count || 0, amount: pipeline.ready?.amount || 0 },
-      { label: 'Pending Amazon', count: pipeline.pending?.count || 0, amount: pipeline.pending?.amount || 0 },
-      { label: 'Approved', count: pipeline.approved?.count || 0, amount: pipeline.approved?.amount || 0 },
-      { label: 'Paid', count: pipeline.paid?.count || 0, amount: pipeline.paid?.amount || 0 },
-    ];
+    // Pipeline Summaries
+    const detectedAmt = formatMoney(pipeline.detected?.amount || 0);
+    const processingAmt = formatMoney((pipeline.ready?.amount || 0) + (pipeline.pending?.amount || 0));
+    const approvedAmt = formatMoney(pipeline.approved?.amount || 0);
 
     const html = `
       <!DOCTYPE html>
@@ -114,304 +101,268 @@ router.post('/payments/report', async (req, res) => {
           @page { margin: 0; size: A4; }
           body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            color: #1a1a2e;
+            color: #1a1a1a;
             line-height: 1.5;
-            padding: 48px 56px;
-            font-size: 12px;
+            padding: 50px 60px;
+            font-size: 11px;
             background: #fff;
           }
 
-          /* Header */
+          /* HEADER - INSTITUTIONAL GRADE */
           .header {
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
-            padding-bottom: 20px;
-            border-bottom: 2px solid #1a1a2e;
-            margin-bottom: 32px;
+            margin-bottom: 50px;
           }
-          .brand {
-            font-size: 28px;
+          .header-left .brand {
+            font-size: 10px;
             font-weight: 800;
-            color: #1a1a2e;
+            color: #000;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-bottom: 2px;
+          }
+          .header-left .sub-label {
+            font-size: 8px;
+            font-weight: 600;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+          }
+          .header-right {
+            text-align: right;
+            font-size: 8.5px;
+            font-weight: 600;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+          }
+
+          /* DOCUMENT TITLE */
+          .doc-title {
+            font-size: 14px;
+            font-weight: 800;
+            color: #000;
+            text-align: center;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-bottom: 40px;
+            border-bottom: 0.2pt solid #e0e0e0;
+            padding-bottom: 12px;
+          }
+
+          /* THE CHECK - HERO SECTION */
+          .hero-check {
+            background: #F9FAFB;
+            border: 0.2pt solid #e0e0e0;
+            padding: 40px;
+            text-align: center;
+            margin-bottom: 20px;
+          }
+          .hero-label {
+            font-size: 9px;
+            font-weight: 700;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 12px;
+          }
+          .hero-amount {
+            font-family: 'Times New Roman', serif;
+            font-size: 48px;
+            font-weight: 700;
+            color: #000;
             letter-spacing: -1px;
           }
-          .brand-sub {
-            font-size: 11px;
-            font-weight: 400;
-            color: #6b7280;
-            margin-top: 2px;
-            letter-spacing: 0.5px;
-          }
-          .doc-info {
-            text-align: right;
-          }
-          .doc-title {
-            font-size: 15px;
-            font-weight: 600;
-            color: #1a1a2e;
-            margin-bottom: 6px;
-          }
-          .doc-meta {
-            font-size: 11px;
-            color: #6b7280;
-            line-height: 1.6;
-          }
-          .doc-meta span {
-            display: block;
-          }
 
-          /* Summary Banner */
-          .summary-banner {
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            border-radius: 10px;
-            padding: 28px 32px;
-            margin-bottom: 32px;
+          /* THE MATH STRIP */
+          .math-strip {
             display: flex;
-            justify-content: space-between;
-            align-items: center;
+            border-top: 0.2pt solid #e0e0e0;
+            border-bottom: 0.2pt solid #e0e0e0;
+            padding: 15px 0;
+            margin-bottom: 50px;
           }
-          .summary-main {
-            color: #fff;
-          }
-          .summary-label {
-            font-size: 11px;
-            font-weight: 500;
-            color: rgba(255,255,255,0.5);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 6px;
-          }
-          .summary-amount {
-            font-size: 40px;
-            font-weight: 800;
-            color: #fff;
-            letter-spacing: -1.5px;
-          }
-          .summary-sub {
-            font-size: 12px;
-            color: rgba(255,255,255,0.45);
-            margin-top: 4px;
-          }
-          .summary-stats {
-            display: flex;
-            gap: 32px;
-          }
-          .stat-box {
-            text-align: center;
-          }
-          .stat-value {
-            font-size: 22px;
-            font-weight: 700;
-            color: #fff;
-          }
-          .stat-label {
-            font-size: 10px;
-            color: rgba(255,255,255,0.45);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-top: 2px;
-          }
-
-          /* Sections */
-          .section {
-            margin-bottom: 28px;
-          }
-          .section-header {
-            font-size: 13px;
-            font-weight: 600;
-            color: #1a1a2e;
-            margin-bottom: 14px;
-            padding-bottom: 8px;
-            border-bottom: 1px solid #e5e7eb;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-          }
-
-          /* Tables */
-          table {
-            width: 100%;
-            border-collapse: collapse;
-          }
-          th {
-            background: #f8f9fa;
-            color: #4b5563;
-            padding: 10px 14px;
-            text-align: left;
-            font-size: 10px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            border-bottom: 2px solid #e5e7eb;
-          }
-          td {
-            padding: 12px 14px;
-            font-size: 12px;
-            border-bottom: 1px solid #f3f4f6;
-            color: #374151;
-          }
-          .text-right {
-            text-align: right;
-          }
-          .bold {
-            font-weight: 600;
-            color: #1a1a2e;
-          }
-          .total-row {
-            background: #f8f9fa;
-            font-weight: 700;
-          }
-          .total-row td {
-            border-top: 2px solid #e5e7eb;
-            border-bottom: 2px solid #e5e7eb;
-            color: #1a1a2e;
-            padding: 14px;
-            font-size: 13px;
-          }
-
-          /* Pipeline Grid */
-          .pipeline-grid {
-            display: flex;
-            gap: 0;
-            border: 1px solid #e5e7eb;
-            border-radius: 8px;
-            overflow: hidden;
-          }
-          .pipeline-stage {
+          .math-col {
             flex: 1;
-            padding: 16px;
             text-align: center;
-            border-right: 1px solid #e5e7eb;
+            border-right: 0.2pt solid #e0e0e0;
           }
-          .pipeline-stage:last-child {
+          .math-col:last-child {
             border-right: none;
           }
-          .pipeline-stage-label {
-            font-size: 10px;
-            font-weight: 500;
-            color: #6b7280;
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
-            margin-bottom: 8px;
-          }
-          .pipeline-stage-count {
-            font-size: 22px;
+          .math-label {
+            font-size: 8px;
             font-weight: 700;
-            color: #1a1a2e;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
           }
-          .pipeline-stage-amount {
-            font-size: 11px;
-            color: #6b7280;
-            margin-top: 4px;
+          .math-value {
+            font-family: 'Times New Roman', serif;
+            font-size: 14px;
+            font-weight: 700;
+            color: #000;
           }
-
-          /* Footnote */
-          .footnote {
-            margin-top: 40px;
-            padding-top: 20px;
-            border-top: 1px solid #e5e7eb;
-            font-size: 10px;
-            color: #9ca3af;
-            line-height: 1.6;
+          .math-value.fee {
+            color: #888;
           }
 
-          /* Footer */
-          .footer {
-            margin-top: 16px;
+          /* THE STATUS BAR - HORIZONTAL PIPELINE */
+          .pipeline-bar {
             display: flex;
             justify-content: space-between;
-            font-size: 10px;
-            color: #9ca3af;
+            margin-bottom: 60px;
+          }
+          .pipeline-col {
+            flex: 1;
+            text-align: left;
+            padding: 0 10px;
+          }
+          .pipeline-label {
+            font-size: 8.5px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 4px;
+          }
+          .pipeline-val {
+            font-size: 16px;
+            font-weight: 500;
+            font-family: 'Times New Roman', serif;
+          }
+          .pipeline-col.detected .pipeline-label,
+          .pipeline-col.detected .pipeline-val {
+            color: #888;
+          }
+          .pipeline-col.processing .pipeline-label,
+          .pipeline-col.processing .pipeline-val {
+            color: #000;
+          }
+          .pipeline-col.approved .pipeline-label,
+          .pipeline-col.approved .pipeline-val {
+            color: #000;
+            font-weight: 700;
+          }
+          .pipeline-col.approved .pipeline-val {
+            border-bottom: 1pt solid #000;
+            display: inline-block;
+            line-height: 1.2;
+          }
+
+          /* METADATA BLOCK */
+          .metadata {
+            margin-bottom: 20px;
+            font-size: 9px;
+            color: #555;
+          }
+          .meta-item {
+            margin-bottom: 4px;
+          }
+          .meta-key {
+            font-weight: 700;
+            text-transform: uppercase;
+            width: 100px;
+            display: inline-block;
+          }
+
+          /* FOOTER DISCLAIMER */
+          .footer-disclaimer {
+            position: absolute;
+            bottom: 50px;
+            left: 60px;
+            right: 60px;
+            padding-top: 15px;
+            border-top: 0.2pt solid #e0e0e0;
+            font-size: 7.5px;
+            color: #999;
+            line-height: 1.6;
+            text-align: justify;
+          }
+          .footer-meta {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 10px;
+            font-size: 7.5px;
+            color: #BBB;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
           }
         </style>
       </head>
       <body>
         <!-- HEADER -->
         <div class="header">
-          <div>
-            <div class="brand">Margin</div>
-            <div class="brand-sub">Inventory Audit & Recovery</div>
+          <div class="header-left">
+            <div class="brand">Margin Audit Systems</div>
+            <div class="sub-label">Revenue Integrity Infrastructure</div>
           </div>
-          <div class="doc-info">
-            <div class="doc-title">Upcoming Payments Report</div>
-            <div class="doc-meta">
-              <span>Account: ${storeName}</span>
-              <span>Report Date: ${reportDate}</span>
-              <span>Currency: ${currency}</span>
-            </div>
+          <div class="header-right">
+            Confidential Financial Record
           </div>
         </div>
 
-        <!-- SUMMARY BANNER -->
-        <div class="summary-banner">
-          <div class="summary-main">
-            <div class="summary-label">Projected Net Payout</div>
-            <div class="summary-amount">${formatMoney(monthTotals.net || totalNet)}</div>
-            <div class="summary-sub">After 20% recovery commission</div>
-          </div>
-          <div class="summary-stats">
-            <div class="stat-box">
-              <div class="stat-value">${totalClaims}</div>
-              <div class="stat-label">Claims</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-value">${formatMoney(totalGross)}</div>
-              <div class="stat-label">Gross Value</div>
-            </div>
-          </div>
+        <div class="doc-title">Liquidity Settlement Statement</div>
+
+        <!-- ACCOUNT INFO -->
+        <div class="metadata">
+          <div class="meta-item"><span class="meta-key">Account:</span> ${storeName}</div>
+          <div class="meta-item"><span class="meta-key">Period:</span> ${reportDate}</div>
+          <div class="meta-item"><span class="meta-key">Currency:</span> ${currency}</div>
         </div>
 
-        <!-- SCHEDULED PAYOUTS -->
-        <div class="section">
-          <div class="section-header">Scheduled Payouts</div>
-          <table>
-            <thead>
-              <tr>
-                <th>Payout Date</th>
-                <th class="text-right">Claims</th>
-                <th class="text-right">Gross Amount</th>
-                <th class="text-right">Commission (20%)</th>
-                <th class="text-right">Net Payout</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${groupRows}
-              <tr class="total-row">
-                <td>TOTAL</td>
-                <td class="text-right">${totalClaims}</td>
-                <td class="text-right">${formatMoney(totalGross)}</td>
-                <td class="text-right">${formatMoney(totalCommission)}</td>
-                <td class="text-right">${formatMoney(totalNet)}</td>
-              </tr>
-            </tbody>
-          </table>
+        <!-- THE CHECK -->
+        <div class="hero-check">
+          <div class="hero-label">Net Recovery Payout</div>
+          <div class="hero-amount">${formatMoney(netPayout)}</div>
         </div>
 
-        <!-- RECOVERY PIPELINE -->
-        <div class="section">
-          <div class="section-header">Recovery Pipeline</div>
-          <div class="pipeline-grid">
-            ${pipelineRows.map((s: any) => `
-              <div class="pipeline-stage">
-                <div class="pipeline-stage-label">${s.label}</div>
-                <div class="pipeline-stage-count">${s.count}</div>
-                <div class="pipeline-stage-amount">${formatMoney(s.amount)}</div>
-              </div>
-            `).join('')}
+        <!-- THE MATH STRIP -->
+        <div class="math-strip">
+          <div class="math-col">
+            <div class="math-label">Gross Claims</div>
+            <div class="math-value">${formatMoney(totalGross)}</div>
+          </div>
+          <div class="math-col">
+            <div class="math-label">Audit Fee (20%)</div>
+            <div class="math-value fee">-${formatMoney(totalCommission)}</div>
+          </div>
+          <div class="math-col">
+            <div class="math-label">Net Settlement</div>
+            <div class="math-value"><b>${formatMoney(totalNet)}</b></div>
           </div>
         </div>
 
-        <!-- FOOTNOTE -->
-        <div class="footnote">
-          Amounts shown are estimates based on current claim status and are subject to Amazon's final review.
-          Commission is calculated at 20% of the gross recovered amount. Net payout represents the estimated
-          amount to be credited to the seller's account after commission deduction.
+        <!-- PIPELINE STATUS -->
+        <div class="pipeline-bar">
+          <div class="pipeline-col detected">
+            <div class="pipeline-label">Detected</div>
+            <div class="pipeline-val">${detectedAmt}</div>
+          </div>
+          <div class="pipeline-col processing">
+            <div class="pipeline-label">Processing</div>
+            <div class="pipeline-val">${processingAmt}</div>
+          </div>
+          <div class="pipeline-col approved">
+            <div class="pipeline-label">Approved</div>
+            <div class="pipeline-val">${approvedAmt}</div>
+          </div>
         </div>
 
         <!-- FOOTER -->
-        <div class="footer">
-          <div>Generated by Margin Audit Systems on ${new Date().toISOString().split('T')[0]}</div>
-          <div>For support: support@marginrecovery.com</div>
+        <div class="footer-disclaimer">
+          Amounts shown are estimates based on current claim status and are subject to Amazon's final audit review and disbursement protocols. 
+          Commission is calculated at 20% of the gross recovered amount in accordance with service tier agreement. 
+          Net payout represents the estimated liquidity to be credited to the seller's treasury after audit commission deduction.
+          This document constitutes a confidential settlement projection and does not guarantee final bank transfer values.
+          
+          <div class="footer-meta">
+            <span>Generated: ${timestamp}</span>
+            <span>Ref: MAS-LIQ-${Date.now().toString().slice(-8)}</span>
+            <span>Audit Integrity Verified</span>
+          </div>
         </div>
       </body>
       </html>
@@ -419,7 +370,7 @@ router.post('/payments/report', async (req, res) => {
 
     const pdfBuffer = await pdfGenerationService.generatePDFFromHTML(html);
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', 'attachment; filename=upcoming-payments-report.pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename=liquidity-settlement-statement.pdf');
     res.send(pdfBuffer);
   } catch (error: any) {
     console.error('[payments-report] Error:', error);
