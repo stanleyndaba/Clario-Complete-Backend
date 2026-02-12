@@ -59,8 +59,8 @@ router.get('/', async (req, res) => {
 
 /**
  * POST /api/v1/disputes/payments/report
- * Generate a high-authority SETTLEMENT & FORECAST (Merged & Optimized V3)
- * Focused on institutional trust and executive reporting.
+ * Generate a high-authority SETTLEMENT & FORECAST (Bank Statement V4)
+ * Stripped of all fluff. Pure financial authority.
  */
 router.post('/payments/report', async (req, res) => {
   try {
@@ -77,27 +77,22 @@ router.post('/payments/report', async (req, res) => {
       return `${currency} ${Number(amt || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     };
 
-    const settlementDate = "February 12, 2026";
     const refId = `SET-20260212-8421`;
     const manifestId = `MAS-SET-8421`;
 
     // Financial Data for 80/20 Split
-    const totalGross = groups.reduce((s: number, g: any) => s + (g.gross || 0), 0) || 13142.10;
-    const auditFee = totalGross * 0.2;
-    const clientNet = totalGross * 0.8;
+    const totalGross = 38803.49; // Matching user spec exact numbers
+    const auditFee = 7760.70;
+    const clientNet = 31042.79;
 
     // Pipeline Data
     const underReviewAmt = pipeline.pending?.amount || 5291.97;
     const justFiledAmt = (pipeline.ready?.amount || 0) + (pipeline.detected?.amount || 20369.42);
-    const totalPipelineFiled = totalGross + underReviewAmt + justFiledAmt;
     const activePipeline = underReviewAmt + justFiledAmt;
 
     // Performance Metrics (Institutional Stats)
     const winRate = "94.2%";
-    const procTime = "11 days";
-    const monthTotal = 23847.29;
-    const annualRecovery = monthTotal * 12;
-    const annualSavings = annualRecovery * 0.8;
+    const annualSavings = "228,933.98"; // Matching user spec
 
     const html = `
       <!DOCTYPE html>
@@ -117,140 +112,108 @@ router.post('/payments/report', async (req, res) => {
             background: #fff;
           }
 
-          /* HEADER BOX */
-          .header-box {
-            border: 0.8pt solid #000;
-            padding: 20px;
-            text-align: center;
-            margin-bottom: 30px;
-          }
-          .header-box .brand {
-            font-size: 14px;
-            font-weight: 800;
-            color: #000;
-            letter-spacing: 4px;
-            text-transform: uppercase;
-            margin-bottom: 5px;
-          }
-          .header-box .sub-label {
-            font-size: 9px;
-            font-weight: 600;
-            color: #666;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-          }
-
-          /* ACCOUNT METADATA ROW */
-          .meta-row {
+          /* HEADER - BRAND CONSISTENCY */
+          .header {
             display: flex;
             justify-content: space-between;
-            border-top: 0.4pt solid #000;
-            border-bottom: 0.4pt solid #000;
-            padding: 12px 0;
-            margin-bottom: 25px;
-            font-size: 8.5px;
+            align-items: flex-start;
+            margin-bottom: 40px;
+          }
+          .brand-block .brand {
+            font-size: 12px;
+            font-weight: 800;
+            color: #000;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+          }
+          .brand-block .sub-label {
+            font-size: 8px;
+            font-weight: 600;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 2px;
+          }
+          .doc-info {
+            text-align: right;
+            font-size: 9px;
             text-transform: uppercase;
             font-weight: 600;
+            color: #555;
             letter-spacing: 0.5px;
           }
-          .meta-item span { color: #888; margin-right: 8px; font-weight: 700; }
+          .doc-title { font-weight: 800; color: #000; margin-bottom: 2px; }
 
-          /* INTRO TEXT */
-          .intro {
-            margin-bottom: 30px;
-            font-size: 10px;
-            color: #444;
+          /* HERO BOX - THE "MONEY" BOX */
+          .hero-box {
+            background: #F5F5F5;
+            padding: 45px 50px;
+            text-align: center;
+            margin-bottom: 40px;
           }
-          .intro b { color: #000; font-size: 11px; }
-
-          /* SECTION TITLE */
-          .section-title {
+          .hero-top-label {
             font-size: 10px;
-            font-weight: 800;
+            font-weight: 700;
+            color: #888;
             text-transform: uppercase;
             letter-spacing: 1.5px;
-            color: #000;
-            margin-bottom: 12px;
-            border-bottom: 0.2pt solid #eee;
-            padding-bottom: 6px;
+            margin-bottom: 20px;
           }
-
-          /* THE LEDGER (MONEY RECOVERED) */
-          .ledger-container {
-            margin-bottom: 40px;
-          }
-          .ledger-top {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-end;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-          }
-          .ledger-label {
-            font-size: 9px;
-            font-weight: 700;
-            color: #888;
-            text-transform: uppercase;
-          }
-          .ledger-amount {
+          .hero-amount {
             font-family: 'Times New Roman', serif;
-            font-size: 32px;
+            font-size: 40pt;
             font-weight: 700;
             color: #000;
+            line-height: 1;
           }
-          .ledger-math {
-            border-top: 0.2pt solid #e0e0e0;
-            padding-top: 12px;
-            font-size: 9.5px;
-          }
-          .math-line {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 4px;
-            color: #555;
-          }
-          .math-line.bold { font-weight: 700; color: #000; }
-          .math-line.payout {
-            margin-top: 10px;
-            padding-top: 10px;
-            border-top: 0.2pt solid #eee;
-            font-size: 11px;
+          .hero-ref {
+            font-family: monospace;
+            font-size: 9px;
+            color: #AAA;
+            text-transform: uppercase;
+            margin-top: 20px;
+            letter-spacing: 0.5px;
           }
 
-          /* PIPELINE GRID (UNDER REVIEW / RECENTLY DETECTED) */
-          .pipeline-grid {
+          /* HORIZONTAL MATH STRIP */
+          .math-strip {
             display: flex;
-            gap: 40px;
-            margin-bottom: 40px;
+            border-top: 0.2pt solid #000;
+            border-bottom: 0.2pt solid #000;
+            padding: 20px 0;
+            margin-bottom: 45px;
           }
-          .p-col { flex: 1; }
-          .p-header {
+          .math-col {
+            flex: 1;
+            text-align: center;
+          }
+          .math-label {
             font-size: 8.5px;
             font-weight: 700;
             color: #888;
             text-transform: uppercase;
+            letter-spacing: 0.5px;
             margin-bottom: 8px;
           }
-          .p-value {
+          .math-val {
             font-family: 'Times New Roman', serif;
-            font-size: 20px;
-            font-weight: 600;
-            color: #1a1a1a;
+            font-size: 18px;
+            font-weight: 700;
+            color: #000;
           }
-          .p-breakdown {
-            margin-top: 8px;
-            font-size: 8px;
-            color: #999;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-          }
-          .p-breakdown div { margin-bottom: 2px; }
+          .math-val.grey { color: #888; }
 
-          /* TOTAL PIPELINE SUMMARY */
+          /* PIPELINE SECTORS (SUBDUED) */
+          .section-title {
+            font-size: 9.5px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #000;
+            margin-bottom: 12px;
+          }
           .pipeline-summary {
-            background: #fafafa;
-            padding: 20px;
-            margin-bottom: 40px;
+            margin-bottom: 45px;
           }
           .summary-line {
             display: flex;
@@ -258,185 +221,121 @@ router.post('/payments/report', async (req, res) => {
             margin-bottom: 6px;
             font-size: 9px;
             color: #666;
+            border-bottom: 0.1pt solid #eee;
+            padding-bottom: 4px;
           }
-          .summary-line.divider {
-            border-top: 0.2pt solid #e0e0e0;
-            margin: 10px 0;
+          .summary-line.bold {
+            font-weight: 800;
+            color: #000;
+            border-bottom: none;
             padding-top: 10px;
+          }
+
+          /* "WHALE STATS" RETENTION FOOTER */
+          .retention-foot {
+            border: 1.5pt double #000;
+            padding: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 60px;
+          }
+          .whale-item {
+            display: flex;
+            flex-direction: column;
+          }
+          .whale-label {
+            font-size: 9px;
             font-weight: 800;
             color: #000;
             text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 5px;
           }
-
-          /* PERFORMANCE BOX */
-          .perf-box {
-            border: 1pt solid #000;
-            padding: 30px;
-            margin-bottom: 40px;
-          }
-          .perf-grid {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 30px 60px;
-          }
-          .perf-item {
-            min-width: 140px;
-          }
-          .perf-label {
-            font-size: 8px;
-            font-weight: 700;
-            color: #888;
-            text-transform: uppercase;
-            margin-bottom: 4px;
-          }
-          .perf-val {
+          .whale-val {
             font-family: 'Times New Roman', serif;
-            font-size: 16px;
+            font-size: 22px;
             font-weight: 700;
             color: #000;
           }
-          .perf-val.large { font-size: 20px; }
 
-          /* FOOTER ACTIONS */
-          .footer-actions {
-            font-size: 9px;
-            color: #444;
-            margin-bottom: 50px;
-          }
-          .action-block { margin-bottom: 20px; }
-          .action-link { font-weight: 700; color: #000; text-decoration: underline; }
-
-          /* LEGAL FOOTER */
-          .legal-footer {
-            border-top: 0.5pt solid #eee;
-            padding-top: 15px;
+          /* SYSTEM FOOTER */
+          .system-foot {
+            position: absolute;
+            bottom: 45px;
+            left: 60px;
+            right: 60px;
             text-align: center;
             font-size: 7.5px;
-            color: #999;
+            color: #BBB;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 1px;
+            border-top: 0.2pt solid #eee;
+            padding-top: 15px;
           }
         </style>
       </head>
       <body>
-        <!-- HEADER BOX -->
-        <div class="header-box">
-          <div class="brand">Margin Recovery</div>
-          <div class="sub-label">Official Payment Summary & Forecast</div>
-        </div>
-
-        <!-- METADATA ROW -->
-        <div class="meta-row">
-          <div class="meta-item"><span>Account:</span> ${storeName}</div>
-          <div class="meta-item"><span>Period:</span> Feb 1-12, 2026</div>
-          <div class="meta-item"><span>Merchant:</span> OPSIDE_GLOBAL_LLC</div>
-          <div class="meta-item"><span>Date:</span> February 12, 2026</div>
-        </div>
-
-        <!-- INTRO -->
-        <div class="intro">
-          Hello <b>Seller</b>,<br><br>
-          Here's what happened with your Amazon account this week. 
-          We've recovered money for you, and we have more in progress.
-        </div>
-
-        <!-- MONEY RECOVERED SECTION -->
-        <div class="section-title">Money Recovered & Paid to You</div>
-        <div class="ledger-container">
-          <div class="ledger-top">
-            <div class="ledger-label">Settled this period</div>
-            <div class="ledger-amount">${formatMoney(totalGross)}</div>
+        <!-- HEADER -->
+        <div class="header">
+          <div class="brand-block">
+            <div class="brand">Margin Audit Systems</div>
+            <div class="sub-label">Revenue Integrity Infrastructure</div>
           </div>
-          <div class="ledger-math">
-            <div class="math-line"><span>Your 80% Share</span> <span>${formatMoney(clientNet)}</span></div>
-            <div class="math-line"><span>Margin Service Fee (20%)</span> <span>${formatMoney(auditFee)}</span></div>
-            <div class="math-line payout bold">
-              <span>Paid to your Amazon Account</span>
-              <span>${formatMoney(clientNet)}</span>
-            </div>
-            <div class="p-breakdown" style="padding-top:8px;">
-              <div>Settlement Date: ${settlementDate}</div>
-              <div>Reference: ${refId}</div>
-            </div>
+          <div class="doc-info">
+            <div class="doc-title">Settlement & Forecast</div>
+            <div>Period: Feb 1-12, 2026</div>
           </div>
         </div>
 
-        <!-- IN PROGRESS SECTION -->
-        <div class="section-title">In Progress (Pending Amazon Review)</div>
-        <div class="pipeline-grid">
-          <div class="p-col">
-            <div class="p-header">Under Review (7-14 Days)</div>
-            <div class="p-value">${formatMoney(underReviewAmt)}</div>
-            <div class="p-breakdown">
-              <div>Potential Share: ${formatMoney(underReviewAmt * 0.8)}</div>
-              <div>Margin Fee (20%): ${formatMoney(underReviewAmt * 0.2)}</div>
-            </div>
+        <!-- HERO BOX (NET LIQUIDITY SETTLED) -->
+        <div class="hero-box">
+          <div class="hero-top-label">NET LIQUIDITY SETTLED (PAID TO AMAZON BALANCE)</div>
+          <div class="hero-amount">${currency} ${clientNet.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+          <div class="hero-ref">Ref: SET-20260212-8421</div>
+        </div>
+
+        <!-- HORIZONTAL MATH STRIP -->
+        <div class="math-strip">
+          <div class="math-col">
+            <div class="math-label">GROSS RECOVERY</div>
+            <div class="math-val">${formatMoney(totalGross)}</div>
           </div>
-          <div class="p-col">
-            <div class="p-header">Recently Detected (Filing)</div>
-            <div class="p-value">${formatMoney(justFiledAmt)}</div>
-            <div class="p-breakdown">
-              <div>Potential Share: ${formatMoney(justFiledAmt * 0.8)}</div>
-              <div>Margin Fee (20%): ${formatMoney(justFiledAmt * 0.2)}</div>
-            </div>
+          <div class="math-col">
+            <div class="math-label">AUDIT COMMISSION 20%</div>
+            <div class="math-val grey">-${formatMoney(auditFee)}</div>
+          </div>
+          <div class="math-col">
+            <div class="math-label">NET TRANSFER</div>
+            <div class="math-val">${formatMoney(clientNet)}</div>
           </div>
         </div>
 
-        <!-- TOTAL PIPELINE VALUE -->
-        <div class="section-title">Total Pipeline Value</div>
+        <!-- PIPELINE STATUS -->
+        <div class="section-title">ACTIVE RECOVERY PIPELINE</div>
         <div class="pipeline-summary">
-          <div class="summary-line"><span>Total Claims Filed This Period</span> <span>${formatMoney(totalPipelineFiled)}</span></div>
-          <div class="summary-line"><span>Approved & Settled</span> <span>${formatMoney(totalGross)}</span></div>
-          <div class="summary-line"><span>Pending Amazon Review</span> <span>${formatMoney(underReviewAmt)}</span></div>
-          <div class="summary-line"><span>Recently Filed</span> <span>${formatMoney(justFiledAmt)}</span></div>
-          <div class="summary-line divider"><span>Active Pipeline (Processing + Detected)</span> <span>${formatMoney(activePipeline)}</span></div>
-          <div class="summary-line divider"><span>Total Potential Value (Paid + Pipeline)</span> <span>${formatMoney(totalGross + activePipeline)}</span></div>
+          <div class="summary-line"><span>Account ID</span> <span>${storeName}</span></div>
+          <div class="summary-line"><span>Pending Amazon Decision (Under Review)</span> <span>${formatMoney(underReviewAmt)}</span></div>
+          <div class="summary-line"><span>New Claims Detected (Awaiting Processing)</span> <span>${formatMoney(justFiledAmt)}</span></div>
+          <div class="summary-line bold"><span>Total Potenial Asset Value</span> <span>${formatMoney(clientNet + activePipeline)}</span></div>
         </div>
 
-        <!-- PERFORMANCE METRICS -->
-        <div class="section-title">Performance Metrics (This Account)</div>
-        <div class="perf-box">
-          <div class="perf-grid">
-            <div class="perf-item">
-              <div class="perf-label">Claims Approval Rate</div>
-              <div class="perf-val">${winRate}</div>
-            </div>
-            <div class="perf-item">
-              <div class="perf-label">Avg Processing Time</div>
-              <div class="perf-val">${procTime}</div>
-            </div>
-            <div class="perf-item">
-              <div class="perf-label">Month Total (Feb)</div>
-              <div class="perf-val">${formatMoney(monthTotal)}</div>
-            </div>
-            <div class="perf-item">
-              <div class="perf-label">Projected Annual Recovery</div>
-              <div class="perf-val large">${formatMoney(annualRecovery)}</div>
-            </div>
-            <div class="perf-item">
-              <div class="perf-label">Est. Annual Savings (80%)</div>
-              <div class="perf-val large" style="color:#000;">${formatMoney(annualSavings)}</div>
-            </div>
+        <!-- "WHALE STATS" RETENTION HOOK -->
+        <div class="retention-foot">
+          <div class="whale-item">
+            <div class="whale-label">CURRENT WIN RATE</div>
+            <div class="whale-val">${winRate}</div>
+          </div>
+          <div class="whale-item" style="text-align: right;">
+            <div class="whale-label">PROJECTED ANNUAL SAVINGS</div>
+            <div class="whale-val">${currency} ${annualSavings}</div>
           </div>
         </div>
 
-        <!-- FOOTER ACTIONS -->
-        <div class="footer-actions">
-          <div class="action-block">
-            <div class="p-header">View Detailed Claim Breakdown</div>
-            <div class="action-link">https://app.margin.com/account/settlements/2026-02-12</div>
-          </div>
-          <div class="action-block">
-            <div class="p-header">Questions?</div>
-            <div>Reply to this email or contact us at <b>support@margin.com</b></div>
-            <div class="p-breakdown">We typically respond within 2-4 hours.</div>
-          </div>
-        </div>
-
-        <div class="legal-footer">
-          Margin Recovery (PTY) LTD | Forensic FBA Recovery Specialists<br>
-          This document is an official statement of recoveries processed on your behalf.
-          Manifest ID: ${manifestId} | Institutional Grade Asset Integrity Verified
+        <!-- LEGAL FOOTER -->
+        <div class="system-foot">
+          Margin Audit Systems | Forensic FBA Recovery Specialists<br>
+          Manifest ID: ${manifestId} | Institutional Grade Asset Integrity Verified | Ref: forensic-settlement-extraction
         </div>
       </body>
       </html>
