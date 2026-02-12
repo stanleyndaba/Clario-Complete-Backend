@@ -162,8 +162,8 @@ router.post('/payments/report', async (req, res) => {
           /* RECEIPT STYLE MATH STRIP */
           .math-strip {
             display: flex;
-            border-top: 0.1pt solid #000;
-            border-bottom: 0.1pt solid #000;
+            border-top: 0.05pt solid #000;
+            border-bottom: 0.05pt solid #000;
             padding: 10px 0;
             margin-bottom: 40px;
           }
@@ -223,13 +223,11 @@ router.post('/payments/report', async (req, res) => {
             margin-bottom: 40px;
           }
           .projections-title {
-            font-size: 10px;
+            font-size: 11px;
             font-weight: 800;
             color: #000;
-            text-transform: uppercase;
-            letter-spacing: 1.5px;
             margin-bottom: 20px;
-            border-bottom: 0.2pt solid #eee;
+            border-bottom: 0.1pt solid #eee;
             padding-bottom: 8px;
             width: 100%;
           }
@@ -244,7 +242,7 @@ router.post('/payments/report', async (req, res) => {
 
           /* SYSTEM FOOTER */
           .system-foot {
-            margin-top: 40px;
+            margin-top: 80px;
             text-align: center;
             font-size: 7px;
             color: #BBB;
@@ -301,9 +299,9 @@ router.post('/payments/report', async (req, res) => {
 
         <!-- PROJECTIONS (CLEAN VERTICAL) -->
         <div class="projections-section">
-          <div class="projections-title">PROJECTIONS</div>
-          <div class="projection-item">CURRENT WIN RATE - <span class="mono">${winRate}</span></div>
-          <div class="projection-item">PROJECTED ANNUAL SAVINGS - <span class="mono">${formatMoney(Number(annualSavings.replace(/,/g, '')))}</span></div>
+          <div class="projections-title">Projections</div>
+          <div class="projection-item">Current Win Rate - <span class="mono">${winRate}</span></div>
+          <div class="projection-item">Projected Annual Savings - <span class="mono">${formatMoney(Number(annualSavings.replace(/,/g, '')))}</span></div>
         </div>
 
         <!-- LEGAL FOOTER -->
