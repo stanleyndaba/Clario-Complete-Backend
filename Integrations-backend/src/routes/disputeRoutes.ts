@@ -155,7 +155,6 @@ router.post('/payments/report', async (req, res) => {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border: 0.2pt solid #eee;
           }
           .hero-strip b { font-weight: 800; letter-spacing: 0.5px; }
           .hero-strip .mono { font-family: 'Roboto Mono', monospace; font-size: 11px; }
@@ -219,8 +218,9 @@ router.post('/payments/report', async (req, res) => {
 
           /* PROJECTIONS SECTION - CLEAN VERTICAL */
           .projections-section {
+            font-family: 'Inter', sans-serif;
             margin-top: 50px;
-            margin-bottom: 50px;
+            margin-bottom: 40px;
           }
           .projections-title {
             font-size: 10px;
@@ -234,6 +234,7 @@ router.post('/payments/report', async (req, res) => {
             width: 100%;
           }
           .projection-item {
+            font-family: 'Inter', sans-serif;
             font-size: 11px;
             margin-bottom: 12px;
             color: #333;
@@ -243,10 +244,7 @@ router.post('/payments/report', async (req, res) => {
 
           /* SYSTEM FOOTER */
           .system-foot {
-            position: absolute;
-            bottom: 45px;
-            left: 60px;
-            right: 60px;
+            margin-top: 40px;
             text-align: center;
             font-size: 7px;
             color: #BBB;
