@@ -935,8 +935,8 @@ export class DisputeService {
             }
             .letterhead-title {
               font-size: 11px;
-              font-weight: 700;
-              letter-spacing: 3px;
+              font-weight: 900;
+              letter-spacing: 5px;
               text-transform: uppercase;
               color: #1a1a1a;
               line-height: 1.2;
@@ -945,7 +945,6 @@ export class DisputeService {
               font-size: 7.5px;
               font-weight: 500;
               letter-spacing: 1.5px;
-              text-transform: uppercase;
               color: #888;
               margin-top: 2px;
             }
@@ -1243,8 +1242,8 @@ export class DisputeService {
           <!-- LETTERHEAD -->
           <div class="letterhead">
             <div class="letterhead-left">
-              <div class="letterhead-title">Margin Audit Systems</div>
-              <div class="letterhead-sub">Revenue Integrity Infrastructure</div>
+              <div class="letterhead-title">MARGIN</div>
+              <div class="letterhead-sub">The Margin Group</div>
             </div>
             <div class="letterhead-right">
               <div class="letterhead-status">Confidential Claim Filing</div>

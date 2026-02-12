@@ -122,16 +122,15 @@ router.post('/payments/report', async (req, res) => {
           }
           .brand-block .brand {
             font-size: 12px;
-            font-weight: 800;
+            font-weight: 900;
             color: #000;
-            letter-spacing: 2px;
+            letter-spacing: 5px;
             text-transform: uppercase;
           }
           .brand-block .sub-label {
             font-size: 8px;
             font-weight: 600;
             color: #888;
-            text-transform: uppercase;
             letter-spacing: 0.5px;
             margin-top: 2px;
           }
@@ -257,8 +256,8 @@ router.post('/payments/report', async (req, res) => {
         <!-- HEADER -->
         <div class="header">
           <div class="brand-block">
-            <div class="brand">Margin Audit Systems</div>
-            <div class="sub-label">Revenue Integrity Infrastructure</div>
+            <div class="brand">MARGIN</div>
+            <div class="sub-label">The Margin Group</div>
           </div>
           <div class="doc-info">
             <div class="doc-title">Settlement & Forecast</div>
