@@ -179,10 +179,10 @@ router.post('/payments/report', async (req, res) => {
           /* RECEIPT STYLE MATH STRIP */
           .math-strip {
             display: flex;
-            border-top: 0.2pt solid #000;
-            border-bottom: 0.2pt solid #000;
-            padding: 24px 0;
-            margin-bottom: 45px;
+            border-top: 0.1pt solid #000;
+            border-bottom: 0.1pt solid #000;
+            padding: 10px 0;
+            margin-bottom: 40px;
           }
           .math-col {
             flex: 1;
