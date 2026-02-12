@@ -59,8 +59,8 @@ router.get('/', async (req, res) => {
 
 /**
  * POST /api/v1/disputes/payments/report
- * Generate a high-authority SETTLEMENT & FORECAST (Bank Statement V4)
- * Stripped of all fluff. Pure financial authority.
+ * Generate a high-authority SETTLEMENT & FORECAST (Reporting V5)
+ * "Quiet Confidence" - Terminal/Receipt aesthetic.
  */
 router.post('/payments/report', async (req, res) => {
   try {
@@ -69,19 +69,20 @@ router.post('/payments/report', async (req, res) => {
       groups = [],
       pipeline = {},
       monthTotals = {},
-      currency = 'USD',
-      storeName = 'Seller Account #A123BCDE999X',
+      currency = 'USD', // Still use USD internal, but format with $
+      storeName = 'Account #A123BCDE999X',
     } = req.body;
 
     const formatMoney = (amt: number) => {
-      return `${currency} ${Number(amt || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      // Receipt style: $X,XXX.XX (No "USD" repeat)
+      return `$${Number(amt || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     };
 
     const refId = `SET-20260212-8421`;
     const manifestId = `MAS-SET-8421`;
 
-    // Financial Data for 80/20 Split
-    const totalGross = 38803.49; // Matching user spec exact numbers
+    // Exact financial values from user spec
+    const totalGross = 38803.49;
     const auditFee = 7760.70;
     const clientNet = 31042.79;
 
@@ -92,7 +93,7 @@ router.post('/payments/report', async (req, res) => {
 
     // Performance Metrics (Institutional Stats)
     const winRate = "94.2%";
-    const annualSavings = "228,933.98"; // Matching user spec
+    const annualSavings = "228,933.98";
 
     const html = `
       <!DOCTYPE html>
@@ -100,12 +101,12 @@ router.post('/payments/report', async (req, res) => {
       <head>
         <meta charset="UTF-8">
         <style>
-          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Roboto+Mono:wght@400;500;700&display=swap');
 
           @page { margin: 0; size: A4; }
           body {
             font-family: 'Inter', sans-serif;
-            color: #1a1a1a;
+            color: #333333; /* Dark Charcoal base */
             line-height: 1.5;
             padding: 60px;
             font-size: 11px;
@@ -144,43 +145,43 @@ router.post('/payments/report', async (req, res) => {
           }
           .doc-title { font-weight: 800; color: #000; margin-bottom: 2px; }
 
-          /* HERO BOX - THE "MONEY" BOX */
+          /* QUIET HERO BOX - THE "REPORTING" BOX */
           .hero-box {
             background: #F5F5F5;
-            padding: 45px 50px;
+            padding: 50px 0;
             text-align: center;
             margin-bottom: 40px;
           }
           .hero-top-label {
-            font-size: 10px;
+            font-size: 9px;
             font-weight: 700;
             color: #888;
             text-transform: uppercase;
-            letter-spacing: 1.5px;
+            letter-spacing: 2px;
             margin-bottom: 20px;
           }
           .hero-amount {
-            font-family: 'Times New Roman', serif;
-            font-size: 40pt;
-            font-weight: 700;
-            color: #000;
-            line-height: 1;
+            font-family: 'Roboto Mono', monospace;
+            font-size: 32pt;
+            font-weight: 500;
+            color: #333333; /* Dark Charcoal */
+            letter-spacing: -1px;
           }
           .hero-ref {
-            font-family: monospace;
-            font-size: 9px;
+            font-family: 'Roboto Mono', monospace;
+            font-size: 8px;
             color: #AAA;
             text-transform: uppercase;
             margin-top: 20px;
-            letter-spacing: 0.5px;
+            letter-spacing: 1px;
           }
 
-          /* HORIZONTAL MATH STRIP */
+          /* RECEIPT STYLE MATH STRIP */
           .math-strip {
             display: flex;
             border-top: 0.2pt solid #000;
             border-bottom: 0.2pt solid #000;
-            padding: 20px 0;
+            padding: 24px 0;
             margin-bottom: 45px;
           }
           .math-col {
@@ -188,29 +189,29 @@ router.post('/payments/report', async (req, res) => {
             text-align: center;
           }
           .math-label {
-            font-size: 8.5px;
+            font-size: 8px;
             font-weight: 700;
-            color: #888;
+            color: #999;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 8px;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
           }
           .math-val {
-            font-family: 'Times New Roman', serif;
-            font-size: 18px;
-            font-weight: 700;
-            color: #000;
+            font-family: 'Roboto Mono', monospace;
+            font-size: 11pt;
+            font-weight: 400; /* Regular weight */
+            color: #333333;
           }
           .math-val.grey { color: #888; }
 
           /* PIPELINE SECTORS (SUBDUED) */
           .section-title {
-            font-size: 9.5px;
+            font-size: 9px;
             font-weight: 800;
             text-transform: uppercase;
             letter-spacing: 1px;
             color: #000;
-            margin-bottom: 12px;
+            margin-bottom: 15px;
           }
           .pipeline-summary {
             margin-bottom: 45px;
@@ -218,11 +219,11 @@ router.post('/payments/report', async (req, res) => {
           .summary-line {
             display: flex;
             justify-content: space-between;
-            margin-bottom: 6px;
+            margin-bottom: 8px;
             font-size: 9px;
             color: #666;
             border-bottom: 0.1pt solid #eee;
-            padding-bottom: 4px;
+            padding-bottom: 5px;
           }
           .summary-line.bold {
             font-weight: 800;
@@ -230,8 +231,9 @@ router.post('/payments/report', async (req, res) => {
             border-bottom: none;
             padding-top: 10px;
           }
+          .mono { font-family: 'Roboto Mono', monospace; }
 
-          /* "WHALE STATS" RETENTION FOOTER */
+          /* RETENTION FOOTER (REFINED) */
           .retention-foot {
             border: 1.5pt double #000;
             padding: 30px;
@@ -250,13 +252,13 @@ router.post('/payments/report', async (req, res) => {
             color: #000;
             text-transform: uppercase;
             letter-spacing: 1px;
-            margin-bottom: 5px;
+            margin-bottom: 8px;
           }
           .whale-val {
-            font-family: 'Times New Roman', serif;
-            font-size: 22px;
-            font-weight: 700;
-            color: #000;
+            font-family: 'Roboto Mono', monospace;
+            font-size: 18pt;
+            font-weight: 500;
+            color: #333333;
           }
 
           /* SYSTEM FOOTER */
@@ -266,12 +268,12 @@ router.post('/payments/report', async (req, res) => {
             left: 60px;
             right: 60px;
             text-align: center;
-            font-size: 7.5px;
+            font-size: 7px;
             color: #BBB;
             text-transform: uppercase;
             letter-spacing: 1px;
             border-top: 0.2pt solid #eee;
-            padding-top: 15px;
+            padding-top: 20px;
           }
         </style>
       </head>
@@ -288,14 +290,14 @@ router.post('/payments/report', async (req, res) => {
           </div>
         </div>
 
-        <!-- HERO BOX (NET LIQUIDITY SETTLED) -->
+        <!-- HERO BOX (QUIET CONFIDENCE) -->
         <div class="hero-box">
-          <div class="hero-top-label">NET LIQUIDITY SETTLED (PAID TO AMAZON BALANCE)</div>
-          <div class="hero-amount">${currency} ${clientNet.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-          <div class="hero-ref">Ref: SET-20260212-8421</div>
+          <div class="hero-top-label">NET LIQUIDITY SETTLED</div>
+          <div class="hero-amount">${formatMoney(clientNet)}</div>
+          <div class="hero-ref">REF: SET-20260212-8421</div>
         </div>
 
-        <!-- HORIZONTAL MATH STRIP -->
+        <!-- RECEIPT MATH STRIP -->
         <div class="math-strip">
           <div class="math-col">
             <div class="math-label">GROSS RECOVERY</div>
@@ -314,13 +316,13 @@ router.post('/payments/report', async (req, res) => {
         <!-- PIPELINE STATUS -->
         <div class="section-title">ACTIVE RECOVERY PIPELINE</div>
         <div class="pipeline-summary">
-          <div class="summary-line"><span>Account ID</span> <span>${storeName}</span></div>
-          <div class="summary-line"><span>Pending Amazon Decision (Under Review)</span> <span>${formatMoney(underReviewAmt)}</span></div>
-          <div class="summary-line"><span>New Claims Detected (Awaiting Processing)</span> <span>${formatMoney(justFiledAmt)}</span></div>
-          <div class="summary-line bold"><span>Total Potenial Asset Value</span> <span>${formatMoney(clientNet + activePipeline)}</span></div>
+          <div class="summary-line"><span>Account ID</span> <span class="mono">${storeName}</span></div>
+          <div class="summary-line"><span>Pending Amazon Decision (Under Review)</span> <span class="mono">${formatMoney(underReviewAmt)}</span></div>
+          <div class="summary-line"><span>New Claims Detected (Awaiting Processing)</span> <span class="mono">${formatMoney(justFiledAmt)}</span></div>
+          <div class="summary-line bold"><span>Total Potential Asset Value</span> <span class="mono">${formatMoney(clientNet + activePipeline)}</span></div>
         </div>
 
-        <!-- "WHALE STATS" RETENTION HOOK -->
+        <!-- RETENTION HOOK -->
         <div class="retention-foot">
           <div class="whale-item">
             <div class="whale-label">CURRENT WIN RATE</div>
@@ -328,7 +330,7 @@ router.post('/payments/report', async (req, res) => {
           </div>
           <div class="whale-item" style="text-align: right;">
             <div class="whale-label">PROJECTED ANNUAL SAVINGS</div>
-            <div class="whale-val">${currency} ${annualSavings}</div>
+            <div class="whale-val">${formatMoney(Number(annualSavings.replace(/,/g, '')))}</div>
           </div>
         </div>
 
