@@ -126,12 +126,15 @@ export class GmailService {
         throw createError('No Gmail refresh token available', 401);
       }
 
-      const response = await axios.post(this.authUrl, {
-        grant_type: 'refresh_token',
-        refresh_token: tokenData.refreshToken,
-        client_id: config.GMAIL_CLIENT_ID!,
-        client_secret: config.GMAIL_CLIENT_SECRET
-      });
+      // Use URLSearchParams for proper form-urlencoded serialization
+      // Google's token endpoint requires application/x-www-form-urlencoded
+      const params = new URLSearchParams();
+      params.append('grant_type', 'refresh_token');
+      params.append('refresh_token', tokenData.refreshToken);
+      params.append('client_id', config.GMAIL_CLIENT_ID!);
+      params.append('client_secret', config.GMAIL_CLIENT_SECRET!);
+
+      const response = await axios.post(this.authUrl, params);
 
       const newTokenData: GmailOAuthResponse = response.data;
       const expiresAt = new Date(Date.now() + newTokenData.expires_in * 1000);

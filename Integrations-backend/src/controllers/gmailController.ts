@@ -141,24 +141,28 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
       });
     }
 
-    logger.info('Exchanging Gmail authorization code for tokens');
+    logger.info('Exchanging Gmail authorization code for tokens', {
+      hasCode: !!code,
+      codeLength: (code as string)?.length,
+      redirectUri,
+      hasClientId: !!clientId,
+      hasClientSecret: !!clientSecret
+    });
 
     // Exchange authorization code for tokens
+    // IMPORTANT: Google's OAuth token endpoint requires application/x-www-form-urlencoded
+    // Using URLSearchParams ensures axios serializes properly (plain objects get sent as JSON)
+    const tokenParams = new URLSearchParams();
+    tokenParams.append('grant_type', 'authorization_code');
+    tokenParams.append('code', code as string);
+    tokenParams.append('client_id', clientId);
+    tokenParams.append('client_secret', clientSecret);
+    tokenParams.append('redirect_uri', redirectUri);
+
     const tokenResponse = await axios.post(
       GMAIL_TOKEN_URL,
-      {
-        grant_type: 'authorization_code',
-        code: code,
-        client_id: clientId,
-        client_secret: clientSecret,
-        redirect_uri: redirectUri
-      },
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        timeout: 30000
-      }
+      tokenParams,
+      { timeout: 30000 }
     );
 
     const { access_token, refresh_token, expires_in, token_type } = tokenResponse.data;
