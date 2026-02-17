@@ -2,49 +2,82 @@ import { Response } from 'express';
 import logger from './logger';
 
 class SSEHub {
-  private connections: Map<string, Set<Response>> = new Map();
+  private connections: Map<string, Map<string, Set<Response>>> = new Map();
 
-  addConnection(userId: string, res: Response): void {
+  addConnection(userId: string, res: Response, tenantSlug: string = 'default'): void {
     if (!this.connections.has(userId)) {
-      this.connections.set(userId, new Set());
+      this.connections.set(userId, new Map());
     }
-    this.connections.get(userId)!.add(res);
+    const userMap = this.connections.get(userId)!;
+    if (!userMap.has(tenantSlug)) {
+      userMap.set(tenantSlug, new Set());
+    }
+    userMap.get(tenantSlug)!.add(res);
+
     logger.info('✅ [SSE HUB] Connection added', {
       userId,
-      totalConnections: this.connections.get(userId)!.size,
+      tenantSlug,
+      userConnectionsInTenant: userMap.get(tenantSlug)!.size,
+      totalTenantsForUser: userMap.size,
       totalUsers: this.connections.size
     });
   }
 
-  removeConnection(userId: string, res: Response): void {
-    const set = this.connections.get(userId);
-    if (!set) return;
-    set.delete(res);
-    if (set.size === 0) {
+  removeConnection(userId: string, res: Response, tenantSlug?: string): void {
+    const userMap = this.connections.get(userId);
+    if (!userMap) return;
+
+    if (tenantSlug) {
+      const set = userMap.get(tenantSlug);
+      if (set) {
+        set.delete(res);
+        if (set.size === 0) userMap.delete(tenantSlug);
+      }
+    } else {
+      // If slug not provided, find and remove from all
+      for (const [slug, set] of userMap.entries()) {
+        if (set.has(res)) {
+          set.delete(res);
+          if (set.size === 0) userMap.delete(slug);
+          break;
+        }
+      }
+    }
+
+    if (userMap.size === 0) {
       this.connections.delete(userId);
       logger.info('✅ [SSE HUB] Last connection removed for user', { userId });
-    } else {
-      logger.info('✅ [SSE HUB] Connection removed', {
-        userId,
-        remainingConnections: set.size
-      });
     }
   }
 
   /**
    * Check if user has active SSE connections
    */
-  hasConnection(userId: string): boolean {
-    const set = this.connections.get(userId);
-    return set !== undefined && set.size > 0;
+  hasConnection(userId: string, tenantSlug?: string): boolean {
+    const userMap = this.connections.get(userId);
+    if (!userMap) return false;
+    if (tenantSlug) {
+      const set = userMap.get(tenantSlug);
+      return set !== undefined && set.size > 0;
+    }
+    return userMap.size > 0;
   }
 
   /**
    * Get connection count for a user
    */
-  getConnectionCount(userId: string): number {
-    const set = this.connections.get(userId);
-    return set ? set.size : 0;
+  getConnectionCount(userId: string, tenantSlug?: string): number {
+    const userMap = this.connections.get(userId);
+    if (!userMap) return 0;
+    if (tenantSlug) {
+      const set = userMap.get(tenantSlug);
+      return set ? set.size : 0;
+    }
+    let total = 0;
+    for (const set of userMap.values()) {
+      total += set.size;
+    }
+    return total;
   }
 
   /**
@@ -57,69 +90,61 @@ class SSEHub {
   /**
    * Send SSE event to user with connection verification and error handling
    */
-  sendEvent(userId: string, event: string, data: any): boolean {
-    const set = this.connections.get(userId);
-    
-    if (!set || set.size === 0) {
-      logger.warn('⚠️ [SSE HUB] No connections found for user', {
-        userId,
-        event,
-        connectedUsers: this.getConnectedUsers()
-      });
+  sendEvent(userId: string, event: string, data: any, tenantSlug?: string): boolean {
+    const userMap = this.connections.get(userId);
+
+    if (!userMap || userMap.size === 0) {
+      return false;
+    }
+
+    // Determine target connections
+    let targetSets: Set<Response>[] = [];
+    const targetSlug = tenantSlug || data?.tenantSlug || data?.tenant_slug || data?.slug;
+
+    if (targetSlug) {
+      const set = userMap.get(targetSlug);
+      if (set) targetSets.push(set);
+    } else {
+      // If no slug, send to all of user's connections (broadcast to user)
+      targetSets = Array.from(userMap.values());
+    }
+
+    if (targetSets.length === 0) {
       return false;
     }
 
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     let successCount = 0;
     let errorCount = 0;
-    const deadConnections: Response[] = [];
+    const deadConnections: { res: Response, slug: string }[] = [];
 
-    for (const res of set) {
-      try {
-        // Check if response is still writable
-        if (res.writable && !res.destroyed) {
-          res.write(payload);
-          successCount++;
-        } else {
-          deadConnections.push(res);
+    for (const [slug, set] of userMap.entries()) {
+      // Skip if we are targeting a specific set and this isn't it
+      if (targetSlug && slug !== targetSlug) continue;
+
+      for (const res of set) {
+        try {
+          if (res.writable && !res.destroyed) {
+            res.write(payload);
+            successCount++;
+          } else {
+            deadConnections.push({ res, slug });
+            errorCount++;
+          }
+        } catch (error: any) {
+          logger.error('❌ [SSE HUB] Error sending event', { userId, event, error: error.message });
+          deadConnections.push({ res, slug });
           errorCount++;
         }
-      } catch (error: any) {
-        logger.error('❌ [SSE HUB] Error sending event', {
-          userId,
-          event,
-          error: error.message
-        });
-        deadConnections.push(res);
-        errorCount++;
       }
     }
 
     // Remove dead connections
-    if (deadConnections.length > 0) {
-      deadConnections.forEach(deadRes => {
-        this.removeConnection(userId, deadRes);
-      });
-    }
+    deadConnections.forEach(({ res, slug }) => {
+      this.removeConnection(userId, res, slug);
+    });
 
-    if (successCount > 0) {
-      logger.debug('✅ [SSE HUB] Event sent successfully', {
-        userId,
-        event,
-        successCount,
-        errorCount,
-        totalConnections: set.size
-      });
-      return true;
-    } else {
-      logger.warn('⚠️ [SSE HUB] All connections failed for user', {
-        userId,
-        event,
-        totalConnections: set.size,
-        errorCount
-      });
-      return false;
-    }
+    return successCount > 0;
   }
 
   /**
@@ -131,7 +156,7 @@ class SSEHub {
       event,
       userCount: users.length
     });
-    
+
     users.forEach(userId => {
       this.sendEvent(userId, event, data);
     });

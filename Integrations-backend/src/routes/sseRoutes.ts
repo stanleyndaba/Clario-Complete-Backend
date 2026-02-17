@@ -17,14 +17,16 @@ router.get('/stream', (req: AuthenticatedSSERequest, res) => {
     closeSSEConnection(res);
     return;
   }
+  const tenantSlug = (req.query.tenantSlug as string) || 'beta';
 
   // Initial hello event for immediate readiness
   sendSSEEvent(res, 'connected', {
     status: 'ok',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    tenantSlug
   });
 
-  sseHub.addConnection(userId, res);
+  sseHub.addConnection(userId, res, tenantSlug);
 
   const heartbeatInterval = setInterval(() => {
     sendSSEHeartbeat(res);
@@ -32,12 +34,12 @@ router.get('/stream', (req: AuthenticatedSSERequest, res) => {
 
   (req as any).on('close', () => {
     clearInterval(heartbeatInterval);
-    sseHub.removeConnection(userId, res);
+    sseHub.removeConnection(userId, res, tenantSlug);
   });
 
   (req as any).on('error', () => {
     clearInterval(heartbeatInterval);
-    sseHub.removeConnection(userId, res);
+    sseHub.removeConnection(userId, res, tenantSlug);
   });
 });
 
@@ -54,9 +56,11 @@ router.get('/status', (req: AuthenticatedSSERequest, res) => {
     closeSSEConnection(res);
     return;
   }
+  const tenantSlug = (req.query.tenantSlug as string) || 'beta';
 
   logger.info('✅ [SSE ROUTES] SSE status connection established', {
     user_id: userId,
+    tenantSlug,
     url: (req as any).url,
     connectedUsers: sseHub.getConnectedUsers(),
     totalConnections: sseHub.getConnectionCount(userId)
@@ -67,12 +71,13 @@ router.get('/status', (req: AuthenticatedSSERequest, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     user_id: userId,
+    tenantSlug,
     message: 'SSE connection established successfully'
   });
 
   // Register connection in hub so events can be sent to this user
-  sseHub.addConnection(userId, res);
-  
+  sseHub.addConnection(userId, res, tenantSlug);
+
   logger.info('✅ [SSE ROUTES] Connection registered in SSE hub', {
     user_id: userId,
     connectionCount: sseHub.getConnectionCount(userId),
@@ -90,7 +95,7 @@ router.get('/status', (req: AuthenticatedSSERequest, res) => {
       user_id: userId
     });
     clearInterval(heartbeatInterval);
-    sseHub.removeConnection(userId, res);
+    sseHub.removeConnection(userId, res, tenantSlug);
   });
 
   // Handle errors
@@ -100,7 +105,7 @@ router.get('/status', (req: AuthenticatedSSERequest, res) => {
       user_id: userId
     });
     clearInterval(heartbeatInterval);
-    sseHub.removeConnection(userId, res);
+    sseHub.removeConnection(userId, res, tenantSlug);
   });
 });
 
@@ -118,21 +123,24 @@ router.get('/sync-progress/:syncId', (req: AuthenticatedSSERequest, res) => {
     closeSSEConnection(res);
     return;
   }
+  const tenantSlug = (req.query.tenantSlug as string) || 'beta';
 
   logger.info('SSE sync progress connection established', {
     user_id: userId,
-    sync_id: syncId
+    sync_id: syncId,
+    tenantSlug
   });
 
   // Send initial connection event
   sendSSEEvent(res, 'sync_progress', {
     sync_id: syncId,
     status: 'connected',
+    tenantSlug,
     timestamp: new Date().toISOString()
   });
 
   // Register in hub
-  if (userId) sseHub.addConnection(userId, res);
+  if (userId) sseHub.addConnection(userId, res, tenantSlug);
 
   // Set up heartbeat interval
   const heartbeatInterval = setInterval(() => {
@@ -146,7 +154,7 @@ router.get('/sync-progress/:syncId', (req: AuthenticatedSSERequest, res) => {
       sync_id: syncId
     });
     clearInterval(heartbeatInterval);
-    if (userId) sseHub.removeConnection(userId, res);
+    if (userId) sseHub.removeConnection(userId, res, tenantSlug);
   });
 
   // Handle errors
@@ -157,7 +165,7 @@ router.get('/sync-progress/:syncId', (req: AuthenticatedSSERequest, res) => {
       sync_id: syncId
     });
     clearInterval(heartbeatInterval);
-    if (userId) sseHub.removeConnection(userId, res);
+    if (userId) sseHub.removeConnection(userId, res, tenantSlug);
   });
 });
 
@@ -175,20 +183,23 @@ router.get('/detection-updates/:syncId', (req: AuthenticatedSSERequest, res) => 
     closeSSEConnection(res);
     return;
   }
+  const tenantSlug = (req.query.tenantSlug as string) || 'beta';
 
   logger.info('SSE detection updates connection established', {
     user_id: userId,
-    sync_id: syncId
+    sync_id: syncId,
+    tenantSlug
   });
 
   // Send initial connection event
   sendSSEEvent(res, 'detection_updates', {
     sync_id: syncId,
     status: 'connected',
+    tenantSlug,
     timestamp: new Date().toISOString()
   });
 
-  if (userId) sseHub.addConnection(userId, res);
+  if (userId) sseHub.addConnection(userId, res, tenantSlug);
 
   // Set up heartbeat interval
   const heartbeatInterval = setInterval(() => {
@@ -202,7 +213,7 @@ router.get('/detection-updates/:syncId', (req: AuthenticatedSSERequest, res) => 
       sync_id: syncId
     });
     clearInterval(heartbeatInterval);
-    if (userId) sseHub.removeConnection(userId, res);
+    if (userId) sseHub.removeConnection(userId, res, tenantSlug);
   });
 
   // Handle errors
@@ -213,15 +224,10 @@ router.get('/detection-updates/:syncId', (req: AuthenticatedSSERequest, res) => 
       sync_id: syncId
     });
     clearInterval(heartbeatInterval);
-    if (userId) sseHub.removeConnection(userId, res);
+    if (userId) sseHub.removeConnection(userId, res, tenantSlug);
   });
 });
 
-/**
- * @route GET /api/sse/financial-events
- * @desc Stream real-time financial event updates
- * @access Private (JWT required)
- */
 router.get('/financial-events', (req: AuthenticatedSSERequest, res) => {
   const userId = req.user?.id;
 
@@ -230,18 +236,21 @@ router.get('/financial-events', (req: AuthenticatedSSERequest, res) => {
     closeSSEConnection(res);
     return;
   }
+  const tenantSlug = (req.query.tenantSlug as string) || 'beta';
 
   logger.info('SSE financial events connection established', {
-    user_id: userId
+    user_id: userId,
+    tenantSlug
   });
 
   // Send initial connection event
   sendSSEEvent(res, 'financial_events', {
     status: 'connected',
+    tenantSlug,
     timestamp: new Date().toISOString()
   });
 
-  if (userId) sseHub.addConnection(userId, res);
+  if (userId) sseHub.addConnection(userId, res, tenantSlug);
 
   // Set up heartbeat interval
   const heartbeatInterval = setInterval(() => {
@@ -254,7 +263,7 @@ router.get('/financial-events', (req: AuthenticatedSSERequest, res) => {
       user_id: userId
     });
     clearInterval(heartbeatInterval);
-    if (userId) sseHub.removeConnection(userId, res);
+    if (userId) sseHub.removeConnection(userId, res, tenantSlug);
   });
 
   // Handle errors
@@ -264,7 +273,7 @@ router.get('/financial-events', (req: AuthenticatedSSERequest, res) => {
       user_id: userId
     });
     clearInterval(heartbeatInterval);
-    if (userId) sseHub.removeConnection(userId, res);
+    if (userId) sseHub.removeConnection(userId, res, tenantSlug);
   });
 });
 
@@ -275,7 +284,7 @@ router.get('/financial-events', (req: AuthenticatedSSERequest, res) => {
  */
 router.get('/connection-status', (req: AuthenticatedSSERequest, res) => {
   const userId = req.user?.id;
-  
+
   if (!userId) {
     return res.status(401).json({
       success: false,
@@ -300,17 +309,12 @@ router.get('/connection-status', (req: AuthenticatedSSERequest, res) => {
     hasConnection,
     connectionCount,
     allConnectedUsers,
-    message: hasConnection 
+    message: hasConnection
       ? `User ${userId} has ${connectionCount} active SSE connection(s)`
       : `User ${userId} has no active SSE connections. Make sure to connect to /api/sse/status first.`
   });
 });
 
-/**
- * @route GET /api/sse/notifications
- * @desc Stream real-time notifications
- * @access Private (JWT required)
- */
 router.get('/notifications', (req: AuthenticatedSSERequest, res) => {
   const userId = req.user?.id;
 
@@ -319,18 +323,21 @@ router.get('/notifications', (req: AuthenticatedSSERequest, res) => {
     closeSSEConnection(res);
     return;
   }
+  const tenantSlug = (req.query.tenantSlug as string) || 'beta';
 
   logger.info('SSE notifications connection established', {
-    user_id: userId
+    user_id: userId,
+    tenantSlug
   });
 
   // Send initial connection event
   sendSSEEvent(res, 'notifications', {
     status: 'connected',
+    tenantSlug,
     timestamp: new Date().toISOString()
   });
 
-  if (userId) sseHub.addConnection(userId, res);
+  if (userId) sseHub.addConnection(userId, res, tenantSlug);
 
   // Set up heartbeat interval
   const heartbeatInterval = setInterval(() => {
@@ -343,7 +350,7 @@ router.get('/notifications', (req: AuthenticatedSSERequest, res) => {
       user_id: userId
     });
     clearInterval(heartbeatInterval);
-    if (userId) sseHub.removeConnection(userId, res);
+    if (userId) sseHub.removeConnection(userId, res, tenantSlug);
   });
 
   // Handle errors
@@ -353,7 +360,7 @@ router.get('/notifications', (req: AuthenticatedSSERequest, res) => {
       user_id: userId
     });
     clearInterval(heartbeatInterval);
-    if (userId) sseHub.removeConnection(userId, res);
+    if (userId) sseHub.removeConnection(userId, res, tenantSlug);
   });
 });
 
