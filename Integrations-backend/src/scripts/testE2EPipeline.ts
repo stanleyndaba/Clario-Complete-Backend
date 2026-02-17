@@ -322,7 +322,8 @@ async function runE2EPipelineTest(): Promise<TestResult[]> {
     try {
         log('📍 STEP 4: Running evidence matching (Agent 6: Matching)...');
 
-        const matchingResult = await evidenceMatchingService.runMatchingWithRetry(TEST_USER_ID);
+        const testTenantId = 'test-tenant-id';
+        const matchingResult = await evidenceMatchingService.runMatchingWithRetry(TEST_USER_ID, testTenantId);
 
         log(`   ✅ Matching complete!`);
         log(`   📊 Results:`);

@@ -1682,7 +1682,11 @@ router.post('/matching/run', async (req: Request, res: Response) => {
     }
 
     // Run evidence matching with retry logic
-    const result = await evidenceMatchingService.runMatchingWithRetry(userId, claims);
+    const tenantId = (req as any).tenant?.tenantId;
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized: Tenant context missing' });
+    }
+    const result = await evidenceMatchingService.runMatchingWithRetry(userId, tenantId, claims);
 
     // Send SSE event for matching completion
     try {
@@ -1739,25 +1743,34 @@ router.get('/matching/results', async (req: Request, res: Response) => {
     const limit = parseInt(req.query.limit as string) || 100;
     const offset = parseInt(req.query.offset as string) || 0;
 
+    const tenantId = (req as any).tenant?.tenantId;
+
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized: Tenant context missing' });
+    }
+
     logger.info('🔍 [EVIDENCE] Fetching matching results', {
       userId: userId || 'all',
+      tenantId,
       limit,
       offset
     });
 
     const client = supabaseAdmin || supabase;
 
-    // Query dispute_cases that have evidence_attachments with document_id set
+    // Query dispute_cases that have evidence_attachments with document_id set - scope by tenant_id
     const { data: casesWithEvidence, error: casesError } = await client
       .from('dispute_cases')
-      .select('id, case_type, status, claim_amount, evidence_attachments, created_at')
+      .select('id, case_type, status, claim_amount, evidence_attachments, created_at, tenant_id')
+      .eq('tenant_id', tenantId)
       .order('created_at', { ascending: false })
       .limit(500);  // Fetch more to filter in JS
 
     if (casesError) {
       logger.error('❌ [EVIDENCE] Error fetching cases with evidence', {
         error: casesError.message,
-        userId
+        userId,
+        tenantId
       });
       return res.status(500).json({
         success: false,
@@ -1771,10 +1784,11 @@ router.get('/matching/results', async (req: Request, res: Response) => {
       c.evidence_attachments?.document_id
     ).slice(offset, offset + limit);
 
-    // Get total count (filter all for count)
+    // Get total count (filter all for count) - scope by tenant_id
     const { data: allCasesWithEvidence } = await client
       .from('dispute_cases')
-      .select('id, evidence_attachments');
+      .select('id, evidence_attachments, tenant_id')
+      .eq('tenant_id', tenantId);
 
     const totalMatched = (allCasesWithEvidence || []).filter((c: any) =>
       c.evidence_attachments?.document_id
@@ -1788,8 +1802,9 @@ router.get('/matching/results', async (req: Request, res: Response) => {
       if (docId) {
         const { data: doc } = await client
           .from('evidence_documents')
-          .select('id, filename, doc_type, created_at, metadata')
+          .select('id, filename, doc_type, created_at, metadata, tenant_id')
           .eq('id', docId)
+          .eq('tenant_id', tenantId)
           .single();
 
         if (doc) {
@@ -1865,27 +1880,34 @@ router.get('/matching/results', async (req: Request, res: Response) => {
 router.post('/matching/:matchId/approve', async (req: Request, res: Response) => {
   try {
     const { matchId } = req.params;
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    const tenantId = (req as any).tenant?.tenantId;
 
-    logger.info('✅ [EVIDENCE] Approving smart prompt match', { matchId });
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    logger.info('✅ [EVIDENCE] Approving smart prompt match', { matchId, tenantId });
 
     const client = supabaseAdmin || supabase;
 
-    // Get the dispute case and update its evidence_attachments to mark as approved
+    // Get the dispute case and update its evidence_attachments to mark as approved - scope by tenant_id
     const { data: existingCase, error: fetchError } = await client
       .from('dispute_cases')
-      .select('id, evidence_attachments, status')
+      .select('id, evidence_attachments, status, tenant_id')
       .eq('id', matchId)
+      .eq('tenant_id', tenantId)
       .single();
 
     if (fetchError || !existingCase) {
-      logger.error('❌ [EVIDENCE] Case not found for approval', { matchId, error: fetchError?.message });
+      logger.error('❌ [EVIDENCE] Case not found for approval', { matchId, tenantId, error: fetchError?.message });
       return res.status(404).json({
         success: false,
         error: 'Match not found'
       });
     }
 
-    // Update evidence_attachments to mark as approved
+    // Update evidence_attachments to mark as approved - scope by tenant_id
     const updatedAttachments = {
       ...(existingCase.evidence_attachments || {}),
       action_taken: 'approved',
@@ -1899,7 +1921,8 @@ router.post('/matching/:matchId/approve', async (req: Request, res: Response) =>
         status: 'approved',
         updated_at: new Date().toISOString()
       })
-      .eq('id', matchId);
+      .eq('id', matchId)
+      .eq('tenant_id', tenantId);
 
     if (updateError) {
       logger.error('❌ [EVIDENCE] Error approving match', {
@@ -1958,20 +1981,27 @@ router.post('/matching/:matchId/reject', async (req: Request, res: Response) => 
   try {
     const { matchId } = req.params;
     const { reason } = req.body || {};
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    const tenantId = (req as any).tenant?.tenantId;
 
-    logger.info('❌ [EVIDENCE] Rejecting smart prompt match', { matchId, reason });
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    logger.info('❌ [EVIDENCE] Rejecting smart prompt match', { matchId, reason, tenantId });
 
     const client = supabaseAdmin || supabase;
 
-    // Get the dispute case and update its evidence_attachments to mark as rejected
+    // Get the dispute case and update its evidence_attachments to mark as rejected - scope by tenant_id
     const { data: existingCase, error: fetchError } = await client
       .from('dispute_cases')
-      .select('id, evidence_attachments, status')
+      .select('id, evidence_attachments, status, tenant_id')
       .eq('id', matchId)
+      .eq('tenant_id', tenantId)
       .single();
 
     if (fetchError || !existingCase) {
-      logger.error('❌ [EVIDENCE] Case not found for rejection', { matchId, error: fetchError?.message });
+      logger.error('❌ [EVIDENCE] Case not found for rejection', { matchId, tenantId, error: fetchError?.message });
       return res.status(404).json({
         success: false,
         error: 'Match not found'
@@ -1993,7 +2023,8 @@ router.post('/matching/:matchId/reject', async (req: Request, res: Response) => 
         status: 'rejected',
         updated_at: new Date().toISOString()
       })
-      .eq('id', matchId);
+      .eq('id', matchId)
+      .eq('tenant_id', tenantId);
 
     if (updateError) {
       logger.error('❌ [EVIDENCE] Error rejecting match', {
@@ -2050,20 +2081,27 @@ router.post('/matching/:matchId/reject', async (req: Request, res: Response) => 
 router.post('/matching/:matchId/request-more-evidence', async (req: Request, res: Response) => {
   try {
     const { matchId } = req.params;
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    const tenantId = (req as any).tenant?.tenantId;
 
-    logger.info('📋 [EVIDENCE] Requesting more evidence for match', { matchId });
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    logger.info('📋 [EVIDENCE] Requesting more evidence for match', { matchId, tenantId });
 
     const client = supabaseAdmin || supabase;
 
-    // Get the dispute case
+    // Get the dispute case - scope by tenant_id
     const { data: existingCase, error: fetchError } = await client
       .from('dispute_cases')
-      .select('id, evidence_attachments, status')
+      .select('id, evidence_attachments, status, tenant_id')
       .eq('id', matchId)
+      .eq('tenant_id', tenantId)
       .single();
 
     if (fetchError || !existingCase) {
-      logger.error('❌ [EVIDENCE] Case not found for evidence request', { matchId, error: fetchError?.message });
+      logger.error('❌ [EVIDENCE] Case not found for evidence request', { matchId, tenantId, error: fetchError?.message });
       return res.status(404).json({
         success: false,
         error: 'Match not found'
@@ -2084,7 +2122,8 @@ router.post('/matching/:matchId/request-more-evidence', async (req: Request, res
         status: 'needs_evidence',
         updated_at: new Date().toISOString()
       })
-      .eq('id', matchId);
+      .eq('id', matchId)
+      .eq('tenant_id', tenantId);
 
     if (updateError) {
       logger.error('❌ [EVIDENCE] Error flagging for more evidence', {
@@ -2120,24 +2159,155 @@ router.post('/matching/:matchId/request-more-evidence', async (req: Request, res
 });
 
 /**
+ * GET /api/evidence/matching/documents/:documentId
+ * Alias for fetching matching results for a specific document (used by frontend)
+ */
+router.get('/matching/documents/:documentId', async (req: Request, res: Response) => {
+  try {
+    const { documentId } = req.params;
+    const tenantId = (req as any).tenant?.tenantId;
+
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized: Tenant context missing' });
+    }
+
+    logger.info('🔍 [EVIDENCE] Fetching matching results for document (alias)', {
+      documentId,
+      tenantId
+    });
+
+    const client = supabaseAdmin || supabase;
+
+    // First verify document belongs to tenant
+    const { data: doc, error: docError } = await client
+      .from('evidence_documents')
+      .select('id, tenant_id')
+      .eq('id', documentId)
+      .single();
+
+    if (docError || !doc) {
+      return res.status(404).json({ success: false, error: 'Document not found' });
+    }
+
+    if (doc.tenant_id !== tenantId) {
+      logger.warn('⚠️ [SECURITY] Tenant mismatch attempt for matching results', {
+        documentId,
+        requestingTenantId: tenantId,
+        ownerTenantId: doc.tenant_id,
+        userId: (req as any).userId
+      });
+      return res.status(403).json({ success: false, error: 'Access denied: Document belongs to a different workspace' });
+    }
+
+    // Query dispute_cases where evidence_attachments.document_id matches this document
+    const { data: allCases, error: casesError } = await client
+      .from('dispute_cases')
+      .select('id, case_type, status, claim_amount, evidence_attachments, created_at, tenant_id')
+      .eq('tenant_id', tenantId) // Ensure we only get cases for this tenant
+      .order('created_at', { ascending: false })
+      .limit(500);
+
+    if (casesError) {
+      logger.error('❌ [EVIDENCE] Error fetching cases for document', {
+        error: casesError.message,
+        documentId
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch matching results',
+        message: casesError.message
+      });
+    }
+
+    // Filter to cases that have this document_id in evidence_attachments
+    const matchedCases = (allCases || []).filter((c: any) =>
+      c.evidence_attachments?.document_id === documentId
+    );
+
+    // Transform results to expected format
+    const results = matchedCases.map((c: any) => {
+      const ea = c.evidence_attachments || {};
+      const confidence = ea.match_confidence || 0;
+
+      return {
+        id: c.id,
+        claim_id: c.id,
+        document_id: documentId,
+        confidence_score: confidence,
+        match_type: ea.match_type || 'unknown',
+        action_taken: confidence >= 0.85 ? 'auto_submit'
+          : confidence >= 0.5 ? 'smart_prompt'
+            : 'no_action',
+        matched_fields: ea.matched_fields || [],
+        reasoning: '',
+        created_at: ea.matched_at || c.created_at,
+        // Additional claim info
+        claim_type: c.case_type,
+        claim_status: c.status,
+        claim_amount: c.claim_amount
+      };
+    });
+
+    res.json({
+      success: true,
+      results,
+      document_id: documentId
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in document matching results alias endpoint', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch document matching results',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
  * GET /api/evidence/matching/results/by-document/:documentId
  * Get matching results for a specific document
  */
 router.get('/matching/results/by-document/:documentId', async (req: Request, res: Response) => {
   try {
     const { documentId } = req.params;
+    const tenantId = (req as any).tenant?.tenantId;
+
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized: Tenant context missing' });
+    }
 
     logger.info('🔍 [EVIDENCE] Fetching matching results for document', {
-      documentId
+      documentId,
+      tenantId
     });
 
     const client = supabaseAdmin || supabase;
 
+    // Verify document belongs to tenant
+    const { data: doc } = await client
+      .from('evidence_documents')
+      .select('id, tenant_id')
+      .eq('id', documentId)
+      .single();
+
+    if (doc && doc.tenant_id !== tenantId) {
+      logger.warn('⚠️ [SECURITY] Tenant mismatch attempt for matching results', {
+        documentId,
+        requestingTenantId: tenantId,
+        ownerTenantId: doc.tenant_id
+      });
+      return res.status(403).json({ success: false, error: 'Access denied' });
+    }
+
     // Query dispute_cases where evidence_attachments.document_id matches this document
-    // We need to find all cases where the evidence_attachments JSONB contains this document_id
     const { data: allCases, error: casesError } = await client
       .from('dispute_cases')
-      .select('id, case_type, status, claim_amount, evidence_attachments, created_at')
+      .select('id, case_type, status, claim_amount, evidence_attachments, created_at, tenant_id')
+      .eq('tenant_id', tenantId)
       .order('created_at', { ascending: false })
       .limit(500);
 
@@ -2213,9 +2383,10 @@ router.get('/matching/results/by-document/:documentId', async (req: Request, res
 router.get('/v1/evidence/documents/:documentId', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const tenantId = (req as any).tenant?.tenantId;
     const documentId = req.params.documentId;
 
-    if (!userId) {
+    if (!userId || !tenantId) {
       return res.status(401).json({
         success: false,
         error: 'Unauthorized'
@@ -2224,6 +2395,7 @@ router.get('/v1/evidence/documents/:documentId', async (req: Request, res: Respo
 
     logger.info('📄 [EVIDENCE] Fetching document with parsed data', {
       userId,
+      tenantId,
       documentId
     });
 
@@ -2232,10 +2404,27 @@ router.get('/v1/evidence/documents/:documentId', async (req: Request, res: Respo
       .from('evidence_documents')
       .select('*')
       .eq('id', documentId)
+      .eq('tenant_id', tenantId)
       .single();
 
     if (docError) {
       if (docError.code === 'PGRST116') {
+        // Log attempt to access document from other tenant
+        const { data: otherDoc } = await supabaseAdmin
+          .from('evidence_documents')
+          .select('id, tenant_id')
+          .eq('id', documentId)
+          .single();
+
+        if (otherDoc) {
+          logger.warn('⚠️ [SECURITY] Unauthorized document access attempt', {
+            documentId,
+            requestingTenantId: tenantId,
+            ownerTenantId: otherDoc.tenant_id,
+            userId
+          });
+        }
+
         return res.status(404).json({
           success: false,
           error: 'Document not found'
@@ -2387,16 +2576,20 @@ router.delete('/v1/evidence/documents/:documentId', async (req: Request, res: Re
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
     const documentId = req.params.documentId;
+    const tenantId = (req as any).tenant?.tenantId;
 
-    // Note: Using demo-user fallback for testing
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
 
-    logger.info('🗑️ [EVIDENCE] Deleting document', { userId, documentId });
+    logger.info('🗑️ [EVIDENCE] Deleting document', { userId, documentId, tenantId });
 
-    // Delete the document
+    // Delete the document - scope by tenant_id
     const { error: deleteError } = await supabaseAdmin
       .from('evidence_documents')
       .delete()
-      .eq('id', documentId);
+      .eq('id', documentId)
+      .eq('tenant_id', tenantId);
 
     if (deleteError) {
       throw deleteError;
@@ -2430,22 +2623,25 @@ router.delete('/v1/evidence/documents/:documentId', async (req: Request, res: Re
 router.delete('/v1/evidence/documents', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    const tenantId = (req as any).tenant?.tenantId;
 
-    // Note: Using demo-user fallback for testing
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
 
-    logger.info('🗑️ [EVIDENCE] Deleting all documents for user', { userId });
+    logger.info('🗑️ [EVIDENCE] Deleting all documents for tenant', { userId, tenantId });
 
-    // Get count before deletion
+    // Get count before deletion - scope by tenant_id
     const { count: beforeCount } = await supabaseAdmin
       .from('evidence_documents')
       .select('*', { count: 'exact', head: true })
-      .eq('seller_id', userId);
+      .eq('tenant_id', tenantId);
 
-    // Delete all documents for this user
+    // Delete all documents for this tenant
     const { error: deleteError } = await supabaseAdmin
       .from('evidence_documents')
       .delete()
-      .eq('seller_id', userId);
+      .eq('tenant_id', tenantId);
 
     if (deleteError) {
       throw deleteError;
@@ -2490,15 +2686,21 @@ router.post('/matching/run', async (req: Request, res: Response) => {
       hasUser: !!reqAny.user
     });
 
-    const userId = reqAny.userId || reqAny.user?.id || reqAny.user?.user_id || 'demo-user';
+    const userId = (reqAny.userId?.toString()) || reqAny.user?.id || reqAny.user?.user_id || 'demo-user';
+    const tenantId = (req as any).tenant?.tenantId;
 
-    logger.info('🔍 [EVIDENCE MATCHING] Starting matching process', { userId, isDemo: userId === 'demo-user' });
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    logger.info('🔍 [EVIDENCE MATCHING] Starting matching process', { userId, tenantId, isDemo: userId === 'demo-user' });
 
     // Run matching via the evidenceMatchingService
-    const result = await evidenceMatchingService.runMatchingWithRetry(userId);
+    const result = await evidenceMatchingService.runMatchingWithRetry(userId, tenantId);
 
     logger.info('✅ [EVIDENCE MATCHING] Matching completed', {
       userId,
+      tenantId,
       matches: result.matches,
       autoSubmits: result.auto_submits,
       smartPrompts: result.smart_prompts
@@ -2657,8 +2859,15 @@ router.get('/matching/metrics', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
     const days = parseInt(req.query.days as string) || 30;
+    const tenantId = (req as any).tenant?.tenantId;
 
-    const metrics = await evidenceMatchingService.getMatchingMetrics(userId, days);
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    logger.debug('📊 [EVIDENCE] Fetching matching metrics', { userId, tenantId, days });
+
+    const metrics = await evidenceMatchingService.getMatchingMetrics(userId, tenantId, days);
 
     res.json({
       success: true,

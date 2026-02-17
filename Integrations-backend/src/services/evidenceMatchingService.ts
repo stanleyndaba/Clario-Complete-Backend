@@ -116,14 +116,15 @@ class EvidenceMatchingService {
    * Run evidence matching for a user
    * Matches claims against parsed documents by ASIN/SKU
    */
-  async runMatchingForUser(userId: string, claims?: ClaimData[]): Promise<MatchingJobResponse> {
+  async runMatchingForUser(userId: string, tenantId: string, claims?: ClaimData[]): Promise<MatchingJobResponse> {
     logger.info('🔄 [EVIDENCE MATCHING] Running matching for user', {
       userId,
+      tenantId,
       claimsCount: claims?.length || 0
     });
 
     // Use local ASIN/SKU matching
-    return this.matchClaimsToDocuments(userId, claims || []);
+    return this.matchClaimsToDocuments(userId, tenantId, claims || []);
   }
 
   /**
@@ -131,38 +132,27 @@ class EvidenceMatchingService {
    * Primary matching method - no external API dependency
    * Uses 'extracted' column (not parsed_metadata) for document data
    */
-  private async matchClaimsToDocuments(userId: string, claims: ClaimData[]): Promise<MatchingJobResponse> {
-    logger.info('🔍 [EVIDENCE MATCHING] Matching claims to documents', { userId, claimsCount: claims.length });
+  private async matchClaimsToDocuments(userId: string, tenantId: string, claims: ClaimData[]): Promise<MatchingJobResponse> {
+    logger.info('🔍 [EVIDENCE MATCHING] Matching claims to documents', { userId, tenantId, claimsCount: claims.length });
 
     try {
       // Get documents with extracted data for user
       // IMPORTANT: Documents may be stored with EITHER 'user_id' (UUID - Document Library) OR 'seller_id' (TEXT - programmatic ingestion)
       // We need to handle the case where userId might be TEXT (not UUID) - can't query user_id with non-UUID value
 
-      // Check if userId is a valid UUID (user_id column is UUID type)
-      const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId);
-
-      let query = supabaseAdmin
+      // Get documents with extracted data for user - scope by tenant_id
+      const { data: documents, error: docError } = await supabaseAdmin
         .from('evidence_documents')
-        .select('id, filename, extracted, parsed_metadata, raw_text, storage_path, parser_status, user_id, seller_id');
-
-      // Only include user_id in query if userId is a valid UUID, otherwise just query by seller_id (TEXT)
-      if (isValidUUID) {
-        query = query.or(`user_id.eq.${userId},seller_id.eq.${userId}`);
-      } else {
-        // userId is TEXT (like 'demo-user'), only query by seller_id to avoid UUID type error
-        query = query.eq('seller_id', userId);
-      }
-
-      const { data: documents, error: docError } = await query;
+        .select('id, filename, extracted, parsed_metadata, raw_text, storage_path, parser_status, user_id, seller_id, tenant_id')
+        .eq('tenant_id', tenantId);
 
       if (docError) {
-        logger.error('❌ [EVIDENCE MATCHING] Failed to fetch documents', { error: docError.message });
+        logger.error('❌ [EVIDENCE MATCHING] Failed to fetch documents', { error: docError.message, tenantId });
         return { matches: 0, auto_submits: 0, smart_prompts: 0, results: [] };
       }
 
       if (!documents || documents.length === 0) {
-        logger.warn('⚠️ [EVIDENCE MATCHING] No documents found for user', { userId });
+        logger.warn('⚠️ [EVIDENCE MATCHING] No documents found for tenant', { userId, tenantId });
         return { matches: 0, auto_submits: 0, smart_prompts: 0, results: [] };
       }
 
@@ -450,13 +440,12 @@ class EvidenceMatchingService {
         uniqueBolNumbers: docBolNumbers.size
       });
 
-      // Also fetch claims with related_event_ids from database if not provided
       let claimsToMatch = claims;
       if (claims.length === 0) {
         const { data: dbClaims } = await supabaseAdmin
           .from('detection_results')
-          .select('id, anomaly_type, estimated_value, currency, evidence, confidence_score, related_event_ids')
-          .eq('seller_id', userId);
+          .select('id, anomaly_type, estimated_value, currency, evidence, confidence_score, related_event_ids, tenant_id')
+          .eq('tenant_id', tenantId);
 
         if (dbClaims) {
           claimsToMatch = dbClaims.map((d: any) => ({
@@ -704,6 +693,7 @@ class EvidenceMatchingService {
    */
   async runMatchingWithRetry(
     userId: string,
+    tenantId: string,
     claims?: ClaimData[],
     maxRetries: number = 3
   ): Promise<MatchingJobResponse> {
@@ -712,21 +702,22 @@ class EvidenceMatchingService {
       logger.info('🔄 [EVIDENCE MATCHING] No claims provided, fetching from database', { userId });
 
       try {
-        // Fetch claims from detection_results that have linked dispute_cases
+        // Fetch claims from detection_results that have linked dispute_cases - scope by tenant_id
         const { data: detections, error } = await supabaseAdmin
           .from('detection_results')
           .select(`
             id,
             seller_id,
+            tenant_id,
             anomaly_type,
             estimated_value,
             currency,
             evidence,
             confidence_score,
             claim_number,
-            dispute_cases!inner(id, status)
+            dispute_cases!inner(id, status, tenant_id)
           `)
-          .eq('seller_id', userId)
+          .eq('tenant_id', tenantId)
           .in('dispute_cases.status', ['pending', 'submitted']);
 
         if (error || !detections || detections.length === 0) {
@@ -736,11 +727,11 @@ class EvidenceMatchingService {
             logger.info('📋 [EVIDENCE MATCHING] No claims with dispute_cases, fetching all claims', { userId });
           }
 
-          // Fallback: simpler query without join - gets ALL claims that can be matched
+          // Fallback: simpler query without join - gets ALL claims that can be matched (scoped by tenant_id)
           const { data: simpleDetections } = await supabaseAdmin
             .from('detection_results')
-            .select('id, seller_id, anomaly_type, estimated_value, currency, evidence, confidence_score, claim_number')
-            .eq('seller_id', userId)
+            .select('id, seller_id, tenant_id, anomaly_type, estimated_value, currency, evidence, confidence_score, claim_number')
+            .eq('tenant_id', tenantId)
             .not('evidence', 'is', null);
 
           if (simpleDetections && simpleDetections.length > 0) {
@@ -825,7 +816,7 @@ class EvidenceMatchingService {
       // Retry logic for this batch
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
-          batchResult = await this.runMatchingForUser(userId, batchClaims);
+          batchResult = await this.runMatchingForUser(userId, tenantId, batchClaims);
           break; // Success - break out of retry loop
         } catch (error: any) {
           lastError = error;
@@ -902,6 +893,7 @@ class EvidenceMatchingService {
         const matchResultRecords = allResults.map(result => {
           const record: any = {
             seller_id: userId,
+            tenant_id: tenantId,
             claim_id: result.dispute_id,
             document_id: result.evidence_document_id,
             match_type: result.match_type,
@@ -947,7 +939,7 @@ class EvidenceMatchingService {
           // 🎯 AGENT 7: Process actionable results (auto-submit → dispute_cases)
           // This triggers handleAutoSubmit which creates dispute cases for Agent 7 to file
           try {
-            const processedStats = await this.processMatchingResults(userId, allResults);
+            const processedStats = await this.processMatchingResults(userId, tenantId, allResults);
             logger.info('🚀 [EVIDENCE MATCHING] Processed actionable results', {
               autoSubmitted: processedStats.autoSubmitted,
               smartPromptsCreated: processedStats.smartPromptsCreated,
@@ -979,6 +971,7 @@ class EvidenceMatchingService {
    */
   async processMatchingResults(
     userId: string,
+    tenantId: string,
     results: MatchingResult[]
   ): Promise<{
     autoSubmitted: number;
@@ -995,15 +988,15 @@ class EvidenceMatchingService {
       try {
         if (result.final_confidence >= this.autoSubmitThreshold) {
           // Auto-submit (>= 0.85)
-          await this.handleAutoSubmit(userId, result);
+          await this.handleAutoSubmit(userId, tenantId, result);
           stats.autoSubmitted++;
         } else if (result.final_confidence >= this.smartPromptThreshold) {
           // Smart prompt (0.5 - 0.85)
-          await this.handleSmartPrompt(userId, result);
+          await this.handleSmartPrompt(userId, tenantId, result);
           stats.smartPromptsCreated++;
         } else {
           // Hold (< 0.5)
-          await this.handleHold(userId, result);
+          await this.handleHold(userId, tenantId, result);
           stats.held++;
         }
       } catch (error: any) {
@@ -1022,20 +1015,21 @@ class EvidenceMatchingService {
    * Handle auto-submit (confidence >= 0.85)
    * Creates dispute case from matched evidence and marks for filing by Agent 7
    */
-  private async handleAutoSubmit(userId: string, result: MatchingResult): Promise<void> {
+  private async handleAutoSubmit(userId: string, tenantId: string, result: MatchingResult): Promise<void> {
     try {
       logger.info('✅ [EVIDENCE MATCHING] Auto-submitting high-confidence match', {
         userId,
+        tenantId,
         disputeId: result.dispute_id,
         evidenceId: result.evidence_document_id,
         confidence: result.final_confidence
       });
 
       // Store evidence link
-      await this.storeEvidenceLink(result, 'auto_match');
+      await this.storeEvidenceLink(tenantId, result, 'auto_match');
 
       // Update detection result status
-      await this.updateDetectionResultStatus(result.dispute_id, 'disputed', result.final_confidence);
+      await this.updateDetectionResultStatus(tenantId, result.dispute_id, 'disputed', result.final_confidence);
 
       // 🎯 AGENT 7 INTEGRATION: Create dispute case from matched evidence
       // Agent 7 (Refund Filing Worker) will pick up cases with filing_status = 'pending'
@@ -1060,6 +1054,7 @@ class EvidenceMatchingService {
       const caseNumber = `CASE-${Date.now().toString(36).toUpperCase()}-${result.dispute_id.slice(0, 8).toUpperCase()}`;
       const disputeCaseData = {
         seller_id: detectionResult.seller_id,
+        tenant_id: tenantId,
         detection_result_id: result.dispute_id,
         case_number: caseNumber,
         status: 'pending',
@@ -1079,11 +1074,12 @@ class EvidenceMatchingService {
         updated_at: new Date().toISOString()
       };
 
-      // Check if dispute case already exists for this detection result
+      // Check if dispute case already exists for this detection result - scope by tenant_id
       const { data: existingCase } = await supabaseAdmin
         .from('dispute_cases')
         .select('id')
         .eq('detection_result_id', result.dispute_id)
+        .eq('tenant_id', tenantId)
         .single();
 
       let disputeCase;
@@ -1100,6 +1096,7 @@ class EvidenceMatchingService {
             updated_at: new Date().toISOString()
           })
           .eq('id', existingCase.id)
+          .eq('tenant_id', tenantId)
           .select('id')
           .single();
         disputeCase = data;
@@ -1183,17 +1180,18 @@ class EvidenceMatchingService {
   /**
    * Handle smart prompt (confidence 0.5 - 0.85)
    */
-  private async handleSmartPrompt(userId: string, result: MatchingResult): Promise<void> {
+  private async handleSmartPrompt(userId: string, tenantId: string, result: MatchingResult): Promise<void> {
     try {
       logger.info('❓ [EVIDENCE MATCHING] Creating smart prompt for ambiguous match', {
         userId,
+        tenantId,
         disputeId: result.dispute_id,
         evidenceId: result.evidence_document_id,
         confidence: result.final_confidence
       });
 
       // Store evidence link
-      await this.storeEvidenceLink(result, 'ml_suggested');
+      await this.storeEvidenceLink(tenantId, result, 'ml_suggested');
 
       // Generate smart prompt question
       const question = this.generateSmartPromptQuestion(result);
@@ -1224,7 +1222,7 @@ class EvidenceMatchingService {
       );
 
       // Update detection result status
-      await this.updateDetectionResultStatus(result.dispute_id, 'reviewed', result.final_confidence);
+      await this.updateDetectionResultStatus(tenantId, result.dispute_id, 'reviewed', result.final_confidence);
 
     } catch (error: any) {
       logger.error('❌ [EVIDENCE MATCHING] Failed to handle smart prompt', {
@@ -1239,20 +1237,21 @@ class EvidenceMatchingService {
   /**
    * Handle hold (confidence < 0.5)
    */
-  private async handleHold(userId: string, result: MatchingResult): Promise<void> {
+  private async handleHold(userId: string, tenantId: string, result: MatchingResult): Promise<void> {
     try {
       logger.info('⏸️ [EVIDENCE MATCHING] Holding low-confidence match', {
         userId,
+        tenantId,
         disputeId: result.dispute_id,
         evidenceId: result.evidence_document_id,
         confidence: result.final_confidence
       });
 
       // Store evidence link with low confidence
-      await this.storeEvidenceLink(result, 'manual_review');
+      await this.storeEvidenceLink(tenantId, result, 'manual_review');
 
       // Update detection result status
-      await this.updateDetectionResultStatus(result.dispute_id, 'pending', result.final_confidence);
+      await this.updateDetectionResultStatus(tenantId, result.dispute_id, 'pending', result.final_confidence);
 
     } catch (error: any) {
       logger.error('❌ [EVIDENCE MATCHING] Failed to handle hold', {
@@ -1268,18 +1267,20 @@ class EvidenceMatchingService {
    * Store evidence link in database
    */
   private async storeEvidenceLink(
+    tenantId: string,
     result: MatchingResult,
     linkType: 'auto_match' | 'ml_suggested' | 'manual_review'
   ): Promise<void> {
     try {
       const client = supabaseAdmin || supabase;
 
-      // Check if dispute_evidence_links table exists
+      // Check if dispute_evidence_links table exists - include tenant_id if possible
       const { error: insertError } = await client
         .from('dispute_evidence_links')
         .insert({
           dispute_case_id: result.dispute_id,
           evidence_document_id: result.evidence_document_id,
+          tenant_id: tenantId,
           relevance_score: result.final_confidence,
           matched_context: {
             match_type: result.match_type,
@@ -1313,6 +1314,7 @@ class EvidenceMatchingService {
    * Update detection result status
    */
   private async updateDetectionResultStatus(
+    tenantId: string,
     detectionId: string,
     status: 'pending' | 'reviewed' | 'disputed' | 'resolved',
     confidence?: number
@@ -1333,7 +1335,8 @@ class EvidenceMatchingService {
       const { error } = await client
         .from('detection_results')
         .update(updateData)
-        .eq('id', detectionId);
+        .eq('id', detectionId)
+        .eq('tenant_id', tenantId);
 
       if (error) {
         logger.debug('⚠️ [EVIDENCE MATCHING] Failed to update detection result', {
@@ -1373,9 +1376,9 @@ class EvidenceMatchingService {
   }
 
   /**
-   * Get matching metrics for a user
+   * Get matching metrics for a user - scope by tenant if applicable
    */
-  async getMatchingMetrics(userId: string, days: number = 30): Promise<any> {
+  async getMatchingMetrics(userId: string, tenantId: string, days: number = 30): Promise<any> {
     try {
       const endpoint = `${this.pythonApiUrl}/api/internal/evidence/matching/metrics`;
       const response = await axios.get(

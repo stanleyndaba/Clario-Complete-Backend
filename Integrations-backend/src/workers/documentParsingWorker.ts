@@ -221,7 +221,7 @@ export class DocumentParsingWorker {
       }
 
       try {
-        const result = await this.parseDocument(document);
+        const result = await this.parseDocument(document, tenantId);
         stats.processed++;
 
         if (result.success) {
@@ -362,7 +362,7 @@ export class DocumentParsingWorker {
   /**
    * Parse a single document
    */
-  private async parseDocument(document: { id: string; seller_id: string; filename: string; content_type: string }): Promise<{ success: boolean; error?: string }> {
+  private async parseDocument(document: { id: string; seller_id: string; filename: string; content_type: string }, tenantId: string): Promise<{ success: boolean; error?: string }> {
     try {
       logger.info(`📄 [DOCUMENT PARSING WORKER] Parsing document: ${document.id}`, {
         documentId: document.id,
@@ -480,7 +480,7 @@ export class DocumentParsingWorker {
       // Trigger matching for this user when document parsing completes
       try {
         const evidenceMatchingWorker = (await import('./evidenceMatchingWorker')).default;
-        await evidenceMatchingWorker.triggerMatchingForParsedDocument(document.seller_id);
+        await evidenceMatchingWorker.triggerMatchingForParsedDocument(document.seller_id, tenantId);
         logger.info(`🔄 [DOCUMENT PARSING WORKER] Triggered evidence matching for user: ${document.seller_id}`);
       } catch (error: any) {
         // Non-blocking - matching can be triggered by scheduled worker
@@ -816,7 +816,7 @@ export class DocumentParsingWorker {
       return { success: false, error: 'Document not found' };
     }
 
-    return await this.parseDocument(document);
+    return await this.parseDocument(document, (document as any).tenant_id || '');
   }
 
   /**
@@ -825,12 +825,12 @@ export class DocumentParsingWorker {
   /**
    * Get document by ID
    */
-  public async getDocumentById(documentId: string): Promise<{ id: string; seller_id: string; filename: string; content_type: string } | null> {
+  public async getDocumentById(documentId: string): Promise<{ id: string; seller_id: string; filename: string; content_type: string; tenant_id?: string } | null> {
     try {
       const client = supabaseAdmin || supabase;
       const { data, error } = await client
         .from('evidence_documents')
-        .select('id, seller_id, filename, content_type')
+        .select('id, seller_id, filename, content_type, tenant_id')
         .eq('id', documentId)
         .single();
 
@@ -842,7 +842,8 @@ export class DocumentParsingWorker {
         id: data.id,
         seller_id: data.seller_id,
         filename: data.filename,
-        content_type: data.content_type
+        content_type: data.content_type,
+        tenant_id: data.tenant_id
       };
     } catch (error: any) {
       logger.error('Error getting document by ID', { documentId, error: error.message });

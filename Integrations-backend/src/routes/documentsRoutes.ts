@@ -40,6 +40,16 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
             filenames: files.map(f => f.originalname)
         });
 
+        // Extract tenant ID
+        const tenantId = (req as any).tenant?.tenantId;
+
+        if (!tenantId) {
+            return res.status(401).json({
+                success: false,
+                error: 'Unauthorized: Tenant context missing'
+            });
+        }
+
         const uploadedDocuments: any[] = [];
 
         for (let i = 0; i < files.length; i++) {
@@ -47,7 +57,7 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
             const docId = uuidv4();
             const timestamp = Date.now();
             // Use index to ensure unique paths even for files with same name
-            const storagePath = `${finalUserId}/${docId}/${file.originalname}`;
+            const storagePath = `${tenantId}/${docId}/${file.originalname}`;
 
             // Upload to Supabase Storage
             const { data: storageData, error: storageError } = await supabaseAdmin
@@ -73,7 +83,8 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
                 .insert({
                     id: docId,
                     user_id: finalUserId,
-                    seller_id: finalUserId,
+                    tenant_id: tenantId,
+                    seller_id: tenantId, // Use tenantId as seller_id in multi-tenant mode
                     filename: file.originalname,
                     original_filename: file.originalname,
                     content_type: file.mimetype,
@@ -159,9 +170,10 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
  */
 router.get('/', async (req: Request, res: Response) => {
     try {
-        const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+        const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+        const tenantId = (req as any).tenant?.tenantId;
 
-        if (!userId) {
+        if (!userId || !tenantId) {
             return res.status(401).json({
                 success: false,
                 error: 'Unauthorized'
@@ -171,13 +183,13 @@ router.get('/', async (req: Request, res: Response) => {
         // Convert to UUID if needed (handles 'demo-user' -> deterministic UUID)
         const finalUserId = convertUserIdToUuid(userId);
 
-        logger.info('📂 [DOCUMENTS] Fetching documents', { userId, finalUserId });
+        logger.info('📂 [DOCUMENTS] Fetching documents', { userId, finalUserId, tenantId });
 
-        // Fetch documents from Supabase
-        const { data: documents, error } = await supabase
+        // Fetch documents from Supabase - scope by tenant_id
+        const { data: documents, error } = await supabaseAdmin
             .from('evidence_documents')
             .select('*')
-            .eq('user_id', finalUserId)
+            .eq('tenant_id', tenantId)
             .order('created_at', { ascending: false });
 
         if (error) {
@@ -247,25 +259,41 @@ router.get('/', async (req: Request, res: Response) => {
  */
 router.get('/:id', async (req: Request, res: Response) => {
     try {
-        const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+        const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+        const tenantId = (req as any).tenant?.tenantId;
         const docId = req.params.id;
 
-        if (!userId) {
+        if (!userId || !tenantId) {
             return res.status(401).json({
                 success: false,
                 error: 'Unauthorized'
             });
         }
 
-        const { data: doc, error } = await supabase
+        const { data: doc, error } = await supabaseAdmin
             .from('evidence_documents')
             .select('*')
             .eq('id', docId)
-            .eq('user_id', convertUserIdToUuid(userId))
+            .eq('tenant_id', tenantId)
             .single();
 
         if (error) {
             if (error.code === 'PGRST116') {
+                // Log unauthorized access attempt
+                const { data: otherDoc } = await supabaseAdmin
+                    .from('evidence_documents')
+                    .select('id, tenant_id')
+                    .eq('id', docId)
+                    .single();
+
+                if (otherDoc) {
+                    logger.warn('⚠️ [SECURITY] Unauthorized document detail access attempt', {
+                        docId,
+                        requestingTenantId: tenantId,
+                        ownerTenantId: otherDoc.tenant_id,
+                        userId
+                    });
+                }
                 return res.status(404).json({
                     success: false,
                     error: 'Document not found'
@@ -339,10 +367,11 @@ router.get('/:id', async (req: Request, res: Response) => {
  */
 router.get('/:id/download', async (req: Request, res: Response) => {
     try {
-        const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+        const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+        const tenantId = (req as any).tenant?.tenantId;
         const docId = req.params.id;
 
-        if (!userId) {
+        if (!userId || !tenantId) {
             return res.status(401).json({
                 success: false,
                 error: 'Unauthorized'
@@ -350,14 +379,31 @@ router.get('/:id/download', async (req: Request, res: Response) => {
         }
 
         // Get document metadata first to get storage path
-        const { data: doc, error: dbError } = await supabase
+        const { data: doc, error: dbError } = await supabaseAdmin
             .from('evidence_documents')
-            .select('storage_path, filename')
+            .select('storage_path, filename, tenant_id')
             .eq('id', docId)
-            .eq('user_id', convertUserIdToUuid(userId))
+            .eq('tenant_id', tenantId)
             .single();
 
         if (dbError || !doc) {
+            if (dbError?.code === 'PGRST116') {
+                // Log unauthorized download attempt
+                const { data: otherDoc } = await supabaseAdmin
+                    .from('evidence_documents')
+                    .select('id, tenant_id')
+                    .eq('id', docId)
+                    .single();
+
+                if (otherDoc) {
+                    logger.warn('⚠️ [SECURITY] Unauthorized document download attempt', {
+                        docId,
+                        requestingTenantId: tenantId,
+                        ownerTenantId: otherDoc.tenant_id,
+                        userId
+                    });
+                }
+            }
             return res.status(404).json({
                 success: false,
                 error: 'Document not found'

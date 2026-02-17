@@ -192,8 +192,8 @@ export async function tenantMiddleware(req: Request, res: Response, next: NextFu
         let tenant: any = null;
         let membership: any = null;
 
-        // 1. Try URL path
-        const pathSlug = extractTenantSlugFromPath(fullPath);
+        // 1. Try URL path or query parameter
+        const pathSlug = extractTenantSlugFromPath(fullPath) || (req.query.tenantSlug as string);
         if (pathSlug) {
             tenant = await getTenantBySlug(pathSlug);
             if (tenant) {

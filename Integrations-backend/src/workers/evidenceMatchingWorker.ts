@@ -253,7 +253,7 @@ export class EvidenceMatchingWorker {
       }
 
       try {
-        const result = await this.matchEvidenceForUser(userId);
+        const result = await this.matchEvidenceForUser(userId, tenantId);
         stats.processed++;
 
         if (result.success) {
@@ -387,7 +387,7 @@ export class EvidenceMatchingWorker {
   /**
    * Match evidence for a single user
    */
-  private async matchEvidenceForUser(userId: string): Promise<{
+  private async matchEvidenceForUser(userId: string, tenantId: string): Promise<{
     success: boolean;
     matches?: number;
     autoSubmitted?: number;
@@ -396,10 +396,10 @@ export class EvidenceMatchingWorker {
     error?: string;
   }> {
     try {
-      logger.info(`🔗 [EVIDENCE MATCHING WORKER] Matching evidence for user: ${userId}`);
+      logger.info(`🔗 [EVIDENCE MATCHING WORKER] Matching evidence for user: ${userId}`, { tenantId });
 
-      // Get pending claims for this user
-      const claims = await this.getPendingClaimsForUser(userId);
+      // Get pending claims for this user - scope by tenant_id
+      const claims = await this.getPendingClaimsForUser(userId, tenantId);
 
       if (claims.length === 0) {
         logger.debug(`ℹ️ [EVIDENCE MATCHING WORKER] No pending claims for user ${userId}`);
@@ -453,12 +453,13 @@ export class EvidenceMatchingWorker {
 
       // Run matching via Python API (with batch processing)
       const matchingResult = await retryWithBackoff(async () => {
-        return await evidenceMatchingService.runMatchingWithRetry(userId, claims, 2);
+        return await evidenceMatchingService.runMatchingWithRetry(userId, tenantId, claims, 2);
       }, 1, 2000);
 
       // Process results and route based on confidence
       const processedStats = await evidenceMatchingService.processMatchingResults(
         userId,
+        tenantId,
         matchingResult.results || []
       );
 
@@ -542,7 +543,7 @@ export class EvidenceMatchingWorker {
 
     } catch (error: any) {
       // Log error
-      await this.logError(userId, error);
+      await this.logError(userId, tenantId, error);
 
       logger.error(`❌ [EVIDENCE MATCHING WORKER] Failed to match evidence for user: ${userId}`, {
         error: error.message,
@@ -559,15 +560,15 @@ export class EvidenceMatchingWorker {
   /**
    * Get pending claims (detection_results) for a user
    */
-  private async getPendingClaimsForUser(userId: string): Promise<ClaimData[]> {
+  private async getPendingClaimsForUser(userId: string, tenantId: string): Promise<ClaimData[]> {
     try {
       const client = supabaseAdmin || supabase;
 
-      // Get detection_results that need matching
+      // Get detection_results that need matching - scope by tenant_id
       const { data: results, error } = await client
         .from('detection_results')
-        .select('id, seller_id, anomaly_type, estimated_value, currency, confidence_score, evidence, related_event_ids')
-        .eq('seller_id', userId)
+        .select('id, seller_id, anomaly_type, estimated_value, currency, confidence_score, evidence, related_event_ids, tenant_id')
+        .eq('tenant_id', tenantId)
         .eq('status', 'pending')
         .limit(50);
 
@@ -612,6 +613,7 @@ export class EvidenceMatchingWorker {
    */
   private async logError(
     userId: string,
+    tenantId: string,
     error: any,
     retryCount: number = 0
   ): Promise<void> {
@@ -623,6 +625,7 @@ export class EvidenceMatchingWorker {
         .from('evidence_matching_errors')
         .insert({
           seller_id: userId,
+          tenant_id: tenantId,
           error_type: error.name || 'MatchingError',
           error_message: error.message || String(error),
           error_stack: error.stack,
@@ -630,7 +633,8 @@ export class EvidenceMatchingWorker {
           max_retries: 3,
           metadata: {
             timestamp: new Date().toISOString(),
-            seller_id: userId
+            seller_id: userId,
+            tenant_id: tenantId
           }
         });
 
@@ -668,7 +672,7 @@ export class EvidenceMatchingWorker {
   /**
    * Manually trigger matching for a user (for testing)
    */
-  async triggerManualMatching(userId: string): Promise<{
+  async triggerManualMatching(userId: string, tenantId: string): Promise<{
     success: boolean;
     matches?: number;
     autoSubmitted?: number;
@@ -676,21 +680,21 @@ export class EvidenceMatchingWorker {
     held?: number;
     error?: string;
   }> {
-    logger.info(`🔧 [EVIDENCE MATCHING WORKER] Manual matching triggered for user: ${userId}`);
-    return await this.matchEvidenceForUser(userId);
+    logger.info(`🔧 [EVIDENCE MATCHING WORKER] Manual matching triggered for user: ${userId}`, { tenantId });
+    return await this.matchEvidenceForUser(userId, tenantId);
   }
 
   /**
    * Trigger matching when document parsing completes (called by Agent 5)
    */
-  async triggerMatchingForParsedDocument(userId: string): Promise<void> {
+  async triggerMatchingForParsedDocument(userId: string, tenantId: string): Promise<void> {
     try {
-      logger.info(`🔄 [EVIDENCE MATCHING WORKER] Triggering matching after document parsing for user: ${userId}`);
+      logger.info(`🔄 [EVIDENCE MATCHING WORKER] Triggering matching after document parsing for user: ${userId}`, { tenantId });
 
       // Queue matching for this user (non-blocking)
       setImmediate(async () => {
         try {
-          await this.matchEvidenceForUser(userId);
+          await this.matchEvidenceForUser(userId, tenantId);
         } catch (error: any) {
           logger.warn('⚠️ [EVIDENCE MATCHING WORKER] Failed to match after parsing', {
             userId,
