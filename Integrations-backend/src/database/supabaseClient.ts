@@ -362,13 +362,13 @@ export const tokenManager = {
         logger.info('Converted non-UUID userId to deterministic UUID', { originalUserId: userId, dbUserId, provider });
       }
 
-      const { error } = await adminClient
+      let { error } = await adminClient
         .from('tokens')
         .upsert({
           user_id: dbUserId,
           provider,
-          tenant_id: tenantId || DEFAULT_TENANT_ID, // Include tenant_id for multi-tenant support
-          store_id: storeId || null, // Associate with specific store
+          tenant_id: tenantId || DEFAULT_TENANT_ID,
+          store_id: storeId || null,
           access_token_iv: accessTokenEnc.iv,
           access_token_data: accessTokenEnc.data,
           refresh_token_iv: refreshTokenEnc?.iv || null,
@@ -376,10 +376,34 @@ export const tokenManager = {
           expires_at: expiresAt ? expiresAt.toISOString() : null,
           updated_at: new Date().toISOString()
         }, {
-          // Alignment with database unique constraint UNIQUE(user_id, provider).
-          // Including store_id in the conflict target causes failure if the database doesn't have a matching UNIQUE index.
           onConflict: 'user_id,provider'
         });
+
+      // Handle column mismatch (e.g., store_id or tenant_id missing in DB)
+      if (error && (error.code === 'PGRST204' || error.message?.includes('column') || error.message?.includes('does not exist'))) {
+        logger.warn('Column mismatch in tokens table, retrying with legacy payload', {
+          error: error.message,
+          userId,
+          provider
+        });
+
+        const legacyResult = await adminClient
+          .from('tokens')
+          .upsert({
+            user_id: dbUserId,
+            provider,
+            access_token_iv: accessTokenEnc.iv,
+            access_token_data: accessTokenEnc.data,
+            refresh_token_iv: refreshTokenEnc?.iv || null,
+            refresh_token_data: refreshTokenEnc?.data || null,
+            expires_at: expiresAt ? expiresAt.toISOString() : null,
+            updated_at: new Date().toISOString()
+          }, {
+            onConflict: 'user_id,provider'
+          });
+
+        error = legacyResult.error;
+      }
 
       if (error) {
         logger.error('Error saving token', { error, userId, dbUserId, provider });
@@ -473,7 +497,7 @@ export const tokenManager = {
       // Convert non-UUID user IDs to deterministic UUID
       const dbUserId = convertUserIdToUuid(userId);
 
-      const { error } = await adminClient
+      let { error } = await adminClient
         .from('tokens')
         .update({
           access_token_iv: accessTokenEnc.iv,
@@ -487,6 +511,30 @@ export const tokenManager = {
         })
         .eq('user_id', dbUserId)
         .eq('provider', provider);
+
+      // Handle column mismatch
+      if (error && (error.code === 'PGRST204' || error.message?.includes('column') || error.message?.includes('does not exist'))) {
+        logger.warn('Column mismatch in tokens table (update), retrying with legacy payload', {
+          error: error.message,
+          userId,
+          provider
+        });
+
+        const legacyResult = await adminClient
+          .from('tokens')
+          .update({
+            access_token_iv: accessTokenEnc.iv,
+            access_token_data: accessTokenEnc.data,
+            refresh_token_iv: refreshTokenEnc?.iv || null,
+            refresh_token_data: refreshTokenEnc?.data || null,
+            expires_at: expiresAt ? expiresAt.toISOString() : null,
+            updated_at: new Date().toISOString()
+          })
+          .eq('user_id', dbUserId)
+          .eq('provider', provider);
+
+        error = legacyResult.error;
+      }
 
       if (error) {
         logger.error('Error updating token', { error, userId, provider });

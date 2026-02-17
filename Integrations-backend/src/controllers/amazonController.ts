@@ -769,42 +769,63 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       });
 
       // Step 6: Create evidence source for the user (Agent 4)
-      const { error: evidenceError } = await supabaseAdmin
-        .from('evidence_sources')
-        .upsert({
-          seller_id: profile.sellerId, // evidence_sources uses seller_id (TEXT), not user_id
-          provider: 'amazon',
-          status: 'connected',
-          display_name: profile.companyName || `Amazon Seller ${profile.sellerId}`,
-          tenant_id: tenantIdToUse,
-          store_id: storeId, // Link to the specific store
-          metadata: {
-            marketplaces: profile.marketplaces,
-            seller_name: profile.sellerName,
-            company_name: profile.companyName
-          },
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        }, {
-          onConflict: 'seller_id,provider,store_id'
-        });
+      try {
+        const { error: evidenceError } = await supabaseAdmin
+          .from('evidence_sources')
+          .upsert({
+            seller_id: profile.sellerId, // evidence_sources uses seller_id (TEXT), not user_id
+            provider: 'amazon',
+            status: 'connected',
+            display_name: profile.companyName || `Amazon Store (${storeId || 'Primary'})`,
+            tenant_id: tenantIdToUse,
+            store_id: storeId, // Link to the specific store
+            metadata: {
+              marketplaces: profile.marketplaces,
+              seller_name: profile.sellerName,
+              company_name: profile.companyName
+            },
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          }, {
+            onConflict: 'seller_id,provider,store_id'
+          });
 
-      if (evidenceError) {
-        logger.warn('Failed to create evidence source (non-critical)', {
-          error: evidenceError.message,
-          sellerId: profile.sellerId
-        });
-        // Don't fail the callback if evidence source creation fails - it's not critical
-      } else {
-        logger.info('Created evidence source for user', { userId, sellerId: profile.sellerId });
+        if (evidenceError) {
+          // If error is column mismatch (store_id doesn't exist yet), retry without store_id
+          if (evidenceError.code === 'PGRST204' || evidenceError.message?.includes('store_id')) {
+            logger.warn('⚠️ [OAUTH] Column mismatch in evidence_sources, retrying legacy upsert', { userId });
+            await supabaseAdmin
+              .from('evidence_sources')
+              .upsert({
+                seller_id: profile.sellerId,
+                provider: 'amazon',
+                display_name: profile.companyName || `Amazon Store`,
+                status: 'connected',
+                tenant_id: tenantIdToUse,
+                metadata: {
+                  marketplaces: profile.marketplaces,
+                  seller_name: profile.sellerName,
+                  company_name: profile.companyName
+                },
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+              }, {
+                onConflict: 'seller_id,provider'
+              });
+          } else {
+            logger.warn('Failed to create evidence source (non-critical)', {
+              error: evidenceError.message,
+              sellerId: profile.sellerId
+            });
+          }
+        } else {
+          logger.info('Created evidence source for user', { userId, sellerId: profile.sellerId });
+        }
+      } catch (sourceEx: any) {
+        logger.error('Error in evidence source linking step', { error: sourceEx.message, userId });
       }
 
       // Step 7: Queue initial sync job (Agent 2: Continuous Data Sync via BullMQ)
-      // This connects Agent 1 (OAuth) → Queue → Agent 2 (Data Sync)
-      // The job will be processed by onboardingWorker in the background
-      // 
-      // HARDENING: Check Redis health BEFORE attempting queue.add()
-      // This prevents unnecessary fallback cascades
       try {
         const { isQueueHealthy, addSyncJob } = await import('../queues/ingestionQueue');
 
@@ -826,7 +847,6 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
               sellerId: profile.sellerId
             });
           } else {
-            // Duplicate job was rejected - user already has pending sync
             logger.info('🔄 [AGENT 1] Duplicate sync rejected (already pending)', {
               userId,
               sellerId: profile.sellerId
@@ -847,7 +867,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         await runInlineSync(userId, storeId || undefined);
       }
 
-      // Helper: Run inline sync (degraded mode)
+      // Helper for inline sync
       async function runInlineSync(uid: string, sid?: string): Promise<void> {
         try {
           const agent2DataSyncService = (await import('../services/agent2DataSyncService')).default;

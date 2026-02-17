@@ -10,24 +10,17 @@ import { join } from 'path';
 import logger from '../src/utils/logger';
 import { supabaseAdmin } from '../src/database/supabaseClient';
 
-const migrations = [
-  '005_add_dispute_system.sql',
-  '006_add_deadline_tracking.sql',
-  '006_add_prediction_fields.sql',
-  '007_evidence_engine.sql',
-  '008_evidence_line_items.sql',
-  '009_evidence_documents_extracted_gin.sql',
-  '010_evidence_engine_extras.sql',
-  '011_evidence_engine_views.sql',
-  '011_evidence_ingestion_worker.sql',
-  '012_document_parsing_worker.sql',
-  '013_evidence_matching_worker.sql',
-  '014_fix_parser_jobs.sql',
-  '015_refund_filing_worker.sql',
-  '024_add_expected_payout_date_to_disputes.sql',
-  '016_ensure_parser_jobs_user_id.sql',
-  '017_ensure_parser_jobs_columns.sql'
-];
+import { readdirSync } from 'fs';
+
+// Dynamically load migrations from the migrations directory
+function getMigrations(): string[] {
+  const migrationsDir = join(__dirname, '..', 'migrations');
+  return readdirSync(migrationsDir)
+    .filter(file => file.endsWith('.sql') && file !== 'combined_migration.sql')
+    .sort();
+}
+
+const migrations = getMigrations();
 
 async function runMigrationsViaSupabase(sql: string): Promise<boolean> {
   // Try using Supabase REST API to execute SQL
