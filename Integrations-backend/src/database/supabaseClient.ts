@@ -30,7 +30,8 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
     notifications: [],
     recovery_lifecycle_logs: [],
     detection_results: [],
-    user_notes: []
+    user_notes: [],
+    evidence_sources: []
   };
 
   logger.info('Using in-memory mock database for demo mode');
@@ -375,7 +376,9 @@ export const tokenManager = {
           expires_at: expiresAt ? expiresAt.toISOString() : null,
           updated_at: new Date().toISOString()
         }, {
-          onConflict: 'user_id,provider,store_id'
+          // Alignment with database unique constraint UNIQUE(user_id, provider).
+          // Including store_id in the conflict target causes failure if the database doesn't have a matching UNIQUE index.
+          onConflict: 'user_id,provider'
         });
 
       if (error) {

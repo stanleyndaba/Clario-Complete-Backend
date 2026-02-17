@@ -14,6 +14,7 @@ interface OAuthStateData {
   userId?: string;
   tenantSlug?: string;
   marketplaceId?: string;
+  storeId?: string;
 }
 
 /**
@@ -61,12 +62,13 @@ class InMemoryOAuthStateStore {
   /**
    * Store OAuth state with user ID (convenience method)
    */
-  async setState(state: string, userId: string, frontendUrl?: string, tenantSlug?: string, marketplaceId?: string): Promise<void> {
+  async setState(state: string, userId: string, frontendUrl?: string, tenantSlug?: string, marketplaceId?: string, storeId?: string): Promise<void> {
     await this.set(state, {
       userId,
       frontendUrl: frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000',
       tenantSlug,
       marketplaceId,
+      storeId,
       timestamp: Date.now()
     });
   }

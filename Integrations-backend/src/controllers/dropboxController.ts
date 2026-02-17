@@ -47,6 +47,10 @@ export const initiateDropboxOAuth = async (req: Request, res: Response) => {
         const redirectUri = config.DROPBOX_REDIRECT_URI || process.env.DROPBOX_REDIRECT_URI ||
             `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/dropbox/callback`;
 
+        // Get tenant info from query params
+        const tenantSlug = (req as any).query?.tenant_slug as string || (req as any).query?.tenant as string;
+        const storeId = (req as any).query?.storeId as string || (req as any).query?.store_id as string;
+
         if (!clientId || !config.DROPBOX_CLIENT_SECRET) {
             logger.warn('Dropbox credentials not configured, returning sandbox mock URL');
             const mockAuthUrl = `${DROPBOX_AUTH_URL}?client_id=mock-client-id&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code`;
@@ -61,7 +65,7 @@ export const initiateDropboxOAuth = async (req: Request, res: Response) => {
 
         // Generate state for CSRF protection
         const state = crypto.randomBytes(32).toString('hex');
-        await oauthStateStore.setState(state, userId, frontendUrl);
+        await oauthStateStore.setState(state, userId, frontendUrl, tenantSlug, undefined, storeId);
 
         // Build OAuth URL
         const authUrl = `${DROPBOX_AUTH_URL}?` +
@@ -176,12 +180,36 @@ export const handleDropboxCallback = async (req: Request, res: Response) => {
         // Get user ID and frontend URL from state store
         let userId: string | null = null;
         let frontendUrl: string | null = null;
+        let tenantId: string | undefined = undefined;
+        let storeId: string | undefined = undefined;
 
         if (typeof state === 'string') {
             const stateData = await oauthStateStore.get(state);
             if (stateData) {
                 userId = stateData.userId || null;
                 frontendUrl = stateData.frontendUrl || null;
+
+                // Resolve tenantId if we have a slug
+                if (stateData.tenantSlug) {
+                    try {
+                        const { supabaseAdmin } = await import('../database/supabaseClient');
+                        const { data: tenant } = await supabaseAdmin
+                            .from('tenants')
+                            .select('id')
+                            .eq('slug', stateData.tenantSlug)
+                            .maybeSingle();
+
+                        if (tenant) {
+                            tenantId = tenant.id;
+                        }
+                    } catch (err) {
+                        logger.warn('Failed to resolve tenant ID from slug in Dropbox callback', { slug: stateData.tenantSlug });
+                    }
+                }
+
+                // Retrieve storeId from state
+                storeId = stateData.storeId;
+
                 await oauthStateStore.removeState(state);
             }
         }
@@ -200,8 +228,8 @@ export const handleDropboxCallback = async (req: Request, res: Response) => {
                 accessToken: access_token,
                 refreshToken: refresh_token || '',
                 expiresAt: new Date(Date.now() + (expiresInSeconds * 1000))
-            });
-            logger.info('Dropbox tokens saved', { userId, email: userEmail });
+            }, tenantId, storeId);
+            logger.info('Dropbox tokens saved', { userId, email: userEmail, tenantId });
         } catch (error) {
             logger.error('Failed to save Dropbox tokens:', error);
             const defaultFrontendUrl = frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';

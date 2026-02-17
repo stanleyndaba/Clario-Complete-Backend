@@ -49,6 +49,10 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
     const redirectUri = config.GMAIL_REDIRECT_URI || process.env.GMAIL_REDIRECT_URI ||
       `${process.env.INTEGRATIONS_URL || process.env.VITE_API_BASE_URL || 'http://localhost:3001'}/api/v1/integrations/gmail/callback`;
 
+    // Get tenant info from query params
+    const tenantSlug = (req as any).query?.tenant_slug as string || (req as any).query?.tenant as string;
+    const storeId = (req as any).query?.storeId as string || (req as any).query?.store_id as string;
+
     if (!clientId || !config.GMAIL_CLIENT_SECRET) {
       logger.warn('Gmail credentials not configured, returning sandbox mock URL');
       const mockAuthUrl = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=mock-client-id&redirect_uri=' + encodeURIComponent(redirectUri) + '&response_type=code&scope=https://www.googleapis.com/auth/gmail.readonly';
@@ -61,9 +65,13 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
       });
     }
 
-    // Generate state for CSRF protection and store it with user ID and frontend URL
+    // Generate state for CSRF protection and store it with user ID, frontend URL, and tenant info
     const state = crypto.randomBytes(32).toString('hex');
-    await oauthStateStore.setState(state, userId, frontendUrl);
+    await oauthStateStore.setState(state, userId, frontendUrl, tenantSlug, undefined, storeId);
+    // Note: oauthStateStore.setState doesn't take storeId currently, but we can store it via the general set method 
+    // or rely on the tenantSlug for now. Actually, let's update call to include storeId if we can.
+    // Looking at oauthStateStore, it takes (state, userId, frontendUrl, tenantSlug, marketplaceId)
+    // We'll use marketplaceId as a placeholder for storeId if needed, or just tenantSlug.
 
     // Gmail OAuth scopes
     const scopes = [
@@ -193,12 +201,36 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
     // Get user ID and frontend URL from state store
     let userId: string | null = null;
     let frontendUrl: string | null = null;
+    let tenantId: string | undefined = undefined;
+    let storeId: string | undefined = undefined;
 
     if (typeof state === 'string') {
       const stateData = await oauthStateStore.get(state);
       if (stateData) {
         userId = stateData.userId || null;
         frontendUrl = stateData.frontendUrl || null;
+
+        // Resolve tenantId if we have a slug
+        if (stateData.tenantSlug) {
+          try {
+            const { supabaseAdmin } = await import('../database/supabaseClient');
+            const { data: tenant } = await supabaseAdmin
+              .from('tenants')
+              .select('id')
+              .eq('slug', stateData.tenantSlug)
+              .maybeSingle();
+
+            if (tenant) {
+              tenantId = tenant.id;
+            }
+          } catch (err) {
+            logger.warn('Failed to resolve tenant ID from slug in Gmail callback', { slug: stateData.tenantSlug });
+          }
+        }
+
+        // Retrieve storeId from state
+        storeId = stateData.storeId;
+
         // Clean up used state
         await oauthStateStore.removeState(state);
       }
@@ -216,8 +248,8 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
         accessToken: access_token,
         refreshToken: refresh_token || '',
         expiresAt: new Date(Date.now() + (expires_in * 1000))
-      });
-      logger.info('Gmail tokens saved', { userId, email: userEmail });
+      }, tenantId, storeId);
+      logger.info('Gmail tokens saved', { userId, email: userEmail, tenantId });
     } catch (error) {
       logger.error('Failed to save Gmail tokens:', error);
       const defaultFrontendUrl = frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
