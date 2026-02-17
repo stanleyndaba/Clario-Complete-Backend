@@ -17,7 +17,7 @@ router.get('/stream', (req: AuthenticatedSSERequest, res) => {
     closeSSEConnection(res);
     return;
   }
-  const tenantSlug = (req.query.tenantSlug as string) || 'beta';
+  const tenantSlug = ((req as any).query.tenantSlug as string) || 'beta';
 
   // Initial hello event for immediate readiness
   sendSSEEvent(res, 'connected', {
@@ -56,7 +56,7 @@ router.get('/status', (req: AuthenticatedSSERequest, res) => {
     closeSSEConnection(res);
     return;
   }
-  const tenantSlug = (req.query.tenantSlug as string) || 'beta';
+  const tenantSlug = ((req as any).query.tenantSlug as string) || 'beta';
 
   logger.info('✅ [SSE ROUTES] SSE status connection established', {
     user_id: userId,
@@ -123,7 +123,7 @@ router.get('/sync-progress/:syncId', (req: AuthenticatedSSERequest, res) => {
     closeSSEConnection(res);
     return;
   }
-  const tenantSlug = (req.query.tenantSlug as string) || 'beta';
+  const tenantSlug = ((req as any).query.tenantSlug as string) || 'beta';
 
   logger.info('SSE sync progress connection established', {
     user_id: userId,
@@ -183,7 +183,7 @@ router.get('/detection-updates/:syncId', (req: AuthenticatedSSERequest, res) => 
     closeSSEConnection(res);
     return;
   }
-  const tenantSlug = (req.query.tenantSlug as string) || 'beta';
+  const tenantSlug = ((req as any).query.tenantSlug as string) || 'beta';
 
   logger.info('SSE detection updates connection established', {
     user_id: userId,
@@ -236,7 +236,7 @@ router.get('/financial-events', (req: AuthenticatedSSERequest, res) => {
     closeSSEConnection(res);
     return;
   }
-  const tenantSlug = (req.query.tenantSlug as string) || 'beta';
+  const tenantSlug = ((req as any).query.tenantSlug as string) || 'beta';
 
   logger.info('SSE financial events connection established', {
     user_id: userId,
@@ -323,7 +323,7 @@ router.get('/notifications', (req: AuthenticatedSSERequest, res) => {
     closeSSEConnection(res);
     return;
   }
-  const tenantSlug = (req.query.tenantSlug as string) || 'beta';
+  const tenantSlug = ((req as any).query.tenantSlug as string) || 'beta';
 
   logger.info('SSE notifications connection established', {
     user_id: userId,
