@@ -54,6 +54,8 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
   try {
     const { provider } = req.params;
     const redirectUri = req.query.redirect_uri as string;
+    const tenantSlug = (req.query.tenant_slug as string) || (req.query.tenantSlug as string);
+    const storeId = (req.query.store_id as string) || (req.query.storeId as string);
 
     // Support both userIdMiddleware and auth middleware
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
@@ -90,7 +92,7 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
 
     // Generate state for CSRF protection
     const state = crypto.randomBytes(32).toString('hex');
-    await oauthStateStore.setState(state, userId, callbackRedirectUri);
+    await oauthStateStore.setState(state, userId, callbackRedirectUri, tenantSlug, undefined, storeId);
 
     // Build OAuth URL based on provider
     let authUrl: string;
@@ -182,7 +184,28 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
 
     const userId = stateData.userId;
     const frontendUrl = stateData.frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
+    const tenantSlug = stateData.tenantSlug;
+    const storeId = stateData.storeId;
+
     await oauthStateStore.delete(state as string);
+
+    // Resolve tenantId if we have a slug
+    let tenantId: string | undefined = undefined;
+    if (tenantSlug) {
+      try {
+        const { data: tenant } = await supabase
+          .from('tenants')
+          .select('id')
+          .eq('slug', tenantSlug)
+          .maybeSingle();
+
+        if (tenant) {
+          tenantId = tenant.id;
+        }
+      } catch (err) {
+        logger.warn('Failed to resolve tenant ID from slug in evidence source callback', { slug: tenantSlug });
+      }
+    }
 
     // Get OAuth configuration
     const oauthConfig = getOAuthConfig(provider);
@@ -253,8 +276,8 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
             accessToken: access_token,
             refreshToken: refresh_token || '',
             expiresAt: expires_in ? new Date(Date.now() + expires_in * 1000) : new Date(Date.now() + 3600 * 1000)
-          });
-          logger.info('Gmail token saved successfully', { userId });
+          }, tenantId, storeId);
+          logger.info('Gmail token saved successfully', { userId, tenantId, storeId });
         } catch (tokenError: any) {
           logger.error('CRITICAL: Failed to store Gmail token', {
             error: tokenError?.message || String(tokenError),
@@ -266,10 +289,24 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
           return res.redirect(`${frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000'}/integrations-hub?error=${encodeURIComponent('Failed to save Gmail token. Please try reconnecting.')}\u0026${provider}_connected=false`);
         }
       } else {
-        // For other providers (outlook, gdrive, dropbox), store in evidence_sources metadata
-        // or use a generic token storage mechanism
-        // For now, we'll just store in the database metadata
-        logger.info('Token stored for provider (using database metadata)', { provider, userId });
+        // For other providers (outlook, gdrive, dropbox), store in token manager as well
+        try {
+          // Map provider to what tokenManager expects if necessary
+          const tokenProvider = provider === 'gdrive' ? 'gdrive' : (provider as any);
+
+          await tokenManager.saveToken(userId, tokenProvider, {
+            accessToken: access_token,
+            refreshToken: refresh_token || '',
+            expiresAt: expires_in ? new Date(Date.now() + expires_in * 1000) : new Date(Date.now() + 3600 * 1000)
+          }, tenantId, storeId);
+          logger.info('Token stored for provider', { provider, userId, tenantId, storeId });
+        } catch (tokenError: any) {
+          logger.error(`Failed to store ${provider} token`, {
+            error: tokenError?.message || String(tokenError),
+            userId,
+            provider
+          });
+        }
       }
 
 
@@ -317,7 +354,9 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
               account_email: accountEmail || null,
               last_sync_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
-              permissions: scopes
+              permissions: scopes,
+              tenant_id: tenantId || null,
+              store_id: storeId || null
             })
             .eq('id', existingSource.id);
         } else {
@@ -333,7 +372,9 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
               status: 'connected',
               last_sync_at: new Date().toISOString(),
               permissions: scopes,
-              metadata: {}
+              metadata: {},
+              tenant_id: tenantId || null,
+              store_id: storeId || null
             });
         }
       } catch (dbError: any) {

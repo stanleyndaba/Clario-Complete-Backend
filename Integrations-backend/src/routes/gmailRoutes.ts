@@ -29,6 +29,16 @@ router.get('/auth', (req, res, next) => {
   return authenticateToken(req, res, next);
 }, initiateGmailOAuth);
 
+// Alias for /auth/start
+router.get('/auth/start', (req, res, next) => {
+  const userId = (req as any).headers['x-user-id'] || (req as any).headers['x-forwarded-user-id'];
+  if (userId) {
+    (req as any).user = { id: userId };
+    return next();
+  }
+  return authenticateToken(req, res, next);
+}, initiateGmailOAuth);
+
 // Connection status - allow X-User-Id header (for testing without full auth)
 router.get('/status', (req, res, next) => {
   // Check if X-User-Id header is present (for testing)
@@ -46,5 +56,5 @@ router.get('/status', (req, res, next) => {
 router.get('/emails', authenticateToken, getGmailEmails);
 router.get('/search', authenticateToken, searchGmailEmails);
 
-export default router; 
+export default router;
 

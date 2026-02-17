@@ -27,6 +27,9 @@ const PUBLIC_PATH_PREFIXES = [
   '/api/amazon/callback', // OAuth callbacks
   '/api/v1/integrations/amazon/auth', // Amazon OAuth
   '/api/v1/integrations/gmail/auth',  // Gmail OAuth
+  '/api/v1/integrations/outlook/auth', // Outlook OAuth
+  '/api/v1/integrations/gdrive/auth',  // Google Drive OAuth
+  '/api/v1/integrations/dropbox/auth', // Dropbox OAuth
 ];
 
 /**
