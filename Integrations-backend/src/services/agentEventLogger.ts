@@ -1,6 +1,6 @@
 /**
  * Agent Event Logger Service
- * Centralized event logging for all agents (4-10)
+ * Centralized event logging for all agents (2-11)
  * Collects rich metadata for continuous learning and improvement
  */
 
@@ -8,38 +8,60 @@ import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 
 export enum AgentType {
+  DATA_SYNC = 'data_sync',          // Agent 2
+  DETECTION = 'detection',          // Agent 3
   EVIDENCE_INGESTION = 'evidence_ingestion',
   DOCUMENT_PARSING = 'document_parsing',
   EVIDENCE_MATCHING = 'evidence_matching',
   REFUND_FILING = 'refund_filing',
   RECOVERIES = 'recoveries',
   BILLING = 'billing',
-  LEARNING = 'learning'  // Agent 11
+  NOTIFICATIONS = 'notifications',  // Agent 10
+  LEARNING = 'learning'             // Agent 11
 }
 
 export enum EventType {
+  // Agent 3 - Detection
+  DETECTION_COMPLETED = 'detection_completed',
+  DETECTION_FAILED = 'detection_failed',
+  // Agent 4 - Evidence Ingestion
   INGESTION_STARTED = 'ingestion_started',
   INGESTION_COMPLETED = 'ingestion_completed',
   INGESTION_FAILED = 'ingestion_failed',
+  // Agent 5 - Document Parsing
   PARSING_STARTED = 'parsing_started',
   PARSING_COMPLETED = 'parsing_completed',
   PARSING_FAILED = 'parsing_failed',
+  // Agent 6 - Evidence Matching
   MATCHING_STARTED = 'matching_started',
   MATCHING_COMPLETED = 'matching_completed',
   MATCHING_FAILED = 'matching_failed',
+  // Agent 7 - Refund Filing
   FILING_STARTED = 'filing_started',
   FILING_COMPLETED = 'filing_completed',
   FILING_FAILED = 'filing_failed',
   CASE_APPROVED = 'case_approved',
   CASE_DENIED = 'case_denied',
+  // Agent 8 - Recoveries
   RECOVERY_DETECTED = 'recovery_detected',
   RECOVERY_RECONCILED = 'recovery_reconciled',
+  // Agent 9 - Billing
   BILLING_COMPLETED = 'billing_completed',
   BILLING_FAILED = 'billing_failed',
-  ANALYST_CORRECTION = 'analyst_correction',  // Agent 11 - manual review feedback
-  SCHEMA_CHANGE_DETECTED = 'schema_change_detected',  // Agent 11 - schema monitoring
-  RULE_UPDATED = 'rule_updated',  // Agent 11 - rules engine
-  THRESHOLD_OPTIMIZED = 'threshold_optimized'  // Agent 11 - learning
+  // Agent 10 - Evidence Matching Trigger
+  EVIDENCE_MATCHING_TRIGGER_FAILED = 'evidence_matching_trigger_failed',
+  EVIDENCE_MATCHING_QUEUED = 'evidence_matching_queued',
+  // Agent 11 - Learning
+  ANALYST_CORRECTION = 'analyst_correction',
+  SCHEMA_CHANGE_DETECTED = 'schema_change_detected',
+  RULE_UPDATED = 'rule_updated',
+  THRESHOLD_OPTIMIZED = 'threshold_optimized',
+  // Agent 2 - Data Sync
+  SYNC_COMPLETED = 'sync_completed',
+  SYNC_FAILED = 'sync_failed',
+  // Agent 10 - Notifications
+  NOTIFICATION_DELIVERED = 'notification_delivered',
+  NOTIFICATION_FAILED = 'notification_failed'
 }
 
 export interface AgentEventData {
@@ -136,6 +158,46 @@ export interface BillingEventData {
   platformFee: number;
   sellerPayout: number;
   stripeTransactionId?: string;
+  duration: number;
+  error?: string;
+}
+
+export interface DetectionEventData {
+  userId: string;
+  syncId: string;
+  success: boolean;
+  claimsDetected: number;
+  highConfidenceCount: number;
+  mediumConfidenceCount: number;
+  lowConfidenceCount: number;
+  totalValue: number;
+  currency: string;
+  algorithmsUsed: string[];
+  confidenceDistribution: { min: number; max: number; avg: number };
+  duration: number;
+  error?: string;
+  isSandbox?: boolean;
+}
+
+export interface SyncEventData {
+  userId: string;
+  syncId: string;
+  success: boolean;
+  duration: number;
+  ordersProcessed?: number;
+  shipmentsProcessed?: number;
+  returnsProcessed?: number;
+  settlementsProcessed?: number;
+  errors?: string[];
+  isMock?: boolean;
+  mockScenario?: string;
+}
+
+export interface NotificationDeliveryEventData {
+  userId: string;
+  notificationType: string;
+  success: boolean;
+  channel: string;  // 'websocket', 'email', 'both'
   duration: number;
   error?: string;
 }
@@ -350,6 +412,79 @@ class AgentEventLogger {
         platformFee: data.platformFee,
         sellerPayout: data.sellerPayout,
         stripeTransactionId: data.stripeTransactionId,
+        error: data.error
+      }
+    });
+  }
+
+  /**
+   * Log detection event (Agent 3 → Agent 11 feed)
+   * Feeds detection outcomes into the learning loop so Agent 11 can:
+   * - Track algorithm accuracy across detection types
+   * - Identify confidence score patterns and calibration drift
+   * - Adjust thresholds based on detection→filing→outcome correlation
+   */
+  async logDetection(data: DetectionEventData): Promise<void> {
+    await this.logEvent({
+      userId: data.userId,
+      agent: AgentType.DETECTION,
+      eventType: data.success ? EventType.DETECTION_COMPLETED : EventType.DETECTION_FAILED,
+      success: data.success,
+      metadata: {
+        syncId: data.syncId,
+        duration: data.duration,
+        claimsDetected: data.claimsDetected,
+        highConfidenceCount: data.highConfidenceCount,
+        mediumConfidenceCount: data.mediumConfidenceCount,
+        lowConfidenceCount: data.lowConfidenceCount,
+        totalValue: data.totalValue,
+        currency: data.currency,
+        algorithmsUsed: data.algorithmsUsed,
+        confidenceDistribution: data.confidenceDistribution,
+        isSandbox: data.isSandbox,
+        error: data.error
+      }
+    });
+  }
+
+  /**
+   * Log data sync event (Agent 2 → Agent 11 feed)
+   * Tracks sync performance, data volumes, and failure patterns
+   */
+  async logDataSync(data: SyncEventData): Promise<void> {
+    await this.logEvent({
+      userId: data.userId,
+      agent: AgentType.DATA_SYNC,
+      eventType: data.success ? EventType.SYNC_COMPLETED : EventType.SYNC_FAILED,
+      success: data.success,
+      metadata: {
+        syncId: data.syncId,
+        duration: data.duration,
+        ordersProcessed: data.ordersProcessed,
+        shipmentsProcessed: data.shipmentsProcessed,
+        returnsProcessed: data.returnsProcessed,
+        settlementsProcessed: data.settlementsProcessed,
+        errors: data.errors,
+        isMock: data.isMock,
+        mockScenario: data.mockScenario
+      }
+    });
+  }
+
+  /**
+   * Log notification delivery event (Agent 10 → Agent 11 feed)
+   * Tracks delivery success rates across channels for reliability monitoring
+   */
+  async logNotificationDelivery(data: NotificationDeliveryEventData): Promise<void> {
+    await this.logEvent({
+      userId: data.userId,
+      agent: AgentType.NOTIFICATIONS,
+      eventType: data.success ? EventType.NOTIFICATION_DELIVERED : EventType.NOTIFICATION_FAILED,
+      success: data.success,
+      metadata: {
+        notificationType: data.notificationType,
+        channel: data.channel,
+        duration: data.duration,
         error: data.error
       }
     });

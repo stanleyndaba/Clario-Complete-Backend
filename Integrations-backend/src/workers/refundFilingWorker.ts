@@ -1325,6 +1325,30 @@ class RefundFilingWorker {
               }
 
               await this.markForRetry(disputeCase.id, disputeCase.seller_id);
+
+              // 🔔 NOTIFICATION: Tell the user their claim was denied
+              try {
+                const { default: notificationHelper } = await import('../services/notificationHelper');
+                const { NotificationType, NotificationPriority, NotificationChannel } = await import('../notifications/models/notification');
+                await notificationHelper.notifyUser(
+                  disputeCase.seller_id,
+                  NotificationType.CLAIM_DENIED,
+                  'Claim Update: Under Review',
+                  `Amazon has requested additional review for your claim${statusResult.amazon_case_id ? ` (Case ${statusResult.amazon_case_id})` : ''}. Reason: ${rejectionReason}. We're strengthening the evidence for resubmission.`,
+                  NotificationPriority.HIGH,
+                  NotificationChannel.IN_APP,
+                  {
+                    disputeId: disputeCase.id,
+                    amazonCaseId: statusResult.amazon_case_id,
+                    rejectionReason,
+                    action: 'retry_with_stronger_evidence'
+                  }
+                );
+              } catch (notifError: any) {
+                logger.warn('⚠️ [REFUND FILING] Failed to send rejection notification', {
+                  error: notifError.message
+                });
+              }
             }
           }
 

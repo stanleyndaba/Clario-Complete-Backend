@@ -1,7 +1,7 @@
 /**
- * Notification Helper Service
+ * Notification Helper Service (Agent 10)
  * Unified helper for Agents 4-9 to send notifications
- * Handles WebSocket push events and email notifications
+ * Handles WebSocket push events, email notifications, and feeds Agent 11
  */
 
 import logger from '../utils/logger';
@@ -59,6 +59,29 @@ export interface FundsDepositedData {
 }
 
 class NotificationHelper {
+
+  /**
+   * Internal helper: non-blocking Agent 11 feed for notification delivery
+   */
+  private _logDelivery(userId: string, notificationType: string, success: boolean, error?: string): void {
+    // Fire-and-forget — notification logging should never block notifications
+    setImmediate(async () => {
+      try {
+        const agentEventLogger = (await import('./agentEventLogger')).default;
+        await agentEventLogger.logNotificationDelivery({
+          userId,
+          notificationType,
+          success,
+          channel: 'both', // websocket + in-app
+          duration: 0,
+          error
+        });
+      } catch (logError: any) {
+        // Silently swallow — logging failure should never impact notifications
+      }
+    });
+  }
+
   /**
    * Notify when claim is detected
    */
@@ -115,11 +138,15 @@ class NotificationHelper {
         data: event.payload
       });
 
+      // 🎯 AGENT 11 FEED: Log notification delivery
+      this._logDelivery(userId, 'claim_detected', true);
+
     } catch (error: any) {
       logger.error('❌ [NOTIFICATIONS] Failed to notify claim detected', {
         userId,
         error: error.message
       });
+      this._logDelivery(userId, 'claim_detected', false, error.message);
     }
   }
 
@@ -170,11 +197,15 @@ class NotificationHelper {
         data: event.payload
       });
 
+      // 🎯 AGENT 11 FEED
+      this._logDelivery(userId, 'evidence_found', true);
+
     } catch (error: any) {
       logger.error('❌ [NOTIFICATIONS] Failed to notify evidence found', {
         userId,
         error: error.message
       });
+      this._logDelivery(userId, 'evidence_found', false, error.message);
     }
   }
 
@@ -219,11 +250,15 @@ class NotificationHelper {
         data: event.payload
       });
 
+      // 🎯 AGENT 11 FEED
+      this._logDelivery(userId, 'case_filed', true);
+
     } catch (error: any) {
       logger.error('❌ [NOTIFICATIONS] Failed to notify case filed', {
         userId,
         error: error.message
       });
+      this._logDelivery(userId, 'case_filed', false, error.message);
     }
   }
 
@@ -269,11 +304,15 @@ class NotificationHelper {
         data: event.payload
       });
 
+      // 🎯 AGENT 11 FEED
+      this._logDelivery(userId, 'refund_approved', true);
+
     } catch (error: any) {
       logger.error('❌ [NOTIFICATIONS] Failed to notify refund approved', {
         userId,
         error: error.message
       });
+      this._logDelivery(userId, 'refund_approved', false, error.message);
     }
   }
 
@@ -329,11 +368,15 @@ class NotificationHelper {
         data: event.payload
       });
 
+      // 🎯 AGENT 11 FEED
+      this._logDelivery(userId, 'funds_deposited', true);
+
     } catch (error: any) {
       logger.error('❌ [NOTIFICATIONS] Failed to notify funds deposited', {
         userId,
         error: error.message
       });
+      this._logDelivery(userId, 'funds_deposited', false, error.message);
     }
   }
 

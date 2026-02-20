@@ -202,6 +202,23 @@ class LearningWorker {
           const updated = await learningService.updateThresholds(userId, patterns.thresholdRecommendations);
           if (updated) {
             stats.thresholdsOptimized += patterns.thresholdRecommendations.length;
+
+            // 🔔 NOTIFICATION: Tell user about threshold optimization
+            try {
+              const { default: notificationHelper } = await import('../services/notificationHelper');
+              const { NotificationType, NotificationPriority, NotificationChannel } = await import('../notifications/models/notification');
+              await notificationHelper.notifyUser(
+                userId,
+                NotificationType.LEARNING_INSIGHT,
+                'Detection Improved',
+                `Agent 11 optimized ${patterns.thresholdRecommendations.length} detection threshold${patterns.thresholdRecommendations.length > 1 ? 's' : ''} based on recent claim outcomes. Your recovery accuracy is improving.`,
+                NotificationPriority.LOW,
+                NotificationChannel.IN_APP,
+                { thresholdsUpdated: patterns.thresholdRecommendations.length, tenantId }
+              );
+            } catch (notifErr: any) {
+              logger.debug('[LEARNING] Failed to send threshold notification', { error: notifErr.message });
+            }
           }
         }
 
@@ -234,6 +251,28 @@ class LearningWorker {
               totalValue: pattern.aggregatedValue
             });
           }
+
+          // 🔔 NOTIFICATION: Tell user about significant long-tail patterns
+          const significantPatterns = longTailPatterns.filter(p => p.aggregatedValue >= 1000);
+          if (significantPatterns.length > 0) {
+            try {
+              const totalLTValue = significantPatterns.reduce((s, p) => s + p.aggregatedValue, 0);
+              const formatted = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(totalLTValue);
+              const { default: notificationHelper } = await import('../services/notificationHelper');
+              const { NotificationType, NotificationPriority, NotificationChannel } = await import('../notifications/models/notification');
+              await notificationHelper.notifyUser(
+                userId,
+                NotificationType.LEARNING_INSIGHT,
+                'New Recovery Pattern Found',
+                `Agent 11 identified ${significantPatterns.length} recurring micro-overcharge pattern${significantPatterns.length > 1 ? 's' : ''} worth ${formatted}. These have been added to your detection pipeline.`,
+                NotificationPriority.NORMAL,
+                NotificationChannel.IN_APP,
+                { patternsFound: significantPatterns.length, totalValue: totalLTValue, tenantId }
+              );
+            } catch (notifErr: any) {
+              logger.debug('[LEARNING] Failed to send pattern notification', { error: notifErr.message });
+            }
+          }
         } catch (ltError: any) {
           logger.debug('[LEARNING] Long tail analysis skipped', { userId, error: ltError.message });
         }
@@ -258,6 +297,24 @@ class LearningWorker {
                 modelVersion: result.modelVersion,
                 improvement: result.improvement
               });
+
+              // 🔔 NOTIFICATION: Tell user about model retraining
+              try {
+                const improvementPct = result.improvement ? `${(result.improvement * 100).toFixed(1)}%` : 'measurable';
+                const { default: notificationHelper } = await import('../services/notificationHelper');
+                const { NotificationType, NotificationPriority, NotificationChannel } = await import('../notifications/models/notification');
+                await notificationHelper.notifyUser(
+                  userId,
+                  NotificationType.LEARNING_INSIGHT,
+                  'Detection Model Updated',
+                  `Agent 11 retrained your detection model (v${result.modelVersion || 'latest'}). Estimated accuracy improvement: ${improvementPct}.`,
+                  NotificationPriority.LOW,
+                  NotificationChannel.IN_APP,
+                  { modelVersion: result.modelVersion, improvement: result.improvement, tenantId }
+                );
+              } catch (notifErr: any) {
+                logger.debug('[LEARNING] Failed to send retraining notification', { error: notifErr.message });
+              }
             }
           }
         }

@@ -624,32 +624,23 @@ export class Agent2DataSyncService {
       result.errors = errors;
       result.success = errors.length === 0;
 
-      // Log event to agent_events table (using generic logEvent method if available)
+      // 🎯 AGENT 11 FEED: Log sync event via agentEventLogger
       try {
-        // Use a simple direct insert since agent_events might not have 'data_sync' as an agent type yet
-        const { error: logError } = await supabaseAdmin
-          .from('agent_events')
-          .insert({
-            user_id: userId,
-            agent: 'data_sync', // Will need migration update, but works for now
-            event_type: result.success ? 'sync_completed' : 'sync_failed',
-            success: result.success,
-            metadata: {
-              syncId,
-              summary: result.summary,
-              duration: result.duration,
-              isMock: result.isMock,
-              mockScenario: result.mockScenario,
-              errors: result.errors
-            },
-            created_at: new Date().toISOString()
-          });
-
-        if (logError) {
-          logger.warn('⚠️ [AGENT 2] Failed to log event (may need migration update)', { error: logError.message });
-        }
+        await agentEventLogger.logDataSync({
+          userId,
+          syncId,
+          success: result.success,
+          duration: result.duration || 0,
+          ordersProcessed: result.summary?.ordersCount || 0,
+          shipmentsProcessed: result.summary?.shipmentsCount || 0,
+          returnsProcessed: result.summary?.returnsCount || 0,
+          settlementsProcessed: result.summary?.settlementsCount || 0,
+          errors: result.errors,
+          isMock: result.isMock,
+          mockScenario: result.mockScenario
+        });
       } catch (logError: any) {
-        logger.warn('⚠️ [AGENT 2] Failed to log event', { error: logError.message });
+        logger.warn('⚠️ [AGENT 2→11] Failed to log sync event', { error: logError.message });
       }
 
       logger.info('✅ [AGENT 2] Data sync completed', {
@@ -733,28 +724,17 @@ export class Agent2DataSyncService {
         stack: error.stack
       });
 
-      // Log error event
+      // 🎯 AGENT 11 FEED: Log sync failure
       try {
-        const { error: logError } = await supabaseAdmin
-          .from('agent_events')
-          .insert({
-            user_id: userId,
-            agent: 'data_sync',
-            event_type: 'sync_failed',
-            success: false,
-            metadata: {
-              syncId,
-              error: error.message,
-              duration: result.duration
-            },
-            created_at: new Date().toISOString()
-          });
-
-        if (logError) {
-          logger.warn('⚠️ [AGENT 2] Failed to log error event', { error: logError.message });
-        }
+        await agentEventLogger.logDataSync({
+          userId,
+          syncId,
+          success: false,
+          duration: result.duration || 0,
+          errors: [error.message]
+        });
       } catch (logError: any) {
-        logger.warn('⚠️ [AGENT 2] Failed to log error event', { error: logError.message });
+        logger.warn('⚠️ [AGENT 2→11] Failed to log sync failure', { error: logError.message });
       }
 
       return result;

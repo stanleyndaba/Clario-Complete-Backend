@@ -84,6 +84,7 @@ import recoveriesWorker from './workers/recoveriesWorker';
 import billingWorker from './workers/billingWorker';
 import notificationsWorker from './workers/notificationsWorker';
 import learningWorker from './workers/learningWorker';
+import weeklySummaryWorker from './workers/weeklySummaryWorker';
 import scheduledSyncJob from './jobs/scheduledSyncJob';
 import { schedulerService } from './services/schedulerService';
 
@@ -571,6 +572,14 @@ if (process.env.NODE_ENV !== 'test') {
           logger.info('Learning worker initialized');
         } else {
           logger.info('Learning worker disabled (ENABLE_LEARNING_WORKER=false)');
+        }
+
+        // Start Weekly Summary Worker
+        if (process.env.ENABLE_WEEKLY_SUMMARY !== 'false') {
+          weeklySummaryWorker.start();
+          logger.info('Weekly summary worker initialized');
+        } else {
+          logger.info('Weekly summary worker disabled (ENABLE_WEEKLY_SUMMARY=false)');
         }
 
         // Start Onboarding Worker (BullMQ - processes initial sync after OAuth)

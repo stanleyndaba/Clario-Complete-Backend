@@ -8,7 +8,9 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE IF NOT EXISTS tokens (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL,
-  provider varchar(64) NOT NULL CHECK (provider IN ('amazon', 'gmail', 'stripe')),
+  provider varchar(64) NOT NULL CHECK (provider IN ('amazon', 'gmail', 'stripe', 'outlook', 'gdrive', 'dropbox')),
+  tenant_id uuid,
+  store_id text,
   access_token_iv text NOT NULL,
   access_token_data text NOT NULL,
   refresh_token_iv text,

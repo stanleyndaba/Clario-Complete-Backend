@@ -305,6 +305,23 @@ class SyncJobManager {
       logger.info('✅ [SYNC JOB MANAGER] SSE event sync.started sent successfully', { userId, syncId });
     }
 
+    // 🔔 PERSIST: Sync started notification (survives offline)
+    try {
+      const notificationHelper = (await import('./notificationHelper')).default;
+      const { NotificationType, NotificationPriority, NotificationChannel } = await import('../notifications/models/notification');
+      await notificationHelper.notifyUser(
+        userId,
+        NotificationType.SYNC_STARTED,
+        'Data Sync Started',
+        'Your Amazon data sync has started. We\'re pulling your latest FBA records.',
+        NotificationPriority.LOW,
+        NotificationChannel.IN_APP,
+        { syncId }
+      );
+    } catch (notifErr: any) {
+      logger.debug('Failed to persist sync.started notification', { error: notifErr.message });
+    }
+
     // Also send as 'message' event for backward compatibility
     sseHub.sendEvent(userId, 'message', {
       type: 'sync',
@@ -865,6 +882,34 @@ class SyncJobManager {
           logger.info('✅ [SYNC JOB MANAGER] SSE event sync.completed sent successfully', { userId, syncId });
         }
 
+        // 🔔 PERSIST: Sync completed notification (survives offline)
+        try {
+          const notificationHelper = (await import('./notificationHelper')).default;
+          const { NotificationType, NotificationPriority, NotificationChannel } = await import('../notifications/models/notification');
+          const claimMsg = syncStatus.claimsDetected && syncStatus.claimsDetected > 0
+            ? ` ${syncStatus.claimsDetected} potential recoveries identified.`
+            : ' No discrepancies found.';
+          const valueMsg = syncStatus.totalRecoverableValue && syncStatus.totalRecoverableValue > 0
+            ? ` Estimated value: ${new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(syncStatus.totalRecoverableValue)}.`
+            : '';
+          await notificationHelper.notifyUser(
+            userId,
+            NotificationType.SYNC_COMPLETED,
+            'Sync Complete',
+            `Data sync finished successfully.${claimMsg}${valueMsg}`,
+            syncStatus.claimsDetected && syncStatus.claimsDetected > 0 ? NotificationPriority.HIGH : NotificationPriority.NORMAL,
+            NotificationChannel.IN_APP,
+            {
+              syncId,
+              ordersProcessed: syncStatus.ordersProcessed || 0,
+              claimsDetected: syncStatus.claimsDetected || 0,
+              totalRecoverableValue: syncStatus.totalRecoverableValue || 0
+            }
+          );
+        } catch (notifErr: any) {
+          logger.debug('Failed to persist sync.completed notification', { error: notifErr.message });
+        }
+
         // Also send as 'message' event for backward compatibility
         sseHub.sendEvent(userId, 'message', {
           type: 'sync',
@@ -939,6 +984,23 @@ class SyncJobManager {
           });
         } else {
           logger.info('✅ [SYNC JOB MANAGER] SSE event sync.failed sent successfully', { userId, syncId });
+        }
+
+        // 🔔 PERSIST: Sync failed notification (survives offline)
+        try {
+          const notificationHelper = (await import('./notificationHelper')).default;
+          const { NotificationType, NotificationPriority, NotificationChannel } = await import('../notifications/models/notification');
+          await notificationHelper.notifyUser(
+            userId,
+            NotificationType.SYNC_FAILED,
+            'Sync Issue',
+            `Data sync encountered an issue: ${error.message}. We'll retry automatically.`,
+            NotificationPriority.HIGH,
+            NotificationChannel.IN_APP,
+            { syncId, errorCode: structuredError.code, error: error.message }
+          );
+        } catch (notifErr: any) {
+          logger.debug('Failed to persist sync.failed notification', { error: notifErr.message });
         }
 
         // Also send as 'message' event for backward compatibility

@@ -32,10 +32,16 @@ export enum NotificationType {
   INTEGRATION_COMPLETED = 'integration_completed',
   PAYMENT_PROCESSED = 'payment_processed',
   SYNC_COMPLETED = 'sync_completed',
+  SYNC_STARTED = 'sync_started',
+  SYNC_FAILED = 'sync_failed',
   DISCREPANCY_FOUND = 'discrepancy_found',
   SYSTEM_ALERT = 'system_alert',
   USER_ACTION_REQUIRED = 'user_action_required',
-  AMAZON_CHALLENGE = 'amazon_challenge'
+  AMAZON_CHALLENGE = 'amazon_challenge',
+  CLAIM_DENIED = 'claim_denied',
+  CLAIM_EXPIRING = 'claim_expiring',
+  LEARNING_INSIGHT = 'learning_insight',
+  WEEKLY_SUMMARY = 'weekly_summary'
 }
 
 export enum NotificationStatus {
@@ -140,7 +146,7 @@ export class Notification {
         updated_at: new Date().toISOString()
       };
 
-      const { data: result, error } = await supabase
+      const { data: result, error } = await client
         .from('notifications')
         .insert(notificationData)
         .select()

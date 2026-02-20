@@ -333,6 +333,53 @@ export class DetectionService {
         sync_id: job.sync_id,
         results_count: results.length
       });
+
+      // 🎯 AGENT 11 FEED: Log detection results for learning loop
+      try {
+        const agentEventLogger = (await import('./agentEventLogger')).default;
+        const confidenceScores = results.map(r => r.confidence_score);
+        const algorithmTypes = [...new Set(results.map(r => r.anomaly_type))];
+        await agentEventLogger.logDetection({
+          userId: job.seller_id,
+          syncId: job.sync_id,
+          success: true,
+          claimsDetected: results.length,
+          highConfidenceCount: highConfidenceClaims.length,
+          mediumConfidenceCount: mediumConfidenceClaims.length,
+          lowConfidenceCount: lowConfidenceClaims.length,
+          totalValue: results.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
+          currency: results[0]?.currency || 'USD',
+          algorithmsUsed: algorithmTypes,
+          confidenceDistribution: {
+            min: confidenceScores.length > 0 ? Math.min(...confidenceScores) : 0,
+            max: confidenceScores.length > 0 ? Math.max(...confidenceScores) : 0,
+            avg: confidenceScores.length > 0 ? confidenceScores.reduce((a, b) => a + b, 0) / confidenceScores.length : 0
+          },
+          duration: 0,
+          isSandbox: job.is_sandbox || false
+        });
+        logger.debug('✅ [AGENT 3→11] Detection results fed to learning loop', {
+          seller_id: job.seller_id,
+          claimsDetected: results.length,
+          algorithms: algorithmTypes.length
+        });
+      } catch (logError: any) {
+        logger.warn('⚠️ [AGENT 3→11] Failed to log detection for learning (non-critical)', {
+          error: logError.message
+        });
+      }
+
+      // 🎯 HANDOFF 2: Trigger evidence matching with retry + queue + alert
+      if (results.length > 0) {
+        // Non-blocking — don't await, let it run in background
+        this._triggerEvidenceMatching(job.seller_id, results).catch((err: any) => {
+          logger.warn('⚠️ [HANDOFF 2] Background evidence matching trigger failed', {
+            error: err.message,
+            seller_id: job.seller_id
+          });
+        });
+      }
+
     } catch (error) {
       logger.error('Error processing detection job directly', { error, job });
 
@@ -356,6 +403,31 @@ export class DetectionService {
         logger.debug('✅ [AGENT 3] SSE event sent for detection failed', { seller_id: job.seller_id, sync_id: job.sync_id });
       } catch (sseError: any) {
         logger.warn('⚠️ [AGENT 3] Failed to send SSE event for detection failed', { error: sseError.message });
+      }
+
+      // 🎯 AGENT 11 FEED: Log detection failure for learning loop
+      try {
+        const agentEventLogger = (await import('./agentEventLogger')).default;
+        await agentEventLogger.logDetection({
+          userId: job.seller_id,
+          syncId: job.sync_id,
+          success: false,
+          claimsDetected: 0,
+          highConfidenceCount: 0,
+          mediumConfidenceCount: 0,
+          lowConfidenceCount: 0,
+          totalValue: 0,
+          currency: 'USD',
+          algorithmsUsed: [],
+          confidenceDistribution: { min: 0, max: 0, avg: 0 },
+          duration: 0,
+          error: error instanceof Error ? error.message : 'Unknown error',
+          isSandbox: job.is_sandbox || false
+        });
+      } catch (logError: any) {
+        logger.warn('⚠️ [AGENT 3→11] Failed to log detection failure for learning', {
+          error: logError.message
+        });
       }
 
       throw error;
@@ -2156,51 +2228,119 @@ export class DetectionService {
 
   /**
    * Trigger evidence matching automatically after detection completes
+   * FIX #1: Retry with exponential backoff + DB queue fallback + Agent 11 alerting
+   * 
+   * Old behavior: fire-and-forget HTTP POST, errors silently swallowed
+   * New behavior: 3 retry attempts → DB queue fallback → Agent 11 alert
    */
   private async _triggerEvidenceMatching(
     sellerId: string,
     results: DetectionResult[]
   ): Promise<void> {
-    try {
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
+    const pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
+    const maxRetries = 3;
+    const baseDelay = 2000; // 2 seconds
+    let lastError: Error | null = null;
 
-      // Transform detection results to claims format for evidence matching
-      const claims = results.map((result, index) => ({
-        claim_id: `claim_${result.seller_id}_${Date.now()}_${index}`,
-        claim_type: result.anomaly_type,
-        amount: result.estimated_value,
-        confidence: result.confidence_score,
-        currency: result.currency,
-        evidence: result.evidence,
-        discovery_date: result.discovery_date?.toISOString(),
-        deadline_date: result.deadline_date?.toISOString()
-      }));
+    // Transform detection results to claims format for evidence matching
+    const claims = results.map((result, index) => ({
+      claim_id: `claim_${result.seller_id}_${Date.now()}_${index}`,
+      claim_type: result.anomaly_type,
+      amount: result.estimated_value,
+      confidence: result.confidence_score,
+      currency: result.currency,
+      evidence: result.evidence,
+      discovery_date: result.discovery_date?.toISOString(),
+      deadline_date: result.deadline_date?.toISOString()
+    }));
 
-      // Trigger evidence matching via Python API
-      await axios.post(
-        `${pythonApiUrl}/api/internal/evidence/matching/run`,
-        {},
-        {
-          timeout: 30000,
-          headers: { 'Content-Type': 'application/json' }
-        }
-      ).catch((error) => {
-        // Non-blocking - evidence matching can be triggered manually if this fails
-        logger.warn('Automatic evidence matching trigger failed (non-critical)', {
-          error: error.message,
-          seller_id: sellerId
+    // === STEP 1: Retry with exponential backoff ===
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await axios.post(
+          `${pythonApiUrl}/api/internal/evidence/matching/run`,
+          { seller_id: sellerId, claims },
+          {
+            timeout: 30000,
+            headers: { 'Content-Type': 'application/json' }
+          }
+        );
+
+        // Success — log and return
+        logger.info('✅ [HANDOFF 2] Evidence matching triggered successfully', {
+          seller_id: sellerId,
+          claims_count: claims.length,
+          attempt
         });
-      });
+        return;
 
-      logger.info('Evidence matching triggered after detection', {
+      } catch (error: any) {
+        lastError = error;
+        logger.warn(`🔄 [HANDOFF 2] Evidence matching attempt ${attempt}/${maxRetries} failed`, {
+          error: error.message,
+          seller_id: sellerId,
+          attempt,
+          nextRetryIn: attempt < maxRetries ? `${baseDelay * Math.pow(2, attempt - 1)}ms` : 'FINAL'
+        });
+
+        if (attempt < maxRetries) {
+          const delay = baseDelay * Math.pow(2, attempt - 1);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    // === STEP 2: All retries exhausted — Queue to DB for later pickup ===
+    try {
+      const { supabaseAdmin } = await import('../database/supabaseClient');
+      await supabaseAdmin
+        .from('pending_jobs')
+        .insert({
+          job_type: 'evidence_matching',
+          user_id: sellerId,
+          payload: {
+            claims,
+            seller_id: sellerId,
+            created_at: new Date().toISOString(),
+            retry_count: maxRetries,
+            last_error: lastError?.message || 'Unknown error'
+          },
+          status: 'pending',
+          created_at: new Date().toISOString()
+        });
+
+      logger.warn('📋 [HANDOFF 2] Evidence matching queued to DB after all retries failed', {
         seller_id: sellerId,
-        claims_count: claims.length
+        claims_count: claims.length,
+        error: lastError?.message
       });
-    } catch (error: any) {
-      // Non-blocking - don't fail detection if evidence matching trigger fails
-      logger.warn('Failed to trigger evidence matching', {
-        error: error.message,
+    } catch (dbError: any) {
+      logger.error('❌ [HANDOFF 2] Failed to queue evidence matching to DB', {
+        error: dbError.message,
         seller_id: sellerId
+      });
+    }
+
+    // === STEP 3: Alert Agent 11 about the failure ===
+    try {
+      const agentEventLogger = (await import('./agentEventLogger')).default;
+      const { AgentType: AT, EventType: ET } = await import('./agentEventLogger');
+      await agentEventLogger.logEvent({
+        userId: sellerId,
+        agent: AT.DETECTION,
+        eventType: ET.EVIDENCE_MATCHING_TRIGGER_FAILED,
+        success: false,
+        metadata: {
+          error: lastError?.message || 'All retry attempts failed',
+          retryAttempts: maxRetries,
+          claimsCount: claims.length,
+          sellerId,
+          queuedToDb: true
+        }
+      });
+    } catch (alertError: any) {
+      logger.error('❌ [HANDOFF 2] Failed to alert Agent 11 about evidence matching failure', {
+        error: alertError.message
       });
     }
   }
