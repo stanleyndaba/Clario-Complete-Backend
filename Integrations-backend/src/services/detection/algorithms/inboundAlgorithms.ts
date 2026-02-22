@@ -253,7 +253,7 @@ export function detectReceivingError(sellerId: string, syncId: string, data: Inb
     for (const item of data.inbound_shipment_items || []) {
         if (!item.receiving_discrepancy && !item.discrepancy_reason) continue;
 
-        const discrepancy = (item.receiving_discrepancy || item.discrepancy_reason || '').toLowerCase();
+        const discrepancy = String(item.receiving_discrepancy || item.discrepancy_reason || '').toLowerCase();
         const isReceivingError = errorKeywords.some(k => discrepancy.includes(k));
 
         if (!isReceivingError) continue;
@@ -427,31 +427,42 @@ export async function fetchInboundShipmentItems(sellerId: string): Promise<Inbou
         }
 
         // Transform to InboundShipmentItem format
+        // FIX: The platform stores quantities as expected_quantity / received_quantity
+        //      and shipment type inside metadata.shipmentType, NOT as top-level columns.
         const items: InboundShipmentItem[] = (data || [])
-            .filter(s => s.shipment_type === 'INBOUND' || s.destination_fc || s.status?.includes('INBOUND'))
+            .filter(s =>
+                s.shipment_type === 'INBOUND' ||
+                s.metadata?.shipmentType === 'INBOUND' ||
+                s.destination_fc ||
+                s.warehouse_location ||
+                s.status?.includes('INBOUND') ||
+                // Fallback: treat all shipments as potential inbound if no type info
+                (!s.shipment_type && !s.metadata?.shipmentType)
+            )
             .map(s => ({
                 id: s.id || s.shipment_id,
                 seller_id: sellerId,
                 shipment_id: s.shipment_id,
                 sku: s.sku || s.items?.[0]?.sku || '',
-                fnsku: s.fnsku || s.items?.[0]?.fnsku,
+                fnsku: s.fnsku || s.items?.[0]?.fnsku || s.items?.[0]?.asin || 'UNKNOWN',
                 asin: s.asin || s.items?.[0]?.asin,
-                product_name: s.product_name,
-                quantity_shipped: s.quantity_shipped || s.quantity || 0,
-                quantity_received: s.quantity_received || 0,
+                product_name: s.product_name || s.items?.[0]?.title,
+                // FIX: Map from platform column names (expected_quantity, received_quantity)
+                quantity_shipped: s.quantity_shipped || s.expected_quantity || s.quantity || 0,
+                quantity_received: s.quantity_received || s.received_quantity || 0,
                 quantity_in_case: s.metadata?.quantity_in_case,
                 cases_shipped: s.metadata?.cases_shipped,
                 shipment_status: s.status || 'UNKNOWN',
                 shipment_created_date: s.created_at,
                 shipment_closed_date: s.status?.toUpperCase() === 'CLOSED' ? s.sync_timestamp : undefined,
-                receiving_discrepancy: s.metadata?.receiving_discrepancy,
+                receiving_discrepancy: s.metadata?.receiving_discrepancy || (s.missing_quantity > 0),
                 discrepancy_reason: s.metadata?.discrepancy_reason,
-                carrier: s.metadata?.carrier,
-                tracking_id: s.tracking_id,
+                carrier: s.carrier || s.metadata?.carrier,
+                tracking_id: s.tracking_number || s.tracking_id,
                 prep_fee_charged: s.metadata?.prep_fee,
                 prep_instructions: s.metadata?.prep_instructions,
                 label_owner: s.metadata?.label_owner,
-                expected_fnsku: s.fnsku,
+                expected_fnsku: s.fnsku || s.items?.[0]?.fnsku,
                 created_at: s.created_at
             }));
 

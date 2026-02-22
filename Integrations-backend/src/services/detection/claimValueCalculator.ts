@@ -385,6 +385,7 @@ export function calculateExpectedReferralFee(
 
 /**
  * Get historical exchange rate for a specific date
+ * 4-tier resolution: DB cache → Live API → Static fallback → Identity (1.0)
  */
 export async function getExchangeRate(
     fromCurrency: string,
@@ -395,14 +396,18 @@ export async function getExchangeRate(
         return { rate: 1.0, source: 'identity' };
     }
 
+    const from = fromCurrency.toUpperCase();
+    const to = toCurrency.toUpperCase();
+    const rateDate = date.substring(0, 10);
+
     try {
-        // Check cached rates first
+        // Tier 1: Check cached rates in database
         const { data: cached } = await supabaseAdmin
             .from('exchange_rates')
             .select('*')
-            .eq('from_currency', fromCurrency.toUpperCase())
-            .eq('to_currency', toCurrency.toUpperCase())
-            .eq('rate_date', date.substring(0, 10))
+            .eq('from_currency', from)
+            .eq('to_currency', to)
+            .eq('rate_date', rateDate)
             .limit(1)
             .maybeSingle();
 
@@ -410,28 +415,103 @@ export async function getExchangeRate(
             return { rate: cached.rate, source: 'cached' };
         }
 
-        // Use hardcoded fallback rates (should be replaced with API in production)
+        // Tier 2: Fetch live rate from free API
+        try {
+            const liveRate = await fetchLiveExchangeRate(from, to, rateDate);
+            if (liveRate) {
+                // Cache to database for future lookups
+                await cacheExchangeRate(from, to, rateDate, liveRate);
+                return { rate: liveRate, source: 'live_api' };
+            }
+        } catch (apiError: any) {
+            logger.warn('[CLAIM CALC] Live FX API failed, falling back to static', {
+                from, to, date, error: apiError.message
+            });
+        }
+
+        // Tier 3: Static fallback rates (last resort — better than nothing)
         const fallbackRates: Record<string, number> = {
-            'EUR_USD': 1.08,
-            'GBP_USD': 1.25,
-            'CAD_USD': 0.74,
-            'MXN_USD': 0.058,
-            'JPY_USD': 0.0067,
-            'USD_EUR': 0.93,
-            'USD_GBP': 0.80,
-            'USD_CAD': 1.35,
+            'EUR_USD': 1.08, 'GBP_USD': 1.25, 'CAD_USD': 0.74,
+            'MXN_USD': 0.058, 'JPY_USD': 0.0067, 'INR_USD': 0.012,
+            'AED_USD': 0.27, 'SEK_USD': 0.095, 'PLN_USD': 0.25,
+            'AUD_USD': 0.65, 'BRL_USD': 0.20, 'SGD_USD': 0.74,
+            'USD_EUR': 0.93, 'USD_GBP': 0.80, 'USD_CAD': 1.35,
+            'USD_MXN': 17.24, 'USD_JPY': 149.25, 'USD_INR': 83.00,
         };
 
-        const key = `${fromCurrency.toUpperCase()}_${toCurrency.toUpperCase()}`;
+        const key = `${from}_${to}`;
         if (fallbackRates[key]) {
-            return { rate: fallbackRates[key], source: 'fallback' };
+            return { rate: fallbackRates[key], source: 'fallback_static' };
         }
 
     } catch (error: any) {
         logger.warn('[CLAIM CALC] Error getting exchange rate', { fromCurrency, toCurrency, date });
     }
 
+    // Tier 4: Identity
     return { rate: 1.0, source: 'default' };
+}
+
+/**
+ * Fetch a live exchange rate from a free API
+ * Uses exchangerate-api.com which has a free tier (1500 req/mo)
+ */
+async function fetchLiveExchangeRate(
+    from: string,
+    to: string,
+    date: string
+): Promise<number | null> {
+    const { default: axios } = await import('axios');
+
+    // Try open.er-api.com (free, no key needed)
+    try {
+        const url = `https://open.er-api.com/v6/latest/${from}`;
+        const response = await axios.get(url, { timeout: 10000 });
+
+        if (response.data?.result === 'success' && response.data?.rates?.[to]) {
+            const rate = response.data.rates[to];
+            logger.info('[CLAIM CALC] 💱 Live FX rate fetched', { from, to, rate, date });
+            return rate;
+        }
+    } catch (e: any) {
+        logger.debug('[CLAIM CALC] open.er-api.com failed', { error: e.message });
+    }
+
+    return null;
+}
+
+/**
+ * Cache an exchange rate to the database for future lookups
+ */
+async function cacheExchangeRate(
+    from: string,
+    to: string,
+    date: string,
+    rate: number
+): Promise<void> {
+    try {
+        if (typeof supabaseAdmin.from !== 'function') return;
+
+        await supabaseAdmin
+            .from('exchange_rates')
+            .upsert({
+                from_currency: from,
+                to_currency: to,
+                rate_date: date,
+                rate: rate,
+                source: 'live_api',
+                fetched_at: new Date().toISOString(),
+                created_at: new Date().toISOString()
+            }, {
+                onConflict: 'from_currency,to_currency,rate_date',
+                ignoreDuplicates: false
+            });
+
+        logger.debug('[CLAIM CALC] FX rate cached', { from, to, date, rate });
+    } catch (error: any) {
+        // Non-fatal — if caching fails, we still have the rate
+        logger.warn('[CLAIM CALC] Failed to cache FX rate', { error: error.message });
+    }
 }
 
 // ============================================================================

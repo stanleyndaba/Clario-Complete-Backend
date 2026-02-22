@@ -124,7 +124,7 @@ export function createCoverageReport(
 
     for (const entity of REQUIRED_ENTITIES) {
         const result = results[entity] || { synced: 0, expected: undefined, pending: undefined, error: undefined };
-        const isComplete = !result.pending && !result.error && result.synced >= 0;
+        const isComplete = !result.pending && !result.error && result.synced > 0;
 
         if (!isComplete) {
             allComplete = false;

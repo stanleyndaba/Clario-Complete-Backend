@@ -81,19 +81,38 @@ export class ReturnsService {
         };
       }
 
-      // Returns are fetched via FBA reports
-      // Report type: GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA
-      // This will be implemented with report processing
+      // Production: Fetch via SP-API Reports (GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA)
+      logger.info('↩️ [RETURNS] Fetching via SP-API Reports', { userId, environment, dataType });
 
-      logger.info('Returns fetch initiated (report-based sync)', {
+      const { spApiReportService } = await import('./spApiReportService');
+
+      const reportStart = startDate || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000); // Default 90 days
+      const reportEnd = endDate || new Date();
+
+      const records = await spApiReportService.requestAndDownloadReport(
         userId,
-        isSandbox: this.isSandbox()
+        'GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA',
+        reportStart,
+        reportEnd,
+        storeId
+      );
+
+      // Convert flat TSV records to the format normalizeReturns expects
+      const returnsData = this.convertReportRecords(records);
+      const normalizedReturns = this.normalizeReturns(returnsData, userId);
+
+      logger.info(`↩️ [RETURNS] Fetched ${normalizedReturns.length} returns from SP-API report`, {
+        userId,
+        recordCount: records.length,
+        normalizedCount: normalizedReturns.length,
+        environment,
+        dataType
       });
 
       return {
         success: true,
-        data: [],
-        message: `Returns sync initiated (report processing will be implemented)`
+        data: normalizedReturns,
+        message: `Fetched ${normalizedReturns.length} returns from SP-API ${environment} (${dataType})`
       };
     } catch (error: any) {
       logger.error('Error fetching returns from SP-API', {
@@ -119,6 +138,46 @@ export class ReturnsService {
 
       throw new Error(`Failed to fetch returns: ${error.message}`);
     }
+  }
+
+  /**
+   * Convert flat TSV report records into the format normalizeReturns expects
+   * Report columns: return-date, order-id, sku, asin, fnsku, product-name,
+   * quantity, fulfillment-center-id, detailed-disposition, reason, status,
+   * license-plate-number, customer-comments
+   */
+  private convertReportRecords(records: Record<string, string>[]): any[] {
+    // Group by order-id + return-date to aggregate items per return
+    const returnMap = new Map<string, any>();
+
+    for (const record of records) {
+      const orderId = record['order-id'] || record['order_id'] || '';
+      const returnDate = record['return-date'] || record['return_date'] || '';
+      const key = `${orderId}_${returnDate}`;
+
+      if (!returnMap.has(key)) {
+        returnMap.set(key, {
+          ReturnId: `RET_${orderId}_${Date.now()}`,
+          AmazonOrderId: orderId,
+          ReturnedDate: returnDate,
+          ReturnStatus: record['status'] || 'Completed',
+          ReturnReason: record['reason'] || record['detailed-disposition'] || 'Unknown',
+          Disposition: record['detailed-disposition'] || record['disposition'] || '',
+          FulfillmentCenterId: record['fulfillment-center-id'] || record['fulfillment_center_id'] || '',
+          Items: []
+        });
+      }
+
+      const returnEntry = returnMap.get(key)!;
+      returnEntry.Items.push({
+        SellerSKU: record['sku'] || record['seller-sku'] || '',
+        ASIN: record['asin'] || '',
+        QuantityReturned: parseInt(record['quantity'] || '1', 10),
+        refund_amount: 0 // Refund amount is in settlements, not returns report
+      });
+    }
+
+    return Array.from(returnMap.values());
   }
 
   /**

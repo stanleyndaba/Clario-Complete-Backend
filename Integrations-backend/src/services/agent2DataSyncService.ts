@@ -570,7 +570,73 @@ export class Agent2DataSyncService {
         logger.error('❌ [AGENT 2] Inventory sync failed', { userId, syncId, error: error.message });
       }
 
-      // 6. Sync Claims (from financial events)
+      // 6. Sync Product Catalog (needed for fee detection algorithms)
+      try {
+        this.sendSyncLog(userId, syncId, {
+          type: 'thinking',
+          category: 'system',
+          message: 'Syncing product catalog for dimension/weight data...'
+        });
+        logger.info('📦 [AGENT 2] Syncing product catalog...', { userId, syncId });
+
+        const { catalogSyncService } = await import('./catalogSyncService');
+        const catalogResult = await catalogSyncService.syncCatalog(userId, storeId);
+
+        if (catalogResult.success && catalogResult.count > 0) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'success',
+            category: 'system',
+            message: `[FOUND] ${catalogResult.count} product catalog items synced`,
+            count: catalogResult.count
+          });
+        } else {
+          this.sendSyncLog(userId, syncId, {
+            type: 'info',
+            category: 'system',
+            message: catalogResult.message || 'No catalog data found'
+          });
+        }
+
+        logger.info('✅ [AGENT 2] Catalog synced', { userId, syncId, count: catalogResult.count });
+      } catch (error: any) {
+        errors.push(`Failed to sync catalog: ${error.message}`);
+        logger.error('❌ [AGENT 2] Catalog sync failed', { userId, syncId, error: error.message });
+      }
+
+      // 7. Sync Inventory Ledger (needed for lost/damaged inventory detection)
+      try {
+        this.sendSyncLog(userId, syncId, {
+          type: 'thinking',
+          category: 'system',
+          message: 'Syncing inventory ledger for event-level history...'
+        });
+        logger.info('📋 [AGENT 2] Syncing inventory ledger...', { userId, syncId });
+
+        const { inventoryLedgerSyncService } = await import('./inventoryLedgerSyncService');
+        const ledgerResult = await inventoryLedgerSyncService.syncInventoryLedger(userId, syncStartDate, syncEndDate, storeId);
+
+        if (ledgerResult.success && ledgerResult.count > 0) {
+          this.sendSyncLog(userId, syncId, {
+            type: 'success',
+            category: 'system',
+            message: `[FOUND] ${ledgerResult.count} inventory ledger events synced`,
+            count: ledgerResult.count
+          });
+        } else {
+          this.sendSyncLog(userId, syncId, {
+            type: 'info',
+            category: 'system',
+            message: ledgerResult.message || 'No inventory ledger data found'
+          });
+        }
+
+        logger.info('✅ [AGENT 2] Inventory ledger synced', { userId, syncId, count: ledgerResult.count });
+      } catch (error: any) {
+        errors.push(`Failed to sync inventory ledger: ${error.message}`);
+        logger.error('❌ [AGENT 2] Inventory ledger sync failed', { userId, syncId, error: error.message });
+      }
+
+      // 8. Sync Claims (from financial events)
       try {
         this.sendSyncLog(userId, syncId, {
           type: 'info',
