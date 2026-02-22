@@ -35,13 +35,37 @@ export interface ReportDocument {
 }
 
 /**
- * Parse a TSV (Tab-Separated Values) string into an array of objects
+ * Normalize a TSV header to lowercase-kebab-case for consistent access.
+ * Amazon uses inconsistent casing: "FNSKU", "fnsku", "Fulfillment Center", "fulfillment-center-id"
+ * This normalizes ALL of them so our services can use a single field name.
+ */
+function normalizeHeader(header: string): string {
+    return header
+        .trim()
+        .replace(/"/g, '')
+        .toLowerCase()
+        .replace(/\s+/g, '-')       // "Event Type" → "event-type"
+        .replace(/_/g, '-');         // "order_id"   → "order-id"
+}
+
+/**
+ * Parse a TSV (Tab-Separated Values) string into an array of objects.
+ * 
+ * Headers are normalized to lowercase-kebab-case so that downstream services
+ * never need to worry about Amazon's inconsistent casing:
+ *   "FNSKU" → "fnsku"
+ *   "Event Type" → "event-type"
+ *   "fulfillment_center_id" → "fulfillment-center-id"
+ * 
+ * Each record is keyed by BOTH the normalized header AND the original header
+ * so that either access pattern works.
  */
 export function parseTSV(content: string): Record<string, string>[] {
     const lines = content.trim().split('\n');
     if (lines.length < 2) return [];
 
-    const headers = lines[0].split('\t').map(h => h.trim().replace(/"/g, ''));
+    const rawHeaders = lines[0].split('\t').map(h => h.trim().replace(/"/g, ''));
+    const normalizedHeaders = rawHeaders.map(normalizeHeader);
     const results: Record<string, string>[] = [];
 
     for (let i = 1; i < lines.length; i++) {
@@ -51,8 +75,11 @@ export function parseTSV(content: string): Record<string, string>[] {
         const values = line.split('\t').map(v => v.trim().replace(/"/g, ''));
         const record: Record<string, string> = {};
 
-        for (let j = 0; j < headers.length; j++) {
-            record[headers[j]] = values[j] || '';
+        for (let j = 0; j < rawHeaders.length; j++) {
+            const val = values[j] || '';
+            // Store under both original and normalized keys
+            record[rawHeaders[j]] = val;
+            record[normalizedHeaders[j]] = val;
         }
 
         results.push(record);
@@ -63,6 +90,12 @@ export function parseTSV(content: string): Record<string, string>[] {
 
 class SPApiReportService {
     private reportsBaseUrl = '/reports/2021-06-30';
+
+    // Production-safe limits
+    private static readonly MAX_POLL_WAIT_MS = 45 * 60 * 1000;       // 45 minutes
+    private static readonly INITIAL_POLL_INTERVAL_MS = 10_000;         // 10 seconds
+    private static readonly MAX_POLL_INTERVAL_MS = 2 * 60 * 1000;     // 2 minutes (cap)
+    private static readonly BACKOFF_MULTIPLIER = 2;                    // Double each time
 
     /**
      * Request a report from Amazon SP-API
@@ -115,21 +148,39 @@ class SPApiReportService {
     }
 
     /**
-     * Poll report status until complete or timeout
+     * Poll report status with exponential backoff.
+     * 
+     * Amazon SP-API reports can take 1–45 minutes depending on seller volume:
+     * - Small seller (<$10k/mo):  1–3 minutes
+     * - Mid seller ($50k–$500k):  5–15 minutes
+     * - Large seller ($1M+):      15–45 minutes
+     * 
+     * Backoff schedule: 10s → 20s → 40s → 80s → 120s (cap) → 120s → ...
+     * Total timeout: 45 minutes (configurable via maxWaitMs)
      */
     async pollReportStatus(
         userId: string,
         reportId: string,
         storeId?: string,
-        maxWaitMs: number = 120000,
-        pollIntervalMs: number = 5000
+        maxWaitMs: number = SPApiReportService.MAX_POLL_WAIT_MS
     ): Promise<ReportStatus> {
         const amazonService = await getAmazonService();
         const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
         const baseUrl = amazonService.getRegionalBaseUrl(marketplaceId);
         const startTime = Date.now();
+        let pollInterval = SPApiReportService.INITIAL_POLL_INTERVAL_MS;
+        let pollCount = 0;
+
+        logger.info('[SP-API REPORTS] 🔄 Starting poll with exponential backoff', {
+            reportId,
+            maxWaitMinutes: Math.round(maxWaitMs / 60000),
+            initialIntervalSec: pollInterval / 1000
+        });
 
         while (Date.now() - startTime < maxWaitMs) {
+            pollCount++;
+            const elapsedMs = Date.now() - startTime;
+
             const accessToken = await amazonService.getAccessTokenForService(userId, storeId);
 
             const response = await axios.get(
@@ -151,9 +202,19 @@ class SPApiReportService {
                 processingEndTime: response.data?.processingEndTime
             };
 
-            logger.debug('[SP-API REPORTS] Poll status', { reportId, status: status.status });
+            logger.info('[SP-API REPORTS] 🔄 Poll #' + pollCount, {
+                reportId,
+                status: status.status,
+                elapsedSec: Math.round(elapsedMs / 1000),
+                nextIntervalSec: Math.round(pollInterval / 1000)
+            });
 
             if (status.status === 'DONE') {
+                logger.info('[SP-API REPORTS] ✅ Report ready', {
+                    reportId,
+                    totalPolls: pollCount,
+                    totalTimeSec: Math.round(elapsedMs / 1000)
+                });
                 return status;
             }
 
@@ -161,11 +222,18 @@ class SPApiReportService {
                 throw new Error(`Report ${reportId} failed with status: ${status.status}`);
             }
 
-            // Wait before next poll
-            await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+            // Wait with exponential backoff
+            await new Promise(resolve => setTimeout(resolve, pollInterval));
+
+            // Increase interval: 10s → 20s → 40s → 80s → 120s (cap)
+            pollInterval = Math.min(
+                pollInterval * SPApiReportService.BACKOFF_MULTIPLIER,
+                SPApiReportService.MAX_POLL_INTERVAL_MS
+            );
         }
 
-        throw new Error(`Report ${reportId} timed out after ${maxWaitMs}ms`);
+        const totalElapsed = Math.round((Date.now() - startTime) / 1000);
+        throw new Error(`Report ${reportId} timed out after ${totalElapsed}s (${pollCount} polls). Seller may need a smaller date range.`);
     }
 
     /**
