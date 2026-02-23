@@ -89,7 +89,9 @@ router.get('/:id', async (req: Request, res: Response) => {
                 claim_number: disputeCase.claim_id || disputeCase.case_number,
                 evidence: disputeCase.evidence || {},
                 // Include events directly in detail response
-                events: await fetchEventsForRecovery(id, userId)
+                events: await fetchEventsForRecovery(id, userId),
+                // Generate dynamic strategy
+                ...generateCaseStrategy(disputeCase)
             });
         }
 
@@ -129,7 +131,9 @@ router.get('/:id', async (req: Request, res: Response) => {
                 claim_number: detectionResult.claim_number,
                 evidence: detectionResult.evidence || {},
                 // Include events directly in detail response
-                events: await fetchEventsForRecovery(id, userId)
+                events: await fetchEventsForRecovery(id, userId),
+                // Generate dynamic strategy
+                ...generateCaseStrategy(detectionResult)
             });
         }
 
@@ -567,6 +571,76 @@ async function fetchEventsForRecovery(id: string, userId: string) {
         logger.error('Error fetching internal events', e);
         return [];
     }
+}
+
+/**
+ * Dynamically generates a recovery strategy and protection protocol based on case data
+ */
+function generateCaseStrategy(record: any) {
+    const caseType = (record.anomaly_type || record.claim_type || record.case_type || '').toLowerCase();
+    const evidence = record.evidence || {};
+
+    const isFee = caseType.includes('fee') || caseType.includes('overcharge') || caseType.includes('dimension');
+    const isLost = caseType.includes('lost') || caseType.includes('missing') || caseType.includes('shipment');
+    const isDamaged = caseType.includes('damaged') || caseType.includes('carrier');
+    const isRefund = caseType.includes('refund') || caseType.includes('return');
+
+    const playbook: any = {
+        title: "Autonomous Strategy",
+        council: [
+            { id: 'filing', agent: 'Agent 7', status: record.status === 'filed' ? 'SETTLED' : 'ACTIVE' },
+            { id: 'recovery', agent: 'Agent 8', status: 'MONITORING' },
+            { id: 'ledger', agent: 'Agent 9', status: 'SYNCHRONIZING' },
+            { id: 'learning', agent: 'Agent 11', status: 'OBSERVING' }
+        ],
+        steps: []
+    };
+
+    const protocol: string[] = [];
+
+    if (isFee) {
+        playbook.steps = [
+            `Audit dimensions for ASIN ${record.asin || evidence.asin}`,
+            `Normalize catalog cubic data`,
+            `Apply for overcharge settlement`
+        ];
+        protocol.push(`Real-time dimension monitoring active`);
+        protocol.push(`Auto-flagging future overcharge events`);
+    } else if (isLost) {
+        playbook.steps = [
+            `Verify FC ${evidence.fulfillment_center || 'Warehouse'} incoming record`,
+            `Confirm 'Patient Zero' via Inventory Ledger`,
+            `Initiate settlement window (Est. 48h)`
+        ];
+        protocol.push(`FC discrepancy shielding activated`);
+        protocol.push(`Inbound accuracy learning protocol enabled`);
+    } else if (isDamaged) {
+        playbook.steps = [
+            `Extract carrier handling proof`,
+            `Verify FC damage classification`,
+            `Process carrier-liability reimbursement`
+        ];
+        protocol.push(`Carrier risk assessment updated`);
+        protocol.push(`Packaging requirement optimization`);
+    } else if (isRefund) {
+        playbook.steps = [
+            `Validate return tracking for Order ${evidence.order_id || 'ID'}`,
+            `Confirm 'Switcheroo' vs Missed Return`,
+            `Lodge RFS (Refund at First Scan) dispute`
+        ];
+        protocol.push(`Customer return abuse monitoring enabled`);
+        protocol.push(`Predictive refund risk shielding active`);
+    } else {
+        playbook.steps = [
+            `Analyze case documentation artifacts`,
+            `Substantiate claim with cross-audit data`,
+            `Monitor Amazon response window`
+        ];
+        protocol.push(`Global discrepancy monitoring active`);
+        protocol.push(`Pattern-based system optimization`);
+    }
+
+    return { playbook, protection_protocol: protocol };
 }
 
 router.get('/:id/events', async (req: Request, res: Response) => {
