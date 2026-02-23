@@ -88,6 +88,8 @@ router.get('/:id', async (req: Request, res: Response) => {
                 // Add fields for detailed view
                 claim_number: disputeCase.claim_id || disputeCase.case_number,
                 evidence: disputeCase.evidence || {},
+                // Include events directly in detail response
+                events: await fetchEventsForRecovery(id, userId)
             });
         }
 
@@ -126,6 +128,8 @@ router.get('/:id', async (req: Request, res: Response) => {
                 // Add fields for detailed view
                 claim_number: detectionResult.claim_number,
                 evidence: detectionResult.evidence || {},
+                // Include events directly in detail response
+                events: await fetchEventsForRecovery(id, userId)
             });
         }
 
@@ -404,6 +408,167 @@ router.post('/:id/resubmit', async (req: Request, res: Response) => {
  * Get timeline/audit trail for a specific claim/recovery
  * Returns all events related to the claim with linked documents
  */
+/**
+ * Internal helper to fetch and aggregate events for a recovery
+ */
+async function fetchEventsForRecovery(id: string, userId: string) {
+    try {
+        // First, try to find in detection_results (claims)
+        const { data: detectionResult } = await supabaseAdmin
+            .from('detection_results')
+            .select('*')
+            .eq('id', id)
+            .single();
+
+        // If not found in detection_results, try dispute_cases
+        let disputeCase: any = null;
+        if (!detectionResult) {
+            const { data: dispCase } = await supabaseAdmin
+                .from('dispute_cases')
+                .select('*')
+                .eq('id', id)
+                .single();
+            disputeCase = dispCase;
+        }
+
+        if (!detectionResult && !disputeCase) return [];
+
+        const record = detectionResult || disputeCase;
+        const evidence = record.evidence || {};
+        const sku = evidence.sku || record.sku;
+        const shipmentId = evidence.shipment_id || record.shipment_id || record.provider_case_id;
+
+        const events: any[] = [];
+
+        // 1. Get notifications
+        const { data: notifications } = await supabaseAdmin
+            .from('notifications')
+            .select('*')
+            .eq('user_id', userId)
+            .or(`payload->>claim_id.eq.${id},payload->>case_id.eq.${id},payload->>dispute_id.eq.${id}`)
+            .order('created_at', { ascending: false });
+
+        if (notifications) {
+            notifications.forEach((notif: any) => {
+                events.push({
+                    id: `notif-${notif.id}`,
+                    type: notif.type,
+                    status: mapNotificationTypeToStatus(notif.type),
+                    at: notif.created_at,
+                    message: notif.message,
+                    amount: notif.payload?.amount,
+                    currency: notif.payload?.currency || 'USD'
+                });
+            });
+        }
+
+        // 2. Main record events
+        if (detectionResult) {
+            events.push({
+                id: `detected-${detectionResult.id}`,
+                type: 'claim',
+                status: 'detected',
+                at: detectionResult.created_at || detectionResult.discovery_date,
+                message: `Claim detected: ${detectionResult.anomaly_type} - ${formatCurrency(detectionResult.estimated_value || 0, detectionResult.currency || 'USD')}`
+            });
+        } else if (disputeCase) {
+            events.push({
+                id: `case-created-${disputeCase.id}`,
+                type: 'claim',
+                status: 'filed',
+                at: disputeCase.created_at,
+                message: `Claim filed for ${formatCurrency(disputeCase.claim_amount, disputeCase.currency)}`
+            });
+        }
+
+        // 3. Logistics Logs
+        if (sku || shipmentId) {
+            let ledgerQuery = supabaseAdmin
+                .from('inventory_ledger')
+                .select('*')
+                .eq('seller_id', userId);
+
+            if (shipmentId) ledgerQuery = ledgerQuery.eq('reference_id', shipmentId);
+            else if (sku) ledgerQuery = ledgerQuery.eq('sku', sku);
+
+            const { data: ledgerEntries } = await ledgerQuery.order('event_date', { ascending: false });
+            if (ledgerEntries) {
+                ledgerEntries.forEach((entry: any) => {
+                    events.push({
+                        id: `ledger-${entry.id}`,
+                        type: 'logistics',
+                        status: entry.event_type?.toUpperCase(),
+                        at: entry.event_date,
+                        message: `${entry.event_type}: ${entry.quantity > 0 ? '+' : ''}${entry.quantity} units at ${entry.fulfillment_center || 'Warehouse'}`,
+                        reference: entry.reference_id,
+                        confirmation: entry.reason_code || 'AMAZON_CONFIRMED'
+                    });
+                });
+            }
+        }
+
+        // 4. Shipment Lifecycle
+        if (shipmentId) {
+            const { data: shipment } = await supabaseAdmin
+                .from('shipments')
+                .select('*')
+                .eq('user_id', userId)
+                .eq('shipment_id', shipmentId)
+                .single();
+
+            if (shipment) {
+                if (shipment.shipped_date) {
+                    events.push({
+                        id: `shipment-shipped-${shipment.id}`,
+                        type: 'logistics',
+                        status: 'FBA_SHIPMENT_CREATE',
+                        at: shipment.shipped_date,
+                        message: `Shipment ${shipment.shipment_id} created/shipped via ${shipment.carrier || 'Carrier'}`,
+                        reference: shipment.shipment_id,
+                        confirmation: 'SELLER_CONFIRMED'
+                    });
+                }
+                if (shipment.received_date) {
+                    events.push({
+                        id: `shipment-received-${shipment.id}`,
+                        type: 'logistics',
+                        status: 'FBA_RECEIVING_SCAN',
+                        at: shipment.received_date,
+                        message: `Shipment ${shipment.shipment_id} received at ${shipment.warehouse_location || 'FC'}`,
+                        reference: shipment.shipment_id,
+                        confirmation: 'AMAZON_CONFIRMED'
+                    });
+                }
+            }
+        }
+
+        // 5. Evidence Documents
+        const { data: docs } = await supabaseAdmin
+            .from('documents')
+            .select('id, created_at, source')
+            .eq('user_id', userId)
+            .or(`metadata->>claim_id.eq.${id},metadata->>case_id.eq.${id}`)
+            .order('created_at', { ascending: false });
+
+        if (docs) {
+            docs.forEach((doc: any) => {
+                events.push({
+                    id: `evidence-${doc.id}`,
+                    type: 'evidence',
+                    status: 'uploaded',
+                    at: doc.created_at,
+                    message: `Evidence uploaded from ${doc.source || 'source'}`
+                });
+            });
+        }
+
+        return events.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+    } catch (e) {
+        logger.error('Error fetching internal events', e);
+        return [];
+    }
+}
+
 router.get('/:id/events', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
@@ -434,11 +599,17 @@ router.get('/:id/events', async (req: Request, res: Response) => {
             disputeCase = dispCase;
         }
 
-        // If neither found, return 404
         if (!detectionResult && !disputeCase) {
             logger.warn('Recovery not found in either table', { id, userId });
             return res.status(404).json({ error: 'Recovery not found' });
         }
+
+        // Extract metadata for granular lookups
+        const record = detectionResult || disputeCase;
+        const evidence = record.evidence || {};
+        const sku = evidence.sku || record.sku;
+        const asin = evidence.asin || record.asin;
+        const shipmentId = evidence.shipment_id || record.shipment_id || record.provider_case_id;
 
         // Build timeline events from multiple sources
         const events: any[] = [];
@@ -574,6 +745,74 @@ router.get('/:id/events', async (req: Request, res: Response) => {
                 currency: disputeCase.currency || 'USD',
                 docIds: []
             });
+        }
+
+        // 6. Get Granular Logistics Logs (Inventory Ledger)
+        if (sku || shipmentId) {
+            let ledgerQuery = supabaseAdmin
+                .from('inventory_ledger')
+                .select('*')
+                .eq('seller_id', userId);
+
+            if (shipmentId) {
+                ledgerQuery = ledgerQuery.eq('reference_id', shipmentId);
+            } else if (sku) {
+                ledgerQuery = ledgerQuery.eq('sku', sku);
+            }
+
+            const { data: ledgerEntries } = await ledgerQuery.order('event_date', { ascending: false });
+
+            if (ledgerEntries) {
+                ledgerEntries.forEach((entry: any) => {
+                    events.push({
+                        id: `ledger-${entry.id}`,
+                        type: 'logistics',
+                        status: entry.event_type?.toUpperCase(),
+                        at: entry.event_date,
+                        claimId: id,
+                        message: `${entry.event_type}: ${entry.quantity > 0 ? '+' : ''}${entry.quantity} units at ${entry.fulfillment_center || 'Warehouse'}`,
+                        reference: entry.reference_id,
+                        confirmation: entry.reason_code || 'AMAZON_CONFIRMED'
+                    });
+                });
+            }
+        }
+
+        // 7. Get Shipment Lifecycle (Shipments)
+        if (shipmentId) {
+            const { data: shipment } = await supabaseAdmin
+                .from('shipments')
+                .select('*')
+                .eq('user_id', userId)
+                .eq('shipment_id', shipmentId)
+                .single();
+
+            if (shipment) {
+                if (shipment.shipped_date) {
+                    events.push({
+                        id: `shipment-shipped-${shipment.id}`,
+                        type: 'logistics',
+                        status: 'FBA_SHIPMENT_CREATE',
+                        at: shipment.shipped_date,
+                        claimId: id,
+                        message: `Shipment ${shipment.shipment_id} created/shipped via ${shipment.carrier || 'Carrier'}`,
+                        reference: shipment.shipment_id,
+                        confirmation: 'SELLER_CONFIRMED'
+                    });
+                }
+                if (shipment.received_date) {
+                    events.push({
+                        id: `shipment-received-${shipment.id}`,
+                        type: 'logistics',
+                        status: 'FBA_RECEIVING_SCAN',
+                        at: shipment.received_date,
+                        claimId: id,
+                        message: `Shipment ${shipment.shipment_id} received at ${shipment.warehouse_location || 'FC'}`,
+                        reference: shipment.shipment_id,
+                        confirmation: 'AMAZON_CONFIRMED'
+                    });
+                }
+            }
         }
 
         // Sort events by timestamp (most recent first)
