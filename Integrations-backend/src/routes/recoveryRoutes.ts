@@ -770,15 +770,15 @@ router.get('/:id/events', async (req: Request, res: Response) => {
         }
 
         // 4. Get evidence/documents linked to this case
-        const { data: evidence } = await supabaseAdmin
+        const { data: evidenceDocs } = await supabaseAdmin
             .from('documents')
             .select('id, created_at, source, metadata')
             .eq('user_id', userId)
             .or(`metadata->>claim_id.eq.${id},metadata->>case_id.eq.${id},metadata->>dispute_id.eq.${id}`)
             .order('created_at', { ascending: false });
 
-        if (evidence) {
-            evidence.forEach((doc: any) => {
+        if (evidenceDocs) {
+            evidenceDocs.forEach((doc: any) => {
                 events.push({
                     id: `evidence-${doc.id}`,
                     type: 'evidence',

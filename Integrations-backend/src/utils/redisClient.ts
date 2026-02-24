@@ -9,9 +9,9 @@ let redisErrorLogged = false;
 
 // Create a mock Redis client that does nothing (for when Redis is unavailable)
 const createMockRedisClient = (): RedisClientType => {
-  return {
-    isReady: false,
-    isOpen: false,
+  const mockClient = {
+    isReady: true,
+    isOpen: true,
     connect: async () => { },
     disconnect: async () => { },
     quit: async () => { },
@@ -27,8 +27,22 @@ const createMockRedisClient = (): RedisClientType => {
     expire: async () => 0,
     ttl: async () => -1,
     keys: async () => [],
+    incr: async () => 1,
     flushAll: async () => 'OK',
+    multi: function () {
+      return {
+        incr: () => this,
+        expire: () => this,
+        set: () => this,
+        get: () => this,
+        del: () => this,
+        exec: async () => [1, 1] // Return dummy results for rate limiting [incrResult, expireResult]
+      } as any;
+    },
+    on: () => mockClient,
+    off: () => mockClient,
   } as any;
+  return mockClient;
 };
 
 export async function createRedisClient(): Promise<RedisClientType> {
