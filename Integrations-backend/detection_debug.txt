@@ -2121,3 +2121,14 @@ IsSandbox: true
 Input Detections: 403
 DB Client: Admin
 
+[2026-02-28T19:40:15.080Z] AFTER detection mapping
+All Predictions: 2784
+Claimable Predictions: 359
+Mapped Detection Results: 359
+Sample Result: {"claim_id":"claim_order_112-8966938-205353_1772307610656_9ossa","seller_id":"demo-user","anomaly_type":"weight_fee_overcharge","severity":"critical","estimated_value":4.86,"currency":"USD","confidence_score":0.9023,"evidence":{},"related_event_ids":["112-8966938-205353"],"discovery_date":"2024-11-20T16:50:25.079Z","deadline_date":"2025-01-19T16:50:25.079Z","days_remaining":0}
+
+[2026-02-28T19:40:15.538Z] storeDetectionResults
+IsSandbox: true
+Input Detections: 359
+DB Client: Admin
+

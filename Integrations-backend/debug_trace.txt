@@ -393,3 +393,6 @@
 [2026-02-28T17:41:19.579Z] simulateDetection called with 1000 claims
 [2026-02-28T17:41:20.612Z] simulateDetection called with 1000 claims
 [2026-02-28T17:41:21.661Z] simulateDetection called with 804 claims
+[2026-02-28T19:40:13.001Z] simulateDetection called with 1000 claims
+[2026-02-28T19:40:14.031Z] simulateDetection called with 1000 claims
+[2026-02-28T19:40:15.049Z] simulateDetection called with 784 claims
