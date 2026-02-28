@@ -24,6 +24,8 @@ import logger from '../src/utils/logger';
 import { randomUUID } from 'crypto';
 
 const TEST_USER_ID = randomUUID();
+const TEST_TENANT_ID = randomUUID();
+const TEST_TENANT_SLUG = 'test-tenant-' + Date.now();
 const TEST_SELLER_ID = 'TEST_SELLER_FULL_' + Date.now();
 
 interface PipelineStep {
@@ -51,37 +53,37 @@ class FullPipelineTest {
       process.env.MOCK_RECORD_COUNT = '10';
 
       // Step 1: Agent 1 (Zero Agent Layer)
-      await this.testAgent1();
+      if (!await this.testAgent1()) return 1;
 
       // Step 2: Agent 2 (Data Sync + Discovery Agent)
-      await this.testAgent2();
+      if (!await this.testAgent2()) return 1;
 
       // Step 3: Discovery Agent (called by Agent 2)
-      await this.testDiscoveryAgent();
+      if (!await this.testDiscoveryAgent()) return 1;
 
       // Step 4: Agent 4 (Evidence Ingestion)
-      await this.testAgent4();
+      if (!await this.testAgent4()) return 1;
 
       // Step 5: Agent 5 (Document Parsing) - Simulated
-      await this.testAgent5();
+      if (!await this.testAgent5()) return 1;
 
       // Step 6: Agent 6 (Evidence Matching) - Simulated
-      await this.testAgent6();
+      if (!await this.testAgent6()) return 1;
 
       // Step 7: Agent 7 (Refund Filing) - Simulated
-      await this.testAgent7();
+      if (!await this.testAgent7()) return 1;
 
       // Step 8: Agent 8 (Recoveries) - Simulated
-      await this.testAgent8();
+      if (!await this.testAgent8()) return 1;
 
       // Step 9: Agent 9 (Billing) - Simulated
-      await this.testAgent9();
+      if (!await this.testAgent9()) return 1;
 
       // Step 10: Agent 10 (Notifications) - Simulated
-      await this.testAgent10();
+      if (!await this.testAgent10()) return 1;
 
       // Step 11: Agent 11 (Learning)
-      await this.testAgent11();
+      if (!await this.testAgent11()) return 1;
 
       // Print summary
       this.printSummary();
@@ -103,14 +105,32 @@ class FullPipelineTest {
     }
   }
 
-  private async testAgent1(): Promise<void> {
+  private async testAgent1(): Promise<boolean> {
     const startTime = Date.now();
     console.log('🔐 Step 1: Agent 1 (Zero Agent Layer)');
 
     try {
+      // 1a. Create Tenant
+      const { error: tenantError } = await supabaseAdmin
+        .from('tenants')
+        .upsert({
+          id: TEST_TENANT_ID,
+          name: 'Test Tenant',
+          slug: TEST_TENANT_SLUG,
+          status: 'active',
+          plan: 'professional'
+        });
+
+      if (tenantError) {
+        throw new Error('Tenant creation failed: ' + tenantError.message);
+      }
+
+      // 1b. Create User
       const { data: testUser, error: userError } = await supabaseAdmin
         .from('users')
         .upsert({
+          id: TEST_USER_ID,
+          tenant_id: TEST_TENANT_ID,
           email: `${TEST_SELLER_ID}@amazon.seller`,
           amazon_seller_id: TEST_SELLER_ID,
           company_name: 'Test Company',
@@ -123,18 +143,46 @@ class FullPipelineTest {
         .single();
 
       if (userError || !testUser?.id) {
-        throw new Error('User creation failed');
+        throw new Error('User creation failed: ' + userError?.message);
       }
 
-      this.recordStep('Agent 1', 'Zero Agent Layer', true, 'User created and tokens ready', Date.now() - startTime, { userId: testUser.id });
-      console.log('   ✅ User created:', testUser.id);
+      // 1c. Create Tenant Membership
+      const { error: memberError } = await supabaseAdmin
+        .from('tenant_memberships')
+        .upsert({
+          tenant_id: TEST_TENANT_ID,
+          user_id: TEST_USER_ID,
+          role: 'owner',
+          is_active: true
+        });
+
+      if (memberError) {
+        throw new Error('Tenant membership failed: ' + memberError.message);
+      }
+
+      // Verify user exists immediately
+      const { data: verifyUser } = await supabaseAdmin
+        .from('users')
+        .select('*')
+        .eq('id', TEST_USER_ID)
+        .single();
+
+      if (!verifyUser) {
+        throw new Error('User was NOT found immediately after creation!');
+      }
+
+      this.recordStep('Agent 1', 'Zero Agent Layer', true, 'User, Tenant, and Membership created', Date.now() - startTime, { userId: TEST_USER_ID, tenantId: TEST_TENANT_ID });
+      console.log('   ✅ User created:', TEST_USER_ID);
+      console.log('   ✅ Tenant created:', TEST_TENANT_ID);
+      return true;
     } catch (error: any) {
       this.recordStep('Agent 1', 'Zero Agent Layer', false, error.message, Date.now() - startTime);
       console.log('   ❌ Failed:', error.message);
+      return false;
     }
   }
 
-  private async testAgent2(): Promise<void> {
+  private async testAgent2(): Promise<boolean> {
     const startTime = Date.now();
     console.log('\n📦 Step 2: Agent 2 (Data Sync)');
 
@@ -142,18 +190,20 @@ class FullPipelineTest {
       const syncResult = await agent2DataSyncService.syncUserData(TEST_USER_ID);
 
       if (!syncResult.success) {
-        throw new Error('Agent 2 sync failed');
+        throw new Error('Agent 2 sync failed: ' + syncResult.errors.join(', '));
       }
 
       this.recordStep('Agent 2', 'Data Sync', true, 'Data normalized and ready', Date.now() - startTime, syncResult.summary);
       console.log('   ✅ Data synced:', syncResult.summary);
+      return true;
     } catch (error: any) {
       this.recordStep('Agent 2', 'Data Sync', false, error.message, Date.now() - startTime);
       console.log('   ❌ Failed:', error.message);
+      return false;
     }
   }
 
-  private async testDiscoveryAgent(): Promise<void> {
+  private async testDiscoveryAgent(): Promise<boolean> {
     const startTime = Date.now();
     console.log('\n🔍 Step 3: Discovery Agent (Python ML) - Called by Agent 2');
 
@@ -174,20 +224,22 @@ class FullPipelineTest {
         throw new Error('No detection results found - Discovery Agent may not have been called');
       }
 
-      this.recordStep('Discovery Agent', 'Claim Detection (Python ML)', true, `${detectionCount} claims detected ($${totalValue.toFixed(2)} total)`, Date.now() - startTime, { 
-        detectionCount, 
+      this.recordStep('Discovery Agent', 'Claim Detection (Python ML)', true, `${detectionCount} claims detected ($${totalValue.toFixed(2)} total)`, Date.now() - startTime, {
+        detectionCount,
         totalValue,
         avgConfidence: detections ? (detections.reduce((sum, d) => sum + (d.confidence_score || 0), 0) / detections.length * 100).toFixed(1) + '%' : 'N/A'
       });
       console.log('   ✅ Discovery Agent completed:', detectionCount, 'claims detected');
       console.log('   💰 Total value:', `$${totalValue.toFixed(2)}`);
+      return true;
     } catch (error: any) {
       this.recordStep('Discovery Agent', 'Claim Detection (Python ML)', false, error.message, Date.now() - startTime);
       console.log('   ❌ Failed:', error.message);
+      return false;
     }
   }
 
-  private async testAgent4(): Promise<void> {
+  private async testAgent4(): Promise<boolean> {
     const startTime = Date.now();
     console.log('\n📦 Step 4: Agent 4 (Evidence Ingestion)');
 
@@ -199,66 +251,65 @@ class FullPipelineTest {
         .eq('status', 'pending')
         .limit(10);
 
-      if (!pendingClaims || pendingClaims.length === 0) {
+      const claimCount = pendingClaims?.length || 0;
+
+      if (claimCount === 0) {
         throw new Error('No pending claims for evidence ingestion');
       }
 
-      this.recordStep('Agent 4', 'Evidence Ingestion', true, `${pendingClaims.length} claims ready for evidence`, Date.now() - startTime, { claimsCount: pendingClaims.length });
-      console.log('   ✅ Evidence ingestion ready:', pendingClaims.length, 'claims');
+      this.recordStep('Agent 4', 'Evidence Ingestion', true, `${claimCount} claims ready for ingestion`, Date.now() - startTime, { claimCount });
+      console.log('   ✅ Evidence ingestion ready:', claimCount, 'claims pending');
+      return true;
     } catch (error: any) {
       this.recordStep('Agent 4', 'Evidence Ingestion', false, error.message, Date.now() - startTime);
       console.log('   ❌ Failed:', error.message);
+      return false;
     }
   }
 
-  private async testAgent5(): Promise<void> {
+  private async testAgent5(): Promise<boolean> {
     const startTime = Date.now();
     console.log('\n📄 Step 5: Agent 5 (Document Parsing)');
 
     try {
       // Simulate document parsing - check if infrastructure exists
-      let docs: any = [];
-      try {
-        const result = await supabaseAdmin
-          .from('evidence_documents')
-          .select('*')
-          .eq('seller_id', TEST_USER_ID)
-          .limit(5);
-        docs = result.data || [];
-      } catch (e) {
-        docs = [];
-      }
+      const { data: sources } = await supabaseAdmin
+        .from('evidence_sources')
+        .select('*')
+        .limit(1);
 
-      this.recordStep('Agent 5', 'Document Parsing', true, 'Document parsing infrastructure ready', Date.now() - startTime, { documentsAccessible: docs !== null });
+      this.recordStep('Agent 5', 'Document Parsing', true, 'Document parsing infrastructure ready', Date.now() - startTime, { sourcesAccessible: sources !== null });
       console.log('   ✅ Document parsing ready');
+      return true;
     } catch (error: any) {
       this.recordStep('Agent 5', 'Document Parsing', false, error.message, Date.now() - startTime);
       console.log('   ❌ Failed:', error.message);
+      return false;
     }
   }
 
-  private async testAgent6(): Promise<void> {
+  private async testAgent6(): Promise<boolean> {
     const startTime = Date.now();
     console.log('\n🔗 Step 6: Agent 6 (Evidence Matching)');
 
     try {
       // Simulate evidence matching - check if infrastructure exists
-      const { data: claims } = await supabaseAdmin
-        .from('detection_results')
+      const { data: links } = await supabaseAdmin
+        .from('dispute_evidence_links')
         .select('*')
-        .eq('seller_id', TEST_USER_ID)
-        .eq('status', 'pending')
-        .limit(5);
+        .limit(1);
 
-      this.recordStep('Agent 6', 'Evidence Matching', true, 'Evidence matching infrastructure ready', Date.now() - startTime, { claimsAvailable: claims?.length || 0 });
+      this.recordStep('Agent 6', 'Evidence Matching', true, 'Evidence matching infrastructure ready', Date.now() - startTime, { linksAccessible: links !== null });
       console.log('   ✅ Evidence matching ready');
+      return true;
     } catch (error: any) {
       this.recordStep('Agent 6', 'Evidence Matching', false, error.message, Date.now() - startTime);
       console.log('   ❌ Failed:', error.message);
+      return false;
     }
   }
 
-  private async testAgent7(): Promise<void> {
+  private async testAgent7(): Promise<boolean> {
     const startTime = Date.now();
     console.log('\n📝 Step 7: Agent 7 (Refund Filing)');
 
@@ -278,13 +329,15 @@ class FullPipelineTest {
 
       this.recordStep('Agent 7', 'Refund Filing', true, 'Refund filing infrastructure ready', Date.now() - startTime, { casesAccessible: cases !== null });
       console.log('   ✅ Refund filing ready');
+      return true;
     } catch (error: any) {
       this.recordStep('Agent 7', 'Refund Filing', false, error.message, Date.now() - startTime);
       console.log('   ❌ Failed:', error.message);
+      return false;
     }
   }
 
-  private async testAgent8(): Promise<void> {
+  private async testAgent8(): Promise<boolean> {
     const startTime = Date.now();
     console.log('\n💰 Step 8: Agent 8 (Recoveries)');
 
@@ -304,13 +357,15 @@ class FullPipelineTest {
 
       this.recordStep('Agent 8', 'Recoveries', true, 'Recovery detection infrastructure ready', Date.now() - startTime, { recoveriesAccessible: recoveries !== null });
       console.log('   ✅ Recovery detection ready');
+      return true;
     } catch (error: any) {
       this.recordStep('Agent 8', 'Recoveries', false, error.message, Date.now() - startTime);
       console.log('   ❌ Failed:', error.message);
+      return false;
     }
   }
 
-  private async testAgent9(): Promise<void> {
+  private async testAgent9(): Promise<boolean> {
     const startTime = Date.now();
     console.log('\n💳 Step 9: Agent 9 (Billing)');
 
@@ -330,13 +385,15 @@ class FullPipelineTest {
 
       this.recordStep('Agent 9', 'Billing', true, 'Billing infrastructure ready', Date.now() - startTime, { transactionsAccessible: transactions !== null });
       console.log('   ✅ Billing ready');
+      return true;
     } catch (error: any) {
       this.recordStep('Agent 9', 'Billing', false, error.message, Date.now() - startTime);
       console.log('   ❌ Failed:', error.message);
+      return false;
     }
   }
 
-  private async testAgent10(): Promise<void> {
+  private async testAgent10(): Promise<boolean> {
     const startTime = Date.now();
     console.log('\n🔔 Step 10: Agent 10 (Notifications)');
 
@@ -356,13 +413,15 @@ class FullPipelineTest {
 
       this.recordStep('Agent 10', 'Notifications', true, 'Notifications infrastructure ready', Date.now() - startTime, { notificationsAccessible: notifications !== null });
       console.log('   ✅ Notifications ready');
+      return true;
     } catch (error: any) {
       this.recordStep('Agent 10', 'Notifications', false, error.message, Date.now() - startTime);
       console.log('   ❌ Failed:', error.message);
+      return false;
     }
   }
 
-  private async testAgent11(): Promise<void> {
+  private async testAgent11(): Promise<boolean> {
     const startTime = Date.now();
     console.log('\n🧠 Step 11: Agent 11 (Learning)');
 
@@ -379,9 +438,11 @@ class FullPipelineTest {
 
       this.recordStep('Agent 11', 'Learning', true, `${eventCount} events collected from ${uniqueAgents.size} agents`, Date.now() - startTime, { eventCount, agents: Array.from(uniqueAgents) });
       console.log('   ✅ Learning ready:', eventCount, 'events from', uniqueAgents.size, 'agents');
+      return true;
     } catch (error: any) {
       this.recordStep('Agent 11', 'Learning', false, error.message, Date.now() - startTime);
       console.log('   ❌ Failed:', error.message);
+      return false;
     }
   }
 
@@ -430,12 +491,27 @@ class FullPipelineTest {
         .from('detection_results')
         .delete()
         .eq('seller_id', TEST_USER_ID);
-      
+
+      await supabaseAdmin
+        .from('agent_events')
+        .delete()
+        .eq('user_id', TEST_USER_ID);
+
+      await supabaseAdmin
+        .from('tenant_memberships')
+        .delete()
+        .eq('user_id', TEST_USER_ID);
+
+      await supabaseAdmin
+        .from('tenants')
+        .delete()
+        .eq('id', TEST_TENANT_ID);
+
       await supabaseAdmin
         .from('users')
         .delete()
-        .eq('amazon_seller_id', TEST_SELLER_ID);
-      
+        .eq('id', TEST_USER_ID);
+
       console.log('\n🧹 Cleanup completed');
     } catch (error: any) {
       console.warn('⚠️  Cleanup failed (non-critical):', error.message);

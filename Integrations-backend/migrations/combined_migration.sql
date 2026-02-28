@@ -2899,7 +2899,9 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE IF NOT EXISTS tokens (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL,
-  provider varchar(64) NOT NULL CHECK (provider IN ('amazon', 'gmail', 'stripe')),
+  provider varchar(64) NOT NULL CHECK (provider IN ('amazon', 'gmail', 'stripe', 'outlook', 'gdrive', 'dropbox')),
+  tenant_id uuid,
+  store_id text,
   access_token_iv text NOT NULL,
   access_token_data text NOT NULL,
   refresh_token_iv text,
@@ -6186,5 +6188,465 @@ ALTER TABLE claims ADD COLUMN IF NOT EXISTS evidence_attachments JSONB DEFAULT '
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_dispute_cases_amazon_case_id ON dispute_cases(amazon_case_id);
 CREATE INDEX IF NOT EXISTS idx_claims_amazon_case_id ON claims(amazon_case_id);
+
+
+
+-- ========================================
+-- Migration: 059_create_feature_flags.sql
+-- ========================================
+
+-- Migration 059: Create Feature Flags System
+-- Purpose: Support featureFlagService.ts (Layer 6 canary/rollout system)
+-- Also seeds 'agent7_filing_enabled' kill switch required by Agent 7 patches
+-- Run this in Supabase SQL Editor
+
+-- ============================================================
+-- TABLE: feature_flags
+-- Main flag definitions - one row per flag
+-- ============================================================
+CREATE TABLE IF NOT EXISTS feature_flags (
+  id               UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  flag_name        TEXT NOT NULL UNIQUE,
+  description      TEXT,
+  flag_type        TEXT NOT NULL DEFAULT 'feature'
+                     CHECK (flag_type IN ('rule_update', 'threshold_change', 'evidence_requirement', 'feature', 'experiment')),
+  is_enabled       BOOLEAN NOT NULL DEFAULT false,
+  rollout_percentage INTEGER NOT NULL DEFAULT 0 CHECK (rollout_percentage BETWEEN 0 AND 100),
+  target_users     TEXT[],          -- NULL = all users
+  exclude_users    TEXT[],          -- Users explicitly excluded
+  conditions       JSONB NOT NULL DEFAULT '{}',
+  payload          JSONB NOT NULL DEFAULT '{}',
+  metrics          JSONB NOT NULL DEFAULT '{}',
+  success_metric   TEXT,
+  success_threshold DECIMAL(10,4),
+  auto_expand      BOOLEAN NOT NULL DEFAULT false,
+  created_by       TEXT,
+  expires_at       TIMESTAMP WITH TIME ZONE,
+  created_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- ============================================================
+-- TABLE: feature_flag_metrics
+-- Stores A/B test metric measurements per flag
+-- ============================================================
+CREATE TABLE IF NOT EXISTS feature_flag_metrics (
+  id               UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  flag_id          UUID REFERENCES feature_flags(id) ON DELETE CASCADE,
+  flag_name        TEXT NOT NULL,
+  metric_name      TEXT NOT NULL,
+  metric_value     DECIMAL(15,4) NOT NULL,
+  is_control_group BOOLEAN NOT NULL DEFAULT false,
+  period_start     TIMESTAMP WITH TIME ZONE,
+  period_end       TIMESTAMP WITH TIME ZONE,
+  created_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- ============================================================
+-- TABLE: feature_flag_evaluations
+-- Audit log of every flag check (user, result, reason)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS feature_flag_evaluations (
+  id           UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  flag_id      UUID REFERENCES feature_flags(id) ON DELETE CASCADE,
+  flag_name    TEXT NOT NULL,
+  user_id      TEXT NOT NULL,
+  evaluated_to BOOLEAN NOT NULL,
+  reason       TEXT,
+  created_at   TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- ============================================================
+-- INDEXES
+-- ============================================================
+CREATE INDEX IF NOT EXISTS idx_feature_flags_flag_name   ON feature_flags(flag_name);
+CREATE INDEX IF NOT EXISTS idx_feature_flags_is_enabled  ON feature_flags(is_enabled);
+CREATE INDEX IF NOT EXISTS idx_feature_flags_flag_type   ON feature_flags(flag_type);
+
+CREATE INDEX IF NOT EXISTS idx_ff_metrics_flag_name      ON feature_flag_metrics(flag_name);
+CREATE INDEX IF NOT EXISTS idx_ff_metrics_created_at     ON feature_flag_metrics(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_ff_evals_flag_name        ON feature_flag_evaluations(flag_name);
+CREATE INDEX IF NOT EXISTS idx_ff_evals_user_id          ON feature_flag_evaluations(user_id);
+CREATE INDEX IF NOT EXISTS idx_ff_evals_created_at       ON feature_flag_evaluations(created_at);
+
+-- ============================================================
+-- AUTO-UPDATE TRIGGER
+-- ============================================================
+CREATE TRIGGER update_feature_flags_updated_at
+  BEFORE UPDATE ON feature_flags
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================
+-- ROW LEVEL SECURITY
+-- feature_flags are admin-managed; read-only for authenticated users
+-- ============================================================
+ALTER TABLE feature_flags            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE feature_flag_metrics     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE feature_flag_evaluations ENABLE ROW LEVEL SECURITY;
+
+-- Authenticated users can read flags (service uses supabaseAdmin which bypasses RLS)
+CREATE POLICY "Authenticated users can read feature flags"
+  ON feature_flags FOR SELECT
+  USING (auth.role() = 'authenticated');
+
+-- Only service role can insert/update (via supabaseAdmin)
+CREATE POLICY "Service role can manage feature flags"
+  ON feature_flags FOR ALL
+  USING (auth.role() = 'service_role');
+
+CREATE POLICY "Service role can manage flag metrics"
+  ON feature_flag_metrics FOR ALL
+  USING (auth.role() = 'service_role');
+
+CREATE POLICY "Service role can manage flag evaluations"
+  ON feature_flag_evaluations FOR ALL
+  USING (auth.role() = 'service_role');
+
+-- ============================================================
+-- SEED: Agent 7 Kill Switch (REQUIRED)
+-- 
+-- is_enabled = true  → filing is ACTIVE (normal operation)
+-- is_enabled = false → ALL filing halted immediately (emergency stop)
+--
+-- To halt all filing: UPDATE feature_flags SET is_enabled = false WHERE flag_name = 'agent7_filing_enabled';
+-- To resume filing:   UPDATE feature_flags SET is_enabled = true  WHERE flag_name = 'agent7_filing_enabled';
+-- ============================================================
+INSERT INTO feature_flags (
+  flag_name,
+  description,
+  flag_type,
+  is_enabled,
+  rollout_percentage,
+  conditions,
+  payload,
+  metrics,
+  auto_expand,
+  created_by
+)
+VALUES (
+  'agent7_filing_enabled',
+  'Global kill switch for Agent 7 automated SP-API refund filing. Set is_enabled=false to halt ALL filing immediately without a code deploy.',
+  'feature',
+  true,   -- ACTIVE: Agent 7 is running
+  100,    -- 100% rollout (applies to all sellers)
+  '{}',
+  '{}',
+  '{}',
+  false,
+  'system'
+)
+ON CONFLICT (flag_name) DO NOTHING;
+
+
+
+-- ========================================
+-- Migration: 060_data_pipeline_tables.sql
+-- ========================================
+
+-- ============================================================================
+-- Migration 060: Data Pipeline Tables
+-- 
+-- Creates the three missing tables required by the data pipeline services:
+--   1. product_catalog   — fed by catalogSyncService.ts
+--   2. inventory_ledger  — fed by inventoryLedgerSyncService.ts
+--   3. exchange_rates    — fed by claimValueCalculator.ts (live API cache)
+--
+-- Without these tables, upserts from the sync services fail silently
+-- and detection algorithms run on empty data.
+-- ============================================================================
+
+-- ============================================================================
+-- 1. PRODUCT CATALOG
+-- Source: GET_MERCHANT_LISTINGS_ALL_DATA report via catalogSyncService.ts
+-- Consumers: feeAlgorithms.ts, feeMisclassificationAlgorithm.ts
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS product_catalog (
+    id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    seller_id       TEXT NOT NULL,
+    sku             TEXT NOT NULL,
+    asin            TEXT NOT NULL,
+    item_name       TEXT,
+    price           NUMERIC(12, 2),
+    quantity        INTEGER,
+    fulfillment_channel TEXT,
+    item_condition  TEXT,
+    
+    -- Dimensions (critical for fee calculations)
+    length_cm       NUMERIC(10, 2),
+    width_cm        NUMERIC(10, 2),
+    height_cm       NUMERIC(10, 2),
+    weight_kg       NUMERIC(10, 4),
+    
+    -- Classification
+    category        TEXT,
+    size_tier       TEXT,       -- STANDARD, OVERSIZE, SMALL_STANDARD, etc.
+    
+    -- Metadata
+    last_synced     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    -- Unique constraint for upsert
+    CONSTRAINT uq_product_catalog_seller_sku UNIQUE (seller_id, sku)
+);
+
+-- Indexes for common query patterns
+CREATE INDEX IF NOT EXISTS idx_product_catalog_seller 
+    ON product_catalog (seller_id);
+CREATE INDEX IF NOT EXISTS idx_product_catalog_asin 
+    ON product_catalog (asin);
+CREATE INDEX IF NOT EXISTS idx_product_catalog_seller_asin 
+    ON product_catalog (seller_id, asin);
+
+COMMENT ON TABLE product_catalog IS 
+    'Product catalog synced from Amazon SP-API. Required by fee detection algorithms for dimension/weight/size-tier verification.';
+
+-- ============================================================================
+-- 2. INVENTORY LEDGER
+-- Source: GET_LEDGER_DETAIL_VIEW_DATA report via inventoryLedgerSyncService.ts
+-- Consumers: Lost inventory detection, damaged inventory detection
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS inventory_ledger (
+    id                  UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    seller_id           TEXT NOT NULL,
+    event_date          TIMESTAMPTZ NOT NULL,
+    fnsku               TEXT NOT NULL,
+    asin                TEXT,
+    sku                 TEXT,
+    title               TEXT,
+    
+    -- Event classification
+    event_type          TEXT NOT NULL,      -- Receipts, Shipments, CustomerReturns, Adjustments, etc.
+    reference_id        TEXT,               -- Shipment ID, Order ID, Adjustment ID
+    quantity            INTEGER NOT NULL,   -- Positive = in, Negative = out
+    
+    -- Location & disposition
+    fulfillment_center  TEXT,               -- PHX7, BFI4, etc.
+    disposition         TEXT,               -- SELLABLE, DEFECTIVE, CUSTOMER_DAMAGED, etc.
+    reason_code         TEXT,               -- Damage reason, adjustment reason
+    country             TEXT,
+    
+    -- Metadata
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    -- Composite unique constraint for dedup (same event won't be inserted twice)
+    CONSTRAINT uq_inventory_ledger_event 
+        UNIQUE (seller_id, event_date, fnsku, event_type, reference_id)
+);
+
+-- Indexes for detection algorithm queries
+CREATE INDEX IF NOT EXISTS idx_inventory_ledger_seller 
+    ON inventory_ledger (seller_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_ledger_seller_fnsku 
+    ON inventory_ledger (seller_id, fnsku);
+CREATE INDEX IF NOT EXISTS idx_inventory_ledger_seller_date 
+    ON inventory_ledger (seller_id, event_date DESC);
+CREATE INDEX IF NOT EXISTS idx_inventory_ledger_event_type 
+    ON inventory_ledger (event_type);
+CREATE INDEX IF NOT EXISTS idx_inventory_ledger_disposition 
+    ON inventory_ledger (disposition);
+
+COMMENT ON TABLE inventory_ledger IS 
+    'Historical inventory events from Amazon FBA. Required by lost/damaged inventory detection algorithms.';
+
+-- ============================================================================
+-- 3. EXCHANGE RATES
+-- Source: Live API (open.er-api.com) cached by claimValueCalculator.ts
+-- Consumers: claimValueCalculator.ts for international seller claim valuation
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS exchange_rates (
+    id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    from_currency   TEXT NOT NULL,          -- EUR, GBP, CAD, etc.
+    to_currency     TEXT NOT NULL,          -- USD (target)
+    rate_date       DATE NOT NULL,          -- Date the rate applies to
+    rate            NUMERIC(18, 8) NOT NULL,-- The exchange rate
+    source          TEXT,                   -- 'live_api', 'manual', 'fallback'
+    fetched_at      TIMESTAMPTZ,            -- When the rate was fetched
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    -- Unique constraint for upsert (one rate per currency pair per day)
+    CONSTRAINT uq_exchange_rates_pair_date 
+        UNIQUE (from_currency, to_currency, rate_date)
+);
+
+-- Indexes for rate lookups
+CREATE INDEX IF NOT EXISTS idx_exchange_rates_lookup 
+    ON exchange_rates (from_currency, to_currency, rate_date DESC);
+
+COMMENT ON TABLE exchange_rates IS 
+    'Cached exchange rates for international claim valuation. Populated by live API, prevents using stale hardcoded rates.';
+
+-- ============================================================================
+-- ENABLE ROW LEVEL SECURITY (RLS) for multi-tenant safety
+-- ============================================================================
+ALTER TABLE product_catalog ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inventory_ledger ENABLE ROW LEVEL SECURITY;
+ALTER TABLE exchange_rates ENABLE ROW LEVEL SECURITY;
+
+-- Product catalog: users can only see their own products
+CREATE POLICY product_catalog_seller_policy ON product_catalog
+    FOR ALL USING (seller_id = current_setting('app.current_user_id', true));
+
+-- Inventory ledger: users can only see their own events
+CREATE POLICY inventory_ledger_seller_policy ON inventory_ledger
+    FOR ALL USING (seller_id = current_setting('app.current_user_id', true));
+
+-- Exchange rates: all users can read (rates are shared), only service can write
+CREATE POLICY exchange_rates_read_policy ON exchange_rates
+    FOR SELECT USING (true);
+
+-- ============================================================================
+-- DONE
+-- ============================================================================
+
+
+
+-- ========================================
+-- Migration: 061_fix_agent_events_constraint.sql
+-- ========================================
+
+-- ========================================
+-- Migration: 061_fix_agent_events_constraint.sql
+-- Expand agent_events_agent_check to support all 11 agents
+-- ========================================
+
+DO $$
+BEGIN
+    ALTER TABLE agent_events 
+    DROP CONSTRAINT IF EXISTS agent_events_agent_check;
+
+    ALTER TABLE agent_events 
+    ADD CONSTRAINT agent_events_agent_check 
+    CHECK (agent IN (
+        'zero',
+        'data_sync',
+        'detection',
+        'evidence',
+        'parsing',
+        'matching',
+        'filing',
+        'recoveries',
+        'billing',
+        'notifications',
+        'learning',
+        -- Include legacy names just in case
+        'evidence_ingestion',
+        'document_parsing',
+        'evidence_matching',
+        'refund_filing',
+        'claim_detection'
+    ));
+END $$;
+
+-- Log migration
+INSERT INTO audit_logs (tenant_id, actor_type, action, resource_type, event_type, metadata)
+VALUES (
+  '00000000-0000-0000-0000-000000000001',
+  'system',
+  'migration.agent_events_fix',
+  'database',
+  'migration',
+  jsonb_build_object('migration', '061_fix_agent_events_constraint', 'timestamp', NOW()::TEXT)
+);
+
+
+
+-- ========================================
+-- Migration: add_pending_jobs_table.sql
+-- ========================================
+
+-- ========================================
+-- Migration: pending_jobs table
+-- Safety net for failed inter-agent handoffs
+-- ========================================
+
+-- Create pending_jobs table - catches failed cross-agent calls for later retry
+CREATE TABLE IF NOT EXISTS pending_jobs (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  job_type TEXT NOT NULL,           -- 'evidence_matching', 'document_parsing', etc.
+  user_id TEXT NOT NULL,            -- seller/user who owns this work
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,  -- job-specific data (claims, doc IDs, etc.)
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed', 'expired')),
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  max_retries INTEGER NOT NULL DEFAULT 5,
+  last_error TEXT,
+  next_retry_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  completed_at TIMESTAMP WITH TIME ZONE
+);
+
+-- Index for efficient polling by status + job_type
+CREATE INDEX IF NOT EXISTS idx_pending_jobs_status_type ON pending_jobs(status, job_type);
+-- Index for user-scoped queries
+CREATE INDEX IF NOT EXISTS idx_pending_jobs_user ON pending_jobs(user_id, status);
+-- Index for retry scheduling
+CREATE INDEX IF NOT EXISTS idx_pending_jobs_retry ON pending_jobs(status, next_retry_at) WHERE status = 'pending';
+
+-- Auto-update updated_at on modification
+CREATE OR REPLACE FUNCTION public.update_updated_at_column()
+    RETURNS TRIGGER AS $function$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$function$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_pending_jobs_updated_at
+  BEFORE UPDATE ON pending_jobs
+  FOR EACH ROW
+  EXECUTE FUNCTION update_pending_jobs_updated_at();
+
+-- RLS: Users can only see their own pending jobs
+ALTER TABLE pending_jobs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own pending jobs" ON pending_jobs
+  FOR SELECT USING (auth.uid()::text = user_id);
+
+-- Service role can do everything (for workers)
+CREATE POLICY "Service role full access to pending_jobs" ON pending_jobs
+  FOR ALL USING (auth.role() = 'service_role');
+
+
+
+-- ========================================
+-- Migration: fix_tokens_provider_constraint.sql
+-- ========================================
+
+-- Migration: Fix tokens table for all OAuth providers
+-- Problem: CHECK constraint only allows ('amazon', 'gmail', 'stripe')
+--          but code saves tokens for 6 providers: amazon, gmail, stripe, outlook, gdrive, dropbox
+-- Also: tenant_id and store_id columns are missing but expected by the backend
+
+-- 1. Drop the restrictive CHECK constraint
+--    (constraint name varies — try both common patterns)
+ALTER TABLE tokens DROP CONSTRAINT IF EXISTS tokens_provider_check;
+ALTER TABLE tokens DROP CONSTRAINT IF EXISTS tokens_check;
+
+-- Remove any inline CHECK on the provider column (Supabase may name it differently)
+DO $$
+DECLARE
+  constraint_name text;
+BEGIN
+  FOR constraint_name IN
+    SELECT con.conname
+    FROM pg_constraint con
+    JOIN pg_attribute att ON att.attnum = ANY(con.conkey) AND att.attrelid = con.conrelid
+    WHERE con.conrelid = 'tokens'::regclass
+      AND con.contype = 'c'
+      AND att.attname = 'provider'
+  LOOP
+    EXECUTE format('ALTER TABLE tokens DROP CONSTRAINT IF EXISTS %I', constraint_name);
+  END LOOP;
+END $$;
+
+-- 2. Add missing columns
+ALTER TABLE tokens ADD COLUMN IF NOT EXISTS tenant_id uuid;
+ALTER TABLE tokens ADD COLUMN IF NOT EXISTS store_id text;
+
+-- 3. Add index on tenant_id for multi-tenant queries
+CREATE INDEX IF NOT EXISTS idx_tokens_tenant ON tokens(tenant_id) WHERE tenant_id IS NOT NULL;
 
 

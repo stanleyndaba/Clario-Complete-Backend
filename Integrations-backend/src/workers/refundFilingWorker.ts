@@ -15,6 +15,8 @@ import logger from '../utils/logger';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import refundFilingService, { FilingRequest, FilingResult, CaseStatus } from '../services/refundFilingService';
+import featureFlagService from '../services/featureFlagService';
+
 
 /**
  * VELOCITY LIMIT JITTER
@@ -109,7 +111,25 @@ class RefundFilingWorker {
   * 
   * Rule: Claims over this threshold are flagged 'pending_approval' instead of auto-submitted.
   */
-  private static readonly HIGH_VALUE_THRESHOLD = 500; // USD - adjust based on risk tolerance
+  private static readonly HIGH_VALUE_THRESHOLD = 500; // USD - ceiling; claims above this require manual approval
+
+  /**
+  * MINIMUM ROI THRESHOLD
+  * Don't waste the 10-claim-per-day quota on sub-$25 discrepancies.
+  * At 20% commission, a $25 claim nets Margin $5.00 minimum.
+  * Below this, cost-of-filing exceeds expected return.
+  */
+  private static readonly MIN_FILING_THRESHOLD = 25.00; // USD
+
+  /**
+  * DIMENSION / WEIGHT FEE CLAIM TYPES
+  * These claim types require physical dimension proof (spec sheets, GS1, Cubiscan).
+  * Agent 7 has no way to attach such proof, so route to pending_approval for manual review.
+  */
+  private static readonly DIMENSION_CLAIM_TYPES = [
+    'weight_fee', 'dimension_fee', 'weight_fee_overcharge',
+    'size_tier_error', 'measurement_fee', 'dimensional_weight'
+  ];
 
   /**
   * KILL SWITCH - DANGEROUS DOCUMENT PATTERNS
@@ -360,7 +380,8 @@ class RefundFilingWorker {
     orderId: string,
     sku: string | undefined,
     asin: string | undefined,
-    sellerId: string
+    sellerId: string,
+    shipmentId?: string
   ): Promise<boolean> {
     // Need at least one identifier to check
     if (!orderId && !sku && !asin) {
@@ -391,6 +412,24 @@ class RefundFilingWorker {
       // Note: asin match would require querying raw_payload JSONB, skip for now
 
       const { data: reimbursements, error } = await query.limit(1);
+
+      // P6: Secondary check by shipment_id in raw_payload JSONB (catches FC sweep credits)
+      if (!error && (!reimbursements || reimbursements.length === 0) && shipmentId) {
+        const { data: shipmentReimbs } = await supabaseAdmin
+          .from('financial_events')
+          .select('id')
+          .eq('seller_id', sellerId)
+          .eq('event_type', 'reimbursement')
+          .gte('event_date', sixMonthsAgo.toISOString())
+          .or(`raw_payload->>'shipment_id'.eq.${shipmentId},raw_payload->>'ShipmentId'.eq.${shipmentId}`)
+          .limit(1);
+        if (shipmentReimbs && shipmentReimbs.length > 0) {
+          logger.warn(' [REFUND FILING] ALREADY REIMBURSED by shipment_id - Amazon credited this shipment', {
+            orderId, shipmentId
+          });
+          return true;
+        }
+      }
 
       if (error) {
         logger.warn(' [REFUND FILING] Could not check reimbursement history, proceeding with caution', {
@@ -722,7 +761,157 @@ class RefundFilingWorker {
     }
   }
 
+  /**
+   * P3 — INVOICE DATE VALIDATION
+   * Rejects claims where the invoice is dated AFTER the shipment was created.
+   * Amazon's document forensics team flags this as forged evidence.
+   */
+  private async validateInvoiceDate(
+    evidenceIds: string[],
+    sellerId: string,
+    disputeCase: any
+  ): Promise<{ isValid: boolean; reason?: string }> {
+    try {
+      if (!evidenceIds || evidenceIds.length === 0) {
+        return { isValid: true, reason: 'No evidence to validate dates against' };
+      }
+
+      // Get shipment creation date from detection evidence
+      const detectionEvidence = disputeCase.detection_results?.evidence || {};
+      const shipmentId = detectionEvidence.shipment_id || detectionEvidence.fba_shipment_id;
+
+      if (!shipmentId) {
+        return { isValid: true, reason: 'No shipment_id available for date comparison' };
+      }
+
+      // Fetch the shipment creation date
+      const { data: shipment } = await supabaseAdmin
+        .from('fba_shipments')
+        .select('created_at, shipment_id')
+        .eq('shipment_id', shipmentId)
+        .eq('seller_id', sellerId)
+        .single();
+
+      if (!shipment?.created_at) {
+        return { isValid: true, reason: 'Shipment date not found, skipping date validation' };
+      }
+
+      const shipmentCreatedAt = new Date(shipment.created_at);
+
+      // Fetch parsed invoice dates from linked evidence documents
+      const { data: docs } = await supabaseAdmin
+        .from('evidence_documents')
+        .select('id, filename, parsed_content, parsed_metadata')
+        .in('id', evidenceIds)
+        .eq('seller_id', sellerId);
+
+      if (!docs || docs.length === 0) {
+        return { isValid: true, reason: 'No parsed evidence documents found' };
+      }
+
+      for (const doc of docs) {
+        const parsed = doc.parsed_content || doc.parsed_metadata || {};
+        // Try various date field names used by different parsers
+        const rawDate = parsed.invoice_date || parsed.date || parsed.document_date || parsed.issued_date;
+        if (!rawDate) continue;
+
+        const invoiceDate = new Date(rawDate);
+        if (isNaN(invoiceDate.getTime())) continue;
+
+        // FAIL: Invoice date is AFTER the shipment was created
+        if (invoiceDate > shipmentCreatedAt) {
+          logger.error('[REFUND FILING] INVOICE DATE TRAP — Invoice post-dates shipment creation', {
+            disputeId: disputeCase.id,
+            invoiceDate: invoiceDate.toISOString(),
+            shipmentCreatedAt: shipmentCreatedAt.toISOString(),
+            invoiceFile: doc.filename,
+            shipmentId
+          });
+          return {
+            isValid: false,
+            reason: `Invoice "${doc.filename}" is dated ${invoiceDate.toDateString()} — AFTER shipment creation (${shipmentCreatedAt.toDateString()}). Amazon will flag this as forged.`
+          };
+        }
+      }
+
+      return { isValid: true, reason: 'Invoice dates validated' };
+
+    } catch (error: any) {
+      logger.warn('[REFUND FILING] Error validating invoice date, allowing to proceed', { error: error.message });
+      return { isValid: true, reason: 'Date validation error — proceeding with caution' };
+    }
+  }
+
+  /**
+   * P7 — REJECTION CLASSIFIER
+   * Categorises Amazon's denial reason string to determine the smartest retry strategy.
+   * Prevents wasting retry budget on cases that are already resolved or unfixable.
+   */
+  private classifyRejection(reason: string): 'evidence_needed' | 'already_resolved' | 'wrong_claim_type' | 'unknown' {
+    const lower = (reason || '').toLowerCase();
+    if (lower.includes('already') || lower.includes('reimbursed') || lower.includes('credited') || lower.includes('resolved') || lower.includes('paid')) {
+      return 'already_resolved';
+    }
+    if (lower.includes('invoice') || lower.includes('proof') || lower.includes('documentation') || lower.includes('evidence') || lower.includes('provide') || lower.includes('additional')) {
+      return 'evidence_needed';
+    }
+    if (lower.includes('wrong') || lower.includes('incorrect') || lower.includes('does not match') || lower.includes('ineligible') || lower.includes('not eligible')) {
+      return 'wrong_claim_type';
+    }
+    return 'unknown';
+  }
+
+  /**
+   * P9 — POD KEYWORD VALIDATION
+   * Checks if documents classified as PODs contain delivery-confirmation keywords
+   * in their parsed text. Flags PODs that are empty or content-free.
+   */
+  private async validatePodEvidence(
+    evidenceIds: string[],
+    sellerId: string
+  ): Promise<{ hasValidPod: boolean; weakPods: string[] }> {
+    const POD_KEYWORDS = ['delivered', 'received by', 'signed', 'signature', 'proof of delivery', 'pod confirmed', 'delivery confirmed'];
+    const weakPods: string[] = [];
+
+    try {
+      const { data: docs } = await supabaseAdmin
+        .from('evidence_documents')
+        .select('id, filename, doc_type, parsed_content, extracted')
+        .in('id', evidenceIds)
+        .eq('seller_id', sellerId);
+
+      if (!docs) return { hasValidPod: true, weakPods: [] };
+
+      for (const doc of docs) {
+        const filenameNorm = (doc.filename || '').toLowerCase();
+        const docTypeNorm = (doc.doc_type || '').toLowerCase();
+        const isPod = filenameNorm.includes('pod') ||
+          filenameNorm.includes('proof_of_delivery') ||
+          filenameNorm.includes('proof-of-delivery') ||
+          docTypeNorm.includes('pod') ||
+          docTypeNorm.includes('delivery');
+        if (!isPod) continue;
+
+        const textContent = JSON.stringify(doc.parsed_content || doc.extracted || '').toLowerCase();
+        const hasDeliveryKeyword = POD_KEYWORDS.some(kw => textContent.includes(kw));
+
+        if (!hasDeliveryKeyword) {
+          weakPods.push(doc.filename || doc.id);
+          logger.warn('[REFUND FILING] POD document has no delivery-confirmation keywords', {
+            docId: doc.id,
+            filename: doc.filename
+          });
+        }
+      }
+    } catch (error: any) {
+      logger.warn('[REFUND FILING] Error validating POD evidence', { error: error.message });
+    }
+
+    return { hasValidPod: weakPods.length === 0, weakPods };
+  }
+
   async runFilingForAllTenants(): Promise<FilingStats> {
+
     const stats: FilingStats = {
       processed: 0,
       filed: 0,
@@ -735,6 +924,14 @@ class RefundFilingWorker {
 
     try {
       logger.info(' [REFUND FILING] Starting filing run for all tenants');
+
+      // P5: GLOBAL KILL SWITCH — Check feature flag before ANY filing
+      // Toggle 'agent7_filing_enabled' to false in feature_flags table to halt all filing instantly.
+      const filingEnabled = await featureFlagService.isEnabled('agent7_filing_enabled', 'system');
+      if (!filingEnabled) {
+        logger.warn('🛑 [REFUND FILING] GLOBAL KILL SWITCH ACTIVE — agent7_filing_enabled=false. All filing halted.');
+        return stats;
+      }
 
       // MULTI-TENANT: Get all active tenants first
       const { data: tenants, error: tenantError } = await supabaseAdmin
@@ -998,17 +1195,21 @@ class RefundFilingWorker {
 
         // DOUBLE-DIP PREVENTION: Check if item was already reimbursed
         // Filing for something Amazon already paid = "Theft" accusation
+        // P6: Now also checks by shipment_id to catch FC sweep / General Adjustment credits
+        const shipmentId = detectionEvidence.shipment_id || detectionEvidence.fba_shipment_id;
         const alreadyReimbursed = await this.wasAlreadyReimbursed(
           orderId,
           sku,
           asin,
-          disputeCase.seller_id
+          disputeCase.seller_id,
+          shipmentId
         );
         if (alreadyReimbursed) {
           logger.info('[SKIP] [REFUND FILING] Skipping case - item already reimbursed by Amazon', {
             disputeId: disputeCase.id,
             orderId,
-            sku
+            sku,
+            shipmentId
           });
           stats.skipped++;
 
@@ -1053,6 +1254,74 @@ class RefundFilingWorker {
           });
           stats.skipped++;
           continue; // Skip this case - seller hit their daily limit
+        }
+
+        // P4: MINIMUM ROI THRESHOLD — Skip claims under $25
+        // At 10 claims/day/seller, every slot is worth protecting.
+        // A $25 floor ensures minimum $5 return at 20% commission.
+        if (claimAmount < RefundFilingWorker.MIN_FILING_THRESHOLD) {
+          logger.info('[SKIP] [REFUND FILING] Claim below minimum filing threshold', {
+            disputeId: disputeCase.id,
+            claimAmount,
+            threshold: RefundFilingWorker.MIN_FILING_THRESHOLD
+          });
+          stats.skipped++;
+          await supabaseAdmin.from('dispute_cases').update({
+            filing_status: 'skipped_low_value',
+            updated_at: new Date().toISOString()
+          }).eq('id', disputeCase.id);
+          continue;
+        }
+
+        // P10: DIMENSION / WEIGHT FEE GATE — Route to manual review
+        // Agent 7 has no independent physical dimension proof (spec sheets, GS1, Cubiscan).
+        // Auto-filing dimension claims without proof = guaranteed denial.
+        if (RefundFilingWorker.DIMENSION_CLAIM_TYPES.includes((disputeCase.case_type || '').toLowerCase())) {
+          logger.warn('[SKIP] [REFUND FILING] Dimension/weight claim requires manual review — no spec sheet proof available', {
+            disputeId: disputeCase.id,
+            caseType: disputeCase.case_type
+          });
+          stats.skipped++;
+          await supabaseAdmin.from('dispute_cases').update({
+            filing_status: 'pending_approval',
+            status: 'needs_dimension_proof',
+            updated_at: new Date().toISOString()
+          }).eq('id', disputeCase.id);
+          continue;
+        }
+
+        // P3: INVOICE DATE VALIDATION — Reject future-dated invoices
+        // An invoice dated after the shipment creation date = automatic fraud flag from Amazon.
+        const dateValidation = await this.validateInvoiceDate(evidenceIds, disputeCase.seller_id, disputeCase);
+        if (!dateValidation.isValid) {
+          logger.error('[BLOCK] [REFUND FILING] INVOICE DATE TRAP — Blocking filing to prevent fraud accusation', {
+            disputeId: disputeCase.id,
+            reason: dateValidation.reason
+          });
+          stats.skipped++;
+          await supabaseAdmin.from('dispute_cases').update({
+            filing_status: 'blocked_invalid_date',
+            metadata: { block_reason: dateValidation.reason },
+            updated_at: new Date().toISOString()
+          }).eq('id', disputeCase.id);
+          continue;
+        }
+
+        // P9: POD KEYWORD VALIDATION — Flag PODs without delivery-confirmation text
+        // A blank PDF named "pod_123.pdf" has no evidentiary value.
+        const podValidation = await this.validatePodEvidence(evidenceIds, disputeCase.seller_id);
+        if (!podValidation.hasValidPod) {
+          logger.warn('[WARN] [REFUND FILING] Weak POD evidence detected — routing to manual review', {
+            disputeId: disputeCase.id,
+            weakPods: podValidation.weakPods
+          });
+          stats.skipped++;
+          await supabaseAdmin.from('dispute_cases').update({
+            filing_status: 'pending_approval',
+            metadata: { approval_reason: 'weak_pod_evidence', weak_pods: podValidation.weakPods },
+            updated_at: new Date().toISOString()
+          }).eq('id', disputeCase.id);
+          continue;
         }
 
         // CLAIM AMOUNT VALIDATION: Cross-check against parsed invoice total
@@ -1283,6 +1552,42 @@ class RefundFilingWorker {
             // Update case status
             await this.updateCaseStatus(disputeCase.id, statusResult);
 
+            // P8: PENDING ACTION DETECTION — Detect when Amazon requests more information
+            // Amazon sometimes keeps a case 'in_progress' but adds a message like
+            // "Please provide additional documentation". Without reading the message, we'd
+            // miss it entirely and the case would silently expire.
+            if (statusResult.status === 'in_progress' && statusResult.resolution) {
+              const resolutionText = (statusResult.resolution || '').toLowerCase();
+              const needsInfo = resolutionText.includes('additional') ||
+                resolutionText.includes('provide') ||
+                resolutionText.includes('information') ||
+                resolutionText.includes('documentation') ||
+                resolutionText.includes('required');
+              if (needsInfo) {
+                logger.warn('🔔 [REFUND FILING] Amazon requesting more information — notifying seller and triggering stronger evidence retry', {
+                  disputeId: disputeCase.id,
+                  message: statusResult.resolution
+                });
+                try {
+                  const { default: notificationHelper } = await import('../services/notificationHelper');
+                  const { NotificationType, NotificationPriority, NotificationChannel } = await import('../notifications/models/notification');
+                  await notificationHelper.notifyUser(
+                    disputeCase.seller_id,
+                    NotificationType.USER_ACTION_REQUIRED,
+                    '⚠️ Amazon Needs More Information',
+                    `Amazon is requesting additional information for your claim${statusResult.amazon_case_id ? ` (Case ${statusResult.amazon_case_id})` : ''}: "${statusResult.resolution}". We are auto-supplementing evidence and resubmitting.`,
+                    NotificationPriority.URGENT,
+                    NotificationChannel.IN_APP,
+                    { disputeId: disputeCase.id, amazonCaseId: statusResult.amazon_case_id }
+                  );
+                } catch (notifErr: any) {
+                  logger.warn(' [REFUND FILING] Failed to send pending-action notification', { error: notifErr.message });
+                }
+                // Auto-supplement evidence and retry
+                await this.markForRetry(disputeCase.id, disputeCase.seller_id);
+              }
+            }
+
             // If denied, mark for retry with stronger evidence
             if (statusResult.status === 'denied' && submission.status !== 'denied') {
               const rejectionReason = statusResult.error || statusResult.resolution || 'Unknown reason';
@@ -1324,7 +1629,37 @@ class RefundFilingWorker {
                 });
               }
 
-              await this.markForRetry(disputeCase.id, disputeCase.seller_id);
+              // P7: SMART REJECTION CLASSIFIER
+              // Route based on denial category rather than blindly retrying every denial.
+              const rejectionCategory = this.classifyRejection(rejectionReason);
+              logger.info(' [REFUND FILING] Rejection classified', {
+                disputeId: disputeCase.id,
+                rejectionCategory,
+                rejectionReason
+              });
+
+              if (rejectionCategory === 'already_resolved') {
+                // Amazon says it's already paid — mark FAILED, don't waste retry budget
+                logger.warn(' [REFUND FILING] Rejection: already resolved — marking FAILED, no retry', { disputeId: disputeCase.id });
+                await supabaseAdmin.from('dispute_cases').update({
+                  filing_status: 'failed',
+                  status: 'closed_already_resolved',
+                  updated_at: new Date().toISOString()
+                }).eq('id', disputeCase.id);
+
+              } else if (rejectionCategory === 'wrong_claim_type') {
+                // Claim type mismatch — needs human to re-categorise, don't auto-retry
+                logger.warn(' [REFUND FILING] Rejection: wrong claim type — routing to manual review', { disputeId: disputeCase.id });
+                await supabaseAdmin.from('dispute_cases').update({
+                  filing_status: 'pending_approval',
+                  metadata: { approval_reason: 'wrong_claim_type', rejection_reason: rejectionReason },
+                  updated_at: new Date().toISOString()
+                }).eq('id', disputeCase.id);
+
+              } else {
+                // evidence_needed or unknown — retry with stronger evidence (original behaviour)
+                await this.markForRetry(disputeCase.id, disputeCase.seller_id);
+              }
 
               // 🔔 NOTIFICATION: Tell the user their claim was denied
               try {

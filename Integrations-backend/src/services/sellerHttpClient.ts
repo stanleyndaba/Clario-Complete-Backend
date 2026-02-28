@@ -73,20 +73,26 @@ export class SellerHttpClient {
                     host: this.proxyConfig.host
                 });
             } else {
-                logger.debug('[HTTP CLIENT] No proxy configured, using direct connection', {
-                    sellerId: this.sellerId
-                });
+                // FAIL-CLOSED: Never proceed without a proxy
+                throw new Error(
+                    `[FAIL-CLOSED] No proxy configured for seller ${this.sellerId}. ` +
+                    `Refusing to use direct connection to prevent IP contamination.`
+                );
             }
 
             this.initialized = true;
 
         } catch (error: any) {
-            logger.error('[HTTP CLIENT] Failed to initialize proxy', {
+            // FAIL-CLOSED: Do NOT fall back to direct connection
+            logger.error('[HTTP CLIENT] FAIL-CLOSED: Proxy initialization failed, BLOCKING request', {
                 sellerId: this.sellerId,
                 error: error.message
             });
-            // Fall back to direct connection
-            this.initialized = true;
+            this.initialized = false;
+            throw new Error(
+                `[FAIL-CLOSED] Proxy failed for seller ${this.sellerId}: ${error.message}. ` +
+                `Request blocked to prevent IP contamination.`
+            );
         }
     }
 

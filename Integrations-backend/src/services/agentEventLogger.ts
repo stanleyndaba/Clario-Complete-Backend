@@ -66,6 +66,7 @@ export enum EventType {
 
 export interface AgentEventData {
   userId: string;
+  tenantId?: string; // Optional, will be resolved from userId if not provided
   agent: AgentType;
   eventType: EventType;
   success: boolean;
@@ -249,11 +250,29 @@ class AgentEventLogger {
       return; // Skip this event to protect the database
     }
 
+    // Resolve tenantId if not provided
+    let tenantId = data.tenantId;
+    if (!tenantId) {
+      try {
+        const { data: userData } = await supabaseAdmin
+          .from('users')
+          .select('tenant_id')
+          .eq('id', data.userId)
+          .single();
+        if (userData?.tenant_id) {
+          tenantId = userData.tenant_id;
+        }
+      } catch (e) {
+        logger.warn('⚠️ [AGENT EVENT LOGGER] Failed to resolve tenantId for event', { userId: data.userId });
+      }
+    }
+
     try {
       const { error } = await supabaseAdmin
         .from('agent_events')
         .insert({
           user_id: data.userId,
+          tenant_id: tenantId,
           agent: data.agent,
           event_type: data.eventType,
           success: data.success,

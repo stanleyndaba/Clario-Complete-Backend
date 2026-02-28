@@ -389,6 +389,11 @@ app.use('/api', evidenceRoutes);
 logger.info('Evidence routes registered at /api/evidence and /api (for v1 endpoints)');
 app.use('/api/documents', documentsRoutes);
 logger.info('Documents routes registered at /api/documents');
+
+// CSV Upload routes (data ingestion from CSV files — bypass SP-API)
+import csvUploadRoutes from './routes/csvUploadRoutes';
+app.use('/api/csv-upload', csvUploadRoutes);
+logger.info('CSV Upload routes registered at /api/csv-upload');
 app.use('/api/recoveries', recoveryRoutes);
 logger.info('Recovery routes registered at /api/recoveries');
 

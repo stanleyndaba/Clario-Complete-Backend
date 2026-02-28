@@ -16,6 +16,7 @@ import { createSellerHttpClient } from './sellerHttpClient';
 import { briefGeneratorService } from './briefGeneratorService';
 import * as fs from 'fs';
 import * as path from 'path';
+import crypto from 'crypto';
 
 export interface FilingRequest {
     dispute_id: string;
@@ -147,13 +148,20 @@ class RefundFilingService {
             // Use seller-specific HTTP client for IP isolation
             const httpClient = createSellerHttpClient(request.user_id);
 
+            // IDEMPOTENCY KEY: Deterministic per dispute_id so crash-retries
+            // send the same key and Amazon's SP-API rejects the duplicate.
+            const idempotencyKey = crypto.createHash('sha256')
+                .update(`filing_${request.dispute_id}`)
+                .digest('hex');
+
             const response = await httpClient.post(
                 `${this.pythonApiUrl}/api/v1/disputes/submit`,
                 payload,
                 {
                     headers: this.buildServiceHeaders(request.user_id, 'file-dispute', {
                         'Content-Type': 'application/json',
-                        'X-User-Id': request.user_id
+                        'X-User-Id': request.user_id,
+                        'x-amzn-idempotency-key': idempotencyKey
                     }),
                     timeout: 120000 // 120 seconds
                 }

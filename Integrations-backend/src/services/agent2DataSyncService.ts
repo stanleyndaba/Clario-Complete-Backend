@@ -3085,14 +3085,22 @@ export class Agent2DataSyncService {
     // Fetch tenant_id (CRITICAL for multi-tenancy)
     let tenantId: string | null = null;
     try {
-      const { data } = await dbClient.from('users').select('tenant_id').eq('id', userId).single();
-      if (data) tenantId = data.tenant_id;
-    } catch (e) {
+      const { data, error } = await dbClient.from('users').select('tenant_id').eq('id', userId).single();
+      if (error) console.log(`[AGENT 2] ERROR fetching tenant_id for user ${userId}:`, error.message);
+      if (data) {
+        tenantId = data.tenant_id;
+        console.log(`[AGENT 2] Resolved tenant_id for user ${userId}: ${tenantId}`);
+      } else {
+        console.log(`[AGENT 2] No user found for id ${userId} to resolve tenant_id`);
+      }
+    } catch (e: any) {
+      console.log(`[AGENT 2] EXCEPTION fetching tenant_id for user ${userId}:`, e.message);
       logger.warn('Failed to fetch tenant_id', { userId });
     }
 
     // Fallback for sandbox/test mode if no tenant found
     if (!tenantId && isSandboxMode) {
+      console.log(`[AGENT 2] WARNING: Using fallback tenantId (userId) for sandbox mode: ${userId}`);
       tenantId = userId; // Fallback to using userId as tenantId for tests
     }
 
@@ -3282,7 +3290,7 @@ export class Agent2DataSyncService {
         const { data: insertedBatch, error: batchError } = await supabaseAdmin
           .from('detection_results')
           .insert(batch)
-          .select('id, seller_id, estimated_value, currency, severity, confidence_score, anomaly_type, created_at, sync_id');
+          .select('id, seller_id, tenant_id, estimated_value, currency, severity, confidence_score, anomaly_type, created_at, sync_id');
 
         if (batchError) {
           // If batch fails due to duplicate, try inserting one by one
@@ -3297,7 +3305,7 @@ export class Agent2DataSyncService {
                 const { data: singleRecord, error: singleError } = await supabaseAdmin
                   .from('detection_results')
                   .insert(record)
-                  .select('id, seller_id, estimated_value, currency, severity, confidence_score, anomaly_type, created_at, sync_id')
+                  .select('id, seller_id, tenant_id, estimated_value, currency, severity, confidence_score, anomaly_type, created_at, sync_id')
                   .single();
 
                 if (singleRecord && !singleError) {
@@ -3409,6 +3417,7 @@ export class Agent2DataSyncService {
         const claimsToInsert = insertedDetections.map((detection: any) => ({
           claim_id: detection.id || `claim_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           user_id: userId,
+          tenant_id: detection.tenant_id,
           claim_type: 'reimbursement',
           provider: 'amazon',
           reference_id: detection.id,

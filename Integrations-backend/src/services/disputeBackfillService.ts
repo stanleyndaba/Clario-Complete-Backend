@@ -4,6 +4,7 @@ import logger from '../utils/logger';
 export interface DetectionForDispute {
   id: string;
   seller_id: string;
+  tenant_id?: string | null;
   estimated_value?: number | null;
   currency?: string | null;
   severity?: string | null;
@@ -18,6 +19,7 @@ type DisputeCaseRow = {
   id: string;
   detection_result_id: string;
   seller_id: string;
+  tenant_id: string;
   status: string;
   claim_amount: number | null;
   currency: string | null;
@@ -106,7 +108,7 @@ export async function upsertDisputesAndRecoveriesFromDetections(
 
     return {
       seller_id: detection.seller_id,
-      // store_id intentionally omitted - column not in DB schema yet
+      tenant_id: detection.tenant_id,
       detection_result_id: detection.id,
       case_number: deriveCaseNumber(detection, index),
       status,
@@ -133,7 +135,7 @@ export async function upsertDisputesAndRecoveriesFromDetections(
   const { data: batchResult, error: batchError } = await supabaseAdmin
     .from('dispute_cases')
     .insert(disputePayload)
-    .select('id, detection_result_id, seller_id, status, claim_amount, currency, resolution_date, case_number, created_at');
+    .select('id, detection_result_id, seller_id, tenant_id, status, claim_amount, currency, resolution_date, case_number, created_at');
 
   if (batchError) {
     // If batch fails (likely duplicates), try inserting one by one
@@ -147,7 +149,7 @@ export async function upsertDisputesAndRecoveriesFromDetections(
           const { data: single, error: singleError } = await supabaseAdmin
             .from('dispute_cases')
             .insert(dispute)
-            .select('id, detection_result_id, seller_id, status, claim_amount, currency, resolution_date, case_number, created_at')
+            .select('id, detection_result_id, seller_id, tenant_id, status, claim_amount, currency, resolution_date, case_number, created_at')
             .single();
 
           if (single && !singleError) {
@@ -206,7 +208,7 @@ const buildRecoveryPayload = (disputes: DisputeCaseRow[], existingIds: Set<strin
       return {
         dispute_id: dispute.id,
         user_id: dispute.seller_id,
-        // store_id intentionally omitted - column not in DB schema yet
+        tenant_id: dispute.tenant_id,
         expected_amount: amount,
         actual_amount: amount,
         discrepancy: 0,
