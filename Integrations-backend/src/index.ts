@@ -394,6 +394,11 @@ logger.info('Documents routes registered at /api/documents');
 import csvUploadRoutes from './routes/csvUploadRoutes';
 app.use('/api/csv-upload', csvUploadRoutes);
 logger.info('CSV Upload routes registered at /api/csv-upload');
+
+// Revenue routes (reimbursement matching, commission invoices, payment methods)
+import revenueRoutes from './routes/revenueRoutes';
+app.use('/api/revenue', revenueRoutes);
+logger.info('Revenue routes registered at /api/revenue');
 app.use('/api/recoveries', recoveryRoutes);
 logger.info('Recovery routes registered at /api/recoveries');
 
