@@ -2132,3 +2132,69 @@ IsSandbox: true
 Input Detections: 359
 DB Client: Admin
 
+[2026-03-01T01:00:30.325Z] AFTER detection mapping
+All Predictions: 2799
+Claimable Predictions: 372
+Mapped Detection Results: 372
+Sample Result: {"claim_id":"claim_order_112-1322442-381286_1772326826249_uxx1i","seller_id":"demo-user","anomaly_type":"damaged_warehouse","severity":"medium","estimated_value":14.65,"currency":"USD","confidence_score":0.65,"evidence":{},"related_event_ids":["112-1322442-381286"],"discovery_date":"2025-08-11T13:56:00.204Z","deadline_date":"2025-10-10T13:56:00.204Z","days_remaining":0}
+
+[2026-03-01T01:00:30.748Z] storeDetectionResults
+IsSandbox: true
+Input Detections: 372
+DB Client: Admin
+
+[2026-03-01T01:03:00.994Z] AFTER detection mapping
+All Predictions: 2799
+Claimable Predictions: 360
+Mapped Detection Results: 360
+Sample Result: {"claim_id":"claim_order_112-1825260-640706_1772326976906_367q1","seller_id":"demo-user","anomaly_type":"missing_unit","severity":"critical","estimated_value":21.5,"currency":"USD","confidence_score":0.8982,"evidence":{},"related_event_ids":["112-1825260-640706"],"discovery_date":"2024-10-05T04:01:42.946Z","deadline_date":"2024-12-04T04:01:42.946Z","days_remaining":0}
+
+[2026-03-01T01:03:01.393Z] storeDetectionResults
+IsSandbox: true
+Input Detections: 360
+DB Client: Admin
+
+[2026-03-01T03:05:45.094Z] AFTER detection mapping
+All Predictions: 2807
+Claimable Predictions: 398
+Mapped Detection Results: 398
+Sample Result: {"claim_id":"claim_order_112-1027026-880816_1772334340223_4q7fy","seller_id":"demo-user","anomaly_type":"lost_warehouse","severity":"critical","estimated_value":7.39,"currency":"USD","confidence_score":0.9309,"evidence":{},"related_event_ids":["112-1027026-880816"],"discovery_date":"2025-01-18T09:07:22.058Z","deadline_date":"2025-03-19T09:07:22.058Z","days_remaining":0}
+
+[2026-03-01T03:05:45.881Z] storeDetectionResults
+IsSandbox: true
+Input Detections: 398
+DB Client: Admin
+
+[2026-03-01T03:34:07.354Z] AFTER detection mapping
+All Predictions: 2793
+Claimable Predictions: 401
+Mapped Detection Results: 401
+Sample Result: {"claim_id":"claim_order_112-1461491-536401_1772336042884_rj9wh","seller_id":"demo-user","anomaly_type":"damaged_warehouse","severity":"critical","estimated_value":2.02,"currency":"USD","confidence_score":0.906,"evidence":{},"related_event_ids":["112-1461491-536401"],"discovery_date":"2025-09-09T12:31:10.991Z","deadline_date":"2025-11-08T12:31:10.991Z","days_remaining":0}
+
+[2026-03-01T03:34:07.852Z] storeDetectionResults
+IsSandbox: true
+Input Detections: 401
+DB Client: Admin
+
+[2026-03-01T05:47:55.058Z] AFTER detection mapping
+All Predictions: 2794
+Claimable Predictions: 396
+Mapped Detection Results: 396
+Sample Result: {"claim_id":"claim_order_112-3087438-352149_1772344068624_eah11","seller_id":"00000000-0000-0000-0000-000000000000","anomaly_type":"damaged_warehouse","severity":"critical","estimated_value":4.92,"currency":"USD","confidence_score":0.8642,"evidence":{},"related_event_ids":["112-3087438-352149"],"discovery_date":"2024-11-26T18:49:50.690Z","deadline_date":"2025-01-25T18:49:50.690Z","days_remaining":0}
+
+[2026-03-01T05:47:59.486Z] storeDetectionResults
+IsSandbox: true
+Input Detections: 396
+DB Client: Admin
+
+[2026-03-01T05:48:14.754Z] AFTER detection mapping
+All Predictions: 2780
+Claimable Predictions: 419
+Mapped Detection Results: 419
+Sample Result: {"claim_id":"claim_order_112-616679-191453_1772344083103_vyyv7","seller_id":"00000000-0000-0000-0000-000000000000","anomaly_type":"missing_unit","severity":"critical","estimated_value":0.76,"currency":"USD","confidence_score":0.9812,"evidence":{},"related_event_ids":["112-616679-191453"],"discovery_date":"2025-12-27T06:00:17.314Z","deadline_date":"2026-02-25T06:00:17.314Z","days_remaining":0}
+
+[2026-03-01T05:48:15.632Z] storeDetectionResults
+IsSandbox: true
+Input Detections: 419
+DB Client: Admin
+
