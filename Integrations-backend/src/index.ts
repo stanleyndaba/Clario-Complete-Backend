@@ -406,6 +406,9 @@ import billingRoutes from './routes/billingRoutes';
 app.use('/api/billing', billingRoutes);
 logger.info('Billing routes registered at /api/billing');
 
+import exportRoutes from './routes/exportRoutes';
+app.use('/api/export-claims', exportRoutes);
+logger.info('Export routes registered at /api/export-claims');
 
 app.use('/api/notifications', notificationRoutes);
 logger.info('Notification routes registered at /api/notifications');
