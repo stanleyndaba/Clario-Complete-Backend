@@ -2960,7 +2960,7 @@ CREATE POLICY "Users can delete their own tokens" ON tokens
 COMMENT ON TABLE tokens IS 'OAuth tokens stored with encrypted IV+data format';
 
 
-
+okay
 
 
 -- ========================================
@@ -6554,6 +6554,354 @@ VALUES (
 
 
 -- ========================================
+-- Migration: 062_create_revenue_tables.sql
+-- ========================================
+
+-- Migration: Create Revenue System Tables
+-- Tables for reimbursement matching, commission invoicing, and payment methods
+
+----------------------------------------------------------------------
+-- 1. reimbursement_matches
+--    Links Amazon reimbursement events/emails to Margin-filed dispute cases
+----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS reimbursement_matches (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  seller_id TEXT NOT NULL,
+  store_id TEXT,
+  dispute_case_id UUID REFERENCES dispute_cases(id) ON DELETE SET NULL,
+  detection_result_id UUID REFERENCES detection_results(id) ON DELETE SET NULL,
+
+  -- What Amazon paid
+  amazon_reimbursement_amount DECIMAL(12,2) NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'USD',
+  reimbursement_date TIMESTAMPTZ NOT NULL,
+
+  -- How we found the match
+  match_source TEXT NOT NULL DEFAULT 'gmail_email'
+    CHECK (match_source IN ('gmail_email', 'csv_upload', 'manual', 'api')),
+  match_confidence DECIMAL(3,2) NOT NULL DEFAULT 0.00
+    CHECK (match_confidence >= 0 AND match_confidence <= 1),
+
+  -- Source metadata (email id, subject, body snippet, case ref, etc.)
+  source_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+  -- Lifecycle
+  status TEXT NOT NULL DEFAULT 'pending_review'
+    CHECK (status IN ('pending_review', 'confirmed', 'disputed', 'invoiced', 'void')),
+
+  -- Optional references extracted from the email / CSV
+  amazon_case_id TEXT,
+  amazon_order_id TEXT,
+  asin TEXT,
+  sku TEXT,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_reimb_matches_seller ON reimbursement_matches(seller_id);
+CREATE INDEX IF NOT EXISTS idx_reimb_matches_status ON reimbursement_matches(status);
+CREATE INDEX IF NOT EXISTS idx_reimb_matches_dispute ON reimbursement_matches(dispute_case_id);
+CREATE INDEX IF NOT EXISTS idx_reimb_matches_date ON reimbursement_matches(reimbursement_date);
+
+----------------------------------------------------------------------
+-- 2. margin_invoices
+--    Commission invoices Margin sends to sellers (20 % of reimbursements)
+----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS margin_invoices (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  seller_id TEXT NOT NULL,
+  store_id TEXT,
+
+  invoice_number TEXT UNIQUE NOT NULL,  -- e.g. MRG-2026-0001
+
+  period_start TIMESTAMPTZ NOT NULL,
+  period_end   TIMESTAMPTZ NOT NULL,
+
+  -- Totals
+  total_reimbursements DECIMAL(12,2) NOT NULL DEFAULT 0,
+  commission_rate DECIMAL(5,4) NOT NULL DEFAULT 0.2000,  -- 20 %
+  commission_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+
+  -- Status
+  status TEXT NOT NULL DEFAULT 'draft'
+    CHECK (status IN ('draft', 'pending', 'sent', 'paid', 'disputed', 'void')),
+
+  due_date TIMESTAMPTZ,
+  dispute_window_ends TIMESTAMPTZ,   -- 24 hr window to dispute
+  paid_at TIMESTAMPTZ,
+  payment_method_id UUID,            -- FK to payment_methods if card-charged
+
+  -- Breakdown of every matched reimbursement in this invoice
+  line_items JSONB NOT NULL DEFAULT '[]'::jsonb,
+
+  notes TEXT,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_margin_inv_seller ON margin_invoices(seller_id);
+CREATE INDEX IF NOT EXISTS idx_margin_inv_status ON margin_invoices(status);
+CREATE INDEX IF NOT EXISTS idx_margin_inv_due ON margin_invoices(due_date);
+
+----------------------------------------------------------------------
+-- 3. payment_methods
+--    Card-on-file for future auto-charge (no Stripe for now — just store
+--    a masked reference; actual charging is Phase 2)
+----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS payment_methods (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  seller_id TEXT NOT NULL,
+
+  method_type TEXT NOT NULL DEFAULT 'card'
+    CHECK (method_type IN ('card', 'bank_account', 'manual')),
+
+  -- Masked display info only — never store raw card numbers
+  card_brand TEXT,         -- visa, mastercard, amex …
+  card_last_four TEXT,     -- 4242
+  card_exp_month INT,
+  card_exp_year INT,
+  cardholder_name TEXT,
+  billing_email TEXT,
+
+  -- For future gateway integration
+  external_token TEXT,     -- tokenised reference (Stripe PM id, etc.)
+  gateway TEXT,            -- 'stripe', 'paystack', 'manual', etc.
+
+  is_default BOOLEAN NOT NULL DEFAULT false,
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'expired', 'removed')),
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pay_methods_seller ON payment_methods(seller_id);
+CREATE INDEX IF NOT EXISTS idx_pay_methods_default ON payment_methods(is_default);
+
+----------------------------------------------------------------------
+-- Triggers
+----------------------------------------------------------------------
+CREATE TRIGGER update_reimbursement_matches_updated_at
+  BEFORE UPDATE ON reimbursement_matches
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_margin_invoices_updated_at
+  BEFORE UPDATE ON margin_invoices
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_payment_methods_updated_at
+  BEFORE UPDATE ON payment_methods
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+----------------------------------------------------------------------
+-- Comments
+----------------------------------------------------------------------
+COMMENT ON TABLE reimbursement_matches IS 'Maps Amazon reimbursement events to Margin-filed dispute cases';
+COMMENT ON TABLE margin_invoices IS 'Commission invoices (20%) that Margin issues to sellers';
+COMMENT ON TABLE payment_methods IS 'Seller payment methods (card on file) for future auto-charge';
+
+
+
+-- ========================================
+-- Migration: 063_create_csv_data_tables.sql
+-- ========================================
+
+-- Migration 063: Create CSV data tables
+-- Creates the 5 tables required by csvIngestionService.ts for CSV upload ingestion:
+-- orders, shipments, returns, settlements, inventory_items
+-- DROP + CREATE to ensure clean schema (no data loss — tables are new/empty)
+
+-- ============================================================================
+-- ORDERS
+-- ============================================================================
+DROP TABLE IF EXISTS orders CASCADE;
+CREATE TABLE orders (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id TEXT NOT NULL,
+    store_id TEXT,
+    order_id TEXT NOT NULL,
+    seller_id TEXT,
+    marketplace_id TEXT DEFAULT 'ATVPDKIKX0DER',
+    order_date TIMESTAMPTZ DEFAULT NOW(),
+    order_status TEXT DEFAULT 'Shipped',
+    fulfillment_channel TEXT DEFAULT 'FBA',
+    total_amount NUMERIC(12, 2) DEFAULT 0,
+    currency TEXT DEFAULT 'USD',
+    items JSONB DEFAULT '[]'::jsonb,
+    quantities JSONB DEFAULT '{}'::jsonb,
+    sync_id TEXT,
+    sync_timestamp TIMESTAMPTZ DEFAULT NOW(),
+    source TEXT DEFAULT 'csv_upload',
+    is_sandbox BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_orders_user_id ON orders(user_id);
+CREATE INDEX idx_orders_order_id ON orders(order_id);
+CREATE INDEX idx_orders_store_id ON orders(store_id);
+CREATE INDEX idx_orders_sync_id ON orders(sync_id);
+
+-- ============================================================================
+-- SHIPMENTS
+-- ============================================================================
+DROP TABLE IF EXISTS shipments CASCADE;
+CREATE TABLE shipments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id TEXT NOT NULL,
+    store_id TEXT,
+    shipment_id TEXT NOT NULL,
+    order_id TEXT,
+    shipped_date TIMESTAMPTZ DEFAULT NOW(),
+    received_date TIMESTAMPTZ,
+    status TEXT DEFAULT 'RECEIVED',
+    carrier TEXT,
+    tracking_number TEXT,
+    warehouse_location TEXT,
+    items JSONB DEFAULT '[]'::jsonb,
+    shipped_quantity INTEGER DEFAULT 0,
+    received_quantity INTEGER DEFAULT 0,
+    missing_quantity INTEGER DEFAULT 0,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    sync_id TEXT,
+    sync_timestamp TIMESTAMPTZ DEFAULT NOW(),
+    source TEXT DEFAULT 'csv_upload',
+    is_sandbox BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_shipments_user_id ON shipments(user_id);
+CREATE INDEX idx_shipments_shipment_id ON shipments(shipment_id);
+CREATE INDEX idx_shipments_store_id ON shipments(store_id);
+CREATE INDEX idx_shipments_sync_id ON shipments(sync_id);
+
+-- ============================================================================
+-- RETURNS
+-- ============================================================================
+DROP TABLE IF EXISTS returns CASCADE;
+CREATE TABLE returns (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id TEXT NOT NULL,
+    store_id TEXT,
+    return_id TEXT NOT NULL,
+    order_id TEXT,
+    reason TEXT DEFAULT 'CUSTOMER_REQUEST',
+    returned_date TIMESTAMPTZ DEFAULT NOW(),
+    status TEXT DEFAULT 'RECEIVED',
+    refund_amount NUMERIC(12, 2) DEFAULT 0,
+    currency TEXT DEFAULT 'USD',
+    items JSONB DEFAULT '[]'::jsonb,
+    is_partial BOOLEAN DEFAULT FALSE,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    sync_id TEXT,
+    sync_timestamp TIMESTAMPTZ DEFAULT NOW(),
+    source TEXT DEFAULT 'csv_upload',
+    is_sandbox BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_returns_user_id ON returns(user_id);
+CREATE INDEX idx_returns_return_id ON returns(return_id);
+CREATE INDEX idx_returns_order_id ON returns(order_id);
+CREATE INDEX idx_returns_store_id ON returns(store_id);
+CREATE INDEX idx_returns_sync_id ON returns(sync_id);
+
+-- ============================================================================
+-- SETTLEMENTS
+-- ============================================================================
+DROP TABLE IF EXISTS settlements CASCADE;
+CREATE TABLE settlements (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id TEXT NOT NULL,
+    store_id TEXT,
+    settlement_id TEXT NOT NULL,
+    order_id TEXT,
+    transaction_type TEXT DEFAULT 'Order',
+    amount NUMERIC(12, 2) DEFAULT 0,
+    fees NUMERIC(12, 2) DEFAULT 0,
+    currency TEXT DEFAULT 'USD',
+    settlement_date TIMESTAMPTZ DEFAULT NOW(),
+    fee_breakdown JSONB DEFAULT '{}'::jsonb,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    sync_id TEXT,
+    sync_timestamp TIMESTAMPTZ DEFAULT NOW(),
+    source TEXT DEFAULT 'csv_upload',
+    is_sandbox BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_settlements_user_id ON settlements(user_id);
+CREATE INDEX idx_settlements_settlement_id ON settlements(settlement_id);
+CREATE INDEX idx_settlements_store_id ON settlements(store_id);
+CREATE INDEX idx_settlements_sync_id ON settlements(sync_id);
+
+-- ============================================================================
+-- INVENTORY ITEMS
+-- ============================================================================
+DROP TABLE IF EXISTS inventory_items CASCADE;
+CREATE TABLE inventory_items (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id TEXT NOT NULL,
+    store_id TEXT,
+    sku TEXT NOT NULL,
+    asin TEXT,
+    fnsku TEXT,
+    product_name TEXT,
+    condition_type TEXT DEFAULT 'New',
+    quantity_available INTEGER DEFAULT 0,
+    quantity_reserved INTEGER DEFAULT 0,
+    quantity_inbound INTEGER DEFAULT 0,
+    price NUMERIC(12, 2) DEFAULT 0,
+    dimensions JSONB DEFAULT '{}'::jsonb,
+    sync_id TEXT,
+    sync_timestamp TIMESTAMPTZ DEFAULT NOW(),
+    source TEXT DEFAULT 'csv_upload',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_inventory_items_user_id ON inventory_items(user_id);
+CREATE INDEX idx_inventory_items_sku ON inventory_items(sku);
+CREATE INDEX idx_inventory_items_asin ON inventory_items(asin);
+CREATE INDEX idx_inventory_items_store_id ON inventory_items(store_id);
+CREATE INDEX idx_inventory_items_sync_id ON inventory_items(sync_id);
+
+
+
+-- ========================================
+-- Migration: 064_fix_financial_events_for_csv.sql
+-- ========================================
+
+-- Migration 064: Fix financial_events table for CSV ingestion compatibility
+-- Adds missing columns and relaxes event_type constraint to match csvIngestionService.ts
+
+-- Add missing columns that csvIngestionService.ts expects
+ALTER TABLE financial_events ADD COLUMN IF NOT EXISTS sku TEXT;
+ALTER TABLE financial_events ADD COLUMN IF NOT EXISTS asin TEXT;
+ALTER TABLE financial_events ADD COLUMN IF NOT EXISTS store_id TEXT;
+ALTER TABLE financial_events ADD COLUMN IF NOT EXISTS sync_id TEXT;
+ALTER TABLE financial_events ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'csv_upload';
+ALTER TABLE financial_events ADD COLUMN IF NOT EXISTS description TEXT;
+
+-- Drop the restrictive event_type CHECK constraint
+-- The original constraint only allows: 'fee', 'reimbursement', 'return', 'shipment'
+-- But CSV ingestion sends values like 'adjustment', 'FBALiquidationEvent', etc.
+ALTER TABLE financial_events DROP CONSTRAINT IF EXISTS financial_events_event_type_check;
+
+-- Add indexes for the new columns
+CREATE INDEX IF NOT EXISTS idx_financial_events_sku ON financial_events(sku);
+CREATE INDEX IF NOT EXISTS idx_financial_events_asin ON financial_events(asin);
+CREATE INDEX IF NOT EXISTS idx_financial_events_store_id ON financial_events(store_id);
+CREATE INDEX IF NOT EXISTS idx_financial_events_sync_id ON financial_events(sync_id);
+
+
+
+-- ========================================
 -- Migration: add_pending_jobs_table.sql
 -- ========================================
 
@@ -6608,6 +6956,41 @@ CREATE POLICY "Users can view own pending jobs" ON pending_jobs
 -- Service role can do everything (for workers)
 CREATE POLICY "Service role full access to pending_jobs" ON pending_jobs
   FOR ALL USING (auth.role() = 'service_role');
+
+
+
+-- ========================================
+-- Migration: create_financial_impact_table.sql
+-- ========================================
+
+-- Migration: Create financial_impact_events table
+-- This table tracks the financial lifecycle of each detection
+
+CREATE TABLE IF NOT EXISTS financial_impact_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    detection_id TEXT UNIQUE NOT NULL, -- Logical ID from Agent 3
+    claim_id TEXT,                    -- Amazon Case ID (when filed)
+    user_id UUID NOT NULL,            -- The seller
+    tenant_id UUID,                   -- Multi-tenant context
+    status TEXT NOT NULL,             -- detected, filed, approved, paid, failed
+    estimated_amount DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    confirmed_amount DECIMAL(12, 2),
+    currency TEXT NOT NULL DEFAULT 'USD',
+    confidence DECIMAL(4, 3) NOT NULL DEFAULT 1.0,
+    anomaly_type TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+-- Index for fast lookup by user
+CREATE INDEX IF NOT EXISTS idx_financial_impact_user ON financial_impact_events(user_id);
+CREATE INDEX IF NOT EXISTS idx_financial_impact_status ON financial_impact_events(status);
+
+-- Ensure RLS is enabled but accessible to service role
+ALTER TABLE financial_impact_events ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Enable all for service role" ON financial_impact_events
+    FOR ALL USING (true);
 
 
 

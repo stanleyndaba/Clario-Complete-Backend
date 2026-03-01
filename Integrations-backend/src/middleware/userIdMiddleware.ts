@@ -113,9 +113,14 @@ export function userIdMiddleware(req: Request, res: Response, next: NextFunction
       userId = req.query.userId as string;
     }
 
+    // Intercept 'demo-user' string explicitely sent from frontend headers/params
+    if (userId === 'demo-user' && allowDemoUser) {
+      userId = '00000000-0000-0000-0000-000000000000';
+    }
+
     if (!userId) {
       if (allowDemoUser) {
-        userId = 'demo-user';
+        userId = '00000000-0000-0000-0000-000000000000';
         logger.debug('Demo mode enabled - falling back to demo-user', {
           path: req.path,
           method: req.method
@@ -135,19 +140,15 @@ export function userIdMiddleware(req: Request, res: Response, next: NextFunction
 
     // Handle prefixed UUIDs (e.g. stress-test-user-UUID)
     // This fixes the issue where valid users are rejected because of the prefix
-    if (userId && userId !== 'demo-user') {
+    if (userId && userId !== '00000000-0000-0000-0000-000000000000') {
       const uuidMatch = userId.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
       if (uuidMatch) {
         // If we found a UUID inside the string, use that as the official ID for validation
-        // But keep the original ID if it was just a prefix, or maybe we should strip it?
-        // For now, let's just allow it if it contains a UUID, but we need to pass the regex check below.
-        // The regex check below expects *only* a UUID.
-        // So we MUST extract it.
         userId = uuidMatch[0];
       }
     }
 
-    if (userId !== 'demo-user' && !UUID_REGEX.test(userId)) {
+    if (userId !== '00000000-0000-0000-0000-000000000000' && !UUID_REGEX.test(userId)) {
       logger.warn('Invalid user ID format (expected UUID)', { userId, path: req.path });
       res.status(400).json({ error: 'Invalid user ID' });
       return;

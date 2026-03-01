@@ -71,7 +71,7 @@ export const optionalAuth = async (req: AuthenticatedRequest, res: Response, nex
   // No token - continue without user (demo-user will be used by routes)
   if (!token) {
     // Set a demo user ID for unauthenticated access
-    (req as any).userId = 'demo-user';
+    (req as any).userId = '00000000-0000-0000-0000-000000000000';
     next();
     return;
   }
@@ -103,7 +103,7 @@ export const optionalAuth = async (req: AuthenticatedRequest, res: Response, nex
   } catch (error) {
     // Invalid token - still allow access as demo user
     logger.debug('Optional auth: token verification failed, using demo-user', { error });
-    (req as any).userId = 'demo-user';
+    (req as any).userId = '00000000-0000-0000-0000-000000000000';
     next();
   }
 };
