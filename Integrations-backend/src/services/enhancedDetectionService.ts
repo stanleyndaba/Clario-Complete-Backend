@@ -235,12 +235,18 @@ export class EnhancedDetectionService {
       jobId
     });
 
+    const csvMode = triggerType === 'csv_upload';
+    const w60 = csvMode ? 730 : 60;
+    const w90 = csvMode ? 730 : 90;
+    const w120 = csvMode ? 730 : 120;
+    const w180 = csvMode ? 730 : 180;
+
     try {
       // Step 1: Fetch inventory ledger from database
       logger.info('🐋 [AGENT3] Fetching inventory ledger for Whale Hunter...', { userId });
 
       const inventoryLedger = await fetchInventoryLedger(userId, {
-        startDate: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString() // Last 90 days
+        startDate: new Date(Date.now() - w90 * 24 * 60 * 60 * 1000).toISOString() // Last 90 days
       });
 
       logger.info('🐋 [AGENT3] Inventory ledger fetched', {
@@ -270,7 +276,7 @@ export class EnhancedDetectionService {
       // Step 4: RUN THE REFUND TRAP 🪤
       logger.info('🪤 [AGENT3] Setting the Refund Trap...', { userId, syncId });
 
-      const lookbackDate = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
+      const lookbackDate = new Date(Date.now() - w120 * 24 * 60 * 60 * 1000).toISOString();
       const [refundEvents, returnEvents, reimbursementEvents] = await Promise.all([
         fetchRefundEvents(userId, { startDate: lookbackDate }),
         fetchReturnEvents(userId, { startDate: lookbackDate }),
@@ -560,8 +566,8 @@ export class EnhancedDetectionService {
       logger.info('🔍 [AGENT3] Running Duplicate/Missed Reimbursement Sentinel...', { userId, syncId });
 
       const [lossEvents, sentinelReimbEvents] = await Promise.all([
-        fetchLossEvents(userId, { lookbackDays: 180 }),
-        fetchReimbursementEventsForSentinel(userId, { lookbackDays: 180 })
+        fetchLossEvents(userId, { lookbackDays: w180 }),
+        fetchReimbursementEventsForSentinel(userId, { lookbackDays: w180 })
       ]);
 
       const sentinelSyncedData: SentinelSyncedData = {
@@ -598,7 +604,7 @@ export class EnhancedDetectionService {
       // Step 18: RUN FALSE CLOSED CASE DETECTOR ⚖️ (Amazon Decision Analysis)
       logger.info('⚖️ [AGENT3] Running False Closed Case Detector...', { userId, syncId });
 
-      const closedCases = await fetchClosedCases(userId, { lookbackDays: 180 });
+      const closedCases = await fetchClosedCases(userId, { lookbackDays: w180 });
       const closedCaseSyncedData: ClosedCaseSyncedData = {
         seller_id: userId,
         sync_id: syncId,
@@ -631,7 +637,7 @@ export class EnhancedDetectionService {
       // Step 19: RUN SLA BREACH COMPENSATION DETECTOR ⏱️ (Policy-Backed Money)
       logger.info('⏱️ [AGENT3] Running SLA Breach Compensation Detector...', { userId, syncId });
 
-      const caseTimelines = await fetchCaseTimelines(userId, { lookbackDays: 180 });
+      const caseTimelines = await fetchCaseTimelines(userId, { lookbackDays: w180 });
       const slaSyncedData: SLABreachSyncedData = {
         seller_id: userId,
         sync_id: syncId,
@@ -665,8 +671,8 @@ export class EnhancedDetectionService {
       logger.info('🔄 [AGENT3] Running Return Abuse Detector...', { userId, syncId });
 
       const [refundEventsForAbuse, returnEventsForAbuse] = await Promise.all([
-        fetchRefundEventsForAbuse(userId, { lookbackDays: 90 }),
-        fetchReturnEventsForAbuse(userId, { lookbackDays: 90 })
+        fetchRefundEventsForAbuse(userId, { lookbackDays: w90 }),
+        fetchReturnEventsForAbuse(userId, { lookbackDays: w90 })
       ]);
 
       const returnAbuseSyncedData: ReturnAbuseSyncedData = {
@@ -704,8 +710,8 @@ export class EnhancedDetectionService {
       logger.info('📊 [AGENT3] Running Inventory Shrinkage Drift Detector...', { userId, syncId });
 
       const [inventorySnapshots, inventoryEvents] = await Promise.all([
-        fetchInventorySnapshots(userId, { lookbackDays: 90 }),
-        fetchInventoryEvents(userId, { lookbackDays: 90 })
+        fetchInventorySnapshots(userId, { lookbackDays: w90 }),
+        fetchInventoryEvents(userId, { lookbackDays: w90 })
       ]);
 
       const shrinkageSyncedData: ShrinkageSyncedData = {
@@ -744,7 +750,7 @@ export class EnhancedDetectionService {
 
       const [productDimensions, feeTransactions] = await Promise.all([
         fetchProductDimensions(userId),
-        fetchFeeTransactions(userId, { lookbackDays: 90 })
+        fetchFeeTransactions(userId, { lookbackDays: w90 })
       ]);
 
       const feeMisclassSyncedData: FeeMisclassSyncedData = {
@@ -780,7 +786,7 @@ export class EnhancedDetectionService {
       // Step 23: RUN REFUND PRICE SHORTFALL DETECTOR 💵 (Fair Refund Pricing)
       logger.info('💵 [AGENT3] Running Refund Price Shortfall Detector...', { userId, syncId });
 
-      const refundEventsForPricing = await fetchRefundEventsForPricing(userId, { lookbackDays: 90 });
+      const refundEventsForPricing = await fetchRefundEventsForPricing(userId, { lookbackDays: w90 });
       const skusToPrice = [...new Set(refundEventsForPricing.map(e => e.sku))];
       const priceHistoryMap = await fetchPriceHistoryForRefunds(userId, skusToPrice);
 
@@ -818,8 +824,8 @@ export class EnhancedDetectionService {
       logger.info('👻 [AGENT3] Running Phantom Refund Detector...', { userId, syncId });
 
       const [refundEventsWithReturns, inventoryAdjustmentsForPhantom] = await Promise.all([
-        fetchRefundEventsWithReturns(userId, { lookbackDays: 90 }),
-        fetchInventoryAdjustmentsForPhantom(userId, { lookbackDays: 90 })
+        fetchRefundEventsWithReturns(userId, { lookbackDays: w90 }),
+        fetchInventoryAdjustmentsForPhantom(userId, { lookbackDays: w90 })
       ]);
 
       const phantomRefundSyncedData: PhantomRefundSyncedData = {
@@ -855,7 +861,7 @@ export class EnhancedDetectionService {
       // Step 25: RUN DELAYED REVENUE IMPACT CALCULATOR 📉 (Enterprise Justification)
       logger.info('📉 [AGENT3] Running Delayed Revenue Impact Calculator...', { userId, syncId });
 
-      const delayEvents = await fetchDelayEvents(userId, { lookbackDays: 90 });
+      const delayEvents = await fetchDelayEvents(userId, { lookbackDays: w90 });
       const delaySkus = [...new Set(delayEvents.map(e => e.sku))];
       const salesVelocityMap = await fetchSalesVelocity(userId, delaySkus);
 
@@ -893,7 +899,7 @@ export class EnhancedDetectionService {
       // Step 26: RUN FEE DRIFT TREND DETECTOR 📈 (Slow Overcharge Prevention)
       logger.info('📈 [AGENT3] Running Fee Drift Trend Detector...', { userId, syncId });
 
-      const feeHistoryForDrift = await fetchFeeHistoryForDrift(userId, { lookbackDays: 180 });
+      const feeHistoryForDrift = await fetchFeeHistoryForDrift(userId, { lookbackDays: w180 });
 
       const feeDriftSyncedData: FeeDriftSyncedData = {
         seller_id: userId,
@@ -927,7 +933,7 @@ export class EnhancedDetectionService {
       // Step 27: RUN ORDER LEVEL DISCREPANCY DETECTOR 📋 (Transaction Integrity)
       logger.info('📋 [AGENT3] Running Order Level Discrepancy Detector...', { userId, syncId });
 
-      const ordersForDiscrepancy = await fetchOrdersForDiscrepancy(userId, { lookbackDays: 90 });
+      const ordersForDiscrepancy = await fetchOrdersForDiscrepancy(userId, { lookbackDays: w90 });
       const orderDiscrepancyResults = await detectOrderLevelDiscrepancies(userId, syncId, ordersForDiscrepancy);
 
       if (orderDiscrepancyResults.length > 0) {
@@ -938,7 +944,7 @@ export class EnhancedDetectionService {
       // Step 28: RUN WAREHOUSE TRANSFER LOSS DETECTOR 🏭 (FC Transfer Integrity)
       logger.info('🏭 [AGENT3] Running Warehouse Transfer Loss Detector...', { userId, syncId });
 
-      const transferRecords = await fetchTransferRecords(userId, { lookbackDays: 90 });
+      const transferRecords = await fetchTransferRecords(userId, { lookbackDays: w90 });
       const transferLossResults = await detectWarehouseTransferLoss(userId, syncId, transferRecords);
 
       if (transferLossResults.length > 0) {
@@ -949,7 +955,7 @@ export class EnhancedDetectionService {
       // Step 29: RUN ACCOUNT HEALTH IMPACT DETECTOR ⚠️ (Risk Intelligence)
       logger.info('⚠️ [AGENT3] Running Account Health Impact Detector...', { userId, syncId });
 
-      const healthIssues = await fetchAccountHealthIssues(userId, { lookbackDays: 90 });
+      const healthIssues = await fetchAccountHealthIssues(userId, { lookbackDays: w90 });
       const inventoryValuesMap = await fetchInventoryValues(userId);
       const healthImpactResults = await detectAccountHealthImpact(userId, syncId, healthIssues, inventoryValuesMap);
 
@@ -969,7 +975,7 @@ export class EnhancedDetectionService {
       // Step 30: RUN SILENT SUPPRESSION DETECTOR 🔇 (Visibility Intelligence)
       logger.info('🔇 [AGENT3] Running Silent Suppression Detector...', { userId, syncId });
 
-      const listingPerformance = await fetchListingPerformance(userId, { lookbackDays: 60 });
+      const listingPerformance = await fetchListingPerformance(userId, { lookbackDays: w60 });
       const suppressionResults = await detectSilentSuppression(userId, syncId, listingPerformance);
 
       if (suppressionResults.length > 0) {
@@ -986,7 +992,7 @@ export class EnhancedDetectionService {
       // Step 31: RUN POLICY/CLAIM WORKFLOW GAPS DETECTOR 📋 (Claims Process Intelligence)
       logger.info('📋 [AGENT3] Running Policy/Claim Workflow Gaps Detector...', { userId, syncId });
 
-      const claimRecords = await fetchClaimRecords(userId, { lookbackDays: 180 });
+      const claimRecords = await fetchClaimRecords(userId, { lookbackDays: w180 });
       const claimGapResults = await detectClaimWorkflowGaps(userId, syncId, claimRecords);
 
       if (claimGapResults.length > 0) {

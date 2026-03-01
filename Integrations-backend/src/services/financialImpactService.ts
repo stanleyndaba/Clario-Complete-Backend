@@ -313,8 +313,8 @@ class FinancialImpactService {
             // Get detection_results aggregates
             const { data: detections } = await supabaseAdmin
                 .from('detection_results')
-                .select('id, amount, confidence, status')
-                .eq('user_id', userId);
+                .select('id, estimated_value, confidence_score, status')
+                .eq('seller_id', userId);
 
             // Get dispute_cases aggregates  
             const { data: disputes } = await supabaseAdmin
@@ -342,8 +342,8 @@ class FinancialImpactService {
             // Process detections
             if (detections && detections.length > 0) {
                 metrics.claimsDetected = detections.length;
-                metrics.totalFound = detections.reduce((sum, d) => sum + (d.amount || 0), 0);
-                metrics.avgConfidence = detections.reduce((sum, d) => sum + (d.confidence || 0), 0) / detections.length;
+                metrics.totalFound = detections.reduce((sum, d) => sum + (d.estimated_value || 0), 0);
+                metrics.avgConfidence = detections.reduce((sum, d) => sum + (d.confidence_score || 0), 0) / detections.length;
             }
 
             // Process disputes

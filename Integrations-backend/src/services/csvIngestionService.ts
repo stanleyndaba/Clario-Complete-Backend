@@ -125,6 +125,8 @@ const CSV_TYPE_SIGNATURES: Record<CSVType, string[][]> = {
         ['settlementId', 'transactionType'],
         ['Settlement ID', 'Transaction Type'],
         ['settlement-id', 'total-amount'],
+        ['EventType', 'PostedDate', 'Amount'],
+        ['EventType', 'PostedDate', 'OrderId', 'SKU', 'Amount'],
     ],
     inventory: [
         ['sellerSku', 'asin'],
@@ -136,7 +138,7 @@ const CSV_TYPE_SIGNATURES: Record<CSVType, string[][]> = {
         ['sku', 'quantity'],
     ],
     financial_events: [
-        ['EventType', 'PostedDate', 'Amount'],
+        ['EventType', 'PostedDate', 'Amount', 'Description'],
         ['event_type', 'posted_date', 'amount'],
         ['eventType', 'postedDate', 'amount'],
         ['AdjustmentEventId', 'PostedDate'],
@@ -176,6 +178,46 @@ function detectCSVType(headers: string[]): CSVType {
 // ============================================================================
 // Column Mapping — flexible mapping from various CSV column names → internal schema
 // ============================================================================
+
+/**
+ * Robustly parse a numeric amount from CSV data.
+ * Strips currency symbols ($, €, £), commas, whitespace, and handles negatives like ($145.00)
+ */
+function parseAmount(raw: any): number {
+    if (raw === null || raw === undefined || raw === '') return 0;
+    if (typeof raw === 'number') return raw;
+    // Strip everything except digits, dots, minuses
+    const cleaned = String(raw).replace(/[^0-9.\-]/g, '');
+    const parsed = parseFloat(cleaned);
+    // If original had parentheses like ($145.00), treat as negative
+    if (String(raw).includes('(') && parsed > 0) return -parsed;
+    return isNaN(parsed) ? 0 : parsed;
+}
+
+/**
+ * Normalize event type values from CSV to database-compatible values.
+ * Maps common synonyms and ensures lowercase.
+ */
+function normalizeEventType(raw: string | null): string {
+    if (!raw) return 'adjustment';
+    const lower = raw.toLowerCase().trim();
+    // Map common CSV values to DB-accepted values
+    const mapping: Record<string, string> = {
+        'order': 'order',
+        'order payment': 'order',
+        'fee': 'fee',
+        'fba referral fee': 'fee',
+        'refund': 'return',
+        'customer return refund': 'return',
+        'return': 'return',
+        'reimbursement': 'reimbursement',
+        'shipment': 'shipment',
+        'adjustment': 'adjustment',
+        'fbaliquidationevent': 'adjustment',
+        'adjustmentevent': 'adjustment',
+    };
+    return mapping[lower] || lower;
+}
 
 /**
  * Get value from record using multiple possible field names (case-insensitive, dash/underscore agnostic)
@@ -244,7 +286,7 @@ export class CSVIngestionService {
             storeId?: string;
         } = {}
     ): Promise<BatchIngestionResult> {
-        const syncId = `csv_upload_${userId}_${Date.now()}`;
+        const syncId = `csv_${Date.now()}`;
         const results: IngestionResult[] = [];
         const triggerDetection = options.triggerDetection !== false;
 
@@ -516,7 +558,7 @@ export class CSVIngestionService {
                     reason: getField(r, 'ReturnReason', 'reason', 'Reason', 'return_reason') || 'CUSTOMER_REQUEST',
                     returned_date: getField(r, 'ReturnDate', 'return_date', 'returnDate', 'returned_date') || new Date().toISOString(),
                     status: getField(r, 'ReturnStatus', 'status', 'Status') || 'RECEIVED',
-                    refund_amount: Number(getField(r, 'RefundAmount', 'refund_amount', 'refundAmount', 'Amount')) || 0,
+                    refund_amount: parseAmount(getField(r, 'RefundAmount', 'refund_amount', 'refundAmount', 'Amount')),
                     currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
                     items: [],
                     is_partial: false,
@@ -549,9 +591,9 @@ export class CSVIngestionService {
                     store_id: storeId || null,
                     settlement_id: getField(r, 'SettlementId', 'settlement_id', 'settlementId', 'Settlement ID') || `csv_settle_${i}`,
                     order_id: getField(r, 'AmazonOrderId', 'order_id', 'orderId') || null,
-                    transaction_type: getField(r, 'TransactionType', 'transaction_type', 'transactionType', 'type') || 'Order',
-                    amount: Number(getField(r, 'Amount', 'amount', 'TotalAmount', 'total_amount')) || 0,
-                    fees: Number(getField(r, 'Fees', 'fees', 'TotalFees', 'total_fees')) || 0,
+                    transaction_type: getField(r, 'TransactionType', 'transaction_type', 'transactionType', 'type', 'EventType', 'event_type') || 'Order',
+                    amount: parseAmount(getField(r, 'Amount', 'amount', 'TotalAmount', 'total_amount')),
+                    fees: parseAmount(getField(r, 'Fees', 'fees', 'TotalFees', 'total_fees')),
                     currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
                     settlement_date: getField(r, 'PostedDate', 'settlement_date', 'posted_date', 'postedDate', 'SettlementDate') || new Date().toISOString(),
                     fee_breakdown: {},
@@ -616,21 +658,19 @@ export class CSVIngestionService {
         for (let i = 0; i < records.length; i++) {
             try {
                 const r = records[i];
+                const rawEventType = getField(r, 'EventType', 'event_type', 'eventType', 'type', 'Type');
+                const rawAmount = getField(r, 'Amount', 'amount', 'AdjustmentAmount', 'LiquidationProceedsAmount');
                 rows.push({
-                    id: uuidv4(),
                     seller_id: userId,
-                    store_id: storeId || null,
-                    event_type: getField(r, 'EventType', 'event_type', 'eventType', 'type', 'Type') || 'adjustment',
-                    amount: Number(getField(r, 'Amount', 'amount', 'AdjustmentAmount', 'LiquidationProceedsAmount')) || 0,
+                    tenant_id: userId,
+                    event_type: normalizeEventType(rawEventType),
+                    amount: parseAmount(rawAmount),
                     currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
                     event_date: getField(r, 'PostedDate', 'event_date', 'postedDate', 'posted_date', 'date', 'Date') || new Date().toISOString(),
-                    amazon_order_id: getField(r, 'AmazonOrderId', 'amazon_order_id', 'orderId', 'order_id') || null,
-                    sku: getField(r, 'SellerSKU', 'sku', 'SKU', 'seller_sku') || null,
-                    asin: getField(r, 'ASIN', 'asin') || null,
+                    amazon_order_id: getField(r, 'AmazonOrderId', 'amazon_order_id', 'orderId', 'order_id', 'OrderId') || null,
+                    amazon_sku: getField(r, 'SellerSKU', 'sku', 'SKU', 'seller_sku') || null,
                     description: getField(r, 'Description', 'description', 'AdjustmentType') || null,
                     raw_payload: r,
-                    sync_id: syncId,
-                    source: 'csv_upload',
                     created_at: new Date().toISOString(),
                 });
             } catch (error: any) {
@@ -697,7 +737,7 @@ export class CSVIngestionService {
             try {
                 const { data, error } = await supabaseAdmin
                     .from(table)
-                    .upsert(batch, { onConflict: 'id', ignoreDuplicates: false });
+                    .insert(batch);
 
                 if (error) {
                     logger.error(`❌ [CSV INGESTION] Batch insert failed for ${table}`, {
