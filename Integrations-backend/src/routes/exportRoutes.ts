@@ -64,8 +64,13 @@ router.post('/', async (req, res) => {
 
         const rows = claims.map((claim: any) => {
             const evidence = claim.evidence || {};
-            const orderId = evidence.order_id || claim.sync_id || '';
-            const fnsku = evidence.fnsku || claim.sku || '';
+            const rawPayload = evidence.raw_payload || {};
+            const orderId = evidence.order_id || evidence.amazon_order_id || claim.sync_id || '';
+            // FNSKU lives in multiple places — check all of them, fall back to ASIN/SKU
+            const fnsku = evidence.fnsku || rawPayload.fnSku || rawPayload.FNSKU
+                || evidence.asin || rawPayload.ASIN || rawPayload.asin
+                || evidence.sku || rawPayload.SellerSKU || rawPayload.sku
+                || claim.sku || '';
             const discrepancyType = (claim.anomaly_type || '').replace(/_/g, ' ').toUpperCase();
 
             // Format currency without the $ sign for Amazon CSV standard, just raw numbers or formatted properly
