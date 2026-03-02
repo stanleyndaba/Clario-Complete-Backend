@@ -24,7 +24,7 @@ router.post('/', async (req, res) => {
         let query = supabaseAdmin
             .from('detection_results')
             .select('*')
-            .in('status', ['pending', 'found', 'unsubmitted'])
+            .in('status', ['detected', 'pending', 'found', 'unsubmitted'])
             .order('discovery_date', { ascending: false });
 
         if (tenantId) {
