@@ -52,7 +52,7 @@ router.post('/ingest', upload.array('files', 10), async (req: Request, res: Resp
             });
         }
 
-        const files = req.files as Express.Multer.File[];
+        const files = (req.files || []) as { buffer: Buffer; originalname: string; size: number; mimetype: string }[];
         if (!files || files.length === 0) {
             return res.status(400).json({
                 success: false,
@@ -117,7 +117,7 @@ router.post('/ingest/:type', upload.array('files', 10), async (req: Request, res
             });
         }
 
-        const files = req.files as Express.Multer.File[];
+        const files = (req.files || []) as { buffer: Buffer; originalname: string; size: number; mimetype: string }[];
         if (!files || files.length === 0) {
             return res.status(400).json({
                 success: false,
