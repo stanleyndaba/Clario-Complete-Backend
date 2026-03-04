@@ -1353,17 +1353,24 @@ class SyncJobManager {
   /**
    * Get sync history for a user
    */
-  async getSyncHistory(userId: string, limit: number = 20, offset: number = 0): Promise<{
+  async getSyncHistory(userId: string, limit: number = 20, offset: number = 0, tenantId?: string): Promise<{
     syncs: SyncJobStatus[];
     total: number;
   }> {
     try {
-      const { data, error, count } = await supabase
+      let query = supabase
         .from('sync_progress')
         .select('*', { count: 'exact' })
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1);
+
+      // Tenant isolation
+      if (tenantId) {
+        query = query.eq('tenant_id', tenantId);
+      }
+
+      const { data, error, count } = await query;
 
       if (error) {
         logger.error(`Error getting sync history for ${userId}:`, error);
@@ -1406,7 +1413,7 @@ class SyncJobManager {
    * Get active sync status for a user (for frontend monitoring)
    * Returns format: { hasActiveSync: boolean, lastSync: { syncId, status, ... } | null }
    */
-  async getActiveSyncStatus(userId: string): Promise<{
+  async getActiveSyncStatus(userId: string, tenantId?: string): Promise<{
     hasActiveSync: boolean;
     lastSync: {
       syncId: string;
@@ -1452,14 +1459,19 @@ class SyncJobManager {
 
     // Check database for active syncs
     try {
-      const { data, error } = await supabase
+      let activeQuery = supabase
         .from('sync_progress')
         .select('*')
         .eq('user_id', userId)
         .eq('status', 'running')
         .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .limit(1);
+
+      if (tenantId) {
+        activeQuery = activeQuery.eq('tenant_id', tenantId);
+      }
+
+      const { data, error } = await activeQuery.maybeSingle();
 
       if (!error && data) {
         const metadata = (data.metadata as any) || {};
@@ -1503,14 +1515,19 @@ class SyncJobManager {
       }
 
       // No active sync, get last sync (completed or failed)
-      const { data: lastSyncData } = await supabase
+      let lastSyncQuery = supabase
         .from('sync_progress')
         .select('*')
         .eq('user_id', userId)
         .in('status', ['completed', 'failed', 'cancelled', 'complete'])
         .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .limit(1);
+
+      if (tenantId) {
+        lastSyncQuery = lastSyncQuery.eq('tenant_id', tenantId);
+      }
+
+      const { data: lastSyncData } = await lastSyncQuery.maybeSingle();
 
       if (lastSyncData) {
         const metadata = (lastSyncData.metadata as any) || {};

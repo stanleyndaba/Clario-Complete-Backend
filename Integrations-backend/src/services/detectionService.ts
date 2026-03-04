@@ -1692,7 +1692,8 @@ export class DetectionService {
     syncId?: string,
     status?: string,
     limit: number = 100,
-    offset: number = 0
+    offset: number = 0,
+    tenantId?: string
   ): Promise<DetectionResultRecord[]> {
     try {
       // Use supabaseAdmin to bypass RLS (Agent 3 stores with supabaseAdmin)
@@ -1711,6 +1712,11 @@ export class DetectionService {
         .select('*')
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1);
+
+      // Tenant isolation - always filter by tenant_id when provided
+      if (tenantId) {
+        query = query.eq('tenant_id', tenantId);
+      }
 
       // Only filter by seller_id in production mode with real SP-API
       if (!isSandbox && sellerId && sellerId !== 'demo-user') {
@@ -1742,7 +1748,7 @@ export class DetectionService {
   /**
    * Get confidence score distribution for monitoring and calibration
    */
-  async getConfidenceDistribution(sellerId: string): Promise<{
+  async getConfidenceDistribution(sellerId: string, tenantId?: string): Promise<{
     total_detections: number;
     by_confidence: {
       high: number;
@@ -1774,10 +1780,17 @@ export class DetectionService {
       // Fall back to supabase if supabaseAdmin is not available
       const { supabaseAdmin, supabase: supabaseClient } = await import('../database/supabaseClient');
       const client = supabaseAdmin || supabaseClient;
-      const { data, error } = await client
+      let query = client
         .from('detection_results')
         .select('anomaly_type, confidence_score, status')
         .eq('seller_id', sellerId);
+
+      // Tenant isolation
+      if (tenantId) {
+        query = query.eq('tenant_id', tenantId);
+      }
+
+      const { data, error } = await query;
 
       if (error) {
         logger.error('Error fetching confidence distribution', { error, sellerId });
@@ -1863,7 +1876,7 @@ export class DetectionService {
   /**
    * Get detection statistics for a seller
    */
-  async getDetectionStatistics(sellerId: string): Promise<{
+  async getDetectionStatistics(sellerId: string, tenantId?: string): Promise<{
     total_anomalies: number;
     total_value: number;
     by_severity: Record<string, { count: number; value: number }>;
@@ -1881,10 +1894,17 @@ export class DetectionService {
       // Fall back to supabase if supabaseAdmin is not available
       const { supabaseAdmin, supabase: supabaseClient } = await import('../database/supabaseClient');
       const client = supabaseAdmin || supabaseClient;
-      const { data, error } = await client
+      let query = client
         .from('detection_results')
         .select('anomaly_type, severity, estimated_value, days_remaining, expired, confidence_score')
         .eq('seller_id', sellerId);
+
+      // Tenant isolation
+      if (tenantId) {
+        query = query.eq('tenant_id', tenantId);
+      }
+
+      const { data, error } = await query;
 
       if (error) {
         logger.error('Error fetching detection statistics', { error, sellerId });

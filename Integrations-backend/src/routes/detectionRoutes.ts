@@ -4,6 +4,8 @@ import enhancedDetectionService from '../services/enhancedDetectionService';
 import detectionService from '../services/detectionService';
 import { timelineService } from '../services/timelineService';
 
+const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+
 const router = Router();
 
 // Auth middleware - allows both JWT tokens, service role key, and userIdMiddleware
@@ -49,6 +51,7 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
   try {
     // Support both authenticated user and userIdMiddleware
     const userId = (req as any).userId || req.user?.id as string;
+    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
     if (!userId) {
       return res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'User ID is required' } });
     }
@@ -58,7 +61,8 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
       undefined, // syncId - optional
       status,
       parseInt(limit as string, 10),
-      parseInt(offset as string, 10)
+      parseInt(offset as string, 10),
+      tenantId
     );
 
     // Enhance results with document counts from dispute_evidence_links
@@ -126,7 +130,8 @@ router.get('/deadlines', async (req: AuthenticatedRequest, res) => {
 router.get('/statistics', async (req: AuthenticatedRequest, res) => {
   try {
     const userId = (req as any).userId || req.user?.id as string;
-    const stats = await detectionService.getDetectionStatistics(userId);
+    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
+    const stats = await detectionService.getDetectionStatistics(userId, tenantId);
     return res.json({ success: true, statistics: stats });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
@@ -138,7 +143,8 @@ router.get('/statistics', async (req: AuthenticatedRequest, res) => {
 router.get('/confidence-distribution', async (req: AuthenticatedRequest, res) => {
   try {
     const userId = (req as any).userId || req.user?.id as string;
-    const distribution = await detectionService.getConfidenceDistribution(userId);
+    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
+    const distribution = await detectionService.getConfidenceDistribution(userId, tenantId);
     return res.json({ success: true, distribution });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });

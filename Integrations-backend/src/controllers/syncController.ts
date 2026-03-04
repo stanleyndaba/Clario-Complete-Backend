@@ -96,7 +96,8 @@ export const getActiveSyncStatus = async (req: Request, res: Response) => {
 
     logger.info(`✅ [SYNC STATUS] Getting active sync status for userId: ${userId}`);
 
-    const activeSyncStatus = await syncJobManager.getActiveSyncStatus(userId);
+    const tenantId = (req as any).tenant?.tenantId;
+    const activeSyncStatus = await syncJobManager.getActiveSyncStatus(userId, tenantId);
 
     logger.info(`✅ [SYNC STATUS] Successfully retrieved sync status`, {
       userId,
@@ -203,7 +204,8 @@ export const getSyncHistory = async (req: Request, res: Response) => {
 
     logger.info(`Getting sync history for userId: ${userId}, limit: ${limit}, offset: ${offset}`);
 
-    const history = await syncJobManager.getSyncHistory(userId, limit, offset);
+    const tenantId = (req as any).tenant?.tenantId;
+    const history = await syncJobManager.getSyncHistory(userId, limit, offset, tenantId);
 
     res.json({
       syncs: history.syncs.map(sync => ({

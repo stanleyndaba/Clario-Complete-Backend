@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { optionalAuth } from '../middleware/authMiddleware';
 import { supabaseAdmin } from '../database/supabaseClient';
 
+const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+
 const router = Router();
 
 // Apply optional authentication - allows demo-user access
@@ -10,12 +12,14 @@ router.use(optionalAuth);
 router.get('/', async (req, res) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
+    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
     const { status, limit } = req.query;
 
-    // Build query with optional status filter
+    // Build query with tenant isolation
     let query = supabaseAdmin
       .from('dispute_cases')
       .select('*')
+      .eq('tenant_id', tenantId)
       .order('created_at', { ascending: false })
       .limit(Number(limit) || 100);
 
@@ -352,12 +356,14 @@ router.get('/:id/brief', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
     const { supabaseAdmin } = await import('../database/supabaseClient');
 
     const { data: dispute, error } = await supabaseAdmin
       .from('dispute_cases')
       .select('*')
       .eq('id', id)
+      .eq('tenant_id', tenantId)
       .single();
 
     if (error) {
@@ -513,6 +519,7 @@ router.post('/:id/deny', async (req, res) => {
 
     const { supabaseAdmin } = await import('../database/supabaseClient');
     const learningWorker = (await import('../workers/learningWorker')).default;
+    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
 
     // 1. Update case status to Denied
     const { error } = await supabaseAdmin
@@ -521,12 +528,13 @@ router.post('/:id/deny', async (req, res) => {
         status: 'Denied',
         recovery_status: 'denied',
         updated_at: new Date().toISOString(),
-        metadata: { // We'll merge this with existing metadata in a real implementation, but for now this is fine or we can use jsonb_set
+        metadata: {
           rejection_reason: rejectionReason,
           amazon_case_id: amazonCaseId
         }
       })
-      .eq('id', id);
+      .eq('id', id)
+      .eq('tenant_id', tenantId);
 
     if (error) throw error;
 
@@ -578,10 +586,12 @@ router.post('/file-now', async (req, res) => {
     const refundFilingService = (await import('../services/refundFilingService')).default;
 
     // Get the dispute case details
+    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
     const { data: caseData, error: fetchError } = await supabaseAdmin
       .from('dispute_cases')
       .select('*')
       .eq('id', dispute_id)
+      .eq('tenant_id', tenantId)
       .single();
 
     if (fetchError || !caseData) {
@@ -598,7 +608,8 @@ router.post('/file-now', async (req, res) => {
         filing_status: 'filing',
         updated_at: new Date().toISOString()
       })
-      .eq('id', dispute_id);
+      .eq('id', dispute_id)
+      .eq('tenant_id', tenantId);
 
     // Prepare filing request
     const filingRequest = {
@@ -674,10 +685,12 @@ router.post('/retry-filing', async (req, res) => {
     const refundFilingService = (await import('../services/refundFilingService')).default;
 
     // Get the dispute case details
+    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
     const { data: caseData, error: fetchError } = await supabaseAdmin
       .from('dispute_cases')
       .select('*')
       .eq('id', dispute_id)
+      .eq('tenant_id', tenantId)
       .single();
 
     if (fetchError || !caseData) {
@@ -696,10 +709,11 @@ router.post('/retry-filing', async (req, res) => {
       .update({
         filing_status: 'retrying',
         retry_count: newRetryCount,
-        filing_error: null, // Clear previous error
+        filing_error: null,
         updated_at: new Date().toISOString()
       })
-      .eq('id', dispute_id);
+      .eq('id', dispute_id)
+      .eq('tenant_id', tenantId);
 
     // Collect stronger evidence if requested
     let evidenceIds = caseData.evidence_document_ids || [];
@@ -785,10 +799,12 @@ router.post('/approve-filing', async (req, res) => {
     }
 
     // Get the dispute case details
+    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
     const { data: caseData, error: fetchError } = await supabaseAdmin
       .from('dispute_cases')
       .select('*')
       .eq('id', dispute_id)
+      .eq('tenant_id', tenantId)
       .single();
 
     if (fetchError || !caseData) {

@@ -4,6 +4,8 @@ import { supabaseAdmin } from '../database/supabaseClient';
 import { compositePdfService } from '../services/compositePdfService';
 import { timelineService } from '../services/timelineService';
 
+const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+
 const router = Router();
 const logger = getLogger('RecoveryRoutes');
 
@@ -15,14 +17,16 @@ router.get('/:id', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
         const userId = (req as any).user?.id || req.headers['x-user-id'] as string || 'demo-user';
+        const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
 
-        logger.info('Fetching recovery details', { recoveryId: id, userId });
+        logger.info('Fetching recovery details', { recoveryId: id, userId, tenantId });
 
-        // Try dispute_cases first (filed claims)
+        // Try dispute_cases first (filed claims) — scoped by tenant
         let { data: disputeCase, error: caseError } = await supabaseAdmin
             .from('dispute_cases')
             .select('*')
             .eq('id', id)
+            .eq('tenant_id', tenantId)
             .single();
 
         if (!disputeCase) {
@@ -31,6 +35,7 @@ router.get('/:id', async (req: Request, res: Response) => {
                 .from('dispute_cases')
                 .select('*')
                 .eq('detection_result_id', id)
+                .eq('tenant_id', tenantId)
                 .single();
             disputeCase = caseByDetection;
         }
@@ -95,11 +100,12 @@ router.get('/:id', async (req: Request, res: Response) => {
             });
         }
 
-        // Try detection_results (unfiled claims)
+        // Try detection_results (unfiled claims) — scoped by tenant
         const { data: detectionResult, error: detError } = await supabaseAdmin
             .from('detection_results')
             .select('*')
             .eq('id', id)
+            .eq('tenant_id', tenantId)
             .single();
 
         if (detectionResult) {
@@ -156,14 +162,16 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
         const userId = (req as any).userId || (req as any).user?.id || req.headers['x-user-id'] as string || 'demo-user';
+        const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
 
-        logger.info('Submitting claim', { claimId: id, userId });
+        logger.info('Submitting claim', { claimId: id, userId, tenantId });
 
         // First, check if this is a dispute_case that already exists
         const { data: existingCase, error: caseError } = await supabaseAdmin
             .from('dispute_cases')
             .select('*')
             .eq('id', id)
+            .eq('tenant_id', tenantId)
             .single();
 
         if (existingCase && !caseError) {
@@ -174,7 +182,8 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
                     status: 'Submitted',
                     updated_at: new Date().toISOString()
                 })
-                .eq('id', id);
+                .eq('id', id)
+                .eq('tenant_id', tenantId);
 
             if (updateError) {
                 logger.error('Error updating dispute case status', { id, error: updateError.message });
@@ -198,6 +207,7 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
             .from('detection_results')
             .select('*')
             .eq('id', id)
+            .eq('tenant_id', tenantId)
             .single();
 
         if (detResult && !detError) {
@@ -257,6 +267,7 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
 
         const disputeCase = {
             seller_id: userId,
+            tenant_id: tenantId,
             detection_result_id: detectionId,
             claim_id: sourceRecord.claim_id || id,
             claim_amount: sourceRecord.estimated_value || sourceRecord.amount || 0,
@@ -347,10 +358,11 @@ router.post('/:id/resubmit', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
         const userId = (req as any).userId || (req as any).user?.id || req.headers['x-user-id'] as string || 'demo-user';
+        const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
 
-        logger.info('Resubmitting claim', { claimId: id, userId });
+        logger.info('Resubmitting claim', { claimId: id, userId, tenantId });
 
-        // Find the existing dispute_case
+        // Find the existing dispute_case — scoped by tenant
         let disputeCase = null;
 
         // Try by ID first
@@ -358,6 +370,7 @@ router.post('/:id/resubmit', async (req: Request, res: Response) => {
             .from('dispute_cases')
             .select('*')
             .eq('id', id)
+            .eq('tenant_id', tenantId)
             .single();
 
         if (caseById) {
@@ -368,6 +381,7 @@ router.post('/:id/resubmit', async (req: Request, res: Response) => {
                 .from('dispute_cases')
                 .select('*')
                 .eq('detection_result_id', id)
+                .eq('tenant_id', tenantId)
                 .single();
             disputeCase = caseByDetection;
         }
@@ -385,7 +399,8 @@ router.post('/:id/resubmit', async (req: Request, res: Response) => {
                 retry_count: (disputeCase.retry_count || 0) + 1,
                 updated_at: new Date().toISOString()
             })
-            .eq('id', disputeCase.id);
+            .eq('id', disputeCase.id)
+            .eq('tenant_id', tenantId);
 
         if (updateError) {
             logger.error('Failed to update dispute case', { error: updateError.message });
