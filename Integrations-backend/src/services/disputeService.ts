@@ -111,7 +111,8 @@ export class DisputeService {
           currency: currency,
           case_type: caseType,
           provider: provider,
-          evidence_attachments: evidence || {}
+          evidence_attachments: evidence || {},
+          tenant_id: evidence?.tenant_id || undefined
         })
         .select()
         .single();
@@ -285,6 +286,7 @@ export class DisputeService {
       provider?: string;
       dateFrom?: string;
       dateTo?: string;
+      tenantId?: string;
     },
     pagination?: {
       limit: number;
@@ -304,6 +306,11 @@ export class DisputeService {
         .from('dispute_cases')
         .select('*', { count: 'exact' })
         .eq('seller_id', sellerId);
+
+      // Tenant isolation
+      if (filters?.tenantId) {
+        query = query.eq('tenant_id', filters.tenantId);
+      }
 
       // Apply filters
       if (filters?.status) {
@@ -379,7 +386,7 @@ export class DisputeService {
   /**
    * Get dispute case statistics for a seller
    */
-  async getDisputeStatistics(sellerId: string): Promise<{
+  async getDisputeStatistics(sellerId: string, tenantId?: string): Promise<{
     total_cases: number;
     total_claimed: number;
     total_resolved: number;
@@ -390,10 +397,15 @@ export class DisputeService {
     average_resolution_time: number;
   }> {
     try {
-      const query = supabase
+      let query = supabase
         .from('dispute_cases')
         .select('*')
         .eq('seller_id', sellerId);
+
+      // Tenant isolation
+      if (tenantId) {
+        query = query.eq('tenant_id', tenantId);
+      }
 
       const { data, error } = await query;
 
