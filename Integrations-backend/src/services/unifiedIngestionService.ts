@@ -10,6 +10,9 @@ import { gmailIngestionService } from './gmailIngestionService';
 import { outlookIngestionService } from './outlookIngestionService';
 import { googleDriveIngestionService } from './googleDriveIngestionService';
 import { dropboxIngestionService } from './dropboxIngestionService';
+import { oneDriveIngestionService } from './oneDriveIngestionService';
+import { adobeSignIngestionService } from './adobeSignIngestionService';
+import { slackIngestionService } from './slackIngestionService';
 
 export interface UnifiedIngestionResult {
   success: boolean;
@@ -41,12 +44,30 @@ export interface UnifiedIngestionResult {
       filesProcessed: number;
       errors: string[];
     };
+    onedrive?: {
+      success: boolean;
+      documentsIngested: number;
+      filesProcessed: number;
+      errors: string[];
+    };
+    adobe_sign?: {
+      success: boolean;
+      documentsIngested: number;
+      agreementsProcessed: number;
+      errors: string[];
+    };
+    slack?: {
+      success: boolean;
+      documentsIngested: number;
+      messagesProcessed: number;
+      errors: string[];
+    };
   };
   jobId?: string;
 }
 
 export interface IngestionOptions {
-  providers?: string[]; // ['gmail', 'outlook', 'gdrive', 'dropbox'] - if not specified, uses all connected
+  providers?: string[]; // ['gmail', 'outlook', 'gdrive', 'dropbox', 'onedrive', 'adobe_sign', 'slack'] - if not specified, uses all connected
   query?: string;
   maxResults?: number;
   autoParse?: boolean;
@@ -98,7 +119,7 @@ export class UnifiedIngestionService {
       });
 
       // Process all sources in parallel
-      const ingestionPromises = connectedSources.map(source => 
+      const ingestionPromises = connectedSources.map(source =>
         this.ingestFromSource(userId, source.provider, options)
       );
 
@@ -276,6 +297,46 @@ export class UnifiedIngestionService {
             documentsIngested: dropboxResult.documentsIngested,
             itemsProcessed: dropboxResult.filesProcessed,
             errors: dropboxResult.errors
+          };
+
+        case 'onedrive':
+          const onedriveResult = await oneDriveIngestionService.ingestEvidenceFromOneDrive(userId, {
+            query: options.query,
+            maxResults: options.maxResults,
+            autoParse: options.autoParse,
+            folderId: options.folderId
+          });
+          return {
+            success: onedriveResult.success,
+            documentsIngested: onedriveResult.documentsIngested,
+            itemsProcessed: onedriveResult.filesProcessed,
+            errors: onedriveResult.errors
+          };
+
+        case 'adobe_sign':
+          const adobeSignResult = await adobeSignIngestionService.ingestEvidenceFromAdobeSign(userId, {
+            query: options.query,
+            maxResults: options.maxResults,
+            autoParse: options.autoParse
+          });
+          return {
+            success: adobeSignResult.success,
+            documentsIngested: adobeSignResult.documentsIngested,
+            itemsProcessed: adobeSignResult.agreementsProcessed,
+            errors: adobeSignResult.errors
+          };
+
+        case 'slack':
+          const slackResult = await slackIngestionService.ingestEvidenceFromSlack(userId, {
+            query: options.query,
+            maxResults: options.maxResults,
+            autoParse: options.autoParse
+          });
+          return {
+            success: slackResult.success,
+            documentsIngested: slackResult.documentsIngested,
+            itemsProcessed: slackResult.messagesProcessed,
+            errors: slackResult.errors
           };
 
         default:

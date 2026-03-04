@@ -1,6 +1,6 @@
 /**
  * Evidence Sources Controller
- * Handles OAuth connection for evidence providers (Gmail, Outlook, Google Drive, Dropbox)
+ * Handles OAuth connection for evidence providers (Gmail, Outlook, Google Drive, Dropbox, OneDrive, Adobe Sign, Slack)
  */
 
 import { Request, Response } from 'express';
@@ -43,6 +43,32 @@ const OAUTH_URLS = {
     auth: 'https://www.dropbox.com/oauth2/authorize',
     token: 'https://api.dropbox.com/oauth2/token',
     scopes: ['files.content.read', 'files.metadata.read']
+  },
+  onedrive: {
+    auth: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+    token: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+    scopes: [
+      'https://graph.microsoft.com/Files.Read',
+      'https://graph.microsoft.com/Files.Read.All',
+      'offline_access'
+    ]
+  },
+  adobe_sign: {
+    auth: 'https://secure.na1.adobesign.com/public/oauth/v2',
+    token: 'https://api.na1.adobesign.com/oauth/v2/token',
+    scopes: [
+      'agreement_read',
+      'agreement_write'
+    ]
+  },
+  slack: {
+    auth: 'https://slack.com/oauth/v2/authorize',
+    token: 'https://slack.com/api/oauth.v2.access',
+    scopes: [
+      'files:read',
+      'channels:read',
+      'groups:read'
+    ]
   }
 };
 
@@ -68,7 +94,7 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
     }
 
     // Validate provider
-    const validProviders = ['gmail', 'outlook', 'gdrive', 'dropbox'];
+    const validProviders = ['gmail', 'outlook', 'gdrive', 'dropbox', 'onedrive', 'adobe_sign', 'slack'];
     if (!validProviders.includes(provider)) {
       return res.status(400).json({
         ok: false,
@@ -125,6 +151,33 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
         `client_id=${encodeURIComponent(oauthConfig.clientId)}&` +
         `redirect_uri=${encodeURIComponent(defaultRedirectUri)}&` +
         `response_type=code&` +
+        `scope=${encodeURIComponent(scopes)}&` +
+        `state=${state}`;
+    } else if (provider === 'onedrive') {
+      // Microsoft OAuth (OneDrive) - same flow as Outlook
+      const scopes = OAUTH_URLS[provider].scopes.join(' ');
+      authUrl = `${OAUTH_URLS[provider].auth}?` +
+        `client_id=${encodeURIComponent(oauthConfig.clientId)}&` +
+        `redirect_uri=${encodeURIComponent(defaultRedirectUri)}&` +
+        `response_type=code&` +
+        `scope=${encodeURIComponent(scopes)}&` +
+        `response_mode=query&` +
+        `state=${state}`;
+    } else if (provider === 'adobe_sign') {
+      // Adobe Sign OAuth
+      const scopes = OAUTH_URLS[provider].scopes.join('+');
+      authUrl = `${OAUTH_URLS[provider].auth}?` +
+        `client_id=${encodeURIComponent(oauthConfig.clientId)}&` +
+        `redirect_uri=${encodeURIComponent(defaultRedirectUri)}&` +
+        `response_type=code&` +
+        `scope=${encodeURIComponent(scopes)}&` +
+        `state=${state}`;
+    } else if (provider === 'slack') {
+      // Slack OAuth v2
+      const scopes = OAUTH_URLS[provider].scopes.join(',');
+      authUrl = `${OAUTH_URLS[provider].auth}?` +
+        `client_id=${encodeURIComponent(oauthConfig.clientId)}&` +
+        `redirect_uri=${encodeURIComponent(defaultRedirectUri)}&` +
         `scope=${encodeURIComponent(scopes)}&` +
         `state=${state}`;
     } else {
@@ -261,6 +314,45 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
             'Content-Type': 'application/x-www-form-urlencoded'
           }
         });
+      } else if (provider === 'onedrive') {
+        // Microsoft OAuth token exchange (same as Outlook)
+        tokenResponse = await axios.post(OAUTH_URLS[provider].token, new URLSearchParams({
+          client_id: oauthConfig.clientId,
+          client_secret: oauthConfig.clientSecret,
+          code: code as string,
+          grant_type: 'authorization_code',
+          redirect_uri: redirectUri,
+          scope: OAUTH_URLS[provider].scopes.join(' ')
+        }), {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        });
+      } else if (provider === 'adobe_sign') {
+        // Adobe Sign OAuth token exchange
+        tokenResponse = await axios.post(OAUTH_URLS[provider].token, new URLSearchParams({
+          client_id: oauthConfig.clientId,
+          client_secret: oauthConfig.clientSecret,
+          code: code as string,
+          grant_type: 'authorization_code',
+          redirect_uri: redirectUri
+        }), {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        });
+      } else if (provider === 'slack') {
+        // Slack OAuth v2 token exchange
+        tokenResponse = await axios.post(OAUTH_URLS[provider].token, new URLSearchParams({
+          client_id: oauthConfig.clientId,
+          client_secret: oauthConfig.clientSecret,
+          code: code as string,
+          redirect_uri: redirectUri
+        }), {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        });
       } else {
         return res.redirect(`${frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?error=unsupported_provider`);
       }
@@ -328,6 +420,28 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
             headers: { 'Authorization': `Bearer ${access_token}` }
           });
           accountEmail = profileResponse.data.email;
+        } else if (provider === 'onedrive') {
+          const profileResponse = await axios.get('https://graph.microsoft.com/v1.0/me', {
+            headers: { 'Authorization': `Bearer ${access_token}` }
+          });
+          accountEmail = profileResponse.data.mail || profileResponse.data.userPrincipalName;
+        } else if (provider === 'adobe_sign') {
+          // Adobe Sign doesn't have a simple profile endpoint; use email from token response if available
+          accountEmail = tokenResponse.data?.email || tokenResponse.data?.userEmail;
+        } else if (provider === 'slack') {
+          // Slack v2 OAuth returns authed_user info
+          const slackData = tokenResponse.data;
+          if (slackData?.authed_user?.id) {
+            try {
+              const userResponse = await axios.get('https://slack.com/api/users.info', {
+                headers: { 'Authorization': `Bearer ${access_token}` },
+                params: { user: slackData.authed_user.id }
+              });
+              accountEmail = userResponse.data?.user?.profile?.email;
+            } catch (slackProfileError) {
+              logger.warn('Failed to fetch Slack user profile', { error: slackProfileError });
+            }
+          }
         }
       } catch (profileError) {
         logger.warn('Failed to fetch user profile', { provider, error: profileError });
@@ -441,6 +555,18 @@ function getOAuthConfig(provider: string): { clientId: string; clientSecret: str
     dropbox: {
       clientId: config.DROPBOX_CLIENT_ID || process.env.DROPBOX_CLIENT_ID || '',
       clientSecret: config.DROPBOX_CLIENT_SECRET || process.env.DROPBOX_CLIENT_SECRET || ''
+    },
+    onedrive: {
+      clientId: config.ONEDRIVE_CLIENT_ID || process.env.ONEDRIVE_CLIENT_ID || '',
+      clientSecret: config.ONEDRIVE_CLIENT_SECRET || process.env.ONEDRIVE_CLIENT_SECRET || ''
+    },
+    adobe_sign: {
+      clientId: config.ADOBESIGN_CLIENT_ID || process.env.ADOBESIGN_CLIENT_ID || '',
+      clientSecret: config.ADOBESIGN_CLIENT_SECRET || process.env.ADOBESIGN_CLIENT_SECRET || ''
+    },
+    slack: {
+      clientId: config.SLACK_CLIENT_ID || process.env.SLACK_CLIENT_ID || '',
+      clientSecret: config.SLACK_CLIENT_SECRET || process.env.SLACK_CLIENT_SECRET || ''
     }
   };
 

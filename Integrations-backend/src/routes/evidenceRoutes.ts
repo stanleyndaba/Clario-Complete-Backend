@@ -9,6 +9,9 @@ import { gmailIngestionService } from '../services/gmailIngestionService';
 import { outlookIngestionService } from '../services/outlookIngestionService';
 import { googleDriveIngestionService } from '../services/googleDriveIngestionService';
 import { dropboxIngestionService } from '../services/dropboxIngestionService';
+import { oneDriveIngestionService } from '../services/oneDriveIngestionService';
+import { adobeSignIngestionService } from '../services/adobeSignIngestionService';
+import { slackIngestionService } from '../services/slackIngestionService';
 import { unifiedIngestionService } from '../services/unifiedIngestionService';
 import { evidenceMatchingService } from '../services/evidenceMatchingService';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
@@ -394,6 +397,238 @@ router.post('/ingest/dropbox', async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       error: 'Failed to ingest evidence from Dropbox',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * POST /api/evidence/ingest/onedrive
+ * Trigger OneDrive evidence ingestion
+ */
+router.post('/ingest/onedrive', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    const { query, maxResults, autoParse, folderId } = req.body;
+
+    logger.info('🔍 [EVIDENCE] Starting OneDrive evidence ingestion', {
+      userId,
+      query,
+      maxResults,
+      autoParse,
+      folderId
+    });
+
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_ingestion_started', {
+        userId,
+        provider: 'onedrive',
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for ingestion start', { error: sseError });
+    }
+
+    const result = await oneDriveIngestionService.ingestEvidenceFromOneDrive(userId, {
+      query,
+      maxResults: maxResults || 50,
+      autoParse: autoParse !== false,
+      folderId
+    });
+
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_ingestion_completed', {
+        userId,
+        provider: 'onedrive',
+        documentsIngested: result.documentsIngested,
+        filesProcessed: result.filesProcessed,
+        errors: result.errors.length,
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for ingestion completion', { error: sseError });
+    }
+
+    res.json({
+      success: result.success,
+      documentsIngested: result.documentsIngested,
+      filesProcessed: result.filesProcessed,
+      errors: result.errors,
+      message: `Ingested ${result.documentsIngested} documents from ${result.filesProcessed} files`
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in OneDrive ingestion endpoint', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to ingest evidence from OneDrive',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * POST /api/evidence/ingest/adobe_sign
+ * Trigger Adobe Sign evidence ingestion
+ */
+router.post('/ingest/adobe_sign', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    const { query, maxResults, autoParse } = req.body;
+
+    logger.info('🔍 [EVIDENCE] Starting Adobe Sign evidence ingestion', {
+      userId,
+      query,
+      maxResults,
+      autoParse
+    });
+
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_ingestion_started', {
+        userId,
+        provider: 'adobe_sign',
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for ingestion start', { error: sseError });
+    }
+
+    const result = await adobeSignIngestionService.ingestEvidenceFromAdobeSign(userId, {
+      query,
+      maxResults: maxResults || 50,
+      autoParse: autoParse !== false
+    });
+
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_ingestion_completed', {
+        userId,
+        provider: 'adobe_sign',
+        documentsIngested: result.documentsIngested,
+        agreementsProcessed: result.agreementsProcessed,
+        errors: result.errors.length,
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for ingestion completion', { error: sseError });
+    }
+
+    res.json({
+      success: result.success,
+      documentsIngested: result.documentsIngested,
+      agreementsProcessed: result.agreementsProcessed,
+      errors: result.errors,
+      message: `Ingested ${result.documentsIngested} documents from ${result.agreementsProcessed} agreements`
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in Adobe Sign ingestion endpoint', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to ingest evidence from Adobe Sign',
+      message: error?.message || String(error)
+    });
+  }
+});
+
+/**
+ * POST /api/evidence/ingest/slack
+ * Trigger Slack evidence ingestion
+ */
+router.post('/ingest/slack', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    const { query, maxResults, autoParse, channelId } = req.body;
+
+    logger.info('🔍 [EVIDENCE] Starting Slack evidence ingestion', {
+      userId,
+      query,
+      maxResults,
+      autoParse,
+      channelId
+    });
+
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_ingestion_started', {
+        userId,
+        provider: 'slack',
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for ingestion start', { error: sseError });
+    }
+
+    const result = await slackIngestionService.ingestEvidenceFromSlack(userId, {
+      query,
+      maxResults: maxResults || 50,
+      autoParse: autoParse !== false,
+      channelId
+    });
+
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(userId, 'evidence_ingestion_completed', {
+        userId,
+        provider: 'slack',
+        documentsIngested: result.documentsIngested,
+        messagesProcessed: result.messagesProcessed,
+        errors: result.errors.length,
+        timestamp: new Date().toISOString()
+      });
+    } catch (sseError) {
+      logger.debug('Failed to send SSE event for ingestion completion', { error: sseError });
+    }
+
+    res.json({
+      success: result.success,
+      documentsIngested: result.documentsIngested,
+      messagesProcessed: result.messagesProcessed,
+      errors: result.errors,
+      message: `Ingested ${result.documentsIngested} documents from ${result.messagesProcessed} messages`
+    });
+  } catch (error: any) {
+    logger.error('❌ [EVIDENCE] Error in Slack ingestion endpoint', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to ingest evidence from Slack',
       message: error?.message || String(error)
     });
   }
