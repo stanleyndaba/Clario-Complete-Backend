@@ -202,11 +202,13 @@ class FinancialImpactService {
         try {
             // Get all resolved dispute cases for this user
             // We use resolution_date to determine when the recovery actually happened
-            const { data: disputes } = await supabaseAdmin
+            let dashQuery = supabaseAdmin
                 .from('dispute_cases')
                 .select('claim_amount, resolution_amount, resolution_date, status')
                 .eq('user_id', userId)
                 .in('status', ['approved', 'paid', 'reconciled']);
+            if (tenantId) dashQuery = dashQuery.eq('tenant_id', tenantId);
+            const { data: disputes } = await dashQuery;
 
             const now = new Date();
             const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -311,16 +313,20 @@ class FinancialImpactService {
         // Calculate from database
         try {
             // Get detection_results aggregates
-            const { data: detections } = await supabaseAdmin
+            let detectionsQuery = supabaseAdmin
                 .from('detection_results')
                 .select('id, estimated_value, confidence_score, status')
                 .eq('seller_id', userId);
+            if (tenantId) detectionsQuery = detectionsQuery.eq('tenant_id', tenantId);
+            const { data: detections } = await detectionsQuery;
 
             // Get dispute_cases aggregates  
-            const { data: disputes } = await supabaseAdmin
+            let disputesQuery = supabaseAdmin
                 .from('dispute_cases')
                 .select('id, claim_amount, actual_payout_amount, status')
                 .eq('user_id', userId);
+            if (tenantId) disputesQuery = disputesQuery.eq('tenant_id', tenantId);
+            const { data: disputes } = await disputesQuery;
 
             const metrics: UserFinancialMetrics = {
                 userId,
