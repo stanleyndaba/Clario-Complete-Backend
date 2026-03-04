@@ -32,6 +32,9 @@ const TENANT_EXEMPT_PATHS = [
     '/api/amazon/callback',
     '/api/v1/integrations/amazon/auth',
     '/api/v1/integrations/gmail/auth',
+    '/api/admin/revenue',
+    '/api/admin/users',
+    '/api/admin/queue',
 ];
 
 /**
