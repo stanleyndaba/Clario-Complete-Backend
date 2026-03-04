@@ -10,6 +10,8 @@ import { financialImpactService } from '../services/financialImpactService';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import logger from '../utils/logger';
 
+const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+
 const router = Router();
 
 /**
@@ -19,15 +21,17 @@ const router = Router();
  */
 router.get('/recoveries', async (req: Request, res: Response) => {
     const userId = (req as any).userId || (req as any)?.user?.id || 'demo-user';
+    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
 
     try {
         const dbClient = supabaseAdmin || supabase;
 
-        // Get all dispute cases for this user
+        // Get all dispute cases for this user — scoped by tenant
         const { data: cases, error } = await dbClient
             .from('dispute_cases')
             .select('claim_amount, status, created_at, actual_payout_amount')
-            .eq('seller_id', userId);
+            .eq('seller_id', userId)
+            .eq('tenant_id', tenantId);
 
         if (error) {
             logger.warn('[METRICS] Error querying dispute_cases for dashboard', { error: error.message, userId });

@@ -40,10 +40,18 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     console.log('[AdminRevenue] Fetching revenue metrics...');
 
-    // Fetch all dispute cases
-    const { data: allCases, error: allError } = await supabaseAdmin
+    const tenantId = (req as any).tenant?.tenantId;
+
+    // Fetch dispute cases — scoped by tenant if available
+    let query = supabaseAdmin
       .from('dispute_cases')
       .select('id, status, claim_amount, seller_id, created_at');
+
+    if (tenantId) {
+      query = query.eq('tenant_id', tenantId);
+    }
+
+    const { data: allCases, error: allError } = await query;
 
     if (allError) {
       throw allError;

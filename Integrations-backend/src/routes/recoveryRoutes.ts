@@ -663,18 +663,20 @@ router.get('/:id/events', async (req: Request, res: Response) => {
         const { id } = req.params;
         // Support multiple auth methods: req.user, X-User-Id header, or demo-user fallback
         const userId = (req as any).user?.id || req.headers['x-user-id'] as string || 'demo-user';
+        const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' });
         }
 
-        logger.info('Fetching timeline events for recovery', { recoveryId: id, userId });
+        logger.info('Fetching timeline events for recovery', { recoveryId: id, userId, tenantId });
 
         // First, try to find in detection_results (claims)
         const { data: detectionResult, error: detError } = await supabaseAdmin
             .from('detection_results')
             .select('*')
             .eq('id', id)
+            .eq('tenant_id', tenantId)
             .single();
 
         // If not found in detection_results, try dispute_cases
@@ -684,6 +686,7 @@ router.get('/:id/events', async (req: Request, res: Response) => {
                 .from('dispute_cases')
                 .select('*')
                 .eq('id', id)
+                .eq('tenant_id', tenantId)
                 .single();
             disputeCase = dispCase;
         }

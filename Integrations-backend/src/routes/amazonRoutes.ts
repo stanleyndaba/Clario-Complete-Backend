@@ -16,6 +16,8 @@ import { validateRedirectMiddleware } from '../security/validateRedirect';
 
 const router = Router();
 
+const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+
 // Note: Rate limiting and redirect validation are applied selectively:
 // - Rate limiting: Applied to all auth endpoints
 // - Redirect validation: Applied only where redirect URIs are used
@@ -293,6 +295,7 @@ router.get('/fees', (_, res) => {
 router.get('/recoveries', wrap(async (req: Request, res: Response) => {
   // Extract user ID from middleware (set by userIdMiddleware)
   const userId = (req as any).userId || (req as any)?.user?.id || (req as any)?.user?.user_id || 'demo-user';
+  const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
   const isSandbox = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') || false;
 
   logger.info('📊 [RECOVERIES] Getting Amazon recoveries summary', {
@@ -315,7 +318,8 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
       const { data: recoveryRows, error: recoveryError } = await dbClient
         .from('recoveries')
         .select('id, user_id, expected_amount, actual_amount, reconciliation_status, payout_date, created_at')
-        .eq('user_id', userId);
+        .eq('user_id', userId)
+        .eq('tenant_id', tenantId);
 
       if (recoveryError) {
         logger.warn('Error querying recoveries table', { error: recoveryError.message, userId });
@@ -356,7 +360,8 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
       const { data: disputeCases, error: disputeError } = await dbClient
         .from('dispute_cases')
         .select('status, claim_amount, actual_payout_amount, currency')
-        .eq('seller_id', userId);
+        .eq('seller_id', userId)
+        .eq('tenant_id', tenantId);
 
       if (disputeError) {
         logger.warn('Error querying dispute_cases', { error: disputeError.message, userId });
@@ -553,6 +558,7 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
 // Get ALL claims for the pipeline stages (Detected, Ready, Pending, Approved, Paid)
 router.get('/upcoming-payments', wrap(async (req: Request, res: Response) => {
   const userId = (req as any).userId || (req as any)?.user?.id || (req as any)?.user?.user_id || 'demo-user';
+  const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
   const dbClient = supabaseAdmin || supabase;
 
   logger.info('📊 [UPCOMING PAYMENTS] Getting all claims for pipeline', { userId });
@@ -565,6 +571,7 @@ router.get('/upcoming-payments', wrap(async (req: Request, res: Response) => {
       .from('dispute_cases')
       .select('id, seller_id, claim_id, claim_amount, currency, status, expected_payout_date, created_at, dispute_type, filing_status, amazon_case_id, actual_payout_amount')
       .eq('seller_id', userId)
+      .eq('tenant_id', tenantId)
       .order('created_at', { ascending: false });
 
     if (disputeError) {
@@ -609,6 +616,7 @@ router.get('/upcoming-payments', wrap(async (req: Request, res: Response) => {
       .from('detection_results')
       .select('id, seller_id, anomaly_type, status, estimated_value, currency, created_at, confidence_score, details, order_id, asin, sku')
       .eq('seller_id', userId)
+      .eq('tenant_id', tenantId)
       .order('created_at', { ascending: false });
 
     if (detectionError) {
