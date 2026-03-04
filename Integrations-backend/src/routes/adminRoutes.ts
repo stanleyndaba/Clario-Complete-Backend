@@ -115,10 +115,14 @@ router.get('/users', async (req: Request, res: Response) => {
             .from('oauth_tokens')
             .select('user_id, provider');
 
-        // Get dispute case stats per user
-        const { data: cases } = await supabaseAdmin
+        const tenantId = (req as any).tenant?.tenantId;
+
+        // Get dispute case stats per user — scope by tenant if available
+        let casesQuery = supabaseAdmin
             .from('dispute_cases')
             .select('seller_id, status, actual_payout_amount');
+        if (tenantId) casesQuery = casesQuery.eq('tenant_id', tenantId);
+        const { data: cases } = await casesQuery;
 
         // Build integration map: user_id -> providers array
         const integrationMap = new Map<string, string[]>();
