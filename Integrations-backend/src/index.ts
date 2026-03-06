@@ -146,7 +146,9 @@ app.use(cors({
       'https://opside-complete-frontend.onrender.com',
       'http://localhost:8080',
       'http://localhost:5173',
-      'http://localhost:3000'
+      'http://localhost:3000',
+      'https://margin-finance.com',
+      'https://www.margin-finance.com'
     ];
 
     // Allow all Vercel preview deployments and onrender.com domains (pattern matching)
@@ -154,11 +156,12 @@ app.use(cors({
     // Check for vercel.app, onrender.com, or vercel.com domains
     const isVercelApp = origin.includes('vercel.app') || origin.includes('vercel.com');
     const isOnRender = origin.includes('onrender.com');
+    const isMarginFinance = origin.includes('margin-finance.com');
 
-    if (isVercelApp || isOnRender) {
+    if (isVercelApp || isOnRender || isMarginFinance) {
       logger.info('CORS: Allowing dynamic domain', {
         origin,
-        type: isVercelApp ? 'vercel' : 'onrender',
+        type: isVercelApp ? 'vercel' : isOnRender ? 'onrender' : 'margin-finance',
         matched: true
       });
       return callback(null, true);

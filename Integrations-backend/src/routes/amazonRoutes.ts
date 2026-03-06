@@ -193,8 +193,9 @@ function isValidOrigin(origin: string | undefined): boolean {
   // Allow all Vercel and Render domains
   const isVercelApp = origin.includes('vercel.app') || origin.includes('vercel.com');
   const isOnRender = origin.includes('onrender.com');
+  const isMarginFinance = origin.includes('margin-finance.com');
 
-  if (isVercelApp || isOnRender) return true;
+  if (isVercelApp || isOnRender || isMarginFinance) return true;
 
   // Check exact matches
   const allowedOrigins = [
@@ -206,7 +207,9 @@ function isValidOrigin(origin: string | undefined): boolean {
     'https://opside-complete-frontend.onrender.com',
     'http://localhost:8080',
     'http://localhost:5173',
-    'http://localhost:3000'
+    'http://localhost:3000',
+    'https://margin-finance.com',
+    'https://www.margin-finance.com'
   ];
 
   return allowedOrigins.includes(origin);

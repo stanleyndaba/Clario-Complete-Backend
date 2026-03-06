@@ -24,21 +24,22 @@ export const authenticateSSE = (
     // Get origin for CORS - validate against allowed origins
     const origin = (req as any).headers?.origin;
     let allowedOrigin = origin || '*';
-    
+
     // Validate origin against allowed patterns (same as main CORS config)
     if (origin) {
-      const isAllowed = 
+      const isAllowed =
         origin.includes('vercel.app') ||
         origin.includes('onrender.com') ||
         origin.includes('vercel.com') ||
+        origin.includes('margin-finance.com') ||
         origin.includes('localhost');
-      
+
       if (!isAllowed) {
         // If origin not allowed, don't set CORS headers (will be blocked by browser)
         logger.warn('SSE connection from disallowed origin', { origin });
       }
     }
-    
+
     // Set SSE headers with proper CORS
     const headers: Record<string, string> = {
       'Content-Type': 'text/event-stream',
@@ -46,24 +47,24 @@ export const authenticateSSE = (
       'Connection': 'keep-alive',
       'X-Accel-Buffering': 'no' // Disable nginx buffering
     };
-    
+
     // Only set CORS headers if origin is valid
     if (origin) {
       headers['Access-Control-Allow-Origin'] = origin;
       headers['Access-Control-Allow-Credentials'] = 'true';
       headers['Access-Control-Allow-Headers'] = 'Cache-Control, Authorization';
     }
-    
+
     res.writeHead(200, headers);
 
     // EventSource can't send custom headers, so we need to support cookies
     // Priority 1: Check cookie (session_token) - this is how EventSource sends auth
     const cookieToken = (req as any).cookies?.session_token;
-    
+
     // Priority 2: Check Authorization header (for testing with curl/Postman)
     const authHeader = (req as any).headers?.authorization;
     const headerToken = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
-    
+
     // Use cookie token if available, otherwise use header token
     const token = cookieToken || headerToken;
 
@@ -75,19 +76,19 @@ export const authenticateSSE = (
         method: (req as any).method,
         ip: (req as any).ip
       });
-      
+
       // Set demo user for unauthenticated connections
       // IMPORTANT: This userId must match the userId used in sync operations
       req.user = {
         id: 'demo-user',
         email: 'demo@example.com'
       };
-      
+
       logger.info('🔍 [SSE AUTH] Using demo-user for unauthenticated connection', {
         url: (req as any).url,
         note: 'Sync operations must also use "demo-user" for SSE events to work'
       });
-      
+
       // Send demo mode event
       res.write(`event: connected\ndata: ${JSON.stringify({
         status: 'ok',
@@ -97,7 +98,7 @@ export const authenticateSSE = (
         timestamp: new Date().toISOString(),
         warning: 'Sync operations must use userId="demo-user" for SSE events to be received'
       })}\n\n`);
-      
+
       // Continue to next middleware (don't close connection)
       next();
       return;
@@ -105,33 +106,33 @@ export const authenticateSSE = (
 
     try {
       const decoded = jwt.verify(token, config.JWT_SECRET) as any;
-      
+
       // Normalize user ID - handle different token formats (id, user_id, userId)
       const userId = decoded.id || decoded.user_id || decoded.userId;
       const email = decoded.email || '';
-      
+
       if (!userId) {
         logger.warn('SSE authentication failed: No user ID in token', {
           tokenKeys: Object.keys(decoded),
           url: (req as any).url
         });
-        
+
         res.write(`event: error\ndata: ${JSON.stringify({
           error: 'Invalid token format',
           code: 'INVALID_TOKEN_FORMAT'
         })}\n\n`);
-        
+
         res.end();
         return;
       }
-      
+
       // Set normalized user object
       req.user = {
         id: userId,
         email: email,
         role: decoded.role
       };
-      
+
       logger.info('✅ [SSE AUTH] SSE authentication successful', {
         user_id: userId,
         email: email,
@@ -154,24 +155,24 @@ export const authenticateSSE = (
         method: (req as any).method,
         ip: (req as any).ip
       });
-      
+
       // Send error event and close connection
       res.write(`event: error\ndata: ${JSON.stringify({
         error: 'Invalid or expired token',
         code: 'INVALID_TOKEN'
       })}\n\n`);
-      
+
       res.end();
     }
   } catch (error) {
     logger.error('Error in SSE authentication middleware', { error });
-    
+
     // Send error event and close connection
     res.write(`event: error\ndata: ${JSON.stringify({
       error: 'Internal server error',
       code: 'INTERNAL_ERROR'
     })}\n\n`);
-    
+
     res.end();
   }
 };
@@ -203,13 +204,13 @@ export const sendSSEEvent = (
 ): void => {
   try {
     let eventData = `event: ${event}\n`;
-    
+
     if (id) {
       eventData += `id: ${id}\n`;
     }
-    
+
     eventData += `data: ${JSON.stringify(data)}\n\n`;
-    
+
     res.write(eventData);
   } catch (error) {
     logger.error('Error sending SSE event', { error, event, data });
@@ -236,7 +237,7 @@ export const closeSSEConnection = (res: Response): void => {
       message: 'Connection closed',
       timestamp: new Date().toISOString()
     })}\n\n`);
-    
+
     res.end();
   } catch (error) {
     logger.error('Error closing SSE connection', { error });
