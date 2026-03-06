@@ -825,25 +825,37 @@ export class DisputeService {
         evidenceDocs = data || [];
       }
 
-      // Extract metadata
+      // Fetch linked detection_result for enrichment
+      let detectionResult: any = null;
+      if (disputeCase.detection_result_id) {
+        const { data: drData } = await supabase
+          .from('detection_results')
+          .select('*')
+          .eq('id', disputeCase.detection_result_id)
+          .single();
+        detectionResult = drData || null;
+      }
+      const drMeta = detectionResult?.metadata || detectionResult?.details || {};
+
+      // Extract metadata — use dispute metadata → detection result → hyphen for nulls
       const metadata = disputeCase.metadata || {};
-      const expectedQty = metadata.expected_qty || metadata.quantity || 48;
-      const receivedQty = metadata.received_qty ?? 0;
-      const unitPrice = metadata.unit_price || 14.56;
-      const variance = expectedQty - receivedQty;
-      const discrepancyRate = receivedQty > 0 ? (((expectedQty - receivedQty) / receivedQty) * 100).toFixed(2) : '100.00';
-      const itemAsin = disputeCase.asin || metadata.asin || metadata.fnsku || 'B0PX5K3NP';
-      const itemSku = disputeCase.sku || metadata.sku || 'SKU-4CR2';
-      const facilityId = metadata.facility_id || metadata.warehouse_code || metadata.fc_id || metadata.fulfillment_center || 'ONT8';
-      const shipmentId = metadata.shipment_id || metadata.fba_shipment_id || 'FBA15JX8K9';
-      const orderId = disputeCase.order_id || metadata.order_id || '';
-      const carrierTracking = metadata.carrier_tracking || metadata.tracking_number || '1Z999AA1234567890';
-      const errorType = metadata.error_type || metadata.anomaly_type || disputeCase.case_type || 'AMAZON_FBA';
-      const errorCode = metadata.error_code || 'RECEIVING_VARIANCE';
-      const policyCode = metadata.policy_code || 'G200213130';
-      const amazonWeight = metadata.amazon_weight || metadata.fba_weight || (expectedQty * 0.22).toFixed(1);
-      const actualWeight = metadata.actual_weight || metadata.certified_weight || (expectedQty * 0.22).toFixed(1);
-      const affectedFCs = metadata.affected_fcs || metadata.fulfillment_centers || facilityId;
+      const expectedQty = metadata.expected_qty || metadata.quantity || drMeta.expected_qty || drMeta.quantity || null;
+      const receivedQty = metadata.received_qty ?? drMeta.received_qty ?? null;
+      const unitPrice = metadata.unit_price || drMeta.unit_price || (expectedQty && disputeCase.claim_amount ? (disputeCase.claim_amount / expectedQty) : null);
+      const variance = (expectedQty != null && receivedQty != null) ? (expectedQty - receivedQty) : null;
+      const discrepancyRate = (receivedQty != null && receivedQty > 0 && variance != null) ? (((variance) / receivedQty) * 100).toFixed(2) : (expectedQty != null && receivedQty === 0 ? '100.00' : '-');
+      const itemAsin = disputeCase.asin || metadata.asin || metadata.fnsku || drMeta.asin || drMeta.fnsku || detectionResult?.asin || '-';
+      const itemSku = disputeCase.sku || metadata.sku || drMeta.sku || detectionResult?.sku || '-';
+      const facilityId = metadata.facility_id || metadata.warehouse_code || metadata.fc_id || metadata.fulfillment_center || drMeta.facility_id || drMeta.warehouse_code || drMeta.fc_id || drMeta.fulfillment_center || '-';
+      const shipmentId = metadata.shipment_id || metadata.fba_shipment_id || drMeta.shipment_id || drMeta.fba_shipment_id || '-';
+      const orderId = disputeCase.order_id || metadata.order_id || drMeta.order_id || '-';
+      const carrierTracking = metadata.carrier_tracking || metadata.tracking_number || drMeta.carrier_tracking || drMeta.tracking_number || '-';
+      const errorType = metadata.error_type || metadata.anomaly_type || drMeta.error_type || drMeta.anomaly_type || detectionResult?.detection_type || disputeCase.case_type || '-';
+      const errorCode = metadata.error_code || drMeta.error_code || '-';
+      const policyCode = metadata.policy_code || drMeta.policy_code || '-';
+      const amazonWeight = metadata.amazon_weight || metadata.fba_weight || drMeta.amazon_weight || drMeta.fba_weight || '-';
+      const actualWeight = metadata.actual_weight || metadata.certified_weight || drMeta.actual_weight || drMeta.certified_weight || '-';
+      const affectedFCs = metadata.affected_fcs || metadata.fulfillment_centers || drMeta.affected_fcs || drMeta.fulfillment_centers || facilityId;
 
       // Date formatting - ISO style for machine readability
       const formatISODate = (ts: string) => {
@@ -902,9 +914,9 @@ export class DisputeService {
 
       const evidenceLogRows = [
         { ts: formatTimestamp(shipCreateDate.toISOString()), event: 'FBA_SHIPMENT_CREATE', ref: shipmentId, confirm: 'SELLER_CONFIRMED' },
-        { ts: formatTimestamp(carrierPickupDate.toISOString()), event: 'CARRIER_PICKUP', ref: `WEIGHT: ${actualWeight} LBS (MATCH)`, confirm: 'UPS_CONFIRMED' },
-        { ts: formatTimestamp(receivingScanDate.toISOString()), event: 'FBA_RECEIVING_SCAN', ref: `${facilityId}_DOCK_7`, confirm: 'AMAZON_CONFIRMED' },
-        { ts: formatTimestamp(discrepancyDate.toISOString()), event: 'RECEIVING_DISCREPANCY', ref: `RCVD:${receivedQty}/EXP:${expectedQty}`, confirm: 'SYSTEM_GENERATED' },
+        { ts: formatTimestamp(carrierPickupDate.toISOString()), event: 'CARRIER_PICKUP', ref: `WEIGHT: ${actualWeight !== '-' ? actualWeight + ' LBS (MATCH)' : '-'}`, confirm: 'UPS_CONFIRMED' },
+        { ts: formatTimestamp(receivingScanDate.toISOString()), event: 'FBA_RECEIVING_SCAN', ref: `${facilityId !== '-' ? facilityId + '_DOCK_7' : '-'}`, confirm: 'AMAZON_CONFIRMED' },
+        { ts: formatTimestamp(discrepancyDate.toISOString()), event: 'RECEIVING_DISCREPANCY', ref: `RCVD:${receivedQty ?? '-'}/EXP:${expectedQty ?? '-'}`, confirm: 'SYSTEM_GENERATED' },
         { ts: formatTimestamp(discoveryDate.toISOString()), event: 'DISCOVERY_ALERT', ref: 'AUTO_AUDIT_FLAG', confirm: 'SYSTEM_GENERATED' },
         { ts: formatTimestamp(disputeCase.created_at), event: 'CLAIM_SUBMISSION', ref: disputeCase.provider_case_id || `AMZ-${Math.floor(Math.random() * 1000000)}`, confirm: 'SELLER_CONFIRMED' },
       ];
@@ -1286,11 +1298,11 @@ export class DisputeService {
 
             <div class="claim-money">
               <div class="section-label">Liability Summary</div>
-              <div class="liability-row"><span class="liability-key">Expected</span><span class="liability-val big">${expectedQty} units</span></div>
-              <div class="liability-row"><span class="liability-key">Received</span><span class="liability-val big">${receivedQty} units</span></div>
-              <div class="liability-row"><span class="liability-key">Discrepancy</span><span class="liability-val big discrepancy">${variance > 0 ? '-' : ''}${Math.abs(variance)} units</span></div>
-              <div class="liability-row"><span class="liability-key">Unit Value</span><span class="liability-val">$${unitPrice.toFixed(2)}</span></div>
-              <div class="liability-row"><span class="liability-key">Total Claim</span><span class="liability-val claim">$${disputeCase.claim_amount.toFixed(2)}</span></div>
+              <div class="liability-row"><span class="liability-key">Expected</span><span class="liability-val big">${expectedQty != null ? expectedQty + ' units' : '-'}</span></div>
+              <div class="liability-row"><span class="liability-key">Received</span><span class="liability-val big">${receivedQty != null ? receivedQty + ' units' : '-'}</span></div>
+              <div class="liability-row"><span class="liability-key">Discrepancy</span><span class="liability-val big discrepancy">${variance != null ? (variance > 0 ? '-' : '') + Math.abs(variance) + ' units' : '-'}</span></div>
+              <div class="liability-row"><span class="liability-key">Unit Value</span><span class="liability-val">${unitPrice != null ? '$' + unitPrice.toFixed(2) : '-'}</span></div>
+              <div class="liability-row"><span class="liability-key">Total Claim</span><span class="liability-val claim">$${(disputeCase.claim_amount || 0).toFixed(2)}</span></div>
               <div class="liability-row"><span class="liability-key">Policy</span><span class="liability-val policy-ref">${policyCode}</span></div>
             </div>
 
@@ -1339,10 +1351,10 @@ export class DisputeService {
                 <div class="status-stamp-line">
                   <span>SEVERITY: CRITICAL</span>
                   <span>|</span>
-                  <span>DISCREPANCY: ${discrepancyRate}%</span>
+                  <span>DISCREPANCY: ${discrepancyRate !== '-' ? discrepancyRate + '%' : '-'}</span>
                 </div>
                 <div class="status-stamp-line">
-                  <span>AFFECTED UNITS: ${expectedQty}</span>
+                  <span>AFFECTED UNITS: ${expectedQty ?? '-'}</span>
                   <span>|</span>
                   <span>FC: ${affectedFCs}</span>
                 </div>

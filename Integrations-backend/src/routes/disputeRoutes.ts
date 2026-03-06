@@ -73,31 +73,61 @@ router.post('/payments/report', async (req, res) => {
       groups = [],
       pipeline = {},
       monthTotals = {},
-      currency = 'USD', // Still use USD internal, but format with $
+      currency = 'USD',
       storeName = 'Account #A123BCDE999X',
     } = req.body;
 
     const formatMoney = (amt: number) => {
-      // Receipt style: $X,XXX.XX (No "USD" repeat)
       return `$${Number(amt || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     };
 
-    const refId = `SET-20260212-8421`;
-    const manifestId = `MAS-SET-8421`;
+    // ── Derive ALL values from the POSTed page data ──────────────────
+    const totalGross = Number(monthTotals.gross) || groups.reduce((s: number, g: any) => s + (Number(g.gross) || 0), 0);
+    const auditFee = Number(monthTotals.commission) || totalGross * 0.2;
+    const clientNet = Number(monthTotals.net) || Math.max(totalGross - auditFee, 0);
 
-    // Exact financial values from user spec
-    const totalGross = 38803.49;
-    const auditFee = 7760.70;
-    const clientNet = 31042.79;
+    // Pipeline amounts — use actual values, fall back to 0 (not hardcoded)
+    const detectedAmt = Number(pipeline.detected?.amount) || 0;
+    const readyAmt = Number(pipeline.ready?.amount) || 0;
+    const underReviewAmt = Number(pipeline.pending?.amount) || 0;
+    const approvedAmt = Number(pipeline.approved?.amount) || 0;
+    const paidAmt = Number(pipeline.paid?.amount) || 0;
+    const justFiledAmt = readyAmt + detectedAmt;
+    const activePipeline = Number(pipeline.totalInPipeline) || (detectedAmt + readyAmt + underReviewAmt + approvedAmt);
 
-    // Pipeline Data
-    const underReviewAmt = pipeline.pending?.amount || 5291.97;
-    const justFiledAmt = (pipeline.ready?.amount || 0) + (pipeline.detected?.amount || 20369.42);
-    const activePipeline = underReviewAmt + justFiledAmt;
+    // Dynamic reference & date range
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
+    const shortId = Math.floor(Math.random() * 9000 + 1000);
+    const refId = `SET-${dateStr}-${shortId}`;
+    const manifestId = `MAS-SET-${shortId}`;
 
-    // Performance Metrics (Institutional Stats)
-    const winRate = "94.2%";
-    const annualSavings = "228,933.98";
+    // Compute period from groups or fallback to current month
+    let periodLabel: string;
+    const datedGroups = groups.filter((g: any) => g.label && g.label !== 'TBD');
+    if (datedGroups.length > 0) {
+      const first = datedGroups[0].label;
+      const last = datedGroups[datedGroups.length - 1].label;
+      periodLabel = first === last ? first : `${first} – ${last}`;
+    } else {
+      periodLabel = now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    }
+
+    // Win rate: approved / (approved + all non-paid) — or N/A
+    const totalDecided = (pipeline.approved?.count || 0) + (pipeline.paid?.count || 0);
+    const totalAll = totalDecided + (pipeline.pending?.count || 0) + (pipeline.ready?.count || 0) + (pipeline.detected?.count || 0);
+    const winRate = totalAll > 0 ? `${((totalDecided / totalAll) * 100).toFixed(1)}%` : 'N/A';
+
+    // Annual savings projection from current monthly gross
+    const annualProjection = totalGross * 12;
+
+    // Build payout schedule rows from groups
+    const payoutRows = groups.map((g: any) => `
+      <div class="summary-line">
+        <span>${g.label} (${g.count} claim${g.count !== 1 ? 's' : ''})</span>
+        <span class="mono">${formatMoney(g.gross)}</span>
+      </div>
+    `).join('');
 
     const html = `
       <!DOCTYPE html>
@@ -110,14 +140,13 @@ router.post('/payments/report', async (req, res) => {
           @page { margin: 0; size: A4; }
           body {
             font-family: 'Inter', sans-serif;
-            color: #333333; /* Dark Charcoal base */
+            color: #333333;
             line-height: 1.5;
             padding: 60px;
             font-size: 11px;
             background: #fff;
           }
 
-          /* HEADER - BRAND CONSISTENCY */
           .header {
             display: flex;
             justify-content: space-between;
@@ -148,7 +177,6 @@ router.post('/payments/report', async (req, res) => {
           }
           .doc-title { font-weight: 800; color: #000; margin-bottom: 2px; }
 
-          /* HERO STRIP - QUIET & PREMIUM */
           .hero-strip {
             background: #F9F9F9;
             padding: 12px 20px;
@@ -162,7 +190,6 @@ router.post('/payments/report', async (req, res) => {
           .hero-strip b { font-weight: 800; letter-spacing: 0.5px; }
           .hero-strip .mono { font-family: 'Roboto Mono', monospace; font-size: 11px; }
 
-          /* RECEIPT STYLE MATH STRIP */
           .math-strip {
             display: flex;
             border-top: 0.05pt solid #000;
@@ -170,10 +197,7 @@ router.post('/payments/report', async (req, res) => {
             padding: 10px 0;
             margin-bottom: 40px;
           }
-          .math-col {
-            flex: 1;
-            text-align: center;
-          }
+          .math-col { flex: 1; text-align: center; }
           .math-label {
             font-size: 8px;
             font-weight: 700;
@@ -185,12 +209,11 @@ router.post('/payments/report', async (req, res) => {
           .math-val {
             font-family: 'Roboto Mono', monospace;
             font-size: 11pt;
-            font-weight: 400; /* Regular weight */
+            font-weight: 400;
             color: #333333;
           }
           .math-val.grey { color: #888; }
 
-          /* PIPELINE SECTORS (SUBDUED) */
           .section-title {
             font-size: 9px;
             font-weight: 800;
@@ -199,9 +222,7 @@ router.post('/payments/report', async (req, res) => {
             color: #000;
             margin-bottom: 15px;
           }
-          .pipeline-summary {
-            margin-bottom: 45px;
-          }
+          .pipeline-summary { margin-bottom: 45px; }
           .summary-line {
             display: flex;
             justify-content: space-between;
@@ -219,7 +240,6 @@ router.post('/payments/report', async (req, res) => {
           }
           .mono { font-family: 'Roboto Mono', monospace; }
 
-          /* PROJECTIONS SECTION - CLEAN VERTICAL */
           .projections-section {
             font-family: 'Inter', sans-serif;
             margin-top: 50px;
@@ -243,7 +263,8 @@ router.post('/payments/report', async (req, res) => {
           .projection-item b { font-weight: 700; color: #000; }
           .projection-item .mono { font-family: 'Roboto Mono', monospace; margin-left: 5px; }
 
-          /* SYSTEM FOOTER */
+          .payout-schedule { margin-bottom: 45px; }
+
           .system-foot {
             margin-top: 80px;
             text-align: center;
@@ -265,11 +286,11 @@ router.post('/payments/report', async (req, res) => {
           </div>
           <div class="doc-info">
             <div class="doc-title">Settlement & Forecast</div>
-            <div>Period: Feb 1-12, 2026</div>
+            <div>Period: ${periodLabel}</div>
           </div>
         </div>
 
-        <!-- HERO STRIP (QUIET & PREMIUM) -->
+        <!-- HERO STRIP -->
         <div class="hero-strip">
           <span><b>NET LIQUIDITY SETTLED:</b> <span class="mono">${formatMoney(clientNet)}</span></span>
           <span><b>REF:</b> <span class="mono">${refId}</span></span>
@@ -295,22 +316,33 @@ router.post('/payments/report', async (req, res) => {
         <div class="section-title">ACTIVE RECOVERY PIPELINE</div>
         <div class="pipeline-summary">
           <div class="summary-line"><span>Account ID</span> <span class="mono">${storeName}</span></div>
+          <div class="summary-line"><span>Detected (Awaiting Processing)</span> <span class="mono">${formatMoney(detectedAmt)}</span></div>
+          <div class="summary-line"><span>Ready to File</span> <span class="mono">${formatMoney(readyAmt)}</span></div>
           <div class="summary-line"><span>Pending Amazon Decision (Under Review)</span> <span class="mono">${formatMoney(underReviewAmt)}</span></div>
-          <div class="summary-line"><span>New Claims Detected (Awaiting Processing)</span> <span class="mono">${formatMoney(justFiledAmt)}</span></div>
+          <div class="summary-line"><span>Approved</span> <span class="mono">${formatMoney(approvedAmt)}</span></div>
+          <div class="summary-line"><span>Paid Out</span> <span class="mono">${formatMoney(paidAmt)}</span></div>
           <div class="summary-line bold"><span>Total Potential Asset Value</span> <span class="mono">${formatMoney(clientNet + activePipeline)}</span></div>
         </div>
 
-        <!-- PROJECTIONS (CLEAN VERTICAL) -->
+        ${groups.length > 0 ? `
+        <!-- PAYOUT SCHEDULE -->
+        <div class="section-title">PAYOUT SCHEDULE</div>
+        <div class="payout-schedule">
+          ${payoutRows}
+        </div>
+        ` : ''}
+
+        <!-- PROJECTIONS -->
         <div class="projections-section">
           <div class="projections-title">Projections</div>
           <div class="projection-item">Current Win Rate - <span class="mono">${winRate}</span></div>
-          <div class="projection-item">Projected Annual Savings - <span class="mono">${formatMoney(Number(annualSavings.replace(/,/g, '')))}</span></div>
+          <div class="projection-item">Projected Annual Savings - <span class="mono">${formatMoney(annualProjection)}</span></div>
         </div>
 
         <!-- LEGAL FOOTER -->
         <div class="system-foot">
           Margin Audit Systems | Forensic FBA Recovery Specialists<br>
-          Manifest ID: ${manifestId} | Institutional Grade Asset Integrity Verified | Ref: forensic-settlement-extraction
+          Manifest ID: ${manifestId} | Institutional Grade Asset Integrity Verified | Generated: ${now.toISOString().slice(0, 10)}
         </div>
       </body>
       </html>
