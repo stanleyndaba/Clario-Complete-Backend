@@ -29,7 +29,6 @@
     "ioredis": "^5.8.1",
     "joi": "^17.11.0",
     "jsonwebtoken": "^9.0.2",
-    "node-fetch": "^3.3.2",
     "pg": "^8.11.3",
     "winston": "^3.11.0"
   },
@@ -41,7 +40,6 @@
     "@types/jest": "^29.5.8",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20.19.22",
-    "@types/node-fetch": "^2.6.13",
     "@types/pg": "^8.15.5",
     "@types/supertest": "^2.0.16",
     "@typescript-eslint/eslint-plugin": "^6.13.1",

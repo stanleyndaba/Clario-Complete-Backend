@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import ClaimsController from '../controllers/claimsController';
+import { ClaimsController } from '../controllers/claimsController';
 
 const router = Router();
 
