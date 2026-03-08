@@ -66,6 +66,19 @@ export class NotificationService {
   }
 
   /**
+   * Send a direct email through the email service
+   */
+  async sendEmail(emailData: {
+    to: string;
+    subject: string;
+    html: string;
+    text: string;
+    replyTo?: string;
+  }): Promise<void> {
+    await this.emailService.sendEmail(emailData);
+  }
+
+  /**
    * Create and queue a notification
    */
   async createNotification(event: NotificationEvent): Promise<Notification> {

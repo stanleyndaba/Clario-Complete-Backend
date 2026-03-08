@@ -1,11 +1,12 @@
 import { getLogger } from '../../../utils/logger';
 import Notification from '../../models/notification';
 import sgMail from '@sendgrid/mail';
+import { Resend } from 'resend';
 
 const logger = getLogger('EmailService');
 
 export interface EmailConfig {
-  provider: 'sendgrid' | 'postmark';
+  provider: 'sendgrid' | 'postmark' | 'resend';
   apiKey: string;
   fromEmail: string;
   fromName: string;
@@ -21,13 +22,23 @@ export interface EmailTemplate {
 export class EmailService {
   private config: EmailConfig;
   private isInitialized: boolean = false;
+  private resend: Resend | null = null;
 
   constructor() {
+    const provider = (process.env.EMAIL_PROVIDER as 'sendgrid' | 'postmark' | 'resend') || 'sendgrid';
+    let apiKey = process.env.EMAIL_API_KEY || '';
+
+    // Fallback to provider-specific keys if the generic one is missing
+    if (!apiKey) {
+      if (provider === 'sendgrid') apiKey = process.env.SENDGRID_API_KEY || '';
+      else if (provider === 'resend') apiKey = process.env.RESEND_API_KEY || '';
+    }
+
     this.config = {
-      provider: (process.env.EMAIL_PROVIDER as 'sendgrid' | 'postmark') || 'sendgrid',
-      apiKey: process.env.EMAIL_API_KEY || '',
-      fromEmail: process.env.EMAIL_FROM_EMAIL || 'notifications@opsided.com',
-      fromName: process.env.EMAIL_FROM_NAME || 'Opsided Notifications',
+      provider,
+      apiKey,
+      fromEmail: process.env.EMAIL_FROM_EMAIL || 'notifications@margin-finance.com',
+      fromName: process.env.EMAIL_FROM_NAME || 'Margin Notifications',
       replyTo: process.env.EMAIL_REPLY_TO
     };
   }
@@ -49,6 +60,10 @@ export class EmailService {
         // Postmark initialization would go here
         this.isInitialized = true;
         logger.info('Email service initialized with Postmark');
+      } else if (this.config.provider === 'resend') {
+        this.resend = new Resend(this.config.apiKey);
+        this.isInitialized = true;
+        logger.info('Email service initialized with Resend');
       } else {
         throw new Error(`Unsupported email provider: ${this.config.provider}`);
       }
@@ -108,10 +123,16 @@ export class EmailService {
     replyTo?: string;
   }): Promise<void> {
     try {
+      if (!this.isInitialized) {
+        await this.initialize();
+      }
+
       if (this.config.provider === 'sendgrid') {
         await this.sendViaSendGrid(emailData);
       } else if (this.config.provider === 'postmark') {
         await this.sendViaPostmark(emailData);
+      } else if (this.config.provider === 'resend') {
+        await this.sendViaResend(emailData);
       } else {
         throw new Error(`Unsupported email provider: ${this.config.provider}`);
       }
@@ -149,6 +170,42 @@ export class EmailService {
     } catch (error) {
       logger.error('SendGrid error:', error);
       throw new Error(`SendGrid error: ${error}`);
+    }
+  }
+
+  /**
+   * Send email via Resend
+   */
+  private async sendViaResend(emailData: {
+    to: string;
+    subject: string;
+    html: string;
+    text: string;
+    replyTo?: string;
+  }): Promise<void> {
+    if (!this.resend) {
+      throw new Error('Resend client not initialized');
+    }
+
+    try {
+      const { data, error } = await this.resend.emails.send({
+        from: `${this.config.fromName} <${this.config.fromEmail}>`,
+        to: [emailData.to],
+        subject: emailData.subject,
+        html: emailData.html,
+        text: emailData.text,
+        replyTo: emailData.replyTo || this.config.replyTo
+      });
+
+      if (error) {
+        logger.error('Resend error:', error);
+        throw new Error(`Resend error: ${error.message}`);
+      }
+
+      logger.info('Email sent via Resend', { to: emailData.to, subject: emailData.subject, id: data?.id });
+    } catch (error) {
+      logger.error('Resend catch error:', error);
+      throw error;
     }
   }
 
@@ -210,14 +267,14 @@ export class EmailService {
             ${notification.payload ? this.generatePayloadHTML(notification.payload) : ''}
             
             <div style="text-align: center; margin-top: 30px;">
-              <a href="${process.env.FRONTEND_URL || 'https://app.opsided.com'}/notifications" class="btn">
+              <a href="${process.env.FRONTEND_URL || 'https://app.margin-finance.com'}/notifications" class="btn">
                 View in App
               </a>
             </div>
           </div>
           
           <div class="footer">
-            <p>This is an automated notification from Opsided.</p>
+            <p>This is an automated notification from Margin.</p>
             <p>If you have any questions, please contact our support team.</p>
           </div>
         </div>
@@ -234,10 +291,10 @@ ${notification.message}
 
 ${notification.payload ? this.generatePayloadText(notification.payload) : ''}
 
-View in App: ${process.env.FRONTEND_URL || 'https://app.opsided.com'}/notifications
+View in App: ${process.env.FRONTEND_URL || 'https://app.margin-finance.com'}/notifications
 
 ---
-This is an automated notification from Opsided.
+This is an automated notification from Margin.
 If you have any questions, please contact our support team.
     `;
 

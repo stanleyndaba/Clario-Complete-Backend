@@ -1,6 +1,6 @@
 # Notifications System Module
 
-A complete, production-ready notifications system for the Opsided Integrations Backend, built with TypeScript, Supabase (PostgreSQL), and BullMQ for background job processing.
+A complete, production-ready notifications system for the Margin Integrations Backend, built with TypeScript, Supabase (PostgreSQL), and BullMQ for background job processing.
 
 ## 🚀 Features
 
@@ -472,5 +472,5 @@ For issues and questions:
 
 ---
 
-**Built with ❤️ by the Opsided Team**
+**Built with ❤️ by the Margin Team**
 
