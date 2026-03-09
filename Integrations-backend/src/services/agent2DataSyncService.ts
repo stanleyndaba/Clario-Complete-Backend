@@ -2047,11 +2047,30 @@ export class Agent2DataSyncService {
         .maybeSingle();
 
       if (!existingQueue) {
+        // Resolve tenant_id for detection_queue (required NOT NULL)
+        const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+        let queueTenantId = DEFAULT_TENANT_ID;
+        try {
+          const { data: membership } = await supabaseAdmin
+            .from('tenant_memberships')
+            .select('tenant_id')
+            .eq('user_id', userId)
+            .eq('is_active', true)
+            .limit(1)
+            .maybeSingle();
+          if (membership?.tenant_id) {
+            queueTenantId = membership.tenant_id;
+          }
+        } catch (tenantErr: any) {
+          // Use default tenant
+        }
+
         // Create initial detection_queue entry with 'processing' status
         await supabaseAdmin
           .from('detection_queue')
           .insert({
             seller_id: userId,
+            tenant_id: queueTenantId,
             sync_id: storageSyncId,
             status: 'processing',
             priority: 1,

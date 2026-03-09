@@ -1365,10 +1365,8 @@ class SyncJobManager {
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1);
 
-      // Tenant isolation
-      if (tenantId) {
-        query = query.eq('tenant_id', tenantId);
-      }
+      // Note: sync_progress table does not have tenant_id column
+      // Tenant isolation is handled via user_id scoping
 
       const { data, error, count } = await query;
 
@@ -1467,9 +1465,7 @@ class SyncJobManager {
         .order('created_at', { ascending: false })
         .limit(1);
 
-      if (tenantId) {
-        activeQuery = activeQuery.eq('tenant_id', tenantId);
-      }
+      // Note: sync_progress table does not have tenant_id column
 
       const { data, error } = await activeQuery.maybeSingle();
 
@@ -1523,9 +1519,7 @@ class SyncJobManager {
         .order('created_at', { ascending: false })
         .limit(1);
 
-      if (tenantId) {
-        lastSyncQuery = lastSyncQuery.eq('tenant_id', tenantId);
-      }
+      // Note: sync_progress table does not have tenant_id column
 
       const { data: lastSyncData } = await lastSyncQuery.maybeSingle();
 

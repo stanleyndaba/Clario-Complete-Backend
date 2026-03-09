@@ -1071,19 +1071,25 @@ export class OrchestrationJobManager {
 
       if (existingProgress) {
         await supabase.from('sync_progress').update({
-          stage: 'Normalizing Amazon data',
-          percent: 40,
-          total_cases: result.totalCases,
-          processed_cases: result.processed,
+          current_step: 'Normalizing Amazon data',
+          progress: 40,
+          metadata: {
+            total_cases: result.totalCases,
+            processed_cases: result.processed
+          },
           updated_at: new Date().toISOString()
         }).eq('user_id', userId);
       } else {
         await supabase.from('sync_progress').insert({
           user_id: userId,
-          stage: 'Normalizing Amazon data',
-          percent: 40,
-          total_cases: result.totalCases,
-          processed_cases: result.processed,
+          sync_id: syncId,
+          current_step: 'Normalizing Amazon data',
+          progress: 40,
+          status: 'running',
+          metadata: {
+            total_cases: result.totalCases,
+            processed_cases: result.processed
+          },
           updated_at: new Date().toISOString()
         });
       }
@@ -1449,15 +1455,15 @@ export class OrchestrationJobManager {
         current_step: `Phase ${data.phaseNumber}`,
         status: data.status === 'started' ? 'running' : data.status === 'completed' ? 'completed' : 'failed',
         progress: Math.round((data.phaseNumber / 7) * 100),
-        phase_number: data.phaseNumber,
-        duration_ms: data.durationMs || null,
-        previous_phase: data.previousPhase || null,
-        error_message: data.errorMessage || null,
-        error_stack: data.errorStack || null,
-        rollback_triggered: data.rollbackTriggered || false,
-        rollback_to_phase: data.rollbackToPhase || null,
         metadata: {
           ...(data.metadata || {}),
+          phase_number: data.phaseNumber,
+          duration_ms: data.durationMs || null,
+          previous_phase: data.previousPhase || null,
+          error_message: data.errorMessage || null,
+          error_stack: data.errorStack || null,
+          rollback_triggered: data.rollbackTriggered || false,
+          rollback_to_phase: data.rollbackToPhase || null,
           phase_status: data.status,
           timestamp: new Date().toISOString()
         },

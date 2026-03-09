@@ -136,15 +136,15 @@ class ScheduledSyncJob {
         }
 
         try {
-            // Get all users with active Amazon integrations
+            // Get all users with active Amazon integrations (via evidence_sources table)
             const { data: integrations, error: intError } = await db
-                .from('integrations')
-                .select('user_id, provider, status, last_sync_at')
+                .from('evidence_sources')
+                .select('user_id, seller_id, provider, status, last_sync_at')
                 .eq('provider', 'amazon')
                 .eq('status', 'connected');
 
             if (intError) {
-                logger.error('❌ [SCHEDULED SYNC] Error fetching integrations:', intError.message);
+                logger.error('❌ [SCHEDULED SYNC] Error fetching evidence_sources:', intError.message);
                 return [];
             }
 
@@ -158,12 +158,13 @@ class ScheduledSyncJob {
             const eligibleUsers: UserSyncInfo[] = [];
 
             for (const integration of integrations) {
+                const userId = integration.user_id || integration.seller_id;
                 const lastSyncAt = integration.last_sync_at ? new Date(integration.last_sync_at) : null;
 
                 // Eligible if never synced OR last sync was more than MIN_HOURS ago
                 if (!lastSyncAt || lastSyncAt < cutoffTime) {
                     eligibleUsers.push({
-                        userId: integration.user_id,
+                        userId,
                         lastSyncAt,
                         hasActiveIntegration: true
                     });
@@ -219,14 +220,23 @@ class ScheduledSyncJob {
                 syncId     // parentSyncId for tracking
             );
 
-            // Update last_sync_at in integrations table
+            // Update last_sync_at in evidence_sources table
             const db = supabaseAdmin || supabase;
             if (db) {
-                await db
-                    .from('integrations')
-                    .update({ last_sync_at: new Date().toISOString() })
-                    .eq('user_id', userId)
-                    .eq('provider', 'amazon');
+                try {
+                    await db
+                        .from('evidence_sources')
+                        .update({ last_sync_at: new Date().toISOString() })
+                        .eq('user_id', userId)
+                        .eq('provider', 'amazon');
+                } catch (updateErr: any) {
+                    // Also try by seller_id
+                    await db
+                        .from('evidence_sources')
+                        .update({ last_sync_at: new Date().toISOString() })
+                        .eq('seller_id', userId)
+                        .eq('provider', 'amazon');
+                }
             }
 
             logger.info(`✅ [SCHEDULED SYNC] User ${userId} synced successfully`, {

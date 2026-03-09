@@ -298,7 +298,7 @@ app.get('/api/metrics/recoveries', async (req: any, res) => {
     let pendingQuery = supabaseAdmin.from('dispute_cases').select('*', { count: 'exact', head: true }).eq('status', 'pending');
     let approvedQuery = supabaseAdmin.from('dispute_cases').select('*', { count: 'exact', head: true }).eq('status', 'approved');
     let inProgressQuery = supabaseAdmin.from('dispute_cases').select('*', { count: 'exact', head: true }).eq('status', 'in_progress');
-    let valueQuery = supabaseAdmin.from('dispute_cases').select('claimed_amount').in('status', ['pending', 'in_progress']);
+    let valueQuery = supabaseAdmin.from('dispute_cases').select('claim_amount').in('status', ['pending', 'in_progress']);
 
     // Apply tenant filtering if available
     if (tenantId) {
@@ -318,7 +318,7 @@ app.get('/api/metrics/recoveries', async (req: any, res) => {
     ]);
 
     // Calculate value in progress
-    const valueInProgress = valueResult.data?.reduce((sum, row) => sum + (parseFloat(row.claimed_amount) || 0), 0) || 0;
+    const valueInProgress = valueResult.data?.reduce((sum, row) => sum + (parseFloat(row.claim_amount) || 0), 0) || 0;
 
     // Get extended recovery metrics for the dashboard
     const dashboardMetrics = await financialImpactService.getRecoveryMetricsExtended(userId, tenantId || undefined);

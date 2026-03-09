@@ -137,8 +137,29 @@ export class Notification {
       // Use admin client to bypass RLS (backend services need to create notifications)
       const client = supabaseAdmin || supabase;
 
+      // Resolve tenant_id from user's membership (notifications table requires tenant_id NOT NULL)
+      let tenantId: string | null = null;
+      const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+
+      try {
+        const { data: membership } = await client
+          .from('tenant_memberships')
+          .select('tenant_id')
+          .eq('user_id', data.user_id)
+          .eq('is_active', true)
+          .limit(1)
+          .maybeSingle();
+
+        tenantId = membership?.tenant_id || DEFAULT_TENANT_ID;
+      } catch (tenantErr: any) {
+        // Fallback to default tenant on any error
+        tenantId = DEFAULT_TENANT_ID;
+        logger.debug('Using default tenant_id for notification', { user_id: data.user_id });
+      }
+
       const notificationData = {
         ...data,
+        tenant_id: tenantId,
         status: NotificationStatus.PENDING,
         priority: data.priority || NotificationPriority.NORMAL,
         channel: data.channel || NotificationChannel.IN_APP,

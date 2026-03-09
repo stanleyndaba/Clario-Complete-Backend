@@ -71,34 +71,42 @@ router.get('/sources', async (req: Request, res: Response) => {
     if (error) {
       logger.warn('⚠️ [EVIDENCE] Error fetching evidence sources, checking integrations table', { error: error.message });
 
-      // Fallback: Check integrations table for connected OAuth integrations
-      const { data: integrations, error: intError } = await supabaseAdmin
-        .from('integrations')
-        .select('*')
-        .or(buildUserFilter(userId))
-        .eq('status', 'connected');
+      // Fallback: Check evidence_sources table for connected OAuth integrations
+      try {
+        const { data: integrations, error: intError } = await supabaseAdmin
+          .from('evidence_sources')
+          .select('*')
+          .or(buildUserFilter(userId))
+          .eq('status', 'connected');
 
-      if (intError || !integrations || integrations.length === 0) {
-        // No connected integrations found - return empty sources
+        if (intError || !integrations || integrations.length === 0) {
+          // No connected integrations found - return empty sources
+          return res.json({
+            success: true,
+            sources: []
+          });
+        }
+
+        // Map integrations to sources format
+        const mappedSources = integrations.map((int: any) => ({
+          id: int.id,
+          provider: int.provider,
+          account_email: int.email || int.account_email || `${int.provider}@connected.local`,
+          status: int.status || 'connected',
+          last_sync_at: int.last_sync_at || int.updated_at
+        }));
+
+        return res.json({
+          success: true,
+          sources: mappedSources
+        });
+      } catch (fallbackError: any) {
+        // Fallback table also failed - return empty
         return res.json({
           success: true,
           sources: []
         });
       }
-
-      // Map integrations to sources format
-      const mappedSources = integrations.map((int: any) => ({
-        id: int.id,
-        provider: int.provider,
-        account_email: int.email || int.account_email || `${int.provider}@connected.local`,
-        status: int.status || 'connected',
-        last_sync_at: int.last_sync_at || int.updated_at
-      }));
-
-      return res.json({
-        success: true,
-        sources: mappedSources
-      });
     }
 
     // Filter to connected sources only
@@ -106,23 +114,27 @@ router.get('/sources', async (req: Request, res: Response) => {
 
     // If no sources found, check integrations table as fallback
     if (connectedSources.length === 0) {
-      const { data: integrations } = await supabaseAdmin
-        .from('integrations')
-        .select('*')
-        .or(buildUserFilter(userId))
-        .eq('status', 'connected');
+      try {
+        const { data: integrations } = await supabaseAdmin
+          .from('evidence_sources')
+          .select('*')
+          .or(buildUserFilter(userId))
+          .eq('status', 'connected');
 
-      if (integrations && integrations.length > 0) {
-        return res.json({
-          success: true,
-          sources: integrations.map((int: any) => ({
-            id: int.id,
-            provider: int.provider,
-            account_email: int.email || int.account_email || int.metadata?.email || `${int.provider}@connected.local`,
-            status: int.status || 'connected',
-            last_sync_at: int.last_sync_at || int.updated_at
-          }))
-        });
+        if (integrations && integrations.length > 0) {
+          return res.json({
+            success: true,
+            sources: integrations.map((int: any) => ({
+              id: int.id,
+              provider: int.provider,
+              account_email: int.email || int.account_email || int.metadata?.email || `${int.provider}@connected.local`,
+              status: int.status || 'connected',
+              last_sync_at: int.last_sync_at || int.updated_at
+            }))
+          });
+        }
+      } catch (fallbackError: any) {
+        // Fallback failed - continue to return empty
       }
 
       // No connected sources at all
