@@ -254,10 +254,15 @@ class AgentEventLogger {
     let tenantId = data.tenantId;
     if (!tenantId) {
       try {
+        // Convert prefixed user IDs (e.g. "stress-test-user-UUID") to valid UUID
+        // before querying the users table which requires UUID format
+        const { convertUserIdToUuid } = require('../database/supabaseClient');
+        const dbUserId = convertUserIdToUuid(data.userId);
+
         const { data: userData } = await supabaseAdmin
           .from('users')
           .select('tenant_id')
-          .eq('id', data.userId)
+          .eq('id', dbUserId)
           .single();
         if (userData?.tenant_id) {
           tenantId = userData.tenant_id;
@@ -267,11 +272,25 @@ class AgentEventLogger {
       }
     }
 
+    // CRITICAL: Do not insert without a tenant_id — the column has a NOT NULL constraint
+    if (!tenantId) {
+      logger.warn('⚠️ [AGENT EVENT LOGGER] Skipping event — no tenant_id could be resolved', {
+        userId: data.userId,
+        agent: data.agent,
+        eventType: data.eventType
+      });
+      return;
+    }
+
     try {
+      // Convert userId to valid UUID for the user_id column as well
+      const { convertUserIdToUuid } = require('../database/supabaseClient');
+      const dbUserId = convertUserIdToUuid(data.userId);
+
       const { error } = await supabaseAdmin
         .from('agent_events')
         .insert({
-          user_id: data.userId,
+          user_id: dbUserId,
           tenant_id: tenantId,
           agent: data.agent,
           event_type: data.eventType,

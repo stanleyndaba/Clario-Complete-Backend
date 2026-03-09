@@ -197,7 +197,6 @@ class RecoveriesWorker {
         provider_case_id,
         detection_result_id,
         tenant_id,
-        store_id,
         detection_results (
           evidence
         )

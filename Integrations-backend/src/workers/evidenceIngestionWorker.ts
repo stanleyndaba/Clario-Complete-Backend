@@ -8,7 +8,7 @@
 
 import cron from 'node-cron';
 import logger from '../utils/logger';
-import { supabase, supabaseAdmin } from '../database/supabaseClient';
+import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import { unifiedIngestionService } from '../services/unifiedIngestionService';
 import { gmailIngestionService } from '../services/gmailIngestionService';
@@ -495,11 +495,15 @@ export class EvidenceIngestionWorker {
       // Use admin client to bypass RLS for source queries
       const client = supabaseAdmin || supabase;
 
+      // Convert prefixed user IDs (e.g. "stress-test-user-UUID") to valid UUID
+      // before querying tables that require UUID format
+      const dbUserId = convertUserIdToUuid(userId);
+
       // Get connected sources for this user (try seller_id first, fallback to user_id)
       let { data: sources, error } = await client
         .from('evidence_sources')
         .select('id, provider, last_synced_at, metadata')
-        .eq('seller_id', userId)
+        .eq('seller_id', dbUserId)
         .eq('status', 'connected')
         .in('provider', ['gmail', 'outlook', 'gdrive', 'dropbox']);
 
@@ -508,7 +512,7 @@ export class EvidenceIngestionWorker {
         const retry = await client
           .from('evidence_sources')
           .select('id, provider, last_synced_at, metadata')
-          .eq('user_id', userId)
+          .eq('user_id', dbUserId)
           .eq('status', 'connected')
           .in('provider', ['gmail', 'outlook', 'gdrive', 'dropbox']);
         if (retry.data && retry.data.length > 0) {
@@ -721,10 +725,11 @@ export class EvidenceIngestionWorker {
           const notificationHelper = (await import('../services/notificationHelper')).default;
 
           // Get recently ingested documents to notify about
+          const dbUserIdForDocs = convertUserIdToUuid(userId);
           const { data: recentDocs } = await supabaseAdmin
             .from('evidence_documents')
             .select('id, filename, source')
-            .eq('seller_id', userId)
+            .eq('seller_id', dbUserIdForDocs)
             .eq('source', source.provider)
             .order('created_at', { ascending: false })
             .limit(stats.ingested);
@@ -770,10 +775,11 @@ export class EvidenceIngestionWorker {
     try {
       // Get documents that were just ingested (within last minute) and don't have storage_path
       // Try user_id first, fallback to seller_id
+      const dbUserIdForStorage = convertUserIdToUuid(userId);
       let { data: documents, error } = await supabase
         .from('evidence_documents')
         .select('id, filename, content_type, metadata')
-        .eq('user_id', userId)
+        .eq('user_id', dbUserIdForStorage)
         .eq('provider', provider)
         .is('storage_path', null)
         .gte('ingested_at', new Date(Date.now() - 60000).toISOString()) // Last minute
@@ -784,7 +790,7 @@ export class EvidenceIngestionWorker {
         const retry = await supabase
           .from('evidence_documents')
           .select('id, filename, content_type, metadata')
-          .eq('seller_id', userId)
+          .eq('seller_id', dbUserIdForStorage)
           .eq('provider', provider)
           .is('storage_path', null)
           .gte('ingested_at', new Date(Date.now() - 60000).toISOString())
@@ -960,10 +966,11 @@ export class EvidenceIngestionWorker {
       // Use admin client to bypass RLS for error logging
       const client = supabaseAdmin || supabase;
 
+      const dbUserIdForError = convertUserIdToUuid(userId);
       const { error: insertError } = await client
         .from('evidence_ingestion_errors')
         .insert({
-          user_id: userId,
+          user_id: dbUserIdForError,
           provider,
           source_id: sourceId,
           error_type: error.name || 'UnknownError',
