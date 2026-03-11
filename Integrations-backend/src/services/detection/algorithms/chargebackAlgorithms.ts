@@ -14,6 +14,7 @@
 import { supabaseAdmin } from '../../../database/supabaseClient';
 import logger from '../../../utils/logger';
 
+import { resolveTenantId } from './shared/tenantUtils';
 // ============================================================================
 // Types
 // ============================================================================
@@ -41,7 +42,7 @@ export interface ChargebackEvent {
     chargeback_reason?: string;
 
     // Status
-    status: 'open' | 'won' | 'lost' | 'expired' | 'pending_response';
+    status: 'detected' | 'won' | 'lost' | 'expired' | 'pending_response';
     response_deadline?: string;
 
     // Seller response
@@ -545,6 +546,9 @@ export async function runChargebackDetection(
 export async function storeDisputeDetectionResults(results: DisputeDetectionResult[]): Promise<void> {
     if (results.length === 0) return;
 
+    // Resolve tenant_id for multi-tenancy
+    const tenantId = await resolveTenantId(results[0].seller_id);
+
     try {
         const records = results.map(r => ({
             seller_id: r.seller_id,
@@ -559,7 +563,9 @@ export async function storeDisputeDetectionResults(results: DisputeDetectionResu
             discovery_date: r.discovery_date.toISOString(),
             deadline_date: r.deadline_date.toISOString(),
             days_remaining: r.days_remaining,
-            status: 'open',
+            tenant_id: tenantId,
+
+            status: 'detected',
             action_required: r.action_required,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()

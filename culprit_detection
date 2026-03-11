@@ -1,0 +1,118 @@
+# Fix: Preview Drawer Shows No Detection Data After CSV Upload
+
+## Root Cause Analysis
+
+The preview drawer on the DataUpload page shows no detection data because **the detection pipeline never sees the uploaded CSV data**. Here's the exact chain of failure:
+
+### The Broken Data Flow
+
+```mermaid
+graph TD
+    A["CSV Upload (final-boss-audit.csv)"] --> B["csvIngestionService detects as 'inventory' type"]
+    B --> C["Data inserted into 'inventory_items' table"]
+    C --> D["enhancedDetectionService.triggerDetectionPipeline()"]
+    D --> E["Whale Hunter calls fetchInventoryLedger()"]
+    E --> F["fetchInventoryLedger reads from: shipments, returns, orders, settlements"]
+    F --> G["❌ inventory_items is NEVER queried → 0 events found"]
+    G --> H["0 detections → nothing stored in detection_results"]
+    H --> I["Frontend preview drawer fetches detection_results → empty"]
+```
+
+### Bug 1: `inventory_items` table is never read by detection algorithms
+
+- [csvIngestionService.ts](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/csvIngestionService.ts#L622-L658) — [ingestInventory()](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/csvIngestionService.ts#622-659) inserts CSV data into `inventory_items` table
+- [inventoryAlgorithms.ts](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/detection/algorithms/inventoryAlgorithms.ts#L396-L567) — [fetchInventoryLedger()](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/detection/algorithms/inventoryAlgorithms.ts#390-568) reads from `shipments`, `returns`, `orders`, `settlements` but **never** from `inventory_items`
+
+The [final-boss-audit.csv](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/final-boss-audit.csv) has headers `Date,FNSKU,ASIN,MSKU,Title,Event Type,...` which matches the `inventory` type signature. So data goes into `inventory_items`, but the Whale Hunter algorithm builds its ledger from the *other* tables it never touches.
+
+### Bug 2: Missing `tenant_id` in algorithm-level storage
+
+- [inventoryAlgorithms.ts storeDetectionResults()](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/detection/algorithms/inventoryAlgorithms.ts#L607-L651) inserts into `detection_results` **without** `tenant_id`
+- [detectionService.ts getDetectionResults()](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/detectionService.ts#L1690-L1746) filters by `tenant_id` (line 1718) when provided, so even if results existed, they'd be invisible to the frontend
+
+> [!IMPORTANT]
+> Bug 1 is the primary cause — no detections are ever generated from inventory CSV data. Bug 2 is a secondary issue that would still cause data to be invisible even if Bug 1 were fixed.
+
+---
+
+## Proposed Changes
+
+### Component 1: Inventory Detection Algorithm
+
+#### [MODIFY] [inventoryAlgorithms.ts](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/detection/algorithms/inventoryAlgorithms.ts)
+
+**Fix [fetchInventoryLedger()](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/detection/algorithms/inventoryAlgorithms.ts#390-568) to also read from `inventory_items` table:**
+
+Add a new query section (after the existing settlements query, before the sort) that reads from `inventory_items` and converts the rows into [InventoryLedgerEvent](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/detection/algorithms/inventoryAlgorithms.ts#33-51) objects. The `inventory_items` table has fields like `fnsku`, `asin`, [sku](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/detection/algorithms/inventoryAlgorithms.ts#140-156), `quantity_available`, `dimensions.damaged`, etc. that need to be mapped to `Snapshot` events (for warehouse balances) and any event_type-like fields from the CSV's `Event Type` column (stored in the raw data or mapped during ingestion).
+
+The key mapping:
+- `inventory_items` rows with quantity data → `Snapshot` events (providing `warehouse_balance`)
+- This gives the Whale Hunter the `endingWarehouseBalance` it needs to detect discrepancies
+
+**Fix [storeDetectionResults()](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/detection/algorithms/inventoryAlgorithms.ts#604-652) to include `tenant_id`:**
+
+Look up the user's `tenant_id` from the `users` table (same pattern used in [detectionService.ts](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/detectionService.ts) line 1586-1598) and include it in the insert. Add a fallback for sandbox/dev mode.
+
+---
+
+### Component 2: CSV Ingestion Service
+
+#### [MODIFY] [csvIngestionService.ts](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/csvIngestionService.ts)
+
+The [ingestInventory()](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/csvIngestionService.ts#622-659) method (line 622-658) stores data into `inventory_items` but doesn't map the CSV's `Event Type`, `Quantity`, `Disposition`, `Reason` columns into fields that the detection algorithm can use as inventory ledger events.
+
+**Add a dedicated `ingestInventoryLedger()` path** that, in addition to inserting into `inventory_items`, also creates records that [fetchInventoryLedger](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/detection/algorithms/inventoryAlgorithms.ts#390-568) can consume. This can be done by:
+
+1. Detecting when the CSV has ledger-style columns (`Event Type`, `Reference ID`, `Disposition`, `Reason`) — which [final-boss-audit.csv](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/final-boss-audit.csv) does
+2. Creating additional entries in the existing tables (e.g., mapping "Transfers" to `shipments`, "Receipts" to receipt entries) that the Whale Hunter already knows how to read
+3. OR: Creating a new `inventory_ledger_events` table that stores the raw ledger events, and adding a query for this table in [fetchInventoryLedger()](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/detection/algorithms/inventoryAlgorithms.ts#390-568)
+
+**Recommended approach**: Option 3 (new table) is cleaner but requires a DB migration. Option 2 (mapping to existing tables) is faster but less clean. Given the "things that don't scale" approach, I recommend **Option 2** — map CSV inventory ledger events into the tables that [fetchInventoryLedger()](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/detection/algorithms/inventoryAlgorithms.ts#390-568) already reads.
+
+Specifically, for the [final-boss-audit.csv](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/final-boss-audit.csv):
+- Rows with `Event Type = "Transfers"` and negative quantity → create `shipments` entries (outbound transfer)
+- Rows with `Event Type = "Transfers"` and positive quantity → create `shipments` entries (inbound receipt)
+- Rows with `Event Type = "Receipts"` → create `shipments` entries with `shipment_type: 'INBOUND'`
+- Rows with `Event Type` like "Adjustments", "Damaged" → create `settlements` entries with `transaction_type: 'adjustment'`
+- Last row per FNSKU provides the snapshot balance
+
+---
+
+## User Review Required
+
+> [!WARNING]
+> The proposed fix involves changing how inventory CSV data is ingested. This could affect existing data if the same CSV is re-uploaded. The ingestion currently goes only to `inventory_items`; the fix will also create entries in `shipments`/`settlements` tables.
+
+1. **Which approach do you prefer?**
+   - **Option A**: Map inventory CSV events to existing tables (`shipments`, `settlements`) so the Whale Hunter picks them up automatically
+   - **Option B**: Create a new `inventory_ledger_events` table and add a query for it in [fetchInventoryLedger()](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/detection/algorithms/inventoryAlgorithms.ts#390-568) (cleaner separation but needs DB schema change)
+
+2. **Should I also fix the `tenant_id` issue across all 26 algorithm `store*Results()` functions**, or just the inventory one for now?
+
+---
+
+## Verification Plan
+
+### Automated Tests
+
+1. **Run the existing test script** to confirm it still detects discrepancies:
+   ```
+   cd c:\Users\Student\Contacts\Clario-Complete-Backend\Integrations-backend
+   npx ts-node scripts/test_final_boss_audit.ts
+   ```
+
+2. **Run the DB verification script** after uploading the CSV to confirm `detection_results` is populated:
+   ```
+   cd c:\Users\Student\Contacts\Clario-Complete-Backend\Integrations-backend
+   npx ts-node scripts/verify-detection-db.ts
+   ```
+
+### Manual Verification
+
+1. Upload [final-boss-audit.csv](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/final-boss-audit.csv) via the DataUpload page
+2. Wait for the "Detection complete" notification
+3. Click the Preview button
+4. Verify the drawer shows detection data with:
+   - "Seller details" column populated
+   - "Detection breakdown" showing lost inventory for `X00GHOST1` and `X00DAMAGED2`
+   - Estimated recovery values displayed

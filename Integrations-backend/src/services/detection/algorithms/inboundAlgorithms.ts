@@ -15,6 +15,7 @@
 
 import { supabaseAdmin } from '../../../database/supabaseClient';
 import logger from '../../../utils/logger';
+import { resolveTenantId } from './shared/tenantUtils';
 
 // ============================================================================
 // Types
@@ -522,8 +523,10 @@ export async function runInboundDetection(sellerId: string, syncId: string): Pro
 
 export async function storeInboundDetectionResults(results: InboundDetectionResult[]): Promise<void> {
     if (!results.length) return;
+    const tenantId = await resolveTenantId(results[0].seller_id);
     await supabaseAdmin.from('detection_results').upsert(results.map(r => ({
-        ...r, discovery_date: r.discovery_date.toISOString(), deadline_date: r.deadline_date.toISOString(), status: 'open', created_at: new Date().toISOString()
+        ...r, discovery_date: r.discovery_date.toISOString(), deadline_date: r.deadline_date.toISOString(),
+        tenant_id: tenantId, status: 'detected', created_at: new Date().toISOString()
     })));
 }
 

@@ -623,6 +623,13 @@ export class CSVIngestionService {
         const errors: string[] = [];
         const rows: any[] = [];
 
+        // Check if this CSV has ledger-style columns (Event Type, Reference ID, Disposition, etc.)
+        const hasLedgerColumns = records.length > 0 && (
+            getField(records[0], 'Event Type', 'event_type', 'EventType') !== null ||
+            getField(records[0], 'Disposition', 'disposition') !== null ||
+            getField(records[0], 'Reference ID', 'reference_id', 'ReferenceId') !== null
+        );
+
         for (let i = 0; i < records.length; i++) {
             try {
                 const r = records[i];
@@ -654,7 +661,171 @@ export class CSVIngestionService {
             }
         }
 
-        return this.batchUpsert('inventory_items', rows, 'inventory', errors);
+        const result = await this.batchUpsert('inventory_items', rows, 'inventory', errors);
+
+        // If this CSV has ledger-style columns, ALSO write to inventory_ledger_events
+        // so the Whale Hunter detection algorithm can pick them up
+        if (hasLedgerColumns && result.rowsInserted > 0) {
+            await this.ingestInventoryLedgerEvents(userId, records, syncId, storeId);
+        }
+
+        return result;
+    }
+
+    /**
+     * Write inventory ledger events to the dedicated inventory_ledger_events table.
+     * This bridges CSV uploads to the Whale Hunter detection algorithm.
+     * Maps CSV "Event Type" values to detection-compatible event types.
+     */
+    private async ingestInventoryLedgerEvents(
+        userId: string,
+        records: any[],
+        syncId: string,
+        storeId?: string
+    ): Promise<void> {
+        const EVENT_TYPE_MAP: Record<string, { eventType: string; direction: 'in' | 'out' }> = {
+            'receipts': { eventType: 'Receipt', direction: 'in' },
+            'receipt': { eventType: 'Receipt', direction: 'in' },
+            'shipments': { eventType: 'Shipment', direction: 'out' },
+            'shipment': { eventType: 'Shipment', direction: 'out' },
+            'customer shipments': { eventType: 'Shipment', direction: 'out' },
+            'adjustments': { eventType: 'Adjustment', direction: 'in' },
+            'adjustment': { eventType: 'Adjustment', direction: 'in' },
+            'returns': { eventType: 'Return', direction: 'in' },
+            'return': { eventType: 'Return', direction: 'in' },
+            'customer returns': { eventType: 'Return', direction: 'in' },
+            'removals': { eventType: 'Removal', direction: 'out' },
+            'removal': { eventType: 'Removal', direction: 'out' },
+            'disposals': { eventType: 'Disposal', direction: 'out' },
+            'disposal': { eventType: 'Disposal', direction: 'out' },
+            'transfers': { eventType: 'Transfer', direction: 'out' }, // direction determined by quantity sign
+            'transfer': { eventType: 'Transfer', direction: 'out' },
+            'damaged': { eventType: 'Adjustment', direction: 'out' },
+            'damaged inventory': { eventType: 'Adjustment', direction: 'out' },
+            'misplaced': { eventType: 'Adjustment', direction: 'out' },
+            'found': { eventType: 'Adjustment', direction: 'in' },
+            'vendor returns': { eventType: 'Removal', direction: 'out' },
+        };
+
+        const ledgerRows: any[] = [];
+        const errors: string[] = [];
+
+        for (let i = 0; i < records.length; i++) {
+            try {
+                const r = records[i];
+                const rawEventType = getField(r, 'Event Type', 'event_type', 'EventType', 'type') || 'Adjustment';
+                const rawQuantity = Number(getField(r, 'Quantity', 'quantity', 'qty') || 0);
+                const fnsku = getField(r, 'FNSKU', 'fnsku', 'fn_sku', 'fnSku');
+
+                if (!fnsku) {
+                    errors.push(`Row ${i + 1}: Missing FNSKU, skipping ledger event`);
+                    continue;
+                }
+
+                // Map the CSV event type to our internal type
+                const mapped = EVENT_TYPE_MAP[rawEventType.toLowerCase()] || { eventType: 'Adjustment', direction: rawQuantity >= 0 ? 'in' : 'out' };
+
+                // For transfers: quantity sign determines direction
+                let direction = mapped.direction;
+                if (mapped.eventType === 'Transfer') {
+                    direction = rawQuantity >= 0 ? 'in' : 'out';
+                }
+
+                const eventDate = getField(r, 'Date', 'date', 'event_date', 'EventDate', 'PostedDate');
+
+                ledgerRows.push({
+                    id: uuidv4(),
+                    user_id: userId,
+                    store_id: storeId || null,
+                    sync_id: syncId,
+                    fnsku,
+                    asin: getField(r, 'ASIN', 'asin') || null,
+                    sku: getField(r, 'MSKU', 'msku', 'SKU', 'sku', 'sellerSku', 'seller-sku') || null,
+                    product_name: getField(r, 'Title', 'title', 'productName', 'product_name', 'ProductName') || null,
+                    event_type: mapped.eventType,
+                    quantity: Math.abs(rawQuantity),
+                    quantity_direction: direction,
+                    warehouse_balance: null, // Will be calculated per-FNSKU after all events
+                    event_date: eventDate ? new Date(eventDate).toISOString() : new Date().toISOString(),
+                    fulfillment_center: getField(r, 'Fulfillment Center', 'fulfillment_center', 'FulfillmentCenter', 'FC', 'warehouse') || null,
+                    disposition: getField(r, 'Disposition', 'disposition') || null,
+                    reason: getField(r, 'Reason', 'reason') || null,
+                    reference_id: getField(r, 'Reference ID', 'reference_id', 'ReferenceId', 'ref_id') || null,
+                    unit_cost: null,
+                    average_sales_price: null,
+                    country: getField(r, 'Country', 'country') || 'US',
+                    raw_payload: r,
+                    source: 'csv_upload',
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                });
+            } catch (error: any) {
+                errors.push(`Ledger Row ${i + 1}: ${error.message}`);
+            }
+        }
+
+        if (ledgerRows.length === 0) {
+            logger.warn('📊 [CSV INGESTION] No inventory ledger events to write', { userId, syncId });
+            return;
+        }
+
+        // Calculate ending warehouse balance per FNSKU (running tally)
+        // Group by FNSKU, then compute balance = sum of (in quantities) - sum of (out quantities)
+        const balanceByFnsku: Record<string, number> = {};
+        for (const row of ledgerRows) {
+            if (!balanceByFnsku[row.fnsku]) balanceByFnsku[row.fnsku] = 0;
+            if (row.quantity_direction === 'in') {
+                balanceByFnsku[row.fnsku] += row.quantity;
+            } else {
+                balanceByFnsku[row.fnsku] -= row.quantity;
+            }
+        }
+
+        // Add a Snapshot event for each FNSKU with the calculated ending balance
+        // This gives the Whale Hunter the endingWarehouseBalance it needs
+        const snapshotDate = new Date().toISOString();
+        for (const [fnsku, balance] of Object.entries(balanceByFnsku)) {
+            // Find the last event for this FNSKU to get metadata
+            const lastEvent = [...ledgerRows].reverse().find(r => r.fnsku === fnsku);
+            ledgerRows.push({
+                id: uuidv4(),
+                user_id: userId,
+                store_id: storeId || null,
+                sync_id: syncId,
+                fnsku,
+                asin: lastEvent?.asin || null,
+                sku: lastEvent?.sku || null,
+                product_name: lastEvent?.product_name || null,
+                event_type: 'Snapshot',
+                quantity: Math.max(0, balance),
+                quantity_direction: 'in',
+                warehouse_balance: Math.max(0, balance),
+                event_date: snapshotDate,
+                fulfillment_center: lastEvent?.fulfillment_center || null,
+                disposition: 'SELLABLE',
+                reason: 'CSV ledger snapshot',
+                reference_id: syncId,
+                unit_cost: null,
+                average_sales_price: null,
+                country: lastEvent?.country || 'US',
+                raw_payload: { type: 'calculated_snapshot', balance, fnsku },
+                source: 'csv_upload',
+                created_at: snapshotDate,
+                updated_at: snapshotDate,
+            });
+        }
+
+        // Insert into inventory_ledger_events table
+        const result = await this.batchUpsert('inventory_ledger_events', ledgerRows, 'inventory_ledger', []);
+
+        logger.info('📊 [CSV INGESTION] Inventory ledger events written', {
+            userId,
+            syncId,
+            ledgerEventsInserted: result.rowsInserted,
+            snapshotsCreated: Object.keys(balanceByFnsku).length,
+            uniqueFnskus: Object.keys(balanceByFnsku).length,
+            errors: errors.length > 0 ? errors : undefined,
+        });
     }
 
     private async ingestFinancialEvents(userId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {

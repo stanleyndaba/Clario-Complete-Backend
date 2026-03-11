@@ -16,6 +16,7 @@
 import { supabaseAdmin } from '../../../database/supabaseClient';
 import logger from '../../../utils/logger';
 
+import { resolveTenantId } from './shared/tenantUtils';
 // ============================================================================
 // Types
 // ============================================================================
@@ -221,6 +222,10 @@ export function detectLostInventory(
         let priceCount = 0;
 
         // Step 3: Calculate Input and Output
+        // Track transfer pairs to detect lost-in-transit
+        let totalTransferOut = 0;
+        let totalTransferIn = 0;
+
         for (const event of events) {
             eventIds.push(event.id);
 
@@ -239,8 +244,18 @@ export function detectLostInventory(
                 priceCount++;
             }
 
-            // Categorize by event type
-            switch (event.event_type) {
+            // Normalize event type: handle plural forms from CSV
+            // e.g., "Transfers" → "Transfer", "Receipts" → "Receipt", "CustomerReturns" → "Return"
+            const rawType = (event.event_type || '').trim();
+            let normalizedType = rawType;
+            if (/^CustomerReturn/i.test(rawType)) {
+                normalizedType = 'Return';
+            } else if (rawType.endsWith('s') && rawType.length > 2) {
+                normalizedType = rawType.slice(0, -1); // Remove trailing 's'
+            }
+
+            // Categorize by normalized event type
+            switch (normalizedType) {
                 case 'Receipt':
                     totalReceipts += Math.abs(event.quantity);
                     break;
@@ -263,6 +278,15 @@ export function detectLostInventory(
                     totalShipments += Math.abs(event.quantity);
                     break;
 
+                case 'Transfer':
+                    // Track transfer pairs: negative = sent out, positive = received
+                    if (event.quantity < 0) {
+                        totalTransferOut += Math.abs(event.quantity);
+                    } else {
+                        totalTransferIn += Math.abs(event.quantity);
+                    }
+                    break;
+
                 case 'Removal':
                 case 'Disposal':
                     totalRemovals += Math.abs(event.quantity);
@@ -278,6 +302,29 @@ export function detectLostInventory(
                     }
                     break;
             }
+        }
+
+        // If no snapshot balance, compute synthetic balance from event data
+        // This handles CSV uploads that never include Snapshot events
+        if (!hasSnapshotBalance) {
+            // Check for transfer discrepancies (lost in transit)
+            if (totalTransferOut > 0 && totalTransferIn > 0 && totalTransferOut > totalTransferIn) {
+                endingWarehouseBalance = totalTransferIn;
+                hasSnapshotBalance = true;
+                totalReceipts += totalTransferOut; // Expected amount that should have arrived
+            } else if (totalReceipts > 0 || totalReturns > 0 || totalAdjustments > 0) {
+                // For non-transfer events, compute net quantity
+                const netQty = events.reduce((sum: number, e: any) => sum + (e.quantity || 0), 0);
+                if (netQty < 0) {
+                    // Net negative means units went missing
+                    endingWarehouseBalance = 0;
+                    hasSnapshotBalance = true;
+                }
+            }
+        } else {
+            // Still account for transfer IO when snapshot exists
+            totalReceipts += totalTransferIn;
+            totalRemovals += totalTransferOut;
         }
 
         // Skip if no snapshot balance to compare against
@@ -405,6 +452,42 @@ export async function fetchInventoryLedger(
 
     try {
         logger.info('🐋 [WHALE] Building inventory ledger from Agent 2 tables', { sellerId });
+
+        // 0. Fetch from dedicated inventory_ledger_events table (CSV uploads go here)
+        const { data: ledgerEvents, error: ledgerError } = await supabaseAdmin
+            .from('inventory_ledger_events')
+            .select('*')
+            .eq('user_id', sellerId)
+            .order('event_date', { ascending: true });
+
+        if (!ledgerError && ledgerEvents && ledgerEvents.length > 0) {
+            for (const le of ledgerEvents) {
+                events.push({
+                    id: le.id,
+                    seller_id: sellerId,
+                    fnsku: le.fnsku || 'UNKNOWN',
+                    sku: le.sku,
+                    asin: le.asin,
+                    product_name: le.product_name,
+                    event_type: le.event_type as InventoryEventType,
+                    quantity: le.quantity || 0,
+                    quantity_direction: le.quantity_direction as 'in' | 'out',
+                    warehouse_balance: le.warehouse_balance,
+                    event_date: le.event_date,
+                    fulfillment_center_id: le.fulfillment_center,
+                    reference_id: le.reference_id,
+                    unit_cost: le.unit_cost,
+                    average_sales_price: le.average_sales_price,
+                    created_at: le.created_at
+                });
+            }
+            logger.info('🐋 [WHALE] Processed inventory_ledger_events (CSV uploads)', { count: ledgerEvents.length });
+        } else if (ledgerError) {
+            // Table might not exist yet — that's OK, continue with other tables
+            logger.warn('🐋 [WHALE] inventory_ledger_events query failed (table may not exist yet)', {
+                error: ledgerError.message
+            });
+        }
 
         // 1. Fetch shipments (inbound = Receipt, outbound = Shipment)
         const { data: shipments, error: shipmentsError } = await supabaseAdmin
@@ -607,6 +690,8 @@ export async function runLostInventoryDetection(
 export async function storeDetectionResults(results: DetectionResult[]): Promise<void> {
     if (results.length === 0) return;
 
+    const tenantId = await resolveTenantId(results[0].seller_id);
+
     try {
         const records = results.map(r => ({
             seller_id: r.seller_id,
@@ -621,17 +706,15 @@ export async function storeDetectionResults(results: DetectionResult[]): Promise
             discovery_date: r.discovery_date.toISOString(),
             deadline_date: r.deadline_date.toISOString(),
             days_remaining: r.days_remaining,
-            status: 'open',
+            tenant_id: tenantId,
+            status: 'detected',
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         }));
 
         const { error } = await supabaseAdmin
             .from('detection_results')
-            .upsert(records, {
-                onConflict: 'seller_id,sync_id,anomaly_type',
-                ignoreDuplicates: false
-            });
+            .insert(records);
 
         if (error) {
             logger.error('🐋 [WHALE] Error storing detection results', {

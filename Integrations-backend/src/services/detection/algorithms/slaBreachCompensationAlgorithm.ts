@@ -21,6 +21,7 @@
 import { supabaseAdmin } from '../../../database/supabaseClient';
 import logger from '../../../utils/logger';
 
+import { resolveTenantId } from './shared/tenantUtils';
 // ============================================================================
 // Types
 // ============================================================================
@@ -910,6 +911,9 @@ export async function storeSLABreachResults(
     results: SLABreachResult[]
 ): Promise<void> {
     if (results.length === 0) return;
+
+    // Resolve tenant_id for multi-tenancy
+    const tenantId = await resolveTenantId(results[0].seller_id);
 
     try {
         const records = results.map(r => ({

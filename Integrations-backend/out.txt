@@ -1,0 +1,26 @@
+≡ƒôä Reading Final Boss Audit from: C:\Users\Student\Contacts\Clario-Complete-Backend\Integrations-backend\final-boss-audit.csv
+Γ£à Parsed 7 records.
+
+≡ƒöì Processing Transaction Timeline by FNSKU:
+
+--- Analyzing FNSKU: X00GHOST1 ---
+[01/15/2026] Transfers | Reason: N/A | Disp: SELLABLE | Qty: %+d | Net: -100 -100
+[01/18/2026] Transfers | Reason: N/A | Disp: SELLABLE | Qty: %+d | Net: -20 80
+Final Net Quantity: -20
+Γ¥î POTENTIAL DISCREPANCY DETECTED for X00GHOST1: Net negative units -20. Need to verify sales or other events.
+
+--- Analyzing FNSKU: X00DAMAGED2 ---
+[02/01/2026] Adjustments | Reason: E | Disp: SELLABLE | Qty: %+d | Net: -15 -15
+[02/10/2026] Adjustments | Reason: P | Disp: SELLABLE | Qty: %+d | Net: -10 5
+Final Net Quantity: -10
+Γ¥î POTENTIAL DISCREPANCY DETECTED for X00DAMAGED2: Net negative units -10. Need to verify sales or other events.
+
+--- Analyzing FNSKU: X00LOST3 ---
+[02/15/2026] CustomerReturns | Reason: N/A | Disp: CUSTOMER_DAMAGED | Qty: %+d | Net: 2 2
+[02/20/2026] Adjustments | Reason: M | Disp: SELLABLE | Qty: %+d | Net: -8 -10
+[02/25/2026] Adjustments | Reason: F | Disp: SELLABLE | Qty: %+d | Net: 2 10
+Final Net Quantity: 2
+Γ£à No immediate discrepancy found based on ledger rules.
+
+--- FINAL AUDIT RESULT ---
+≡ƒÜ¿ Found 2 discrepant FNSKUs require filing.

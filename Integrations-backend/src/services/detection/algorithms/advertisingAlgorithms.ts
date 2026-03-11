@@ -15,6 +15,7 @@
 import { supabaseAdmin } from '../../../database/supabaseClient';
 import logger from '../../../utils/logger';
 
+import { resolveTenantId } from './shared/tenantUtils';
 // ============================================================================
 // Types
 // ============================================================================
@@ -646,6 +647,9 @@ export async function runAdvertisingDetection(
 export async function storeAdvertisingDetectionResults(results: AdvertisingDetectionResult[]): Promise<void> {
     if (results.length === 0) return;
 
+    // Resolve tenant_id for multi-tenancy
+    const tenantId = await resolveTenantId(results[0].seller_id);
+
     try {
         const records = results.map(r => ({
             seller_id: r.seller_id,
@@ -660,7 +664,9 @@ export async function storeAdvertisingDetectionResults(results: AdvertisingDetec
             discovery_date: r.discovery_date.toISOString(),
             deadline_date: r.deadline_date.toISOString(),
             days_remaining: r.days_remaining,
-            status: 'open',
+            tenant_id: tenantId,
+
+            status: 'detected',
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         }));
