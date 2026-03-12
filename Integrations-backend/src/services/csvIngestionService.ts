@@ -898,15 +898,13 @@ export class CSVIngestionService {
     /**
      * Table-specific conflict keys for UPSERT idempotency.
      * When a row with the same natural key already exists, it is UPDATED instead of duplicated.
+     * IMPORTANT: Only include tables that have a DB-level UNIQUE constraint.
+     * Tables without a constraint will fall back to plain .insert().
      */
     private static readonly CONFLICT_KEYS: Record<string, string> = {
         inventory_ledger_events: 'user_id,fnsku,event_type,event_date,reference_id',
-        inventory_items: 'user_id,sku',
-        orders: 'user_id,order_id',
-        shipments: 'user_id,shipment_id',
-        returns: 'user_id,return_id',
-        settlements: 'user_id,settlement_id',
-        financial_events: 'seller_id,event_type,event_date,amazon_order_id',
+        // Other tables (orders, shipments, returns, settlements, inventory_items, financial_events)
+        // do NOT have unique constraints yet — they fall back to .insert() automatically.
     };
 
     /**
