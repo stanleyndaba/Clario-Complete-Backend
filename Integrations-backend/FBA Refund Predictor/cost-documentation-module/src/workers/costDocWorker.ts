@@ -1,7 +1,7 @@
 import Bull from 'bull';
 import { PDFRenderer } from '../services/pdfRenderer';
 import { CostDocumentationService } from '../services/costDocService';
-import { computeEvidenceSha256 } from '../utils/canonicalize';
+// import { computeEvidenceSha256 } from '../utils/canonicalize';
 
 export interface WorkerJob {
   id: string;
@@ -30,7 +30,7 @@ export class CostDocumentationWorker {
     const redisConfig = {
       host: process.env['REDIS_HOST'] || 'localhost',
       port: parseInt(process.env['REDIS_PORT'] || '6379'),
-      password: process.env['REDIS_PASSWORD'],
+      password: process.env['REDIS_PASSWORD'] || '',
       db: parseInt(process.env['REDIS_DB'] || '0')
     };
 
@@ -114,7 +114,7 @@ export class CostDocumentationWorker {
    * Set up job processor
    */
   private setupJobProcessor(): void {
-    const concurrency = parseInt(process.env.QUEUE_MAX_CONCURRENCY || '3');
+    const concurrency = parseInt(process.env['QUEUE_MAX_CONCURRENCY'] || '3');
     
     this.queue.process(concurrency, async (job: Bull.Job) => {
       return await this.processJob(job);
@@ -131,7 +131,7 @@ export class CostDocumentationWorker {
       console.log(`Processing job ${job.id} for anomaly ${jobData.anomaly_id}`);
       
       // Update job status to processing
-      await this.costDocService.updateJobStatus(job.id, 'processing');
+      await this.costDocService.updateJobStatus(String(job.id), 'processing');
       
       // Render PDF
       const renderResult = await this.pdfRenderer.renderPdfBuffer(
@@ -155,7 +155,7 @@ export class CostDocumentationWorker {
       
       // Update job status to completed
       await this.costDocService.updateJobStatus(
-        job.id,
+        String(job.id),
         'completed',
         uploadedKey,
         url
@@ -174,7 +174,7 @@ export class CostDocumentationWorker {
       
       // Update job status to failed
       await this.costDocService.updateJobStatus(
-        job.id,
+        String(job.id),
         'failed',
         undefined,
         undefined,
@@ -193,7 +193,7 @@ export class CostDocumentationWorker {
    */
   private async handleJobStart(job: Bull.Job): Promise<void> {
     try {
-      await this.costDocService.updateJobStatus(job.id, 'processing');
+      await this.costDocService.updateJobStatus(String(job.id), 'processing');
     } catch (error) {
       console.error(`Failed to update job ${job.id} status to processing:`, error);
     }
@@ -206,7 +206,7 @@ export class CostDocumentationWorker {
     if (result.success) {
       try {
         await this.costDocService.updateJobStatus(
-          job.id,
+          String(job.id),
           'completed',
           result.s3Key,
           result.s3Url
@@ -227,7 +227,7 @@ export class CostDocumentationWorker {
   private async handleJobFailure(job: Bull.Job, error: Error): Promise<void> {
     try {
       await this.costDocService.updateJobStatus(
-        job.id,
+        String(job.id),
         'failed',
         undefined,
         undefined,
@@ -301,21 +301,21 @@ export class CostDocumentationWorker {
   /**
    * Get queue statistics
    */
-  async getQueueStats(): Promise<Bull.Queue.QueueStatus> {
+  async getQueueStats(): Promise<Bull.JobCounts> {
     return await this.queue.getJobCounts();
   }
 
   /**
    * Get job by ID
    */
-  async getJob(jobId: string): Promise<Bull.Job | null> {
+  async getJob(jobId: string | number): Promise<Bull.Job | null> {
     return await this.queue.getJob(jobId);
   }
 
   /**
    * Retry a failed job
    */
-  async retryJob(jobId: string): Promise<boolean> {
+  async retryJob(jobId: string | number): Promise<boolean> {
     try {
       const job = await this.queue.getJob(jobId);
       if (job && job.failedReason) {
@@ -333,7 +333,7 @@ export class CostDocumentationWorker {
   /**
    * Remove a job from the queue
    */
-  async removeJob(jobId: string): Promise<boolean> {
+  async removeJob(jobId: string | number): Promise<boolean> {
     try {
       const job = await this.queue.getJob(jobId);
       if (job) {

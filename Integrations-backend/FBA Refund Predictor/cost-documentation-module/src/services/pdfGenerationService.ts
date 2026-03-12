@@ -1,10 +1,10 @@
-import puppeteer from 'puppeteer';
+import puppeteer, { Browser } from 'puppeteer';
 import Handlebars from 'handlebars';
 import { logger } from '../utils/logger';
 import { AnomalyEvidence, PDFTemplate, CostBreakdown, EvidenceSection, PDFGenerationOptions } from '../types/costDocumentation';
 
 export class PDFGenerationService {
-  private browser: puppeteer.Browser | null = null;
+  private browser: Browser | null = null;
   private templates: Map<string, HandlebarsTemplateDelegate> = new Map();
 
   /**
@@ -13,7 +13,7 @@ export class PDFGenerationService {
   async initialize(): Promise<void> {
     try {
       this.browser = await puppeteer.launch({
-        headless: 'new',
+        headless: true,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -75,7 +75,7 @@ export class PDFGenerationService {
       await page.close();
       logger.info('PDF generated successfully', { anomaly_id: evidence.anomaly_id });
 
-      return pdfBuffer;
+      return Buffer.from(pdfBuffer);
     } catch (error) {
       logger.error('Failed to generate PDF', { error, anomaly_id: evidence.anomaly_id });
       throw error;
@@ -170,7 +170,7 @@ export class PDFGenerationService {
       pricing_discrepancy: this.getPricingDiscrepancyTemplate()
     };
 
-    return templates[anomalyType] || templates.lost_units;
+    return (templates as Record<string, string>)[anomalyType] || templates.lost_units;
   }
 
   /**
@@ -244,13 +244,13 @@ export class PDFGenerationService {
               <tr>
                 <td>{{item_description}}</td>
                 <td>{{quantity}}</td>
-                <td>${{unit_cost}}</td>
-                <td>${{total_cost}}</td>
+                <td>\${{unit_cost}}</td>
+                <td>\${{total_cost}}</td>
               </tr>
               {{/each}}
               <tr class="total-row">
                 <td colspan="3">Total Loss:</td>
-                <td>${{anomaly.total_loss}}</td>
+                <td>\${{anomaly.total_loss}}</td>
               </tr>
             </tbody>
           </table>
@@ -346,13 +346,13 @@ export class PDFGenerationService {
               <tr>
                 <td>{{item_description}}</td>
                 <td>{{quantity}}</td>
-                <td>${{unit_cost}}</td>
-                <td>${{total_cost}}</td>
+                <td>\${{unit_cost}}</td>
+                <td>\${{total_cost}}</td>
               </tr>
               {{/each}}
               <tr class="total-row">
                 <td colspan="3">Total Overcharge:</td>
-                <td>${{anomaly.total_loss}}</td>
+                <td>\${{anomaly.total_loss}}</td>
               </tr>
             </tbody>
           </table>

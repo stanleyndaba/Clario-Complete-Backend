@@ -96,7 +96,7 @@ export class CostDocumentationController {
    */
   static async getByAnomalyId(req: Request, res: Response): Promise<void> {
     try {
-      const { anomalyId } = req.params;
+      const anomalyId = req.params['anomalyId'] || '';
 
       const documentation = await CostDocumentationController.service.getDocumentationByAnomalyId(anomalyId);
 
@@ -132,7 +132,7 @@ export class CostDocumentationController {
    */
   static async getBySellerId(req: Request, res: Response): Promise<void> {
     try {
-      const { sellerId } = req.params;
+      const sellerId = req.params['sellerId'] || '';
       const { page = 1, limit = 20 } = req.query;
 
       const documentation = await CostDocumentationController.service.getDocumentationBySellerId(sellerId);
@@ -171,7 +171,7 @@ export class CostDocumentationController {
   /**
    * Get queue statistics
    */
-  static async getQueueStats(req: Request, res: Response): Promise<void> {
+  static async getQueueStats(_req: Request, res: Response): Promise<void> {
     try {
       const stats = await costDocumentationWorker.getQueueStats();
 
@@ -194,7 +194,7 @@ export class CostDocumentationController {
    */
   static async getJobStatus(req: Request, res: Response): Promise<void> {
     try {
-      const { jobId } = req.params;
+      const jobId = req.params['jobId'] || '';
 
       const job = await costDocumentationWorker.getJob(jobId);
 
@@ -232,7 +232,7 @@ export class CostDocumentationController {
    */
   static async retryJob(req: Request, res: Response): Promise<void> {
     try {
-      const { jobId } = req.params;
+      const jobId = req.params['jobId'] || '';
 
       await costDocumentationWorker.retryJob(jobId);
 
@@ -256,7 +256,7 @@ export class CostDocumentationController {
    */
   static async removeJob(req: Request, res: Response): Promise<void> {
     try {
-      const { jobId } = req.params;
+      const jobId = req.params['jobId'] || '';
 
       await costDocumentationWorker.removeJob(jobId);
 
@@ -278,7 +278,7 @@ export class CostDocumentationController {
   /**
    * Pause the queue
    */
-  static async pauseQueue(req: Request, res: Response): Promise<void> {
+  static async pauseQueue(_req: Request, res: Response): Promise<void> {
     try {
       await costDocumentationWorker.pauseQueue();
 
@@ -300,7 +300,7 @@ export class CostDocumentationController {
   /**
    * Resume the queue
    */
-  static async resumeQueue(req: Request, res: Response): Promise<void> {
+  static async resumeQueue(_req: Request, res: Response): Promise<void> {
     try {
       await costDocumentationWorker.resumeQueue();
 
@@ -322,7 +322,7 @@ export class CostDocumentationController {
   /**
    * Clear the queue
    */
-  static async clearQueue(req: Request, res: Response): Promise<void> {
+  static async clearQueue(_req: Request, res: Response): Promise<void> {
     try {
       await costDocumentationWorker.clearQueue();
 

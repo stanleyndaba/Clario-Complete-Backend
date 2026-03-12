@@ -1,6 +1,7 @@
-import { Request, Response } from 'express';
+import { Response } from 'express';
 import { DetectionService } from '../services/detectionService';
 import { logger } from '../utils/logger';
+import { AuthenticatedRequest } from '../middleware/auth';
 
 export class DetectionController {
   private detectionService: DetectionService;
@@ -12,7 +13,7 @@ export class DetectionController {
   /**
    * Enqueue a detection job for a claim
    */
-  async enqueueDetectionJob(req: Request, res: Response): Promise<void> {
+  async enqueueDetectionJob(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const { claimId, priority = 'MEDIUM' } = req.body;
       const userId = req.user?.id; // Assuming auth middleware sets this
@@ -50,9 +51,9 @@ export class DetectionController {
   /**
    * Get detection results for a claim
    */
-  async getDetectionResults(req: Request, res: Response): Promise<void> {
+  async getDetectionResults(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const { claimId } = req.params;
+      const claimId = req.params['claimId'] || '';
       const userId = req.user?.id;
 
       if (!userId) {
@@ -84,7 +85,7 @@ export class DetectionController {
   /**
    * Get detection statistics for a user
    */
-  async getDetectionStatistics(req: Request, res: Response): Promise<void> {
+  async getDetectionStatistics(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const userId = req.user?.id;
 
@@ -108,7 +109,7 @@ export class DetectionController {
   /**
    * Start the detection worker
    */
-  async startDetectionWorker(req: Request, res: Response): Promise<void> {
+  async startDetectionWorker(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const { intervalMs = 5000 } = req.body;
       const userId = req.user?.id;
@@ -141,7 +142,7 @@ export class DetectionController {
   /**
    * Stop the detection worker
    */
-  async stopDetectionWorker(req: Request, res: Response): Promise<void> {
+  async stopDetectionWorker(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const userId = req.user?.id;
 
@@ -172,7 +173,7 @@ export class DetectionController {
   /**
    * Get detection job status
    */
-  async getDetectionJobStatus(req: Request, res: Response): Promise<void> {
+  async getDetectionJobStatus(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const { jobId } = req.params;
       const userId = req.user?.id;
@@ -197,7 +198,7 @@ export class DetectionController {
   /**
    * Health check for detection service
    */
-  async healthCheck(req: Request, res: Response): Promise<void> {
+  async healthCheck(_req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       res.status(200).json({
         service: 'detection',

@@ -1,7 +1,7 @@
-import { Request, Response } from 'express';
+import { Response } from 'express';
 import { body, param, query, validationResult } from 'express-validator';
-import { CostDocumentService } from '../services/costDocumentService';
-import { AuditService } from '../services/auditService';
+import { CostDocumentService, SearchFilters } from '../services/costDocumentService';
+import { auditService } from '../services/auditService';
 import { logger } from '../utils/logger';
 import { AuthenticatedRequest } from '../middleware/auth';
 
@@ -14,11 +14,13 @@ export class CostDocumentController {
       // Validate request
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
+        res.status(400).json({ errors: errors.array() });
+        return;
       }
 
       if (!req.file) {
-        return res.status(400).json({ error: 'No file uploaded' });
+        res.status(400).json({ error: 'No file uploaded' });
+        return;
       }
 
       const { claimId, skuId, metadata } = req.body;
@@ -59,7 +61,7 @@ export class CostDocumentController {
    */
   static async getDocument(req: AuthenticatedRequest, res: Response) {
     try {
-      const { id } = req.params;
+      const id = req.params['id'] || '';
       const userId = req.user?.id || 'anonymous';
 
       const document = await CostDocumentService.getDocumentById(id, userId);
@@ -69,7 +71,7 @@ export class CostDocumentController {
         data: document,
       });
     } catch (error) {
-      logger.error('Get document failed', { error, id: req.params.id });
+      logger.error('Get document failed', { error, id: req.params['id'] });
       res.status(404).json({
         success: false,
         error: error instanceof Error ? error.message : 'Document not found',
@@ -84,10 +86,11 @@ export class CostDocumentController {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
+        res.status(400).json({ errors: errors.array() });
+        return;
       }
 
-      const { id } = req.params;
+      const id = req.params['id'] || '';
       const { metadata } = req.body;
       const updatedBy = req.user?.id || 'anonymous';
 
@@ -102,7 +105,7 @@ export class CostDocumentController {
         message: 'Document updated successfully',
       });
     } catch (error) {
-      logger.error('Update document failed', { error, id: req.params.id });
+      logger.error('Update document failed', { error, id: req.params['id'] });
       res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Update failed',
@@ -115,7 +118,7 @@ export class CostDocumentController {
    */
   static async deleteDocument(req: AuthenticatedRequest, res: Response) {
     try {
-      const { id } = req.params;
+      const id = req.params['id'] || '';
       const deletedBy = req.user?.id || 'anonymous';
 
       await CostDocumentService.deleteDocument(id, deletedBy);
@@ -125,7 +128,7 @@ export class CostDocumentController {
         message: 'Document deleted successfully',
       });
     } catch (error) {
-      logger.error('Delete document failed', { error, id: req.params.id });
+      logger.error('Delete document failed', { error, id: req.params['id'] });
       res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Delete failed',
@@ -149,14 +152,13 @@ export class CostDocumentController {
         limit = '20',
       } = req.query;
 
-      const filters = {
-        claimId: claimId as string,
-        skuId: skuId as string,
-        fileType: fileType as string,
-        uploadedBy: uploadedBy as string,
-        dateFrom: dateFrom ? new Date(dateFrom as string) : undefined,
-        dateTo: dateTo ? new Date(dateTo as string) : undefined,
-      };
+      const filters: SearchFilters = {};
+      if (claimId) filters.claimId = claimId as string;
+      if (skuId) filters.skuId = skuId as string;
+      if (fileType) filters.fileType = fileType as string;
+      if (uploadedBy) filters.uploadedBy = uploadedBy as string;
+      if (dateFrom) filters.dateFrom = new Date(dateFrom as string);
+      if (dateTo) filters.dateTo = new Date(dateTo as string);
 
       const result = await CostDocumentService.searchDocuments(
         filters,
@@ -182,7 +184,7 @@ export class CostDocumentController {
    */
   static async getDocumentsByClaim(req: AuthenticatedRequest, res: Response) {
     try {
-      const { claimId } = req.params;
+      const claimId = req.params['claimId'] || '';
       const { page = '1', limit = '20' } = req.query;
 
       const result = await CostDocumentService.getDocumentsByClaim(
@@ -196,7 +198,7 @@ export class CostDocumentController {
         data: result,
       });
     } catch (error) {
-      logger.error('Get documents by claim failed', { error, claimId: req.params.claimId });
+      logger.error('Get documents by claim failed', { error, claimId: req.params['claimId'] });
       res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Failed to get documents',
@@ -209,7 +211,7 @@ export class CostDocumentController {
    */
   static async getDocumentsBySku(req: AuthenticatedRequest, res: Response) {
     try {
-      const { skuId } = req.params;
+      const skuId = req.params['skuId'] || '';
       const { page = '1', limit = '20' } = req.query;
 
       const result = await CostDocumentService.getDocumentsBySku(
@@ -223,7 +225,7 @@ export class CostDocumentController {
         data: result,
       });
     } catch (error) {
-      logger.error('Get documents by SKU failed', { error, skuId: req.params.skuId });
+      logger.error('Get documents by SKU failed', { error, skuId: req.params['skuId'] });
       res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Failed to get documents',
@@ -257,10 +259,15 @@ export class CostDocumentController {
    */
   static async getDocumentAuditLogs(req: AuthenticatedRequest, res: Response) {
     try {
-      const { id } = req.params;
+      const id = req.params['id'];
       const { limit = '50' } = req.query;
 
-      const auditLogs = await AuditService.getDocumentAuditLogs(
+      if (!id) {
+        res.status(400).json({ success: false, error: 'Document ID is required' });
+        return;
+      }
+
+      const auditLogs = await auditService.getDocumentAuditTrail(
         id,
         parseInt(limit as string)
       );
@@ -270,7 +277,7 @@ export class CostDocumentController {
         data: auditLogs,
       });
     } catch (error) {
-      logger.error('Get audit logs failed', { error, id: req.params.id });
+      logger.error('Get audit logs failed', { error, id: req.params['id'] });
       res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Failed to get audit logs',
@@ -281,14 +288,9 @@ export class CostDocumentController {
   /**
    * Get audit statistics
    */
-  static async getAuditStats(req: AuthenticatedRequest, res: Response) {
+  static async getAuditStats(_req: AuthenticatedRequest, res: Response) {
     try {
-      const { dateFrom, dateTo } = req.query;
-
-      const stats = await AuditService.getAuditStats(
-        dateFrom ? new Date(dateFrom as string) : undefined,
-        dateTo ? new Date(dateTo as string) : undefined
-      );
+      const stats = await auditService.getAuditSummary();
 
       res.json({
         success: true,
