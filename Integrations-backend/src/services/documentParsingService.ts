@@ -63,6 +63,9 @@ class DocumentParsingService {
   private pythonApiUrl: string;
   private maxRetries: number = 3;
   private baseDelay: number = 2000; // 2 seconds
+  // Track job IDs that have returned 404 to avoid re-polling them
+  private deadJobIds: Set<string> = new Set();
+  private readonly MAX_DEAD_JOBS = 500; // Cap memory usage
 
   constructor() {
     // Get Python API URL from environment
@@ -100,11 +103,10 @@ class DocumentParsingService {
         userId
       });
 
-      // Try multiple endpoint formats (Python API might use different paths)
+      // Try endpoint formats (Python API might use different paths)
       const endpoints = [
         `${this.pythonApiUrl}/api/v1/evidence/parse/${documentId}`,
-        `${this.pythonApiUrl}/api/documents/${documentId}/parse`,
-        `${this.pythonApiUrl}/api/v1/evidence/parse/${documentId}`
+        `${this.pythonApiUrl}/api/documents/${documentId}/parse`
       ];
 
       let lastError: any;
@@ -163,13 +165,21 @@ class DocumentParsingService {
 
   /**
    * Get parsing job status from Python API
+   * Returns null immediately for job IDs already known to be dead (404).
    */
   async getJobStatus(jobId: string, userId: string): Promise<ParsingJobStatus | null> {
+    // Skip polling for jobs we already know are dead
+    if (this.deadJobIds.has(jobId)) {
+      return null;
+    }
+
     try {
       const endpoints = [
         `${this.pythonApiUrl}/api/v1/evidence/parse/jobs/${jobId}`,
         `${this.pythonApiUrl}/api/parse/jobs/${jobId}`
       ];
+
+      let all404 = true;
 
       for (const endpoint of endpoints) {
         try {
@@ -186,14 +196,23 @@ class DocumentParsingService {
           if (response.data?.ok && response.data.data) {
             return response.data.data;
           }
+          all404 = false; // Got a non-404 response
         } catch (error: any) {
-          if (error.response?.status !== 404) {
+          if (error.response?.status === 404) {
+            // Expected — endpoint or job doesn't exist
+          } else {
+            all404 = false;
             logger.debug('⚠️ [DOCUMENT PARSING] Status endpoint failed', {
               endpoint,
               error: error.message
             });
           }
         }
+      }
+
+      // If ALL endpoints returned 404, mark this job as dead
+      if (all404) {
+        this.markJobDead(jobId);
       }
 
       return null;
@@ -205,6 +224,18 @@ class DocumentParsingService {
       });
       return null;
     }
+  }
+
+  /**
+   * Mark a job ID as dead to prevent further polling
+   */
+  private markJobDead(jobId: string): void {
+    // Evict oldest entries if the set is too large
+    if (this.deadJobIds.size >= this.MAX_DEAD_JOBS) {
+      const first = this.deadJobIds.values().next().value;
+      if (first) this.deadJobIds.delete(first);
+    }
+    this.deadJobIds.add(jobId);
   }
 
   /**
@@ -254,30 +285,49 @@ class DocumentParsingService {
   }
 
   /**
-   * Poll for parsing completion with retry logic
+   * Poll for parsing completion with retry logic.
+   * Bails out early after MAX_CONSECUTIVE_NULLS polls that all return null (404).
+   * Uses exponential backoff on the poll interval.
    */
   async waitForParsingCompletion(
     jobId: string,
     userId: string,
-    maxWaitTime: number = 300000, // 5 minutes
-    pollInterval: number = 5000 // 5 seconds
+    maxWaitTime: number = 120000, // 2 minutes (was 5 — reduced to limit 404 spam)
+    pollInterval: number = 5000 // initial 5 seconds
   ): Promise<ParsingJobStatus | null> {
     const startTime = Date.now();
+    const MAX_CONSECUTIVE_NULLS = 5; // bail after 5 consecutive null responses
+    let consecutiveNulls = 0;
+    let currentInterval = pollInterval;
 
     while (Date.now() - startTime < maxWaitTime) {
       const status = await this.getJobStatus(jobId, userId);
 
       if (!status) {
-        await new Promise(resolve => setTimeout(resolve, pollInterval));
+        consecutiveNulls++;
+        if (consecutiveNulls >= MAX_CONSECUTIVE_NULLS) {
+          logger.warn('⏹️ [DOCUMENT PARSING] Bailing out — job status endpoint unreachable', {
+            jobId,
+            userId,
+            consecutiveNulls
+          });
+          this.markJobDead(jobId);
+          return null;
+        }
+        // Exponential backoff: 5s → 10s → 20s → 40s
+        await new Promise(resolve => setTimeout(resolve, currentInterval));
+        currentInterval = Math.min(currentInterval * 2, 60000);
         continue;
       }
+
+      consecutiveNulls = 0; // reset on successful response
 
       if (status.status === 'completed' || status.status === 'failed') {
         return status;
       }
 
       // Still processing, wait and poll again
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
+      await new Promise(resolve => setTimeout(resolve, currentInterval));
     }
 
     logger.warn('⏱️ [DOCUMENT PARSING] Parsing timeout', {
