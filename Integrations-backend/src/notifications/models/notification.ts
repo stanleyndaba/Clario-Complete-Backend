@@ -157,8 +157,24 @@ export class Notification {
         logger.debug('Using default tenant_id for notification', { user_id: data.user_id });
       }
 
+      // DB-allowed notification types (from notifications_type_check constraint)
+      // If code sends a type not in this set, map it to 'system_alert' to prevent constraint violation
+      const DB_ALLOWED_TYPES = new Set([
+        'claim_detected', 'evidence_found', 'case_filed',
+        'refund_approved', 'funds_deposited', 'integration_completed',
+        'payment_processed', 'discrepancy_found', 'system_alert',
+        'user_action_required', 'amazon_challenge', 'claim_denied',
+        'claim_expiring', 'learning_insight', 'weekly_summary'
+      ]);
+
+      const sanitizedType = DB_ALLOWED_TYPES.has(data.type) ? data.type : 'system_alert';
+      if (sanitizedType !== data.type) {
+        logger.debug('Mapped unsupported notification type to system_alert', { original: data.type });
+      }
+
       const notificationData = {
         ...data,
+        type: sanitizedType,
         tenant_id: tenantId,
         status: NotificationStatus.PENDING,
         priority: data.priority || NotificationPriority.NORMAL,

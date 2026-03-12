@@ -205,7 +205,7 @@ class FinancialImpactService {
             let dashQuery = supabaseAdmin
                 .from('dispute_cases')
                 .select('claim_amount, resolution_amount, resolution_date, status')
-                .eq('user_id', userId)
+                .eq('seller_id', userId)
                 .in('status', ['approved', 'paid', 'reconciled']);
             if (tenantId) dashQuery = dashQuery.eq('tenant_id', tenantId);
             const { data: disputes } = await dashQuery;
@@ -324,7 +324,7 @@ class FinancialImpactService {
             let disputesQuery = supabaseAdmin
                 .from('dispute_cases')
                 .select('id, claim_amount, actual_payout_amount, status')
-                .eq('user_id', userId);
+                .eq('seller_id', userId);
             if (tenantId) disputesQuery = disputesQuery.eq('tenant_id', tenantId);
             const { data: disputes } = await disputesQuery;
 

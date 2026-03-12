@@ -176,16 +176,16 @@ class SyncJobManager {
 
     const { data: recentSync } = await supabase
       .from('sync_progress')
-      .select('sync_id, status, completed_at, sync_fingerprint')
+      .select('sync_id, status, updated_at, sync_fingerprint')
       .eq('user_id', userId)
       .eq('sync_fingerprint', syncFingerprint)
       .eq('status', 'completed')
-      .order('completed_at', { ascending: false })
+      .order('updated_at', { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (recentSync && recentSync.completed_at) {
-      const completedAt = new Date(recentSync.completed_at);
+    if (recentSync && recentSync.updated_at) {
+      const completedAt = new Date(recentSync.updated_at);
       const minutesAgo = (Date.now() - completedAt.getTime()) / (1000 * 60);
 
       if (minutesAgo < 5) {
@@ -1721,7 +1721,6 @@ class SyncJobManager {
 
       // Add last_successful_sync_at if completed successfully
       if (dbStatus === 'completed') {
-        enhancedFields.completed_at = new Date().toISOString();
         enhancedFields.last_successful_sync_at = new Date().toISOString();
       }
 
