@@ -278,9 +278,8 @@ export function detectLostInventory(
         let priceCount = 0;
 
         // Step 3: Calculate Input and Output
-        // Track transfer pairs to detect lost-in-transit
-        let totalTransferOut = 0;
-        let totalTransferIn = 0;
+        // Track transfer events by reference_id for proper double-entry netting
+        const transfersByRef = new Map<string, { netQty: number; earliestDate: Date }>();
 
         for (const event of events) {
             eventIds.push(event.id);
@@ -334,14 +333,20 @@ export function detectLostInventory(
                     totalShipments += Math.abs(event.quantity);
                     break;
 
-                case 'Transfer':
-                    // Track transfer pairs: negative = sent out, positive = received
-                    if (event.quantity < 0) {
-                        totalTransferOut += Math.abs(event.quantity);
-                    } else {
-                        totalTransferIn += Math.abs(event.quantity);
+                case 'Transfer': {
+                    // Group transfers by reference_id for double-entry netting.
+                    // A transfer out (-50) and transfer in (+50) with the same
+                    // reference_id net to 0 — meaning units arrived safely.
+                    const refId = event.reference_id || `no_ref_${event.event_date}`;
+                    const existing = transfersByRef.get(refId) || { netQty: 0, earliestDate: new Date(event.event_date) };
+                    existing.netQty += event.quantity; // negative for out, positive for in
+                    const evDate = new Date(event.event_date);
+                    if (evDate < existing.earliestDate) {
+                        existing.earliestDate = evDate;
                     }
+                    transfersByRef.set(refId, existing);
                     break;
+                }
 
                 case 'Removal':
                 case 'Disposal':
@@ -360,27 +365,57 @@ export function detectLostInventory(
             }
         }
 
+        // Step 3b: Net transfers by reference_id — the double-entry accounting fix.
+        // Only transfers that are TRULY lost (net < 0 AND older than 30 days) count.
+        const TRANSFER_MATURITY_DAYS = 30;
+        const now = new Date();
+        let totalTransferLoss = 0;  // actual confirmed losses
+        let totalTransferIn = 0;    // for snapshot balance computation
+
+        for (const [, transfer] of transfersByRef) {
+            if (transfer.netQty < 0) {
+                // Net negative = more went out than came in.
+                // Only flag if 30+ days have passed (Amazon policy allows 30 days for FC transfer).
+                const daysSinceTransfer = Math.floor(
+                    (now.getTime() - transfer.earliestDate.getTime()) / (1000 * 60 * 60 * 24)
+                );
+                if (daysSinceTransfer >= TRANSFER_MATURITY_DAYS) {
+                    totalTransferLoss += Math.abs(transfer.netQty);
+                }
+                // If < 30 days, units may still be in transit — do NOT flag.
+            } else if (transfer.netQty > 0) {
+                totalTransferIn += transfer.netQty;
+            }
+            // netQty === 0 → perfectly balanced transfer, completely ignored. ✅
+        }
+
         // If no snapshot balance, compute synthetic balance from event data
         // This handles CSV uploads that never include Snapshot events
         if (!hasSnapshotBalance) {
-            // Check for transfer discrepancies (lost in transit)
-            if (totalTransferOut > 0 && totalTransferIn > 0 && totalTransferOut > totalTransferIn) {
-                endingWarehouseBalance = totalTransferIn;
+            if (totalTransferLoss > 0) {
+                // We have confirmed transfer losses (net negative, 30+ days old)
+                endingWarehouseBalance = 0;
                 hasSnapshotBalance = true;
-                totalReceipts += totalTransferOut; // Expected amount that should have arrived
+                totalReceipts += totalTransferLoss; // What SHOULD have arrived
             } else if (totalReceipts > 0 || totalReturns > 0 || totalAdjustments > 0) {
-                // For non-transfer events, compute net quantity
-                const netQty = events.reduce((sum: number, e: any) => sum + (e.quantity || 0), 0);
-                if (netQty < 0) {
-                    // Net negative means units went missing
+                // For non-transfer events, compute net quantity (EXCLUDING transfers)
+                const nonTransferNet = events
+                    .filter(e => {
+                        const rt = (e.event_type || '').trim();
+                        return !/^Transfer/i.test(rt);
+                    })
+                    .reduce((sum: number, e: any) => sum + (e.quantity || 0), 0);
+                if (nonTransferNet < 0) {
                     endingWarehouseBalance = 0;
                     hasSnapshotBalance = true;
                 }
             }
+            // If only balanced transfers exist, hasSnapshotBalance stays false
+            // and this FNSKU is skipped entirely. No false positive. ✅
         } else {
-            // Still account for transfer IO when snapshot exists
+            // Account for confirmed transfer losses when snapshot exists
             totalReceipts += totalTransferIn;
-            totalRemovals += totalTransferOut;
+            totalRemovals += totalTransferLoss;
         }
 
         // Skip if no snapshot balance to compare against
