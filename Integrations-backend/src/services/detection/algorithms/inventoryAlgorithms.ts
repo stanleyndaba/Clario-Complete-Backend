@@ -47,6 +47,8 @@ export interface InventoryLedgerEvent {
     reference_id?: string;           // Shipment ID, Order ID, etc.
     unit_cost?: number;              // Estimated cost per unit
     average_sales_price?: number;    // Average selling price
+    reason?: string;                 // Amazon Reason Code (e.g. 'M', 'E', 'D')
+    disposition?: string;            // Item disposition (e.g. 'SELLABLE', 'DAMAGED')
     created_at: string;
 }
 
@@ -61,7 +63,7 @@ export interface SyncedData {
 export interface DetectionResult {
     seller_id: string;
     sync_id: string;
-    anomaly_type: 'lost_warehouse' | 'damaged_warehouse' | 'lost_inbound' | 'damaged_inbound';
+    anomaly_type: 'lost_warehouse' | 'damaged_warehouse' | 'lost_inbound' | 'damaged_inbound' | 'lost_in_transit' | 'inbound_shipment_shortage';
     severity: 'low' | 'medium' | 'high' | 'critical';
     estimated_value: number;
     currency: string;
@@ -136,6 +138,60 @@ function calculateSeverity(estimatedValue: number): 'low' | 'medium' | 'high' | 
     if (estimatedValue >= 500) return 'high';
     if (estimatedValue >= 100) return 'medium';
     return 'low';
+}
+
+/**
+ * Classify the anomaly type based on Amazon Reason Codes, Dispositions, and Event Types.
+ *
+ * Amazon Reason Codes:
+ *   M = Lost/Missing in warehouse
+ *   E = Damaged by Amazon (warehouse damage)
+ *   D = Defective
+ *   F = Carrier damage
+ *
+ * Event Type signals:
+ *   Transfers only → Lost in Transit (FC-to-FC transfer loss)
+ *   Receipts only  → Inbound Shipment Shortage (shipped but never received)
+ */
+function classifyAnomalyType(
+    events: InventoryLedgerEvent[]
+): DetectionResult['anomaly_type'] {
+    // Collect reason codes and dispositions from all events
+    const reasons = events.map(e => e.reason).filter(Boolean) as string[];
+    const dispositions = events.map(e => e.disposition).filter(Boolean) as string[];
+    const eventTypes = events
+        .filter(e => e.event_type !== 'Snapshot')
+        .map(e => e.event_type);
+
+    // --- Reason Code takes highest priority ---
+    // Reason Code E or F, or disposition contains 'damaged' → Damaged in Warehouse
+    if (reasons.some(r => /^[EF]$/i.test(r.trim()) || /damaged/i.test(r))) {
+        return 'damaged_warehouse';
+    }
+    if (dispositions.some(d => /damaged|defective/i.test(d))) {
+        return 'damaged_warehouse';
+    }
+
+    // --- Event Type pattern analysis ---
+    const uniqueTypes = new Set(eventTypes);
+
+    // All events are Transfers → Lost in Transit
+    if (uniqueTypes.size > 0 && [...uniqueTypes].every(t => t === 'Transfer')) {
+        return 'lost_in_transit';
+    }
+
+    // All events are Receipts → Inbound Shipment Shortage
+    if (uniqueTypes.size > 0 && [...uniqueTypes].every(t => t === 'Receipt')) {
+        return 'inbound_shipment_shortage';
+    }
+
+    // Reason Code D → damaged inbound
+    if (reasons.some(r => /^D$/i.test(r.trim()))) {
+        return 'damaged_inbound';
+    }
+
+    // Default: Lost in Warehouse (Reason Code M, or no distinguishing signal)
+    return 'lost_warehouse';
 }
 
 /**
@@ -393,7 +449,7 @@ export function detectLostInventory(
         const result: DetectionResult = {
             seller_id: sellerId,
             sync_id: syncId,
-            anomaly_type: 'lost_warehouse',
+            anomaly_type: classifyAnomalyType(events),
             severity: calculateSeverity(estimatedRecoveryValue),
             estimated_value: estimatedRecoveryValue,
             currency: 'USD',
@@ -478,6 +534,8 @@ export async function fetchInventoryLedger(
                     reference_id: le.reference_id,
                     unit_cost: le.unit_cost,
                     average_sales_price: le.average_sales_price,
+                    reason: le.reason || undefined,
+                    disposition: le.disposition || undefined,
                     created_at: le.created_at
                 });
             }
@@ -691,8 +749,30 @@ export async function storeDetectionResults(results: DetectionResult[]): Promise
     if (results.length === 0) return;
 
     const tenantId = await resolveTenantId(results[0].seller_id);
+    const sellerId = results[0].seller_id;
 
     try {
+        // CLEAN-SLATE: Delete existing inventory detection results for this seller
+        // before inserting the fresh batch. This prevents duplicate accumulation
+        // across multiple detection runs and ensures resolved claims disappear.
+        const { error: deleteError } = await supabaseAdmin
+            .from('detection_results')
+            .delete()
+            .eq('seller_id', sellerId)
+            .in('anomaly_type', [
+                'lost_warehouse', 'damaged_warehouse', 'lost_inbound',
+                'damaged_inbound', 'lost_in_transit', 'inbound_shipment_shortage'
+            ]);
+
+        if (deleteError) {
+            logger.warn('🐋 [WHALE] Failed to clear stale detection results (proceeding anyway)', {
+                error: deleteError.message,
+                sellerId
+            });
+        } else {
+            logger.info('🐋 [WHALE] Cleared stale inventory detection results', { sellerId });
+        }
+
         const records = results.map(r => ({
             seller_id: r.seller_id,
             sync_id: r.sync_id,
@@ -722,8 +802,9 @@ export async function storeDetectionResults(results: DetectionResult[]): Promise
                 count: results.length
             });
         } else {
-            logger.info('🐋 [WHALE] Detection results stored', {
-                count: results.length
+            logger.info('🐋 [WHALE] Detection results stored (clean-slate)', {
+                count: results.length,
+                sellerId
             });
         }
     } catch (err: any) {

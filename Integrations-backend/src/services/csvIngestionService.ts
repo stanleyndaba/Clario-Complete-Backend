@@ -896,7 +896,22 @@ export class CSVIngestionService {
     // ============================================================================
 
     /**
-     * Batch upsert rows into a Supabase table (in chunks of 500 to avoid API limits)
+     * Table-specific conflict keys for UPSERT idempotency.
+     * When a row with the same natural key already exists, it is UPDATED instead of duplicated.
+     */
+    private static readonly CONFLICT_KEYS: Record<string, string> = {
+        inventory_ledger_events: 'user_id,fnsku,event_type,event_date,reference_id',
+        inventory_items: 'user_id,sku',
+        orders: 'user_id,order_id',
+        shipments: 'user_id,shipment_id',
+        returns: 'user_id,return_id',
+        settlements: 'user_id,settlement_id',
+        financial_events: 'seller_id,event_type,event_date,amazon_order_id',
+    };
+
+    /**
+     * Batch upsert rows into a Supabase table (in chunks of 500 to avoid API limits).
+     * Uses .upsert() with table-specific onConflict keys to prevent duplicate rows.
      */
     private async batchUpsert(
         table: string,
@@ -907,21 +922,27 @@ export class CSVIngestionService {
         let inserted = 0;
         let failed = 0;
         const BATCH_SIZE = 500;
+        const conflictKey = CSVIngestionService.CONFLICT_KEYS[table];
 
         for (let i = 0; i < rows.length; i += BATCH_SIZE) {
             const batch = rows.slice(i, i + BATCH_SIZE);
 
             try {
-                const { data, error } = await supabaseAdmin
-                    .from(table)
-                    .insert(batch);
+                // Use upsert with onConflict when a natural key exists for this table,
+                // otherwise fall back to plain insert (for tables without a unique constraint yet).
+                const query = conflictKey
+                    ? supabaseAdmin.from(table).upsert(batch, { onConflict: conflictKey, ignoreDuplicates: false })
+                    : supabaseAdmin.from(table).insert(batch);
+
+                const { data, error } = await query;
 
                 if (error) {
-                    logger.error(`❌ [CSV INGESTION] Batch insert failed for ${table}`, {
+                    logger.error(`❌ [CSV INGESTION] Batch upsert failed for ${table}`, {
                         error: error.message,
                         code: error.code,
                         batchStart: i,
                         batchSize: batch.length,
+                        conflictKey: conflictKey || 'none (plain insert)',
                     });
                     accumulatedErrors.push(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
                     failed += batch.length;
@@ -934,12 +955,13 @@ export class CSVIngestionService {
             }
         }
 
-        logger.info(`✅ [CSV INGESTION] ${csvType}: ${inserted} rows inserted, ${failed} failed`, {
+        logger.info(`✅ [CSV INGESTION] ${csvType}: ${inserted} rows upserted, ${failed} failed`, {
             table,
             csvType,
             inserted,
             failed,
             total: rows.length,
+            conflictKey: conflictKey || 'none',
         });
 
         return {
