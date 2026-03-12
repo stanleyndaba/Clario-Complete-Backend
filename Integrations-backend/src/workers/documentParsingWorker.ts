@@ -54,6 +54,9 @@ export class DocumentParsingWorker {
   private jobs: Map<string, cron.ScheduledTask> = new Map();
   private isRunning: boolean = false;
   private schedule: string = '*/2 * * * *'; // Every 2 minutes
+  // Track documents that have already failed to prevent re-processing
+  private failedDocIds: Set<string> = new Set();
+  private readonly MAX_FAILED_CACHE = 1000;
 
   constructor() {
     // Initialize
@@ -275,12 +278,14 @@ export class DocumentParsingWorker {
           contentType.includes('text') || filename.endsWith('.txt');
       });
 
-      return parsableDocs.map((doc: any) => ({
-        id: doc.id,
-        seller_id: doc.seller_id,
-        filename: doc.filename,
-        content_type: doc.content_type
-      }));
+      return parsableDocs
+        .filter((doc: any) => !this.failedDocIds.has(doc.id)) // Skip known failures
+        .map((doc: any) => ({
+          id: doc.id,
+          seller_id: doc.seller_id,
+          filename: doc.filename,
+          content_type: doc.content_type
+        }));
     } catch (error: any) {
       logger.error('❌ [DOCUMENT PARSING WORKER] Error getting pending documents for tenant', {
         tenantId,
@@ -345,12 +350,14 @@ export class DocumentParsingWorker {
         parsableCount: parsableDocs.length
       });
 
-      return parsableDocs.map((doc: any) => ({
-        id: doc.id,
-        seller_id: doc.seller_id,
-        filename: doc.filename,
-        content_type: doc.content_type
-      }));
+      return parsableDocs
+        .filter((doc: any) => !this.failedDocIds.has(doc.id)) // Skip known failures
+        .map((doc: any) => ({
+          id: doc.id,
+          seller_id: doc.seller_id,
+          filename: doc.filename,
+          content_type: doc.content_type
+        }));
     } catch (error: any) {
       logger.error('❌ [DOCUMENT PARSING WORKER] Error getting pending documents', {
         error: error.message
@@ -498,6 +505,33 @@ export class DocumentParsingWorker {
 
       // Update document status to failed
       await this.updateDocumentStatus(document.id, 'failed', undefined, error.message);
+
+      // Set parsed_metadata to a failure sentinel so the document isn't re-picked
+      // (getPendingDocuments queries for parsed_metadata IS NULL)
+      try {
+        const client = supabaseAdmin || supabase;
+        await client
+          .from('evidence_documents')
+          .update({
+            parsed_metadata: {
+              _parse_failed: true,
+              error: (error.message || 'Unknown error').substring(0, 500),
+              failed_at: new Date().toISOString(),
+              retry_eligible: false
+            },
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', document.id);
+      } catch (metaErr: any) {
+        logger.debug('Could not set failure sentinel on parsed_metadata', { error: metaErr.message });
+      }
+
+      // Also track in memory to prevent re-processing in same process
+      if (this.failedDocIds.size >= this.MAX_FAILED_CACHE) {
+        const first = this.failedDocIds.values().next().value;
+        if (first) this.failedDocIds.delete(first);
+      }
+      this.failedDocIds.add(document.id);
 
       logger.error(`❌ [DOCUMENT PARSING WORKER] Failed to parse document: ${document.id}`, {
         error: error.message,
