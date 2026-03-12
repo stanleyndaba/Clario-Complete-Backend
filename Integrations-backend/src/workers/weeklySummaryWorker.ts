@@ -144,14 +144,14 @@ class WeeklySummaryWorker {
         try {
             const { data: detections, error } = await dbClient
                 .from('detection_results')
-                .select('amount')
+                .select('estimated_value')
                 .eq('seller_id', userId)
                 .gte('created_at', since);
 
             if (!error && detections) {
                 summary.claimsDetected = detections.length;
                 summary.totalRecoverableValue = detections.reduce(
-                    (sum, d) => sum + (parseFloat(d.amount) || 0), 0
+                    (sum, d) => sum + (parseFloat(d.estimated_value) || 0), 0
                 );
             }
         } catch (err: any) {

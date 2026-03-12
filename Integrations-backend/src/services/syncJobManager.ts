@@ -621,12 +621,12 @@ class SyncJobManager {
             try {
               const { data: amounts } = await supabase
                 .from('detection_results')
-                .select('amount')
+                .select('estimated_value')
                 .eq('seller_id', userId)
                 .eq('sync_id', syncId);
 
               if (amounts && amounts.length > 0) {
-                actualValue = amounts.reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+                actualValue = amounts.reduce((sum, r) => sum + (parseFloat(r.estimated_value) || 0), 0);
               }
             } catch (err) {
               logger.debug('Could not query detection amounts', { error: err });
@@ -686,13 +686,13 @@ class SyncJobManager {
             // Query both count and sum of actual amounts
             const { data: detectionStats, error: statsError } = await supabase
               .from('detection_results')
-              .select('amount')
+              .select('estimated_value')
               .eq('seller_id', userId)
               .eq('sync_id', syncId);
 
             if (!statsError && detectionStats && detectionStats.length > 0) {
               const count = detectionStats.length;
-              const totalValue = detectionStats.reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+              const totalValue = detectionStats.reduce((sum, r) => sum + (parseFloat(r.estimated_value) || 0), 0);
 
               syncStatus.claimsDetected = count;
               syncStatus.totalRecoverableValue = totalValue;
