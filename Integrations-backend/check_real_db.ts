@@ -1,0 +1,1 @@
+import * as dotenv from 'dotenv'; dotenv.config(); import { supabaseAdmin } from './src/database/supabaseClient'; async function run() { console.log('Checking real DB...'); const { data, error } = await supabaseAdmin.from('evidence_sources').select('*'); console.log('evidence_sources:', JSON.stringify(data, null, 2)); if(error) console.error(error); } run();

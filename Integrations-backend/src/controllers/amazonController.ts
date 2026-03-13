@@ -770,11 +770,14 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
 
       // Step 6: Create evidence source for the user (Agent 4)
       try {
+        const { convertUserIdToUuid } = await import('../database/supabaseClient');
+        const safeUserId = convertUserIdToUuid(userId);
+
         const { error: evidenceError } = await supabaseAdmin
           .from('evidence_sources')
           .upsert({
-            seller_id: profile.sellerId, // evidence_sources uses seller_id (TEXT), not user_id
-            user_id: userId,
+            seller_id: profile.sellerId, // evidence_sources uses seller_id (TEXT)
+            user_id: safeUserId,         // PG UUID safe injection
             provider: 'amazon',
             status: 'connected',
             display_name: profile.companyName || `Amazon Store (${storeId || 'Primary'})`,
@@ -799,7 +802,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
               .from('evidence_sources')
               .upsert({
                 seller_id: profile.sellerId,
-                user_id: userId,
+                user_id: safeUserId,
                 provider: 'amazon',
                 display_name: profile.companyName || `Amazon Store`,
                 status: 'connected',

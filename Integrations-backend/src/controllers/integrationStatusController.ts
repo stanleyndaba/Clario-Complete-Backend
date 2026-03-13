@@ -5,9 +5,9 @@
  */
 
 import { Request, Response } from 'express';
+import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import tokenManager from '../utils/tokenManager';
-import { supabase } from '../database/supabaseClient';
 import { gmailIngestionService } from '../services/gmailIngestionService';
 
 /**
@@ -139,10 +139,11 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
 
     // Check evidence sources from database
     try {
+      const safeUserId = convertUserIdToUuid(userId);
       const { data: evidenceSources, error: sourcesError } = await supabase
         .from('evidence_sources')
         .select('provider, status, last_sync_at, account_email, permissions')
-        .eq('user_id', userId);
+        .or(`user_id.eq.${safeUserId},seller_id.eq.${userId}`);
 
       if (sourcesError) {
         logger.warn('Failed to fetch evidence sources', { error: sourcesError });
@@ -201,10 +202,11 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         try {
           // Check for ANY token for this provider (ignoring storeId)
           // We'll use a specific query here to find any valid token
+          const safeUserId = convertUserIdToUuid(userId);
           const { data: tokenRecord } = await supabase
             .from('tokens')
             .select('access_token_data, expires_at')
-            .eq('user_id', userId)
+            .eq('user_id', safeUserId)
             .eq('provider', provider)
             .limit(1)
             .maybeSingle();
