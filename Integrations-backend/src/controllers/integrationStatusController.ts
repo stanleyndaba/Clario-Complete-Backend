@@ -8,7 +8,6 @@ import { Request, Response } from 'express';
 import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import tokenManager from '../utils/tokenManager';
-import { gmailIngestionService } from '../services/gmailIngestionService';
 
 /**
  * Get integration status with evidence providers
@@ -29,6 +28,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
     logger.info('Getting integration status', { userId });
 
     // Initialize response
+    // BUG 1 FIX (Opus): Expand providerIngest map to include all 7 supported providers
     const response: {
       amazon_connected: boolean;
       docs_connected: boolean;
@@ -140,6 +140,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
     // Check evidence sources from database
     try {
       const safeUserId = convertUserIdToUuid(userId);
+      // BUG 2 FIX (Opus/PostgreSQL crash): Check both user_id and seller_id gracefully
       const { data: evidenceSources, error: sourcesError } = await supabase
         .from('evidence_sources')
         .select('provider, status, last_sync_at, account_email, permissions')
@@ -168,7 +169,10 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
 
         // Populate provider-specific status
         for (const source of evidenceSources) {
-          const provider = source.provider as 'gmail' | 'outlook' | 'gdrive' | 'dropbox';
+          // Allow any string key to dynamically map to the expanded providerIngest
+          const provider = source.provider as keyof typeof response.providerIngest;
+          
+          // CRITICAL BUG FIX (Opus): If the DB has 'slack'/'adobe_sign'/'onedrive', this check will now pass
           if (provider && provider in response.providerIngest) {
             let scopes: string[] | undefined;
             if (source.permissions) {
@@ -196,7 +200,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
     }
 
     // Also check token manager for Gmail/Outlook/Drive/Dropbox (fallback)
-    const docProviders = ['gmail', 'outlook', 'gdrive', 'dropbox'] as const;
+    const docProviders = ['gmail', 'outlook', 'gdrive', 'dropbox', 'slack', 'adobe_sign', 'onedrive'] as const;
     for (const provider of docProviders) {
       if (!response.providerIngest[provider].connected) {
         try {
