@@ -39,6 +39,9 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         outlook: { connected: boolean; lastIngest?: string; scopes?: string[]; error?: string };
         gdrive: { connected: boolean; lastIngest?: string; scopes?: string[]; error?: string };
         dropbox: { connected: boolean; lastIngest?: string; scopes?: string[]; error?: string };
+        slack: { connected: boolean; lastIngest?: string; scopes?: string[]; error?: string };
+        adobe_sign: { connected: boolean; lastIngest?: string; scopes?: string[]; error?: string };
+        onedrive: { connected: boolean; lastIngest?: string; scopes?: string[]; error?: string };
       };
     } = {
       amazon_connected: false,
@@ -49,7 +52,10 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         gmail: { connected: false },
         outlook: { connected: false },
         gdrive: { connected: false },
-        dropbox: { connected: false }
+        dropbox: { connected: false },
+        slack: { connected: false },
+        adobe_sign: { connected: false },
+        onedrive: { connected: false }
       }
     };
 
