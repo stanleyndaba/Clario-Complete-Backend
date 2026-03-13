@@ -28,6 +28,9 @@ const DEFAULT_ALLOWED_REDIRECT_URIS = [
   'https://*.vercel.com/*',
   // Render deployments
   'https://*.onrender.com/*',
+  // Custom domains
+  'https://*.margin-finance.com/*',
+  'https://margin-finance.com/*',
   // Local development
   'http://localhost:*/*',
   'http://127.0.0.1:*/*',

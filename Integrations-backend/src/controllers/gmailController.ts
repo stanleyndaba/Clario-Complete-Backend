@@ -5,6 +5,7 @@ import logger from '../utils/logger';
 import config from '../config/env';
 import tokenManager from '../utils/tokenManager';
 import oauthStateStore from '../utils/oauthStateStore';
+import { validateRedirectUri } from '../security/validateRedirect';
 
 // Gmail OAuth base URL
 const GMAIL_AUTH_BASE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -46,8 +47,33 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
     }
 
     const clientId = config.GMAIL_CLIENT_ID || process.env.GMAIL_CLIENT_ID;
-    const redirectUri = config.GMAIL_REDIRECT_URI || process.env.GMAIL_REDIRECT_URI ||
-      `${process.env.INTEGRATIONS_URL || process.env.VITE_API_BASE_URL || 'http://localhost:3001'}/api/v1/integrations/gmail/callback`;
+    
+    // Dynamically determine redirect URI based on request host
+    const defaultPort = process.env.PORT || '3001';
+    const host = req.get('host') || `localhost:${defaultPort}`;
+    const protocol = req.protocol || 'http';
+    const derivedRedirectUri = `${protocol}://${host}/api/v1/integrations/gmail/callback`;
+    
+    // Get primary redirect URI and list of potential others
+    const envRedirects = (config.GMAIL_REDIRECT_URI || process.env.GMAIL_REDIRECT_URI || '').split(',').map(u => u.trim()).filter(Boolean);
+    const primaryRedirectUri = envRedirects[0] || `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/gmail/callback`;
+    
+    let redirectUri = primaryRedirectUri;
+
+    // Check if the derived URI (matching current host) is allowed
+    const validation = validateRedirectUri(derivedRedirectUri);
+    if (validation.valid) {
+      // If the current host is allowed, use the derived URI so Google redirects back to the same subdomain/domain
+      redirectUri = derivedRedirectUri;
+      logger.info('Using dynamic Gmail redirect URI based on request host', { redirectUri });
+    } else {
+      // If the current host isn't allowed but we have multiple configured in ENV, check them
+      const validFromEnv = envRedirects.find(u => validateRedirectUri(u).valid);
+      if (validFromEnv) {
+        redirectUri = validFromEnv;
+      }
+      logger.info('Using configured Gmail redirect URI', { redirectUri, isPrimary: redirectUri === primaryRedirectUri });
+    }
 
     // Get tenant info from query params
     const tenantSlug = (req as any).query?.tenant_slug as string || (req as any).query?.tenant as string;
@@ -67,7 +93,7 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
 
     // Generate state for CSRF protection and store it with user ID, frontend URL, and tenant info
     const state = crypto.randomBytes(32).toString('hex');
-    await oauthStateStore.setState(state, userId, frontendUrl, tenantSlug, undefined, storeId);
+    await oauthStateStore.setState(state, userId, frontendUrl, tenantSlug, undefined, storeId, redirectUri);
     // Note: oauthStateStore.setState doesn't take storeId currently, but we can store it via the general set method 
     // or rely on the tenantSlug for now. Actually, let's update call to include storeId if we can.
     // Looking at oauthStateStore, it takes (state, userId, frontendUrl, tenantSlug, marketplaceId)
@@ -133,7 +159,49 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
 
     const clientId = config.GMAIL_CLIENT_ID || process.env.GMAIL_CLIENT_ID;
     const clientSecret = config.GMAIL_CLIENT_SECRET || process.env.GMAIL_CLIENT_SECRET;
-    const redirectUri = config.GMAIL_REDIRECT_URI || process.env.GMAIL_REDIRECT_URI ||
+    
+    // Retrieve redirect URI from state metadata if available
+    let redirectUriFromState: string | undefined;
+    
+    // Get user ID and frontend URL from state store
+    let userId: string | null = null;
+    let frontendUrl: string | null = null;
+    let tenantId: string | undefined = undefined;
+    let storeId: string | undefined = undefined;
+
+    if (typeof state === 'string') {
+      const stateData = await oauthStateStore.get(state);
+      if (stateData) {
+        userId = stateData.userId || null;
+        frontendUrl = stateData.frontendUrl || null;
+        redirectUriFromState = stateData.redirectUri;
+
+        // Resolve tenantId if we have a slug
+        if (stateData.tenantSlug) {
+          try {
+            const { supabaseAdmin } = await import('../database/supabaseClient');
+            const { data: tenant } = await supabaseAdmin
+              .from('tenants')
+              .select('id')
+              .eq('slug', stateData.tenantSlug)
+              .maybeSingle();
+
+            if (tenant) {
+              tenantId = tenant.id;
+            }
+          } catch (err) {
+            logger.warn('Failed to resolve tenant ID from slug in Gmail callback', { slug: stateData.tenantSlug });
+          }
+        }
+
+        // Retrieve storeId from state
+        storeId = stateData.storeId;
+
+        // Clean up used state later (after token exchange)
+      }
+    }
+
+    const redirectUri = redirectUriFromState || config.GMAIL_REDIRECT_URI || process.env.GMAIL_REDIRECT_URI ||
       `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/gmail/callback`;
 
     if (!clientId || !clientSecret) {
@@ -158,8 +226,6 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
     });
 
     // Exchange authorization code for tokens
-    // IMPORTANT: Google's OAuth token endpoint requires application/x-www-form-urlencoded
-    // Using URLSearchParams ensures axios serializes properly (plain objects get sent as JSON)
     const tokenParams = new URLSearchParams();
     tokenParams.append('grant_type', 'authorization_code');
     tokenParams.append('code', code as string);
@@ -198,48 +264,15 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
       logger.warn('Failed to fetch Gmail profile:', error.message);
     }
 
-    // Get user ID and frontend URL from state store
-    let userId: string | null = null;
-    let frontendUrl: string | null = null;
-    let tenantId: string | undefined = undefined;
-    let storeId: string | undefined = undefined;
-
-    if (typeof state === 'string') {
-      const stateData = await oauthStateStore.get(state);
-      if (stateData) {
-        userId = stateData.userId || null;
-        frontendUrl = stateData.frontendUrl || null;
-
-        // Resolve tenantId if we have a slug
-        if (stateData.tenantSlug) {
-          try {
-            const { supabaseAdmin } = await import('../database/supabaseClient');
-            const { data: tenant } = await supabaseAdmin
-              .from('tenants')
-              .select('id')
-              .eq('slug', stateData.tenantSlug)
-              .maybeSingle();
-
-            if (tenant) {
-              tenantId = tenant.id;
-            }
-          } catch (err) {
-            logger.warn('Failed to resolve tenant ID from slug in Gmail callback', { slug: stateData.tenantSlug });
-          }
-        }
-
-        // Retrieve storeId from state
-        storeId = stateData.storeId;
-
-        // Clean up used state
-        await oauthStateStore.removeState(state);
-      }
-    }
-
     if (!userId) {
       logger.error('Invalid or expired OAuth state', { state });
       const defaultFrontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
       return res.redirect(`${defaultFrontendUrl}/auth/error?reason=${encodeURIComponent('invalid_state')}`);
+    }
+
+    // Clean up used state now
+    if (typeof state === 'string') {
+      await oauthStateStore.removeState(state);
     }
 
     // Store tokens in token manager
