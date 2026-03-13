@@ -48,7 +48,6 @@ export const initiateOutlookOAuth = async (req: Request, res: Response) => {
 
         // Get tenant info from query params
         const tenantSlug = (req as any).query?.tenant_slug as string || (req as any).query?.tenant as string;
-        const storeId = (req as any).query?.storeId as string || (req as any).query?.store_id as string;
 
         if (!clientId || !config.MICROSOFT_CLIENT_SECRET) {
             logger.warn('Microsoft credentials not configured, returning sandbox mock URL');
@@ -64,7 +63,7 @@ export const initiateOutlookOAuth = async (req: Request, res: Response) => {
 
         // Generate state for CSRF protection
         const state = crypto.randomBytes(32).toString('hex');
-        await oauthStateStore.setState(state, userId, frontendUrl, tenantSlug, undefined, storeId);
+        await oauthStateStore.setState(state, userId, frontendUrl, tenantSlug);
 
         // Microsoft OAuth scopes for Outlook
         const scopes = [
@@ -209,9 +208,6 @@ export const handleOutlookCallback = async (req: Request, res: Response) => {
                     }
                 }
 
-                // Retrieve storeId from state
-                storeId = stateData.storeId;
-
                 await oauthStateStore.removeState(state);
             }
         }
@@ -228,7 +224,7 @@ export const handleOutlookCallback = async (req: Request, res: Response) => {
                 accessToken: access_token,
                 refreshToken: refresh_token || '',
                 expiresAt: new Date(Date.now() + (expires_in * 1000))
-            }, tenantId, storeId);
+            }, tenantId);
             logger.info('Outlook tokens saved', { userId, email: userEmail, tenantId });
         } catch (error) {
             logger.error('Failed to save Outlook tokens:', error);
@@ -294,13 +290,28 @@ export const getOutlookStatus = async (req: Request, res: Response) => {
             });
         }
 
-        // Check if Outlook is connected
-        let tokenData;
+        // Check if Outlook is connected using a more flexible check
+        let tokenData = null;
         try {
-            tokenData = await tokenManager.getToken(userId, 'outlook');
+            const { supabase } = await import('../database/supabaseClient');
+            const { data: tokenRecord } = await supabase
+                .from('tokens')
+                .select('access_token_data, expires_at')
+                .eq('user_id', userId)
+                .eq('provider', 'outlook')
+                .limit(1)
+                .maybeSingle();
+
+            if (tokenRecord && tokenRecord.access_token_data) {
+                tokenData = {
+                    accessToken: typeof tokenRecord.access_token_data === 'string'
+                        ? tokenRecord.access_token_data
+                        : (tokenRecord.access_token_data as any).accessToken,
+                    expiresAt: new Date(tokenRecord.expires_at)
+                };
+            }
         } catch (error) {
             logger.warn('Error getting Outlook token:', error);
-            tokenData = null;
         }
 
         const isConnected = !!tokenData && !!tokenData.accessToken;

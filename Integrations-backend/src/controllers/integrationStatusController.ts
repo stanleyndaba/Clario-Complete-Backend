@@ -188,34 +188,33 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       logger.warn('Failed to check evidence sources', { error: evidenceError });
     }
 
-    // Also check token manager for Gmail (fallback, only for supported providers)
-    if (!response.providerIngest.gmail.connected) {
-      try {
-        const token = await tokenManager.getToken(userId, 'gmail');
-        if (token && token.accessToken) {
-          response.providerIngest.gmail.connected = true;
-          response.docs_connected = true;
-          
-          // Try to get last sync from evidence_sources
-          try {
-            const { data: source } = await supabase
-              .from('evidence_sources')
-              .select('last_sync_at')
-              .eq('user_id', userId)
-              .eq('provider', 'gmail')
-              .eq('status', 'connected')
-              .maybeSingle();
-            
-            if (source?.last_sync_at) {
-              response.providerIngest.gmail.lastIngest = source.last_sync_at;
+    // Also check token manager for Gmail/Outlook/Drive/Dropbox (fallback)
+    const docProviders = ['gmail', 'outlook', 'gdrive', 'dropbox'] as const;
+    for (const provider of docProviders) {
+      if (!response.providerIngest[provider].connected) {
+        try {
+          // Check for ANY token for this provider (ignoring storeId)
+          // We'll use a specific query here to find any valid token
+          const { data: tokenRecord } = await supabase
+            .from('tokens')
+            .select('access_token_data, expires_at')
+            .eq('user_id', userId)
+            .eq('provider', provider)
+            .limit(1)
+            .maybeSingle();
+
+          if (tokenRecord && tokenRecord.access_token_data) {
+            // Check expiry
+            const isExpired = new Date(tokenRecord.expires_at) <= new Date();
+            if (!isExpired) {
+              response.providerIngest[provider].connected = true;
+              response.docs_connected = true;
+              logger.info(`Detected ${provider} connection via global token fallback`, { userId });
             }
-          } catch (dbError) {
-            logger.debug('Failed to get last sync from database', { provider: 'gmail', error: dbError });
           }
+        } catch (tokenError) {
+          logger.debug(`${provider} status check fallback failed`, { error: tokenError });
         }
-      } catch (tokenError) {
-        // Gmail not connected, that's okay
-        logger.debug('Gmail not connected', { error: tokenError });
       }
     }
     

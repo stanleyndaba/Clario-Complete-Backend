@@ -77,7 +77,6 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
 
     // Get tenant info from query params
     const tenantSlug = (req as any).query?.tenant_slug as string || (req as any).query?.tenant as string;
-    const storeId = (req as any).query?.storeId as string || (req as any).query?.store_id as string;
 
     if (!clientId || !config.GMAIL_CLIENT_SECRET) {
       logger.warn('Gmail credentials not configured, returning sandbox mock URL');
@@ -93,11 +92,7 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
 
     // Generate state for CSRF protection and store it with user ID, frontend URL, and tenant info
     const state = crypto.randomBytes(32).toString('hex');
-    await oauthStateStore.setState(state, userId, frontendUrl, tenantSlug, undefined, storeId, redirectUri);
-    // Note: oauthStateStore.setState doesn't take storeId currently, but we can store it via the general set method 
-    // or rely on the tenantSlug for now. Actually, let's update call to include storeId if we can.
-    // Looking at oauthStateStore, it takes (state, userId, frontendUrl, tenantSlug, marketplaceId)
-    // We'll use marketplaceId as a placeholder for storeId if needed, or just tenantSlug.
+    await oauthStateStore.setState(state, userId, frontendUrl, tenantSlug, undefined, undefined, redirectUri);
 
     // Gmail OAuth scopes
     const scopes = [
@@ -194,9 +189,6 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
           }
         }
 
-        // Retrieve storeId from state
-        storeId = stateData.storeId;
-
         // Clean up used state later (after token exchange)
       }
     }
@@ -281,7 +273,7 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
         accessToken: access_token,
         refreshToken: refresh_token || '',
         expiresAt: new Date(Date.now() + (expires_in * 1000))
-      }, tenantId, storeId);
+      }, tenantId);
       logger.info('Gmail tokens saved', { userId, email: userEmail, tenantId });
     } catch (error) {
       logger.error('Failed to save Gmail tokens:', error);
@@ -546,13 +538,28 @@ export const getGmailStatus = async (req: Request, res: Response) => {
       });
     }
 
-    // Check if Gmail is connected using token manager
-    let tokenData;
+    // Check if Gmail is connected using a more flexible check (find ANY valid gmail token)
+    let tokenData = null;
     try {
-      tokenData = await tokenManager.getToken(userId, 'gmail');
+      const { supabase } = await import('../database/supabaseClient');
+      const { data: tokenRecord } = await supabase
+        .from('tokens')
+        .select('access_token_data, expires_at')
+        .eq('user_id', userId)
+        .eq('provider', 'gmail')
+        .limit(1)
+        .maybeSingle();
+
+      if (tokenRecord && tokenRecord.access_token_data) {
+        tokenData = {
+          accessToken: typeof tokenRecord.access_token_data === 'string' 
+            ? tokenRecord.access_token_data 
+            : (tokenRecord.access_token_data as any).accessToken,
+          expiresAt: new Date(tokenRecord.expires_at)
+        };
+      }
     } catch (error) {
       logger.warn('Error getting Gmail token:', error);
-      tokenData = null;
     }
 
     const isConnected = !!tokenData && !!tokenData.accessToken;
