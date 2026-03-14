@@ -145,6 +145,7 @@ class RefundFilingWorker {
         }
 
         try {
+            logger.info(`[AGENT 7] Transmitting claim ${caseId} to Seller Central for seller ${sellerId}.`);
             await this.automator.executeFullSubmission(caseId, sellerId);
         } catch (error: any) {
             if (error.status === 429 && token) {
@@ -173,6 +174,26 @@ class RefundFilingWorker {
     // OSS Tier doesn't need a control queue for unpausing (handled by Redis TTL)
     this.controlQueue = undefined as any;
     this.controlWorker = undefined as any;
+  }
+
+  /**
+   * Distributed Filing Bridge: Add a specific case to the submission queue.
+   * This is used by Agent 7 manual triggers (e.g., from the frontend).
+   */
+  async addJob(caseId: string, sellerId: string): Promise<void> {
+    logger.info(`📥 [AGENT 7] Manual trigger: Enqueueing case ${caseId} for seller ${sellerId}`);
+    
+    await this.submissionQueue.add(
+      `filing_${caseId}`,
+      { 
+        caseId, 
+        sellerId 
+      },
+      { 
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 300000 }
+      }
+    );
   }
 
   /**

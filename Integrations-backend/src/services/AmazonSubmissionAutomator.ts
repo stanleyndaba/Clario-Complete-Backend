@@ -13,6 +13,15 @@ export class AmazonSubmissionAutomator {
      */
     async executeFullSubmission(caseId: string, sellerId: string) {
         try {
+            // Fetch case number for forensic logging
+            const { data: caseInfo } = await supabaseAdmin
+                .from('dispute_cases')
+                .select('case_number')
+                .eq('id', caseId)
+                .single();
+            
+            const caseNum = caseInfo?.case_number || caseId;
+            logger.info(`[AGENT 7] Transmitting claim ${caseNum} to Seller Central for seller ${sellerId}.`);
             logger.info(`🚀 [AGENT 7] STARTING FULL SUBMISSION PROTOCOL`, { caseId, sellerId });
 
             // 0. FINANCIAL SENTRY: Pre-Flight Payment Verification

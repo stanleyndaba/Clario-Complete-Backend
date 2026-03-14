@@ -605,7 +605,7 @@ router.post('/:id/deny', async (req, res) => {
 router.post('/file-now', async (req, res) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
-    const { dispute_id, claim_id } = req.body;
+    const { dispute_id } = req.body;
 
     if (!dispute_id) {
       return res.status(400).json({
@@ -614,80 +614,43 @@ router.post('/file-now', async (req, res) => {
       });
     }
 
-    // Import refund filing service
-    const refundFilingService = (await import('../services/refundFilingService')).default;
-
-    // Get the dispute case details
-    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
-    const { data: caseData, error: fetchError } = await supabaseAdmin
-      .from('dispute_cases')
-      .select('*')
-      .eq('id', dispute_id)
-      .eq('tenant_id', tenantId)
+    // 1. FINANCIAL SENTRY: Check is_paid_beta flag
+    const { data: user, error: userError } = await supabaseAdmin
+      .from('users')
+      .select('is_paid_beta')
+      .eq('id', userId)
       .single();
 
-    if (fetchError || !caseData) {
-      return res.status(404).json({
+    if (userError || !user?.is_paid_beta) {
+      logger.warn(`🚨 [SECURITY] Unauthorized filing attempt for unpaid user: ${userId}`, { dispute_id });
+      return res.status(403).json({
         success: false,
-        message: 'Dispute case not found'
+        message: 'Upgrade required to file disputes ($99 Beta Activation)'
       });
     }
 
-    // Update status to 'filing'
+    // 2. QUEUE HANDOFF: Enqueue job via refundFilingWorker
+    const refundFilingWorker = (await import('../workers/refundFilingWorker')).default;
+    
+    // Ensure the case is in 'pending' status so the worker can pick it up
+    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
     await supabaseAdmin
       .from('dispute_cases')
       .update({
-        filing_status: 'filing',
+        filing_status: 'pending',
         updated_at: new Date().toISOString()
       })
       .eq('id', dispute_id)
       .eq('tenant_id', tenantId);
 
-    // Prepare filing request
-    const filingRequest = {
-      dispute_id,
-      user_id: userId,
-      order_id: caseData.order_id || '',
-      asin: caseData.asin || '',
-      sku: caseData.sku || '',
-      claim_type: caseData.case_type || caseData.dispute_type || 'unknown',
-      amount_claimed: caseData.claim_amount || caseData.amount || 0,
-      currency: caseData.currency || 'USD',
-      evidence_document_ids: caseData.evidence_document_ids || [],
-      confidence_score: caseData.confidence_score || 0.85
-    };
-
-    // File the dispute (async - don't wait for completion)
-    refundFilingService.fileDispute(filingRequest)
-      .then(async (result) => {
-        // Update case with result
-        await supabaseAdmin
-          .from('dispute_cases')
-          .update({
-            filing_status: result.success ? 'submitted' : 'failed',
-            provider_case_id: result.amazon_case_id || null,
-            filing_error: result.error_message || null,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', dispute_id);
-      })
-      .catch(async (err) => {
-        console.error('[file-now] Filing error:', err);
-        await supabaseAdmin
-          .from('dispute_cases')
-          .update({
-            filing_status: 'failed',
-            filing_error: err.message || 'Unknown error',
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', dispute_id);
-      });
+    // Enqueue the job
+    await refundFilingWorker.addJob(dispute_id, userId);
 
     res.json({
       success: true,
-      message: 'Filing initiated',
+      message: 'Filing request enqueued with Agent 7',
       dispute_id,
-      filing_status: 'filing'
+      filing_status: 'pending'
     });
 
   } catch (error: any) {
