@@ -59,6 +59,17 @@ export async function createRedisClient(): Promise<RedisClientType> {
     throw new Error(errorMsg);
   }
 
+  // REDIS URL DECONTAMINATION (GUARD MODE)
+  const urlSnippet = redisUrl.substring(0, 10);
+  logger.info(`🔍 [REDIS BOOT] Proximity Check: ${urlSnippet}...`);
+
+  if (redisUrl.toLowerCase().includes('upstash')) {
+    const errorMsg = '🚨 [FATAL_MIGRATION_ERROR] Upstash endpoint detected! Migration to secure perimiter REQUIRED. Connections to *.upstash.io are strictly FORBIDDEN.';
+    logger.error(errorMsg);
+    // Hard shutdown to prevent exhausted Upstash charges/failures
+    process.exit(1); 
+  }
+
   // Strict check: No localhost/loopback allowed in production/Render environment
   if (redisUrl.includes('localhost') || redisUrl.includes('127.0.0.1')) {
     const errorMsg = '🚨 [SECURITY] Localhost Redis detected. Secure external Redis provider required.';

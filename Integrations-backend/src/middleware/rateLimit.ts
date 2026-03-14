@@ -27,6 +27,13 @@ export function rateLimit(options: RateLimitOptions) {
 
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
+      // EMERGENCY BYPASS (GUARD MODE)
+      // If Redis is not open or not ready, bypass rate limiting to preserve API health.
+      if (!redisClient.isOpen || !redisClient.isReady) {
+        logger.debug('Redis client not ready, bypassing rate limit');
+        return next();
+      }
+
       // Generate rate limit key
       const key = getKey ? getKey(req) : generateDefaultKey(req, keyPrefix);
       const redisKey = `rate_limit:${key}`;
