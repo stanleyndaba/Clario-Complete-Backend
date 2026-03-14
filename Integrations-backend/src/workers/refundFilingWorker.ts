@@ -1512,7 +1512,6 @@ class RefundFilingWorker {
               sellerId: disputeCase.seller_id 
             },
             { 
-              groupId: disputeCase.seller_id, // HOL Isolation
               attempts: 3,
               backoff: { type: 'exponential', delay: 300000 }
             }
