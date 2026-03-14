@@ -114,6 +114,25 @@ export function userIdMiddleware(req: Request, res: Response, next: NextFunction
       userId = req.query.userId as string;
     }
 
+    // POISON CHECK: The Null Identity Poison Trap
+    // Intercept and destroy requests carrying the legacy "Zero-Bucket" identifier
+    if (userId === '00000000-0000-0000-0000-000000000000') {
+      logger.warn('IDENTITY_POISON_TRAP: Intercepted Null UUID request', {
+        ip: req.ip,
+        userAgent: req.headers['user-agent'],
+        path: req.path,
+        method: req.method
+      });
+
+      res.status(403).json({
+        error: 'SECURITY_IDENTITY_MISMATCH',
+        message: 'Your session identity is deprecated. Please re-authenticate to synchronize with the Unified Identity layer.',
+        action: 'FORCE_LOGOUT',
+        code: 403
+      });
+      return;
+    }
+
     // Intercept 'demo-user' string explicitly sent from frontend headers/params
     if (userId === 'demo-user' && allowDemoUser) {
       userId = convertUserIdToUuid('demo-user');
@@ -141,7 +160,7 @@ export function userIdMiddleware(req: Request, res: Response, next: NextFunction
 
     // Handle prefixed UUIDs (e.g. stress-test-user-UUID)
     // This fixes the issue where valid users are rejected because of the prefix
-    if (userId && userId !== '00000000-0000-0000-0000-000000000000') {
+    if (userId) {
       const uuidMatch = userId.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
       if (uuidMatch) {
         // If we found a UUID inside the string, use that as the official ID for validation
@@ -149,7 +168,7 @@ export function userIdMiddleware(req: Request, res: Response, next: NextFunction
       }
     }
 
-    if (userId !== '00000000-0000-0000-0000-000000000000' && !UUID_REGEX.test(userId)) {
+    if (!UUID_REGEX.test(userId)) {
       logger.warn('Invalid user ID format (expected UUID)', { userId, path: req.path });
       res.status(400).json({ error: 'Invalid user ID' });
       return;
