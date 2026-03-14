@@ -105,6 +105,11 @@ const config = {
 
   // Sync timeout configuration (in milliseconds)
   SYNC_TIMEOUT_MS: toInt(process.env.SYNC_TIMEOUT_MS, 300 * 1000), // Default: 300 seconds (5 minutes) for ML detection
+
+  // PayPal Integration
+  PAYPAL_CLIENT_ID: process.env.PAYPAL_CLIENT_ID,
+  PAYPAL_CLIENT_SECRET: process.env.PAYPAL_CLIENT_SECRET,
+  PAYPAL_WEBHOOK_ID: process.env.PAYPAL_WEBHOOK_ID,
 };
 
 export default config;

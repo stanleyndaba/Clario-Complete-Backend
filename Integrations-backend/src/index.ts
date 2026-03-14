@@ -60,6 +60,7 @@ import notesRoutes from './routes/notesRoutes';
 import tenantRoutes from './routes/tenantRoutes';
 import storeRoutes from './routes/storeRoutes';
 import waitlistRoutes from './routes/waitlistRoutes';
+import paymentRoutes from './routes/paymentRoutes';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -386,6 +387,7 @@ app.use('/api/autoclaim', autoclaimRoutes);
 app.use('/api/internal-events', internalEventsRoutes);
 app.use('/api/stripe-webhook', stripeWebhookRoutes);
 app.use('/api/paypal-webhook', paypalWebhookRoutes);
+app.use('/api/v1/payments', paymentRoutes);
 app.use('/api/v1/workflow', workflowRoutes);
 logger.info('Workflow routes registered at /api/v1/workflow');
 app.use('/api/evidence', evidenceRoutes);
