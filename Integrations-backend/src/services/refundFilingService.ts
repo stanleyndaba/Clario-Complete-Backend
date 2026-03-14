@@ -31,6 +31,7 @@ export interface FilingRequest {
     confidence_score: number;
     subject?: string;
     body?: string;
+    metadata?: Record<string, any>;
 }
 
 export interface FilingResult {
@@ -153,6 +154,14 @@ class RefundFilingService {
             const idempotencyKey = crypto.createHash('sha256')
                 .update(`filing_${request.dispute_id}`)
                 .digest('hex');
+
+            // --- CHAOS HOOK: TOKEN DECAY ---
+            if (process.env.SIMULATE_TOKEN_EXPIRE === 'true') {
+                logger.warn('[CHAOS] SIMULATE_TOKEN_EXPIRE active. Simulating stale token.');
+                // We modify the payload directly to trigger fallback in the worker/service logic
+                payload.body = "EXPIRED_TOKEN_SIMULATION_TRIGGER"; 
+            }
+            // -------------------------------
 
             const response = await httpClient.post(
                 `${this.pythonApiUrl}/api/v1/disputes/submit`,
@@ -462,6 +471,32 @@ class RefundFilingService {
         };
 
         return statusMap[status.toLowerCase()] || 'open';
+    }
+
+    /**
+     * Ghost Hunt Reconciliation:
+     * Searches Amazon index for a case matching the idempotency key.
+     */
+    async findCaseByIdempotencyKey(sellerId: string, idempotencyKey: string): Promise<{ id: string } | null> {
+        try {
+            const httpClient = createSellerHttpClient(sellerId);
+            const response = await httpClient.get(
+                `${this.pythonApiUrl}/api/v1/disputes/search`,
+                {
+                    params: { idempotency_key: idempotencyKey },
+                    headers: this.buildServiceHeaders(sellerId, 'search-disputes')
+                }
+            );
+
+            if (response.data?.ok && response.data?.data?.case_id) {
+                return { id: response.data.data.case_id };
+            }
+
+            return null;
+        } catch (err: any) {
+            logger.error(`[FORTRESS] Failed to search Amazon for idempotency key: ${idempotencyKey}`, { error: err.message });
+            return null;
+        }
     }
 }
 

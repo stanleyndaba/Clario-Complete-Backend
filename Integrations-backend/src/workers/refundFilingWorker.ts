@@ -11,11 +11,13 @@
  */
 
 import cron from 'node-cron';
+import { Queue, Worker, Job } from 'bullmq';
 import logger from '../utils/logger';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import refundFilingService, { FilingRequest, FilingResult, CaseStatus } from '../services/refundFilingService';
 import featureFlagService from '../services/featureFlagService';
+import { AmazonSubmissionAutomator } from '../services/AmazonSubmissionAutomator';
 
 
 /**
@@ -81,7 +83,68 @@ class RefundFilingWorker {
   private statusPollingSchedule: string = '*/10 * * * *'; // Every 10 minutes
   private cronJob: cron.ScheduledTask | null = null;
   private statusPollingJob: cron.ScheduledTask | null = null;
+  private ghostHuntJob: cron.ScheduledTask | null = null;
   private isRunning: boolean = false;
+  private submissionQueue: Queue;
+  private submissionWorker: Worker;
+  private controlQueue: Queue;
+  private controlWorker: Worker;
+  private automator: AmazonSubmissionAutomator;
+
+  constructor() {
+    this.automator = new AmazonSubmissionAutomator();
+    
+    const redisConfig = { 
+      host: process.env.REDIS_HOST || 'localhost', 
+      port: parseInt(process.env.REDIS_PORT || '6379') 
+    };
+
+    // 1. SUBMISSION INFRASTRUCTURE
+    this.submissionQueue = new Queue('sp-api-submissions', { connection: redisConfig });
+
+    this.submissionWorker = new Worker('sp-api-submissions', async (job: Job) => {
+        const { caseId, sellerId } = job.data;
+        try {
+            await this.automator.executeFullSubmission(caseId, sellerId);
+        } catch (error: any) {
+            if (error.status === 429) {
+                logger.error(`🚨 [FORTRESS] 429 Throttled for Seller: ${sellerId}. Pausing queue.`, { caseId });
+                
+                // REDIS-NATIVE PAUSE:
+                await this.submissionQueue.pauseGroup(sellerId);
+                
+                // DISPATCH DELAYED RESUMPTION (30m delay)
+                // This ensures we unpause even if this specific process dies.
+                await this.controlQueue.add(
+                  'resume-group', 
+                  { action: 'resume', sellerId }, 
+                  { delay: 30 * 60 * 1000, removeOnComplete: true }
+                );
+
+                throw error; 
+            }
+            throw error;
+        }
+    }, {
+        connection: redisConfig,
+        concurrency: 5,
+        limiter: {
+            max: 1,
+            duration: 120000 
+        }
+    });
+
+    // 2. CONTROL INFRASTRUCTURE (Admin/Resumption)
+    this.controlQueue = new Queue('sp-api-control', { connection: redisConfig });
+    
+    this.controlWorker = new Worker('sp-api-control', async (job: Job) => {
+      const { action, sellerId } = job.data;
+      if (action === 'resume') {
+        logger.info(`🔄 [FORTRESS] Resuming queue for seller: ${sellerId}`);
+        await this.submissionQueue.resumeGroup(sellerId);
+      }
+    }, { connection: redisConfig });
+  }
 
   /**
   * THROTTLE CONFIGURATION
@@ -234,6 +297,12 @@ class RefundFilingWorker {
       } finally {
         this.isRunning = false;
       }
+    });
+
+    // Schedule ghost hunt reconciliation (every 15 minutes)
+    this.ghostHuntJob = cron.schedule('*/15 * * * *', async () => {
+      logger.info('🔍 [AGENT 7] Starting Ghost Hunt reconciliation loop...');
+      await this.runGhostHuntReconciliation();
     });
 
     logger.info(' [REFUND FILING] Worker started successfully');
@@ -1025,9 +1094,7 @@ class RefundFilingWorker {
     });
 
     // MULTI-TENANT: Get cases for this tenant only using tenant-scoped query
-    const tenantQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-
-    const { data: casesToFile, error } = await tenantQuery
+    let query = createTenantScopedQueryById(tenantId, 'dispute_cases')
       .select(`
         id, 
         seller_id, 
@@ -1047,8 +1114,14 @@ class RefundFilingWorker {
         )
       `)
       .in('filing_status', ['pending', 'retrying'])
-      .or('status.eq.pending,status.eq.submitted')
-      .limit(maxThisRun);
+      .or('status.eq.pending,status.eq.submitted');
+
+    // MOCK/TEST: Filter by single case if specified
+    if (process.env.SINGLE_CASE_MODE) {
+       query = query.eq('id', process.env.SINGLE_CASE_MODE);
+    }
+
+    const { data: casesToFile, error } = await (query as any).limit(maxThisRun);
 
     if (error) {
       if (error.message?.includes('0 rows') || error.code === 'PGRST116') {
@@ -1066,7 +1139,6 @@ class RefundFilingWorker {
     }
 
     logger.info(` [REFUND FILING] Found ${casesToFile.length} cases with evidence ready for filing`, { tenantId });
-    console.log(`\nDEBUG: Found ${casesToFile.length} cases for tenant ${tenantId}`);
 
     // Process each case
     for (const disputeCase of casesToFile) {
@@ -1423,29 +1495,31 @@ class RefundFilingWorker {
             stats.retried++;
           }
         }
-        // 🎯 AGENT 7: Automated Submission Protocol
-        // Use the new Automator to handle the full filing loop autonomously
-        const automator = (await import('../services/AmazonSubmissionAutomator')).default;
-
+        // 🎯 AGENT 7: Distributed Submission Protocol (Fortress Queue)
+        // We push to BullMQ to enable global rate limiting and tenant isolation.
         try {
-          const amazonCaseId = await automator.executeFullSubmission(disputeCase.id, disputeCase.seller_id);
-          if (amazonCaseId) {
-            logger.info(`🎯 [AGENT 7] Fully autonomous submission complete`, { disputeId: disputeCase.id, amazonCaseId });
-            stats.filed++;
-          }
-        } catch (automatorError: any) {
-          logger.error(`❌ [AGENT 7] Automator failed, falling back to legacy filing`, { disputeId: disputeCase.id, error: automatorError.message });
-
-          // Legacy Fallback
-          const filingResult = await retryWithBackoff(() => refundFilingService.fileDispute(filingRequest));
-          if (filingResult.success) {
-            await this.updateCaseAfterFiling(disputeCase.id, filingResult);
-            stats.filed++;
-          } else {
-            await this.handleFilingFailure(disputeCase.id, disputeCase.seller_id, filingResult, disputeCase.retry_count || 0);
-            stats.failed++;
-            stats.errors.push(`Case ${disputeCase.id}: ${filingResult.error_message || 'Filing failed'}`);
-          }
+          await this.submissionQueue.add(
+            `filing_${disputeCase.id}`,
+            { 
+              caseId: disputeCase.id, 
+              sellerId: disputeCase.seller_id 
+            },
+            { 
+              groupId: disputeCase.seller_id, // HOL Isolation
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 300000 }
+            }
+          );
+          
+          logger.info(`✅ [AGENT 7] Case queued for distributed filing`, { 
+            disputeId: disputeCase.id, 
+            sellerId: disputeCase.seller_id 
+          });
+          stats.filed++;
+        } catch (queueError: any) {
+          logger.error(`❌ [AGENT 7] Failed to queue case ${disputeCase.id}`, { error: queueError.message });
+          stats.failed++;
+          stats.errors.push(`Queue Failure ${disputeCase.id}: ${queueError.message}`);
         }
       } catch (error: any) {
         logger.error(' [REFUND FILING] Error processing case', {
@@ -2082,6 +2156,44 @@ class RefundFilingWorker {
         disputeId,
         error: error.message
       });
+    }
+  }
+
+  /**
+  * Ghost Hunt Reconciliation Loop
+  * Reconciles claims stuck in 'submitting' status for > 15 minutes.
+  * Prevents double-submissions due to server crashes.
+  */
+  private async runGhostHuntReconciliation(): Promise<void> {
+    try {
+      const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+      
+      const { data: ghosts, error } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('id, seller_id, idempotency_key')
+        .eq('filing_status', 'submitting')
+        .lt('updated_at', fifteenMinutesAgo);
+
+      if (error) throw error;
+      if (!ghosts || ghosts.length === 0) return;
+
+      logger.info(`🔍 [GHOST HUNT] Found ${ghosts.length} claims stuck in 'submitting' status. Reconciling...`);
+
+      for (const ghost of ghosts) {
+        // If we have an idempotency key, we can use the automator's reconciliation logic
+        if (ghost.idempotency_key) {
+           await this.automator.reconcileGhost(ghost.id, ghost.seller_id, ghost.idempotency_key);
+        } else {
+           // No key? Safely revert to pending so it can be re-processed fresh
+           logger.warn(`⚠️ [GHOST HUNT] No idempotency key for ghost ${ghost.id}. Reverting to pending.`);
+           await supabaseAdmin
+             .from('dispute_cases')
+             .update({ filing_status: 'pending', updated_at: new Date().toISOString() })
+             .eq('id', ghost.id);
+        }
+      }
+    } catch (error: any) {
+      logger.error('❌ [GHOST HUNT] Reconciliation loop failed', { error: error.message });
     }
   }
 }
