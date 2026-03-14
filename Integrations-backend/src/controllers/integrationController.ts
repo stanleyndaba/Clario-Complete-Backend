@@ -254,34 +254,65 @@ export const disconnectIntegration = async (req: Request, res: Response) => {
   }
 };
 
-export const getAllIntegrations = async (_req: Request, res: Response) => {
+export const getAllIntegrations = async (req: Request, res: Response) => {
   try {
-    // Mock all integrations status
-    res.json({
-      success: true,
-      integrations: [
-        {
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required'
+      });
+    }
+
+    // THE PRODUCTION FIX: Query live evidence_sources with identity isolation
+    const { data: sources, error } = await supabase
+      .from('evidence_sources')
+      .select('provider, status, last_sync_at, account_email')
+      .or(`user_id.eq.${userId},seller_id.eq.${userId}`)
+      // DEFENSE-IN-DEPTH: SQL-level guard against Null UUID legacy data
+      .neq('user_id', '00000000-0000-0000-0000-000000000000');
+
+    if (error) {
+      logger.error('Failed to fetch integrations from database', { error, userId });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to retrieve integration data'
+      });
+    }
+
+    // THE HYDRATION BRIDGE: Map DB rows to the expected frontend schema
+    // This bridges the 'account_email' (DB) -> 'email' (Frontend) gap
+    const integrations = (sources || []).map(source => ({
+      provider: source.provider,
+      connected: source.status === 'connected',
+      status: source.status === 'connected' ? 'active' : 'disconnected',
+      lastSync: source.last_sync_at,
+      email: source.account_email !== 'unknown' ? source.account_email : undefined
+    }));
+
+    // Handle Amazon (Legacy Agent 1 flow)
+    // Check if amazon is already in the list; if not, check environment for sandbox
+    const hasAmazon = integrations.some(i => i.provider === 'amazon');
+    if (!hasAmazon) {
+      const envRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
+      if (envRefreshToken && envRefreshToken.trim() !== '') {
+        integrations.push({
           provider: 'amazon',
           connected: true,
           status: 'active',
-          lastSync: new Date().toISOString()
-        },
-        {
-          provider: 'gmail', 
-          connected: true,
-          status: 'active',
-          lastSync: new Date().toISOString()
-        },
-        {
-          provider: 'stripe',
-          connected: false,
-          status: 'disconnected',
-          lastSync: null
-        }
-      ]
+          lastSync: new Date().toISOString(),
+          email: undefined
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      integrations: integrations
     });
   } catch (error) {
-    console.error('All integrations error:', error);
+    logger.error('All integrations error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get integrations'
