@@ -59,16 +59,8 @@ export async function createRedisClient(): Promise<RedisClientType> {
     throw new Error(errorMsg);
   }
 
-  // REDIS URL DECONTAMINATION (GUARD MODE)
-  const urlSnippet = redisUrl.substring(0, 10);
-  logger.info(`🔍 [REDIS BOOT] Proximity Check: ${urlSnippet}...`);
+  // No kill-switch or proximity checks - boot normally using REDIS_URL
 
-  if (redisUrl.toLowerCase().includes('allowing-akita')) {
-    const errorMsg = '🚨 [FATAL_MIGRATION_ERROR] Exhausted Upstash endpoint (allowing-akita) detected! Connections to this specific cluster are strictly FORBIDDEN to prevent billing overages and service failures.';
-    logger.error(errorMsg);
-    // Hard shutdown to prevent exhausted Upstash charges/failures
-    process.exit(1); 
-  }
 
   // Strict check: No localhost/loopback allowed in production/Render environment
   if (redisUrl.includes('localhost') || redisUrl.includes('127.0.0.1')) {
