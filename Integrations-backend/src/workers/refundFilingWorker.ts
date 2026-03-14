@@ -11,7 +11,7 @@
  */
 
 import cron from 'node-cron';
-import { Queue, Worker, Job } from 'bullmq';
+import { Queue, Worker, Job, DelayedError } from 'bullmq';
 import logger from '../utils/logger';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import { createTenantScopedQueryById } from '../database/tenantScopedClient';
@@ -102,26 +102,40 @@ class RefundFilingWorker {
     // 1. SUBMISSION INFRASTRUCTURE
     this.submissionQueue = new Queue('sp-api-submissions', { connection: redisConfig });
 
-    this.submissionWorker = new Worker('sp-api-submissions', async (job: Job) => {
+    this.submissionWorker = new Worker('sp-api-submissions', async (job: Job, token?: string) => {
         const { caseId, sellerId } = job.data;
+        
+        // 1. REDIS-NATIVE TENANT GUARD
+        // Check if this seller is currently throttled/paused
+        const { getRedisClient } = await import('../utils/redisClient');
+        const redis = await getRedisClient();
+        const pauseKey = `seller_pause:${sellerId}`;
+        const pausedUntil = await redis.get(pauseKey);
+        
+        if (pausedUntil && token) {
+            const resumeAt = parseInt(pausedUntil);
+            if (Date.now() < resumeAt) {
+                logger.debug(` [FORTRESS] Seller ${sellerId} is paused. Delaying job for 1 minute.`);
+                // Move back to delayed state for 1 minute
+                await job.moveToDelayed(Date.now() + 60000, token);
+                throw new DelayedError();
+            }
+        }
+
         try {
             await this.automator.executeFullSubmission(caseId, sellerId);
         } catch (error: any) {
-            if (error.status === 429) {
-                logger.error(`🚨 [FORTRESS] 429 Throttled for Seller: ${sellerId}. Pausing queue.`, { caseId });
+            if (error.status === 429 && token) {
+                logger.error(`🚨 [FORTRESS] 429 Throttled for Seller: ${sellerId}. Locking tenant for 30m.`, { caseId });
                 
-                // REDIS-NATIVE PAUSE:
-                await this.submissionQueue.pauseGroup(sellerId);
+                // REDIS-NATIVE LOCK (30-minute window)
+                const lockDuration = 30 * 60 * 1000;
+                const resumeAt = Date.now() + lockDuration;
+                await redis.set(pauseKey, resumeAt.toString(), { PX: lockDuration } as any);
                 
-                // DISPATCH DELAYED RESUMPTION (30m delay)
-                // This ensures we unpause even if this specific process dies.
-                await this.controlQueue.add(
-                  'resume-group', 
-                  { action: 'resume', sellerId }, 
-                  { delay: 30 * 60 * 1000, removeOnComplete: true }
-                );
-
-                throw error; 
+                // Move current job to delayed state (30m)
+                await job.moveToDelayed(resumeAt, token);
+                throw new DelayedError(); 
             }
             throw error;
         }
@@ -134,16 +148,9 @@ class RefundFilingWorker {
         }
     });
 
-    // 2. CONTROL INFRASTRUCTURE (Admin/Resumption)
-    this.controlQueue = new Queue('sp-api-control', { connection: redisConfig });
-    
-    this.controlWorker = new Worker('sp-api-control', async (job: Job) => {
-      const { action, sellerId } = job.data;
-      if (action === 'resume') {
-        logger.info(`🔄 [FORTRESS] Resuming queue for seller: ${sellerId}`);
-        await this.submissionQueue.resumeGroup(sellerId);
-      }
-    }, { connection: redisConfig });
+    // OSS Tier doesn't need a control queue for unpausing (handled by Redis TTL)
+    this.controlQueue = undefined as any;
+    this.controlWorker = undefined as any;
   }
 
   /**
