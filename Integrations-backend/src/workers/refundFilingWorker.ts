@@ -94,10 +94,32 @@ class RefundFilingWorker {
   constructor() {
     this.automator = new AmazonSubmissionAutomator();
     
-    const redisConfig = { 
-      host: process.env.REDIS_HOST || 'localhost', 
-      port: parseInt(process.env.REDIS_PORT || '6379') 
-    };
+    const redisUrl = process.env.REDIS_URL;
+    if (!redisUrl) {
+      const errorMsg = '❌ [FATAL] [REFUND FILING] REDIS_URL is not configured. Infrastructure startup failed.';
+      logger.error(errorMsg);
+      throw new Error(errorMsg);
+    }
+
+    let redisConfig: any;
+    try {
+      const parsed = new URL(redisUrl);
+      redisConfig = {
+        host: parsed.hostname,
+        port: parseInt(parsed.port, 10) || 6379,
+        ...(parsed.password && { password: decodeURIComponent(parsed.password) }),
+        maxRetriesPerRequest: null,
+        ...(parsed.protocol === 'rediss:' && {
+          tls: {
+            rejectUnauthorized: false
+          }
+        })
+      };
+    } catch (error: any) {
+      logger.error('[REFUND FILING] Failed to parse REDIS_URL', { error: error.message });
+      throw error;
+    }
+
 
     // 1. SUBMISSION INFRASTRUCTURE
     this.submissionQueue = new Queue('sp-api-submissions', { connection: redisConfig });

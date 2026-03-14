@@ -25,13 +25,34 @@ export class NotificationWorker {
   private isInitialized: boolean = false;
 
   constructor() {
+    const redisUrl = process.env.REDIS_URL;
+    if (!redisUrl) {
+      const errorMsg = '❌ [FATAL] [NOTIFICATION] REDIS_URL is not configured. Notification engine disabled.';
+      logger.error(errorMsg);
+      throw new Error(errorMsg);
+    }
+
+    let connection: any;
+    try {
+      const parsed = new URL(redisUrl);
+      connection = {
+        host: parsed.hostname,
+        port: parseInt(parsed.port, 10) || 6379,
+        ...(parsed.password && { password: decodeURIComponent(parsed.password) }),
+        maxRetriesPerRequest: null,
+        ...(parsed.protocol === 'rediss:' && {
+          tls: {
+            rejectUnauthorized: false
+          }
+        })
+      };
+    } catch (error: any) {
+      logger.error('[NOTIFICATION] Failed to parse REDIS_URL', { error: error.message });
+      throw error;
+    }
+
     this.queue = new Queue('notifications', {
-      connection: {
-        host: process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.REDIS_PORT || '6379'),
-        password: process.env.REDIS_PASSWORD,
-        db: parseInt(process.env.REDIS_DB || '0')
-      },
+      connection,
       defaultJobOptions: {
         attempts: 3,
         backoff: {
@@ -49,17 +70,13 @@ export class NotificationWorker {
       'notifications',
       async (job) => this.processNotificationJob(job),
       {
-        connection: {
-          host: process.env.REDIS_HOST || 'localhost',
-          port: parseInt(process.env.REDIS_PORT || '6379'),
-          password: process.env.REDIS_PASSWORD,
-          db: parseInt(process.env.REDIS_DB || '0')
-        },
+        connection,
         concurrency: parseInt(process.env.NOTIFICATION_WORKER_CONCURRENCY || '5'),
         removeOnComplete: { count: 100 },
         removeOnFail: { count: 50 }
       }
     );
+
 
     this.setupEventHandlers();
   }

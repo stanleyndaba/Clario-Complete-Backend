@@ -51,41 +51,63 @@ export async function createRedisClient(): Promise<RedisClientType> {
     return redisClient;
   }
 
-  // If we've already attempted and failed, return mock client
-  if (redisConnectionAttempted && !redisAvailable) {
-    return createMockRedisClient();
-  }
-
   // Check if Redis URL is configured
-  // If not set or set to localhost/default, disable Redis (common in production without Redis)
-  if (!config.REDIS_URL ||
-    config.REDIS_URL === 'redis://localhost:6379' ||
-    config.REDIS_URL.includes('localhost') ||
-    config.REDIS_URL.includes('127.0.0.1')) {
-    if (!redisErrorLogged) {
-      logger.warn('Redis URL not configured or pointing to localhost - Redis features will be disabled. Set REDIS_URL environment variable to enable Redis features.');
-      redisErrorLogged = true;
-    }
-    redisConnectionAttempted = true;
-    redisAvailable = false;
-    return createMockRedisClient();
+  const redisUrl = config.REDIS_URL;
+  if (!redisUrl) {
+    const errorMsg = '❌ [FATAL] REDIS_URL is not configured. This is required for background workers and caching. Server will not start.';
+    logger.error(errorMsg);
+    throw new Error(errorMsg);
   }
 
-  redisConnectionAttempted = true;
+  // Strict check: No localhost/loopback allowed in production/Render environment
+  if (redisUrl.includes('localhost') || redisUrl.includes('127.0.0.1')) {
+    const errorMsg = '🚨 [SECURITY] Localhost Redis detected. Secure external Redis provider required.';
+    logger.error(errorMsg);
+    throw new Error(errorMsg);
+  }
 
-  // Force mock client to avoid crash due to Redis limit
-  return createMockRedisClient();
-
-  /*
   try {
+    const isSecure = redisUrl.startsWith('rediss:');
+    
     redisClient = createClient({
-      // ...
+      url: redisUrl,
+      socket: {
+        // BullMQ compliance
+        reconnectStrategy: (retries) => {
+          if (retries > 20) return new Error('Max retries reached');
+          return Math.min(retries * 100, 3000);
+        },
+        // TLS for secure providers
+        ...(isSecure && {
+          tls: true,
+          rejectUnauthorized: false
+        })
+      }
     });
-    // ...
+
+    redisClient.on('error', (err) => {
+      logger.error('❌ Redis Error', { error: err.message });
+      redisAvailable = false;
+    });
+
+    redisClient.on('connect', () => {
+      logger.info('✅ Redis Connected', { 
+        url: redisUrl.split('@')[1] || 'hidden',
+        secure: isSecure
+      });
+      redisAvailable = true;
+    });
+
+    await redisClient.connect();
+    redisConnectionAttempted = true;
+    
+    return redisClient;
   } catch (error: any) {
-    // ...
+    logger.error('❌ Failed to initialize Redis', { error: error.message });
+    redisAvailable = false;
+    redisConnectionAttempted = true;
+    throw error;
   }
-  */
 }
 
 export async function getRedisClient(): Promise<RedisClientType> {

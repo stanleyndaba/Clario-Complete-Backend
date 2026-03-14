@@ -39,28 +39,35 @@ let _initializationAttempted = false;
 /**
  * Get connection config (parsed lazily to avoid startup issues)
  */
-function getConnection(): { host: string; port: number; password?: string; tls?: object } {
+function getConnection(): { host: string; port: number; password?: string; tls?: object; maxRetriesPerRequest: null } {
     const redisUrl = process.env.REDIS_URL;
 
-    if (redisUrl) {
-        try {
-            const parsed = new URL(redisUrl);
-            return {
-                host: parsed.hostname,
-                port: parseInt(parsed.port, 10) || 6379,
-                ...(parsed.password && { password: decodeURIComponent(parsed.password) }),
-                // Enable TLS for rediss:// URLs
-                ...(parsed.protocol === 'rediss:' && { tls: {} })
-            };
-        } catch (error) {
-            logger.warn('Failed to parse REDIS_URL, using defaults');
-        }
+    if (!redisUrl) {
+        const errorMsg = '❌ [FATAL] [QUEUE] REDIS_URL is not configured. Queue initialization aborted.';
+        logger.error(errorMsg);
+        throw new Error(errorMsg);
     }
 
-    return {
-        host: process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.REDIS_PORT || '6379', 10)
-    };
+    try {
+        const parsed = new URL(redisUrl);
+        const isSecure = parsed.protocol === 'rediss:';
+
+        return {
+            host: parsed.hostname,
+            port: parseInt(parsed.port, 10) || 6379,
+            ...(parsed.password && { password: decodeURIComponent(parsed.password) }),
+            maxRetriesPerRequest: null, // Required by BullMQ
+            // Enable TLS for rediss:// URLs
+            ...(isSecure && { 
+                tls: { 
+                    rejectUnauthorized: false // Required for most cloud Redis providers on Render
+                } 
+            })
+        };
+    } catch (error: any) {
+        logger.error('Failed to parse REDIS_URL', { error: error.message });
+        throw error;
+    }
 }
 
 /**

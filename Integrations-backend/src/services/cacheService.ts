@@ -44,19 +44,28 @@ class CacheService {
 
         const redisUrl = process.env.REDIS_URL;
         if (!redisUrl) {
-            logger.warn('[CACHE] No REDIS_URL configured, caching disabled');
-            return null;
+            const errorMsg = '❌ [FATAL] [CACHE] REDIS_URL is not configured. Cache engine required for performance. Server will not start.';
+            logger.error(errorMsg);
+            throw new Error(errorMsg);
         }
 
         try {
+            const isSecure = redisUrl.startsWith('rediss:');
+            
             this.redis = new Redis(redisUrl, {
-                maxRetriesPerRequest: 3,
+                maxRetriesPerRequest: null, // Critical for BullMQ compatibility if reused, but good for stability here too
                 retryStrategy: (times) => {
-                    if (times > 3) return null;
+                    if (times > 20) return null;
                     return Math.min(times * 100, 3000);
                 },
                 lazyConnect: true,
+                ...(isSecure && {
+                    tls: {
+                        rejectUnauthorized: false
+                    }
+                })
             });
+
 
             this.redis.on('connect', () => {
                 this.isAvailable = true;
