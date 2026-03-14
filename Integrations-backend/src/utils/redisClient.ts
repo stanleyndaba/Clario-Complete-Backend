@@ -63,8 +63,8 @@ export async function createRedisClient(): Promise<RedisClientType> {
   const urlSnippet = redisUrl.substring(0, 10);
   logger.info(`🔍 [REDIS BOOT] Proximity Check: ${urlSnippet}...`);
 
-  if (redisUrl.toLowerCase().includes('upstash')) {
-    const errorMsg = '🚨 [FATAL_MIGRATION_ERROR] Upstash endpoint detected! Migration to secure perimiter REQUIRED. Connections to *.upstash.io are strictly FORBIDDEN.';
+  if (redisUrl.toLowerCase().includes('allowing-akita')) {
+    const errorMsg = '🚨 [FATAL_MIGRATION_ERROR] Exhausted Upstash endpoint (allowing-akita) detected! Connections to this specific cluster are strictly FORBIDDEN to prevent billing overages and service failures.';
     logger.error(errorMsg);
     // Hard shutdown to prevent exhausted Upstash charges/failures
     process.exit(1); 
