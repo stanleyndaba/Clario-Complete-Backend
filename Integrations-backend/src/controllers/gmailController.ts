@@ -568,41 +568,47 @@ export const getGmailStatus = async (req: Request, res: Response) => {
     let email: string | undefined;
     let lastSync: string | undefined;
 
+    // BASELINE: Always try to get metadata from local database first (source of truth for connection)
+    try {
+      const { supabase } = await import('../database/supabaseClient');
+      const { data: source } = await supabase
+        .from('evidence_sources')
+        .select('account_email, last_sync_at')
+        .eq('user_id', userId)
+        .eq('provider', 'gmail')
+        .eq('status', 'connected')
+        .maybeSingle();
+
+      if (source) {
+        email = source.account_email !== 'unknown' ? source.account_email : undefined;
+        lastSync = source.last_sync_at;
+      }
+    } catch (dbError) {
+      logger.debug('Could not fetch baseline metadata from database', { error: dbError });
+    }
+
     if (isConnected && tokenData.accessToken) {
       try {
+        // Attempt live verification but with a strict timeout (circuit breaker)
+        // This ensures UI doesn't hang if Google API is slow
         const profileResponse = await axios.get(
           'https://gmail.googleapis.com/gmail/v1/users/me/profile',
           {
             headers: {
               'Authorization': `Bearer ${tokenData.accessToken}`
             },
-            timeout: 5000
+            timeout: 2000 // 2s timeout for live check
           }
         );
-        email = profileResponse.data.emailAddress;
-
-        // Get last sync time from evidence_sources table
-        try {
-          const { supabase } = await import('../database/supabaseClient');
-          const { data: source } = await supabase
-            .from('evidence_sources')
-            .select('last_sync_at')
-            .eq('user_id', userId)
-            .eq('provider', 'gmail')
-            .eq('status', 'connected')
-            .maybeSingle();
-
-          if (source?.last_sync_at) {
-            lastSync = source.last_sync_at;
-          }
-        } catch (dbError) {
-          logger.debug('Could not fetch last sync time from database', { error: dbError });
+        
+        // Update email if live check succeeds (more fresh)
+        if (profileResponse.data.emailAddress) {
+          email = profileResponse.data.emailAddress;
         }
       } catch (error: any) {
         // Token might be expired or invalid
         if (error.response?.status === 401) {
           logger.warn('Gmail token expired or invalid, marking as disconnected');
-          // Token is invalid, mark as disconnected
           return res.json({
             connected: false,
             email: undefined,
@@ -610,13 +616,16 @@ export const getGmailStatus = async (req: Request, res: Response) => {
             message: 'Gmail token expired or invalid. Please reconnect.'
           });
         }
-        logger.warn('Failed to verify Gmail token:', error.message);
+        
+        // For other errors (timeout, network), we RETAIN the DB email if we have it
+        // This is the "Enterprise Fallback" - UI stays functional even if Google is down
+        logger.warn('Failed to verify Gmail token live, falling back to DB metadata:', error.message);
       }
     }
 
     // Return response matching frontend expectations
     res.json({
-      connected: isConnected && !!email,
+      connected: isConnected && (!!email || isConnected), // Match connected even if email is unknown (minimal state)
       email: email,
       lastSync: lastSync
     });

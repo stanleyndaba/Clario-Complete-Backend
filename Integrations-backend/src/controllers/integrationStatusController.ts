@@ -35,13 +35,13 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       lastSync: string | null;
       lastIngest: string | null;
       providerIngest: {
-        gmail: { connected: boolean; lastIngest?: string; scopes?: string[]; error?: string };
-        outlook: { connected: boolean; lastIngest?: string; scopes?: string[]; error?: string };
-        gdrive: { connected: boolean; lastIngest?: string; scopes?: string[]; error?: string };
-        dropbox: { connected: boolean; lastIngest?: string; scopes?: string[]; error?: string };
-        slack: { connected: boolean; lastIngest?: string; scopes?: string[]; error?: string };
-        adobe_sign: { connected: boolean; lastIngest?: string; scopes?: string[]; error?: string };
-        onedrive: { connected: boolean; lastIngest?: string; scopes?: string[]; error?: string };
+        gmail: { connected: boolean; lastIngest?: string; scopes?: string[]; email?: string; error?: string };
+        outlook: { connected: boolean; lastIngest?: string; scopes?: string[]; email?: string; error?: string };
+        gdrive: { connected: boolean; lastIngest?: string; scopes?: string[]; email?: string; error?: string };
+        dropbox: { connected: boolean; lastIngest?: string; scopes?: string[]; email?: string; error?: string };
+        slack: { connected: boolean; lastIngest?: string; scopes?: string[]; email?: string; error?: string };
+        adobe_sign: { connected: boolean; lastIngest?: string; scopes?: string[]; email?: string; error?: string };
+        onedrive: { connected: boolean; lastIngest?: string; scopes?: string[]; email?: string; error?: string };
       };
     } = {
       amazon_connected: false,
@@ -190,7 +190,8 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
             response.providerIngest[provider] = {
               connected: source.status === 'connected',
               lastIngest: source.last_sync_at || undefined,
-              scopes: scopes
+              scopes: scopes,
+              email: source.account_email || undefined
             };
           }
         }
