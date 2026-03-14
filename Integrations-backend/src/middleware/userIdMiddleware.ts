@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import logger from '../utils/logger';
+import { convertUserIdToUuid } from '../database/supabaseClient';
 
 const UUID_REGEX =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -113,14 +114,14 @@ export function userIdMiddleware(req: Request, res: Response, next: NextFunction
       userId = req.query.userId as string;
     }
 
-    // Intercept 'demo-user' string explicitely sent from frontend headers/params
+    // Intercept 'demo-user' string explicitly sent from frontend headers/params
     if (userId === 'demo-user' && allowDemoUser) {
-      userId = '00000000-0000-0000-0000-000000000000';
+      userId = convertUserIdToUuid('demo-user');
     }
 
     if (!userId) {
       if (allowDemoUser) {
-        userId = '00000000-0000-0000-0000-000000000000';
+        userId = convertUserIdToUuid('demo-user');
         logger.debug('Demo mode enabled - falling back to demo-user', {
           path: req.path,
           method: req.method
