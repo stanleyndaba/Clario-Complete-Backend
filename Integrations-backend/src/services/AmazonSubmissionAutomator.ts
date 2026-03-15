@@ -28,7 +28,7 @@ export class AmazonSubmissionAutomator {
             // Must occur BEFORE the database lock.
             const isAuthorized = await this.enforcePaywall(caseId, sellerId);
             if (!isAuthorized) {
-                return; // Gate Closed
+                throw new Error(`[AGENT 7 FATAL] Financial Sentry: Paywall check failed. Seller: ${sellerId}`);
             }
 
             // 1. ATOMIC LOCK: 'pending' -> 'submitting'
@@ -43,8 +43,7 @@ export class AmazonSubmissionAutomator {
                 .select('id, filing_status, submission_attempts, idempotency_key');
 
             if (lockError || !lockData || lockData.length === 0) {
-                logger.info(`[FORTRESS] Claim ${caseId} already locked or processed. Exiting silently.`);
-                return;
+                throw new Error(`[AGENT 7 FATAL] Atomic Lock Failed: Case ${caseId} already processed or not in 'pending' state.`);
             }
 
             const activeCase = lockData[0];
@@ -84,7 +83,7 @@ export class AmazonSubmissionAutomator {
             if (evidenceError || !evidence || evidence.length === 0) {
                 logger.warn(`⚠️ [AGENT 7] Missing evidence for Case: ${caseId}. Escalating to Agent 10.`);
                 await supabaseAdmin.from('dispute_cases').update({ filing_status: 'failed' }).eq('id', caseId);
-                return;
+                throw new Error(`[AGENT 7 FATAL] Harvesting Failed: No evidence linked to Case ${caseId}`);
             }
 
             // 4. Open case via SP-API Implementation
@@ -176,7 +175,7 @@ export class AmazonSubmissionAutomator {
 
             if (mapError || !mapping) {
                 logger.error(`❌ [IDENTITY] Unmapped seller attempt: ${sellerId}. Gate Closed.`);
-                return false;
+                throw new Error(`[AGENT 7 FATAL] Identity Mapping Missing: Seller ${sellerId} is not mapped to any user_id in v1_seller_identity_map.`);
             }
 
             const userId = mapping.user_id;
@@ -200,8 +199,7 @@ export class AmazonSubmissionAutomator {
                     })
                     .eq('id', caseId);
 
-                // In a real system, we would log to a dedicated security audit log here
-                return false; 
+                throw new Error(`[AGENT 7 FATAL] Security Violation: Mapped user ${userId} is not a paid beta user.`);
             }
 
             return true; // Authorized

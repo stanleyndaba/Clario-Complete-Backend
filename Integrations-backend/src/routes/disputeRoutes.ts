@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { optionalAuth } from '../middleware/authMiddleware';
 import { supabaseAdmin } from '../database/supabaseClient';
+import logger from '../utils/logger';
 
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -605,6 +606,7 @@ router.post('/:id/deny', async (req, res) => {
 router.post('/file-now', async (req, res) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
+    logger.info(`🔍 [DISPUTE] Financial Sentry check for user: ${userId}`);
     const { dispute_id } = req.body;
 
     if (!dispute_id) {
@@ -617,9 +619,11 @@ router.post('/file-now', async (req, res) => {
     // 1. FINANCIAL SENTRY: Check is_paid_beta flag
     const { data: user, error: userError } = await supabaseAdmin
       .from('users')
-      .select('is_paid_beta')
+      .select('is_paid_beta, amazon_seller_id')
       .eq('id', userId)
       .single();
+
+    logger.info(`🔍 [DISPUTE] User data found: ${JSON.stringify(user)}, Error: ${userError?.message}`);
 
     if (userError || !user?.is_paid_beta) {
       logger.warn(`🚨 [SECURITY] Unauthorized filing attempt for unpaid user: ${userId}`, { dispute_id });
@@ -628,6 +632,8 @@ router.post('/file-now', async (req, res) => {
         message: 'Upgrade required to file disputes ($99 Beta Activation)'
       });
     }
+
+    const sellerId = user.amazon_seller_id || userId; // Fallback to userId if amazon_seller_id is missing
 
     // 2. QUEUE HANDOFF: Enqueue job via refundFilingWorker
     const refundFilingWorker = (await import('../workers/refundFilingWorker')).default;
@@ -644,13 +650,12 @@ router.post('/file-now', async (req, res) => {
       .eq('tenant_id', tenantId);
 
     // Enqueue the job
-    await refundFilingWorker.addJob(dispute_id, userId);
+    const job = await refundFilingWorker.addJob(dispute_id, sellerId);
 
     res.json({
       success: true,
-      message: 'Filing request enqueued with Agent 7',
-      dispute_id,
-      filing_status: 'pending'
+      message: 'Filing request received and queued.',
+      jobId: job.id
     });
 
   } catch (error: any) {

@@ -146,7 +146,7 @@ class RefundFilingWorker {
 
         try {
             logger.info(`[AGENT 7] Transmitting claim ${caseId} to Seller Central for seller ${sellerId}.`);
-            await this.automator.executeFullSubmission(caseId, sellerId);
+            return await this.automator.executeFullSubmission(caseId, sellerId);
         } catch (error: any) {
             if (error.status === 429 && token) {
                 logger.error(`🚨 [FORTRESS] 429 Throttled for Seller: ${sellerId}. Locking tenant for 30m.`, { caseId });
@@ -180,10 +180,10 @@ class RefundFilingWorker {
    * Distributed Filing Bridge: Add a specific case to the submission queue.
    * This is used by Agent 7 manual triggers (e.g., from the frontend).
    */
-  async addJob(caseId: string, sellerId: string): Promise<void> {
+  async addJob(caseId: string, sellerId: string): Promise<Job> {
     logger.info(`📥 [AGENT 7] Manual trigger: Enqueueing case ${caseId} for seller ${sellerId}`);
     
-    await this.submissionQueue.add(
+    return await this.submissionQueue.add(
       `filing_${caseId}`,
       { 
         caseId, 
