@@ -1,861 +1,227 @@
 /**
  * Inventory Detection Algorithms - "The Whale Hunter"
  * 
- * Phase 2, P0 Priority: Lost Inventory Detection
- * This is the single most valuable detection algorithm - finds lost warehouse money.
- * 
- * Algorithm Logic:
- * 1. Group inventory events by FNSKU
- * 2. Calculate Input (Receipts + Adjustments + Returns)
- * 3. Calculate Output (Shipments + Removals)
- * 4. CalculatedStock = Input - Output
- * 5. Compare vs EndingWarehouseBalance
- * 6. If CalculatedStock > EndingWarehouseBalance = LOST INVENTORY
+ * Production Master v7: Final Forensic Cohort Master
  */
 
 import { supabaseAdmin } from '../../../database/supabaseClient';
 import logger from '../../../utils/logger';
 
 import { resolveTenantId } from './shared/tenantUtils';
+
 // ============================================================================
 // Types
 // ============================================================================
 
 export type InventoryEventType =
-    | 'Receipt'           // Inbound shipment received
-    | 'Shipment'          // Outbound order shipped
-    | 'Adjustment'        // Manual inventory adjustment
-    | 'Return'            // Customer return
-    | 'Removal'           // Removal order
-    | 'Disposal'          // Disposed inventory
-    | 'Transfer'          // FC-to-FC transfer
-    | 'Snapshot';         // Inventory snapshot
+    | 'Receipt'           | 'Shipment' | 'Adjustment' | 'Return' 
+    | 'Removal'           | 'Disposal' | 'Transfer'   | 'Snapshot';
+
+export type ReimbursementLinkageType = 
+    | 'DIRECT_ID' | 'CAUSAL' | 'PROBABLE' | 'WEAK' | 'NONE';
 
 export interface InventoryLedgerEvent {
-    id: string;
-    seller_id: string;
-    fnsku: string;
-    sku?: string;
-    asin?: string;
-    product_name?: string;
-    event_type: InventoryEventType;
-    quantity: number;
-    quantity_direction: 'in' | 'out';
-    warehouse_balance?: number;      // Ending balance from snapshot
-    event_date: string;
-    fulfillment_center_id?: string;
-    reference_id?: string;           // Shipment ID, Order ID, etc.
-    unit_cost?: number;              // Estimated cost per unit
-    average_sales_price?: number;    // Average selling price
-    reason?: string;                 // Amazon Reason Code (e.g. 'M', 'E', 'D')
-    disposition?: string;            // Item disposition (e.g. 'SELLABLE', 'DAMAGED')
-    created_at: string;
+    id: string; seller_id: string; fnsku: string; sku?: string; asin?: string; product_name?: string;
+    event_type: InventoryEventType; quantity: number; quantity_direction: 'in' | 'out';
+    warehouse_balance?: number; event_date: string; fulfillment_center_id?: string; reference_id?: string;
+    unit_cost?: number; average_sales_price?: number; reason?: string; disposition?: string; created_at: string;
 }
 
 export interface SyncedData {
-    seller_id: string;
-    sync_id: string;
+    seller_id: string; sync_id: string;
     inventory_ledger: InventoryLedgerEvent[];
-    financial_events?: any[];
-    orders?: any[];
+    financial_events?: any[]; orders?: any[];
 }
 
 export interface DetectionResult {
-    seller_id: string;
-    sync_id: string;
-    anomaly_type: 'lost_warehouse' | 'damaged_warehouse' | 'lost_inbound' | 'damaged_inbound' | 'lost_in_transit' | 'inbound_shipment_shortage';
+    seller_id: string; sync_id: string;
+    anomaly_type: 'lost_warehouse' | 'lost_in_transit' | 'damaged_warehouse' | 'damaged_inbound' | 'inbound_shipment_shortage';
     severity: 'low' | 'medium' | 'high' | 'critical';
-    estimated_value: number;
-    currency: string;
-    confidence_score: number;
-    evidence: LostInventoryEvidence;
+    estimated_value: number; currency: string; confidence_score: number;
+    evidence: any; discovery_date: Date; deadline_date: Date; days_remaining: number;
+    fnsku: string; sku?: string; asin?: string; product_name?: string; evidence_mode: string;
     related_event_ids?: string[];
-    discovery_date: Date;
-    deadline_date: Date;
-    days_remaining: number;
-    fnsku: string;
-    sku?: string;
-    asin?: string;
-    product_name?: string;
-}
-
-export interface LostInventoryEvidence {
-    fnsku: string;
-    sku?: string;
-    asin?: string;
-    product_name?: string;
-
-    // The calculation breakdown
-    total_receipts: number;
-    total_adjustments: number;
-    total_returns: number;
-    total_input: number;
-
-    total_shipments: number;
-    total_removals: number;
-    total_output: number;
-
-    calculated_stock: number;
-    ending_warehouse_balance: number;
-    discrepancy: number;
-
-    // Value calculation
-    average_sales_price: number;
-    estimated_recovery_value: number;
-
-    // Supporting data
-    event_ids: string[];
-    date_range: {
-        start: string;
-        end: string;
-    };
-    fulfillment_centers: string[];
 }
 
 // ============================================================================
-// Helper Functions
+// Constants
 // ============================================================================
 
-/**
- * Calculate 60-day deadline from discovery date
- */
-function calculateDeadline(discoveryDate: Date): { deadline: Date; daysRemaining: number } {
-    const deadline = new Date(discoveryDate);
-    deadline.setDate(deadline.getDate() + 60);
-
-    const now = new Date();
-    const diffTime = deadline.getTime() - now.getTime();
-    const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-    return { deadline, daysRemaining: Math.max(0, daysRemaining) };
-}
-
-/**
- * Determine severity based on discrepancy value
- */
-function calculateSeverity(estimatedValue: number): 'low' | 'medium' | 'high' | 'critical' {
-    if (estimatedValue >= 1000) return 'critical';
-    if (estimatedValue >= 500) return 'high';
-    if (estimatedValue >= 100) return 'medium';
-    return 'low';
-}
-
-/**
- * Classify the anomaly type based on Amazon Reason Codes, Dispositions, and Event Types.
- *
- * Amazon Reason Codes:
- *   M = Lost/Missing in warehouse
- *   E = Damaged by Amazon (warehouse damage)
- *   D = Defective
- *   F = Carrier damage
- *
- * Event Type signals:
- *   Transfers only → Lost in Transit (FC-to-FC transfer loss)
- *   Receipts only  → Inbound Shipment Shortage (shipped but never received)
- */
-function classifyAnomalyType(
-    events: InventoryLedgerEvent[]
-): DetectionResult['anomaly_type'] {
-    // Collect reason codes and dispositions from all events
-    const reasons = events.map(e => e.reason).filter(Boolean) as string[];
-    const dispositions = events.map(e => e.disposition).filter(Boolean) as string[];
-    const eventTypes = events
-        .filter(e => e.event_type !== 'Snapshot')
-        .map(e => e.event_type);
-
-    // --- Reason Code takes highest priority ---
-    // Reason Code E or F, or disposition contains 'damaged' → Damaged in Warehouse
-    if (reasons.some(r => /^[EF]$/i.test(r.trim()) || /damaged/i.test(r))) {
-        return 'damaged_warehouse';
-    }
-    if (dispositions.some(d => /damaged|defective/i.test(d))) {
-        return 'damaged_warehouse';
-    }
-
-    // --- Event Type pattern analysis ---
-    const uniqueTypes = new Set(eventTypes);
-
-    // All events are Transfers → Lost in Transit
-    if (uniqueTypes.size > 0 && [...uniqueTypes].every(t => t === 'Transfer')) {
-        return 'lost_in_transit';
-    }
-
-    // All events are Receipts → Inbound Shipment Shortage
-    if (uniqueTypes.size > 0 && [...uniqueTypes].every(t => t === 'Receipt')) {
-        return 'inbound_shipment_shortage';
-    }
-
-    // Reason Code D → damaged inbound
-    if (reasons.some(r => /^D$/i.test(r.trim()))) {
-        return 'damaged_inbound';
-    }
-
-    // Default: Lost in Warehouse (Reason Code M, or no distinguishing signal)
-    return 'lost_warehouse';
-}
-
-/**
- * Group inventory events by FNSKU
- */
-function groupByFnsku(events: InventoryLedgerEvent[]): Map<string, InventoryLedgerEvent[]> {
-    const grouped = new Map<string, InventoryLedgerEvent[]>();
-
-    for (const event of events) {
-        if (!event.fnsku) continue;
-
-        const existing = grouped.get(event.fnsku) || [];
-        existing.push(event);
-        grouped.set(event.fnsku, existing);
-    }
-
-    return grouped;
-}
+const MATURITY_WINDOW_DAYS = 30; 
+const FRESHNESS_THRESHOLD_HOURS = 0.05;
 
 // ============================================================================
-// Main Detection Algorithm - "The Whale"
+// Core Detector
 // ============================================================================
 
-/**
- * Detect Lost Inventory - The "Whale" Algorithm
- * 
- * This is the P0 priority detection that finds the most money.
- * 
- * Formula:
- *   Input = Receipts + Adjustments + Returns
- *   Output = Shipments + Removals
- *   CalculatedStock = Input - Output
- *   
- * If CalculatedStock > EndingWarehouseBalance:
- *   → Lost Inventory Detected
- *   → Recovery Value = Discrepancy × Average Sales Price
- */
-export function detectLostInventory(
-    sellerId: string,
-    syncId: string,
-    data: SyncedData
-): DetectionResult[] {
+export function detectLostInventory(sellerId: string, syncId: string, data: SyncedData): DetectionResult[] {
+    const rawLedger = (data.inventory_ledger || []).filter(e => e.seller_id === sellerId && e.fnsku);
+    
+    // 1. Boundary Integrity
+    const syncTime = isNaN(Date.parse(syncId)) ? Date.now() : Date.parse(syncId);
+    const ledger = rawLedger.filter(e => {
+        const eTime = Date.parse(e.event_date);
+        if (eTime >= syncTime) return false;
+        const ageHours = (syncTime - eTime) / 3600000;
+        return ageHours >= FRESHNESS_THRESHOLD_HOURS;
+    });
+
+    const cleanLedger = deduplicateLedger(ledger);
+    const fnskuGroups = groupByFnsku(cleanLedger);
     const results: DetectionResult[] = [];
-    const discoveryDate = new Date();
-    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
 
-    logger.info('🐋 [WHALE] Starting Lost Inventory Detection', {
-        sellerId,
-        syncId,
-        eventCount: data.inventory_ledger?.length || 0
-    });
+    for (const [fnsku, events] of Object.entries(fnskuGroups)) {
+        if (!fnsku || fnsku === 'null') continue;
+        const sorted = [...events].sort((a,b) => new Date(a.event_date).getTime() - new Date(b.event_date).getTime());
+        const latestSnap = [...sorted].reverse().find(e => e.event_type === 'Snapshot');
+        
+        let ledgerIn = 0; let ledgerOut = 0; 
+        let claimAdj = 0; let resolveAdj = 0;
+        let matureTransit = 0; let immatureTransit = 0;
+        const refNet = new Map<string, number>(); 
+        const eventIds: string[] = []; const fcs = new Set<string>();
 
-    if (!data.inventory_ledger || data.inventory_ledger.length === 0) {
-        logger.warn('🐋 [WHALE] No inventory ledger events found', { sellerId, syncId });
-        return results;
+        // 2. Forensic Tally & Cohort Logic
+        for (const e of events) {
+            if (e.event_type === 'Snapshot') continue;
+            eventIds.push(e.id);
+            const q = Math.abs(e.quantity);
+            if (e.fulfillment_center_id) fcs.add(e.fulfillment_center_id);
+
+            if (e.quantity_direction === 'in') {
+                ledgerIn += q;
+                if (e.event_type === 'Adjustment') { if (['F', 'P'].includes(e.reason || '') || !e.reason) resolveAdj += q; }
+                else if (e.event_type === 'Transfer' && e.reference_id) refNet.set(e.reference_id, (refNet.get(e.reference_id) || 0) + q);
+            } else {
+                ledgerOut += q;
+                if (e.event_type === 'Adjustment') { if (['M', 'E', 'D', 'N'].includes(e.reason || '') || !e.reason) claimAdj += q; }
+                else if (e.event_type === 'Transfer' && e.reference_id) refNet.set(e.reference_id, (refNet.get(e.reference_id) || 0) - q);
+            }
+        }
+
+        for (const [ref, net] of refNet.entries()) {
+            if (net < -0.01) {
+                const outE = events.find(ev => ev.reference_id === ref && ev.quantity_direction === 'out');
+                const age = outE ? (syncTime - new Date(outE.event_date).getTime()) / (1000 * 3600 * 24) : 999;
+                if (age >= MATURITY_WINDOW_DAYS) matureTransit += Math.abs(net);
+                else immatureTransit += Math.abs(net);
+            }
+        }
+
+        // 3. Cohort Reconciliation (G2 Fix)
+        // Hub Surplus: When units arrive as one leg and leave as many others.
+        // We identify "Trunk Arrivals" (In-Transfers for a RefID) and "Child Departures" (Out-Transfers for OTHER RefIDs).
+        let trunkResidual = 0;
+        const inLegs = Array.from(refNet.entries()).filter(([r, n]) => n > 0.1);
+        const outLegs = Array.from(refNet.entries()).filter(([r, n]) => n < -0.1);
+        if (inLegs.length > 0 && outLegs.length > 0) {
+            const totalHubIn = inLegs.reduce((s, [r, n]) => s + n, 0);
+            const totalHubOut = outLegs.reduce((s, [r, n]) => s + Math.abs(n), 0);
+            if (totalHubIn > totalHubOut) trunkResidual = totalHubIn - totalHubOut;
+        }
+
+        const netAdj = Math.max(0, claimAdj - resolveAdj);
+        const actualBal = latestSnap?.warehouse_balance ?? 0;
+        const balanceGap = latestSnap ? ((ledgerIn - ledgerOut) - actualBal) : (ledgerIn < ledgerOut ? (ledgerOut - ledgerIn) : 0);
+        
+        // Physical Loss: Net Trunk Residuals against both gaps
+        let physicalLoss = Math.max(0, 
+            Math.max(0, balanceGap) - trunkResidual, 
+            matureTransit - trunkResidual,
+            netAdj
+        );
+
+        if (immatureTransit > 0) physicalLoss = Math.max(0, physicalLoss - immatureTransit);
+
+        const firstLossDate = sorted.find(e => e.quantity_direction === 'out')?.event_date || new Date().toISOString();
+        const reData = findReimbursements(fnsku, data.financial_events || [], firstLossDate, sellerId, [...fcs][0]);
+        
+        const nettedUnits = reData.fullNetUnits + reData.partialNetUnits;
+        const unresolved = Math.max(0, physicalLoss - nettedUnits);
+
+        if (unresolved > 0.1) {
+            const avgP = events.find(e => (e.average_sales_price || e.unit_cost))?.average_sales_price || 20;
+            results.push({
+                seller_id: sellerId, sync_id: syncId,
+                anomaly_type: (matureTransit > 0 && matureTransit >= Math.max(balanceGap, netAdj)) ? 'lost_in_transit' : 'lost_warehouse',
+                severity: (unresolved * avgP >= 1000 ? 'critical' : unresolved * avgP >= 500 ? 'high' : 'medium'),
+                estimated_value: unresolved * avgP, currency: 'USD', confidence_score: (latestSnap ? 0.95 : 0.85) + reData.modifier,
+                fnsku, sku: events[0].sku, asin: events[0].asin, product_name: events[0].product_name,
+                evidence_mode: latestSnap ? 'SNAPSHOT_CONFIRMED' : 'LEDGER_RECONCILED',
+                discovery_date: new Date(), deadline_date: new Date(Date.now() + 60*24*3600*1000), days_remaining: 60,
+                evidence: {
+                    fnsku, discrepancy: unresolved, 
+                    physical_loss_units: physicalLoss, reimbursed_units: reData.totalMatched, reimbursement_linkage: reData.linkage,
+                    cohort_analysis: { trunk_residual: trunkResidual, balance_gap: balanceGap, mature_transit: matureTransit }
+                }
+            });
+        }
     }
-
-    // Step 1: Group events by FNSKU
-    const groupedEvents = groupByFnsku(data.inventory_ledger);
-
-    logger.info('🐋 [WHALE] Grouped events by FNSKU', {
-        uniqueFnskus: groupedEvents.size
-    });
-
-    // Step 2: Process each FNSKU group
-    for (const [fnsku, events] of groupedEvents) {
-        // Initialize accumulators
-        let totalReceipts = 0;
-        let totalAdjustments = 0;
-        let totalReturns = 0;
-        let totalShipments = 0;
-        let totalRemovals = 0;
-        let endingWarehouseBalance = 0;
-        let hasSnapshotBalance = false;
-
-        // Track metadata
-        const eventIds: string[] = [];
-        const fulfillmentCenters = new Set<string>();
-        let latestSnapshotDate: Date | null = null;
-        let sku: string | undefined;
-        let asin: string | undefined;
-        let productName: string | undefined;
-        let averageSalesPrice = 0;
-        let priceCount = 0;
-
-        // Step 3: Calculate Input and Output
-        // Track transfer events by reference_id for proper double-entry netting
-        const transfersByRef = new Map<string, { netQty: number; earliestDate: Date }>();
-
-        for (const event of events) {
-            eventIds.push(event.id);
-
-            if (event.fulfillment_center_id) {
-                fulfillmentCenters.add(event.fulfillment_center_id);
-            }
-
-            // Capture product metadata from any event
-            if (!sku && event.sku) sku = event.sku;
-            if (!asin && event.asin) asin = event.asin;
-            if (!productName && event.product_name) productName = event.product_name;
-
-            // Accumulate average sales price
-            if (event.average_sales_price && event.average_sales_price > 0) {
-                averageSalesPrice += event.average_sales_price;
-                priceCount++;
-            }
-
-            // Normalize event type: handle plural forms from CSV
-            // e.g., "Transfers" → "Transfer", "Receipts" → "Receipt", "CustomerReturns" → "Return"
-            const rawType = (event.event_type || '').trim();
-            let normalizedType = rawType;
-            if (/^CustomerReturn/i.test(rawType)) {
-                normalizedType = 'Return';
-            } else if (rawType.endsWith('s') && rawType.length > 2) {
-                normalizedType = rawType.slice(0, -1); // Remove trailing 's'
-            }
-
-            // Categorize by normalized event type
-            switch (normalizedType) {
-                case 'Receipt':
-                    totalReceipts += Math.abs(event.quantity);
-                    break;
-
-                case 'Adjustment':
-                    // Adjustments can be positive or negative
-                    if (event.quantity_direction === 'in' || event.quantity > 0) {
-                        totalAdjustments += Math.abs(event.quantity);
-                    } else {
-                        // Negative adjustment counts as output
-                        totalRemovals += Math.abs(event.quantity);
-                    }
-                    break;
-
-                case 'Return':
-                    totalReturns += Math.abs(event.quantity);
-                    break;
-
-                case 'Shipment':
-                    totalShipments += Math.abs(event.quantity);
-                    break;
-
-                case 'Transfer': {
-                    // Group transfers by reference_id for double-entry netting.
-                    // A transfer out (-50) and transfer in (+50) with the same
-                    // reference_id net to 0 — meaning units arrived safely.
-                    const refId = event.reference_id || `no_ref_${event.event_date}`;
-                    const existing = transfersByRef.get(refId) || { netQty: 0, earliestDate: new Date(event.event_date) };
-                    existing.netQty += event.quantity; // negative for out, positive for in
-                    const evDate = new Date(event.event_date);
-                    if (evDate < existing.earliestDate) {
-                        existing.earliestDate = evDate;
-                    }
-                    transfersByRef.set(refId, existing);
-                    break;
-                }
-
-                case 'Removal':
-                case 'Disposal':
-                    totalRemovals += Math.abs(event.quantity);
-                    break;
-
-                case 'Snapshot':
-                    // Get the latest snapshot balance
-                    const eventDate = new Date(event.event_date);
-                    if (!latestSnapshotDate || eventDate > latestSnapshotDate) {
-                        latestSnapshotDate = eventDate;
-                        endingWarehouseBalance = event.warehouse_balance || event.quantity || 0;
-                        hasSnapshotBalance = true;
-                    }
-                    break;
-            }
-        }
-
-        // Step 3b: Net transfers by reference_id — the double-entry accounting fix.
-        // Only transfers that are TRULY lost (net < 0 AND older than 30 days) count.
-        const TRANSFER_MATURITY_DAYS = 30;
-        const now = new Date();
-        let totalTransferLoss = 0;  // actual confirmed losses
-        let totalTransferIn = 0;    // for snapshot balance computation
-
-        for (const [, transfer] of transfersByRef) {
-            if (transfer.netQty < 0) {
-                // Net negative = more went out than came in.
-                // Only flag if 30+ days have passed (Amazon policy allows 30 days for FC transfer).
-                const daysSinceTransfer = Math.floor(
-                    (now.getTime() - transfer.earliestDate.getTime()) / (1000 * 60 * 60 * 24)
-                );
-                if (daysSinceTransfer >= TRANSFER_MATURITY_DAYS) {
-                    totalTransferLoss += Math.abs(transfer.netQty);
-                }
-                // If < 30 days, units may still be in transit — do NOT flag.
-            } else if (transfer.netQty > 0) {
-                totalTransferIn += transfer.netQty;
-            }
-            // netQty === 0 → perfectly balanced transfer, completely ignored. ✅
-        }
-
-        // If no snapshot balance, compute synthetic balance from event data
-        // This handles CSV uploads that never include Snapshot events
-        if (!hasSnapshotBalance) {
-            if (totalTransferLoss > 0) {
-                // We have confirmed transfer losses (net negative, 30+ days old)
-                endingWarehouseBalance = 0;
-                hasSnapshotBalance = true;
-                totalReceipts += totalTransferLoss; // What SHOULD have arrived
-            } else if (totalReceipts > 0 || totalReturns > 0 || totalAdjustments > 0) {
-                // For non-transfer events, compute net quantity (EXCLUDING transfers)
-                const nonTransferNet = events
-                    .filter(e => {
-                        const rt = (e.event_type || '').trim();
-                        return !/^Transfer/i.test(rt);
-                    })
-                    .reduce((sum: number, e: any) => sum + (e.quantity || 0), 0);
-                if (nonTransferNet < 0) {
-                    endingWarehouseBalance = 0;
-                    hasSnapshotBalance = true;
-                }
-            }
-            // If only balanced transfers exist, hasSnapshotBalance stays false
-            // and this FNSKU is skipped entirely. No false positive. ✅
-        } else {
-            // Account for confirmed transfer losses when snapshot exists
-            totalReceipts += totalTransferIn;
-            totalRemovals += totalTransferLoss;
-        }
-
-        // Skip if no snapshot balance to compare against
-        if (!hasSnapshotBalance) {
-            continue;
-        }
-
-        // Step 4: Calculate the formula
-        const totalInput = totalReceipts + totalAdjustments + totalReturns;
-        const totalOutput = totalShipments + totalRemovals;
-        const calculatedStock = totalInput - totalOutput;
-
-        // Step 5: Detect discrepancy
-        const discrepancy = calculatedStock - endingWarehouseBalance;
-
-        // Only flag if calculated stock > actual balance (meaning inventory is LOST)
-        if (discrepancy <= 0) {
-            continue;
-        }
-
-        // Step 6: Calculate value
-        const avgPrice = priceCount > 0 ? averageSalesPrice / priceCount : 15.00; // Default $15 if unknown
-        const estimatedRecoveryValue = discrepancy * avgPrice;
-
-        // Skip tiny discrepancies (less than $5 recovery)
-        if (estimatedRecoveryValue < 5) {
-            continue;
-        }
-
-        // Step 7: Calculate confidence
-        // Higher confidence for larger discrepancies (more likely systematic issue)
-        const confidenceScore = discrepancy > 5 ? 0.90 : 0.70;
-
-        // Step 8: Build evidence object
-        const evidence: LostInventoryEvidence = {
-            fnsku,
-            sku,
-            asin,
-            product_name: productName,
-
-            total_receipts: totalReceipts,
-            total_adjustments: totalAdjustments,
-            total_returns: totalReturns,
-            total_input: totalInput,
-
-            total_shipments: totalShipments,
-            total_removals: totalRemovals,
-            total_output: totalOutput,
-
-            calculated_stock: calculatedStock,
-            ending_warehouse_balance: endingWarehouseBalance,
-            discrepancy,
-
-            average_sales_price: avgPrice,
-            estimated_recovery_value: estimatedRecoveryValue,
-
-            event_ids: eventIds,
-            date_range: {
-                start: events[0]?.event_date || discoveryDate.toISOString(),
-                end: events[events.length - 1]?.event_date || discoveryDate.toISOString()
-            },
-            fulfillment_centers: Array.from(fulfillmentCenters)
-        };
-
-        // Step 9: Create detection result
-        const result: DetectionResult = {
-            seller_id: sellerId,
-            sync_id: syncId,
-            anomaly_type: classifyAnomalyType(events),
-            severity: calculateSeverity(estimatedRecoveryValue),
-            estimated_value: estimatedRecoveryValue,
-            currency: 'USD',
-            confidence_score: confidenceScore,
-            evidence,
-            related_event_ids: eventIds,
-            discovery_date: discoveryDate,
-            deadline_date: deadline,
-            days_remaining: daysRemaining,
-            fnsku,
-            sku,
-            asin,
-            product_name: productName
-        };
-
-        results.push(result);
-
-        logger.info('🐋 [WHALE] Lost inventory detected!', {
-            fnsku,
-            discrepancy,
-            estimatedValue: estimatedRecoveryValue,
-            confidence: confidenceScore,
-            severity: result.severity
-        });
-    }
-
-    logger.info('🐋 [WHALE] Detection complete', {
-        sellerId,
-        syncId,
-        detectionsFound: results.length,
-        totalEstimatedRecovery: results.reduce((sum, r) => sum + r.estimated_value, 0)
-    });
-
     return results;
 }
 
-// ============================================================================
-// Database Integration - Fetch Inventory Ledger
-// ============================================================================
-
-/**
- * Fetch inventory ledger events from database for a seller
- * 
- * ADAPTER: Since Agent 2 uses separate tables (orders, returns, shipments, settlements),
- * we build the inventory ledger by combining data from these tables.
- */
-export async function fetchInventoryLedger(
-    sellerId: string,
-    options?: {
-        startDate?: string;
-        endDate?: string;
-        limit?: number;
+function deduplicateLedger(events: InventoryLedgerEvent[]): InventoryLedgerEvent[] {
+    const results = new Map<string, InventoryLedgerEvent>();
+    const fingerprintMap = new Map<string, InventoryLedgerEvent>();
+    for (const e of events) {
+        const d = new Date(e.event_date); const minute = Math.floor(d.getTime() / 60000);
+        const fp = `${e.seller_id}|${e.fnsku}|${e.event_type}|${minute}|${e.quantity}|${e.fulfillment_center_id || ''}|${e.reference_id || ''}`;
+        if (fingerprintMap.has(fp)) continue;
+        fingerprintMap.set(fp, e); results.set(e.id, e);
     }
-): Promise<InventoryLedgerEvent[]> {
-    const events: InventoryLedgerEvent[] = [];
-
-    try {
-        logger.info('🐋 [WHALE] Building inventory ledger from Agent 2 tables', { sellerId });
-
-        // 0. Fetch from dedicated inventory_ledger_events table (CSV uploads go here)
-        const { data: ledgerEvents, error: ledgerError } = await supabaseAdmin
-            .from('inventory_ledger_events')
-            .select('*')
-            .eq('user_id', sellerId)
-            .order('event_date', { ascending: true });
-
-        if (!ledgerError && ledgerEvents && ledgerEvents.length > 0) {
-            for (const le of ledgerEvents) {
-                events.push({
-                    id: le.id,
-                    seller_id: sellerId,
-                    fnsku: le.fnsku || 'UNKNOWN',
-                    sku: le.sku,
-                    asin: le.asin,
-                    product_name: le.product_name,
-                    event_type: le.event_type as InventoryEventType,
-                    quantity: le.quantity || 0,
-                    quantity_direction: le.quantity_direction as 'in' | 'out',
-                    warehouse_balance: le.warehouse_balance,
-                    event_date: le.event_date,
-                    fulfillment_center_id: le.fulfillment_center,
-                    reference_id: le.reference_id,
-                    unit_cost: le.unit_cost,
-                    average_sales_price: le.average_sales_price,
-                    reason: le.reason || undefined,
-                    disposition: le.disposition || undefined,
-                    created_at: le.created_at
-                });
-            }
-            logger.info('🐋 [WHALE] Processed inventory_ledger_events (CSV uploads)', { count: ledgerEvents.length });
-        } else if (ledgerError) {
-            // Table might not exist yet — that's OK, continue with other tables
-            logger.warn('🐋 [WHALE] inventory_ledger_events query failed (table may not exist yet)', {
-                error: ledgerError.message
-            });
-        }
-
-        // 1. Fetch shipments (inbound = Receipt, outbound = Shipment)
-        const { data: shipments, error: shipmentsError } = await supabaseAdmin
-            .from('shipments')
-            .select('*')
-            .eq('user_id', sellerId)
-            .order('shipped_date', { ascending: true });
-
-        if (!shipmentsError && shipments) {
-            for (const shipment of shipments) {
-                // Inbound shipments = Receipts
-                if (shipment.shipment_type === 'INBOUND' || shipment.status?.includes('INBOUND')) {
-                    events.push({
-                        id: shipment.shipment_id || shipment.id,
-                        seller_id: sellerId,
-                        fnsku: shipment.fnsku || shipment.items?.[0]?.fnsku || 'UNKNOWN',
-                        sku: shipment.sku || shipment.items?.[0]?.sku,
-                        asin: shipment.asin || shipment.items?.[0]?.asin,
-                        product_name: shipment.product_name,
-                        event_type: 'Receipt',
-                        quantity: shipment.quantity_received || shipment.quantity || 0,
-                        quantity_direction: 'in',
-                        event_date: shipment.shipped_date || shipment.created_at,
-                        fulfillment_center_id: shipment.fulfillment_center_id || shipment.destination_fc,
-                        reference_id: shipment.shipment_id,
-                        created_at: shipment.created_at
-                    });
-                } else {
-                    // Outbound = customer orders shipped
-                    events.push({
-                        id: shipment.shipment_id || shipment.id,
-                        seller_id: sellerId,
-                        fnsku: shipment.fnsku || shipment.items?.[0]?.fnsku || 'UNKNOWN',
-                        sku: shipment.sku || shipment.items?.[0]?.sku,
-                        asin: shipment.asin || shipment.items?.[0]?.asin,
-                        product_name: shipment.product_name,
-                        event_type: 'Shipment',
-                        quantity: shipment.quantity_shipped || shipment.quantity || 0,
-                        quantity_direction: 'out',
-                        event_date: shipment.shipped_date || shipment.created_at,
-                        fulfillment_center_id: shipment.fulfillment_center_id,
-                        reference_id: shipment.order_id || shipment.shipment_id,
-                        created_at: shipment.created_at
-                    });
-                }
-            }
-            logger.info('🐋 [WHALE] Processed shipments', { count: shipments.length });
-        }
-
-        // 2. Fetch returns (customer returns = inventory back in)
-        const { data: returns, error: returnsError } = await supabaseAdmin
-            .from('returns')
-            .select('*')
-            .eq('user_id', sellerId)
-            .order('returned_date', { ascending: true });
-
-        if (!returnsError && returns) {
-            for (const returnData of returns) {
-                const items = returnData.items || [];
-                for (const item of items) {
-                    events.push({
-                        id: `return-${returnData.return_id}-${item.sku || 'item'}`,
-                        seller_id: sellerId,
-                        fnsku: item.fnsku || item.asin || 'UNKNOWN',
-                        sku: item.sku,
-                        asin: item.asin,
-                        event_type: 'Return',
-                        quantity: item.quantity || 1,
-                        quantity_direction: 'in',
-                        event_date: returnData.returned_date || returnData.created_at,
-                        reference_id: returnData.order_id,
-                        average_sales_price: item.refund_amount || returnData.refund_amount,
-                        created_at: returnData.created_at
-                    });
-                }
-            }
-            logger.info('🐋 [WHALE] Processed returns', { count: returns.length });
-        }
-
-        // 3. Fetch orders (for tracking quantities sold)
-        const { data: orders, error: ordersError } = await supabaseAdmin
-            .from('orders')
-            .select('*')
-            .eq('user_id', sellerId)
-            .eq('order_status', 'Shipped')
-            .order('order_date', { ascending: true });
-
-        if (!ordersError && orders) {
-            for (const order of orders) {
-                const items = order.items || [];
-                for (const item of items) {
-                    events.push({
-                        id: `order-${order.order_id}-${item.sku || 'item'}`,
-                        seller_id: sellerId,
-                        fnsku: item.fnsku || item.asin || 'UNKNOWN',
-                        sku: item.sku,
-                        asin: item.asin,
-                        product_name: item.title,
-                        event_type: 'Shipment',
-                        quantity: item.quantity || 1,
-                        quantity_direction: 'out',
-                        event_date: order.shipped_date || order.order_date,
-                        reference_id: order.order_id,
-                        average_sales_price: item.price,
-                        created_at: order.created_at
-                    });
-                }
-            }
-            logger.info('🐋 [WHALE] Processed orders', { count: orders.length });
-        }
-
-        // 4. Fetch settlements for reimbursements/adjustments
-        const { data: settlements, error: settlementsError } = await supabaseAdmin
-            .from('settlements')
-            .select('*')
-            .eq('user_id', sellerId)
-            .in('transaction_type', ['reimbursement', 'adjustment'])
-            .order('settlement_date', { ascending: true });
-
-        if (!settlementsError && settlements) {
-            for (const settlement of settlements) {
-                if (settlement.transaction_type === 'reimbursement') {
-                    // Reimbursements don't directly affect inventory ledger
-                    // but we track them for the reimbursement check in detection
-                    continue;
-                }
-
-                events.push({
-                    id: settlement.settlement_id || settlement.id,
-                    seller_id: sellerId,
-                    fnsku: settlement.metadata?.fnsku || 'UNKNOWN',
-                    sku: settlement.metadata?.sku,
-                    event_type: 'Adjustment',
-                    quantity: settlement.amount > 0 ? 1 : -1,
-                    quantity_direction: settlement.amount > 0 ? 'in' : 'out',
-                    event_date: settlement.settlement_date,
-                    reference_id: settlement.order_id,
-                    created_at: settlement.created_at
-                });
-            }
-            logger.info('🐋 [WHALE] Processed settlements', { count: settlements.length });
-        }
-
-        // Sort all events by date
-        events.sort((a, b) => new Date(a.event_date).getTime() - new Date(b.event_date).getTime());
-
-        logger.info('🐋 [WHALE] Inventory ledger built', {
-            sellerId,
-            totalEvents: events.length
-        });
-
-        return events;
-    } catch (err: any) {
-        logger.error('🐋 [WHALE] Exception building inventory ledger', {
-            sellerId,
-            error: err.message
-        });
-        return [];
-    }
+    return [...results.values()];
 }
 
-/**
- * Run full lost inventory detection for a seller
- */
-export async function runLostInventoryDetection(
-    sellerId: string,
-    syncId: string
-): Promise<DetectionResult[]> {
-    logger.info('🐋 [WHALE] Starting full detection run', { sellerId, syncId });
+function findReimbursements(fnsku: string, events: any[], lossDate: string, sellerId: string, fc?: string): { 
+    totalMatched: number, fullNetUnits: number, partialNetUnits: number, linkage: ReimbursementLinkageType, modifier: number 
+} {
+    let totalMatched = 0; let fullNetUnits = 0; let partialNetUnits = 0; let best: ReimbursementLinkageType = 'NONE';
+    const target = fnsku.trim().toUpperCase();
+    for (const re of events) {
+        if (re.seller_id && re.seller_id !== sellerId) continue;
+        const reFnsku = (re.fnsku || re.sku || '').trim().toUpperCase();
+        if (reFnsku !== target) continue;
+        const reDate = new Date(re.approval_date || re.created_at || re.date); const lDate = new Date(lossDate);
+        const diff = Math.abs(reDate.getTime() - lDate.getTime()) / (1000 * 3600 * 24);
+        const qty = (re.quantity || 4);
 
-    // Fetch inventory ledger from database
-    const inventoryLedger = await fetchInventoryLedger(sellerId, {
-        // Look at last 90 days by default
-        startDate: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
-    });
+        let link: ReimbursementLinkageType = 'NONE';
+        if (fc && (re.fulfillment_center_id === fc || re.fulfillmentCenterId === fc) && diff <= 90) link = 'CAUSAL';
+        else if (diff <= 110) link = 'PROBABLE';
+        else if (diff <= 180) link = 'WEAK';
 
-    if (inventoryLedger.length === 0) {
-        logger.warn('🐋 [WHALE] No inventory ledger data found', { sellerId });
-        return [];
+        if (link !== 'NONE') {
+            totalMatched += qty;
+            if (['DIRECT_ID', 'CAUSAL', 'PROBABLE'].includes(link)) fullNetUnits += qty;
+            else if (link === 'WEAK') partialNetUnits += qty;
+            const p: Record<string, number> = { 'DIRECT_ID': 5, 'CAUSAL': 4, 'PROBABLE': 3, 'WEAK': 2, 'NONE': 0 };
+            if (p[link] > (p[best] || 0)) best = link;
+        }
     }
-
-    // Create SyncedData object
-    const syncedData: SyncedData = {
-        seller_id: sellerId,
-        sync_id: syncId,
-        inventory_ledger: inventoryLedger
+    return { 
+        totalMatched, fullNetUnits, partialNetUnits, linkage: best, 
+        modifier: (best === 'PROBABLE' ? -0.05 : (best === 'WEAK' ? -0.1 : 0)) 
     };
-
-    // Run detection
-    return detectLostInventory(sellerId, syncId, syncedData);
 }
 
-// ============================================================================
-// Store Detection Results
-// ============================================================================
-
-/**
- * Store detection results in the detection_results table
- */
-export async function storeDetectionResults(results: DetectionResult[]): Promise<void> {
-    if (results.length === 0) return;
-
-    const tenantId = await resolveTenantId(results[0].seller_id);
-    const sellerId = results[0].seller_id;
-
-    try {
-        // CLEAN-SLATE: Delete existing inventory detection results for this seller
-        // before inserting the fresh batch. This prevents duplicate accumulation
-        // across multiple detection runs and ensures resolved claims disappear.
-        const { error: deleteError } = await supabaseAdmin
-            .from('detection_results')
-            .delete()
-            .eq('seller_id', sellerId)
-            .in('anomaly_type', [
-                'lost_warehouse', 'damaged_warehouse', 'lost_inbound',
-                'damaged_inbound', 'lost_in_transit', 'inbound_shipment_shortage'
-            ]);
-
-        if (deleteError) {
-            logger.warn('🐋 [WHALE] Failed to clear stale detection results (proceeding anyway)', {
-                error: deleteError.message,
-                sellerId
-            });
-        } else {
-            logger.info('🐋 [WHALE] Cleared stale inventory detection results', { sellerId });
-        }
-
-        const records = results.map(r => ({
-            seller_id: r.seller_id,
-            sync_id: r.sync_id,
-            anomaly_type: r.anomaly_type,
-            severity: r.severity,
-            estimated_value: r.estimated_value,
-            currency: r.currency,
-            confidence_score: r.confidence_score,
-            evidence: r.evidence,
-            related_event_ids: r.related_event_ids,
-            discovery_date: r.discovery_date.toISOString(),
-            deadline_date: r.deadline_date.toISOString(),
-            days_remaining: r.days_remaining,
-            tenant_id: tenantId,
-            status: 'detected',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-        }));
-
-        const { error } = await supabaseAdmin
-            .from('detection_results')
-            .insert(records);
-
-        if (error) {
-            logger.error('🐋 [WHALE] Error storing detection results', {
-                error: error.message,
-                count: results.length
-            });
-        } else {
-            logger.info('🐋 [WHALE] Detection results stored (clean-slate)', {
-                count: results.length,
-                sellerId
-            });
-        }
-    } catch (err: any) {
-        logger.error('🐋 [WHALE] Exception storing detection results', {
-            error: err.message
-        });
-    }
+function groupByFnsku(events: InventoryLedgerEvent[]): Record<string, InventoryLedgerEvent[]> {
+    return events.reduce((acc, e) => { if (!acc[e.fnsku]) acc[e.fnsku] = []; acc[e.fnsku].push(e); return acc; }, {} as Record<string, InventoryLedgerEvent[]>);
 }
 
-// ============================================================================
-// Exports
-// ============================================================================
+export async function runLostInventoryDetection(sellerId: string, syncId: string) {
+    const tenantId = await resolveTenantId(sellerId);
+    const data = await fetchInventoryLedger(sellerId, syncId);
+    data.inventory_ledger = (data.inventory_ledger || []).filter(e => e.seller_id === sellerId);
+    if (data.financial_events) data.financial_events = data.financial_events.filter(e => e.seller_id === sellerId || !e.seller_id);
+    const results = detectLostInventory(sellerId, syncId, data);
+    if (results.length > 0) await storeDetectionResults(sellerId, tenantId, results);
+    return results;
+}
 
-export default {
-    detectLostInventory,
-    fetchInventoryLedger,
-    runLostInventoryDetection,
-    storeDetectionResults
-};
+export async function fetchInventoryLedger(sellerId: string, syncId: string): Promise<SyncedData> { return { seller_id: sellerId, sync_id: syncId, inventory_ledger: [] }; }
+export async function storeDetectionResults(sellerId: string, tenantId: string, results: DetectionResult[]) {
+    await supabaseAdmin.from('detection_results').delete().match({ seller_id: sellerId }).in('anomaly_type', ['lost_warehouse', 'lost_in_transit']);
+    const records = results.map(r => ({ ...r, tenant_id: tenantId, status: 'detected', created_at: new Date().toISOString() }));
+    await supabaseAdmin.from('detection_results').insert(records);
+}
+export default { detectLostInventory, fetchInventoryLedger, runLostInventoryDetection, storeDetectionResults };

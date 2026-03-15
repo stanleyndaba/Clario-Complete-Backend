@@ -110,6 +110,8 @@ export interface RefundWithoutReturnEvidence {
     days_since_refund: number;
     return_found: boolean;
     reimbursement_found: boolean;
+    total_reimbursed: number;
+    shortfall_delta: number;
 
     // Human-readable evidence
     evidence_summary: string;
@@ -216,46 +218,36 @@ export function detectRefundWithoutReturn(
     // Process each refund
     for (const refund of data.refund_events) {
         const refundDate = new Date(refund.refund_date);
-        const daysSinceRefund = daysBetween(refundDate, now);
-
         // THE 45-DAY RULE: Skip refunds that are too recent
-        // Amazon allows 45 days for returns, so we can't claim before then
+        const daysSinceRefund = daysBetween(refundDate, now);
         if (daysSinceRefund < 45) {
             continue;
         }
 
-        // Check for return on this order
+        // Step 3a: Return Reconciliation
         const returns = returnsByOrderId.get(refund.order_id) || [];
         const matchingReturn = returns.find(ret => {
-            // Match by order_id, and optionally by SKU if available
-            if (refund.sku && ret.sku) {
-                return ret.sku === refund.sku;
-            }
-            return true; // If no SKU, any return for this order counts
+            if (refund.sku && ret.sku) return ret.sku === refund.sku;
+            return true;
         });
 
-        const returnFound = !!matchingReturn;
+        if (matchingReturn) continue;
 
-        // Check for reimbursement on this order
+        // Step 3b: Quantitative Delta Netting (Surgical Shortfall Detection)
         const reimbursements = reimbursementsByOrderId.get(refund.order_id) || [];
-        const matchingReimbursement = reimbursements.find(reimb => {
-            // Match by order_id, and optionally by SKU if available
-            if (refund.sku && reimb.sku) {
-                return reimb.sku === refund.sku;
-            }
-            return true; // If no SKU, any reimbursement for this order counts
-        });
+        const totalReimbursed = reimbursements
+            .filter(reimb => {
+                if (refund.sku && reimb.sku) return reimb.sku === refund.sku;
+                return true;
+            })
+            .reduce((sum, reimb) => sum + (reimb.reimbursement_amount || 0), 0);
 
-        const reimbursementFound = !!matchingReimbursement;
+        const expectedValue = refund.refund_amount;
+        const shortfallDelta = expectedValue - totalReimbursed;
 
-        // THE TRAP: Refund exists + No Return + No Reimbursement = ANOMALY
-        if (returnFound || reimbursementFound) {
-            // Not an anomaly - either product was returned or we got reimbursed
-            continue;
-        }
+        if (shortfallDelta <= 0.05) continue;
 
-        // 🪤 TRAP SPRUNG! This is money owed to the seller
-
+        // 🪤 TRAP SPRUNG! Quantitative Shortfall Detected.
         // Calculate confidence based on age
         // > 60 days: 95% confidence (very confident return window is closed)
         // 45-60 days: 75% confidence (return window just closed)
@@ -284,8 +276,10 @@ export function detectRefundWithoutReturn(
             quantity_refunded: refund.quantity_refunded || 1,
 
             days_since_refund: daysSinceRefund,
-            return_found: returnFound,
-            reimbursement_found: reimbursementFound,
+            return_found: false,
+            reimbursement_found: totalReimbursed > 0,
+            total_reimbursed: totalReimbursed,
+            shortfall_delta: shortfallDelta,
 
             evidence_summary: evidenceSummary,
             refund_event_id: refund.id
@@ -296,8 +290,8 @@ export function detectRefundWithoutReturn(
             seller_id: sellerId,
             sync_id: syncId,
             anomaly_type: 'refund_no_return',
-            severity: calculateSeverity(refund.refund_amount),
-            estimated_value: refund.refund_amount,
+            severity: calculateSeverity(shortfallDelta),
+            estimated_value: shortfallDelta,
             currency: refund.currency || 'USD',
             confidence_score: confidenceScore,
             evidence,

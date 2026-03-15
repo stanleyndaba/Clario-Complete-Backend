@@ -25,7 +25,7 @@ import { resolveTenantId } from './shared/tenantUtils';
 export interface LossEvent {
     id: string;
     seller_id: string;
-    event_type: 'lost' | 'damaged' | 'disposed' | 'removed' | 'adjustment';
+    event_type: 'lost' | 'damaged' | 'disposed' | 'removed' | 'adjustment' | 'found';
     event_date: string;
     sku?: string;
     fnsku?: string;
@@ -84,7 +84,7 @@ export interface SentinelDetectionResult {
     seller_id: string;
     sync_id: string;
 
-    detection_type: 'missed_reimbursement' | 'duplicate_reimbursement' | 'clawback_risk';
+    detection_type: 'missed_reimbursement' | 'duplicate_reimbursement' | 'clawback_risk' | 'ASYMMETRIC_CLAWBACK' | 'GHOST_REVERSAL';
 
     // SKU info
     sku?: string;
@@ -109,7 +109,7 @@ export interface SentinelDetectionResult {
     // Classification
     severity: 'low' | 'medium' | 'high' | 'critical';
     risk_level: 'low' | 'moderate' | 'high' | 'extreme';
-    recommended_action: 'monitor' | 'review' | 'file_claim' | 'preemptive_audit';
+    recommended_action: 'monitor' | 'review' | 'file_claim' | 'preemptive_audit' | 'escalate';
 
     // Confidence
     confidence_score: number;
@@ -526,6 +526,104 @@ function analyzeRecoveryLifecycle(
         }
     }
 
+    // Detection D: Sentinel Reversal Reconciliation (Tripartite Ledger Lock)
+    const reversals = lifecycle.reimbursement_events.filter(r => r.amount < 0);
+    
+    for (const reversal of reversals) {
+        // 1. The Financial Anchor: Link to originating reimbursement
+        const originalReimb = lifecycle.reimbursement_events.find(r => 
+            r.amount > 0 && 
+            (r.order_id === reversal.order_id || r.case_id === reversal.case_id) &&
+            new Date(r.reimbursement_date) < new Date(reversal.reimbursement_date)
+        );
+
+        if (originalReimb) {
+            // 2. The Asymmetric Over-Clawback Check
+            const clawbackDelta = Math.abs(reversal.amount) - originalReimb.amount;
+            
+            if (clawbackDelta > 0.05) {
+                const asymReasons = [
+                    `Asymmetric Clawback: reversal amount ($${Math.abs(reversal.amount).toFixed(2)}) exceeds original payout ($${originalReimb.amount.toFixed(2)})`,
+                    `Loss delta: $${clawbackDelta.toFixed(2)}`
+                ];
+
+                results.push({
+                    seller_id: sellerId,
+                    sync_id: syncId,
+                    detection_type: 'ASYMMETRIC_CLAWBACK',
+                    sku: lifecycle.sku,
+                    fnsku: lifecycle.fnsku,
+                    asin: lifecycle.asin,
+                    loss_count: lifecycle.total_losses,
+                    reimbursement_count: 2,
+                    quantity_gap: 0,
+                    value_gap: -clawbackDelta,
+                    unmatched_loss_ids: [],
+                    duplicate_reimbursement_ids: [originalReimb.id, reversal.id],
+                    estimated_recovery: clawbackDelta,
+                    clawback_risk_value: clawbackDelta,
+                    currency: reversal.currency || 'USD',
+                    severity: 'high',
+                    risk_level: 'extreme',
+                    recommended_action: 'escalate',
+                    confidence_score: 1.0,
+                    confidence_factors: calculateConfidence(lifecycle, 'duplicate'),
+                    evidence: {
+                        recovery_lifecycle: lifecycle,
+                        detection_reasons: asymReasons
+                    }
+                });
+                continue; // Do not proceed to Step 3 if Step 2 caught an over-clawback
+            }
+
+            // 3. The Physical Ghost Reversal Check
+            if (clawbackDelta <= 0.05) {
+                const reversalDate = new Date(reversal.reimbursement_date);
+                const sixtyDaysPrior = new Date(reversalDate);
+                sixtyDaysPrior.setDate(sixtyDaysPrior.getDate() - 60);
+
+                const foundEvent = lifecycle.loss_events.find(l => 
+                    l.event_type === 'found' && 
+                    new Date(l.event_date) >= sixtyDaysPrior && 
+                    new Date(l.event_date) <= reversalDate
+                );
+
+                if (!foundEvent) {
+                    results.push({
+                        seller_id: sellerId,
+                        sync_id: syncId,
+                        detection_type: 'GHOST_REVERSAL',
+                        sku: lifecycle.sku,
+                        fnsku: lifecycle.fnsku,
+                        asin: lifecycle.asin,
+                        loss_count: lifecycle.total_losses,
+                        reimbursement_count: 2,
+                        quantity_gap: 1,
+                        value_gap: Math.abs(reversal.amount),
+                        unmatched_loss_ids: [],
+                        duplicate_reimbursement_ids: [originalReimb.id, reversal.id],
+                        estimated_recovery: Math.abs(reversal.amount),
+                        clawback_risk_value: Math.abs(reversal.amount),
+                        currency: reversal.currency || 'USD',
+                        severity: 'critical',
+                        risk_level: 'extreme',
+                        recommended_action: 'file_claim',
+                        confidence_score: 0.95,
+                        confidence_factors: calculateConfidence(lifecycle, 'missed'),
+                        evidence: {
+                            recovery_lifecycle: lifecycle,
+                            detection_reasons: [
+                                `Ghost Reversal: Reimbursement of $${Math.abs(reversal.amount).toFixed(2)} clawed back but item remains lost`,
+                                `No 'Found' event detected in 60-day horizon prior to reversal`
+                            ]
+                        }
+                    });
+                }
+                // 4. Precision Guardrail (The Control): Silently discard if Found exists
+            }
+        }
+    }
+
     return results;
 }
 
@@ -662,7 +760,7 @@ export async function fetchLossEvents(
             .from('inventory_ledger')
             .select('*')
             .eq('user_id', sellerId)
-            .in('adjustment_type', ['Lost', 'Damaged', 'Disposed', 'M', 'P', 'E', 'D'])
+            .in('adjustment_type', ['Lost', 'Damaged', 'Disposed', 'M', 'P', 'E', 'D', 'Found', 'F'])
             .gte('event_date', cutoffDate.toISOString());
 
         if (!ledgerError && ledgerData) {
@@ -727,7 +825,7 @@ export async function fetchReimbursementEventsForSentinel(
                     asin: row.asin,
                     order_id: row.order_id,
                     quantity: row.quantity || 1,
-                    amount: Math.abs(parseFloat(row.amount) || 0),
+                    amount: parseFloat(row.amount) || 0,
                     currency: row.currency || 'USD',
                     reason: row.metadata?.reason,
                     case_id: row.metadata?.case_id
@@ -750,8 +848,8 @@ export async function fetchReimbursementEventsForSentinel(
 /**
  * Map adjustment type to event type
  */
-function mapEventType(adjustmentType: string): 'lost' | 'damaged' | 'disposed' | 'removed' | 'adjustment' {
-    const typeMap: Record<string, 'lost' | 'damaged' | 'disposed' | 'removed' | 'adjustment'> = {
+function mapEventType(adjustmentType: string): 'lost' | 'damaged' | 'disposed' | 'removed' | 'adjustment' | 'found' {
+    const typeMap: Record<string, 'lost' | 'damaged' | 'disposed' | 'removed' | 'adjustment' | 'found'> = {
         'Lost': 'lost',
         'M': 'lost', // Missing
         'Damaged': 'damaged',
@@ -759,7 +857,9 @@ function mapEventType(adjustmentType: string): 'lost' | 'damaged' | 'disposed' |
         'E': 'damaged', // Expired
         'Disposed': 'disposed',
         'P': 'disposed',
-        'Removed': 'removed'
+        'Removed': 'removed',
+        'Found': 'found',
+        'F': 'found'
     };
     return typeMap[adjustmentType] || 'adjustment';
 }

@@ -91,7 +91,7 @@ export interface DamagedSyncedData {
 export interface DamagedDetectionResult {
     seller_id: string;
     sync_id: string;
-    anomaly_type: 'damaged_warehouse' | 'damaged_inbound' | 'damaged_removal';
+    anomaly_type: 'damaged_warehouse' | 'damaged_inbound' | 'damaged_removal' | 'DAMAGED_INVENTORY_SHORTFALL';
     severity: 'low' | 'medium' | 'high' | 'critical';
     estimated_value: number;
     currency: string;
@@ -256,109 +256,87 @@ export function detectDamagedInventory(
         const damageDate = new Date(damage.event_date);
         const daysSinceDamage = daysBetween(damageDate, now);
 
-        // THE 45-DAY RULE: Skip events less than 45 days old
-        // Amazon needs time to process, so we can't claim before then
-        if (daysSinceDamage < 45) {
+        // 1. Physical Ledger Netting: Check for 'Found' events in the 30-day SLA window
+        const thirtyDaysAfter = new Date(damageDate);
+        thirtyDaysAfter.setDate(thirtyDaysAfter.getDate() + 30);
+
+        const foundEvents = data.inventory_ledger.filter(l => 
+            l.fnsku === damage.fnsku &&
+            (l.reason_code?.toUpperCase() === 'F' || l.reason_code?.toUpperCase() === 'FOUND') &&
+            new Date(l.event_date) >= damageDate &&
+            new Date(l.event_date) <= thirtyDaysAfter
+        );
+
+        const foundQty = foundEvents.reduce((sum, l) => sum + Math.abs(l.quantity), 0);
+        const netLossQty = Math.abs(damage.quantity) - foundQty;
+
+        // If netQty <= 0, item was restored. Discard silently.
+        if (netLossQty <= 0) {
             continue;
         }
 
-        // Check for matching reimbursement
+        // 2. Financial Ledger Netting: Sum reimbursements
         const reimbursements = reimbursementsByFnsku.get(damage.fnsku) || [];
-
-        // Look for a reimbursement that matches:
-        // - Same FNSKU
-        // - Happened within 45 days of damage
-        // - Quantity matches (approximately)
-        const matchingReimbursement = reimbursements.find(reimb => {
+        const linkedReimbs = reimbursements.filter(reimb => {
             const reimbDate = new Date(reimb.reimbursement_date);
-            const daysBetweenEvents = daysBetween(damageDate, reimbDate);
-
-            // Reimbursement should happen after damage, within 45 days
-            if (reimbDate < damageDate) return false;
-            if (daysBetweenEvents > 45) return false;
-
-            // Check quantity (allow some tolerance)
-            const quantityMatch = Math.abs(reimb.quantity_reimbursed - damage.quantity) <= 1;
-
-            return quantityMatch;
+            const daysDiff = daysBetween(damageDate, reimbDate);
+            return reimbDate >= damageDate && daysDiff <= 45;
         });
 
-        // If reimbursement found, skip - Amazon already paid
-        if (matchingReimbursement) {
+        const totalReimbursed = linkedReimbs.reduce((sum, r) => sum + r.reimbursement_amount, 0);
+
+        // 3. Shortfall Calculation
+        const unitValue = damage.unit_value || damage.average_sales_price || 15;
+        const expectedValue = netLossQty * unitValue;
+        const shortfallDelta = expectedValue - totalReimbursed;
+
+        // THE 30-DAY SLA TRIGGER: Only promote if SLA has expired
+        if (daysSinceDamage < 30) {
             continue;
         }
 
-        // 💥 THE TRAP IS SPRUNG! Amazon damaged it and didn't pay
+        if (shortfallDelta > 0.05) {
+            // THE TRAP IS SPRUNG!
+            const evidence: DamagedInventoryEvidence = {
+                fnsku: damage.fnsku,
+                sku: damage.sku,
+                asin: damage.asin,
+                product_name: damage.product_name,
+                damage_date: damage.event_date,
+                disposition: damage.disposition,
+                reason_code: damage.reason_code,
+                reason_description: REASON_CODE_DESCRIPTIONS[damage.reason_code.toUpperCase()] || damage.reason_code,
+                quantity_damaged: damage.quantity,
+                fulfillment_center: damage.fulfillment_center_id,
+                reimbursement_found: totalReimbursed > 0,
+                days_since_damage: daysSinceDamage,
+                unit_value: unitValue,
+                total_value: expectedValue,
+                evidence_summary: `Damaged Inventory Shortfall: ${netLossQty} units of ${damage.fnsku} remain un-reconciled after ${daysSinceDamage} days. ` +
+                                 `Expected: $${expectedValue.toFixed(2)}, Reimbursed: $${totalReimbursed.toFixed(2)}. ` +
+                                 `Shortfall: $${shortfallDelta.toFixed(2)}.`,
+                damage_event_id: damage.id
+            };
 
-        // Calculate value
-        const unitValue = damage.unit_value || damage.average_sales_price || 15; // Default $15 if unknown
-        const totalValue = damage.quantity * unitValue;
-
-        // Skip tiny amounts
-        if (totalValue < 5) {
-            continue;
+            results.push({
+                seller_id: sellerId,
+                sync_id: syncId,
+                anomaly_type: 'DAMAGED_INVENTORY_SHORTFALL',
+                severity: calculateSeverity(shortfallDelta),
+                estimated_value: shortfallDelta,
+                currency: 'USD',
+                confidence_score: 0.95,
+                evidence,
+                related_event_ids: [damage.id, ...linkedReimbs.map(r => r.id)],
+                discovery_date: discoveryDate,
+                deadline_date: deadline,
+                days_remaining: daysRemaining,
+                fnsku: damage.fnsku,
+                sku: damage.sku,
+                asin: damage.asin,
+                product_name: damage.product_name
+            });
         }
-
-        // Build evidence
-        const reasonDescription = REASON_CODE_DESCRIPTIONS[damage.reason_code.toUpperCase()]
-            || `Amazon damage code ${damage.reason_code}`;
-
-        const evidenceSummary = `Amazon marked ${damage.quantity} units of ${damage.fnsku} as ${damage.disposition} ` +
-            `(Code ${damage.reason_code}: ${reasonDescription}) on ${damageDate.toLocaleDateString()}. ` +
-            `No reimbursement found after ${daysSinceDamage} days. Recovery value: $${totalValue.toFixed(2)}.`;
-
-        const evidence: DamagedInventoryEvidence = {
-            fnsku: damage.fnsku,
-            sku: damage.sku,
-            asin: damage.asin,
-            product_name: damage.product_name,
-
-            damage_date: damage.event_date,
-            disposition: damage.disposition,
-            reason_code: damage.reason_code,
-            reason_description: reasonDescription,
-            quantity_damaged: damage.quantity,
-            fulfillment_center: damage.fulfillment_center_id,
-
-            reimbursement_found: false,
-            days_since_damage: daysSinceDamage,
-
-            unit_value: unitValue,
-            total_value: totalValue,
-
-            evidence_summary: evidenceSummary,
-            damage_event_id: damage.id
-        };
-
-        // Create detection result
-        const result: DamagedDetectionResult = {
-            seller_id: sellerId,
-            sync_id: syncId,
-            anomaly_type: getAnomalyType(damage.reason_code),
-            severity: calculateSeverity(totalValue),
-            estimated_value: totalValue,
-            currency: 'USD',
-            confidence_score: 0.95, // High confidence since > 45 days
-            evidence,
-            related_event_ids: [damage.id],
-            discovery_date: discoveryDate,
-            deadline_date: deadline,
-            days_remaining: daysRemaining,
-            fnsku: damage.fnsku,
-            sku: damage.sku,
-            asin: damage.asin,
-            product_name: damage.product_name
-        };
-
-        results.push(result);
-
-        logger.info('💥 [BROKEN GOODS] Unreimbursed damage detected!', {
-            fnsku: damage.fnsku,
-            quantity: damage.quantity,
-            reasonCode: damage.reason_code,
-            daysSinceDamage,
-            totalValue
-        });
     }
 
     logger.info('💥 [BROKEN GOODS] Detection complete', {

@@ -24,7 +24,8 @@ export type RemovalAnomalyType =
     | 'disposal_incomplete'
     | 'removal_in_transit_lost'
     | 'liquidation_undervalue'
-    | 'removal_fee_overcharge';
+    | 'removal_fee_overcharge'
+    | 'CANCELLED_REMOVAL_LOSS';
 
 export interface RemovalOrderDetail {
     id: string; seller_id: string; order_id: string;
@@ -41,7 +42,8 @@ export interface RemovalOrderDetail {
 export interface RemovalSyncedData {
     seller_id: string; sync_id: string;
     removal_orders: RemovalOrderDetail[];
-    reimbursement_events: Array<{ id: string; order_id?: string; sku?: string; reimbursement_amount: number }>;
+    reimbursement_events: Array<{ id: string; order_id?: string; sku?: string; reimbursement_amount: number; quantity_reimbursed?: number }>;
+    inventory_ledger?: Array<{ event_date: string; sku: string; quantity: number; reason_code: string }>;
 }
 
 export interface RemovalDetectionResult {
@@ -65,12 +67,14 @@ function buildReimbLookup(reimbs: any[]): Map<string, any[]> {
 // 1. REMOVAL UNFULFILLED - Return requested but never shipped
 // ============================================================================
 
+const REMOVAL_MATURITY_DAYS = 45;
+
 /**
- * Detect Removal Unfulfilled
+ * Detect Removal Unfulfilled (Tripartite Ledger Lock)
  * 
- * LOGIC: Order type = 'Return', status = 'Completed', but shipped_quantity = 0
- * RULE: You asked for items back, Amazon marked complete, but nothing shipped
- * CONFIDENCE: 90% (clear discrepancy - complete but 0 shipped)
+ * LOGIC: Order type = 'Return', status = 'Completed'|'Cancelled'|'Pending'
+ * RULE: If Cancelled/Pending, verify if units were physically returned to the ledger or reimbursed financially.
+ * CONFIDENCE: 92% (Rigorous physical + financial reconciliation)
  */
 export function detectRemovalUnfulfilled(sellerId: string, syncId: string, data: RemovalSyncedData): RemovalDetectionResult[] {
     const results: RemovalDetectionResult[] = [];
@@ -79,33 +83,57 @@ export function detectRemovalUnfulfilled(sellerId: string, syncId: string, data:
 
     for (const order of data.removal_orders || []) {
         if (order.order_type !== 'Return') continue;
-        if (order.order_status?.toLowerCase() !== 'completed') continue;
 
-        const daysSince = daysBetween(new Date(order.request_date), now);
-        if (daysSince < 60) continue;
+        const requestDate = new Date(order.request_date);
+        const daysSince = daysBetween(requestDate, now);
+        
+        // SLA Squeeze: Target 45 days
+        if (daysSince < REMOVAL_MATURITY_DAYS) continue;
 
+        const status = order.order_status?.toLowerCase();
+        const requestedQty = order.requested_quantity || 0;
         const shippedQty = order.shipped_quantity || 0;
-        if (shippedQty > 0) continue; // Something was shipped
 
-        const missingQty = order.requested_quantity - (order.cancelled_quantity || 0);
-        if (missingQty <= 0) continue;
+        // 1. Physical Ledger Netting (For Cancelled/Pending/Unfulfilled)
+        // If status is cancelled or unfulfilled, we MUST find a ledger addition
+        let physicalUnitsReturned = 0;
+        if (status === 'cancelled' || status === 'pending' || shippedQty < requestedQty) {
+            const ledgerEvents = data.inventory_ledger || [];
+            const returnEvents = ledgerEvents.filter((l: any) => 
+                l.sku === order.sku && 
+                l.quantity > 0 && // Positive adjustment = return to sellable
+                new Date(l.event_date) >= requestDate
+            );
+            physicalUnitsReturned = returnEvents.reduce((sum: number, l: any) => sum + l.quantity, 0);
+        }
 
+        // 2. Financial Guardrail
         const reimbs = reimbByOrder.get(order.order_id) || [];
-        if (reimbs.some(r => r.sku === order.sku)) continue;
+        const financialUnitsReimbursed = reimbs.reduce((sum, r) => sum + (r.quantity_reimbursed || 0), 0);
 
-        const value = missingQty * 18;
-        results.push({
-            seller_id: sellerId, sync_id: syncId, anomaly_type: 'removal_unfulfilled',
-            severity: severity(value), estimated_value: value, currency: 'USD', confidence_score: 0.90,
-            evidence: {
-                order_id: order.order_id, order_type: 'Return', sku: order.sku,
-                requested: order.requested_quantity, shipped: 0, days_since: daysSince,
-                summary: `Removal ${order.order_id}: Requested ${order.requested_quantity} units returned, NONE shipped. Status: Completed. ${daysSince} days since request.`
-            },
-            related_event_ids: [order.order_id || order.id],
-            discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
-            order_id: order.order_id, sku: order.sku, fnsku: order.fnsku, product_name: order.product_name
-        });
+        // 3. The Promotion Trigger
+        const netMissingUnits = requestedQty - shippedQty - physicalUnitsReturned - financialUnitsReimbursed;
+
+        if (netMissingUnits > 0) {
+            const value = netMissingUnits * 18; // Default $18 value
+            const anomalyType = status === 'cancelled' ? 'CANCELLED_REMOVAL_LOSS' : 'removal_unfulfilled';
+
+            results.push({
+                seller_id: sellerId, sync_id: syncId,
+                anomaly_type: anomalyType as any,
+                severity: severity(value), estimated_value: value, currency: 'USD', confidence_score: 0.92,
+                evidence: {
+                    order_id: order.order_id, sku: order.sku, status: order.order_status,
+                    requested: requestedQty, shipped: shippedQty, returned: physicalUnitsReturned, reimbursed: financialUnitsReimbursed,
+                    missing: netMissingUnits, days_since: daysSince,
+                    summary: `Removal ${order.order_id} (${order.order_status}): ${requestedQty} units requested, but ${netMissingUnits} remain missing ` +
+                             `after physical and financial reconciliation. Status: ${order.order_status}.`
+                },
+                related_event_ids: [order.order_id || order.id, ...reimbs.map(r => r.id)],
+                discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
+                order_id: order.order_id, sku: order.sku, fnsku: order.fnsku, product_name: order.product_name
+            });
+        }
     }
     return results;
 }
@@ -391,10 +419,24 @@ export async function runRemovalDetection(sellerId: string, syncId: string): Pro
         id: s.id || s.settlement_id,
         order_id: s.order_id,
         sku: s.metadata?.sku,
-        reimbursement_amount: s.amount || 0
+        reimbursement_amount: s.amount || 0,
+        quantity_reimbursed: s.metadata?.quantity || 1
     }));
 
-    return detectRemovalAnomalies(sellerId, syncId, { seller_id: sellerId, sync_id: syncId, removal_orders: orders, reimbursement_events: reimbs });
+    // Fetch ledger for physical netting
+    const { data: ledgerData } = await supabaseAdmin
+        .from('inventory_ledger')
+        .select('event_date, sku, quantity, reason_code')
+        .eq('user_id', sellerId)
+        .gte('event_date', new Date(Date.now() - 120 * 86400000).toISOString());
+
+    return detectRemovalAnomalies(sellerId, syncId, { 
+        seller_id: sellerId, 
+        sync_id: syncId, 
+        removal_orders: orders, 
+        reimbursement_events: reimbs,
+        inventory_ledger: ledgerData || []
+    });
 }
 
 export async function storeRemovalResults(results: RemovalDetectionResult[]): Promise<void> {
