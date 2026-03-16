@@ -2198,3 +2198,9 @@ IsSandbox: true
 Input Detections: 419
 DB Client: Admin
 
+[2026-03-15T17:07:53.809Z] AFTER detection mapping
+All Predictions: 175717
+Claimable Predictions: 24564
+Mapped Detection Results: 24564
+Sample Result: {"claim_id":"claim_order_112-3020967-402900_1773594221509_0z5c8","seller_id":"test-user","anomaly_type":"storage_overcharge","severity":"critical","estimated_value":7.5,"currency":"USD","confidence_score":0.9628,"evidence":{},"related_event_ids":["112-3020967-402900"],"discovery_date":"2026-03-15T17:03:41.283Z","deadline_date":"2026-05-14T17:03:41.283Z","days_remaining":60}
+

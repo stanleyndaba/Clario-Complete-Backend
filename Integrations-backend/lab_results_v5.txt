@@ -1,0 +1,158 @@
+[33mwarn[39m: Using demo Supabase client - no real database connection {"service":"integrations-backend","timestamp":"2026-03-16T17:52:05.079Z"}
+[32minfo[39m: Using in-memory mock database for demo mode {"service":"integrations-backend","timestamp":"2026-03-16T17:52:05.093Z"}
+[36m≡ƒÜÇ Starting Fee Phantom Adversarial Calibration Lab...[0m
+================================================================
+Evaluating [F1-HEALTHY-US-SMALL] Healthy fulfillment fees                     ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.916Z"}
+[32mPASS (TN)[0m
+Evaluating [F1-HEALTHY-US-LARGE] Healthy fulfillment fees                     ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.938Z"}
+[32mPASS (TN)[0m
+Evaluating [F1-HEALTHY-US-OVERSIZE] Healthy fulfillment fees                     ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.946Z"}
+[32mPASS (TN)[0m
+Evaluating [F1-HEALTHY-US-2025-RATE] Healthy fulfillment fees                     ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.954Z"}
+[32mPASS (TN)[0m
+Evaluating [F2-HEALTHY-STORAGE-JAN] Healthy storage fees                         ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.966Z"}
+[32mPASS (TN)[0m
+Evaluating [F2-HEALTHY-STORAGE-OCT] Healthy storage fees                         ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.968Z"}
+[32mPASS (TN)[0m
+Evaluating [F2-HEALTHY-LTS-STORAGE] Healthy storage fees                         ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.971Z"}
+[32mPASS (TN)[0m
+Evaluating [F3-OVERCHARGE-US-LARGE] Fulfillment fee overcharge                   ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.975Z"}
+[31mFAIL (FN)[0m
+Evaluating [F3-OVERCHARGE-US-SMALL] Fulfillment fee overcharge                   ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.978Z"}
+[31mFAIL (FN)[0m
+Evaluating [F3-OVERCHARGE-PEAK] Fulfillment fee overcharge                   ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.982Z"}
+[31mFAIL (FN)[0m
+Evaluating [F3-OVERCHARGE-AGGREGATED] Fulfillment fee overcharge                   ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.984Z"}
+[32mPASS (TP)[0m
+  - [33mValue Mismatch:[0m Expected $21.80, Found $70.40
+Evaluating [F4-UNDERCHARGE-US] Fulfillment fee undercharge / reversal sanity... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.990Z"}
+[32mPASS (TN)[0m
+Evaluating [F4-REVERSAL-US] Fulfillment fee undercharge / reversal sanity... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.992Z"}
+[32mPASS (TN)[0m
+Evaluating [F4-PARTIAL-REVERSAL] Fulfillment fee undercharge / reversal sanity... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.994Z"}
+[31mFAIL (FN)[0m
+Evaluating [F5-STORAGE-OVERCHARGE-RATE] Storage fee overcharge                       ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.996Z"}
+[31mFAIL (FN)[0m
+Evaluating [F5-STORAGE-OVERCHARGE-CUFT] Storage fee overcharge                       ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.998Z"}
+[31mFAIL (FN)[0m
+Evaluating [F5-LTS-OVERCHARGE] Storage fee overcharge                       ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:05.999Z"}
+[31mFAIL (FN)[0m
+Evaluating [F6-SIZE-TIER-US-L-S] Dimensional weight / size-tier misclassification... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.000Z"}
+[32mPASS (TP)[0m
+  - [33mValue Mismatch:[0m Expected $4.98, Found $5.87
+Evaluating [F6-DIM-WEIGHT-OVERCHARGE] Dimensional weight / size-tier misclassification... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.002Z"}
+[31mFAIL (FN)[0m
+Evaluating [F6-CATEGORY-REFERRAL-ERR] Dimensional weight / size-tier misclassification... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.006Z"}
+[32mPASS (TP)[0m
+Evaluating [F6-SMALL-VS-LARGE-STD] Dimensional weight / size-tier misclassification... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.008Z"}
+[31mFAIL (FN)[0m
+Evaluating [F7-MARKETPLACE-UK-PHYSICS] Marketplace-specific factor differences      ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.011Z"}
+[32minfo[39m: ≡ƒÆ▓ [FEE-MISCLASS] Suppressing misclassification due to currency mismatch {"sellerId":"fee-phantom-tester","service":"integrations-backend","sku":"SKU-F7-1","timestamp":"2026-03-16T17:52:06.012Z"}
+[32mPASS (TN)[0m
+Evaluating [F7-MARKETPLACE-DE-VARS] Marketplace-specific factor differences      ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.013Z"}
+[32mPASS (TN)[0m
+Evaluating [F7-PHYSICS-LEAK-US-TO-UK] Marketplace-specific factor differences      ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.014Z"}
+[32minfo[39m: ≡ƒÆ▓ [FEE-MISCLASS] Suppressing misclassification due to currency mismatch {"sellerId":"fee-phantom-tester","service":"integrations-backend","sku":"SKU-F7-3","timestamp":"2026-03-16T17:52:06.015Z"}
+[31mFAIL (FN)[0m
+Evaluating [F8-CURRENCY-BLINDNESS-EUR] Currency mismatch / non-USD scenarios        ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.016Z"}
+[32minfo[39m: ≡ƒÆ▓ [FEE-MISCLASS] Suppressing misclassification due to currency mismatch {"sellerId":"fee-phantom-tester","service":"integrations-backend","sku":"SKU-F8-1","timestamp":"2026-03-16T17:52:06.017Z"}
+[31mFAIL (FN)[0m
+Evaluating [F8-CROSS-CURRENCY-NETTING] Currency mismatch / non-USD scenarios        ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.018Z"}
+[32minfo[39m: ≡ƒÆ▓ [FEE-MISCLASS] Suppressing misclassification due to currency mismatch {"sellerId":"fee-phantom-tester","service":"integrations-backend","sku":"SKU-F8-2","timestamp":"2026-03-16T17:52:06.019Z"}
+[31mFAIL (FN)[0m
+Evaluating [F8-JPY-NO-DECIMAL] Currency mismatch / non-USD scenarios        ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.021Z"}
+[32minfo[39m: ≡ƒÆ▓ [FEE-MISCLASS] Suppressing misclassification due to currency mismatch {"sellerId":"fee-phantom-tester","service":"integrations-backend","sku":"SKU-F8-3","timestamp":"2026-03-16T17:52:06.022Z"}
+[32mPASS (TN)[0m
+Evaluating [F9-LOW-INV-HEALTHY] Low-inventory fee logic                      ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.024Z"}
+[32mPASS (TN)[0m
+Evaluating [F9-LOW-INV-OVERCHARGE-IPI] Low-inventory fee logic                      ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.027Z"}
+[31mFAIL (FN)[0m
+Evaluating [F9-LOW-INV-NEW-SELLER] Low-inventory fee logic                      ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.029Z"}
+[31mFAIL (FN)[0m
+Evaluating [F10-RETURN-FEE-APPAREL] Return processing fee logic                  ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.030Z"}
+[32mPASS (TN)[0m
+Evaluating [F10-RETURN-FEE-OVERCHARGE] Return processing fee logic                  ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.032Z"}
+[31mFAIL (FN)[0m
+Evaluating [F10-RETURN-FEE-NON-CLOTHING] Return processing fee logic                  ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.035Z"}
+[31mFAIL (FN)[0m
+Evaluating [F11-DUPLICATE-ORDER-FEE] Duplicate fee event contamination            ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.038Z"}
+[31mFAIL (FN)[0m
+Evaluating [F11-TRIPLE-STORAGE-DISASTER] Duplicate fee event contamination            ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.041Z"}
+[31mFAIL (FN)[0m
+Evaluating [F11-DUPLICATE-PLACEMENT] Duplicate fee event contamination            ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.043Z"}
+[31mFAIL (FN)[0m
+Evaluating [F12-TENANT-LEAK-SKU] Cross-tenant contamination                   ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.049Z"}
+[32mPASS (TN)[0m
+Evaluating [F12-TENANT-LEAK-ORDER] Cross-tenant contamination                   ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.057Z"}
+[32mPASS (TN)[0m
+Evaluating [F13-MISSING-REFUND-REVERSAL] Missing fee reversals / compensating credits ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.060Z"}
+[31mFAIL (FN)[0m
+Evaluating [F13-DISPOSAL-FEE-ERROR] Missing fee reversals / compensating credits ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.063Z"}
+[32mPASS (TP)[0m
+Evaluating [F13-PLACEMENT-CREDIT-MISSING] Missing fee reversals / compensating credits ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.065Z"}
+[31mFAIL (FN)[0m
+Evaluating [F14-BOUNDARY-2024-TO-2025] Boundary / effective-date versioning cases   ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.069Z"}
+[32mPASS (TN)[0m
+Evaluating [F14-BOUNDARY-PEAK-END] Boundary / effective-date versioning cases   ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.073Z"}
+[31mFAIL (FN)[0m
+Evaluating [F14-DIM-FACTOR-CHANGE] Boundary / effective-date versioning cases   ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.075Z"}
+[31mFAIL (FN)[0m
+Evaluating [F15-STRICT-REF-MATCH] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.076Z"}
+[31mFAIL (FN)[0m
+Evaluating [F15-STRICT-ID-MATCH] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.078Z"}
+[31mFAIL (FN)[0m
+Evaluating [F15-TEMPORAL-PROXIMITY-BAN] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.080Z"}
+[32mPASS (TN)[0m
+Evaluating [F15-UNRESOLVED-BAN] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.081Z"}
+[32mPASS (TN)[0m
+Evaluating [F15-APPROVED-MAPPING-MATCH] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.083Z"}
+[31mFAIL (FN)[0m
+Evaluating [F15-NET-BALANCED-SAFE] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.084Z"}
+[32mPASS (TN)[0m
+Evaluating [F15-HASH-DUPLICATE-MATCH] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.086Z"}
+[32mPASS (TP)[0m
+Evaluating [F15-SHIPMENT-LEG-ISOLATION] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.090Z"}
+[31mFAIL (FP)[0m
+Evaluating [F15-TENANT-ISOLATION-COLLISION] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.092Z"}
+[32mPASS (TN)[0m
+Evaluating [F15-MARKETPLACE-ISOLATION] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.093Z"}
+[32mPASS (TN)[0m
+Evaluating [F15-PARTIAL-CREDIT-NETTING] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.094Z"}
+[31mFAIL (FN)[0m
+Evaluating [F15-REPLACED-EVENT-LOGIC] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.096Z"}
+[32mPASS (TN)[0m
+Evaluating [F15-OPTIMIZED-PLACEMENT-TRAP] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.098Z"}
+[32mPASS (TP)[0m
+Evaluating [F15-WINDOW-VIOLATION-REVERSAL] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.100Z"}
+[31mFAIL (FN)[0m
+Evaluating [F15-WINDOW-VIOLATION-DUPE] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.102Z"}
+[32mPASS (TN)[0m
+Evaluating [F15-LEG-COLLISION-TRAP] Round 3A Deterministic Cohort Adversaries    ... [32minfo[39m: ≡ƒÆ░ [FEE AUDITOR] Running all fee detection algorithms (Updated Round 1) {"sellerId":"fee-phantom-tester","service":"integrations-backend","syncId":"bench-sync-999","timestamp":"2026-03-16T17:52:06.105Z"}
+[31mFAIL (FP)[0m
+
+================================================================
+[32m≡ƒôè FEE PHANTOM CALIBRATION LAB FINAL METRICS[0m
+================================================================
+Scenarios Evaluated:     60
+True Positives (TP):     6
+True Negatives (TN):     24
+False Positives (FP):    2
+False Negatives (FN):    28
+----------------------------------------------------------------
+Precision:               [35m75.00%[0m
+Recall:                  [35m17.65%[0m
+Absolute Value Error:    [31m$49.49[0m
+Value Accuracy Fails:    2
+----------------------------------------------------------------
+--- FAILURE TAXONOMY ---
+usd_only_assumption                : 2
+marketplace_physics_mismatch       : 1
+dimensional_tier_misclassification : 2
+low_inventory_fee_placeholder      : 2
+return_processing_fee_placeholder  : 2
+duplicate_fee_inflation            : 3
+missing_credit_or_reversal         : 2
+versioning_boundary_error          : 2
+other                              : 14
+================================================================
+[31m≡ƒÜ¿ VERDICT: SYSTEM UNSTABLE. HARDENING REQUIRED.[0m

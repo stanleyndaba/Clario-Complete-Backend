@@ -1,21 +1,19 @@
 /**
  * Refund Detection Algorithms - "The Refund Trap"
  * 
- * Phase 2, P0 Priority: Refund Without Return Detection
+ * Flagship 5: Refund Without Return Detection
  * Finds money owed when customers got refunds but never returned the product.
  * 
- * Algorithm Logic:
- * 1. Scan all refund events
- * 2. Filter for refunds older than 45 days (Amazon's return window)
- * 3. Check if a return was ever scanned for this order
- * 4. Check if a reimbursement was already issued
- * 5. If Refund + No Return + No Reimbursement = TRAP SPRUNG 💰
+ * Hardening Round 1:
+ * - Unit-level reconciliation (Broke the Boolean Return Wall)
+ * - Status-aware return filtering (Pending/Maturity logic)
+ * - Currency-safe shortfall math
  */
 
 import { supabaseAdmin } from '../../../database/supabaseClient';
 import logger from '../../../utils/logger';
-
 import { resolveTenantId } from './shared/tenantUtils';
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -62,7 +60,8 @@ export interface ReimbursementEvent {
     reimbursement_amount: number;
     currency: string;
     reimbursement_date: string;
-    reimbursement_type: string;  // 'REVERSAL', 'REFUND_COMMISSION', etc.
+    reimbursement_type: string;
+    quantity_reimbursed?: number;
     reason_code?: string;
     created_at: string;
 }
@@ -106,17 +105,28 @@ export interface RefundWithoutReturnEvidence {
     refund_reason?: string;
     quantity_refunded: number;
 
+    // Reconciliation results
+    returned_units: number;
+    damaged_units: number;
+    reimbursed_units: number;
+    reimbursed_value: number;
+    unresolved_units: number;
+    shortfall_delta: number;
+
+    // Metadata for traceability
+    return_status_mode: 'precise' | 'fallback' | 'exception';
+    damaged_return_mode: 'none' | 'unreimbursed' | 'reimbursed';
+    currency_match_mode: 'parity' | 'mismatch' | 'none';
+    value_reconciliation_mode: 'unit_weighted' | 'scalar_shortfall';
+    ownership_mode: 'claim_direct' | 'monitor_reimb' | 'none';
+
     // The trap analysis
     days_since_refund: number;
     return_found: boolean;
     reimbursement_found: boolean;
     total_reimbursed: number;
-    shortfall_delta: number;
 
-    // Human-readable evidence
     evidence_summary: string;
-
-    // IDs for audit trail
     refund_event_id: string;
 }
 
@@ -124,57 +134,31 @@ export interface RefundWithoutReturnEvidence {
 // Helper Functions
 // ============================================================================
 
-/**
- * Calculate 60-day deadline from discovery date
- */
 function calculateDeadline(discoveryDate: Date): { deadline: Date; daysRemaining: number } {
     const deadline = new Date(discoveryDate);
     deadline.setDate(deadline.getDate() + 60);
-
     const now = new Date();
     const diffTime = deadline.getTime() - now.getTime();
     const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
     return { deadline, daysRemaining: Math.max(0, daysRemaining) };
 }
 
-/**
- * Determine severity based on refund value
- */
-function calculateSeverity(refundAmount: number): 'low' | 'medium' | 'high' | 'critical' {
-    if (refundAmount >= 200) return 'critical';
-    if (refundAmount >= 100) return 'high';
-    if (refundAmount >= 25) return 'medium';
+function calculateSeverity(amount: number): 'low' | 'medium' | 'high' | 'critical' {
+    if (amount >= 200) return 'critical';
+    if (amount >= 100) return 'high';
+    if (amount >= 25) return 'medium';
     return 'low';
 }
 
-/**
- * Calculate days between two dates
- */
 function daysBetween(date1: Date, date2: Date): number {
     const diffTime = Math.abs(date2.getTime() - date1.getTime());
-    return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    return Math.floor(diffTime / (1000 * 60 * 60 * 24));
 }
 
 // ============================================================================
-// Main Detection Algorithm - "The Refund Trap"
+// Main Detection Algorithm
 // ============================================================================
 
-/**
- * Detect Refund Without Return - The "Refund Trap" Algorithm
- * 
- * This P0 algorithm finds cases where:
- * - Customer got a refund
- * - 45+ days have passed (Amazon's return window expired)
- * - No return was ever scanned
- * - No reimbursement was issued
- * 
- * = SELLER IS OWED MONEY
- * 
- * Confidence:
- * - > 60 days since refund: 95%
- * - 45-60 days since refund: 75%
- */
 export function detectRefundWithoutReturn(
     sellerId: string,
     syncId: string,
@@ -185,20 +169,10 @@ export function detectRefundWithoutReturn(
     const now = new Date();
     const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
 
-    logger.info('🪤 [REFUND TRAP] Starting Refund Without Return Detection', {
-        sellerId,
-        syncId,
-        refundCount: data.refund_events?.length || 0,
-        returnCount: data.return_events?.length || 0,
-        reimbursementCount: data.reimbursement_events?.length || 0
-    });
+    logger.info('🪤 [REFUND TRAP] Starting Hardened Detection Run', { sellerId, syncId });
 
-    if (!data.refund_events || data.refund_events.length === 0) {
-        logger.warn('🪤 [REFUND TRAP] No refund events found', { sellerId, syncId });
-        return results;
-    }
+    if (!data.refund_events || data.refund_events.length === 0) return results;
 
-    // Create lookup maps for fast searching
     const returnsByOrderId = new Map<string, ReturnEvent[]>();
     for (const ret of (data.return_events || [])) {
         if (!ret.order_id) continue;
@@ -215,382 +189,243 @@ export function detectRefundWithoutReturn(
         reimbursementsByOrderId.set(reimb.order_id, existing);
     }
 
-    // Process each refund
     for (const refund of data.refund_events) {
         const refundDate = new Date(refund.refund_date);
-        // THE 45-DAY RULE: Skip refunds that are too recent
         const daysSinceRefund = daysBetween(refundDate, now);
-        if (daysSinceRefund < 45) {
-            continue;
-        }
+        
+        // Maturity Window: 45 days
+        if (daysSinceRefund < 45) continue;
 
-        // Step 3a: Return Reconciliation
+        const quantityRefunded = refund.quantity_refunded || 1;
         const returns = returnsByOrderId.get(refund.order_id) || [];
-        const matchingReturn = returns.find(ret => {
-            if (refund.sku && ret.sku) return ret.sku === refund.sku;
+        
+        // Status-Aware Return Reconciliation
+        let returnStatusMode: RefundWithoutReturnEvidence['return_status_mode'] = 'precise';
+        let totalDamagedQty = 0;
+        let oldestDamagedReturnAge = 0;
+
+        const totalReturnedQty = returns
+            .filter(ret => {
+                // SKU isolation: only filter out if BOTH have SKUs and they mismatch
+                if (refund.sku && ret.sku && ret.sku !== refund.sku) return false;
+                
+                // Status-Aware Return Reconciliation (Optimistic for precision)
+                const status = ret.return_status?.toLowerCase();
+                const disposition = ret.disposition?.toLowerCase();
+                const arrivalAge = daysBetween(new Date(ret.return_date), now);
+
+                // 1. Amazon Fault (Carrier Damage / Damaged) - Check priority disposition first
+                if (status === 'carrier_damaged' || disposition === 'carrier_damaged' || disposition === 'damaged') {
+                    returnStatusMode = 'exception';
+                    const qty = ret.quantity_returned || 1;
+                    totalDamagedQty += qty;
+                    oldestDamagedReturnAge = Math.max(oldestDamagedReturnAge, arrivalAge);
+                    return false; // This is a trap! Amazon fault.
+                }
+
+                // 2. Definite Recoveries or Missing Metadata (assume received if record exists)
+                if (!status || status === 'received' || disposition === 'sellable' || disposition === 'defective' || disposition === 'customer_damaged') return true;
+
+                // 3. Pending Maturity (60-day limit)
+                if (status === 'pending') {
+                    if (arrivalAge > 60) return false; // Abandoned pending
+                    return true;
+                }
+
+                return false;
+            })
+            .reduce((sum, ret) => sum + (ret.quantity_returned || 1), 0);
+
+        // Reimbursement Reconciliation with Currency Safety
+        const reimbursements = reimbursementsByOrderId.get(refund.order_id) || [];
+        let currencyMismatchDetected = false;
+        
+        const matchingReimbs = reimbursements.filter(reimb => {
+            if (refund.sku && reimb.sku && reimb.sku !== refund.sku) return false;
+            if (reimb.currency && refund.currency && reimb.currency !== refund.currency) {
+                currencyMismatchDetected = true;
+            }
             return true;
         });
 
-        if (matchingReturn) continue;
+        const currencyMatchMode: RefundWithoutReturnEvidence['currency_match_mode'] = currencyMismatchDetected ? 'mismatch' : 'parity';
+        const totalReimbursedQty = matchingReimbs.reduce((sum, r) => sum + (r.quantity_reimbursed || 0), 0);
+        const totalReimbursedValue = matchingReimbs.reduce((sum, r) => sum + (r.reimbursement_amount || 0), 0);
 
-        // Step 3b: Quantitative Delta Netting (Surgical Shortfall Detection)
-        const reimbursements = reimbursementsByOrderId.get(refund.order_id) || [];
-        const totalReimbursed = reimbursements
-            .filter(reimb => {
-                if (refund.sku && reimb.sku) return reimb.sku === refund.sku;
-                return true;
-            })
-            .reduce((sum, reimb) => sum + (reimb.reimbursement_amount || 0), 0);
+        // Reconciliation Math
+        const unresolvedUnits = Math.max(0, quantityRefunded - totalReturnedQty - totalReimbursedQty);
+        const unitPrice = refund.refund_amount / quantityRefunded;
+        
+        // Final Shortfall calculation
+        let shortfallValue = 0;
+        let reconMode: RefundWithoutReturnEvidence['value_reconciliation_mode'] = 'unit_weighted';
 
-        const expectedValue = refund.refund_amount;
-        const shortfallDelta = expectedValue - totalReimbursed;
-
-        if (shortfallDelta <= 0.05) continue;
-
-        // 🪤 TRAP SPRUNG! Quantitative Shortfall Detected.
-        // Calculate confidence based on age
-        // > 60 days: 95% confidence (very confident return window is closed)
-        // 45-60 days: 75% confidence (return window just closed)
-        const confidenceScore = daysSinceRefund > 60 ? 0.95 : 0.75;
-
-        // Skip tiny refunds (less than $3)
-        if (refund.refund_amount < 3) {
-            continue;
+        if (currencyMatchMode === 'mismatch') {
+            shortfallValue = unresolvedUnits * unitPrice;
+        } else {
+            // High-fidelity value netting (TRUST DOLLARS OVER METADATA)
+            const valueShortfall = refund.refund_amount - totalReimbursedValue - (totalReturnedQty * unitPrice);
+            shortfallValue = Math.max(0, valueShortfall);
+            
+            if (shortfallValue > (unresolvedUnits * unitPrice) + 0.1) {
+                reconMode = 'scalar_shortfall';
+            }
         }
 
-        // Build human-readable evidence summary
-        const evidenceSummary = `Refunded $${refund.refund_amount.toFixed(2)} on ${refundDate.toLocaleDateString()
-            }, no return scan found after ${daysSinceRefund} days. ` +
-            `Return window (45 days) has expired. Customer kept product and refund.`;
+        // Ownership & Damaged Return Maturity Handling
+        let ownershipMode: RefundWithoutReturnEvidence['ownership_mode'] = 'none';
+        let damagedReturnMode: RefundWithoutReturnEvidence['damaged_return_mode'] = 'none';
 
-        // Build evidence object
+        if (totalDamagedQty > 0) {
+            damagedReturnMode = totalReimbursedQty >= totalDamagedQty ? 'reimbursed' : 'unreimbursed';
+            
+            if (damagedReturnMode === 'unreimbursed') {
+                // Maturity check: only claim if received > 30 days ago
+                if (oldestDamagedReturnAge > 30) {
+                    ownershipMode = 'claim_direct';
+                } else {
+                    ownershipMode = 'monitor_reimb';
+                    // Suppress from value if not mature to maintain 100% precision
+                    shortfallValue = Math.max(0, shortfallValue - (totalDamagedQty * unitPrice));
+                }
+            }
+        }
+
+        if (ownershipMode === 'none' && unresolvedUnits > 0) {
+            ownershipMode = 'claim_direct';
+        }
+
+        // Precision Suppression: If no money is missing, it's not a trap.
+        if (shortfallValue <= 0.05) continue;
+
         const evidence: RefundWithoutReturnEvidence = {
             order_id: refund.order_id,
-            sku: refund.sku,
-            asin: refund.asin,
-            product_name: refund.product_name,
-
+            sku: refund.sku, asin: refund.asin, product_name: refund.product_name,
             refund_date: refund.refund_date,
             refund_amount: refund.refund_amount,
-            refund_reason: refund.refund_reason,
-            quantity_refunded: refund.quantity_refunded || 1,
-
+            quantity_refunded: quantityRefunded,
+            returned_units: totalReturnedQty,
+            damaged_units: totalDamagedQty,
+            reimbursed_units: totalReimbursedQty,
+            reimbursed_value: totalReimbursedValue,
+            unresolved_units: unresolvedUnits,
+            shortfall_delta: shortfallValue,
+            return_status_mode: returnStatusMode,
+            damaged_return_mode: damagedReturnMode,
+            currency_match_mode: currencyMatchMode,
+            value_reconciliation_mode: reconMode,
+            ownership_mode: ownershipMode,
             days_since_refund: daysSinceRefund,
-            return_found: false,
-            reimbursement_found: totalReimbursed > 0,
-            total_reimbursed: totalReimbursed,
-            shortfall_delta: shortfallDelta,
-
-            evidence_summary: evidenceSummary,
-            refund_event_id: refund.id
+            return_found: totalReturnedQty > 0 || totalDamagedQty > 0,
+            reimbursement_found: totalReimbursedValue > 0,
+            total_reimbursed: totalReimbursedValue,
+            refund_event_id: refund.id,
+            evidence_summary: `Refunded ${quantityRefunded} units ($${refund.refund_amount.toFixed(2)}). ` +
+                `Reconciled: ${totalReturnedQty} clean, ${totalDamagedQty} damaged, ${totalReimbursedQty} reimbursed. ` +
+                `Ownership: ${ownershipMode}. Unresolved: ${unresolvedUnits} units worth $${shortfallValue.toFixed(2)}.`
         };
 
-        // Create detection result
-        const result: RefundDetectionResult = {
-            seller_id: sellerId,
-            sync_id: syncId,
+        results.push({
+            seller_id: sellerId, sync_id: syncId,
             anomaly_type: 'refund_no_return',
-            severity: calculateSeverity(shortfallDelta),
-            estimated_value: shortfallDelta,
+            severity: calculateSeverity(shortfallValue),
+            estimated_value: shortfallValue,
             currency: refund.currency || 'USD',
-            confidence_score: confidenceScore,
+            confidence_score: daysSinceRefund > 60 ? 0.95 : 0.75,
             evidence,
-            related_event_ids: [refund.order_id || refund.id],
-            discovery_date: discoveryDate,
-            deadline_date: deadline,
+            related_event_ids: [refund.id],
+            discovery_date: discoveryDate, 
+            deadline_date: deadline, 
             days_remaining: daysRemaining,
-            order_id: refund.order_id,
-            sku: refund.sku,
-            asin: refund.asin,
-            product_name: refund.product_name
-        };
-
-        results.push(result);
-
-        logger.info('🪤 [REFUND TRAP] Trapped! Refund without return detected', {
-            orderId: refund.order_id,
-            refundAmount: refund.refund_amount,
-            daysSinceRefund,
-            confidence: confidenceScore,
-            severity: result.severity
+            order_id: refund.order_id, sku: refund.sku
         });
     }
-
-    logger.info('🪤 [REFUND TRAP] Detection complete', {
-        sellerId,
-        syncId,
-        detectionsFound: results.length,
-        totalEstimatedRecovery: results.reduce((sum, r) => sum + r.estimated_value, 0)
-    });
 
     return results;
 }
 
 // ============================================================================
-// Database Integration - Fetch Refund/Return/Reimbursement Data
+// Data Fetchers
 // ============================================================================
 
-/**
- * Fetch refund events from database
- * 
- * ADAPTER: Agent 2 stores refunds in the settlements table with transaction_type = 'fee' 
- * or in orders as refund-related records. We extract from settlements.
- */
-export async function fetchRefundEvents(
-    sellerId: string,
-    options?: { startDate?: string; endDate?: string; limit?: number }
-): Promise<RefundEvent[]> {
-    try {
-        logger.info('🪤 [REFUND TRAP] Fetching refund events from settlements table', { sellerId });
-
-        // Refunds are typically negative amounts in settlements or have specific transaction types
-        const { data, error } = await supabaseAdmin
-            .from('settlements')
-            .select('*')
-            .eq('user_id', sellerId)
-            .in('transaction_type', ['refund', 'fee', 'shipment_fee'])
-            .order('settlement_date', { ascending: false });
-
-        if (error) {
-            logger.error('🪤 [REFUND TRAP] Error fetching settlements', { sellerId, error: error.message });
-            return [];
-        }
-
-        // Transform settlements into refund events
-        const refundEvents: RefundEvent[] = (data || [])
-            .filter(s => s.amount < 0 || s.transaction_type === 'refund')
-            .map(settlement => ({
-                id: settlement.id || settlement.settlement_id,
-                seller_id: sellerId,
-                order_id: settlement.order_id || '',
-                sku: settlement.metadata?.sku,
-                asin: settlement.metadata?.asin,
-                refund_amount: Math.abs(settlement.amount || 0),
-                currency: settlement.currency || 'USD',
-                refund_date: settlement.settlement_date,
-                refund_reason: settlement.metadata?.reason || 'Customer Refund',
-                created_at: settlement.created_at
-            }));
-
-        logger.info('🪤 [REFUND TRAP] Extracted refund events', { count: refundEvents.length });
-        return refundEvents;
-    } catch (err: any) {
-        logger.error('🪤 [REFUND TRAP] Exception fetching refund events', { sellerId, error: err.message });
-        return [];
-    }
+export async function fetchRefundEvents(sellerId: string, options?: { startDate?: string }): Promise<RefundEvent[]> {
+    const { data, error } = await supabaseAdmin.from('settlements')
+        .select('*')
+        .eq('user_id', sellerId)
+        .in('transaction_type', ['refund', 'fee'])
+        .filter('amount', 'lt', 0);
+    
+    if (error) return [];
+    return data.map(s => ({
+        id: s.id, seller_id: sellerId, order_id: s.order_id || '',
+        sku: s.metadata?.sku, asin: s.metadata?.asin,
+        refund_amount: Math.abs(s.amount), currency: s.currency || 'USD',
+        refund_date: s.settlement_date, created_at: s.created_at,
+        quantity_refunded: s.metadata?.quantity || 1
+    }));
 }
 
-/**
- * Fetch return events from database
- * 
- * ADAPTER: Uses Agent 2's 'returns' table directly
- */
-export async function fetchReturnEvents(
-    sellerId: string,
-    options?: { startDate?: string; limit?: number }
-): Promise<ReturnEvent[]> {
-    try {
-        logger.info('🪤 [REFUND TRAP] Fetching return events from returns table', { sellerId });
-
-        let query = supabaseAdmin
-            .from('returns')
-            .select('*')
-            .eq('user_id', sellerId)
-            .order('returned_date', { ascending: false });
-
-        if (options?.limit) {
-            query = query.limit(options.limit);
-        }
-
-        const { data, error } = await query;
-
-        if (error) {
-            logger.error('🪤 [REFUND TRAP] Error fetching returns', { sellerId, error: error.message });
-            return [];
-        }
-
-        // Transform returns to ReturnEvent format
-        const returnEvents: ReturnEvent[] = (data || []).map(ret => ({
-            id: ret.id || ret.return_id,
-            seller_id: sellerId,
-            order_id: ret.order_id || '',
-            sku: ret.items?.[0]?.sku,
-            asin: ret.items?.[0]?.asin,
-            return_date: ret.returned_date,
-            return_status: ret.status || 'received',
-            quantity_returned: ret.items?.reduce((sum: number, i: any) => sum + (i.quantity || 0), 0) || 1,
-            disposition: ret.metadata?.disposition,
-            fulfillment_center_id: ret.metadata?.fulfillmentCenterId,
-            created_at: ret.created_at
-        }));
-
-        logger.info('🪤 [REFUND TRAP] Fetched return events', { count: returnEvents.length });
-        return returnEvents;
-    } catch (err: any) {
-        logger.error('🪤 [REFUND TRAP] Exception fetching return events', { sellerId, error: err.message });
-        return [];
-    }
+export async function fetchReturnEvents(sellerId: string, options?: { startDate?: string }): Promise<ReturnEvent[]> {
+    const { data, error } = await supabaseAdmin.from('returns')
+        .select('*').eq('user_id', sellerId);
+    
+    if (error) return [];
+    return data.map(r => ({
+        id: r.id, seller_id: sellerId, order_id: r.order_id || '',
+        sku: r.items?.[0]?.sku, asin: r.items?.[0]?.asin,
+        return_date: r.returned_date, return_status: r.status || 'received',
+        quantity_returned: r.items?.[0]?.quantity || 1,
+        disposition: r.metadata?.disposition, created_at: r.created_at
+    }));
 }
 
-/**
- * Fetch reimbursement events from database
- * 
- * ADAPTER: Uses Agent 2's 'settlements' table filtered by transaction_type = 'reimbursement'
- */
-export async function fetchReimbursementEvents(
-    sellerId: string,
-    options?: { startDate?: string; limit?: number }
-): Promise<ReimbursementEvent[]> {
-    try {
-        logger.info('🪤 [REFUND TRAP] Fetching reimbursements from settlements table', { sellerId });
-
-        let query = supabaseAdmin
-            .from('settlements')
-            .select('*')
-            .eq('user_id', sellerId)
-            .eq('transaction_type', 'reimbursement')
-            .order('settlement_date', { ascending: false });
-
-        if (options?.limit) {
-            query = query.limit(options.limit);
-        }
-
-        const { data, error } = await query;
-
-        if (error) {
-            logger.error('🪤 [REFUND TRAP] Error fetching reimbursements', { sellerId, error: error.message });
-            return [];
-        }
-
-        // Transform settlements to ReimbursementEvent format
-        const reimbursementEvents: ReimbursementEvent[] = (data || []).map(settlement => ({
-            id: settlement.id || settlement.settlement_id,
-            seller_id: sellerId,
-            order_id: settlement.order_id,
-            sku: settlement.metadata?.sku,
-            asin: settlement.metadata?.asin,
-            reimbursement_amount: settlement.amount || 0,
-            currency: settlement.currency || 'USD',
-            reimbursement_date: settlement.settlement_date,
-            reimbursement_type: settlement.metadata?.adjustmentType || 'REIMBURSEMENT',
-            reason_code: settlement.metadata?.reason,
-            created_at: settlement.created_at
-        }));
-
-        logger.info('🪤 [REFUND TRAP] Fetched reimbursement events', { count: reimbursementEvents.length });
-        return reimbursementEvents;
-    } catch (err: any) {
-        logger.error('🪤 [REFUND TRAP] Exception fetching reimbursement events', { sellerId, error: err.message });
-        return [];
-    }
+export async function fetchReimbursementEvents(sellerId: string, options?: { startDate?: string }): Promise<ReimbursementEvent[]> {
+    const { data, error } = await supabaseAdmin.from('settlements')
+        .select('*').eq('user_id', sellerId).eq('transaction_type', 'reimbursement');
+    
+    if (error) return [];
+    return data.map(s => ({
+        id: s.id, seller_id: sellerId, order_id: s.order_id,
+        sku: s.metadata?.sku, reimbursement_amount: s.amount || 0,
+        currency: s.currency || 'USD', reimbursement_date: s.settlement_date,
+        reimbursement_type: s.metadata?.adjustmentType || 'REIMBURSEMENT',
+        quantity_reimbursed: s.metadata?.quantity || 0,
+        created_at: s.created_at
+    }));
 }
 
-/**
- * Run full refund without return detection for a seller
- */
-export async function runRefundWithoutReturnDetection(
-    sellerId: string,
-    syncId: string
-): Promise<RefundDetectionResult[]> {
-    logger.info('🪤 [REFUND TRAP] Starting full detection run', { sellerId, syncId });
-
-    // Fetch all data from database - look at last 120 days to catch 45+ day old refunds
-    const lookbackDate = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
-
-    const [refundEvents, returnEvents, reimbursementEvents] = await Promise.all([
-        fetchRefundEvents(sellerId, { startDate: lookbackDate }),
-        fetchReturnEvents(sellerId, { startDate: lookbackDate }),
-        fetchReimbursementEvents(sellerId, { startDate: lookbackDate })
+export async function runRefundWithoutReturnDetection(sellerId: string, syncId: string): Promise<RefundDetectionResult[]> {
+    const lookback = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
+    const [refunds, returns, reimbs] = await Promise.all([
+        fetchRefundEvents(sellerId, { startDate: lookback }),
+        fetchReturnEvents(sellerId, { startDate: lookback }),
+        fetchReimbursementEvents(sellerId, { startDate: lookback })
     ]);
-
-    logger.info('🪤 [REFUND TRAP] Data fetched', {
-        sellerId,
-        refunds: refundEvents.length,
-        returns: returnEvents.length,
-        reimbursements: reimbursementEvents.length
+    return detectRefundWithoutReturn(sellerId, syncId, { 
+        seller_id: sellerId, 
+        sync_id: syncId, 
+        refund_events: refunds, 
+        return_events: returns, 
+        reimbursement_events: reimbs 
     });
-
-    if (refundEvents.length === 0) {
-        logger.warn('🪤 [REFUND TRAP] No refund events found', { sellerId });
-        return [];
-    }
-
-    // Build synced data object
-    const syncedData: RefundSyncedData = {
-        seller_id: sellerId,
-        sync_id: syncId,
-        refund_events: refundEvents,
-        return_events: returnEvents,
-        reimbursement_events: reimbursementEvents
-    };
-
-    // Run detection
-    return detectRefundWithoutReturn(sellerId, syncId, syncedData);
 }
 
-/**
- * Store refund detection results in database
- */
 export async function storeRefundDetectionResults(results: RefundDetectionResult[]): Promise<void> {
     if (results.length === 0) return;
-
-    // Resolve tenant_id for multi-tenancy
     const tenantId = await resolveTenantId(results[0].seller_id);
-
-    try {
-        const records = results.map(r => ({
-            seller_id: r.seller_id,
-            sync_id: r.sync_id,
-            anomaly_type: r.anomaly_type,
-            severity: r.severity,
-            estimated_value: r.estimated_value,
-            currency: r.currency,
-            confidence_score: r.confidence_score,
-            evidence: r.evidence,
-            related_event_ids: r.related_event_ids,
-            discovery_date: r.discovery_date.toISOString(),
-            deadline_date: r.deadline_date.toISOString(),
-            days_remaining: r.days_remaining,
-            tenant_id: tenantId,
-
-            status: 'detected',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-        }));
-
-        const { error } = await supabaseAdmin
-            .from('detection_results')
-            .upsert(records, {
-                onConflict: 'seller_id,sync_id,anomaly_type',
-                ignoreDuplicates: false
-            });
-
-        if (error) {
-            logger.error('🪤 [REFUND TRAP] Error storing detection results', {
-                error: error.message,
-                count: results.length
-            });
-        } else {
-            logger.info('🪤 [REFUND TRAP] Detection results stored', {
-                count: results.length
-            });
-        }
-    } catch (err: any) {
-        logger.error('🪤 [REFUND TRAP] Exception storing detection results', {
-            error: err.message
-        });
-    }
+    const records = results.map(r => ({
+        seller_id: r.seller_id, sync_id: r.sync_id, anomaly_type: r.anomaly_type,
+        severity: r.severity, estimated_value: r.estimated_value, currency: r.currency,
+        confidence_score: r.confidence_score, evidence: r.evidence, related_event_ids: r.related_event_ids,
+        discovery_date: r.discovery_date.toISOString(), deadline_date: r.deadline_date.toISOString(),
+        days_remaining: r.days_remaining, tenant_id: tenantId, status: 'detected',
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+    }));
+    await supabaseAdmin.from('detection_results').upsert(records, { onConflict: 'seller_id,sync_id,anomaly_type' });
 }
-
-// ============================================================================
-// Exports
-// ============================================================================
 
 export default {
     detectRefundWithoutReturn,
-    fetchRefundEvents,
-    fetchReturnEvents,
-    fetchReimbursementEvents,
     runRefundWithoutReturnDetection,
     storeRefundDetectionResults
 };

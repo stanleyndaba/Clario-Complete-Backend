@@ -1,0 +1,282 @@
+{
+  "F1-HEALTHY-US-SMALL": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F1-HEALTHY-US-LARGE": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F1-HEALTHY-US-OVERSIZE": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F1-HEALTHY-US-2025-RATE": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F2-HEALTHY-STORAGE-JAN": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F2-HEALTHY-STORAGE-OCT": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F2-HEALTHY-LTS-STORAGE": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F3-OVERCHARGE-US-LARGE": {
+    "label": "TP",
+    "actual_value": 1.3499999999999996
+  },
+  "F3-OVERCHARGE-US-SMALL": {
+    "label": "TP",
+    "actual_value": 0.5499999999999998
+  },
+  "F3-OVERCHARGE-PEAK": {
+    "label": "TP",
+    "actual_value": 0.5700000000000003
+  },
+  "F3-OVERCHARGE-AGGREGATED": {
+    "label": "TP",
+    "actual_value": 21.799999999999994
+  },
+  "F4-UNDERCHARGE-US": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F4-REVERSAL-US": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F4-PARTIAL-REVERSAL": {
+    "label": "TP",
+    "actual_value": 1
+  },
+  "F5-STORAGE-OVERCHARGE-RATE": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F5-STORAGE-OVERCHARGE-CUFT": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F5-LTS-OVERCHARGE": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F6-SIZE-TIER-US-L-S": {
+    "label": "TP",
+    "actual_value": 4.98
+  },
+  "F6-DIM-WEIGHT-OVERCHARGE": {
+    "label": "TP",
+    "actual_value": 0.9800000000000004
+  },
+  "F6-CATEGORY-REFERRAL-ERR": {
+    "label": "TP",
+    "actual_value": 5
+  },
+  "F6-SMALL-VS-LARGE-STD": {
+    "label": "TP",
+    "actual_value": 1.5299999999999998
+  },
+  "F7-MARKETPLACE-UK-PHYSICS": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F7-MARKETPLACE-DE-VARS": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F7-PHYSICS-LEAK-US-TO-UK": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F8-CURRENCY-BLINDNESS-EUR": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F8-CROSS-CURRENCY-NETTING": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F8-JPY-NO-DECIMAL": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F9-LOW-INV-HEALTHY": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F9-LOW-INV-OVERCHARGE-IPI": {
+    "label": "TP",
+    "actual_value": 2
+  },
+  "F9-LOW-INV-NEW-SELLER": {
+    "label": "TP",
+    "actual_value": 5
+  },
+  "F10-RETURN-FEE-APPAREL": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F10-RETURN-FEE-OVERCHARGE": {
+    "label": "TP",
+    "actual_value": 3.15
+  },
+  "F10-RETURN-FEE-NON-CLOTHING": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F11-DUPLICATE-ORDER-FEE": {
+    "label": "TP",
+    "actual_value": 5.640000000000001
+  },
+  "F11-TRIPLE-STORAGE-DISASTER": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F11-DUPLICATE-PLACEMENT": {
+    "label": "TP",
+    "actual_value": 1.15
+  },
+  "F12-TENANT-LEAK-SKU": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F12-TENANT-LEAK-ORDER": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F13-MISSING-REFUND-REVERSAL": {
+    "label": "TP",
+    "actual_value": 10.25
+  },
+  "F13-DISPOSAL-FEE-ERROR": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F13-PLACEMENT-CREDIT-MISSING": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F14-BOUNDARY-2024-TO-2025": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F14-BOUNDARY-PEAK-END": {
+    "label": "TP",
+    "actual_value": 0.5700000000000003
+  },
+  "F14-DIM-FACTOR-CHANGE": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F15-STRICT-REF-MATCH": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F15-STRICT-ID-MATCH": {
+    "label": "TP",
+    "actual_value": 5.25
+  },
+  "F15-TEMPORAL-PROXIMITY-BAN": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F15-UNRESOLVED-BAN": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F15-APPROVED-MAPPING-MATCH": {
+    "label": "TP",
+    "actual_value": 5
+  },
+  "F15-NET-BALANCED-SAFE": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F15-HASH-DUPLICATE-MATCH": {
+    "label": "TP",
+    "actual_value": 10
+  },
+  "F15-SHIPMENT-LEG-ISOLATION": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F15-TENANT-ISOLATION-COLLISION": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F15-MARKETPLACE-ISOLATION": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F15-PARTIAL-CREDIT-NETTING": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F15-REPLACED-EVENT-LOGIC": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F15-OPTIMIZED-PLACEMENT-TRAP": {
+    "label": "TP",
+    "actual_value": 55
+  },
+  "F15-WINDOW-VIOLATION-REVERSAL": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F15-WINDOW-VIOLATION-DUPE": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F15-LEG-COLLISION-TRAP": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F16-SKU-DETECT": {
+    "label": "TP",
+    "actual_value": 5.25
+  },
+  "F16-SKU-SUPPRESS": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F16-PEAK-DETECT": {
+    "label": "TP",
+    "actual_value": 4.85
+  },
+  "F16-PEAK-SUPPRESS": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F16-VOL-DETECT": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F16-VOL-SUPPRESS": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F16-MAPPING-DETECT": {
+    "label": "FN",
+    "actual_value": 0
+  },
+  "F16-MAPPING-SUPPRESS": {
+    "label": "TN",
+    "actual_value": 0
+  },
+  "F17-DUAL-TRIGGER-OWNERSHIP": {
+    "label": "TP",
+    "actual_value": 15.25
+  },
+  "F17-DISTINCT-HARM-NO-SUPPRESS": {
+    "label": "TP",
+    "actual_value": 40.25
+  }
+}

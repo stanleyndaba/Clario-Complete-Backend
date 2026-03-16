@@ -121,18 +121,37 @@ export interface DamagedInventoryEvidence {
     quantity_damaged: number;
     fulfillment_center?: string;
 
+    // Found/Recovery check
+    recovery_found: boolean;
+    recovered_quantity: number;
+    recovery_mode?: 'DIRECT' | 'CANDIDATE';
+    recovery_confidence?: number;
+
     // Reimbursement check
     reimbursement_found: boolean;
+    reimbursed_quantity?: number;
+
+    // Quantitative reconciliation
+    expected_damaged_units: number;
+    unresolved_units: number;
+    reimbursed_value: number;
+
+    // Traceability
+    duplicate_event_detected?: boolean;
+    duplicate_event_suppressed?: boolean;
+    duplicate_fingerprint_mode?: 'PRIMARY' | 'FALLBACK';
+
+    // Metadata
     days_since_damage: number;
 
-    // Value
+    // Valuation
     unit_value: number;
     total_value: number;
+    valuation_source: 'CATALOG_METADATA' | 'SKU_SYNC' | 'LOCAL_CONTEXT' | 'DEFAULT_FALLBACK';
+    valuation_basis?: string;
+    valuation_confidence: number;
 
-    // Human-readable
     evidence_summary: string;
-
-    // IDs
     damage_event_id: string;
 }
 
@@ -176,6 +195,61 @@ function getAnomalyType(reasonCode: string): 'damaged_warehouse' | 'damaged_inbo
     }
 }
 
+interface ValuationResult {
+    value: number;
+    source: 'CATALOG_METADATA' | 'SKU_SYNC' | 'LOCAL_CONTEXT' | 'DEFAULT_FALLBACK';
+    basis?: string;
+    confidence: number;
+}
+
+function getDamagedValuation(
+    damage: DamagedEvent,
+    linkedReimbs: ReimbursementEvent[]
+): ValuationResult {
+    // 1. Primary: Exact Item Metadata / unit_value from ledger (if it exists and is non-zero)
+    if (damage.unit_value && damage.unit_value > 0) {
+        return { 
+            value: damage.unit_value, 
+            source: 'CATALOG_METADATA', 
+            basis: `Ledger unit_value provided: ${damage.unit_value}`,
+            confidence: 1.0 
+        };
+    }
+
+    // 2. Secondary: Recent SKU-level synced value (average_sales_price)
+    if (damage.average_sales_price && damage.average_sales_price > 0) {
+        return { 
+            value: damage.average_sales_price, 
+            source: 'SKU_SYNC', 
+            basis: `Ledger SKU ASP: ${damage.average_sales_price}`,
+            confidence: 0.95 
+        };
+    }
+
+    // 3. Tertiary: Local context (Historical reimbursement basis for this set)
+    if (linkedReimbs.length > 0) {
+        const totalAmt = linkedReimbs.reduce((sum, r) => sum + r.reimbursement_amount, 0);
+        const totalQty = linkedReimbs.reduce((sum, r) => sum + (r.quantity_reimbursed || 1), 0);
+        if (totalQty > 0) {
+            const histBasis = totalAmt / totalQty;
+            return { 
+                value: histBasis, 
+                source: 'LOCAL_CONTEXT', 
+                basis: `Reimbursement basis: ${histBasis.toFixed(2)}`,
+                confidence: 0.9 
+            };
+        }
+    }
+
+    // 4. Last Resort: Default Fallback
+    return { 
+        value: 15, 
+        source: 'DEFAULT_FALLBACK', 
+        basis: 'Static industry default fallback',
+        confidence: 0.7 
+    };
+}
+
 // ============================================================================
 // Main Detection Algorithm - "The Broken Goods Hunter"
 // ============================================================================
@@ -204,99 +278,176 @@ export function detectDamagedInventory(
     const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
     const now = new Date();
 
-    logger.info('💥 [BROKEN GOODS] Starting Damaged Inventory Detection', {
-        sellerId,
-        syncId,
-        ledgerEventCount: data.inventory_ledger?.length || 0,
-        reimbursementCount: data.reimbursement_events?.length || 0
-    });
-
     if (!data.inventory_ledger || data.inventory_ledger.length === 0) {
-        logger.warn('💥 [BROKEN GOODS] No inventory ledger events found', { sellerId, syncId });
         return results;
     }
 
-    // Build reimbursement lookup map by FNSKU
+    // 1. Tiered Ledger Deduplication
+    const processedFingerprints = new Set<string>();
+    const deduplicatedLedger: DamagedEvent[] = [];
+
+    for (const event of data.inventory_ledger) {
+        // Only deduplicate if this is an adjustment we care about
+        if (event.event_type?.toLowerCase() !== 'adjustment') {
+            deduplicatedLedger.push(event);
+            continue;
+        }
+
+        const dateKey = event.event_date ? new Date(event.event_date).toISOString() : 'no-date';
+        
+        // Tier 1: Primary Fingerprint (Richest)
+        const primaryFingerprint = [
+            event.seller_id,
+            event.fnsku,
+            dateKey,
+            event.quantity,
+            event.reason_code,
+            event.fulfillment_center_id,
+            event.disposition
+        ].join('|');
+
+        // Tier 2: Fallback Fingerprint (Missing FC)
+        const fallbackFingerprint = [
+            event.seller_id,
+            event.fnsku,
+            dateKey,
+            event.quantity,
+            event.reason_code
+        ].join('|');
+
+        if (processedFingerprints.has(primaryFingerprint)) {
+            logger.info('💥 [BROKEN GOODS] duplicate_event_suppressed', { 
+                fnsku: event.fnsku, 
+                mode: 'PRIMARY',
+                fingerprint: primaryFingerprint 
+            });
+            continue;
+        }
+
+        // Check fallback if FC is missing or we suspect generic stutter
+        if (!event.fulfillment_center_id && processedFingerprints.has(fallbackFingerprint)) {
+            logger.info('💥 [BROKEN GOODS] duplicate_event_suppressed', { 
+                fnsku: event.fnsku, 
+                mode: 'FALLBACK',
+                fingerprint: fallbackFingerprint 
+            });
+            continue;
+        }
+
+        processedFingerprints.add(primaryFingerprint);
+        processedFingerprints.add(fallbackFingerprint);
+        deduplicatedLedger.push(event);
+    }
+
+    // 2. Tenant-Safe Lookup Maps
     const reimbursementsByFnsku = new Map<string, ReimbursementEvent[]>();
     for (const reimb of (data.reimbursement_events || [])) {
-        if (!reimb.fnsku) continue;
+        if (!reimb.fnsku || reimb.seller_id !== sellerId) continue;
         const existing = reimbursementsByFnsku.get(reimb.fnsku) || [];
         existing.push(reimb);
         reimbursementsByFnsku.set(reimb.fnsku, existing);
     }
 
-    // Filter to damaged/adjustment events with Amazon-at-fault codes
-    const damageEvents = data.inventory_ledger.filter(event => {
-        // Check event type
-        if (event.event_type?.toLowerCase() !== 'adjustment') {
-            return false;
-        }
+    // Filter to damaged events
+    const damageEvents = deduplicatedLedger.filter(event => 
+        event.seller_id === sellerId &&
+        event.event_type?.toLowerCase() === 'adjustment' &&
+        ['DAMAGED', 'UNSELLABLE', 'DEFECTIVE'].includes(event.disposition?.toUpperCase() || '') &&
+        isAmazonAtFault(event.reason_code || '')
+    );
 
-        // Check disposition
-        const disposition = event.disposition?.toUpperCase();
-        if (!disposition || !['DAMAGED', 'UNSELLABLE', 'DEFECTIVE'].includes(disposition)) {
-            return false;
-        }
+    // 3. Reimbursement Consumption Pool (To prevent double-counting linkage)
+    const consumedReimbIds = new Set<string>();
+    const consumedReimbQtyPerFnsku = new Map<string, number>();
+    const consumedReimbValPerFnsku = new Map<string, number>();
 
-        // Check for Amazon-at-fault reason code
-        if (!event.reason_code || !isAmazonAtFault(event.reason_code)) {
-            return false;
-        }
-
-        return true;
-    });
-
-    logger.info('💥 [BROKEN GOODS] Found Amazon-at-fault damage events', {
-        sellerId,
-        count: damageEvents.length
-    });
-
-    // Process each damage event
+    // 4. Tripartite Reconciliation
     for (const damage of damageEvents) {
         const damageDate = new Date(damage.event_date);
         const daysSinceDamage = daysBetween(damageDate, now);
 
-        // 1. Physical Ledger Netting: Check for 'Found' events in the 30-day SLA window
+        // a. Physical Recovery Expansion (Direct vs Candidate)
+        // ... (preserving Round 1 wins)
         const thirtyDaysAfter = new Date(damageDate);
         thirtyDaysAfter.setDate(thirtyDaysAfter.getDate() + 30);
 
-        const foundEvents = data.inventory_ledger.filter(l => 
-            l.fnsku === damage.fnsku &&
-            (l.reason_code?.toUpperCase() === 'F' || l.reason_code?.toUpperCase() === 'FOUND') &&
-            new Date(l.event_date) >= damageDate &&
-            new Date(l.event_date) <= thirtyDaysAfter
-        );
+        const salvageEvents = deduplicatedLedger.filter(l => {
+            if (l.seller_id !== sellerId || l.fnsku !== damage.fnsku) return false;
+            if (l.disposition?.toUpperCase() !== 'SELLABLE') return false;
+            const lDate = new Date(l.event_date);
+            return lDate >= damageDate && lDate <= thirtyDaysAfter;
+        });
 
-        const foundQty = foundEvents.reduce((sum, l) => sum + Math.abs(l.quantity), 0);
-        const netLossQty = Math.abs(damage.quantity) - foundQty;
+        let recoveredUnits = 0;
+        let recoveryMode: 'DIRECT' | 'CANDIDATE' | undefined;
+        let recoveryConfidence = 0;
 
-        // If netQty <= 0, item was restored. Discard silently.
-        if (netLossQty <= 0) {
-            continue;
+        for (const l of salvageEvents) {
+            const lDate = new Date(l.event_date);
+            const code = l.reason_code?.toUpperCase();
+            const sameFC = (l.fulfillment_center_id && damage.fulfillment_center_id && l.fulfillment_center_id === damage.fulfillment_center_id);
+            const narrowWindow = daysBetween(damageDate, lDate) <= 1;
+
+            const isDirectCode = (code === 'F' || code === 'FOUND');
+            const isCandidateCode = (code === 'P' || code === 'O');
+            const isEmptyCode = !code || code === '';
+            const isWash = (code === damage.reason_code?.toUpperCase() && l.quantity < 0);
+
+            const strongSupport = sameFC || narrowWindow;
+
+            if (isDirectCode || isWash || (isCandidateCode && strongSupport) || (isEmptyCode && strongSupport)) {
+                recoveredUnits += Math.abs(l.quantity);
+                recoveryMode = 'DIRECT';
+                recoveryConfidence = 1.0;
+            } else if (isCandidateCode) {
+                recoveredUnits += (Math.abs(l.quantity) * 0.8);
+                if (!recoveryMode) recoveryMode = 'CANDIDATE';
+                recoveryConfidence = Math.max(recoveryConfidence, 0.8);
+            }
         }
 
-        // 2. Financial Ledger Netting: Sum reimbursements
+        const effectiveDamagedQty = Math.abs(damage.quantity);
+        const physicalUnresolvedQty = Math.max(0, effectiveDamagedQty - recoveredUnits);
+
+        if (physicalUnresolvedQty <= 0) continue;
+
+        // b. Value-Aware Financial Reconciliation
         const reimbursements = reimbursementsByFnsku.get(damage.fnsku) || [];
+        
+        // Link available (unconsumed) reimbursements
         const linkedReimbs = reimbursements.filter(reimb => {
+            if (consumedReimbIds.has(reimb.id)) return false;
             const reimbDate = new Date(reimb.reimbursement_date);
             const daysDiff = daysBetween(damageDate, reimbDate);
             return reimbDate >= damageDate && daysDiff <= 45;
         });
 
-        const totalReimbursed = linkedReimbs.reduce((sum, r) => sum + r.reimbursement_amount, 0);
+        // c. Valuation Ladder
+        const val = getDamagedValuation(damage, linkedReimbs);
+        
+        let localReimbursedValue = 0;
+        let localReimbursedQty = 0;
+        const currentLinkedIds: string[] = [];
 
-        // 3. Shortfall Calculation
-        const unitValue = damage.unit_value || damage.average_sales_price || 15;
-        const expectedValue = netLossQty * unitValue;
-        const shortfallDelta = expectedValue - totalReimbursed;
-
-        // THE 30-DAY SLA TRIGGER: Only promote if SLA has expired
-        if (daysSinceDamage < 30) {
-            continue;
+        for (const reimb of linkedReimbs) {
+            if (localReimbursedQty >= physicalUnresolvedQty) break;
+            
+            localReimbursedValue += reimb.reimbursement_amount;
+            localReimbursedQty += (reimb.quantity_reimbursed || 1);
+            consumedReimbIds.add(reimb.id);
+            currentLinkedIds.push(reimb.id);
         }
 
-        if (shortfallDelta > 0.05) {
-            // THE TRAP IS SPRUNG!
+        // d. Value-Aware Reconciliation
+        const totalDamageValue = physicalUnresolvedQty * val.value;
+        const shortfallValue = totalDamageValue - localReimbursedValue;
+
+        // 30-Day SLA Trigger
+        if (daysSinceDamage < 30) continue;
+
+        if (shortfallValue > 0.05) {
+            const anomalyType = getAnomalyType(damage.reason_code);
+            
             const evidence: DamagedInventoryEvidence = {
                 fnsku: damage.fnsku,
                 sku: damage.sku,
@@ -306,28 +457,45 @@ export function detectDamagedInventory(
                 disposition: damage.disposition,
                 reason_code: damage.reason_code,
                 reason_description: REASON_CODE_DESCRIPTIONS[damage.reason_code.toUpperCase()] || damage.reason_code,
-                quantity_damaged: damage.quantity,
-                fulfillment_center: damage.fulfillment_center_id,
-                reimbursement_found: totalReimbursed > 0,
+                
+                expected_damaged_units: effectiveDamagedQty,
+                recovery_found: recoveredUnits > 0,
+                recovered_quantity: recoveredUnits,
+                recovery_mode: recoveryMode,
+                recovery_confidence: recoveryConfidence,
+
+                reimbursement_found: localReimbursedValue > 0,
+                reimbursed_quantity: localReimbursedQty,
+                reimbursed_value: localReimbursedValue,
+                unresolved_units: physicalUnresolvedQty,
+
+                quantity_damaged: damage.quantity, // Legacy compat
                 days_since_damage: daysSinceDamage,
-                unit_value: unitValue,
-                total_value: expectedValue,
-                evidence_summary: `Damaged Inventory Shortfall: ${netLossQty} units of ${damage.fnsku} remain un-reconciled after ${daysSinceDamage} days. ` +
-                                 `Expected: $${expectedValue.toFixed(2)}, Reimbursed: $${totalReimbursed.toFixed(2)}. ` +
-                                 `Shortfall: $${shortfallDelta.toFixed(2)}.`,
+                
+                // Valuation Ladder Traceability
+                unit_value: val.value,
+                total_value: totalDamageValue,
+                valuation_source: val.source,
+                valuation_basis: val.basis,
+                valuation_confidence: val.confidence,
+
+                evidence_summary: `[${recoveryMode || 'NO_RECOVERY'}] Reconciliation: ${physicalUnresolvedQty.toFixed(1)} units un-reconciled. ` +
+                                 `Source: ${val.source} ($${val.value.toFixed(2)}/unit). ` +
+                                 `Expected: $${totalDamageValue.toFixed(2)}, Reimbursed: $${localReimbursedValue.toFixed(2)}. ` +
+                                 `Shortfall: $${shortfallValue.toFixed(2)}.`,
                 damage_event_id: damage.id
             };
 
             results.push({
                 seller_id: sellerId,
                 sync_id: syncId,
-                anomaly_type: 'DAMAGED_INVENTORY_SHORTFALL',
-                severity: calculateSeverity(shortfallDelta),
-                estimated_value: shortfallDelta,
+                anomaly_type: anomalyType as any,
+                severity: calculateSeverity(shortfallValue),
+                estimated_value: shortfallValue,
                 currency: 'USD',
-                confidence_score: 0.95,
+                confidence_score: (recoveryMode === 'CANDIDATE' ? 0.8 : 0.95) * val.confidence,
                 evidence,
-                related_event_ids: [damage.id, ...linkedReimbs.map(r => r.id)],
+                related_event_ids: [damage.id, ...currentLinkedIds],
                 discovery_date: discoveryDate,
                 deadline_date: deadline,
                 days_remaining: daysRemaining,
@@ -338,13 +506,6 @@ export function detectDamagedInventory(
             });
         }
     }
-
-    logger.info('💥 [BROKEN GOODS] Detection complete', {
-        sellerId,
-        syncId,
-        detectionsFound: results.length,
-        totalEstimatedRecovery: results.reduce((sum, r) => sum + r.estimated_value, 0)
-    });
 
     return results;
 }

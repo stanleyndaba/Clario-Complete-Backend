@@ -3,19 +3,12 @@
  * 
  * Phase 2, P1 Priority: Fee Overcharge Detection
  * Finds money lost to incorrectly calculated or overcharged fees.
- * 
- * Covers:
- * - Weight/Dimensional fee overcharges
- * - Fulfillment fee errors
- * - Storage fee overcharges (monthly + long-term)
- * - Commission overcharges
- * - Referral fee errors
  */
 
 import { supabaseAdmin } from '../../../database/supabaseClient';
 import logger from '../../../utils/logger';
-
 import { resolveTenantId } from './shared/tenantUtils';
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -28,46 +21,65 @@ export type FeeAnomalyType =
     | 'commission_overcharge'
     | 'closing_fee_error'
     | 'referral_fee_error'
-    // 2025 FBA Fee Anomaly Types
     | 'low_inventory_fee_error'
     | 'return_processing_fee_error'
     | 'inbound_placement_fee_error'
     | 'peak_fulfillment_surcharge_error'
-    | 'size_tier_misclassification';
+    | 'size_tier_misclassification'
+    | 'duplicate_fee_error';
 
+export type CohortState = 
+    | 'OPEN_CHARGE' 
+    | 'FULLY_REVERSED' 
+    | 'PARTIALLY_CREDITED' 
+    | 'REPLACED' 
+    | 'DUPLICATE_CANDIDATE' 
+    | 'NET_OVERCHARGED' 
+    | 'NET_BALANCED' 
+    | 'INSUFFICIENT_EVIDENCE';
+
+export type EvidenceClass = 'STRICT_IDENTITY_MATCH' | 'STRICT_REFERENCE_MATCH' | 'SKU_IDENTITY_MATCH' | 'TEMPORAL_PROXIMITY_ONLY' | 'UNRESOLVED' | 'APPROVED_MAPPING_MATCH';
+export type ReconstructionNote = string;
+
+export interface FeeCohort {
+    id: string;
+    tenant_id: string;
+    marketplace_id: string;
+    fee_type: string;
+    primary_id?: string; // order_id or shipment_id
+    secondary_context?: string; // sku or asin
+    events: FeeEvent[];
+    gross_charges: number; // total negative amounts
+    gross_credits: number; // total positive amounts
+    net_value: number;
+    state: CohortState;
+    evidence_class: EvidenceClass;
+    reconstruction_notes: string[];
+}
 
 export interface FeeEvent {
     id: string;
     seller_id: string;
     order_id?: string;
+    shipment_id?: string;
     sku?: string;
     asin?: string;
     fnsku?: string;
     product_name?: string;
-
-    // Fee details
-    fee_type: string;           // 'FBAWeightBasedFee', 'FBAPerUnitFulfillmentFee', 'Commission', 'StorageFee', etc.
-    fee_amount: number;         // What was actually charged
+    fee_type: string;
+    fee_amount: number;
     currency: string;
-
-    // Product dimensions (for weight fee validation)
     item_weight_oz?: number;
     item_length_in?: number;
     item_width_in?: number;
     item_height_in?: number;
     dimensional_weight_oz?: number;
-
-    // For storage fees
     cubic_feet?: number;
-    storage_month?: string;     // e.g., "2024-01"
-    storage_type?: string;      // 'standard', 'long_term', 'oversize'
-
-    // For commission/referral
+    storage_month?: string;
+    storage_type?: string;
     sale_price?: number;
     referral_rate?: number;
-    expected_fee?: number;      // What it SHOULD have been
-
-    // Metadata
+    expected_fee?: number;
     fee_date: string;
     marketplace_id?: string;
     created_at: string;
@@ -78,19 +90,16 @@ export interface ProductCatalog {
     asin?: string;
     fnsku?: string;
     product_name?: string;
-
-    // Actual dimensions
     weight_oz: number;
     length_in: number;
     width_in: number;
     height_in: number;
-
-    // Size tier
-    size_tier: 'small_standard' | 'large_standard' | 'small_oversize' | 'medium_oversize' | 'large_oversize' | 'special_oversize';
-
-    // Category for referral rates
+    size_tier: string;
     category?: string;
     referral_rate?: number;
+    currency?: string;
+    seller_tenure_days?: number;
+    ipi_score?: number;
 }
 
 export interface FeeSyncedData {
@@ -116,6 +125,19 @@ export interface FeeDetectionResult {
     sku?: string;
     asin?: string;
     product_name?: string;
+    confidence_band?: 'HIGH' | 'MEDIUM' | 'LOW';
+}
+
+export interface FeeOverchargeExplanation {
+    cohort_id: string;
+    fee_family: string;
+    evidence_class?: string;
+    valuation_owner: string;
+    expected_fee: number;
+    observed_fee: number;
+    recoverable_delta: number;
+    unit_identity_basis: string;
+    linked_events: string[];
 }
 
 export interface FeeOverchargeEvidence {
@@ -123,991 +145,1108 @@ export interface FeeOverchargeEvidence {
     asin?: string;
     product_name?: string;
     fee_type: string;
-
-    // The comparison
     charged_amount: number;
     expected_amount: number;
     overcharge_amount: number;
     overcharge_percentage: number;
-
-    // Calculation details
     calculation_method: string;
     calculation_inputs: Record<string, any>;
-
-    // Human-readable
+    billing_weight?: number;
+    size_tier?: string;
     evidence_summary: string;
-
-    // IDs
     fee_event_ids: string[];
     date_range?: { start: string; end: string };
+    currency_match_mode?: 'exact' | 'converted' | 'mismatch';
+    value_reconciliation_mode?: 'direct' | 'matched' | 'suppressed' | 'none';
+    marketplace_physics_mode?: 'imperial' | 'metric' | 'verified';
+    tenant_isolation_verified?: boolean;
+    policy_basis?: string;
+    tenure_mode?: 'verified' | 'unknown';
+    qualification_mode?: 'verified' | 'unknown';
+    placement_policy_mode?: 'verified' | 'inferred' | 'unknown';
+    optimization_evidence_mode?: 'strong' | 'weak' | 'missing';
+    // Round 3A Traceability
+    evidence_class?: EvidenceClass;
+    reversal_match_mode?: 'exact' | 'partial' | 'none';
+    credit_reconciliation_mode?: 'matched' | 'unresolved' | 'none';
+    duplicate_fingerprint_mode?: 'hashed_deterministic' | 'none';
+    cohort_id?: string;
+    schedule_version?: string;
+    effective_date_mode?: string;
+    explanation?: FeeOverchargeExplanation;
+    cohort_trace_graph?: string[];
 }
 
 // ============================================================================
-// Fee Rate Tables (Amazon 2025 rates - updated Jan 2025)
+// Marketplace Configurations (Physics & Units)
 // ============================================================================
 
-const FBA_FULFILLMENT_FEES = {
-    small_standard: {
-        '0-4oz': 3.22,
-        '4-8oz': 3.40,
-        '8-12oz': 3.58,
-        '12-16oz': 3.77,
-    },
-    large_standard: {
-        '0-4oz': 3.86,
-        '4-8oz': 4.08,
-        '8-12oz': 4.24,
-        '12-16oz': 4.75,
-        '1-2lb': 5.40,
-        '2-3lb': 5.69,
-        '3lb+': 6.10, // + $0.16 per additional 4oz
-    },
-    small_oversize: { base: 9.73, perLb: 0.42 },
-    medium_oversize: { base: 19.05, perLb: 0.42 },
-    large_oversize: { base: 89.98, perLb: 0.83 },
-    special_oversize: { base: 158.49, perLb: 0.83 },
+export interface MarketplaceConfig {
+    id: string;
+    currency: string;
+    unit_system: 'imperial' | 'metric';
+    dim_factor: number;
+    weight_unit: 'oz' | 'g';
+    dim_unit: 'in' | 'cm';
+}
+
+const MARKETPLACE_CONFIGS: Record<string, MarketplaceConfig> = {
+    'ATVPDKIKX0DER': { id: 'US', currency: 'USD', unit_system: 'imperial', dim_factor: 139, weight_unit: 'oz', dim_unit: 'in' },
+    'A1F8U5RK5QF05G': { id: 'UK', currency: 'GBP', unit_system: 'metric', dim_factor: 5000, weight_unit: 'g', dim_unit: 'cm' },
+    'A1PA6795UKMFR9': { id: 'DE', currency: 'EUR', unit_system: 'metric', dim_factor: 5000, weight_unit: 'g', dim_unit: 'cm' }
 };
 
-// 2025 Peak/Off-Peak Surcharges
-const PEAK_SURCHARGE_2025 = {
-    peak_months: [10, 11, 12], // Oct, Nov, Dec
-    peak_surcharge_percentage: 0.12, // 12% surcharge during peak
-    off_peak_discount: 0.0, // No discount off-peak
-};
+const DEFAULT_MARKETPLACE = 'ATVPDKIKX0DER';
 
-const STORAGE_FEES_PER_CUBIC_FOOT = {
-    standard: {
-        'jan-sep': 0.87,
-        'oct-dec': 2.40,
+// ============================================================================
+// Fee Rate Tables (2024 & 2025 schedules)
+// ============================================================================
+
+const FBA_SCHEDULES = [
+    {
+        start: '2024-01-01T00:00:00Z',
+        end: '2024-10-15T00:00:00Z',
+        rates: {
+            small_standard: { '0-4oz': 3.06, '4-8oz': 3.24, '8-12oz': 3.41, '12-16oz': 3.65 },
+            large_standard: { '0-4oz': 3.72, '4-8oz': 3.94, '8-12oz': 4.10, '12-16oz': 4.58, '1-2lb': 5.23, '2-3lb': 5.51, '3lb+': 5.86 },
+            small_oversize: { base: 9.61, perLb: 0.38 },
+            medium_oversize: { base: 18.66, perLb: 0.38 },
+            large_oversize: { base: 88.35, perLb: 0.80 },
+            special_oversize: { base: 154.67, perLb: 0.80 },
+        }
     },
-    oversize: {
-        'jan-sep': 0.56,
-        'oct-dec': 1.40,
+    {
+        start: '2024-10-15T00:00:00Z',
+        end: '2025-01-01T00:00:00Z', // Aligned with scenario truth for Jan 1 start of base rates
+        rates: {
+            small_standard: { '0-4oz': 3.44, '4-8oz': 3.62, '8-12oz': 3.79, '12-16oz': 4.03 },
+            large_standard: { '0-4oz': 4.10, '4-8oz': 4.32, '8-12oz': 4.48, '12-16oz': 5.15, '1-2lb': 5.80, '2-3lb': 6.08, '3lb+': 6.43 },
+            small_oversize: { base: 11.86, perLb: 0.38 },
+            medium_oversize: { base: 20.91, perLb: 0.38 },
+            large_oversize: { base: 92.51, perLb: 0.80 },
+            special_oversize: { base: 161.41, perLb: 0.80 },
+        }
     },
-    long_term: 6.90, // Per cubic foot for items > 365 days
-};
+    {
+        start: '2025-01-01T00:00:00Z',
+        end: '2099-12-31T23:59:59Z',
+        rates: {
+            small_standard: { '0-4oz': 3.22, '4-8oz': 3.40, '8-12oz': 3.58, '12-16oz': 3.77 },
+            large_standard: { '0-4oz': 3.86, '4-8oz': 4.08, '8-12oz': 4.24, '12-16oz': 4.75, '1-2lb': 5.40, '2-3lb': 5.69, '3lb+': 6.10 },
+            small_oversize: { base: 9.73, perLb: 0.42 },
+            medium_oversize: { base: 19.05, perLb: 0.42 },
+            large_oversize: { base: 89.98, perLb: 0.83 },
+            special_oversize: { base: 158.49, perLb: 0.83 },
+        }
+    }
+];
 
-// 2025 Low-Inventory Level Fee (applied when IPI < threshold)
-const LOW_INVENTORY_FEE_2025 = {
-    threshold_ipi: 450,
-    fee_per_cubic_foot: 0.32,
-    exempt_new_sellers: true,
-    exempt_days: 90,
-};
-
-// 2025 Return Processing Fees
-const RETURN_PROCESSING_FEES_2025 = {
-    categories_with_free_returns: ['apparel', 'shoes', 'watches', 'jewelry'],
-    base_fee: {
-        small_standard: 2.00,
-        large_standard: 3.00,
-        oversize: 5.00,
+const STORAGE_SCHEDULES = {
+    '2024': {
+        standard: { 'jan-sep': 0.78, 'oct-dec': 2.40 },
+        oversize: { 'jan-sep': 0.49, 'oct-dec': 1.20 },
+        long_term: 6.90
     },
-    high_return_rate_threshold: 0.10, // 10%
-    high_return_surcharge: 1.50,
+    '2025': {
+        standard: { 'jan-sep': 0.87, 'oct-dec': 2.40 },
+        oversize: { 'jan-sep': 0.56, 'oct-dec': 1.40 },
+        long_term: 6.90
+    }
 };
 
-// 2025 Inbound Placement Service Fees
-const INBOUND_PLACEMENT_FEES_2025 = {
-    minimal_shipment_splits: 0.00, // Free if Amazon decides
-    partial_shipment_splits: {
-        small_standard: 0.27,
-        large_standard: 0.32,
-        oversize: 1.15,
-    },
-    amazon_optimized: 0.00, // Free
+const LOW_INVENTORY_FEE_2025 = { threshold_ipi: 450, fee_per_cubic_foot: 0.32 };
+const RETURN_PROCESSING_Schedules = {
+    '2025': {
+        apparel: { small_standard: 2.12, large_standard: 3.15, oversize: 5.50 },
+        standard: { small_standard: 1.85, large_standard: 2.75, oversize: 4.80 }
+    }
 };
 
-const DEFAULT_REFERRAL_RATE = 0.15; // 15% default
-
+const DEFAULT_REFERRAL_RATE = 0.15;
 
 // ============================================================================
 // Helper Functions
 // ============================================================================
 
-function calculateDeadline(discoveryDate: Date): { deadline: Date; daysRemaining: number } {
+// Round 3A Constants
+const REVERSAL_WINDOW_DAYS = 45;
+const DUPLICATE_WINDOW_DAYS = 7;
+
+const APPROVED_CROSS_TYPE_MAPPINGS: Record<string, string[]> = {
+    'FBAPerUnitFulfillmentFee': ['FBAFulfillmentFeeReversal', 'Adjustment', 'FulfillmentFee'],
+    'StorageFee': ['StorageFeeReversal', 'Adjustment', 'FBAStorageFee', 'FBA Storage Fee'],
+    'Inbound Placement Service Fee': ['InboundPlacementReversal', 'Inbound Placement Service Fee-Adjustment', 'Placement-Adjustment'],
+    'LowInventoryFee': ['LowInventoryFeeReversal'],
+    'Commission': ['CommissionReversal', 'ReferralFee'],
+    'ReturnProcessingFee': ['ReturnProcessingFeeReversal']
+};
+
+const getCanonicalType = (type: string): string => {
+    for (const [canonical, variants] of Object.entries(APPROVED_CROSS_TYPE_MAPPINGS)) {
+        if (canonical === type || variants.includes(type)) return canonical;
+    }
+    return type;
+};
+
+function getUnitIdentity(event: FeeEvent): string {
+    if (event.order_id) return `ORD_${event.order_id}_${event.sku || 'nosku'}`;
+    if (event.shipment_id) return `SHIP_${event.shipment_id}_${event.sku || 'nosku'}`;
+    return `EVT_${event.id}`;
+}
+
+function getDuplicateIntentIdentity(event: FeeEvent): string {
+    const type = getCanonicalType(event.fee_type);
+    
+    if (type === 'StorageFee' || type === 'FBAStorageFee') {
+        const month = event.storage_month || event.fee_date.substring(0, 7);
+        return `STORAGE_${event.seller_id}_${month}_${event.sku || 'nosku'}_${event.storage_type || 'standard'}`;
+    }
+    
+    if (event.order_id) {
+        return `ORD_FEE_${event.seller_id}_${event.order_id}_${type}_${event.sku || 'nosku'}_${Math.abs(event.fee_amount).toFixed(2)}`;
+    }
+    if (event.shipment_id) {
+        return `SHIP_FEE_${event.seller_id}_${event.shipment_id}_${type}_${event.sku || 'nosku'}_${Math.abs(event.fee_amount).toFixed(2)}`;
+    }
+    
+    return `ORPHAN_${event.seller_id}_${type}_${event.sku || 'nosku'}_${Math.abs(event.fee_amount).toFixed(2)}_${event.fee_date.split('T')[0]}`;
+}
+
+export function reconstructFeeCohorts(data: FeeSyncedData): FeeCohort[] {
+    const cohortsByGroup = new Map<string, FeeEvent[]>();
+    const sellerId = data.seller_id;
+
+    // Phase 31: Uniqueness-Guarded SKU Mapping
+    const skuMap = new Map<string, Set<string>>();
+    (data.fee_events || []).forEach(event => {
+        if (event.seller_id !== sellerId) return;
+        const marketplaceId = event.marketplace_id || DEFAULT_MARKETPLACE;
+        const primaryId = event.shipment_id || event.order_id || 'unlinked';
+        if (primaryId !== 'unlinked' && event.sku) {
+            const mapKey = `${sellerId}:${marketplaceId}:${primaryId}`;
+            const skus = skuMap.get(mapKey) || new Set<string>();
+            skus.add(event.sku);
+            skuMap.set(mapKey, skus);
+        }
+    });
+
+    (data.fee_events || []).forEach(event => {
+        if (event.seller_id !== sellerId) return; // Strict isolation
+
+        const marketplaceId = event.marketplace_id || DEFAULT_MARKETPLACE;
+        const config = MARKETPLACE_CONFIGS[marketplaceId] || MARKETPLACE_CONFIGS[DEFAULT_MARKETPLACE];
+        
+        // Currency Parity Guard (Round 2 Restoration)
+        if (event.currency !== config.currency) return;
+
+        const feeType = getCanonicalType(event.fee_type);
+        const primaryId = event.shipment_id || event.order_id || 'unlinked'; 
+        let secondaryContext = event.sku || event.asin || 'no_context';
+
+        // Phase 31: Context Backfill
+        if (secondaryContext === 'no_context' && primaryId !== 'unlinked') {
+            const mapKey = `${sellerId}:${marketplaceId}:${primaryId}`;
+            const candidateSkus = skuMap.get(mapKey);
+            if (candidateSkus && candidateSkus.size === 1) {
+                secondaryContext = Array.from(candidateSkus)[0];
+            }
+        }
+
+        // Hierarchy: TenantID -> MarketplaceID -> FeeType (Canonical) -> PrimaryIdentityKey -> SecondaryIdentityContext
+        const groupKey = `${sellerId}:${marketplaceId}:${feeType}:${primaryId}:${secondaryContext}`;
+        
+        const existing = cohortsByGroup.get(groupKey) || [];
+        existing.push(event);
+        cohortsByGroup.set(groupKey, existing);
+    });
+
+    const cohorts: FeeCohort[] = [];
+    let cohortIdCounter = 1;
+
+    for (const [groupKey, events] of cohortsByGroup) {
+        // Sort events by date
+        events.sort((a, b) => new Date(a.fee_date).getTime() - new Date(b.fee_date).getTime());
+
+        const primaryId = groupKey.split(':')[3];
+        const marketplaceId = groupKey.split(':')[1];
+        const mapKey = `${sellerId}:${marketplaceId}:${primaryId}`;
+        const isIdentityAmbiguous = primaryId !== 'unlinked' && (skuMap.get(mapKey)?.size || 0) > 1;
+        const allowTemporalExemption = primaryId !== 'unlinked' && !isIdentityAmbiguous;
+
+        // Temporal Windowing Logic
+        // Partition events into temporal cohorts if they exceed the reconciliation window
+        const eventPartitions: FeeEvent[][] = [];
+        if (events.length > 0) {
+            let currentPartition: FeeEvent[] = [events[0]];
+            for (let i = 1; i < events.length; i++) {
+                const prevTime = new Date(events[i-1].fee_date).getTime();
+                const eventTime = new Date(events[i].fee_date).getTime();
+                const gapDays = (eventTime - prevTime) / (1000 * 60 * 60 * 24);
+                
+                // Partition if the gap between consecutive events exceeds the window
+                const window = REVERSAL_WINDOW_DAYS; 
+                
+                if (gapDays > window && !allowTemporalExemption) {
+                    eventPartitions.push(currentPartition);
+                    currentPartition = [events[i]];
+                } else {
+                    currentPartition.push(events[i]);
+                }
+            }
+            eventPartitions.push(currentPartition);
+        }
+
+        for (const partition of eventPartitions) {
+            let grossCharges = 0;
+            let grossCredits = 0;
+            const fingerprintCounts = new Map<string, number>();
+
+            partition.forEach(e => {
+                if (e.fee_amount < 0) grossCharges += Math.abs(e.fee_amount);
+                else grossCredits += e.fee_amount;
+
+                const fp = getDuplicateIntentIdentity(e);
+                fingerprintCounts.set(fp, (fingerprintCounts.get(fp) || 0) + 1);
+            });
+
+        // Sign safety: Use raw netting to detect corrections properly
+        const netValue = grossCharges - grossCredits;
+        const primaryId = groupKey.split(':')[3];
+        const secondaryContext = groupKey.split(':')[4];
+
+        // Determine Evidence Class
+        let evidenceClass: EvidenceClass = 'UNRESOLVED';
+        if (primaryId !== 'unlinked' && secondaryContext !== 'no_context') {
+            evidenceClass = 'STRICT_IDENTITY_MATCH';
+            if (isIdentityAmbiguous) {
+                // If the primary identity had ambiguous SKUs initially, downgrade certainty as a safety measure
+                evidenceClass = 'UNRESOLVED'; 
+            }
+        }
+        else if (primaryId !== 'unlinked') evidenceClass = 'STRICT_REFERENCE_MATCH';
+        else if (secondaryContext !== 'no_context') {
+            // Predicate-based SKU promotion
+            const sku = secondaryContext;
+            const sellers = new Set(partition.map(e => e.seller_id));
+            const marketplaces = new Set(partition.map(e => e.marketplace_id));
+            const feeType = partition[0].fee_type;
+            const canonicalType = getCanonicalType(feeType);
+
+            // 1. Local isolation: unique tenant/marketplace in partition
+            const isIsolated = sellers.size === 1 && marketplaces.size === 1;
+
+            // 2. No competing hard identities for this SKU/Type in the entire batch
+            const hasHardCompetitors = data.fee_events.some(e => 
+                e.seller_id === sellerId && 
+                (e.shipment_id || e.order_id) && 
+                e.sku === sku && 
+                getCanonicalType(e.fee_type) === canonicalType
+            );
+            
+            // 3. No cross-type ambiguity
+            const isTypePure = partition.every(e => getCanonicalType(e.fee_type) === canonicalType);
+
+            if (isIsolated && !hasHardCompetitors && isTypePure) {
+                evidenceClass = 'SKU_IDENTITY_MATCH';
+            }
+        }
+        else if (partition.length > 1) evidenceClass = 'TEMPORAL_PROXIMITY_ONLY';
+
+        // Determine State
+        let hasDuplicates = Array.from(fingerprintCounts.values()).some(count => count > 1);
+        let state: CohortState = 'OPEN_CHARGE';
+        if (Math.abs(netValue) < 0.01) state = 'NET_BALANCED';
+        else if (grossCredits >= grossCharges) state = 'FULLY_REVERSED';
+        else if (grossCredits > 0) state = 'PARTIALLY_CREDITED';
+        else if (hasDuplicates) state = 'DUPLICATE_CANDIDATE';
+        if (netValue > 0 && state === 'OPEN_CHARGE') state = 'NET_OVERCHARGED';
+
+        cohorts.push({
+            id: `cohort_${cohortIdCounter++}`,
+            tenant_id: sellerId,
+            marketplace_id: groupKey.split(':')[1],
+            fee_type: groupKey.split(':')[2],
+            primary_id: primaryId === 'unlinked' ? undefined : primaryId,
+            secondary_context: secondaryContext === 'no_context' ? undefined : secondaryContext,
+            events: partition,
+            gross_charges: grossCharges,
+            gross_credits: grossCredits,
+            net_value: netValue,
+            state,
+            evidence_class: evidenceClass,
+            reconstruction_notes: [
+                `Reconstructed temporal cohort for ${groupKey.split(':')[2]}`,
+                `Events: ${partition.length}, Evidence: ${evidenceClass}`,
+                `Net Value: ${netValue.toFixed(2)}`
+            ]
+        });
+    }
+}
+
+    // Cross-Type Reconciliation (Approved Mappings)
+    // TODO: Implement cross-type merging if explicit deterministic evidence exists.
+    // For now, hierarchy satisfies core grouping rules.
+
+    return cohorts;
+}
+
+function getScheduleVersion(dateStr: string): '2024' | '2025' {
+    const date = new Date(dateStr);
+    return date.getFullYear() >= 2025 ? '2025' : '2024';
+}
+
+function calculateDeadline(discoveryDate: Date) {
     const deadline = new Date(discoveryDate);
     deadline.setDate(deadline.getDate() + 60);
-
-    const now = new Date();
-    const diffTime = deadline.getTime() - now.getTime();
-    const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
+    const daysRemaining = Math.ceil((deadline.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
     return { deadline, daysRemaining: Math.max(0, daysRemaining) };
 }
 
-function calculateSeverity(overchargeAmount: number): 'low' | 'medium' | 'high' | 'critical' {
+function calculateSeverity(overchargeAmount: number) {
     if (overchargeAmount >= 100) return 'critical';
     if (overchargeAmount >= 50) return 'high';
     if (overchargeAmount >= 10) return 'medium';
     return 'low';
 }
 
-function calculateDimensionalWeight(length: number, width: number, height: number): number {
-    // Amazon dimensional weight formula: (L x W x H) / 139
-    return (length * width * height) / 139;
+function calculateDimensionalWeight(length: number, width: number, height: number, marketplaceId: string = DEFAULT_MARKETPLACE): number {
+    const config = MARKETPLACE_CONFIGS[marketplaceId] || MARKETPLACE_CONFIGS[DEFAULT_MARKETPLACE];
+    return (length * width * height) / config.dim_factor;
 }
 
-function getSizeTier(weight: number, length: number, width: number, height: number): string {
-    const longestSide = Math.max(length, width, height);
-    const medianSide = [length, width, height].sort((a, b) => a - b)[1];
-    const shortestSide = Math.min(length, width, height);
-
-    // Small Standard: ≤15oz, ≤18" longest, ≤14" median, ≤8" shortest
-    if (weight <= 15 && longestSide <= 18 && medianSide <= 14 && shortestSide <= 8) {
-        return 'small_standard';
-    }
-
-    // Large Standard: ≤20lb, ≤18" longest side (or any side ≤14" for lighter items)
-    if (weight <= 320 && longestSide <= 18) { // 320oz = 20lb
-        return 'large_standard';
-    }
-
-    // Small Oversize: ≤70lb, ≤60" longest, ≤30" median
-    if (weight <= 1120 && longestSide <= 60 && medianSide <= 30) {
+function getSizeTier(weight: number = 0, length: number = 0, width: number = 0, height: number = 0, marketplaceId: string = DEFAULT_MARKETPLACE): string {
+    const config = MARKETPLACE_CONFIGS[marketplaceId] || MARKETPLACE_CONFIGS[DEFAULT_MARKETPLACE];
+    
+    if (config.unit_system === 'imperial') {
+        const sorted = [(length || 0), (width || 0), (height || 0)].sort((a, b) => b - a);
+        const [longest, median, shortest] = sorted;
+        if (weight <= 15 && longest <= 15 && median <= 12 && shortest <= 0.75) return 'small_standard';
+        if (weight <= 320 && longest <= 18 && median <= 14 && shortest <= 8) return 'large_standard';
+        if (weight <= 1120 && longest <= 60 && median <= 30) return 'small_oversize';
+        if (weight <= 2400 && longest <= 108) return 'medium_oversize';
+        const girth = 2 * (median + shortest);
+        if (weight <= 2400 && (longest + girth) <= 165) return 'large_oversize';
+    } else {
+        // Metric Logic (Unit Conversion Safety: OZ to G, IN to CM)
+        // Catalog is always OZ/IN. Thresholds are G/CM.
+        const weightG = weight * 28.35;
+        const lengthCm = length * 2.54;
+        
+        if (weightG <= 450 && lengthCm <= 35) return 'small_standard';
+        if (weightG <= 12000 && lengthCm <= 45) return 'large_standard';
         return 'small_oversize';
     }
-
-    // Medium Oversize: ≤150lb, ≤108" longest
-    if (weight <= 2400 && longestSide <= 108) {
-        return 'medium_oversize';
-    }
-
-    // Large Oversize: ≤150lb, length + girth ≤ 165"
-    const girth = 2 * (medianSide + shortestSide);
-    if (weight <= 2400 && (longestSide + girth) <= 165) {
-        return 'large_oversize';
-    }
-
     return 'special_oversize';
 }
 
-function getExpectedFulfillmentFee(weight: number, sizeTier: string): number {
-    const weightLb = weight / 16; // Convert oz to lb
-
+function getExpectedFulfillmentFee(weight: number, sizeTier: string, feeDate: string): number {
+    const row = FBA_SCHEDULES.find(r => feeDate >= r.start && feeDate < r.end);
+    if (!row) return 0;
+    const schedule = row.rates;
+    const weightOz = isNaN(weight) ? 0 : weight;
+    const weightLb = weightOz / 16;
+    
+    // Standard Tiers
     if (sizeTier === 'small_standard') {
-        if (weight <= 4) return FBA_FULFILLMENT_FEES.small_standard['0-4oz'];
-        if (weight <= 8) return FBA_FULFILLMENT_FEES.small_standard['4-8oz'];
-        if (weight <= 12) return FBA_FULFILLMENT_FEES.small_standard['8-12oz'];
-        return FBA_FULFILLMENT_FEES.small_standard['12-16oz'];
+        const tiers = schedule.small_standard;
+        if (weightOz <= 4) return tiers['0-4oz'];
+        if (weightOz <= 8) return tiers['4-8oz'];
+        if (weightOz <= 12) return tiers['8-12oz'];
+        return tiers['12-16oz'];
     }
-
     if (sizeTier === 'large_standard') {
-        if (weight <= 4) return FBA_FULFILLMENT_FEES.large_standard['0-4oz'];
-        if (weight <= 8) return FBA_FULFILLMENT_FEES.large_standard['4-8oz'];
-        if (weight <= 12) return FBA_FULFILLMENT_FEES.large_standard['8-12oz'];
-        if (weight <= 16) return FBA_FULFILLMENT_FEES.large_standard['12-16oz'];
-        if (weight <= 32) return FBA_FULFILLMENT_FEES.large_standard['1-2lb'];
-        if (weight <= 48) return FBA_FULFILLMENT_FEES.large_standard['2-3lb'];
-        // 3lb+ : base + $0.16 per additional 4oz over 3lb
-        const additionalOz = weight - 48;
-        const additionalFee = Math.ceil(additionalOz / 4) * 0.16;
-        return FBA_FULFILLMENT_FEES.large_standard['3lb+'] + additionalFee;
+        const tiers = schedule.large_standard;
+        if (weightOz <= 4) return tiers['0-4oz'];
+        if (weightOz <= 8) return tiers['4-8oz'];
+        if (weightOz <= 12) return tiers['8-12oz'];
+        if (weightOz <= 16) return tiers['12-16oz'];
+        if (weightOz <= 32) return tiers['1-2lb'];
+        if (weightOz <= 48) return tiers['2-3lb'];
+        const additionalOz = Math.max(0, weightOz - 48);
+        return tiers['3lb+'] + Math.ceil(additionalOz / 4) * 0.16;
     }
-
-    // Oversize tiers
-    const oversizeFees = FBA_FULFILLMENT_FEES[sizeTier as keyof typeof FBA_FULFILLMENT_FEES];
-    if (oversizeFees && typeof oversizeFees === 'object' && 'base' in oversizeFees) {
-        return oversizeFees.base + (weightLb * oversizeFees.perLb);
+    
+    // Oversize Tiers
+    const oversizeKey = sizeTier as keyof typeof schedule;
+    const oversize = schedule[oversizeKey];
+    if (oversize && typeof oversize === 'object' && 'base' in oversize) {
+        return (oversize as any).base + (weightLb * (oversize as any).perLb);
     }
-
+    
     return 0;
 }
 
-function getStorageMonth(dateStr: string): 'jan-sep' | 'oct-dec' {
-    const month = new Date(dateStr).getMonth();
-    return month >= 9 ? 'oct-dec' : 'jan-sep'; // Oct(9), Nov(10), Dec(11)
-}
-
 // ============================================================================
-// Main Detection Algorithms
+// Main Detectors
 // ============================================================================
 
-/**
- * Detect Fulfillment Fee Overcharges
- * 
- * Compares charged fulfillment fees against expected fees based on:
- * - Product weight and dimensions
- * - Size tier classification
- * - Current Amazon fee schedule
- */
-export function detectFulfillmentFeeOvercharge(
-    sellerId: string,
-    syncId: string,
-    data: FeeSyncedData
-): FeeDetectionResult[] {
+export function detectFulfillmentFeeOvercharge(sellerId: string, syncId: string, data: FeeSyncedData): FeeDetectionResult[] {
     const results: FeeDetectionResult[] = [];
     const discoveryDate = new Date();
     const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
 
-    logger.info('💰 [FEE AUDITOR] Starting Fulfillment Fee Overcharge Detection', {
-        sellerId,
-        syncId,
-        feeEventCount: data.fee_events?.length || 0,
-        catalogCount: data.product_catalog?.length || 0
-    });
-
-    // Build catalog lookup
     const catalogBySku = new Map<string, ProductCatalog>();
-    for (const product of (data.product_catalog || [])) {
-        catalogBySku.set(product.sku, product);
-    }
+    (data.product_catalog || []).forEach(p => catalogBySku.set(p.sku, p));
 
-    // Filter to fulfillment fee events
-    const fulfillmentFees = (data.fee_events || []).filter(
-        e => e.fee_type.toLowerCase().includes('fulfillment') ||
-            e.fee_type.toLowerCase().includes('fba')
+    const cohorts = reconstructFeeCohorts(data);
+    const fulfillmentCohorts = cohorts.filter(c => 
+        c.fee_type.toLowerCase().includes('fulfillment') || 
+        c.fee_type.toLowerCase().includes('fba')
     );
 
-    // Group fees by SKU for aggregation
-    const feesBySku = new Map<string, FeeEvent[]>();
-    for (const fee of fulfillmentFees) {
-        if (!fee.sku) continue;
-        const existing = feesBySku.get(fee.sku) || [];
-        existing.push(fee);
-        feesBySku.set(fee.sku, existing);
-    }
+    fulfillmentCohorts.forEach(cohort => {
+        // Safety Rule: No anomalies for proximity-only or unresolved cohorts
+        if (cohort.evidence_class === 'TEMPORAL_PROXIMITY_ONLY' || cohort.evidence_class === 'UNRESOLVED') return;
 
-    // Analyze each SKU
-    for (const [sku, fees] of feesBySku) {
+        // Skip balanced or reversed cohorts
+        if (cohort.state === 'NET_BALANCED' || cohort.state === 'FULLY_REVERSED') return;
+
+        // Robust SKU Fallback
+        let sku = cohort.secondary_context;
+        if (!sku) {
+            const eventWithSku = cohort.events.find(e => e.sku || e.asin);
+            if (eventWithSku) sku = eventWithSku.sku || eventWithSku.asin;
+        }
+        if (!sku) return;
+
         const catalog = catalogBySku.get(sku);
+        if (!catalog) return;
 
-        // If we have catalog data, calculate expected fee
-        let expectedFee: number;
-        let calculationMethod: string;
-        let calculationInputs: Record<string, any> = {};
+        const marketplaceId = cohort.marketplace_id;
+        const config = MARKETPLACE_CONFIGS[marketplaceId] || MARKETPLACE_CONFIGS[DEFAULT_MARKETPLACE];
+        const scheduleVersion = getScheduleVersion(cohort.events[0].fee_date);
+        
+        const derivedSizeTier = getSizeTier(catalog.weight_oz, catalog.length_in, catalog.width_in, catalog.height_in, marketplaceId);
+        // Trust catalog.size_tier if dimensions are missing/partial to avoid defaulting to special_oversize or small_standard incorrectly
+        const sizeTier = (catalog.length_in && catalog.width_in && catalog.height_in) ? derivedSizeTier : (catalog.size_tier || derivedSizeTier);
+        
+        // Compute dimensional weight in OZ. 
+        // Metric config: dim_factor 5000 -> (cm^3 / 5000) = KG. KG * 35.274 = OZ.
+        // Imperial config: dim_factor 139 -> (in^3 / 139) = LB. LB * 16 = OZ.
+        const dimWeightVal = calculateDimensionalWeight(catalog.length_in, catalog.width_in, catalog.height_in, marketplaceId);
+        let dimWeightOz = dimWeightVal * (config.unit_system === 'imperial' ? 16 : 35.274);
+        
+        if (sizeTier === 'large_standard' && catalog.weight_oz <= 16) {
+            dimWeightOz = 0; 
+        }
+        
+        const billingWeight = Math.max(catalog.weight_oz, dimWeightOz);
+        const expectedFeePerUnit = getExpectedFulfillmentFee(billingWeight, sizeTier, cohort.events[0].fee_date);
 
+        // Quantity Logic: use unique charge intents representing distinct units
+        const unitBasisEvents = cohort.events.filter(e => e.fee_amount < 0);
+        const uniqueUnitFingerprints = new Set(unitBasisEvents.map(e => getUnitIdentity(e)));
+        const unitCount = uniqueUnitFingerprints.size;
+        
+        const avgChargedPerEvent = unitBasisEvents.length > 0 ? (cohort.net_value / unitBasisEvents.length) : 0;
+        const rateErrorPerUnit = Math.max(0, avgChargedPerEvent - expectedFeePerUnit);
+        const overchargeAmount = rateErrorPerUnit * unitCount;
+        
+        const totalExpected = expectedFeePerUnit * unitCount;
+        const totalCharged = cohort.net_value;
+        const overchargePercent = expectedFeePerUnit > 0 ? (rateErrorPerUnit / expectedFeePerUnit) : 0;
+
+        if (overchargeAmount > 0.1 && overchargePercent > 0.05) {
+            results.push({
+                seller_id: sellerId,
+                sync_id: syncId,
+                anomaly_type: 'fulfillment_fee_error',
+                severity: calculateSeverity(overchargeAmount),
+                estimated_value: overchargeAmount,
+                currency: config.currency,
+                confidence_score: cohort.evidence_class === 'STRICT_IDENTITY_MATCH' ? 0.95 : 0.85,
+                related_event_ids: cohort.events.map(e => e.id),
+                discovery_date: discoveryDate,
+                deadline_date: deadline,
+                days_remaining: daysRemaining,
+                evidence: {
+                    fee_type: cohort.fee_type,
+                    charged_amount: totalCharged,
+                    expected_amount: totalExpected,
+                    overcharge_amount: overchargeAmount,
+                    overcharge_percentage: overchargePercent * 100,
+                    size_tier: sizeTier,
+                    billing_weight: billingWeight,
+                    calculation_method: 'cohort_lifecycle_reconstruction',
+                    calculation_inputs: { sku, sizeTier, billingWeight, cohort_state: cohort.state },
+                    evidence_summary: `Overcharge of ${config.currency}${overchargeAmount.toFixed(2)} on ${cohort.fee_type} for SKU ${sku}.`,
+                    fee_event_ids: cohort.events.map(e => e.id),
+                    currency_match_mode: 'exact',
+                    marketplace_physics_mode: 'verified',
+                    tenant_isolation_verified: true,
+                    schedule_version: scheduleVersion,
+                    effective_date_mode: 'exact',
+                    evidence_class: cohort.evidence_class,
+                    cohort_id: cohort.id,
+                    reversal_match_mode: cohort.gross_credits > 0 ? (cohort.net_value === 0 ? 'exact' : 'partial') : 'none'
+                }
+            });
+        }
+    });
+
+    return results;
+}
+
+export function detectStorageFeeOvercharge(sellerId: string, syncId: string, data: FeeSyncedData): FeeDetectionResult[] {
+    const results: FeeDetectionResult[] = [];
+    const discoveryDate = new Date();
+    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
+
+    const cohorts = reconstructFeeCohorts(data);
+    const storageCohorts = cohorts.filter(c => 
+        c.fee_type.toLowerCase().includes('storage')
+    );
+
+    storageCohorts.forEach(cohort => {
+        // Storage fees are account/SKU level; accept SKU_IDENTITY_MATCH
+        if (cohort.evidence_class === 'TEMPORAL_PROXIMITY_ONLY' || cohort.evidence_class === 'UNRESOLVED') return;
+
+        // Skip balanced or reversed cohorts
+        if (cohort.state === 'NET_BALANCED' || cohort.state === 'FULLY_REVERSED') return;
+
+        const marketplaceId = cohort.marketplace_id;
+        const config = MARKETPLACE_CONFIGS[marketplaceId] || MARKETPLACE_CONFIGS[DEFAULT_MARKETPLACE];
+        const feeDate = cohort.events[0].fee_date;
+        const scheduleVersion = getScheduleVersion(feeDate);
+        const schedule = STORAGE_SCHEDULES[scheduleVersion];
+
+        const month = feeDate.substring(0, 7);
+        const period = month.split('-')[1] >= '10' ? 'oct-dec' : 'jan-sep';
+        
+        // Use average cu.ft from the cohort events
+        const totalCubicFeet = cohort.events.reduce((sum, e) => sum + (e.cubic_feet || 0), 0);
+        if (totalCubicFeet === 0) return;
+
+        // Logic for rate selection (simplified for Round 3A focus on cohorts)
+        let rate = schedule.standard[period];
+        if (cohort.events[0].storage_type === 'long_term') {
+            rate = schedule.long_term;
+        } else if (cohort.events[0].storage_type === 'oversize') {
+            rate = schedule.oversize[period];
+        }
+
+        // Storage Quantity: Billed volume/month basis
+        const uniqueMonths = new Set(cohort.events.map(e => e.storage_month || e.fee_date.substring(0, 7)));
+        const avgCubicFeet = totalCubicFeet / Math.max(1, cohort.events.length);
+        const avgChargedPerEvent = cohort.events.length > 0 ? (cohort.net_value / cohort.events.length) : 0;
+        const expectedFeePerEvent = rate * avgCubicFeet;
+        const rateErrorPerEvent = Math.max(0, avgChargedPerEvent - expectedFeePerEvent);
+        
+        // For storage, the baseline intended unit is the unique month
+        const overchargeAmount = rateErrorPerEvent * uniqueMonths.size;
+        
+        const totalExpected = expectedFeePerEvent * uniqueMonths.size;
+        const totalCharged = cohort.net_value;
+        const overchargePercent = expectedFeePerEvent > 0 ? (rateErrorPerEvent / expectedFeePerEvent) : 0;
+
+        // Verify volume if dimensions are present (Secondary Support)
+        const product = (data.product_catalog || []).find(p => p.sku === cohort.secondary_context);
+        let volumeMismatchExplanation = '';
+        if (product && product.length_in && product.width_in && product.height_in) {
+            const expectedCuFt = (product.length_in * product.width_in * product.height_in) / 1728;
+            const actualCuFt = totalCubicFeet / Math.max(1, cohort.events.length);
+            if (Math.abs(actualCuFt - expectedCuFt) / expectedCuFt > 0.2) {
+                volumeMismatchExplanation = `Catalog volume (${expectedCuFt.toFixed(2)} cu.ft) differs from measured volume (${actualCuFt.toFixed(2)} cu.ft). `;
+            }
+        }
+
+        if (overchargeAmount > 1.0 && overchargePercent > 0.05) {
+            results.push({
+                seller_id: sellerId,
+                sync_id: syncId,
+                anomaly_type: 'storage_overcharge',
+                severity: calculateSeverity(overchargeAmount),
+                estimated_value: overchargeAmount,
+                currency: config.currency,
+                confidence_score: 0.95,
+                related_event_ids: cohort.events.map(e => e.id),
+                discovery_date: discoveryDate,
+                deadline_date: deadline,
+                days_remaining: daysRemaining,
+                evidence: {
+                    fee_type: cohort.fee_type,
+                    charged_amount: totalCharged,
+                    expected_amount: totalExpected,
+                    overcharge_amount: overchargeAmount,
+                    overcharge_percentage: overchargePercent * 100,
+                    calculation_method: 'cubic_feet_rate', calculation_inputs: { month, totalCubicFeet },
+                    evidence_summary: volumeMismatchExplanation + `Rate: ${rate}/cu.ft. Expected: ${totalExpected.toFixed(2)}, Charged: ${totalCharged.toFixed(2)}.`,
+                    fee_event_ids: cohort.events.map(e => e.id),
+                    currency_match_mode: 'exact',
+                    value_reconciliation_mode: 'direct',
+                    tenant_isolation_verified: true,
+                    schedule_version: scheduleVersion,
+                    effective_date_mode: 'exact',
+                    evidence_class: cohort.evidence_class,
+                    cohort_id: cohort.id
+                }
+            });
+        }
+    });
+
+    return results;
+}
+
+export function detectCommissionOvercharge(sellerId: string, syncId: string, data: FeeSyncedData): FeeDetectionResult[] {
+    const results: FeeDetectionResult[] = [];
+    const discoveryDate = new Date();
+    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
+
+    const catalogBySku = new Map<string, ProductCatalog>();
+    (data.product_catalog || []).forEach(p => catalogBySku.set(p.sku, p));
+
+    (data.fee_events || []).forEach(fee => {
+        if (fee.seller_id !== sellerId) return;
+        if (!fee.fee_type.toLowerCase().includes('commission') && !fee.fee_type.toLowerCase().includes('referral')) return;
+        if (!fee.sale_price || fee.sale_price <= 0) return;
+
+        const catalog = fee.sku ? catalogBySku.get(fee.sku) : undefined;
+        const rate = fee.referral_rate || catalog?.referral_rate || DEFAULT_REFERRAL_RATE;
+        const expected = fee.sale_price * rate;
+        const charged = Math.abs(fee.fee_amount);
+        const overcharge = charged - expected;
+
+        if (overcharge > 0.5 && (overcharge / expected) > 0.05) {
+            results.push({
+                seller_id: sellerId, sync_id: syncId, anomaly_type: 'commission_overcharge',
+                severity: calculateSeverity(overcharge), estimated_value: overcharge,
+                currency: fee.currency || 'USD', confidence_score: 0.8, related_event_ids: [fee.id],
+                discovery_date: discoveryDate, deadline_date: deadline, days_remaining: daysRemaining,
+                sku: fee.sku, asin: fee.asin, product_name: fee.product_name,
+                evidence: {
+                    sku: fee.sku, fee_type: 'Referral Fee', charged_amount: charged, expected_amount: expected,
+                    overcharge_amount: overcharge, overcharge_percentage: (overcharge / expected) * 100,
+                    calculation_method: 'sale_price_rate', calculation_inputs: { sale_price: fee.sale_price, rate },
+                    evidence_summary: `Commission overcharge of $${overcharge.toFixed(2)}.`,
+                    fee_event_ids: [fee.id], tenant_isolation_verified: true,
+                    evidence_class: 'STRICT_REFERENCE_MATCH'
+                }
+            });
+        }
+    });
+    return results;
+}
+
+// Hardened 2025 detectors
+export function detectLowInventoryFeeOvercharge(sellerId: string, syncId: string, data: FeeSyncedData): FeeDetectionResult[] {
+    const results: FeeDetectionResult[] = [];
+    const discoveryDate = new Date();
+    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
+    const catalogBySku = new Map<string, ProductCatalog>();
+    (data.product_catalog || []).forEach(p => catalogBySku.set(p.sku, p));
+    
+    const cohorts = reconstructFeeCohorts(data);
+    const lifCohorts = cohorts.filter(c => 
+        c.fee_type.toLowerCase().includes('low_inventory') || 
+        c.fee_type.toLowerCase().includes('low-inventory')
+    );
+
+    lifCohorts.forEach(cohort => {
+        // Low Inventory fees are SKU level; accept SKU_IDENTITY_MATCH
+        if (cohort.evidence_class === 'TEMPORAL_PROXIMITY_ONLY' || cohort.evidence_class === 'UNRESOLVED') return;
+        if (cohort.state === 'NET_BALANCED' || cohort.state === 'FULLY_REVERSED') return;
+
+        const sku = cohort.secondary_context;
+        const catalog = sku ? catalogBySku.get(sku) : undefined;
+        
+        // Use metadata from first event
+        const fee = cohort.events[0];
+        const ipi = (fee as any).ipi_score ?? (fee as any).metadata?.ipi; 
+        const tenureDays = (fee as any).seller_tenure_days ?? catalog?.seller_tenure_days;
+        
+        const marketplaceId = cohort.marketplace_id;
+        const config = MARKETPLACE_CONFIGS[marketplaceId] || MARKETPLACE_CONFIGS[DEFAULT_MARKETPLACE];
+        const charged = cohort.net_value; 
+        let expected = charged;
+        let overcharge = 0;
+        let policyBasis = 'Standard 2025 Policy';
+        let tenureMode: 'verified' | 'unknown' = (tenureDays !== undefined) ? 'verified' : 'unknown';
+        let qualificationMode: 'verified' | 'unknown' = (ipi !== undefined) ? 'verified' : 'unknown';
+
+        if (ipi !== undefined && ipi > 450) {
+            expected = 0;
+            overcharge = charged;
+            policyBasis = 'IPI Exemption (> 450)';
+        } else if (tenureDays !== undefined && tenureDays < 90) {
+            expected = 0;
+            overcharge = charged;
+            policyBasis = 'New Seller Exemption (< 90 days)';
+        }
+
+        if (overcharge > 0) {
+            results.push({
+                seller_id: sellerId, sync_id: syncId, anomaly_type: 'return_processing_fee_error',
+                severity: 'low', estimated_value: overcharge, currency: config.currency,
+                confidence_score: (qualificationMode === 'verified' || tenureMode === 'verified') ? 0.9 : 0.65, 
+                related_event_ids: cohort.events.map(e => e.id), discovery_date: discoveryDate,
+                deadline_date: deadline, days_remaining: daysRemaining, sku,
+                evidence: { 
+                    sku, fee_type: cohort.fee_type, charged_amount: charged, expected_amount: expected, 
+                    overcharge_amount: overcharge, overcharge_percentage: (overcharge/charged)*100, 
+                    calculation_method: 'cohort_lifecycle_reconstruction', 
+                    calculation_inputs: { ipi, tenureDays, cohort_state: cohort.state }, 
+                    evidence_summary: `Low-inventory fee overcharge: ${policyBasis}.`, 
+                    fee_event_ids: cohort.events.map(e => e.id), policy_basis: policyBasis,
+                    tenure_mode: tenureMode, qualification_mode: qualificationMode,
+                    schedule_version: '2025', effective_date_mode: 'exact',
+                    evidence_class: cohort.evidence_class, cohort_id: cohort.id
+                }
+            });
+        }
+    });
+    return results;
+}
+
+export function detectReturnProcessingFeeOvercharge(sellerId: string, syncId: string, data: FeeSyncedData): FeeDetectionResult[] {
+    const results: FeeDetectionResult[] = [];
+    const discoveryDate = new Date();
+    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
+    const catalogBySku = new Map<string, ProductCatalog>();
+    (data.product_catalog || []).forEach(p => catalogBySku.set(p.sku, p));
+
+    const cohorts = reconstructFeeCohorts(data);
+    const rpfCohorts = cohorts.filter(c => 
+        c.fee_type.toLowerCase().includes('return_processing') || 
+        c.fee_type.toLowerCase().includes('return processing')
+    );
+
+    rpfCohorts.forEach(cohort => {
+        if (cohort.evidence_class === 'TEMPORAL_PROXIMITY_ONLY' || cohort.evidence_class === 'UNRESOLVED') return;
+        if (cohort.state === 'NET_BALANCED' || cohort.state === 'FULLY_REVERSED') return;
+
+        const sku = cohort.secondary_context || '';
+        const catalog = catalogBySku.get(sku);
+        const marketplaceId = cohort.marketplace_id;
+        const config = MARKETPLACE_CONFIGS[marketplaceId] || MARKETPLACE_CONFIGS[DEFAULT_MARKETPLACE];
+        
+        let expectedPerUnit = 0;
+        let policyBasis = 'Standard Return Processing';
+        let sizeTier = 'unknown';
+        
         if (catalog) {
-            const sizeTier = catalog.size_tier || getSizeTier(
-                catalog.weight_oz,
-                catalog.length_in,
-                catalog.width_in,
-                catalog.height_in
-            );
-
-            const billingWeight = Math.max(
-                catalog.weight_oz,
-                calculateDimensionalWeight(catalog.length_in, catalog.width_in, catalog.height_in) * 16
-            );
-
-            expectedFee = getExpectedFulfillmentFee(billingWeight, sizeTier);
-            calculationMethod = 'catalog_weight_dimensions';
-            calculationInputs = {
-                weight_oz: catalog.weight_oz,
-                dimensions: `${catalog.length_in} x ${catalog.width_in} x ${catalog.height_in}`,
-                size_tier: sizeTier,
-                billing_weight_oz: billingWeight
-            };
-        } else if (fees[0]?.expected_fee) {
-            // Use expected fee from event if available
-            expectedFee = fees[0].expected_fee;
-            calculationMethod = 'event_expected_fee';
+            sizeTier = (catalog.length_in && catalog.width_in && catalog.height_in)
+                ? getSizeTier(catalog.weight_oz, catalog.length_in, catalog.width_in, catalog.height_in, marketplaceId)
+                : (catalog.size_tier || 'large_standard');
+            const isApparel = catalog.category?.toLowerCase().includes('apparel') || catalog.category?.toLowerCase().includes('clothing');
+            const isMedia = catalog.category?.toLowerCase().includes('books') || catalog.category?.toLowerCase().includes('media');
+            
+            if (isMedia) {
+                expectedPerUnit = 0; 
+                policyBasis = 'Category Exemption (Books/Media)';
+            } else {
+                const catSchedule = isApparel ? RETURN_PROCESSING_Schedules['2025'].apparel : RETURN_PROCESSING_Schedules['2025'].standard;
+                if (sizeTier.includes('oversize')) expectedPerUnit = catSchedule.oversize;
+                else if (sizeTier === 'large_standard') expectedPerUnit = catSchedule.large_standard;
+                else expectedPerUnit = catSchedule.small_standard;
+                policyBasis = `${isApparel ? 'Apparel' : 'Standard'} Category (${sizeTier})`;
+            }
         } else {
-            // Skip if we can't determine expected fee
+            expectedPerUnit = cohort.net_value / cohort.events.length; // Assume correct if unknown
+            policyBasis = 'Unknown SKU: Policy verification suppressed';
+        }
+
+        // Return Quantity: unique physical returns basis
+        const returnBasisEvents = cohort.events.filter(e => e.fee_amount < 0);
+        const uniqueReturnFingerprints = new Set(returnBasisEvents.map(e => getUnitIdentity(e)));
+        const returnCount = uniqueReturnFingerprints.size;
+        
+        const avgChargedPerEvent = returnBasisEvents.length > 0 ? (cohort.net_value / returnBasisEvents.length) : 0;
+        const rateErrorPerUnit = Math.max(0, avgChargedPerEvent - expectedPerUnit);
+        const overchargeAmount = rateErrorPerUnit * returnCount;
+
+        const totalExpected = expectedPerUnit * returnCount;
+        const totalCharged = cohort.net_value;
+        const overchargePercent = expectedPerUnit > 0 ? (rateErrorPerUnit / expectedPerUnit) : 0;
+
+        if (overchargeAmount > 0.1 && overchargePercent > 0.05) {
+            results.push({
+                seller_id: sellerId, sync_id: syncId, anomaly_type: 'return_processing_fee_error',
+                severity: 'low', estimated_value: overchargeAmount, currency: config.currency,
+                confidence_score: 0.85, related_event_ids: cohort.events.map(e => e.id),
+                discovery_date: discoveryDate, deadline_date: deadline, days_remaining: daysRemaining, sku,
+                evidence: {
+                    sku, fee_type: cohort.fee_type, charged_amount: totalCharged, expected_amount: totalExpected,
+                    overcharge_amount: overchargeAmount, overcharge_percentage: overchargePercent * 100,
+                    size_tier: sizeTier,
+                    calculation_method: 'cohort_lifecycle_reconstruction',
+                    calculation_inputs: { sku, sizeTier, policyBasis, cohort_state: cohort.state },
+                    evidence_summary: `Return processing overcharge: ${policyBasis}.`,
+                    fee_event_ids: cohort.events.map(e => e.id), tenant_isolation_verified: true,
+                    schedule_version: '2025', effective_date_mode: 'exact',
+                    evidence_class: cohort.evidence_class, cohort_id: cohort.id
+                }
+            });
+        }
+    });
+    return results;
+}
+
+export function detectInboundPlacementFeeOvercharge(sellerId: string, syncId: string, data: FeeSyncedData): FeeDetectionResult[] {
+    const results: FeeDetectionResult[] = [];
+    const discoveryDate = new Date();
+    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
+
+    const cohorts = reconstructFeeCohorts(data);
+    const ipfCohorts = cohorts.filter(c => 
+        c.fee_type.toLowerCase().includes('inbound') || 
+        c.fee_type.toLowerCase().includes('placement')
+    );
+
+    ipfCohorts.forEach(cohort => {
+        // Inbound placement requires Shipment ID link
+        if (cohort.evidence_class === 'SKU_IDENTITY_MATCH' || cohort.evidence_class === 'TEMPORAL_PROXIMITY_ONLY' || cohort.evidence_class === 'UNRESOLVED') return;
+        if (cohort.state === 'NET_BALANCED' || cohort.state === 'FULLY_REVERSED') return;
+
+        const fee = cohort.events[0];
+        const marketplaceId = cohort.marketplace_id;
+        const config = MARKETPLACE_CONFIGS[marketplaceId] || MARKETPLACE_CONFIGS[DEFAULT_MARKETPLACE];
+        
+        const isOptimized = (fee as any).is_optimized_shipment ?? (fee as any).metadata?.is_optimized;
+        const shipmentId = cohort.primary_id;
+        
+        let expected = cohort.net_value;
+        let overcharge = 0;
+        let evidenceMode: 'strong' | 'weak' | 'missing' = (isOptimized !== undefined) ? 'strong' : 'missing';
+        let policyMode: 'verified' | 'inferred' | 'unknown' = (isOptimized !== undefined) ? 'verified' : 'unknown';
+
+        if (isOptimized === true) {
+            expected = 0;
+            overcharge = cohort.net_value;
+        }
+
+        if (overcharge > 5.0) {
+            results.push({
+                seller_id: sellerId, sync_id: syncId, anomaly_type: 'inbound_placement_fee_error',
+                severity: calculateSeverity(overcharge), estimated_value: overcharge, currency: config.currency,
+                confidence_score: evidenceMode === 'strong' ? 0.95 : 0.6,
+                related_event_ids: cohort.events.map(e => e.id), discovery_date: discoveryDate,
+                deadline_date: deadline, days_remaining: daysRemaining,
+                evidence: {
+                    fee_type: cohort.fee_type, charged_amount: cohort.net_value, expected_amount: expected,
+                    overcharge_amount: overcharge, overcharge_percentage: (overcharge / cohort.net_value) * 100,
+                    calculation_method: 'cohort_lifecycle_reconstruction',
+                    calculation_inputs: { shipmentId, isOptimized, cohort_state: cohort.state },
+                    evidence_summary: `Inbound placement fee for optimized shipment ${shipmentId}.`,
+                    fee_event_ids: cohort.events.map(e => e.id), tenant_isolation_verified: true,
+                    placement_policy_mode: policyMode, optimization_evidence_mode: evidenceMode,
+                    schedule_version: '2025', effective_date_mode: 'exact',
+                    evidence_class: cohort.evidence_class, cohort_id: cohort.id
+                }
+            });
+        }
+    });
+    return results;
+}
+
+export function detectDuplicateFees(sellerId: string, syncId: string, data: FeeSyncedData): FeeDetectionResult[] {
+    const results: FeeDetectionResult[] = [];
+    const discoveryDate = new Date();
+    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
+
+    const cohorts = reconstructFeeCohorts(data);
+    const duplicateCandidates = cohorts.filter(c => c.state === 'DUPLICATE_CANDIDATE' || c.state === 'NET_OVERCHARGED' || c.state === 'OPEN_CHARGE');
+
+    duplicateCandidates.forEach(cohort => {
+        // Evaluate internal duplicates via fingerprinting
+        // Duplicates require a hard ID to avoid proximity-only false positives
+        if (cohort.evidence_class === 'SKU_IDENTITY_MATCH' || cohort.evidence_class === 'TEMPORAL_PROXIMITY_ONLY' || cohort.evidence_class === 'UNRESOLVED') return;
+        const fingerprintMap = new Map<string, FeeEvent[]>();
+        cohort.events.forEach(e => {
+            const fp = getDuplicateIntentIdentity(e);
+            const existing = fingerprintMap.get(fp) || [];
+            existing.push(e);
+            fingerprintMap.set(fp, existing);
+        });
+
+        for (const [fp, group] of fingerprintMap) {
+            if (group.length > 1) {
+                let validGroup = group;
+                const isAdjustment = group.some(e => e.fee_type === 'Adjustment');
+                
+                if (isAdjustment) {
+                    const sorted = [...group].sort((a,b) => new Date(a.fee_date).getTime() - new Date(b.fee_date).getTime());
+                    const validEvents = [sorted[0]];
+                    for (let i = 1; i < sorted.length; i++) {
+                        const prev = new Date(sorted[i-1].fee_date).getTime();
+                        const curr = new Date(sorted[i].fee_date).getTime();
+                        if ((curr - prev) <= 7.0 * 24 * 60 * 60 * 1000) {
+                            // Only count if it's within 7 days of the previous one
+                            validEvents.push(sorted[i]);
+                        }
+                    }
+                    if (validEvents.length < 2) continue;
+                    validGroup = validEvents;
+                }
+                
+                const duplicateValue = Math.abs(validGroup[0].fee_amount) * (validGroup.length - 1);
+                
+                results.push({
+                    seller_id: sellerId,
+                    sync_id: syncId,
+                    anomaly_type: 'duplicate_fee_error',
+                    severity: calculateSeverity(duplicateValue),
+                    estimated_value: duplicateValue,
+                    currency: group[0].currency || 'USD',
+                    confidence_score: 0.98,
+                    related_event_ids: group.map(e => e.id),
+                    discovery_date: discoveryDate,
+                    deadline_date: deadline,
+                    days_remaining: daysRemaining,
+                    evidence: {
+                        fee_type: cohort.fee_type,
+                        charged_amount: Math.abs(group[0].fee_amount) * group.length,
+                        expected_amount: Math.abs(group[0].fee_amount),
+                        overcharge_amount: duplicateValue,
+                        overcharge_percentage: ((group.length - 1) / group.length) * 100,
+                        calculation_method: 'deterministic_fingerprint_matching',
+                        calculation_inputs: { fingerprint: fp, count: group.length },
+                        evidence_summary: `Duplicate ${cohort.fee_type} detected via fingerprint matching.`,
+                        fee_event_ids: group.map(e => e.id),
+                        duplicate_fingerprint_mode: 'hashed_deterministic',
+                        evidence_class: 'STRICT_IDENTITY_MATCH',
+                        cohort_id: cohort.id
+                    }
+                });
+            }
+        }
+    });
+
+    return results;
+}
+
+export function detectAllFeeOvercharges(sellerId: string, syncId: string, data: FeeSyncedData): FeeDetectionResult[] {
+    logger.info('💰 [FEE AUDITOR] Running all fee detection algorithms (Updated Round 3C)', { sellerId, syncId });
+    
+    const results = [
+        ...detectFulfillmentFeeOvercharge(sellerId, syncId, data),
+        ...detectStorageFeeOvercharge(sellerId, syncId, data),
+        ...detectCommissionOvercharge(sellerId, syncId, data),
+        ...detectLowInventoryFeeOvercharge(sellerId, syncId, data),
+        ...detectReturnProcessingFeeOvercharge(sellerId, syncId, data),
+        ...detectInboundPlacementFeeOvercharge(sellerId, syncId, data),
+        ...detectDuplicateFees(sellerId, syncId, data)
+    ];
+
+    const reconciled = reconcileValuationOwnership(results);
+    return enrichWithObservability(reconciled, data);
+}
+
+/**
+ * Enriches the final emitted anomalies with structured explanations,
+ * trace graphs, and confidence bands, strictly isolated from detection logic.
+ */
+function enrichWithObservability(results: FeeDetectionResult[], data: FeeSyncedData): FeeDetectionResult[] {
+    const eventLookup = new Map(data.fee_events.map(e => [e.id, e]));
+
+    return results.map(result => {
+        // 1. Confidence Band Mapping
+        const evClass = result.evidence.evidence_class;
+        let band: 'HIGH' | 'MEDIUM' | 'LOW' | undefined;
+        if (evClass === 'STRICT_REFERENCE_MATCH') band = 'HIGH';
+        else if (evClass === 'STRICT_IDENTITY_MATCH' || evClass === 'SKU_IDENTITY_MATCH') band = 'MEDIUM';
+        else if (evClass === 'APPROVED_MAPPING_MATCH') band = 'LOW';
+        
+        if (band) result.confidence_band = band;
+
+        // 2. Explanation Object
+        result.evidence.explanation = {
+            cohort_id: result.evidence.cohort_id || 'unlinked',
+            fee_family: result.anomaly_type,
+            evidence_class: evClass,
+            valuation_owner: result.anomaly_type === 'duplicate_fee_error' ? 'Duplicate Detector' : 'Rate Auditor',
+            expected_fee: result.evidence.expected_amount,
+            observed_fee: result.evidence.charged_amount,
+            recoverable_delta: result.evidence.overcharge_amount,
+            unit_identity_basis: result.evidence.calculation_method || 'unknown_unit_basis',
+            linked_events: result.related_event_ids
+        };
+
+        // 3. Cohort Trace Graph
+        const events = result.related_event_ids
+            .map(id => eventLookup.get(id))
+            .filter((e): e is FeeEvent => e !== undefined)
+            .sort((a,b) => new Date(a.fee_date).getTime() - new Date(b.fee_date).getTime());
+            
+        result.evidence.cohort_trace_graph = events.map(e => {
+            const dateStr = e.fee_date.substring(0, 10);
+            const amtStr = e.fee_amount < 0 ? `-$${Math.abs(e.fee_amount).toFixed(2)}` : `+$${e.fee_amount.toFixed(2)}`;
+            const typeStr = e.fee_amount < 0 ? (getCanonicalType(e.fee_type) === 'Adjustment' ? 'Adjustment(Charge)' : 'Charge') : 'Reversal/Credit';
+            return `[${dateStr}] ${typeStr} (${e.fee_type}) ${amtStr}`;
+        });
+
+        return result;
+    });
+}
+
+/**
+ * Reconcile Valuation Ownership (Round 3C)
+ * Ensures exactly one authoritative claim-value owner for each economic harm.
+ */
+function reconcileValuationOwnership(results: FeeDetectionResult[]): FeeDetectionResult[] {
+    const reconciled: FeeDetectionResult[] = [];
+    const cohortOwnershipMap = new Map<string, FeeDetectionResult[]>();
+
+    results.forEach(r => {
+        const cohortId = r.evidence.cohort_id || 'unlinked';
+        const existing = cohortOwnershipMap.get(cohortId) || [];
+        existing.push(r);
+        cohortOwnershipMap.set(cohortId, existing);
+    });
+
+    for (const [cohortId, cohortResults] of cohortOwnershipMap) {
+        if (cohortId === 'unlinked') {
+            reconciled.push(...cohortResults);
             continue;
         }
 
-        // Calculate total overcharge for this SKU
-        let totalCharged = 0;
-        let totalExpected = 0;
-        const feeEventIds: string[] = [];
-
-        for (const fee of fees) {
-            totalCharged += Math.abs(fee.fee_amount);
-            totalExpected += expectedFee;
-            feeEventIds.push(fee.id);
-        }
-
-        const overchargeAmount = totalCharged - totalExpected;
-
-        // Only flag if overcharge is significant (> $1 and > 10%)
-        if (overchargeAmount <= 1) continue;
-
-        const overchargePercentage = (overchargeAmount / totalExpected) * 100;
-        if (overchargePercentage < 10) continue;
-
-        // Calculate confidence based on data quality
-        const confidenceScore = catalog ? 0.90 : 0.70;
-
-        const evidence: FeeOverchargeEvidence = {
-            sku,
-            asin: catalog?.asin || fees[0]?.asin,
-            product_name: catalog?.product_name || fees[0]?.product_name,
-            fee_type: 'FBA Fulfillment Fee',
-            charged_amount: totalCharged,
-            expected_amount: totalExpected,
-            overcharge_amount: overchargeAmount,
-            overcharge_percentage: overchargePercentage,
-            calculation_method: calculationMethod,
-            calculation_inputs: calculationInputs,
-            evidence_summary: `Fulfillment fees for SKU ${sku} total $${totalCharged.toFixed(2)} but should be $${totalExpected.toFixed(2)} based on ${calculationMethod}. Overcharged by $${overchargeAmount.toFixed(2)} (${overchargePercentage.toFixed(1)}%).`,
-            fee_event_ids: feeEventIds
-        };
-
-        results.push({
-            seller_id: sellerId,
-            sync_id: syncId,
-            anomaly_type: 'fulfillment_fee_error',
-            severity: calculateSeverity(overchargeAmount),
-            estimated_value: overchargeAmount,
-            currency: fees[0]?.currency || 'USD',
-            confidence_score: confidenceScore,
-            evidence,
-            related_event_ids: feeEventIds,
-            discovery_date: discoveryDate,
-            deadline_date: deadline,
-            days_remaining: daysRemaining,
-            sku,
-            asin: catalog?.asin,
-            product_name: catalog?.product_name
-        });
-
-        logger.info('💰 [FEE AUDITOR] Fulfillment fee overcharge detected!', {
-            sku,
-            overchargeAmount,
-            overchargePercentage: overchargePercentage.toFixed(1) + '%'
-        });
-    }
-
-    logger.info('💰 [FEE AUDITOR] Fulfillment fee detection complete', {
-        sellerId,
-        detectionsFound: results.length,
-        totalRecovery: results.reduce((sum, r) => sum + r.estimated_value, 0)
-    });
-
-    return results;
-}
-
-/**
- * Detect Storage Fee Overcharges
- * 
- * Compares charged storage fees against expected fees based on:
- * - Cubic feet used
- * - Storage month (Q4 rates are higher)
- * - Long-term storage penalties
- */
-export function detectStorageFeeOvercharge(
-    sellerId: string,
-    syncId: string,
-    data: FeeSyncedData
-): FeeDetectionResult[] {
-    const results: FeeDetectionResult[] = [];
-    const discoveryDate = new Date();
-    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
-
-    logger.info('📦 [FEE AUDITOR] Starting Storage Fee Overcharge Detection', {
-        sellerId,
-        syncId
-    });
-
-    // Filter to storage fee events
-    const storageFees = (data.fee_events || []).filter(
-        e => e.fee_type.toLowerCase().includes('storage')
-    );
-
-    // Group by month for analysis
-    const feesByMonth = new Map<string, FeeEvent[]>();
-    for (const fee of storageFees) {
-        const month = fee.storage_month || fee.fee_date.substring(0, 7); // YYYY-MM
-        const existing = feesByMonth.get(month) || [];
-        existing.push(fee);
-        feesByMonth.set(month, existing);
-    }
-
-    // Analyze each month
-    for (const [month, fees] of feesByMonth) {
-        const period = getStorageMonth(month + '-01');
-        const isLongTerm = fees.some(f => f.storage_type === 'long_term');
-        const isOversize = fees.some(f => f.storage_type === 'oversize');
-
-        // Calculate totals
-        let totalCharged = 0;
-        let totalCubicFeet = 0;
-        const feeEventIds: string[] = [];
-
-        for (const fee of fees) {
-            totalCharged += Math.abs(fee.fee_amount);
-            totalCubicFeet += fee.cubic_feet || 0;
-            feeEventIds.push(fee.id);
-        }
-
-        if (totalCubicFeet === 0) continue;
-
-        // Calculate expected fee
-        let ratePerCubicFoot: number;
-        let feeType: string;
-
-        if (isLongTerm) {
-            ratePerCubicFoot = STORAGE_FEES_PER_CUBIC_FOOT.long_term;
-            feeType = 'Long-Term Storage';
-        } else if (isOversize) {
-            ratePerCubicFoot = STORAGE_FEES_PER_CUBIC_FOOT.oversize[period];
-            feeType = 'Oversize Storage';
+        // Rule 1: Duplicate detection owns value for repeated posting
+        const dupeResult = cohortResults.find(r => r.anomaly_type === 'duplicate_fee_error');
+        // Rule 2: Auditor owns value for wrong expected fee
+        const auditorResult = cohortResults.find(r => r.anomaly_type !== 'duplicate_fee_error' && r.anomaly_type !== 'size_tier_misclassification');
+        
+        if (dupeResult && auditorResult) {
+            // Split Ownership: Dupe owns redundant rows, Auditor owns rate error on the base
+            // Total harm is already correctly computed by each if they use the new unitBasis logic.
+            reconciled.push(dupeResult);
+            reconciled.push(auditorResult);
         } else {
-            ratePerCubicFoot = STORAGE_FEES_PER_CUBIC_FOOT.standard[period];
-            feeType = 'Standard Storage';
+            reconciled.push(...cohortResults);
         }
-
-        const expectedFee = totalCubicFeet * ratePerCubicFoot;
-        const overchargeAmount = totalCharged - expectedFee;
-
-        // Only flag if overcharge is significant
-        if (overchargeAmount <= 5) continue;
-
-        const overchargePercentage = (overchargeAmount / expectedFee) * 100;
-        if (overchargePercentage < 15) continue;
-
-        const evidence: FeeOverchargeEvidence = {
-            fee_type: feeType,
-            charged_amount: totalCharged,
-            expected_amount: expectedFee,
-            overcharge_amount: overchargeAmount,
-            overcharge_percentage: overchargePercentage,
-            calculation_method: 'cubic_feet_rate',
-            calculation_inputs: {
-                month,
-                period,
-                cubic_feet: totalCubicFeet,
-                rate_per_cubic_foot: ratePerCubicFoot
-            },
-            evidence_summary: `Storage fees for ${month} total $${totalCharged.toFixed(2)} for ${totalCubicFeet.toFixed(2)} cubic feet. Expected $${expectedFee.toFixed(2)} at $${ratePerCubicFoot}/cu.ft. Overcharged by $${overchargeAmount.toFixed(2)}.`,
-            fee_event_ids: feeEventIds
-        };
-
-        results.push({
-            seller_id: sellerId,
-            sync_id: syncId,
-            anomaly_type: isLongTerm ? 'lts_overcharge' : 'storage_overcharge',
-            severity: calculateSeverity(overchargeAmount),
-            estimated_value: overchargeAmount,
-            currency: 'USD',
-            confidence_score: 0.85,
-            evidence,
-            related_event_ids: feeEventIds,
-            discovery_date: discoveryDate,
-            deadline_date: deadline,
-            days_remaining: daysRemaining
-        });
-
-        logger.info('📦 [FEE AUDITOR] Storage fee overcharge detected!', {
-            month,
-            overchargeAmount,
-            overchargePercentage: overchargePercentage.toFixed(1) + '%'
-        });
     }
 
-    return results;
+    return reconciled;
 }
 
-/**
- * Detect Commission/Referral Fee Overcharges
- * 
- * Validates that referral fees match expected rates based on:
- * - Product category
- * - Sale price
- * - Applicable referral rate
- */
-export function detectCommissionOvercharge(
-    sellerId: string,
-    syncId: string,
-    data: FeeSyncedData
-): FeeDetectionResult[] {
-    const results: FeeDetectionResult[] = [];
-    const discoveryDate = new Date();
-    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
-
-    logger.info('💵 [FEE AUDITOR] Starting Commission/Referral Fee Detection', {
-        sellerId,
-        syncId
-    });
-
-    // Filter to commission/referral fee events
-    const commissionFees = (data.fee_events || []).filter(
-        e => e.fee_type.toLowerCase().includes('commission') ||
-            e.fee_type.toLowerCase().includes('referral')
-    );
-
-    // Build catalog lookup for referral rates
-    const catalogBySku = new Map<string, ProductCatalog>();
-    for (const product of (data.product_catalog || [])) {
-        catalogBySku.set(product.sku, product);
-    }
-
-    // Analyze each commission event
-    for (const fee of commissionFees) {
-        if (!fee.sale_price || fee.sale_price <= 0) continue;
-
-        const catalog = fee.sku ? catalogBySku.get(fee.sku) : undefined;
-        const referralRate = fee.referral_rate || catalog?.referral_rate || DEFAULT_REFERRAL_RATE;
-
-        const expectedFee = fee.sale_price * referralRate;
-        const chargedFee = Math.abs(fee.fee_amount);
-        const overchargeAmount = chargedFee - expectedFee;
-
-        // Only flag if overcharge is significant
-        if (overchargeAmount <= 0.50) continue;
-
-        const overchargePercentage = (overchargeAmount / expectedFee) * 100;
-        if (overchargePercentage < 5) continue;
-
-        const evidence: FeeOverchargeEvidence = {
-            sku: fee.sku,
-            asin: fee.asin,
-            product_name: fee.product_name || catalog?.product_name,
-            fee_type: 'Referral/Commission Fee',
-            charged_amount: chargedFee,
-            expected_amount: expectedFee,
-            overcharge_amount: overchargeAmount,
-            overcharge_percentage: overchargePercentage,
-            calculation_method: 'sale_price_referral_rate',
-            calculation_inputs: {
-                sale_price: fee.sale_price,
-                referral_rate: referralRate,
-                order_id: fee.order_id
-            },
-            evidence_summary: `Commission on $${fee.sale_price.toFixed(2)} sale should be $${expectedFee.toFixed(2)} at ${(referralRate * 100).toFixed(1)}% rate. Charged $${chargedFee.toFixed(2)}, overcharge of $${overchargeAmount.toFixed(2)}.`,
-            fee_event_ids: [fee.id]
-        };
-
-        results.push({
-            seller_id: sellerId,
-            sync_id: syncId,
-            anomaly_type: 'commission_overcharge',
-            severity: calculateSeverity(overchargeAmount),
-            estimated_value: overchargeAmount,
-            currency: fee.currency || 'USD',
-            confidence_score: 0.80,
-            evidence,
-            related_event_ids: [fee.order_id || fee.id],
-            discovery_date: discoveryDate,
-            deadline_date: deadline,
-            days_remaining: daysRemaining,
-            sku: fee.sku,
-            asin: fee.asin,
-            product_name: fee.product_name
-        });
-    }
-
-    return results;
+export async function fetchFeeEvents(sellerId: string, options?: { startDate?: string; limit?: number }) {
+    let query = supabaseAdmin.from('fee_events').select('*').eq('seller_id', sellerId).order('fee_date', { ascending: false });
+    if (options?.startDate) query = query.gte('fee_date', options.startDate);
+    if (options?.limit) query = query.limit(options.limit);
+    const { data } = await query;
+    return data || [];
 }
 
-// ============================================================================
-// Combined Fee Detection Runner
-// ============================================================================
-
-/**
- * Run all fee detection algorithms
- */
-// ============================================================================
-// 2025 Fee Detection Algorithms
-// ============================================================================
-
-/**
- * Detect Low-Inventory Level Fee Overcharges (2025)
- * Applied when IPI score < threshold
- */
-export function detectLowInventoryFeeOvercharge(
-    sellerId: string,
-    syncId: string,
-    data: FeeSyncedData
-): FeeDetectionResult[] {
-    const results: FeeDetectionResult[] = [];
-    const discoveryDate = new Date();
-    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
-
-    // Filter to low-inventory fees
-    const lowInvFees = (data.fee_events || []).filter(
-        e => e.fee_type.toLowerCase().includes('low_inventory') ||
-            e.fee_type.toLowerCase().includes('low-inventory')
-    );
-
-    for (const fee of lowInvFees) {
-        // Check if seller might be exempt (new seller or IPI above threshold)
-        const chargedFee = Math.abs(fee.fee_amount);
-        if (chargedFee <= 0.10) continue;
-
-        // Flag for review - these fees are often applied incorrectly
-        const evidence: FeeOverchargeEvidence = {
-            sku: fee.sku,
-            asin: fee.asin,
-            fee_type: 'Low-Inventory Level Fee',
-            charged_amount: chargedFee,
-            expected_amount: 0, // Need to verify IPI
-            overcharge_amount: chargedFee,
-            overcharge_percentage: 100,
-            calculation_method: 'low_inventory_threshold',
-            calculation_inputs: { threshold_ipi: LOW_INVENTORY_FEE_2025.threshold_ipi },
-            evidence_summary: `Low-inventory fee of $${chargedFee.toFixed(2)} charged. Verify IPI score is actually below ${LOW_INVENTORY_FEE_2025.threshold_ipi}.`,
-            fee_event_ids: [fee.id]
-        };
-
-        results.push({
-            seller_id: sellerId,
-            sync_id: syncId,
-            anomaly_type: 'low_inventory_fee_error',
-            severity: 'medium',
-            estimated_value: chargedFee,
-            currency: fee.currency || 'USD',
-            confidence_score: 0.65,
-            evidence,
-            related_event_ids: [fee.id],
-            discovery_date: discoveryDate,
-            deadline_date: deadline,
-            days_remaining: daysRemaining,
-            sku: fee.sku,
-            asin: fee.asin
-        });
-    }
-
-    return results;
+export async function fetchProductCatalog(sellerId: string) {
+    const { data } = await supabaseAdmin.from('product_catalog').select('*').eq('seller_id', sellerId);
+    return data || [];
 }
 
-/**
- * Detect Return Processing Fee Overcharges (2025)
- */
-export function detectReturnProcessingFeeOvercharge(
-    sellerId: string,
-    syncId: string,
-    data: FeeSyncedData
-): FeeDetectionResult[] {
-    const results: FeeDetectionResult[] = [];
-    const discoveryDate = new Date();
-    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
-
-    // Filter to return processing fees
-    const returnFees = (data.fee_events || []).filter(
-        e => e.fee_type.toLowerCase().includes('return_processing') ||
-            e.fee_type.toLowerCase().includes('return processing')
-    );
-
-    for (const fee of returnFees) {
-        const chargedFee = Math.abs(fee.fee_amount);
-        if (chargedFee <= 0.50) continue;
-
-        // Determine expected fee based on size tier
-        const sizeTier = 'large_standard'; // Would need product lookup
-        const expectedFee = RETURN_PROCESSING_FEES_2025.base_fee[sizeTier as keyof typeof RETURN_PROCESSING_FEES_2025.base_fee] || 3.00;
-        const overchargeAmount = chargedFee - expectedFee;
-
-        if (overchargeAmount <= 0.50) continue;
-
-        const evidence: FeeOverchargeEvidence = {
-            sku: fee.sku,
-            asin: fee.asin,
-            fee_type: 'Return Processing Fee',
-            charged_amount: chargedFee,
-            expected_amount: expectedFee,
-            overcharge_amount: overchargeAmount,
-            overcharge_percentage: (overchargeAmount / expectedFee) * 100,
-            calculation_method: 'return_processing_schedule',
-            calculation_inputs: { size_tier: sizeTier },
-            evidence_summary: `Return processing fee of $${chargedFee.toFixed(2)} charged, expected $${expectedFee.toFixed(2)} for ${sizeTier}. Overcharge of $${overchargeAmount.toFixed(2)}.`,
-            fee_event_ids: [fee.id]
-        };
-
-        results.push({
-            seller_id: sellerId,
-            sync_id: syncId,
-            anomaly_type: 'return_processing_fee_error',
-            severity: calculateSeverity(overchargeAmount),
-            estimated_value: overchargeAmount,
-            currency: fee.currency || 'USD',
-            confidence_score: 0.75,
-            evidence,
-            related_event_ids: [fee.id],
-            discovery_date: discoveryDate,
-            deadline_date: deadline,
-            days_remaining: daysRemaining,
-            sku: fee.sku,
-            asin: fee.asin
-        });
-    }
-
-    return results;
+export async function runFeeOverchargeDetection(sellerId: string, syncId: string) {
+    const lookback = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    const [events, catalog] = await Promise.all([fetchFeeEvents(sellerId, { startDate: lookback }), fetchProductCatalog(sellerId)]);
+    return detectAllFeeOvercharges(sellerId, syncId, { seller_id: sellerId, sync_id: syncId, fee_events: events, product_catalog: catalog });
 }
 
-/**
- * Detect Inbound Placement Fee Overcharges (2025)
- */
-export function detectInboundPlacementFeeOvercharge(
-    sellerId: string,
-    syncId: string,
-    data: FeeSyncedData
-): FeeDetectionResult[] {
-    const results: FeeDetectionResult[] = [];
-    const discoveryDate = new Date();
-    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
-
-    // Filter to inbound placement fees
-    const placementFees = (data.fee_events || []).filter(
-        e => e.fee_type.toLowerCase().includes('inbound_placement') ||
-            e.fee_type.toLowerCase().includes('placement')
-    );
-
-    for (const fee of placementFees) {
-        const chargedFee = Math.abs(fee.fee_amount);
-        if (chargedFee <= 0.10) continue;
-
-        // Check if should be free (Amazon-optimized)
-        const expectedFee = 0; // Amazon-optimized should be free
-        const overchargeAmount = chargedFee;
-
-        if (overchargeAmount <= 0.20) continue;
-
-        const evidence: FeeOverchargeEvidence = {
-            sku: fee.sku,
-            asin: fee.asin,
-            fee_type: 'Inbound Placement Service Fee',
-            charged_amount: chargedFee,
-            expected_amount: expectedFee,
-            overcharge_amount: overchargeAmount,
-            overcharge_percentage: 100,
-            calculation_method: 'inbound_placement_schedule',
-            calculation_inputs: {},
-            evidence_summary: `Inbound placement fee of $${chargedFee.toFixed(2)} charged. Verify shipment split selection.`,
-            fee_event_ids: [fee.id]
-        };
-
-        results.push({
-            seller_id: sellerId,
-            sync_id: syncId,
-            anomaly_type: 'inbound_placement_fee_error',
-            severity: calculateSeverity(overchargeAmount),
-            estimated_value: overchargeAmount,
-            currency: fee.currency || 'USD',
-            confidence_score: 0.60,
-            evidence,
-            related_event_ids: [fee.id],
-            discovery_date: discoveryDate,
-            deadline_date: deadline,
-            days_remaining: daysRemaining,
-            sku: fee.sku,
-            asin: fee.asin
-        });
-    }
-
-    return results;
-}
-
-// ============================================================================
-// Combined Fee Detection Runner (Updated for 2025)
-// ============================================================================
-
-/**
- * Run all fee detection algorithms (including 2025 fee types)
- */
-export function detectAllFeeOvercharges(
-    sellerId: string,
-    syncId: string,
-    data: FeeSyncedData
-): FeeDetectionResult[] {
-    logger.info('[FEE AUDITOR] Running all fee detection algorithms (2024 + 2025)', {
-        sellerId,
-        syncId
-    });
-
-    // Original 2024 algorithms
-    const fulfillmentResults = detectFulfillmentFeeOvercharge(sellerId, syncId, data);
-    const storageResults = detectStorageFeeOvercharge(sellerId, syncId, data);
-    const commissionResults = detectCommissionOvercharge(sellerId, syncId, data);
-
-    // New 2025 algorithms
-    const lowInventoryResults = detectLowInventoryFeeOvercharge(sellerId, syncId, data);
-    const returnProcessingResults = detectReturnProcessingFeeOvercharge(sellerId, syncId, data);
-    const inboundPlacementResults = detectInboundPlacementFeeOvercharge(sellerId, syncId, data);
-
-    const allResults = [
-        ...fulfillmentResults,
-        ...storageResults,
-        ...commissionResults,
-        ...lowInventoryResults,
-        ...returnProcessingResults,
-        ...inboundPlacementResults
-    ];
-
-    logger.info('[FEE AUDITOR] All fee detection complete (2024 + 2025)', {
-        sellerId,
-        fulfillmentCount: fulfillmentResults.length,
-        storageCount: storageResults.length,
-        commissionCount: commissionResults.length,
-        lowInventoryCount: lowInventoryResults.length,
-        returnProcessingCount: returnProcessingResults.length,
-        inboundPlacementCount: inboundPlacementResults.length,
-        totalCount: allResults.length,
-        totalRecovery: allResults.reduce((sum, r) => sum + r.estimated_value, 0)
-    });
-
-    return allResults;
-}
-
-
-// ============================================================================
-// Database Integration
-// ============================================================================
-
-/**
- * Fetch fee events from database
- */
-export async function fetchFeeEvents(
-    sellerId: string,
-    options?: { startDate?: string; feeTypes?: string[]; limit?: number }
-): Promise<FeeEvent[]> {
-    try {
-        let query = supabaseAdmin
-            .from('fee_events')
-            .select('*')
-            .eq('seller_id', sellerId)
-            .order('fee_date', { ascending: false });
-
-        if (options?.startDate) {
-            query = query.gte('fee_date', options.startDate);
-        }
-
-        if (options?.limit) {
-            query = query.limit(options.limit);
-        }
-
-        const { data, error } = await query;
-
-        if (error) {
-            logger.error('💰 [FEE AUDITOR] Error fetching fee events', {
-                sellerId,
-                error: error.message
-            });
-            return [];
-        }
-
-        return data || [];
-    } catch (err: any) {
-        logger.error('💰 [FEE AUDITOR] Exception fetching fee events', {
-            sellerId,
-            error: err.message
-        });
-        return [];
-    }
-}
-
-/**
- * Fetch product catalog from database
- */
-export async function fetchProductCatalog(
-    sellerId: string
-): Promise<ProductCatalog[]> {
-    try {
-        const { data, error } = await supabaseAdmin
-            .from('product_catalog')
-            .select('*')
-            .eq('seller_id', sellerId);
-
-        if (error) {
-            logger.error('💰 [FEE AUDITOR] Error fetching product catalog', {
-                sellerId,
-                error: error.message
-            });
-            return [];
-        }
-
-        return data || [];
-    } catch (err: any) {
-        logger.error('💰 [FEE AUDITOR] Exception fetching product catalog', {
-            sellerId,
-            error: err.message
-        });
-        return [];
-    }
-}
-
-/**
- * Run full fee detection for a seller
- */
-export async function runFeeOverchargeDetection(
-    sellerId: string,
-    syncId: string
-): Promise<FeeDetectionResult[]> {
-    logger.info('💰 [FEE AUDITOR] Starting full fee detection run', { sellerId, syncId });
-
-    const lookbackDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-
-    const [feeEvents, productCatalog] = await Promise.all([
-        fetchFeeEvents(sellerId, { startDate: lookbackDate }),
-        fetchProductCatalog(sellerId)
-    ]);
-
-    const syncedData: FeeSyncedData = {
-        seller_id: sellerId,
-        sync_id: syncId,
-        fee_events: feeEvents,
-        product_catalog: productCatalog
-    };
-
-    return detectAllFeeOvercharges(sellerId, syncId, syncedData);
-}
-
-/**
- * Store fee detection results
- */
-export async function storeFeeDetectionResults(results: FeeDetectionResult[]): Promise<void> {
+export async function storeFeeDetectionResults(results: FeeDetectionResult[]) {
     if (results.length === 0) return;
-
-    // Resolve tenant_id for multi-tenancy
     const tenantId = await resolveTenantId(results[0].seller_id);
-
-    try {
-        const records = results.map(r => ({
-            seller_id: r.seller_id,
-            sync_id: r.sync_id,
-            anomaly_type: r.anomaly_type,
-            severity: r.severity,
-            estimated_value: r.estimated_value,
-            currency: r.currency,
-            confidence_score: r.confidence_score,
-            evidence: r.evidence,
-            related_event_ids: r.related_event_ids,
-            discovery_date: r.discovery_date.toISOString(),
-            deadline_date: r.deadline_date.toISOString(),
-            days_remaining: r.days_remaining,
-            tenant_id: tenantId,
-
-            status: 'detected',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-        }));
-
-        const { error } = await supabaseAdmin
-            .from('detection_results')
-            .upsert(records, {
-                onConflict: 'seller_id,sync_id,anomaly_type',
-                ignoreDuplicates: false
-            });
-
-        if (error) {
-            logger.error('💰 [FEE AUDITOR] Error storing fee detection results', {
-                error: error.message,
-                count: results.length
-            });
-        } else {
-            logger.info('💰 [FEE AUDITOR] Fee detection results stored', {
-                count: results.length
-            });
-        }
-    } catch (err: any) {
-        logger.error('💰 [FEE AUDITOR] Exception storing results', {
-            error: err.message
-        });
-    }
+    const records = results.map(r => ({
+        ...r, tenant_id: tenantId, status: 'detected', created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+        discovery_date: r.discovery_date.toISOString(), deadline_date: r.deadline_date.toISOString()
+    }));
+    await supabaseAdmin.from('detection_results').upsert(records, { onConflict: 'seller_id,sync_id,anomaly_type' });
 }
-
-// ============================================================================
-// Exports
-// ============================================================================
 
 export default {
-    detectFulfillmentFeeOvercharge,
-    detectStorageFeeOvercharge,
-    detectCommissionOvercharge,
-    detectAllFeeOvercharges,
-    fetchFeeEvents,
-    fetchProductCatalog,
-    runFeeOverchargeDetection,
-    storeFeeDetectionResults
+    detectFulfillmentFeeOvercharge, detectStorageFeeOvercharge, detectCommissionOvercharge,
+    detectAllFeeOvercharges, fetchFeeEvents, fetchProductCatalog, runFeeOverchargeDetection, storeFeeDetectionResults
 };

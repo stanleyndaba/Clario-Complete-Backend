@@ -56,9 +56,9 @@ const FRESHNESS_THRESHOLD_HOURS = 0.05;
 
 export function detectLostInventory(sellerId: string, syncId: string, data: SyncedData): DetectionResult[] {
     const rawLedger = (data.inventory_ledger || []).filter(e => e.seller_id === sellerId && e.fnsku);
-    
-    // 1. Boundary Integrity
     const syncTime = isNaN(Date.parse(syncId)) ? Date.now() : Date.parse(syncId);
+    
+    // 1. Boundary Integrity (Strict half-open [start, syncTime))
     const ledger = rawLedger.filter(e => {
         const eTime = Date.parse(e.event_date);
         if (eTime >= syncTime) return false;
@@ -70,91 +70,153 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
     const fnskuGroups = groupByFnsku(cleanLedger);
     const results: DetectionResult[] = [];
 
-    for (const [fnsku, events] of Object.entries(fnskuGroups)) {
+    for (const [fnsku, allEvents] of Object.entries(fnskuGroups)) {
         if (!fnsku || fnsku === 'null') continue;
-        const sorted = [...events].sort((a,b) => new Date(a.event_date).getTime() - new Date(b.event_date).getTime());
+        const sorted = [...allEvents].sort((a,b) => new Date(a.event_date).getTime() - new Date(b.event_date).getTime());
         const latestSnap = [...sorted].reverse().find(e => e.event_type === 'Snapshot');
         
-        let ledgerIn = 0; let ledgerOut = 0; 
+        // --- Quantitative Cohort Accounting ---
+        const transfersOut = sorted.filter(e => e.event_type === 'Transfer' && e.quantity_direction === 'out');
+        const transfersIn = sorted.filter(e => e.event_type === 'Transfer' && e.quantity_direction === 'in');
+        
+        // Track consumed units to enforce one-consumption-only rule
+        const consumedInMap = new Map<string, number>(); // eventId -> quantityConsumed
+        const matchedOutMetrics = new Map<string, { matched: number, mode: string, score: number }>(); // eventId -> metrics
+
+        // Step A: Primary Match (Exact Reference ID)
+        for (const outE of transfersOut) {
+            if (!outE.reference_id) continue;
+            const matches = transfersIn.filter(inE => inE.reference_id === outE.reference_id);
+            let totalMatched = 0;
+            for (const m of matches) {
+                const available = Math.abs(m.quantity) - (consumedInMap.get(m.id) || 0);
+                if (available <= 0) continue;
+                const needed = Math.abs(outE.quantity) - totalMatched;
+                const taking = Math.min(needed, available);
+                totalMatched += taking;
+                consumedInMap.set(m.id, (consumedInMap.get(m.id) || 0) + taking);
+            }
+            if (totalMatched > 0) {
+                matchedOutMetrics.set(outE.id, { matched: totalMatched, mode: 'DIRECT_ID', score: 1.0 });
+            }
+        }
+
+        // Step B: Confidence-Scored Fallback Matching (Orphan Legs)
+        for (const outE of transfersOut) {
+            const currentMatch = matchedOutMetrics.get(outE.id)?.matched || 0;
+            const remainingNeeded = Math.abs(outE.quantity) - currentMatch;
+            if (remainingNeeded <= 0.01) continue;
+
+            const candidates = transfersIn.filter(inE => {
+                const consumed = consumedInMap.get(inE.id) || 0;
+                return (Math.abs(inE.quantity) - consumed) > 0.01;
+            }).map(inE => {
+                // Scoring Logic
+                let score = 0;
+                const timeDiffDays = Math.abs(new Date(inE.event_date).getTime() - new Date(outE.event_date).getTime()) / (1000 * 3600 * 24);
+                if (timeDiffDays <= 14) score += 0.4;
+                else if (timeDiffDays <= 30) score += 0.2;
+                
+                if (Math.abs(Math.abs(inE.quantity) - Math.abs(outE.quantity)) < 0.01) score += 0.3;
+                if (inE.fulfillment_center_id && outE.fulfillment_center_id && inE.fulfillment_center_id !== outE.fulfillment_center_id) score += 0.2;
+                if (!inE.reference_id || inE.reference_id === outE.reference_id) score += 0.1;
+
+                return { event: inE, score };
+            }).sort((a,b) => b.score - a.score);
+
+            // Ambiguity check: suppress if top two are tied and low-confidence
+            if (candidates.length > 1 && candidates[0].score < 0.6 && candidates[0].score === candidates[1].score) continue;
+
+            for (const cand of candidates) {
+                if (cand.score < 0.4) continue;
+                const available = Math.abs(cand.event.quantity) - (consumedInMap.get(cand.event.id) || 0);
+                const taking = Math.min(Math.abs(outE.quantity) - (matchedOutMetrics.get(outE.id)?.matched || 0), available);
+                if (taking <= 0) continue;
+                
+                const prev = matchedOutMetrics.get(outE.id) || { matched: 0, mode: 'FALLBACK', score: 0 };
+                matchedOutMetrics.set(outE.id, { 
+                    matched: prev.matched + taking, 
+                    mode: 'FALLBACK', 
+                    score: Math.max(prev.score, cand.score) 
+                });
+                consumedInMap.set(cand.event.id, (consumedInMap.get(cand.event.id) || 0) + taking);
+            }
+        }
+
+        // --- Final Tally ---
+        let grossOut = 0; let matchedIn = 0; let matureUnresolved = 0;
+        for (const outE of transfersOut) {
+            const outQty = Math.abs(outE.quantity);
+            const matched = matchedOutMetrics.get(outE.id)?.matched || 0;
+            const diff = Math.max(0, outQty - matched);
+            
+            grossOut += outQty;
+            matchedIn += matched;
+
+            if (diff > 0.01) {
+                const age = (syncTime - new Date(outE.event_date).getTime()) / (1000 * 3600 * 24);
+                if (age >= MATURITY_WINDOW_DAYS) matureUnresolved += diff;
+            }
+        }
+
+        let warehouseIn = 0; let warehouseOut = 0;
         let claimAdj = 0; let resolveAdj = 0;
-        let matureTransit = 0; let immatureTransit = 0;
-        const refNet = new Map<string, number>(); 
-        const eventIds: string[] = []; const fcs = new Set<string>();
-
-        // 2. Forensic Tally & Cohort Logic
-        for (const e of events) {
-            if (e.event_type === 'Snapshot') continue;
-            eventIds.push(e.id);
-            const q = Math.abs(e.quantity);
+        const fcs = new Set<string>();
+        for (const e of sorted) {
             if (e.fulfillment_center_id) fcs.add(e.fulfillment_center_id);
-
+            if (e.event_type === 'Snapshot' || e.event_type === 'Transfer') continue;
+            const q = Math.abs(e.quantity);
             if (e.quantity_direction === 'in') {
-                ledgerIn += q;
-                if (e.event_type === 'Adjustment') { if (['F', 'P'].includes(e.reason || '') || !e.reason) resolveAdj += q; }
-                else if (e.event_type === 'Transfer' && e.reference_id) refNet.set(e.reference_id, (refNet.get(e.reference_id) || 0) + q);
+                warehouseIn += q;
+                if (e.event_type === 'Adjustment' && (['F', 'P'].includes(e.reason || '') || !e.reason)) resolveAdj += q;
             } else {
-                ledgerOut += q;
-                if (e.event_type === 'Adjustment') { if (['M', 'E', 'D', 'N'].includes(e.reason || '') || !e.reason) claimAdj += q; }
-                else if (e.event_type === 'Transfer' && e.reference_id) refNet.set(e.reference_id, (refNet.get(e.reference_id) || 0) - q);
+                warehouseOut += q;
+                if (e.event_type === 'Adjustment' && (['M', 'E', 'D', 'N'].includes(e.reason || '') || !e.reason)) claimAdj += q;
             }
         }
 
-        for (const [ref, net] of refNet.entries()) {
-            if (net < -0.01) {
-                const outE = events.find(ev => ev.reference_id === ref && ev.quantity_direction === 'out');
-                const age = outE ? (syncTime - new Date(outE.event_date).getTime()) / (1000 * 3600 * 24) : 999;
-                if (age >= MATURITY_WINDOW_DAYS) matureTransit += Math.abs(net);
-                else immatureTransit += Math.abs(net);
-            }
-        }
-
-        // 3. Cohort Reconciliation (G2 Fix)
-        // Hub Surplus: When units arrive as one leg and leave as many others.
-        // We identify "Trunk Arrivals" (In-Transfers for a RefID) and "Child Departures" (Out-Transfers for OTHER RefIDs).
-        let trunkResidual = 0;
-        const inLegs = Array.from(refNet.entries()).filter(([r, n]) => n > 0.1);
-        const outLegs = Array.from(refNet.entries()).filter(([r, n]) => n < -0.1);
-        if (inLegs.length > 0 && outLegs.length > 0) {
-            const totalHubIn = inLegs.reduce((s, [r, n]) => s + n, 0);
-            const totalHubOut = outLegs.reduce((s, [r, n]) => s + Math.abs(n), 0);
-            if (totalHubIn > totalHubOut) trunkResidual = totalHubIn - totalHubOut;
-        }
-
-        const netAdj = Math.max(0, claimAdj - resolveAdj);
         const actualBal = latestSnap?.warehouse_balance ?? 0;
-        const balanceGap = latestSnap ? ((ledgerIn - ledgerOut) - actualBal) : (ledgerIn < ledgerOut ? (ledgerOut - ledgerIn) : 0);
-        
-        // Physical Loss: Net Trunk Residuals against both gaps
-        let physicalLoss = Math.max(0, 
-            Math.max(0, balanceGap) - trunkResidual, 
-            matureTransit - trunkResidual,
-            netAdj
-        );
+        const balanceGap = latestSnap ? ((warehouseIn - warehouseOut) - actualBal) : 0;
+        const netAdj = Math.max(0, claimAdj - resolveAdj);
 
-        if (immatureTransit > 0) physicalLoss = Math.max(0, physicalLoss - immatureTransit);
+        const physicalLoss = Math.max(0, matureUnresolved, balanceGap, netAdj);
 
-        const firstLossDate = sorted.find(e => e.quantity_direction === 'out')?.event_date || new Date().toISOString();
-        const reData = findReimbursements(fnsku, data.financial_events || [], firstLossDate, sellerId, [...fcs][0]);
-        
-        const nettedUnits = reData.fullNetUnits + reData.partialNetUnits;
-        const unresolved = Math.max(0, physicalLoss - nettedUnits);
+        if (physicalLoss > 0.1) {
+            const firstLossDate = sorted.find(e => e.quantity_direction === 'out')?.event_date || new Date().toISOString();
+            const reData = findReimbursements(fnsku, data.financial_events || [], firstLossDate, sellerId, [...fcs][0]);
+            
+            let nettingFactor = 0;
+            if (['DIRECT_ID', 'CAUSAL'].includes(reData.linkage)) nettingFactor = 1.0;
+            else if (reData.linkage === 'PROBABLE') nettingFactor = 0.7;
+            else if (reData.linkage === 'WEAK') nettingFactor = 0.3;
 
-        if (unresolved > 0.1) {
-            const avgP = events.find(e => (e.average_sales_price || e.unit_cost))?.average_sales_price || 20;
-            results.push({
-                seller_id: sellerId, sync_id: syncId,
-                anomaly_type: (matureTransit > 0 && matureTransit >= Math.max(balanceGap, netAdj)) ? 'lost_in_transit' : 'lost_warehouse',
-                severity: (unresolved * avgP >= 1000 ? 'critical' : unresolved * avgP >= 500 ? 'high' : 'medium'),
-                estimated_value: unresolved * avgP, currency: 'USD', confidence_score: (latestSnap ? 0.95 : 0.85) + reData.modifier,
-                fnsku, sku: events[0].sku, asin: events[0].asin, product_name: events[0].product_name,
-                evidence_mode: latestSnap ? 'SNAPSHOT_CONFIRMED' : 'LEDGER_RECONCILED',
-                discovery_date: new Date(), deadline_date: new Date(Date.now() + 60*24*3600*1000), days_remaining: 60,
-                evidence: {
-                    fnsku, discrepancy: unresolved, 
-                    physical_loss_units: physicalLoss, reimbursed_units: reData.totalMatched, reimbursement_linkage: reData.linkage,
-                    cohort_analysis: { trunk_residual: trunkResidual, balance_gap: balanceGap, mature_transit: matureTransit }
-                }
-            });
+            const nettedUnits = reData.totalMatched * nettingFactor;
+            const unresolved = Math.max(0, physicalLoss - nettedUnits);
+
+            if (unresolved > 0.1) {
+                const avgP = sorted.find(e => (e.average_sales_price || e.unit_cost))?.average_sales_price || 20;
+                results.push({
+                    seller_id: sellerId, sync_id: syncId,
+                    anomaly_type: matureUnresolved >= Math.max(balanceGap, netAdj) ? 'lost_in_transit' : 'lost_warehouse',
+                    severity: (unresolved * avgP >= 1000 ? 'critical' : unresolved * avgP >= 500 ? 'high' : 'medium'),
+                    estimated_value: unresolved * avgP, currency: 'USD',
+                    confidence_score: (latestSnap ? 0.95 : 0.85) + reData.modifier,
+                    fnsku, sku: sorted[0].sku, asin: sorted[0].asin, product_name: sorted[0].product_name,
+                    evidence_mode: latestSnap ? 'SNAPSHOT_CONFIRMED' : 'LEDGER_RECONCILED',
+                    discovery_date: new Date(), deadline_date: new Date(Date.now() + 60*24*3600*1000), days_remaining: 60,
+                    evidence: {
+                        fnsku,
+                        gross_transfer_out_units: grossOut,
+                        matched_transfer_in_units: matchedIn,
+                        mature_unresolved_transfer_units: matureUnresolved,
+                        net_unresolved_units: unresolved,
+                        reimbursement_linkage_mode: reData.linkage,
+                        linkage_score: reData.modifier,
+                        physical_loss_units: physicalLoss,
+                        netted_reimbursement_units: nettedUnits
+                    }
+                });
+            }
         }
     }
     return results;
