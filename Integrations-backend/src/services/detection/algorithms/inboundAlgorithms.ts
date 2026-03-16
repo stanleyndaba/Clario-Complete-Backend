@@ -63,16 +63,195 @@ export interface InboundDetectionResult {
     shipment_id: string; sku?: string; fnsku?: string; product_name?: string;
 }
 
+// Internal reporting state for Round 2 & 3
+let approximationFailures = 0;
+let linkageConflicts = 0;
+let caseBreakOverlaps = 0;
+let duplicateFailures = 0;
+let normalizedSkuMatchCount = 0;
+let probableSkuMatchCount = 0;
+let sellerIsolationRejectionCount = 0;
+
+// Reset counters
+export function resetInboundCounters() {
+    approximationFailures = 0;
+    linkageConflicts = 0;
+    caseBreakOverlaps = 0;
+    duplicateFailures = 0;
+    normalizedSkuMatchCount = 0;
+    probableSkuMatchCount = 0;
+    sellerIsolationRejectionCount = 0;
+}
+
+// Get counters
+export function getInboundCounters() {
+    return {
+        valuation_approximation_failure_count: approximationFailures,
+        linkage_conflict_suppression_count: linkageConflicts,
+        case_break_overlap_suppression_count: caseBreakOverlaps,
+        duplicate_sensitivity_failure_count: duplicateFailures,
+        normalized_sku_match_count: normalizedSkuMatchCount,
+        probable_sku_match_count: probableSkuMatchCount,
+        seller_isolation_reimbursement_rejections: sellerIsolationRejectionCount
+    };
+}
+
 // Helpers
-const daysBetween = (d1: Date, d2: Date) => Math.ceil(Math.abs(d2.getTime() - d1.getTime()) / 86400000);
+function normalizeSku(sku: string): string {
+    if (!sku) return '';
+    return sku.trim().toUpperCase()
+        .replace(/-PRIME$/i, '')
+        .replace(/-FBA$/i, '')
+        .replace(/\s+/g, '');
+}
+const daysBetween = (d1: Date, d2: Date) => Math.floor(Math.abs(d2.getTime() - d1.getTime()) / 86400000);
 const severity = (v: number): 'low' | 'medium' | 'high' | 'critical' => v >= 500 ? 'critical' : v >= 200 ? 'high' : v >= 50 ? 'medium' : 'low';
 
-// Build reimbursement lookup
-function buildReimbLookup(reimbs: InboundReimbursement[]): Map<string, InboundReimbursement[]> {
-    const map = new Map<string, InboundReimbursement[]>();
-    for (const r of reimbs) { if (r.shipment_id) map.set(r.shipment_id, [...(map.get(r.shipment_id) || []), r]); }
+// Strict Valuation Ladder Helper
+function getUnitValuation(item: InboundShipmentItem, data: InboundSyncedData, detectorDefault: number): { value: number, source: string, confidence: number, basis: string } {
+    // Level 1: Same SKU in same data sync (Evidence of previous valuation)
+    const matchingReimb = (data.reimbursement_events || []).find(r => r.sku === item.sku && r.reimbursement_amount > 0);
+    
+    if (matchingReimb) {
+        return { value: detectorDefault, source: 'ITEM_SKU_SYNC', confidence: 0.8, basis: `Confirmed SKU reimbursement exists in sync context` };
+    }
+
+    // Level 2: Fallback Constant
+    return { 
+        value: detectorDefault, 
+        source: 'FALLBACK_CONSTANT', 
+        confidence: 0.6, 
+        basis: `Default for ${item.shipment_id || 'UNKNOWN'}` 
+    };
+}
+
+// Tiered Event Fingerprinting
+function getEventFingerprint(item: InboundShipmentItem): { fingerprint: string, mode: 'PRIMARY' | 'FALLBACK' } {
+    const roundedDate = new Date(item.shipment_created_date).toISOString().split('T')[0]; // YYYY-MM-DD
+    if (item.shipment_id && item.shipment_id !== 'UNKNOWN') {
+        return {
+            fingerprint: `${item.seller_id}|${item.shipment_id}|${item.sku}|${item.quantity_shipped}|${item.shipment_status?.toUpperCase()}|${roundedDate}`,
+            mode: 'PRIMARY'
+        };
+    }
+    return {
+        fingerprint: `${item.seller_id}|${item.sku}|${item.quantity_shipped}|${roundedDate}`,
+        mode: 'FALLBACK'
+    };
+}
+
+// Deduplication Pre-processor
+export function deduplicateInboundItems(items: InboundShipmentItem[]): { items: InboundShipmentItem[], metadata: any } {
+    const seen = new Map<string, InboundShipmentItem>();
+    const unique: InboundShipmentItem[] = [];
+    let discovered = 0;
+    let suppressed = 0;
+
+    for (const item of items) {
+        const { fingerprint, mode } = getEventFingerprint(item);
+        if (seen.has(fingerprint)) {
+            suppressed++;
+            duplicateFailures++;
+            continue;
+        }
+        seen.set(fingerprint, item);
+        unique.push(item);
+        discovered++;
+    }
+
+    return {
+        items: unique,
+        metadata: {
+            duplicate_event_detected: suppressed > 0,
+            duplicate_event_suppressed: suppressed,
+            duplicate_fingerprint_mode: items.some(i => !i.shipment_id) ? 'MIXED' : 'PRIMARY'
+        }
+    };
+}
+
+// Build reimbursement lookup with tiered linkage scoring and CONSERVATIVE CONFLICT HANDLING
+function buildReimbLookup(reimbs: InboundReimbursement[], items: InboundShipmentItem[], targetSellerId: string): Map<string, { reimb: InboundReimbursement, score: number, mode: string, conflict?: boolean, confidence_mode: 'HIGH' | 'LOW' }[]> {
+    const map = new Map<string, { reimb: InboundReimbursement, score: number, mode: string, conflict?: boolean, confidence_mode: 'HIGH' | 'LOW' }[]>();
+    
+    // Pass 1: Strict ID Linkage & Seller Isolation
+    for (const r of reimbs) {
+        if (r.seller_id !== targetSellerId) {
+            sellerIsolationRejectionCount++;
+            continue;
+        }
+
+        if (r.shipment_id) {
+            const existing = map.get(r.shipment_id) || [];
+            map.set(r.shipment_id, [...existing, { reimb: r, score: 1.0, mode: 'EXACT_SHIPMENT_ID', confidence_mode: 'HIGH' }]);
+        }
+    }
+
+    // Pass 2: Candidate Search for ALL reimbursements (including those with IDs) 
+    // to identify cross-shipment conflicts / grey-zones
+    for (const r of reimbs) {
+        if (r.seller_id !== targetSellerId) continue;
+
+        const candidates: { key: string, score: number, isNormalized: boolean }[] = [];
+        const normR = normalizeSku(r.sku || '');
+
+        for (const item of items) {
+            const sid = item.shipment_id || item.id;
+            // Skip if already strictly linked to this shipment
+            if (r.shipment_id === sid) continue;
+
+            const normItem = normalizeSku(item.sku);
+            const isExactMatch = r.sku === item.sku;
+            const isNormMatch = normR === normItem;
+            const isFuzzyMatch = r.sku && item.sku && (r.sku.includes(item.sku) || item.sku.includes(r.sku));
+
+            if (isNormMatch || isFuzzyMatch) {
+                const refDate = item.shipment_closed_date ? new Date(item.shipment_closed_date) : new Date(item.shipment_created_date);
+                const daysDiff = Math.abs(daysBetween(new Date(r.reimbursement_date), refDate));
+                if (daysDiff <= 45) { // Wider window for candidate discovery
+                    const score = Math.max(0.4, (isNormMatch ? 0.9 : 0.6) - (daysDiff * 0.015));
+                    candidates.push({ key: sid, score, isNormalized: isNormMatch && !isExactMatch });
+                }
+            }
+        }
+
+        for (const cand of candidates) {
+            if (cand.isNormalized) normalizedSkuMatchCount++;
+            else probableSkuMatchCount++;
+
+            const existing = map.get(cand.key) || [];
+            // If it's a cross-shipment match, it's ALWAYS low confidence / conflict
+            map.set(cand.key, [...existing, { 
+                reimb: r, 
+                score: cand.score, 
+                mode: r.shipment_id ? 'CROSS_SHIPMENT_CANDIDATE' : 'ORPHAN_CANDIDATE', 
+                conflict: true, 
+                confidence_mode: 'LOW' 
+            }]);
+        }
+    }
     return map;
 }
+
+// Status Mode Helper
+function getStatusMode(item: InboundShipmentItem, now: Date): { status_mode: string, should_process: boolean } {
+    const status = item.shipment_status?.toUpperCase();
+    const createdDate = new Date(item.shipment_created_date);
+    const daysSinceCreated = daysBetween(createdDate, now);
+
+    if (status === 'CLOSED') {
+        return { status_mode: 'STAMPED_CLOSED', should_process: true };
+    }
+
+    if (status === 'RECEIVING' || status === 'WORKING' || status === 'SHIPPED' || status === 'CREATED') {
+        if (daysSinceCreated >= 120) {
+            // Check for dormancy (assume stale if created >= 120 days ago)
+            return { status_mode: 'MATURE_LIMBO_STALLED', should_process: true };
+        }
+    }
+
+    return { status_mode: 'ACTIVE_IN_PROGRESS', should_process: false };
+}
+
 
 // ============================================================================
 // 1. SHIPMENT MISSING - Entire shipment never received
@@ -88,21 +267,24 @@ function buildReimbLookup(reimbs: InboundReimbursement[]): Map<string, InboundRe
 export function detectShipmentMissing(sellerId: string, syncId: string, data: InboundSyncedData): InboundDetectionResult[] {
     const results: InboundDetectionResult[] = [];
     const now = new Date();
-    const reimbByShipment = buildReimbLookup(data.reimbursement_events || []);
+    const reimbLookup = buildReimbLookup(data.reimbursement_events || [], data.inbound_shipment_items || [], sellerId);
 
     // Group by shipment
     const byShipment = new Map<string, InboundShipmentItem[]>();
     for (const item of data.inbound_shipment_items || []) {
-        byShipment.set(item.shipment_id, [...(byShipment.get(item.shipment_id) || []), item]);
+        const sid = item.shipment_id || item.id;
+        byShipment.set(sid, [...(byShipment.get(sid) || []), item]);
     }
 
     for (const [shipmentId, items] of byShipment) {
         const first = items[0];
-        if (first.shipment_status?.toUpperCase() !== 'CLOSED') continue;
-        if (!first.shipment_closed_date) continue;
+        const { status_mode, should_process } = getStatusMode(first, now);
+        if (!should_process) continue;
 
-        const daysSinceClosed = daysBetween(new Date(first.shipment_closed_date), now);
-        if (daysSinceClosed < 90) continue;
+        const refDate = first.shipment_closed_date ? new Date(first.shipment_closed_date) : new Date(first.shipment_created_date);
+        const daysSinceTrigger = daysBetween(refDate, now);
+        const threshold = status_mode === 'STAMPED_CLOSED' ? 90 : 45;
+        if (daysSinceTrigger < threshold) continue;
 
         // Check if ALL items have 0 received
         const totalShipped = items.reduce((s, i) => s + i.quantity_shipped, 0);
@@ -110,17 +292,52 @@ export function detectShipmentMissing(sellerId: string, syncId: string, data: In
 
         if (totalReceived > 0) continue; // Not fully missing
 
-        // Check reimbursement
-        if ((reimbByShipment.get(shipmentId) || []).length > 0) continue;
+        // Quantitative Netting
+        const matches = reimbLookup.get(shipmentId) || [];
+        const validMatches = matches.filter(m => !m.conflict && m.confidence_mode !== 'LOW');
+        const totalReimbValue = validMatches.reduce((sum, m) => sum + m.reimb.reimbursement_amount, 0);
+        
+        // Round 4: Grey-Zone Suppression
+        const greyZoneSuppressed = matches.length > 0 && validMatches.length === 0;
+        if (greyZoneSuppressed) continue; 
 
-        const value = totalShipped * 20; // Avg $20/unit
+        const valuation = getUnitValuation(first, data, 20);
+        const estimatedReimbUnits = Math.round(totalReimbValue / valuation.value);
+
+        if (totalReimbValue > 0 && Math.abs(totalReimbValue % valuation.value) > (valuation.value * 0.5)) {
+            approximationFailures++;
+        }
+
+        const unresolvedUnits = totalShipped - totalReceived;
+        const claimableUnits = Math.max(0, unresolvedUnits - estimatedReimbUnits);
+        if (claimableUnits <= 0) continue;
+
+        // Missing is usually high conviction, no dust floor here as requested (selective)
+        const value = claimableUnits * valuation.value;
         results.push({
             seller_id: sellerId, sync_id: syncId, anomaly_type: 'shipment_missing',
             severity: 'critical', estimated_value: value, currency: 'USD', confidence_score: 0.95,
             evidence: {
-                shipment_id: shipmentId, total_shipped: totalShipped, total_received: 0,
-                days_since_closed: daysSinceClosed, carrier: first.carrier, tracking: first.tracking_id,
-                summary: `Shipment ${shipmentId} never received. ${totalShipped} units shipped ${daysSinceClosed} days ago via ${first.carrier || 'unknown carrier'}. Tracking: ${first.tracking_id || 'unknown'}. No reimbursement.`
+                expected_sent_units: totalShipped,
+                observed_received_units: totalReceived,
+                reimbursed_value: totalReimbValue,
+                estimated_reimbursed_units_equivalent: estimatedReimbUnits,
+                valuation_source: valuation.source,
+                valuation_confidence: valuation.confidence,
+                valuation_basis: valuation.basis,
+                unresolved_units: unresolvedUnits,
+                claimable_units: claimableUnits,
+                status_mode,
+                shipment_linkage_mode: 'STRICT_ID',
+                reimbursement_linkage_mode: validMatches[0]?.mode || 'NONE',
+                linkage_score: validMatches[0]?.score || 0,
+                linkage_conflict_detected: matches.some(m => m.conflict),
+                linkage_confidence_mode: validMatches[0]?.confidence_mode || (matches.length > 0 ? 'LOW' : 'HIGH'),
+                grouping_mode: 'SHIPMENT_LEVEL',
+                grouped_row_count: items.length,
+                grey_zone_suppressed: false,
+                dust_floor_suppressed: false,
+                summary: `Shipment ${shipmentId} never received. ${totalShipped} units shipped across ${items.length} rows.`
             },
             related_event_ids: items.map(i => i.id),
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
@@ -138,47 +355,117 @@ export function detectShipmentMissing(sellerId: string, syncId: string, data: In
  * Detect Shipment Shortage
  * 
  * LOGIC: Received less than shipped per SKU, but some units did arrive
- * RULE: 90+ days, shortage > 0, no reimbursement
- * CONFIDENCE: 90% (common issue, well documented in Amazon reports)
+ * RULE: 90+ days, shortage > 0, quantitative netting
+ * CONFIDENCE: 90% (common issue)
  */
 export function detectShipmentShortage(sellerId: string, syncId: string, data: InboundSyncedData): InboundDetectionResult[] {
     const results: InboundDetectionResult[] = [];
     const now = new Date();
-    const reimbByShipment = buildReimbLookup(data.reimbursement_events || []);
+    const reimbLookup = buildReimbLookup(data.reimbursement_events || [], data.inbound_shipment_items || [], sellerId);
 
+    const claimedShortages = new Map<string, number>();
+    const groups = new Map<string, InboundShipmentItem[]>();
     for (const item of data.inbound_shipment_items || []) {
-        if (item.shipment_status?.toUpperCase() !== 'CLOSED') continue;
-        if (!item.shipment_closed_date) continue;
+        const key = (item.shipment_id || item.id) + '|' + item.sku;
+        groups.set(key, [...(groups.get(key) || []), item]);
+    }
 
-        const daysSinceClosed = daysBetween(new Date(item.shipment_closed_date), now);
-        if (daysSinceClosed < 90) continue;
+    for (const [key, items] of groups) {
+        const first = items[0];
+        const { status_mode, should_process } = getStatusMode(first, now);
+        if (!should_process) continue;
 
-        const shortage = item.quantity_shipped - item.quantity_received;
-        if (shortage <= 0 || item.quantity_received === 0) continue; // Either no shortage or missing (different type)
+        // Split receipt resolution: aggregate quantities across all items in group
+        const totalShipped = items.reduce((s, i) => s + i.quantity_shipped, 0);
+        const totalReceived = items.reduce((s, i) => s + i.quantity_received, 0);
+        const shortage = totalShipped - totalReceived;
 
-        // Check reimbursement
-        const reimbs = reimbByShipment.get(item.shipment_id) || [];
-        if (reimbs.some(r => r.sku === item.sku)) continue;
+        // Skip if no shortage or if fully missing (handled by detectShipmentMissing)
+        if (shortage <= 0 || totalReceived === 0) continue; 
 
-        // Skip if explicitly marked as damage (different type)
-        if (item.discrepancy_reason?.toLowerCase().includes('damage')) continue;
+        // Maturity window
+        const refDate = first.shipment_closed_date ? new Date(first.shipment_closed_date) : new Date(first.shipment_created_date);
+        const daysSinceRef = daysBetween(refDate, now);
+        const threshold = status_mode === 'STAMPED_CLOSED' ? 90 : 45;
+        if (daysSinceRef < threshold) continue;
 
-        const value = shortage * 18;
+        // Skip if explicitly marked as damage
+        if (items.some(i => i.discrepancy_reason?.toLowerCase().includes('damage'))) continue;
+
+        // Quantitative Netting
+        const matches = reimbLookup.get(first.shipment_id || first.id) || [];
+        const normFirst = normalizeSku(first.sku);
+        const validMatches = matches.filter(m => {
+            const normM = normalizeSku(m.reimb.sku || '');
+            const isMatch = m.reimb.sku === first.sku || normM === normFirst;
+            return isMatch && !m.conflict && m.confidence_mode !== 'LOW';
+        });
+        const totalReimbValue = validMatches.reduce((sum, m) => sum + m.reimb.reimbursement_amount, 0);
+        
+        // Round 4: Grey-Zone Suppression
+        const hasWeakLinkage = matches.some(m => {
+            const normM = normalizeSku(m.reimb.sku || '');
+            const isMatch = m.reimb.sku === first.sku || normM === normFirst;
+            return isMatch && (m.conflict || m.confidence_mode === 'LOW');
+        });
+        const greyZoneSuppressed = hasWeakLinkage && validMatches.length === 0;
+        if (greyZoneSuppressed) continue;
+
+        const valuation = getUnitValuation(first, data, 20);
+        const estimatedReimbUnits = Math.round(totalReimbValue / valuation.value);
+        
+        if (totalReimbValue > 0 && Math.abs(totalReimbValue % valuation.value) > (valuation.value * 0.5)) {
+            approximationFailures++;
+        }
+
+        const unresolvedUnits = shortage;
+        const claimableUnits = Math.max(0, unresolvedUnits - estimatedReimbUnits);
+        if (claimableUnits <= 0) continue;
+
+        // Round 4: Selective Dust Floor (Only for approximation-heavy residuals)
+        const isApproximation = totalReimbValue > 0;
+        const dustFloorSuppressed = claimableUnits < 2 && isApproximation;
+        if (dustFloorSuppressed) continue;
+
+        const value = claimableUnits * valuation.value;
         results.push({
             seller_id: sellerId, sync_id: syncId, anomaly_type: 'shipment_shortage',
             severity: severity(value), estimated_value: value, currency: 'USD', confidence_score: 0.90,
             evidence: {
-                shipment_id: item.shipment_id, sku: item.sku, shipped: item.quantity_shipped,
-                received: item.quantity_received, shortage, days_since_closed: daysSinceClosed,
-                summary: `Shipment ${item.shipment_id}: Shipped ${item.quantity_shipped} units of ${item.sku}, received ${item.quantity_received}. ${shortage} units short. No reimbursement after ${daysSinceClosed} days.`
+                expected_sent_units: totalShipped,
+                observed_received_units: totalReceived,
+                reimbursed_value: totalReimbValue,
+                estimated_reimbursed_units_equivalent: estimatedReimbUnits,
+                valuation_source: valuation.source,
+                valuation_confidence: valuation.confidence,
+                valuation_basis: valuation.basis,
+                unresolved_units: unresolvedUnits,
+                claimable_units: claimableUnits,
+                status_mode,
+                shipment_linkage_mode: 'STRICT_ID',
+                reimbursement_linkage_mode: validMatches[0]?.mode || 'NONE',
+                linkage_score: validMatches[0]?.score || 0,
+                linkage_conflict_detected: hasWeakLinkage,
+                linkage_confidence_mode: validMatches[0]?.confidence_mode || (hasWeakLinkage ? 'LOW' : 'HIGH'),
+                grouping_mode: 'SHIPMENT_SKU',
+                grouped_row_count: items.length,
+                grey_zone_suppressed: false,
+                dust_floor_suppressed: false,
+                competition_count: validMatches.length,
+                summary: `Shipment ${first.shipment_id}: ${shortage} units short across ${items.length} rows.`
             },
-            related_event_ids: [item.shipment_id || item.id],
+            related_event_ids: items.map(i => i.id),
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
-            shipment_id: item.shipment_id, sku: item.sku, fnsku: item.fnsku, product_name: item.product_name
+            shipment_id: first.shipment_id, sku: first.sku, fnsku: first.fnsku, product_name: first.product_name
         });
+
+        // Report ownership for secondary detectors
+        const ownershipKey = (first.shipment_id || first.id) + first.sku;
+        claimedShortages.set(ownershipKey, claimableUnits);
     }
     return results;
 }
+
 
 // ============================================================================
 // 3. CARRIER DAMAGE - Explicitly marked as damaged in transit
@@ -188,13 +475,11 @@ export function detectShipmentShortage(sellerId: string, syncId: string, data: I
  * Detect Carrier Damage
  * 
  * LOGIC: Amazon's discrepancy_reason explicitly mentions 'damage' or 'carrier'
- * RULE: Carrier is at fault = Amazon should reimburse (they have insurance)
- * CONFIDENCE: 85% (need to verify it's not seller-packed damage)
  */
-export function detectCarrierDamage(sellerId: string, syncId: string, data: InboundSyncedData): InboundDetectionResult[] {
+export function detectCarrierDamage(sellerId: string, syncId: string, data: InboundSyncedData, claimedShortages?: Map<string, number>): InboundDetectionResult[] {
     const results: InboundDetectionResult[] = [];
     const now = new Date();
-    const reimbByShipment = buildReimbLookup(data.reimbursement_events || []);
+    const reimbLookup = buildReimbLookup(data.reimbursement_events || [], data.inbound_shipment_items || [], sellerId);
 
     for (const item of data.inbound_shipment_items || []) {
         if (!item.discrepancy_reason) continue;
@@ -205,25 +490,73 @@ export function detectCarrierDamage(sellerId: string, syncId: string, data: Inbo
 
         if (!isCarrierDamage) continue;
 
-        if (!item.shipment_closed_date) continue;
-        const daysSinceClosed = daysBetween(new Date(item.shipment_closed_date), now);
-        if (daysSinceClosed < 45) continue; // Shorter window for damage claims
+        // Grouping alignment for ownership consistency
+        const { status_mode, should_process } = getStatusMode(item, now);
+        if (!should_process) continue;
 
-        const damagedQty = item.quantity_shipped - item.quantity_received;
-        if (damagedQty <= 0) continue;
+        const refDate = item.shipment_closed_date ? new Date(item.shipment_closed_date) : new Date(item.shipment_created_date);
+        const daysSinceTrigger = daysBetween(refDate, now);
+        if (daysSinceTrigger < 45) continue; 
 
-        // Check reimbursement
-        const reimbs = reimbByShipment.get(item.shipment_id) || [];
-        if (reimbs.some(r => r.sku === item.sku)) continue;
+        const rawDamagedQty = item.quantity_shipped - item.quantity_received;
+        if (rawDamagedQty <= 0) continue;
 
-        const value = damagedQty * 20;
+        // Round 3: Secondary Precedence
+        const claimed = claimedShortages?.get((item.shipment_id || item.id) + item.sku) || 0;
+        const damagedQty = Math.max(0, rawDamagedQty - claimed);
+        if (damagedQty <= 0) continue; // Already owned by shortage detector
+
+        // Quantitative Netting
+        const matches = reimbLookup.get(item.shipment_id || item.id) || [];
+        const validMatches = matches.filter(m => m.reimb.sku === item.sku && !m.conflict && m.confidence_mode !== 'LOW');
+        const totalReimbValue = validMatches.reduce((sum, m) => sum + m.reimb.reimbursement_amount, 0);
+        
+        // Round 4: Grey-Zone Suppression
+        const hasWeakLinkage = matches.some(m => m.reimb.sku === item.sku && (m.conflict || m.confidence_mode === 'LOW'));
+        const greyZoneSuppressed = hasWeakLinkage && validMatches.length === 0;
+        if (greyZoneSuppressed) continue;
+
+        const valuation = getUnitValuation(item, data, 20);
+        const estimatedReimbUnits = Math.round(totalReimbValue / valuation.value);
+
+        if (totalReimbValue > 0 && Math.abs(totalReimbValue % valuation.value) > (valuation.value * 0.5)) {
+            approximationFailures++;
+        }
+        
+        const claimableUnits = Math.max(0, damagedQty - estimatedReimbUnits);
+        if (claimableUnits <= 0) continue;
+
+        // Round 4: Selective Dust Floor
+        // Exception: Strong evidence (carrier damage) does NOT trigger dust floor suppression at 1 unit
+        const dustFloorSuppressed = false;
+
+        const value = claimableUnits * valuation.value;
         results.push({
             seller_id: sellerId, sync_id: syncId, anomaly_type: 'carrier_damage',
             severity: severity(value), estimated_value: value, currency: 'USD', confidence_score: 0.85,
             evidence: {
-                shipment_id: item.shipment_id, sku: item.sku, carrier: item.carrier,
-                damaged_qty: damagedQty, discrepancy_reason: item.discrepancy_reason,
-                summary: `Shipment ${item.shipment_id}: ${damagedQty} units of ${item.sku} damaged in transit (${item.carrier || 'carrier'}). Reason: "${item.discrepancy_reason}". No reimbursement.`
+                expected_sent_units: item.quantity_shipped,
+                observed_received_units: item.quantity_received,
+                unresolved_units: damagedQty,
+                reimbursed_value: totalReimbValue,
+                estimated_reimbursed_units_equivalent: estimatedReimbUnits,
+                valuation_source: valuation.source,
+                valuation_confidence: valuation.confidence,
+                valuation_basis: valuation.basis,
+                claimable_units: claimableUnits,
+                status_mode,
+                shipment_linkage_mode: 'STRICT_ID',
+                reimbursement_linkage_mode: validMatches[0]?.mode || 'NONE',
+                linkage_score: validMatches[0]?.score || 0,
+                linkage_conflict_detected: hasWeakLinkage,
+                linkage_confidence_mode: validMatches[0]?.confidence_mode || (hasWeakLinkage ? 'LOW' : 'HIGH'),
+                grouping_mode: 'NONE',
+                grouped_row_count: 1,
+                grey_zone_suppressed: false,
+                dust_floor_suppressed: false,
+                dust_floor_reason: 'STRONG_EVIDENCE',
+                competition_count: validMatches.length,
+                summary: `Shipment ${item.shipment_id}: ${damagedQty} units damaged. Net ${claimableUnits} claimable.`
             },
             related_event_ids: [item.shipment_id || item.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
@@ -233,6 +566,7 @@ export function detectCarrierDamage(sellerId: string, syncId: string, data: Inbo
     return results;
 }
 
+
 // ============================================================================
 // 4. RECEIVING ERROR - Amazon made counting error
 // ============================================================================
@@ -241,13 +575,11 @@ export function detectCarrierDamage(sellerId: string, syncId: string, data: Inbo
  * Detect Receiving Error
  * 
  * LOGIC: receiving_discrepancy field indicates Amazon counting/scanning error
- * RULE: Error codes like 'MISCOUNTED', 'SCAN_ERROR', etc.
- * CONFIDENCE: 88% (Amazon's internal error but needs case opening)
  */
-export function detectReceivingError(sellerId: string, syncId: string, data: InboundSyncedData): InboundDetectionResult[] {
+export function detectReceivingError(sellerId: string, syncId: string, data: InboundSyncedData, claimedShortages?: Map<string, number>): InboundDetectionResult[] {
     const results: InboundDetectionResult[] = [];
     const now = new Date();
-    const reimbByShipment = buildReimbLookup(data.reimbursement_events || []);
+    const reimbLookup = buildReimbLookup(data.reimbursement_events || [], data.inbound_shipment_items || [], sellerId);
 
     const errorKeywords = ['miscount', 'scan error', 'receiving error', 'count discrepancy', 'quantity error'];
 
@@ -259,24 +591,72 @@ export function detectReceivingError(sellerId: string, syncId: string, data: Inb
 
         if (!isReceivingError) continue;
 
-        if (!item.shipment_closed_date) continue;
-        const daysSinceClosed = daysBetween(new Date(item.shipment_closed_date), now);
-        if (daysSinceClosed < 60) continue;
+        const { status_mode, should_process } = getStatusMode(item, now);
+        if (!should_process) continue;
 
-        const shortage = item.quantity_shipped - item.quantity_received;
-        if (shortage <= 0) continue;
+        const refDate = item.shipment_closed_date ? new Date(item.shipment_closed_date) : new Date(item.shipment_created_date);
+        const daysSinceTrigger = daysBetween(refDate, now);
+        if (daysSinceTrigger < 60) continue;
 
-        const reimbs = reimbByShipment.get(item.shipment_id) || [];
-        if (reimbs.some(r => r.sku === item.sku)) continue;
+        const rawShortage = item.quantity_shipped - item.quantity_received;
+        if (rawShortage <= 0) continue;
 
-        const value = shortage * 18;
+        // Round 3: Secondary Precedence
+        const ownershipKey = (item.shipment_id || item.id) + item.sku;
+        const claimed = claimedShortages?.get(ownershipKey) || 0;
+        const shortage = Math.max(0, rawShortage - claimed);
+        if (shortage <= 0) continue; 
+
+        // Quantitative Netting
+        const matches = reimbLookup.get(item.shipment_id || item.id) || [];
+        const validMatches = matches.filter(m => m.reimb.sku === item.sku && !m.conflict && m.confidence_mode !== 'LOW');
+        const totalReimbValue = validMatches.reduce((sum, m) => sum + m.reimb.reimbursement_amount, 0);
+        
+        // Round 4: Grey-Zone Suppression
+        const hasWeakLinkage = matches.some(m => m.reimb.sku === item.sku && (m.conflict || m.confidence_mode === 'LOW'));
+        const greyZoneSuppressed = hasWeakLinkage && validMatches.length === 0;
+        if (greyZoneSuppressed) continue;
+
+        const valuation = getUnitValuation(item, data, 18);
+        const estimatedReimbUnits = Math.round(totalReimbValue / valuation.value);
+
+        if (totalReimbValue > 0 && Math.abs(totalReimbValue % valuation.value) > (valuation.value * 0.5)) {
+            approximationFailures++;
+        }
+
+        const claimableUnits = Math.max(0, shortage - estimatedReimbUnits);
+        if (claimableUnits <= 0) continue;
+
+        // Receiving error is also strong evidence, usually no dust floor
+        const dustFloorSuppressed = false;
+
+        const value = claimableUnits * valuation.value;
         results.push({
             seller_id: sellerId, sync_id: syncId, anomaly_type: 'receiving_error',
             severity: severity(value), estimated_value: value, currency: 'USD', confidence_score: 0.88,
             evidence: {
-                shipment_id: item.shipment_id, sku: item.sku, shortage,
-                receiving_discrepancy: item.receiving_discrepancy || item.discrepancy_reason,
-                summary: `Shipment ${item.shipment_id}: Amazon receiving error on ${item.sku}. Shipped ${item.quantity_shipped}, received ${item.quantity_received}. Discrepancy: "${item.receiving_discrepancy || item.discrepancy_reason}"`
+                expected_sent_units: item.quantity_shipped,
+                observed_received_units: item.quantity_received,
+                unresolved_units: shortage,
+                reimbursed_value: totalReimbValue,
+                estimated_reimbursed_units_equivalent: estimatedReimbUnits,
+                valuation_source: valuation.source,
+                valuation_confidence: valuation.confidence,
+                valuation_basis: valuation.basis,
+                claimable_units: claimableUnits,
+                status_mode,
+                shipment_linkage_mode: 'STRICT_ID',
+                reimbursement_linkage_mode: validMatches[0]?.mode || 'NONE',
+                linkage_score: validMatches[0]?.score || 0,
+                linkage_conflict_detected: hasWeakLinkage,
+                linkage_confidence_mode: validMatches[0]?.confidence_mode || (hasWeakLinkage ? 'LOW' : 'HIGH'),
+                grouping_mode: 'NONE',
+                grouped_row_count: 1,
+                grey_zone_suppressed: false,
+                dust_floor_suppressed: false,
+                dust_floor_reason: 'DIRECT_ADMISSION',
+                competition_count: validMatches.length,
+                summary: `Shipment ${item.shipment_id}: Amazon receiving error. Net ${claimableUnits} claimable.`
             },
             related_event_ids: [item.shipment_id || item.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
@@ -294,43 +674,94 @@ export function detectReceivingError(sellerId: string, syncId: string, data: Inb
  * Detect Case Break Error
  * 
  * LOGIC: cases_shipped * quantity_in_case ≠ actual received
- * RULE: Amazon miscounted cases or broke cases and didn't count correctly
- * CONFIDENCE: 85% (needs case packing documentation)
  */
-export function detectCaseBreakError(sellerId: string, syncId: string, data: InboundSyncedData): InboundDetectionResult[] {
+export function detectCaseBreakError(sellerId: string, syncId: string, data: InboundSyncedData, claimedShortages?: Map<string, number>): InboundDetectionResult[] {
     const results: InboundDetectionResult[] = [];
     const now = new Date();
-    const reimbByShipment = buildReimbLookup(data.reimbursement_events || []);
+    const reimbLookup = buildReimbLookup(data.reimbursement_events || [], data.inbound_shipment_items || [], sellerId);
 
     for (const item of data.inbound_shipment_items || []) {
         if (!item.cases_shipped || !item.quantity_in_case) continue;
 
         const expectedUnits = item.cases_shipped * item.quantity_in_case;
-        if (item.quantity_shipped !== expectedUnits) continue; // Don't match on shipping end
+        if (item.quantity_shipped !== expectedUnits) continue; 
 
-        if (!item.shipment_closed_date) continue;
-        const daysSinceClosed = daysBetween(new Date(item.shipment_closed_date), now);
-        if (daysSinceClosed < 90) continue;
+        const { status_mode, should_process } = getStatusMode(item, now);
+        if (!should_process) continue;
 
-        const shortage = expectedUnits - item.quantity_received;
-        if (shortage <= 0) continue;
+        const refDate = item.shipment_closed_date ? new Date(item.shipment_closed_date) : new Date(item.shipment_created_date);
+        const daysSinceTrigger = daysBetween(refDate, now);
+        if (daysSinceTrigger < 90) continue;
 
-        // Check if shortage aligns with case count (e.g., missing exactly 1 or more cases worth)
+        const rawShortage = expectedUnits - item.quantity_received;
+        if (rawShortage <= 0) continue;
+
+        // Precedence Check: Subtract units already claimed by shipment_shortage
+        const ownershipKey = (item.shipment_id || item.id) + item.sku;
+        const claimed = claimedShortages?.get(ownershipKey) || 0;
+        const shortage = rawShortage - claimed;
+        
+        if (shortage <= 0) {
+            caseBreakOverlaps++;
+            continue; 
+        }
+
+        // Check if shortage aligns with case count
         const caseMissing = shortage % item.quantity_in_case === 0;
-        if (!caseMissing) continue; // Probably a different issue
+        if (!caseMissing) continue; 
 
-        const reimbs = reimbByShipment.get(item.shipment_id) || [];
-        if (reimbs.some(r => r.sku === item.sku)) continue;
+        // Quantitative Netting
+        const matches = reimbLookup.get(item.shipment_id || item.id) || [];
+        const validMatches = matches.filter(m => m.reimb.sku === item.sku && !m.conflict && m.confidence_mode !== 'LOW');
+        const totalReimbValue = validMatches.reduce((sum, m) => sum + m.reimb.reimbursement_amount, 0);
+        
+        // Round 4: Grey-Zone Suppression
+        const hasWeakLinkage = matches.some(m => m.reimb.sku === item.sku && (m.conflict || m.confidence_mode === 'LOW'));
+        const greyZoneSuppressed = hasWeakLinkage && validMatches.length === 0;
+        if (greyZoneSuppressed) continue;
 
-        const value = shortage * 18;
+        const valuation = getUnitValuation(item, data, 18);
+        const estimatedReimbUnits = Math.round(totalReimbValue / valuation.value);
+
+        if (totalReimbValue > 0 && Math.abs(totalReimbValue % valuation.value) > (valuation.value * 0.5)) {
+            approximationFailures++;
+        }
+
+        const claimableUnits = Math.max(0, shortage - estimatedReimbUnits);
+        if (claimableUnits <= 0) continue;
+
+        // Round 4: Selective Dust Floor (Only for approximation-heavy residuals)
+        const isApproximation = totalReimbValue > 0;
+        const dustFloorSuppressed = claimableUnits < 2 && isApproximation;
+        if (dustFloorSuppressed) continue;
+
+        const value = claimableUnits * valuation.value;
         results.push({
             seller_id: sellerId, sync_id: syncId, anomaly_type: 'case_break_error',
             severity: severity(value), estimated_value: value, currency: 'USD', confidence_score: 0.85,
             evidence: {
-                shipment_id: item.shipment_id, sku: item.sku,
-                cases_shipped: item.cases_shipped, units_per_case: item.quantity_in_case,
-                expected_units: expectedUnits, received_units: item.quantity_received, shortage,
-                summary: `Shipment ${item.shipment_id}: Shipped ${item.cases_shipped} cases × ${item.quantity_in_case} = ${expectedUnits} units. Received ${item.quantity_received}. ${shortage} units missing (${shortage / item.quantity_in_case} cases).`
+                expected_sent_units: expectedUnits,
+                observed_received_units: item.quantity_received,
+                unresolved_units: shortage,
+                reimbursed_value: totalReimbValue,
+                estimated_reimbursed_units_equivalent: estimatedReimbUnits,
+                valuation_source: valuation.source,
+                valuation_confidence: valuation.confidence,
+                valuation_basis: valuation.basis,
+                claimable_units: claimableUnits,
+                status_mode,
+                shipment_linkage_mode: 'STRICT_ID',
+                reimbursement_linkage_mode: validMatches[0]?.mode || 'NONE',
+                linkage_score: validMatches[0]?.score || 0,
+                linkage_conflict_detected: hasWeakLinkage,
+                linkage_confidence_mode: validMatches[0]?.confidence_mode || (hasWeakLinkage ? 'LOW' : 'HIGH'),
+                grouping_mode: 'NONE',
+                grouped_row_count: 1,
+                grey_zone_suppressed: false,
+                dust_floor_suppressed: false,
+                dust_floor_reason: 'CASE_PRECISION_RESIDUAL',
+                competition_count: validMatches.length,
+                summary: `Shipment ${item.shipment_id}: Case break error (Residual). Net ${claimableUnits} claimable.`
             },
             related_event_ids: [item.shipment_id || item.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
@@ -348,8 +779,6 @@ export function detectCaseBreakError(sellerId: string, syncId: string, data: Inb
  * Detect Prep Fee Error
  * 
  * LOGIC: Seller did prep (label_owner = 'SELLER') but Amazon charged prep fee
- * RULE: If you did the prep, no fee should be charged
- * CONFIDENCE: 92% (very clear cut - either you prepped or you didn't)
  */
 export function detectPrepFeeError(sellerId: string, syncId: string, data: InboundSyncedData): InboundDetectionResult[] {
     const results: InboundDetectionResult[] = [];
@@ -371,7 +800,7 @@ export function detectPrepFeeError(sellerId: string, syncId: string, data: Inbou
             evidence: {
                 shipment_id: item.shipment_id, sku: item.sku,
                 prep_fee_charged: item.prep_fee_charged, label_owner: item.label_owner,
-                summary: `Shipment ${item.shipment_id}: Charged $${item.prep_fee_charged.toFixed(2)} prep fee for ${item.sku} but seller completed prep (label_owner: ${item.label_owner}).`
+                summary: `Shipment ${item.shipment_id}: Charged $${item.prep_fee_charged.toFixed(2)} prep fee for ${item.sku} but seller completed prep.`
             },
             related_event_ids: [item.shipment_id || item.id],
             discovery_date: now, deadline_date: new Date(now.getTime() + 60 * 86400000), days_remaining: 60,
@@ -386,21 +815,44 @@ export function detectPrepFeeError(sellerId: string, syncId: string, data: Inbou
 // ============================================================================
 
 export function detectInboundAnomalies(sellerId: string, syncId: string, data: InboundSyncedData): InboundDetectionResult[] {
-    logger.info('📦 [INBOUND] Running all 7 distinct inbound detection algorithms', { sellerId, syncId });
+    logger.info('📦 [INBOUND] Running all inbound detection algorithms', { sellerId, syncId });
+    resetInboundCounters();
 
-    const missing = detectShipmentMissing(sellerId, syncId, data);
-    const shortage = detectShipmentShortage(sellerId, syncId, data);
-    const carrierDamage = detectCarrierDamage(sellerId, syncId, data);
-    const receivingError = detectReceivingError(sellerId, syncId, data);
-    const caseBreak = detectCaseBreakError(sellerId, syncId, data);
-    const prepFee = detectPrepFeeError(sellerId, syncId, data);
+    // Round 3: Tiered Deduplication
+    const { items: dedupedItems, metadata: dedupMeta } = deduplicateInboundItems(data.inbound_shipment_items || []);
+    const dedupData = { ...data, inbound_shipment_items: dedupedItems };
 
-    const all = [...missing, ...shortage, ...carrierDamage, ...receivingError, ...caseBreak, ...prepFee];
+    const missing = detectShipmentMissing(sellerId, syncId, dedupData);
+    const shortage = detectShipmentShortage(sellerId, syncId, dedupData);
 
+    // Track claimed shortages for precedence logic
+    const claimedMap = new Map<string, number>();
+    for (const r of shortage) {
+        const key = (r.shipment_id || r.related_event_ids[0]) + r.sku;
+        claimedMap.set(key, (claimedMap.get(key) || 0) + (r.evidence.claimable_units || 0));
+    }
+
+    // Secondary detectors only handle residual forensic units
+    const carrierDamage = detectCarrierDamage(sellerId, syncId, dedupData, claimedMap);
+    const receivingError = detectReceivingError(sellerId, syncId, dedupData, claimedMap);
+    const caseBreak = detectCaseBreakError(sellerId, syncId, dedupData, claimedMap);
+    const prepFee = detectPrepFeeError(sellerId, syncId, dedupData);
+
+    // Combine results and enrich with dedup metadata
+    const all = [...missing, ...shortage, ...carrierDamage, ...receivingError, ...caseBreak, ...prepFee].map(res => ({
+        ...res,
+        evidence: {
+            ...res.evidence,
+            ...dedupMeta
+        }
+    }));
+
+    const counters = getInboundCounters();
     logger.info('📦 [INBOUND] Detection complete', {
         missing: missing.length, shortage: shortage.length, carrierDamage: carrierDamage.length,
         receivingError: receivingError.length, caseBreak: caseBreak.length, prepFee: prepFee.length,
-        total: all.length, recovery: all.reduce((s, r) => s + r.estimated_value, 0)
+        total: all.length, recovery: all.reduce((s, r) => s + r.estimated_value, 0),
+        ...counters
     });
 
     return all;
@@ -410,8 +862,6 @@ export function detectInboundAnomalies(sellerId: string, syncId: string, data: I
 
 /**
  * Fetch inbound shipment items
- * 
- * ADAPTER: Agent 2 uses 'shipments' table. We filter for INBOUND type shipments.
  */
 export async function fetchInboundShipmentItems(sellerId: string): Promise<InboundShipmentItem[]> {
     try {
@@ -427,9 +877,6 @@ export async function fetchInboundShipmentItems(sellerId: string): Promise<Inbou
             return [];
         }
 
-        // Transform to InboundShipmentItem format
-        // FIX: The platform stores quantities as expected_quantity / received_quantity
-        //      and shipment type inside metadata.shipmentType, NOT as top-level columns.
         const items: InboundShipmentItem[] = (data || [])
             .filter(s =>
                 s.shipment_type === 'INBOUND' ||
@@ -437,7 +884,6 @@ export async function fetchInboundShipmentItems(sellerId: string): Promise<Inbou
                 s.destination_fc ||
                 s.warehouse_location ||
                 s.status?.includes('INBOUND') ||
-                // Fallback: treat all shipments as potential inbound if no type info
                 (!s.shipment_type && !s.metadata?.shipmentType)
             )
             .map(s => ({
@@ -448,7 +894,6 @@ export async function fetchInboundShipmentItems(sellerId: string): Promise<Inbou
                 fnsku: s.fnsku || s.items?.[0]?.fnsku || s.items?.[0]?.asin || 'UNKNOWN',
                 asin: s.asin || s.items?.[0]?.asin,
                 product_name: s.product_name || s.items?.[0]?.title,
-                // FIX: Map from platform column names (expected_quantity, received_quantity)
                 quantity_shipped: s.quantity_shipped || s.expected_quantity || s.quantity || 0,
                 quantity_received: s.quantity_received || s.received_quantity || 0,
                 quantity_in_case: s.metadata?.quantity_in_case,
@@ -467,7 +912,6 @@ export async function fetchInboundShipmentItems(sellerId: string): Promise<Inbou
                 created_at: s.created_at
             }));
 
-        logger.info('📦 [INBOUND] Fetched inbound shipments', { count: items.length });
         return items;
     } catch (err: any) {
         logger.error('📦 [INBOUND] Exception fetching shipments', { sellerId, error: err.message });
@@ -477,8 +921,6 @@ export async function fetchInboundShipmentItems(sellerId: string): Promise<Inbou
 
 /**
  * Fetch inbound reimbursements
- * 
- * ADAPTER: Uses Agent 2's settlements table with 'reimbursement' type
  */
 export async function fetchInboundReimbursements(sellerId: string): Promise<InboundReimbursement[]> {
     try {
@@ -495,7 +937,6 @@ export async function fetchInboundReimbursements(sellerId: string): Promise<Inbo
             return [];
         }
 
-        // Transform to InboundReimbursement format
         const reimbs: InboundReimbursement[] = (data || []).map(s => ({
             id: s.id || s.settlement_id,
             seller_id: sellerId,
@@ -508,7 +949,6 @@ export async function fetchInboundReimbursements(sellerId: string): Promise<Inbo
             created_at: s.created_at
         }));
 
-        logger.info('📦 [INBOUND] Fetched reimbursements', { count: reimbs.length });
         return reimbs;
     } catch (err: any) {
         logger.error('📦 [INBOUND] Exception fetching reimbursements', { sellerId, error: err.message });
