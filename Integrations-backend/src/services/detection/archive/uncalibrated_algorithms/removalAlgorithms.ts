@@ -11,8 +11,8 @@
  * Each type has its OWN detection function with specific logic.
  */
 
-import { supabaseAdmin } from '../../../database/supabaseClient';
-import logger from '../../../utils/logger';
+import { supabaseAdmin } from '../../../../database/supabaseClient';
+import logger from '../../../../utils/logger';
 import { resolveTenantId } from './shared/tenantUtils';
 
 // ============================================================================

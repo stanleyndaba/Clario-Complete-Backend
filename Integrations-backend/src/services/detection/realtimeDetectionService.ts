@@ -14,9 +14,9 @@ import logger from '../../utils/logger';
 import { RealtimeChannel } from '@supabase/supabase-js';
 
 // Import detection algorithms for mini-detection runs
-import { detectLostInventory } from './algorithms/inventoryAlgorithms';
-import { detectRefundWithoutReturn } from './algorithms/refundAlgorithms';
-import { detectDamagedInventory } from './algorithms/damagedAlgorithms';
+import { detectLostInventory } from './core/detectors/inventoryAlgorithms';
+import { detectRefundWithoutReturn } from './core/detectors/refundAlgorithms';
+import { detectDamagedInventory } from './core/detectors/damagedAlgorithms';
 import { calculateCalibratedConfidence } from './confidenceCalibrator';
 
 // ============================================================================

@@ -4,8 +4,8 @@
  * Version: 1.0 (Production-Grade)
  */
 
-import { InventoryLedgerEvent } from '../services/detection/algorithms/inventoryAlgorithms';
-import { TransferRecord } from '../services/detection/algorithms/warehouseTransferLossAlgorithm';
+import { InventoryLedgerEvent } from '../services/detection/core/detectors/inventoryAlgorithms';
+import { TransferRecord } from '../services/detection/core/detectors/warehouseTransferLossAlgorithm';
 
 export interface TransferLossScenario {
     id: string;

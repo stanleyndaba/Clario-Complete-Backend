@@ -13,8 +13,8 @@
  * (Different from underpayment algorithm which handles reimbursement amounts)
  */
 
-import { supabaseAdmin } from '../../../database/supabaseClient';
-import logger from '../../../utils/logger';
+import { supabaseAdmin } from '../../../../database/supabaseClient';
+import logger from '../../../../utils/logger';
 
 import { resolveTenantId } from './shared/tenantUtils';
 // ============================================================================

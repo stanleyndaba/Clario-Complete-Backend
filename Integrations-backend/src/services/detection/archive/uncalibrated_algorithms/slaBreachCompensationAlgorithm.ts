@@ -18,8 +18,8 @@
  * ✔️ Works across categories, scales beautifully
  */
 
-import { supabaseAdmin } from '../../../database/supabaseClient';
-import logger from '../../../utils/logger';
+import { supabaseAdmin } from '../../../../database/supabaseClient';
+import logger from '../../../../utils/logger';
 
 import { resolveTenantId } from './shared/tenantUtils';
 // ============================================================================

@@ -33,3 +33,16 @@ The Agent 3 Detection Engine is organized into a strict hierarchy to ensure runt
 ## 🛂 Production Safety Check
 - **No Direct Imports**: Only the Registry is allowed to import from `core/detectors`.
 - **Archive Isolation**: No code in `src/` (outside archive) should ever import from the `archive/` path.
+
+## 🎖️ The Primary Seven Standard
+The following detectors are established as the **Primary and Main** production standard for Agent 3. No other algorithms are permitted to execute in the production pipeline:
+
+1. **Whale Hunter** (`lost-inventory`)
+2. **Refund Trap** (`refund-gap`)
+3. **Broken Goods** (`damaged-stock`)
+4. **Fee Phantom** (`fee-overcharge`)
+5. **Inbound Inspector** (`inbound-shortage`)
+6. **Transfer Auditor** (`fc-transfer`)
+7. **The Sentinel** (`reconcile-integrity`)
+
+*Any new detection capabilities MUST be developed in the `/lab/`, undergo calibration, and be formally promoted to `core/` before entering the Production Registry.*

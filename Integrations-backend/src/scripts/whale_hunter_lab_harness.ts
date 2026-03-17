@@ -5,7 +5,7 @@
  * Designed to expose weaknesses in physical vs claim truth reconciliation.
  */
 
-import { detectLostInventory, SyncedData, DetectionResult } from '../services/detection/algorithms/inventoryAlgorithms';
+import { detectLostInventory, SyncedData, DetectionResult } from '../services/detection/core/detectors/inventoryAlgorithms';
 import { WHALE_HUNTER_SCENARIOS, WhaleHunterScenario } from './whale_hunter_scenarios';
 
 // --- Calibration Assumptions (Independent of Implementation) ---

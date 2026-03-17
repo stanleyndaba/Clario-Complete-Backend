@@ -12,21 +12,21 @@ import { supabaseAdmin } from '../database/supabaseClient';
 import {
     detectLostInventory,
     fetchInventoryLedger
-} from './detection/algorithms/inventoryAlgorithms';
+} from './detection/core/detectors/inventoryAlgorithms';
 import {
     detectRefundWithoutReturn,
     fetchRefundEvents,
     fetchReturnEvents as fetchReturnsForRefund,
     fetchReimbursementEvents
-} from './detection/algorithms/refundAlgorithms';
+} from './detection/core/detectors/refundAlgorithms';
 import {
     detectDamagedInventory,
     fetchDamagedEvents,
     fetchReimbursementsForDamage
-} from './detection/algorithms/damagedAlgorithms';
-import { detectInboundAnomalies, fetchInboundShipmentItems, fetchInboundReimbursements } from './detection/algorithms/inboundAlgorithms';
-import { detectRemovalAnomalies, fetchRemovalOrders } from './detection/algorithms/removalAlgorithms';
-import { detectFraudAnomalies, fetchReturnEvents, fetchRefundEventsForFraud } from './detection/algorithms/fraudAlgorithms';
+} from './detection/core/detectors/damagedAlgorithms';
+import { detectInboundAnomalies, fetchInboundShipmentItems, fetchInboundReimbursements } from './detection/core/detectors/inboundAlgorithms';
+import { detectRemovalAnomalies, fetchRemovalOrders } from './detection/archive/uncalibrated_algorithms/removalAlgorithms';
+import { detectFraudAnomalies, fetchReturnEvents, fetchRefundEventsForFraud } from './detection/archive/uncalibrated_algorithms/fraudAlgorithms';
 
 async function runE2EDetectionTest(userId: string) {
     console.log('🧪 Starting E2E Detection Test\n');
@@ -57,7 +57,8 @@ async function runE2EDetectionTest(userId: string) {
     // 2. Run Inventory Detection (Whale Hunter)
     console.log('\n🐋 STEP 2: Running Inventory Detection (Whale Hunter)...');
     try {
-        const inventoryLedger = await fetchInventoryLedger(userId);
+        const inventoryData = await fetchInventoryLedger(userId, syncId);
+        const inventoryLedger = inventoryData.inventory_ledger || [];
         console.log(`   Fetched ${inventoryLedger.length} inventory events`);
 
         if (inventoryLedger.length > 0) {
@@ -80,10 +81,11 @@ async function runE2EDetectionTest(userId: string) {
     // 3. Run Refund Detection (Refund Trap)
     console.log('\n🪤 STEP 3: Running Refund Detection (Refund Trap)...');
     try {
+        const lookback = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
         const [refunds, returns, reimbursements] = await Promise.all([
-            fetchRefundEvents(userId),
-            fetchReturnsForRefund(userId),
-            fetchReimbursementEvents(userId)
+            fetchRefundEvents(userId, { startDate: lookback }),
+            fetchReturnsForRefund(userId, { startDate: lookback }),
+            fetchReimbursementEvents(userId, { startDate: lookback })
         ]);
         console.log(`   Fetched: ${refunds.length} refunds, ${returns.length} returns, ${reimbursements.length} reimbursements`);
 
@@ -109,9 +111,10 @@ async function runE2EDetectionTest(userId: string) {
     // 4. Run Damaged Detection (Broken Goods)
     console.log('\n💥 STEP 4: Running Damaged Detection (Broken Goods)...');
     try {
+        const lookback = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
         const [damaged, damagedReimbs] = await Promise.all([
-            fetchDamagedEvents(userId),
-            fetchReimbursementsForDamage(userId)
+            fetchDamagedEvents(userId, { startDate: lookback }),
+            fetchReimbursementsForDamage(userId, { startDate: lookback })
         ]);
         console.log(`   Fetched: ${damaged.length} damaged events, ${damagedReimbs.length} reimbursements`);
 
@@ -163,6 +166,7 @@ async function runE2EDetectionTest(userId: string) {
     // 6. Run Fraud Detection
     console.log('\n🕵️ STEP 6: Running Fraud Detection...');
     try {
+        // Fraud algorithms now in archive, potentially using legacy signatures
         const [fraudReturns, fraudRefunds] = await Promise.all([
             fetchReturnEvents(userId),
             fetchRefundEventsForFraud(userId)

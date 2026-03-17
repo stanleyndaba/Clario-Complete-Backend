@@ -14,8 +14,8 @@
  * - Confidence-scored (only recommend filing at ≥0.75)
  */
 
-import { supabaseAdmin } from '../../../database/supabaseClient';
-import logger from '../../../utils/logger';
+import { supabaseAdmin } from '../../../../database/supabaseClient';
+import logger from '../../../../utils/logger';
 
 // ============================================================================
 // Types

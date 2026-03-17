@@ -1,4 +1,4 @@
-import { InventoryLedgerEvent } from '../services/detection/algorithms/inventoryAlgorithms';
+import { InventoryLedgerEvent } from '../services/detection/core/detectors/inventoryAlgorithms';
 
 export interface WhaleHunterScenario {
     scenario_id: string;

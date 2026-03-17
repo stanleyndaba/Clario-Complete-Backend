@@ -3,8 +3,8 @@
  * Centralizes tenant_id resolution to avoid duplication across 26+ algorithm files.
  */
 
-import { supabaseAdmin } from '../../../../database/supabaseClient';
-import logger from '../../../../utils/logger';
+import { supabaseAdmin } from '../../../../../database/supabaseClient';
+import logger from '../../../../../utils/logger';
 
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
