@@ -5,8 +5,8 @@
  * Finds money lost to incorrectly calculated or overcharged fees.
  */
 
-import { supabaseAdmin } from '../../../database/supabaseClient';
-import logger from '../../../utils/logger';
+import { supabaseAdmin } from '../../../../database/supabaseClient';
+import logger from '../../../../utils/logger';
 import { resolveTenantId } from './shared/tenantUtils';
 
 // ============================================================================
@@ -1233,7 +1233,13 @@ export async function fetchProductCatalog(sellerId: string) {
 export async function runFeeOverchargeDetection(sellerId: string, syncId: string) {
     const lookback = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
     const [events, catalog] = await Promise.all([fetchFeeEvents(sellerId, { startDate: lookback }), fetchProductCatalog(sellerId)]);
-    return detectAllFeeOvercharges(sellerId, syncId, { seller_id: sellerId, sync_id: syncId, fee_events: events, product_catalog: catalog });
+    const results = await detectAllFeeOvercharges(sellerId, syncId, { seller_id: sellerId, sync_id: syncId, fee_events: events, product_catalog: catalog });
+    
+    if (results.length > 0) {
+        await storeFeeDetectionResults(results);
+    }
+    
+    return results;
 }
 
 export async function storeFeeDetectionResults(results: FeeDetectionResult[]) {

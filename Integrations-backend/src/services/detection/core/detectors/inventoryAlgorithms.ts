@@ -4,8 +4,8 @@
  * Production Master v7: Final Forensic Cohort Master
  */
 
-import { supabaseAdmin } from '../../../database/supabaseClient';
-import logger from '../../../utils/logger';
+import { supabaseAdmin } from '../../../../database/supabaseClient';
+import logger from '../../../../utils/logger';
 
 import { resolveTenantId } from './shared/tenantUtils';
 

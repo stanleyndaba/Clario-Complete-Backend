@@ -17,13 +17,13 @@ config();
 
 import { createClient } from '@supabase/supabase-js';
 import {
-    detectReimbursementUnderpayments,
-    detectMissingDocumentation,
-    UnderpaymentSyncedData,
-    UnderpaymentDetectionResult,
+    detectDuplicateMissedReimbursements,
+    getRecoveryHealthSummary,
+    SentinelSyncedData,
+    SentinelDetectionResult,
     THRESHOLD_SHOW_TO_USER,
     THRESHOLD_RECOMMEND_FILING
-} from '../src/services/detection/algorithms/reimbursementUnderpaymentAlgorithm';
+} from '../src/services/detection/core/detectors/duplicateMissedReimbursementAlgorithm';
 
 // ============================================================================
 // Configuration
@@ -118,7 +118,7 @@ interface TestResults {
     noAction: number;
 
     // Sample detections for manual review
-    sampleDetections: UnderpaymentDetectionResult[];
+    sampleDetections: SentinelDetectionResult[];
 
     // Warnings
     warnings: string[];
@@ -228,15 +228,16 @@ async function runCalibrationTest(sellerId: string): Promise<void> {
     results.sellersAnalyzed++;
 
     // Build test data
-    const syncedData: UnderpaymentSyncedData = {
+    const syncedData: SentinelSyncedData = {
         seller_id: sellerId,
         sync_id: `calibration-${Date.now()}`,
+        loss_events: [], // Placeholder
         reimbursement_events: reimbursements
     };
 
     // Run detection with timing
     const startTime = Date.now();
-    const detections = await detectReimbursementUnderpayments(
+    const detections = await detectDuplicateMissedReimbursements(
         sellerId,
         syncedData.sync_id,
         syncedData
@@ -277,7 +278,7 @@ async function runCalibrationTest(sellerId: string): Promise<void> {
         }
 
         // Shortfall tracking
-        results.totalShortfall += detection.shortfall_amount;
+        results.totalShortfall += detection.estimated_recovery;
 
         // Save sample detections (first 10)
         if (results.sampleDetections.length < 10) {
@@ -286,14 +287,11 @@ async function runCalibrationTest(sellerId: string): Promise<void> {
     }
 
     // Check COGS availability
-    const docStatus = await detectMissingDocumentation(sellerId);
-    if (docStatus.hasCogs) {
+    const docStatus = await getRecoveryHealthSummary(sellerId);
+    if (!docStatus.actionRequired) {
         results.sellersWithCogs++;
     } else {
         results.sellersWithoutCogs++;
-        if (docStatus.alertMessage) {
-            log.warn(docStatus.alertMessage);
-        }
     }
 }
 
@@ -370,8 +368,8 @@ function analyzeResults(): void {
         console.log('\n🔍 SAMPLE DETECTIONS (for manual review)');
         for (const detection of results.sampleDetections.slice(0, 5)) {
             console.log(`\n   SKU: ${detection.sku || 'N/A'}`);
-            console.log(`   Actual: $${detection.actual_reimbursement.toFixed(2)} | Expected: $${detection.expected_fair_value.toFixed(2)}`);
-            console.log(`   Shortfall: $${detection.shortfall_amount.toFixed(2)} | COGS Gap: ${detection.cogs_gap ? '$' + detection.cogs_gap.toFixed(2) : 'N/A'}`);
+            console.log(`   Value Gap: $${detection.value_gap.toFixed(2)} | Estimated Recovery: $${detection.estimated_recovery.toFixed(2)}`);
+            console.log(`   Clawback Risk: $${detection.clawback_risk_value.toFixed(2)} | Accuracy: ${((detection.confidence_score) * 100).toFixed(0)}%`);
             console.log(`   Confidence: ${(detection.confidence_score * 100).toFixed(0)}% | Severity: ${detection.severity}`);
             console.log(`   Reason: ${detection.evidence.detection_reasons?.[0] || 'N/A'}`);
             console.log(`   Action: ${detection.recommended_action}`);

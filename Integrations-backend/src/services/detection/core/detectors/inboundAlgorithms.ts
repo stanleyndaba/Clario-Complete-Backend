@@ -13,8 +13,8 @@
  * Each type has its OWN detection function with specific logic.
  */
 
-import { supabaseAdmin } from '../../../database/supabaseClient';
-import logger from '../../../utils/logger';
+import { supabaseAdmin } from '../../../../database/supabaseClient';
+import logger from '../../../../utils/logger';
 import { resolveTenantId } from './shared/tenantUtils';
 
 // ============================================================================
@@ -958,7 +958,13 @@ export async function fetchInboundReimbursements(sellerId: string): Promise<Inbo
 
 export async function runInboundDetection(sellerId: string, syncId: string): Promise<InboundDetectionResult[]> {
     const [items, reimbs] = await Promise.all([fetchInboundShipmentItems(sellerId), fetchInboundReimbursements(sellerId)]);
-    return detectInboundAnomalies(sellerId, syncId, { seller_id: sellerId, sync_id: syncId, inbound_shipment_items: items, reimbursement_events: reimbs });
+    const results = await detectInboundAnomalies(sellerId, syncId, { seller_id: sellerId, sync_id: syncId, inbound_shipment_items: items, reimbursement_events: reimbs });
+    
+    if (results.length > 0) {
+        await storeInboundDetectionResults(results);
+    }
+    
+    return results;
 }
 
 export async function storeInboundDetectionResults(results: InboundDetectionResult[]): Promise<void> {

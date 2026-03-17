@@ -10,8 +10,8 @@
  * - Currency-safe shortfall math
  */
 
-import { supabaseAdmin } from '../../../database/supabaseClient';
-import logger from '../../../utils/logger';
+import { supabaseAdmin } from '../../../../database/supabaseClient';
+import logger from '../../../../utils/logger';
 import { resolveTenantId } from './shared/tenantUtils';
 
 // ============================================================================
@@ -401,13 +401,19 @@ export async function runRefundWithoutReturnDetection(sellerId: string, syncId: 
         fetchReturnEvents(sellerId, { startDate: lookback }),
         fetchReimbursementEvents(sellerId, { startDate: lookback })
     ]);
-    return detectRefundWithoutReturn(sellerId, syncId, { 
+    const results = await detectRefundWithoutReturn(sellerId, syncId, { 
         seller_id: sellerId, 
         sync_id: syncId, 
         refund_events: refunds, 
         return_events: returns, 
         reimbursement_events: reimbs 
     });
+    
+    if (results.length > 0) {
+        await storeRefundDetectionResults(results);
+    }
+    
+    return results;
 }
 
 export async function storeRefundDetectionResults(results: RefundDetectionResult[]): Promise<void> {

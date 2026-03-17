@@ -11,8 +11,8 @@
  * 4. If no reimbursement found after 45 days = MONEY OWED
  */
 
-import { supabaseAdmin } from '../../../database/supabaseClient';
-import logger from '../../../utils/logger';
+import { supabaseAdmin } from '../../../../database/supabaseClient';
+import logger from '../../../../utils/logger';
 
 import { resolveTenantId } from './shared/tenantUtils';
 // ============================================================================
@@ -658,7 +658,13 @@ export async function runDamagedInventoryDetection(
         reimbursement_events: reimbursementEvents
     };
 
-    return detectDamagedInventory(sellerId, syncId, syncedData);
+    const results = await detectDamagedInventory(sellerId, syncId, syncedData);
+    
+    if (results.length > 0) {
+        await storeDamagedDetectionResults(results);
+    }
+    
+    return results;
 }
 
 /**

@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { runInboundDetection, storeInboundDetectionResults } from '../src/services/detection/algorithms/inboundAlgorithms';
+import { runInboundDetection, storeInboundDetectionResults } from '../src/services/detection/core/detectors/inboundAlgorithms';
 import { v4 as uuidv4 } from 'uuid';
 import logger from '../src/utils/logger';
 

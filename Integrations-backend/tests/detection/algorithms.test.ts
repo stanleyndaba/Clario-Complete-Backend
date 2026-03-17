@@ -8,32 +8,32 @@
 import {
     detectLostInventory,
     SyncedData
-} from '../../src/services/detection/algorithms/inventoryAlgorithms';
+} from '../../src/services/detection/core/detectors/inventoryAlgorithms';
 
 import {
     detectRefundWithoutReturn,
     RefundSyncedData
-} from '../../src/services/detection/algorithms/refundAlgorithms';
+} from '../../src/services/detection/core/detectors/refundAlgorithms';
 
 import {
     detectDamagedInventory,
     DamagedSyncedData
-} from '../../src/services/detection/algorithms/damagedAlgorithms';
+} from '../../src/services/detection/core/detectors/damagedAlgorithms';
 
 import {
     detectInboundAnomalies,
     InboundSyncedData
-} from '../../src/services/detection/algorithms/inboundAlgorithms';
+} from '../../src/services/detection/core/detectors/inboundAlgorithms';
 
 import {
     detectRemovalAnomalies,
     RemovalSyncedData
-} from '../../src/services/detection/algorithms/removalAlgorithms';
+} from '../../src/services/detection/archive/uncalibrated_algorithms/removalAlgorithms';
 
 import {
     detectFraudAnomalies,
     FraudSyncedData
-} from '../../src/services/detection/algorithms/fraudAlgorithms';
+} from '../../src/services/detection/archive/uncalibrated_algorithms/fraudAlgorithms';
 
 // Mock logger to prevent console output during tests
 jest.mock('../../src/utils/logger', () => ({

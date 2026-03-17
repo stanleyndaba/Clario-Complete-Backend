@@ -1,184 +1,32 @@
 /**
- * Enhanced Detection Service - THE REAL BRAIN
+ * Enhanced Detection Service - Agent 3 Core Orchestrator
  * 
- * This is the main orchestrator for Agent 3's detection capabilities.
- * Now wired to the Whale Hunter algorithm for real lost inventory detection.
- * 
- * NO MORE MOCKS. THIS IS LIVE. 🧟‍♂️⚡️
+ * Orchestrates the 7 frozen flagship detectors.
+ * STRICT BOUNDARY: Only executes hardened core algorithms.
  */
 
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import { financialImpactService, ImpactStatus } from './financialImpactService';
-import { calculateCalibratedConfidence, calibrateBatch, getCalibrationStats } from './detection/confidenceCalibrator';
-import { analyzeSellerPatterns, generateInsights } from './detection/patternAnalyzer';
-import {
-  detectLostInventory,
-  fetchInventoryLedger,
-  storeDetectionResults,
-  SyncedData,
-  DetectionResult as InventoryDetectionResult
-} from './detection/algorithms/inventoryAlgorithms';
-import {
-  detectRefundWithoutReturn,
-  fetchRefundEvents,
-  fetchReturnEvents,
-  fetchReimbursementEvents,
-  storeRefundDetectionResults,
-  RefundSyncedData,
-  RefundDetectionResult
-} from './detection/algorithms/refundAlgorithms';
-import {
-  detectAllFeeOvercharges,
-  fetchFeeEvents,
-  fetchProductCatalog,
-  storeFeeDetectionResults,
-  FeeSyncedData,
-  FeeDetectionResult
-} from './detection/algorithms/feeAlgorithms';
-import {
-  detectDefensibleChargebacks,
-  fetchChargebackEvents,
-  fetchDeliveryRecords,
-  storeDisputeDetectionResults,
-  DisputeSyncedData,
-  DisputeDetectionResult
-} from './detection/algorithms/chargebackAlgorithms';
-import {
-  detectAllAdvertisingErrors,
-  fetchCouponEvents,
-  fetchDealEvents,
-  fetchSubscribeSaveEvents,
-  storeAdvertisingDetectionResults,
-  AdvertisingSyncedData,
-  AdvertisingDetectionResult
-} from './detection/algorithms/advertisingAlgorithms';
-import {
-  detectDamagedInventory,
-  fetchDamagedEvents,
-  fetchReimbursementsForDamage,
-  storeDamagedDetectionResults,
-  DamagedSyncedData,
-  DamagedDetectionResult
-} from './detection/algorithms/damagedAlgorithms';
-import { detectInboundAnomalies, runInboundDetection, storeInboundDetectionResults } from './detection/algorithms/inboundAlgorithms';
-import { detectRemovalAnomalies, runRemovalDetection, storeRemovalResults } from './detection/algorithms/removalAlgorithms';
-import { detectFraudAnomalies, runFraudDetection, storeFraudResults } from './detection/algorithms/fraudAlgorithms';
-import {
-  detectReimbursementUnderpayments,
-  storeUnderpaymentResults,
-  detectMissingDocumentation,
-  UnderpaymentSyncedData
-} from './detection/algorithms/reimbursementUnderpaymentAlgorithm';
-import {
-  detectReimbursementDelays,
-  fetchPendingReimbursements,
-  storeDelayResults,
-  DelaySyncedData
-} from './detection/algorithms/reimbursementDelayAlgorithm';
-import {
-  detectDuplicateMissedReimbursements,
-  fetchLossEvents,
-  fetchReimbursementEventsForSentinel,
-  storeSentinelResults,
-  SentinelSyncedData
-} from './detection/algorithms/duplicateMissedReimbursementAlgorithm';
-import {
-  detectFalseClosedCases,
-  fetchClosedCases,
-  storeClosedCaseResults,
-  ClosedCaseSyncedData
-} from './detection/algorithms/falseClosedCaseAlgorithm';
-import {
-  detectSLABreaches,
-  fetchCaseTimelines,
-  storeSLABreachResults,
-  SLABreachSyncedData
-} from './detection/algorithms/slaBreachCompensationAlgorithm';
-import {
-  detectReturnAbuse,
-  fetchRefundEvents as fetchRefundEventsForAbuse,
-  fetchReturnEvents as fetchReturnEventsForAbuse,
-  storeReturnAbuseResults,
-  ReturnAbuseSyncedData
-} from './detection/algorithms/returnAbuseAlgorithm';
-import {
-  detectInventoryShrinkageDrift,
-  fetchInventorySnapshots,
-  fetchInventoryEvents,
-  storeShrinkageDriftResults,
-  ShrinkageSyncedData
-} from './detection/algorithms/inventoryShrinkageDriftAlgorithm';
-import {
-  detectFeeMisclassification,
-  fetchProductDimensions,
-  fetchFeeTransactions,
-  storeFeeMisclassResults,
-  FeeMisclassSyncedData
-} from './detection/algorithms/feeMisclassificationAlgorithm';
-import {
-  detectRefundPriceShortfall,
-  fetchRefundEventsForPricing,
-  fetchPriceHistoryForRefunds,
-  storeRefundPriceShortfallResults,
-  RefundPriceSyncedData
-} from './detection/algorithms/refundPriceShortfallAlgorithm';
-import {
-  detectPhantomRefunds,
-  fetchRefundEventsWithReturns,
-  fetchInventoryAdjustmentsForPhantom,
-  storePhantomRefundResults,
-  PhantomRefundSyncedData
-} from './detection/algorithms/phantomRefundAlgorithm';
-import {
-  calculateDelayedRevenueImpact,
-  fetchDelayEvents,
-  fetchSalesVelocity,
-  storeDelayedRevenueResults,
-  DelayRevenueImpactSyncedData
-} from './detection/algorithms/delayedRevenueImpactAlgorithm';
-import {
-  detectFeeDriftTrend,
-  fetchFeeHistoryForDrift,
-  storeFeeDriftResults,
-  FeeDriftSyncedData
-} from './detection/algorithms/feeDriftTrendAlgorithm';
-// 2025 overhaul: 12 new algorithms - underpayment to fee drift trend
-import {
-  detectOrderLevelDiscrepancies,
-  fetchOrdersForDiscrepancy,
-  storeOrderDiscrepancyResults,
-  OrderRecord
-} from './detection/algorithms/orderDiscrepancyAlgorithm';
-import {
-  detectWarehouseTransferLoss,
-  fetchTransferRecords,
-  storeTransferLossResults,
-  TransferRecord
-} from './detection/algorithms/warehouseTransferLossAlgorithm';
-import {
-  detectAccountHealthImpact,
-  fetchAccountHealthIssues,
-  fetchInventoryValues,
-  storeAccountHealthImpactResults,
-  AccountHealthIssue
-} from './detection/algorithms/accountHealthImpactAlgorithm';
-import {
-  detectSilentSuppression,
-  fetchListingPerformance,
-  storeSuppressionResults
-} from './detection/algorithms/silentSuppressionAlgorithm';
-import {
-  detectClaimWorkflowGaps,
-  fetchClaimRecords,
-  storeClaimGapResults
-} from './detection/algorithms/policyClaimGapsAlgorithm';
-// 2025 COMPLETE: 17 new algorithms (10-26) - Agent 3 now runs 26 algorithms + ML
+import { calculateCalibratedConfidence } from './detection/confidenceCalibrator';
+import { generateInsights } from './detection/patternAnalyzer';
 
+// =====================================================
+// PRODUCTION REGISTRY (AGENT 3 CORE)
+// =====================================================
+import {
+  runLostInventoryDetection,
+  runRefundWithoutReturnDetection,
+  runFeeOverchargeDetection,
+  runInboundDetection,
+  runDamagedInventoryDetection,
+  runTransferLossDetection,
+  runSentinelDetection
+} from './detection/core/registry';
 
-// ============================================================================
+// =====================================================
 // Types
-// ============================================================================
+// =====================================
 
 export interface DetectionJob {
   id: string;
@@ -209,16 +57,16 @@ export interface DetectionResult {
 }
 
 // ============================================================================
-// Enhanced Detection Service - LIVE
+// Enhanced Detection Service - LIVE CORE
 // ============================================================================
 
 export class EnhancedDetectionService {
 
   /**
-   * TRIGGER DETECTION PIPELINE - THE MAIN ENTRY POINT
+   * TRIGGER DETECTION PIPELINE - CORE PRODUCTION
    * 
-   * This is called after sync completion to run detection algorithms.
-   * Now wired to the REAL Whale Hunter for lost inventory detection.
+   * Orchestrates the 7 frozen flagship detectors.
+   * STRICT BOUNDARY: Only executes hardened core algorithms.
    */
   async triggerDetectionPipeline(
     userId: string,
@@ -228,950 +76,115 @@ export class EnhancedDetectionService {
   ): Promise<{ success: boolean; jobId: string; message: string; detectionsFound?: number; estimatedRecovery?: number }> {
     const jobId = `detection-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-    logger.info('🧠 [AGENT3] Detection pipeline triggered - LIVE MODE', {
+    logger.info('🧠 [AGENT3] Production pipeline triggered (Frozen Flagships Only)', {
       userId,
       syncId,
       triggerType,
       jobId
     });
 
-    const csvMode = triggerType === 'csv_upload';
-    const w60 = csvMode ? 730 : 60;
-    const w90 = csvMode ? 730 : 90;
-    const w120 = csvMode ? 730 : 120;
-    const w180 = csvMode ? 730 : 180;
-
     try {
-      // Step 1: Fetch inventory ledger from database
-      logger.info('🐋 [AGENT3] Fetching inventory ledger for Whale Hunter...', { userId });
+      // ---------------------------------------------------------
+      // RUN CORE PRODUCTION TRINITY
+      // ---------------------------------------------------------
+      
+      // 1. Whale Hunter (Inventory)
+      logger.info('🐋 [AGENT3] Unleashing the Whale Hunter...');
+      const inventoryRes = await runLostInventoryDetection(userId, syncId);
 
-      const inventoryLedger = await fetchInventoryLedger(userId, {
-        startDate: new Date(Date.now() - w90 * 24 * 60 * 60 * 1000).toISOString() // Last 90 days
-      });
+      // 2. Refund Trap (Returns)
+      logger.info('🪤 [AGENT3] Setting the Refund Trap...');
+      const refundRes = await runRefundWithoutReturnDetection(userId, syncId);
 
-      logger.info('🐋 [AGENT3] Inventory ledger fetched', {
-        userId,
-        eventCount: inventoryLedger.length
-      });
+      // 3. Broken Goods Hunter (Damage)
+      logger.info('💥 [AGENT3] Deploying the Broken Goods Hunter...');
+      const damagedRes = await runDamagedInventoryDetection(userId, syncId);
 
-      // Step 2: Build SyncedData object
-      const syncedData: SyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        inventory_ledger: inventoryLedger
-      };
+      // ---------------------------------------------------------
+      // RUN CORE SYSTEM AUDITORS
+      // ---------------------------------------------------------
 
-      // Step 3: RUN THE WHALE HUNTER 🐋
-      logger.info('🐋 [AGENT3] Unleashing the Whale Hunter...', { userId, syncId });
+      // 4. Fee Phantom (Fees)
+      logger.info('💰 [AGENT3] Running the Fee Auditor...');
+      const feeRes = await runFeeOverchargeDetection(userId, syncId);
 
-      const inventoryResults = detectLostInventory(userId, syncId, syncedData);
+      // 5. Inbound Inspector (Ingress)
+      logger.info('🚀 [AGENT3] Launching the Inbound Inspector...');
+      const inboundRes = await runInboundDetection(userId, syncId);
 
-      logger.info('🐋 [AGENT3] Whale Hunter complete!', {
-        userId,
-        syncId,
-        detectionsFound: inventoryResults.length,
-        estimatedRecovery: inventoryResults.reduce((sum, r) => sum + r.estimated_value, 0)
-      });
+      // 6. Transfer Loss (Warehouse Moves)
+      logger.info('🏭 [AGENT3] Auditing Warehouse Transfers...');
+      const transferRes = await runTransferLossDetection(userId, syncId);
 
-      // Step 4: RUN THE REFUND TRAP 🪤
-      logger.info('🪤 [AGENT3] Setting the Refund Trap...', { userId, syncId });
+      // 7. The Sentinel (Integrity)
+      logger.info('🔍 [AGENT3] Activating the Sentinel...');
+      const sentinelRes = await runSentinelDetection(userId, syncId);
 
-      const lookbackDate = new Date(Date.now() - w120 * 24 * 60 * 60 * 1000).toISOString();
-      const [refundEvents, returnEvents, reimbursementEvents] = await Promise.all([
-        fetchRefundEvents(userId, { startDate: lookbackDate }),
-        fetchReturnEvents(userId, { startDate: lookbackDate }),
-        fetchReimbursementEvents(userId, { startDate: lookbackDate })
-      ]);
-
-      const refundSyncedData: RefundSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        refund_events: refundEvents,
-        return_events: returnEvents,
-        reimbursement_events: reimbursementEvents
-      };
-
-      const refundResults = detectRefundWithoutReturn(userId, syncId, refundSyncedData);
-
-      logger.info('🪤 [AGENT3] Refund Trap complete!', {
-        userId,
-        syncId,
-        detectionsFound: refundResults.length,
-        estimatedRecovery: refundResults.reduce((sum, r) => sum + r.estimated_value, 0)
-      });
-
-      // Step 5: Store inventory and refund results
-      if (inventoryResults.length > 0) {
-        await storeDetectionResults(inventoryResults);
-        logger.info('🐋 [AGENT3] Inventory detection results stored', {
-          count: inventoryResults.length
-        });
-      }
-
-      if (refundResults.length > 0) {
-        await storeRefundDetectionResults(refundResults);
-        logger.info('🪤 [AGENT3] Refund detection results stored', {
-          count: refundResults.length
-        });
-      }
-
-      // Step 6: RUN THE FEE AUDITOR 💰
-      logger.info('💰 [AGENT3] Running the Fee Auditor...', { userId, syncId });
-
-      const [feeEvents, productCatalog] = await Promise.all([
-        fetchFeeEvents(userId, { startDate: lookbackDate }),
-        fetchProductCatalog(userId)
-      ]);
-
-      const feeSyncedData: FeeSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        fee_events: feeEvents,
-        product_catalog: productCatalog
-      };
-
-      const feeResults = detectAllFeeOvercharges(userId, syncId, feeSyncedData);
-
-      logger.info('💰 [AGENT3] Fee Auditor complete!', {
-        userId,
-        syncId,
-        detectionsFound: feeResults.length,
-        estimatedRecovery: feeResults.reduce((sum, r) => sum + r.estimated_value, 0)
-      });
-
-      // Step 7: Store fee results
-      if (feeResults.length > 0) {
-        await storeFeeDetectionResults(feeResults);
-        logger.info('💰 [AGENT3] Fee detection results stored', {
-          count: feeResults.length
-        });
-      }
-
-      // Step 8: RUN THE DISPUTE DEFENDER 🛡️
-      logger.info('🛡️ [AGENT3] Deploying the Dispute Defender...', { userId, syncId });
-
-      const [chargebackEvents, deliveryRecords] = await Promise.all([
-        fetchChargebackEvents(userId, { startDate: lookbackDate }),
-        fetchDeliveryRecords(userId, { startDate: lookbackDate })
-      ]);
-
-      const disputeSyncedData: DisputeSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        chargeback_events: chargebackEvents,
-        delivery_records: deliveryRecords
-      };
-
-      const disputeResults = detectDefensibleChargebacks(userId, syncId, disputeSyncedData);
-
-      logger.info('🛡️ [AGENT3] Dispute Defender complete!', {
-        userId,
-        syncId,
-        detectionsFound: disputeResults.length,
-        estimatedRecovery: disputeResults.reduce((sum, r) => sum + r.estimated_value, 0)
-      });
-
-      // Step 9: Store dispute results
-      if (disputeResults.length > 0) {
-        await storeDisputeDetectionResults(disputeResults);
-        logger.info('🛡️ [AGENT3] Dispute detection results stored', {
-          count: disputeResults.length
-        });
-      }
-
-      // Step 10: RUN THE AD AUDITOR 📢
-      logger.info('📢 [AGENT3] Launching the Ad Auditor...', { userId, syncId });
-
-      const [couponEvents, dealEvents, subscribeSaveEvents] = await Promise.all([
-        fetchCouponEvents(userId, { startDate: lookbackDate }),
-        fetchDealEvents(userId, { startDate: lookbackDate }),
-        fetchSubscribeSaveEvents(userId, { startDate: lookbackDate })
-      ]);
-
-      const advertisingSyncedData: AdvertisingSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        coupon_events: couponEvents,
-        deal_events: dealEvents,
-        subscribe_save_events: subscribeSaveEvents
-      };
-
-      const advertisingResults = detectAllAdvertisingErrors(userId, syncId, advertisingSyncedData);
-
-      logger.info('📢 [AGENT3] Ad Auditor complete!', {
-        userId,
-        syncId,
-        detectionsFound: advertisingResults.length,
-        estimatedRecovery: advertisingResults.reduce((sum, r) => sum + r.estimated_value, 0)
-      });
-
-      // Step 11: Store advertising results
-      if (advertisingResults.length > 0) {
-        await storeAdvertisingDetectionResults(advertisingResults);
-        logger.info('📢 [AGENT3] Advertising detection results stored', {
-          count: advertisingResults.length
-        });
-      }
-
-      // Step 12: RUN THE BROKEN GOODS HUNTER 💥 (P0 Trinity Final)
-      logger.info('💥 [AGENT3] Deploying the Broken Goods Hunter...', { userId, syncId });
-
-      const [damagedEvents, reimbursementsForDamage] = await Promise.all([
-        fetchDamagedEvents(userId, { startDate: lookbackDate }),
-        fetchReimbursementsForDamage(userId, { startDate: lookbackDate })
-      ]);
-
-      const damagedSyncedData: DamagedSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        inventory_ledger: damagedEvents,
-        reimbursement_events: reimbursementsForDamage
-      };
-
-      const damagedResults = detectDamagedInventory(userId, syncId, damagedSyncedData);
-
-      logger.info('💥 [AGENT3] Broken Goods Hunter complete!', {
-        userId,
-        syncId,
-        detectionsFound: damagedResults.length,
-        estimatedRecovery: damagedResults.reduce((sum, r) => sum + r.estimated_value, 0)
-      });
-
-      // Step 13: Store damaged results
-      if (damagedResults.length > 0) {
-        await storeDamagedDetectionResults(damagedResults);
-        logger.info('💥 [AGENT3] Damaged detection results stored', {
-          count: damagedResults.length
-        });
-      }
-
-      // Step 14: Calculate combined summary from ALL 6 algorithms
+      // ---------------------------------------------------------
+      // AGGREGATE RESULTS
+      // ---------------------------------------------------------
       const allResults = [
-        ...inventoryResults,     // 🐋 Whale Hunter
-        ...refundResults,        // 🪤 Refund Trap
-        ...damagedResults,       // 💥 Broken Goods Hunter
-        ...feeResults,           // 💰 Fee Auditor
-        ...disputeResults,       // 🛡️ Dispute Defender
-        ...advertisingResults    // 📢 Ad Auditor
+        ...inventoryRes, ...refundRes, ...damagedRes,
+        ...feeRes, ...inboundRes, ...transferRes, ...sentinelRes
       ];
 
-      // Run Cluster Algorithms in parallel
-      logger.info('🚀 [AGENT3] Running Cluster Algorithms...', { userId, syncId });
-      const [inboundResults, removalResults, fraudResults] = await Promise.all([
-        runInboundDetection(userId, syncId),
-        runRemovalDetection(userId, syncId),
-        runFraudDetection(userId, syncId)
-      ]);
-
-      // Store cluster results
-      await Promise.all([
-        storeInboundDetectionResults(inboundResults),
-        storeRemovalResults(removalResults),
-        storeFraudResults(fraudResults)
-      ]);
-
-      // Combine ALL results from 9 algorithms
-      const clusterResults = [...inboundResults, ...removalResults, ...fraudResults];
-
-      // Step 15: RUN REIMBURSEMENT UNDERPAYMENT DETECTOR 💰📉 (2025 Policy Aware)
-      logger.info('💰📉 [AGENT3] Running Reimbursement Underpayment Detector...', { userId, syncId });
-
-      // Build underpayment synced data from existing reimbursement events
-      const underpaymentSyncedData: UnderpaymentSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        reimbursement_events: reimbursementEvents.map(r => ({
-          id: r.id || `reimb-${Date.now()}`,
-          seller_id: userId,
-          order_id: r.order_id,
-          sku: r.sku,
-          asin: r.asin,
-          fnsku: r.fnsku,
-          quantity: (r as any).quantity || 1,
-          reimbursement_amount: r.reimbursement_amount || 0,
-          currency: r.currency || 'USD',
-          reimbursement_date: r.reimbursement_date || new Date().toISOString(),
-          reimbursement_type: r.reimbursement_type || 'UNKNOWN',
-          reason: (r as any).reason
-        }))
-      };
-
-      const underpaymentResults = await detectReimbursementUnderpayments(
-        userId,
-        syncId,
-        underpaymentSyncedData
-      );
-
-      logger.info('💰📉 [AGENT3] Reimbursement Underpayment Detector complete!', {
-        userId,
-        syncId,
-        detectionsFound: underpaymentResults.length,
-        totalShortfall: underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0),
-        highSeverity: underpaymentResults.filter(r => r.severity === 'high' || r.severity === 'critical').length
-      });
-
-      // Store underpayment results
-      if (underpaymentResults.length > 0) {
-        await storeUnderpaymentResults(underpaymentResults);
-        logger.info('💰📉 [AGENT3] Underpayment detection results stored', {
-          count: underpaymentResults.length
-        });
-      }
-
-      // Check for missing documentation (non-blocking alert)
-      detectMissingDocumentation(userId).then(docStatus => {
-        if (docStatus.alertMessage) {
-          logger.info('📋 [AGENT3] Missing documentation alert', {
-            userId,
-            alert: docStatus.alertMessage,
-            skusWithoutCogs: docStatus.skusWithoutCogs,
-            potentialAtRisk: docStatus.potentialRecoveryAtRisk
-          });
-        }
-      }).catch(() => { });
-
-      // Step 16: RUN REIMBURSEMENT DELAY DETECTOR ⏰ (Cashflow Theft Detection)
-      logger.info('⏰ [AGENT3] Running Reimbursement Delay Detector...', { userId, syncId });
-
-      const pendingReimbursements = await fetchPendingReimbursements(userId);
-      const delaySyncedData: DelaySyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        pending_reimbursements: pendingReimbursements
-      };
-
-      const delayResults = await detectReimbursementDelays(
-        userId,
-        syncId,
-        delaySyncedData
-      );
-
-      logger.info('⏰ [AGENT3] Reimbursement Delay Detector complete!', {
-        userId,
-        syncId,
-        overdueFound: delayResults.length,
-        totalDelayCost: delayResults.reduce((sum, r) => sum + r.total_delay_cost, 0).toFixed(2),
-        criticalCount: delayResults.filter(r => r.severity === 'critical').length
-      });
-
-      // Store delay results
-      if (delayResults.length > 0) {
-        await storeDelayResults(delayResults);
-        logger.info('⏰ [AGENT3] Delay detection results stored', {
-          count: delayResults.length
-        });
-      }
-
-      // Step 17: RUN DUPLICATE/MISSED REIMBURSEMENT SENTINEL 🔍 (Recovery Lifecycle)
-      logger.info('🔍 [AGENT3] Running Duplicate/Missed Reimbursement Sentinel...', { userId, syncId });
-
-      const [lossEvents, sentinelReimbEvents] = await Promise.all([
-        fetchLossEvents(userId, { lookbackDays: w180 }),
-        fetchReimbursementEventsForSentinel(userId, { lookbackDays: w180 })
-      ]);
-
-      const sentinelSyncedData: SentinelSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        loss_events: lossEvents,
-        reimbursement_events: sentinelReimbEvents
-      };
-
-      const sentinelResults = await detectDuplicateMissedReimbursements(
-        userId,
-        syncId,
-        sentinelSyncedData
-      );
-
-      logger.info('🔍 [AGENT3] Sentinel detection complete!', {
-        userId,
-        syncId,
-        missedReimbursements: sentinelResults.filter(r => r.detection_type === 'missed_reimbursement').length,
-        duplicates: sentinelResults.filter(r => r.detection_type === 'duplicate_reimbursement').length,
-        clawbackRisks: sentinelResults.filter(r => r.detection_type === 'clawback_risk').length,
-        totalRecoveryOpportunity: sentinelResults.reduce((sum, r) => sum + r.estimated_recovery, 0).toFixed(2),
-        clawbackRiskValue: sentinelResults.reduce((sum, r) => sum + r.clawback_risk_value, 0).toFixed(2)
-      });
-
-      // Store sentinel results
-      if (sentinelResults.length > 0) {
-        await storeSentinelResults(sentinelResults);
-        logger.info('🔍 [AGENT3] Sentinel detection results stored', {
-          count: sentinelResults.length
-        });
-      }
-
-      // Step 18: RUN FALSE CLOSED CASE DETECTOR ⚖️ (Amazon Decision Analysis)
-      logger.info('⚖️ [AGENT3] Running False Closed Case Detector...', { userId, syncId });
-
-      const closedCases = await fetchClosedCases(userId, { lookbackDays: w180 });
-      const closedCaseSyncedData: ClosedCaseSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        closed_cases: closedCases
-      };
-
-      const falseClosureResults = await detectFalseClosedCases(
-        userId,
-        syncId,
-        closedCaseSyncedData
-      );
-
-      logger.info('⚖️ [AGENT3] False Closed Case Detector complete!', {
-        userId,
-        syncId,
-        analyzedCases: closedCases.length,
-        falseClosuresDetected: falseClosureResults.length,
-        stronglyRecommendedRefiling: falseClosureResults.filter(r => r.dispute_worthiness === 'strongly_recommended').length,
-        totalRecoveryPotential: falseClosureResults.reduce((sum, r) => sum + r.shortfall, 0).toFixed(2)
-      });
-
-      // Store false closure results
-      if (falseClosureResults.length > 0) {
-        await storeClosedCaseResults(falseClosureResults);
-        logger.info('⚖️ [AGENT3] False closure detection results stored', {
-          count: falseClosureResults.length
-        });
-      }
-
-      // Step 19: RUN SLA BREACH COMPENSATION DETECTOR ⏱️ (Policy-Backed Money)
-      logger.info('⏱️ [AGENT3] Running SLA Breach Compensation Detector...', { userId, syncId });
-
-      const caseTimelines = await fetchCaseTimelines(userId, { lookbackDays: w180 });
-      const slaSyncedData: SLABreachSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        case_timelines: caseTimelines
-      };
-
-      const slaBreachResults = await detectSLABreaches(
-        userId,
-        syncId,
-        slaSyncedData
-      );
-
-      logger.info('⏱️ [AGENT3] SLA Breach Detector complete!', {
-        userId,
-        syncId,
-        casesAnalyzed: caseTimelines.length,
-        breachesFound: slaBreachResults.length,
-        criticalBreaches: slaBreachResults.filter(r => r.severity === 'critical').length,
-        totalCompensationOwed: slaBreachResults.reduce((sum, r) => sum + r.expected_compensation, 0).toFixed(2)
-      });
-
-      // Store SLA breach results
-      if (slaBreachResults.length > 0) {
-        await storeSLABreachResults(slaBreachResults);
-        logger.info('⏱️ [AGENT3] SLA breach detection results stored', {
-          count: slaBreachResults.length
-        });
-      }
-
-      // Step 20: RUN RETURN ABUSE DETECTOR 🔄 (Non-Return Reimbursement)
-      logger.info('🔄 [AGENT3] Running Return Abuse Detector...', { userId, syncId });
-
-      const [refundEventsForAbuse, returnEventsForAbuse] = await Promise.all([
-        fetchRefundEventsForAbuse(userId, { lookbackDays: w90 }),
-        fetchReturnEventsForAbuse(userId, { lookbackDays: w90 })
-      ]);
-
-      const returnAbuseSyncedData: ReturnAbuseSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        refund_events: refundEventsForAbuse,
-        return_events: returnEventsForAbuse
-      };
-
-      const returnAbuseResults = await detectReturnAbuse(
-        userId,
-        syncId,
-        returnAbuseSyncedData
-      );
-
-      logger.info('🔄 [AGENT3] Return Abuse Detector complete!', {
-        userId,
-        syncId,
-        refundsAnalyzed: refundEventsForAbuse.length,
-        abuseDetected: returnAbuseResults.length,
-        noReturnCases: returnAbuseResults.filter(r => r.abuse_type === 'refund_no_return').length,
-        wrongItemCases: returnAbuseResults.filter(r => r.abuse_type === 'wrong_item_returned').length,
-        totalRecovery: returnAbuseResults.reduce((sum, r) => sum + r.expected_recovery, 0).toFixed(2)
-      });
-
-      // Store return abuse results
-      if (returnAbuseResults.length > 0) {
-        await storeReturnAbuseResults(returnAbuseResults);
-        logger.info('🔄 [AGENT3] Return abuse detection results stored', {
-          count: returnAbuseResults.length
-        });
-      }
-
-      // Step 21: RUN INVENTORY SHRINKAGE DRIFT DETECTOR 📊 (Time-Series Intelligence)
-      logger.info('📊 [AGENT3] Running Inventory Shrinkage Drift Detector...', { userId, syncId });
-
-      const [inventorySnapshots, inventoryEvents] = await Promise.all([
-        fetchInventorySnapshots(userId, { lookbackDays: w90 }),
-        fetchInventoryEvents(userId, { lookbackDays: w90 })
-      ]);
-
-      const shrinkageSyncedData: ShrinkageSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        snapshots: inventorySnapshots,
-        events: inventoryEvents
-      };
-
-      const shrinkageDriftResults = await detectInventoryShrinkageDrift(
-        userId,
-        syncId,
-        shrinkageSyncedData
-      );
-
-      logger.info('📊 [AGENT3] Shrinkage Drift Detector complete!', {
-        userId,
-        syncId,
-        snapshotsAnalyzed: inventorySnapshots.length,
-        driftDetected: shrinkageDriftResults.length,
-        systematicLeakage: shrinkageDriftResults.filter(r => r.is_systematic).length,
-        acceleratingLoss: shrinkageDriftResults.filter(r => r.is_accelerating).length,
-        projectedAnnualLoss: shrinkageDriftResults.reduce((sum, r) => sum + r.projected_annual_loss, 0).toFixed(2)
-      });
-
-      // Store shrinkage drift results
-      if (shrinkageDriftResults.length > 0) {
-        await storeShrinkageDriftResults(shrinkageDriftResults);
-        logger.info('📊 [AGENT3] Shrinkage drift detection results stored', {
-          count: shrinkageDriftResults.length
-        });
-      }
-
-      // Step 22: RUN FEE MISCLASSIFICATION DETECTOR 💲 (Recurring Leakage)
-      logger.info('💲 [AGENT3] Running Fee Misclassification Detector...', { userId, syncId });
-
-      const [productDimensions, feeTransactions] = await Promise.all([
-        fetchProductDimensions(userId),
-        fetchFeeTransactions(userId, { lookbackDays: w90 })
-      ]);
-
-      const feeMisclassSyncedData: FeeMisclassSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        dimensions: productDimensions,
-        fee_transactions: feeTransactions
-      };
-
-      const feeMisclassResults = await detectFeeMisclassification(
-        userId,
-        syncId,
-        feeMisclassSyncedData
-      );
-
-      logger.info('💲 [AGENT3] Fee Misclassification Detector complete!', {
-        userId,
-        syncId,
-        skusAnalyzed: productDimensions.length,
-        misclassificationsFound: feeMisclassResults.length,
-        totalOvercharge: feeMisclassResults.reduce((sum, r) => sum + r.total_overcharge, 0).toFixed(2),
-        projectedAnnualSavings: feeMisclassResults.reduce((sum, r) => sum + r.projected_annual_savings, 0).toFixed(2)
-      });
-
-      // Store fee misclassification results
-      if (feeMisclassResults.length > 0) {
-        await storeFeeMisclassResults(feeMisclassResults);
-        logger.info('💲 [AGENT3] Fee misclassification detection results stored', {
-          count: feeMisclassResults.length
-        });
-      }
-
-      // Step 23: RUN REFUND PRICE SHORTFALL DETECTOR 💵 (Fair Refund Pricing)
-      logger.info('💵 [AGENT3] Running Refund Price Shortfall Detector...', { userId, syncId });
-
-      const refundEventsForPricing = await fetchRefundEventsForPricing(userId, { lookbackDays: w90 });
-      const skusToPrice = [...new Set(refundEventsForPricing.map(e => e.sku))];
-      const priceHistoryMap = await fetchPriceHistoryForRefunds(userId, skusToPrice);
-
-      const refundPriceSyncedData: RefundPriceSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        refund_events: refundEventsForPricing,
-        price_history: priceHistoryMap
-      };
-
-      const refundPriceResults = await detectRefundPriceShortfall(
-        userId,
-        syncId,
-        refundPriceSyncedData
-      );
-
-      logger.info('💵 [AGENT3] Refund Price Shortfall Detector complete!', {
-        userId,
-        syncId,
-        refundsAnalyzed: refundEventsForPricing.length,
-        shortfallsFound: refundPriceResults.length,
-        systematicCases: refundPriceResults.filter(r => r.is_systematic).length,
-        totalShortfall: refundPriceResults.reduce((sum, r) => sum + r.total_shortfall, 0).toFixed(2)
-      });
-
-      // Store refund price shortfall results
-      if (refundPriceResults.length > 0) {
-        await storeRefundPriceShortfallResults(refundPriceResults);
-        logger.info('💵 [AGENT3] Refund price shortfall detection results stored', {
-          count: refundPriceResults.length
-        });
-      }
-
-      // Step 24: RUN PHANTOM REFUND DETECTOR 👻 (Quiet Leak Stopper)
-      logger.info('👻 [AGENT3] Running Phantom Refund Detector...', { userId, syncId });
-
-      const [refundEventsWithReturns, inventoryAdjustmentsForPhantom] = await Promise.all([
-        fetchRefundEventsWithReturns(userId, { lookbackDays: w90 }),
-        fetchInventoryAdjustmentsForPhantom(userId, { lookbackDays: w90 })
-      ]);
-
-      const phantomRefundSyncedData: PhantomRefundSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        refund_events: refundEventsWithReturns,
-        inventory_adjustments: inventoryAdjustmentsForPhantom
-      };
-
-      const phantomRefundResults = await detectPhantomRefunds(
-        userId,
-        syncId,
-        phantomRefundSyncedData
-      );
-
-      logger.info('👻 [AGENT3] Phantom Refund Detector complete!', {
-        userId,
-        syncId,
-        refundsAnalyzed: refundEventsWithReturns.length,
-        phantomsFound: phantomRefundResults.length,
-        totalPhantomQty: phantomRefundResults.reduce((sum, r) => sum + r.phantom_quantity, 0),
-        totalPhantomLoss: phantomRefundResults.reduce((sum, r) => sum + r.phantom_loss_value, 0).toFixed(2)
-      });
-
-      // Store phantom refund results
-      if (phantomRefundResults.length > 0) {
-        await storePhantomRefundResults(phantomRefundResults);
-        logger.info('👻 [AGENT3] Phantom refund detection results stored', {
-          count: phantomRefundResults.length
-        });
-      }
-
-      // Step 25: RUN DELAYED REVENUE IMPACT CALCULATOR 📉 (Enterprise Justification)
-      logger.info('📉 [AGENT3] Running Delayed Revenue Impact Calculator...', { userId, syncId });
-
-      const delayEvents = await fetchDelayEvents(userId, { lookbackDays: w90 });
-      const delaySkus = [...new Set(delayEvents.map(e => e.sku))];
-      const salesVelocityMap = await fetchSalesVelocity(userId, delaySkus);
-
-      const delayRevenueData: DelayRevenueImpactSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        delay_events: delayEvents,
-        sales_velocity: salesVelocityMap
-      };
-
-      const delayRevenueResults = await calculateDelayedRevenueImpact(
-        userId,
-        syncId,
-        delayRevenueData
-      );
-
-      logger.info('📉 [AGENT3] Delayed Revenue Impact Calculator complete!', {
-        userId,
-        syncId,
-        delaysAnalyzed: delayEvents.length,
-        impactsFound: delayRevenueResults.length,
-        ongoingDelays: delayRevenueResults.filter(r => r.is_ongoing).length,
-        totalLostRevenue: delayRevenueResults.reduce((sum, r) => sum + r.lost_revenue, 0).toFixed(2),
-        totalFinancialHarm: delayRevenueResults.reduce((sum, r) => sum + r.total_financial_harm, 0).toFixed(2)
-      });
-
-      // Store delayed revenue results
-      if (delayRevenueResults.length > 0) {
-        await storeDelayedRevenueResults(delayRevenueResults);
-        logger.info('📉 [AGENT3] Delayed revenue impact results stored', {
-          count: delayRevenueResults.length
-        });
-      }
-
-      // Step 26: RUN FEE DRIFT TREND DETECTOR 📈 (Slow Overcharge Prevention)
-      logger.info('📈 [AGENT3] Running Fee Drift Trend Detector...', { userId, syncId });
-
-      const feeHistoryForDrift = await fetchFeeHistoryForDrift(userId, { lookbackDays: w180 });
-
-      const feeDriftSyncedData: FeeDriftSyncedData = {
-        seller_id: userId,
-        sync_id: syncId,
-        fee_history: feeHistoryForDrift
-      };
-
-      const feeDriftResults = await detectFeeDriftTrend(
-        userId,
-        syncId,
-        feeDriftSyncedData
-      );
-
-      logger.info('📈 [AGENT3] Fee Drift Trend Detector complete!', {
-        userId,
-        syncId,
-        feePointsAnalyzed: feeHistoryForDrift.length,
-        driftsFound: feeDriftResults.length,
-        criticalDrifts: feeDriftResults.filter(r => r.severity === 'critical').length,
-        totalAnnualImpact: feeDriftResults.reduce((sum, r) => sum + r.projected_annual_impact, 0).toFixed(2)
-      });
-
-      // Store fee drift results
-      if (feeDriftResults.length > 0) {
-        await storeFeeDriftResults(feeDriftResults);
-        logger.info('📈 [AGENT3] Fee drift trend results stored', {
-          count: feeDriftResults.length
-        });
-      }
-
-      // Step 27: RUN ORDER LEVEL DISCREPANCY DETECTOR 📋 (Transaction Integrity)
-      logger.info('📋 [AGENT3] Running Order Level Discrepancy Detector...', { userId, syncId });
-
-      const ordersForDiscrepancy = await fetchOrdersForDiscrepancy(userId, { lookbackDays: w90 });
-      const orderDiscrepancyResults = await detectOrderLevelDiscrepancies(userId, syncId, ordersForDiscrepancy);
-
-      if (orderDiscrepancyResults.length > 0) {
-        await storeOrderDiscrepancyResults(orderDiscrepancyResults);
-        logger.info('📋 [AGENT3] Order discrepancy results stored', { count: orderDiscrepancyResults.length });
-      }
-
-      // Step 28: RUN WAREHOUSE TRANSFER LOSS DETECTOR 🏭 (FC Transfer Integrity)
-      logger.info('🏭 [AGENT3] Running Warehouse Transfer Loss Detector...', { userId, syncId });
-
-      const transferRecords = await fetchTransferRecords(userId, { lookbackDays: w90 });
-      const transferLossResults = await detectWarehouseTransferLoss(userId, syncId, transferRecords);
-
-      if (transferLossResults.length > 0) {
-        await storeTransferLossResults(transferLossResults);
-        logger.info('🏭 [AGENT3] Transfer loss results stored', { count: transferLossResults.length });
-      }
-
-      // Step 29: RUN ACCOUNT HEALTH IMPACT DETECTOR ⚠️ (Risk Intelligence)
-      logger.info('⚠️ [AGENT3] Running Account Health Impact Detector...', { userId, syncId });
-
-      const healthIssues = await fetchAccountHealthIssues(userId, { lookbackDays: w90 });
-      const inventoryValuesMap = await fetchInventoryValues(userId);
-      const healthImpactResults = await detectAccountHealthImpact(userId, syncId, healthIssues, inventoryValuesMap);
-
-      if (healthImpactResults.length > 0) {
-        await storeAccountHealthImpactResults(healthImpactResults);
-        logger.info('⚠️ [AGENT3] Account health impact results stored', { count: healthImpactResults.length });
-      }
-
-      logger.info('🎯 [AGENT3] ALL 24 ALGORITHMS COMPLETE!', {
-        userId, syncId,
-        feeDriftResults: feeDriftResults.length,
-        orderDiscrepancies: orderDiscrepancyResults.length,
-        transferLosses: transferLossResults.length,
-        healthImpacts: healthImpactResults.length
-      });
-
-      // Step 30: RUN SILENT SUPPRESSION DETECTOR 🔇 (Visibility Intelligence)
-      logger.info('🔇 [AGENT3] Running Silent Suppression Detector...', { userId, syncId });
-
-      const listingPerformance = await fetchListingPerformance(userId, { lookbackDays: w60 });
-      const suppressionResults = await detectSilentSuppression(userId, syncId, listingPerformance);
-
-      if (suppressionResults.length > 0) {
-        await storeSuppressionResults(suppressionResults);
-        logger.info('🔇 [AGENT3] Suppression detection results stored', { count: suppressionResults.length });
-      }
-
-      logger.info('🏆 [AGENT3] ALL 25 ALGORITHMS COMPLETE!', {
-        userId, syncId,
-        suppressionsFound: suppressionResults.length,
-        weeklyLoss: suppressionResults.reduce((sum, r) => sum + r.estimated_weekly_loss, 0).toFixed(2)
-      });
-
-      // Step 31: RUN POLICY/CLAIM WORKFLOW GAPS DETECTOR 📋 (Claims Process Intelligence)
-      logger.info('📋 [AGENT3] Running Policy/Claim Workflow Gaps Detector...', { userId, syncId });
-
-      const claimRecords = await fetchClaimRecords(userId, { lookbackDays: w180 });
-      const claimGapResults = await detectClaimWorkflowGaps(userId, syncId, claimRecords);
-
-      if (claimGapResults.length > 0) {
-        await storeClaimGapResults(claimGapResults);
-        logger.info('📋 [AGENT3] Claim workflow gap results stored', { count: claimGapResults.length });
-      }
-
-      logger.info('🏆 [AGENT3] ALL 26 ALGORITHMS COMPLETE!', {
-        userId, syncId,
-        claimGapsFound: claimGapResults.length,
-        urgentGaps: claimGapResults.filter(r => r.action_priority === 'urgent').length,
-        totalRecoveryOpportunity: claimGapResults.reduce((sum, r) => sum + r.expected_recovery, 0).toFixed(2)
-      });
-
-      // Step 32: RUN ADVANCED PATTERN ANALYSIS
-      // Consolidated into patternAnalyzer and pattern matching engine.
-
-      // Combine ALL results from 9 primary algorithms
-      const finalResults = [...allResults, ...clusterResults];
-
-      const totalRecovery = finalResults.reduce((sum, r) => sum + r.estimated_value, 0);
-
-      // PHASE 3: Apply ML Calibration to confidence scores
-      logger.info('🧠 [AGENT3] Applying ML confidence calibration...', { userId, syncId });
-
-      let calibratedCount = 0;
-      for (const result of finalResults) {
+      // ML Confidence Calibration (Simplified for Core)
+      for (const result of allResults) {
         try {
           const calibration = await calculateCalibratedConfidence(
             result.anomaly_type,
             result.confidence_score
           );
-          // Update confidence with calibrated value
-          (result as any).raw_confidence = result.confidence_score;
           (result as any).confidence_score = calibration.calibrated_confidence;
-          (result as any).calibration_data = {
-            factor: calibration.calibration_factor,
-            historical_approval_rate: calibration.historical_approval_rate,
-            sample_size: calibration.sample_size
-          };
-          calibratedCount++;
         } catch (err) {
-          // Keep original confidence if calibration fails
+          // Keep original
         }
       }
 
-      // Generate seller insights (async, non-blocking)
-      generateInsights(userId).then(insights => {
-        if (insights.length > 0) {
-          logger.info('📊 [AGENT3] Pattern insights generated', {
-            userId,
-            insightCount: insights.length,
-            urgent: insights.filter(i => i.priority === 'urgent').length
-          });
-        }
-      }).catch(() => { });
+      const detectionsFound = allResults.length;
+      const estimatedRecovery = allResults.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
 
-      logger.info('[AGENT3] FULL 26-ALGORITHM PIPELINE COMPLETE!', {
+      // Record Financial Impact
+      if (detectionsFound > 0) {
+        await financialImpactService.recordImpact({
+          userId,
+          detectionId: jobId,
+          status: ImpactStatus.DETECTED,
+          estimatedAmount: estimatedRecovery,
+          currency: 'USD',
+          confidence: 0.9,
+          anomalyType: 'multi_flagship_detection',
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Generate Seller Insights (Async)
+      generateInsights(userId).catch(() => {});
+
+      logger.info('🏁 [AGENT3] Production pipeline complete!', {
         userId,
         syncId,
-        totalClaims: finalResults.length,
-        calibratedClaims: calibratedCount,
-        p0Trinity: inventoryResults.length + damagedResults.length + refundResults.length,
-        fees: feeResults.length,
-        disputes: disputeResults.length,
-        advertising: advertisingResults.length,
-        inbound: inboundResults.length,
-        removals: removalResults.length,
-        fraud: fraudResults.length,
-        underpayments: underpaymentResults.length,
-        underpaymentShortfall: underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0),
-        delays: delayResults.length,
-        totalDelayCost: delayResults.reduce((sum, r) => sum + r.total_delay_cost, 0),
-        sentinel: sentinelResults.length,
-        sentinelRecovery: sentinelResults.reduce((sum, r) => sum + r.estimated_recovery, 0),
-        sentinelClawbackRisk: sentinelResults.reduce((sum, r) => sum + r.clawback_risk_value, 0),
-        falseClosures: falseClosureResults.length,
-        falseClosureRecovery: falseClosureResults.reduce((sum, r) => sum + r.shortfall, 0),
-        slaBreaches: slaBreachResults.length,
-        slaCompensationOwed: slaBreachResults.reduce((sum, r) => sum + r.expected_compensation, 0),
-        returnAbuse: returnAbuseResults.length,
-        returnAbuseRecovery: returnAbuseResults.reduce((sum, r) => sum + r.expected_recovery, 0),
-        shrinkageDrift: shrinkageDriftResults.length,
-        projectedAnnualLoss: shrinkageDriftResults.reduce((sum, r) => sum + r.projected_annual_loss, 0),
-        feeMisclass: feeMisclassResults.length,
-        feeMisclassOvercharge: feeMisclassResults.reduce((sum, r) => sum + r.total_overcharge, 0),
-        refundPrice: refundPriceResults.length,
-        refundPriceShortfall: refundPriceResults.reduce((sum, r) => sum + r.total_shortfall, 0),
-        phantomRefunds: phantomRefundResults.length,
-        phantomLoss: phantomRefundResults.reduce((sum, r) => sum + r.phantom_loss_value, 0),
-        delayedRevenue: delayRevenueResults.length,
-        delayedRevenueHarm: delayRevenueResults.reduce((sum, r) => sum + r.total_financial_harm, 0),
-        feeDrifts: feeDriftResults.length,
-        feeDriftAnnual: feeDriftResults.reduce((sum, r) => sum + r.projected_annual_impact, 0),
-        orderDiscrepancies: orderDiscrepancyResults.length,
-        transferLosses: transferLossResults.length,
-        healthImpacts: healthImpactResults.length,
-        suppressions: suppressionResults.length,
-        suppressionWeeklyLoss: suppressionResults.reduce((sum, r) => sum + r.estimated_weekly_loss, 0),
-        claimGaps: claimGapResults.length,
-        claimGapRecovery: claimGapResults.reduce((sum, r) => sum + r.expected_recovery, 0),
-        totalRecovery
+        detectionsFound,
+        estimatedRecovery
       });
-
-      const totalAlgoResults = finalResults.length + underpaymentResults.length + delayResults.length + sentinelResults.length + falseClosureResults.length + slaBreachResults.length + returnAbuseResults.length + shrinkageDriftResults.length + feeMisclassResults.length + refundPriceResults.length + phantomRefundResults.length + delayRevenueResults.length + feeDriftResults.length + orderDiscrepancyResults.length + transferLossResults.length + healthImpactResults.length + suppressionResults.length + claimGapResults.length;
-      const totalRecoveryValue = totalRecovery +
-        underpaymentResults.reduce((sum, r) => sum + r.shortfall_amount, 0) +
-        delayResults.reduce((sum, r) => sum + r.reimbursement_amount, 0) +
-        sentinelResults.reduce((sum, r) => sum + r.estimated_recovery, 0) +
-        falseClosureResults.reduce((sum, r) => sum + r.shortfall, 0) +
-        slaBreachResults.reduce((sum, r) => sum + r.expected_compensation, 0) +
-        returnAbuseResults.reduce((sum, r) => sum + r.expected_recovery, 0) +
-        shrinkageDriftResults.reduce((sum, r) => sum + r.total_loss_value, 0) +
-        feeMisclassResults.reduce((sum, r) => sum + r.total_overcharge, 0) +
-        refundPriceResults.reduce((sum, r) => sum + r.total_shortfall, 0) +
-        phantomRefundResults.reduce((sum, r) => sum + r.phantom_loss_value, 0) +
-        delayRevenueResults.reduce((sum, r) => sum + r.total_financial_harm, 0) +
-        feeDriftResults.reduce((sum, r) => sum + r.projected_annual_impact, 0) +
-        orderDiscrepancyResults.reduce((sum, r) => sum + r.discrepancy_amount, 0) +
-        transferLossResults.reduce((sum, r) => sum + r.loss_value, 0) +
-        healthImpactResults.reduce((sum, r) => sum + r.total_financial_impact, 0) +
-        suppressionResults.reduce((sum, r) => sum + r.estimated_weekly_loss * 4, 0) +
-        claimGapResults.reduce((sum, r) => sum + r.expected_recovery, 0);
-
-      // PLATFORM INTELLIGENCE: Record financial impact for all detections
-      if (totalAlgoResults > 0) {
-        try {
-          // Emit aggregate impact event
-          await financialImpactService.recordImpact({
-            userId,
-            detectionId: jobId,
-            status: ImpactStatus.DETECTED,
-            estimatedAmount: totalRecoveryValue,
-            currency: 'USD',
-            confidence: 0.85, // Average confidence
-            anomalyType: 'multi_algorithm_detection',
-            timestamp: new Date().toISOString()
-          });
-
-          // Also emit user metrics update via SSE
-          await financialImpactService.emitMetricsUpdate(userId);
-
-          logger.info('💰 [AGENT3] Financial impact recorded', {
-            userId,
-            jobId,
-            totalDetections: totalAlgoResults,
-            totalRecovery: totalRecoveryValue
-          });
-        } catch (impactError: any) {
-          logger.warn('[AGENT3] Financial impact recording failed (non-blocking)', {
-            error: impactError.message
-          });
-        }
-      }
 
       return {
         success: true,
         jobId,
-        message: totalAlgoResults > 0
-          ? `Agent 3 ran 26 algorithms + ML calibration - Found ${totalAlgoResults} claims. Total recovery: $${totalRecoveryValue.toFixed(2)}!`
-          : 'Detection complete. No discrepancies found.',
-        detectionsFound: totalAlgoResults,
-        estimatedRecovery: totalRecoveryValue
+        message: `Detection pipeline completed successfully with 7 frozen flagship detectors. Found ${detectionsFound} claims.`,
+        detectionsFound,
+        estimatedRecovery
       };
-
     } catch (error: any) {
       logger.error('❌ [AGENT3] Detection pipeline failed', {
-        userId,
-        syncId,
         error: error.message,
-        stack: error.stack
+        userId,
+        syncId
       });
-
       return {
         success: false,
         jobId,
-        message: `Detection failed: ${error.message}`,
-        detectionsFound: 0,
-        estimatedRecovery: 0
+        message: `Pipeline failed: ${error.message}`
       };
     }
   }
@@ -1218,18 +231,11 @@ export class EnhancedDetectionService {
         return { results: [], total: 0, filters };
       }
 
-      logger.info('📊 [AGENT3] Detection results fetched', {
-        userId,
-        count: data?.length || 0,
-        total: count || 0
-      });
-
       return {
         results: data || [],
         total: count || 0,
         filters
       };
-
     } catch (error: any) {
       logger.error('❌ [AGENT3] Exception fetching detection results', {
         userId,
@@ -1251,16 +257,10 @@ export class EnhancedDetectionService {
     logger.info('📋 [AGENT3] Getting detection job status', { jobId });
 
     try {
-      // Check if we have any recent detection results
       const { data, error } = await supabaseAdmin
         .from('detection_results')
-        .select('*')
-        .order('created_at', { ascending: false })
+        .select('estimated_value')
         .limit(100);
-
-      if (error) {
-        logger.error('❌ [AGENT3] Error fetching job status', { jobId, error: error.message });
-      }
 
       const claimsFound = data?.length || 0;
       const estimatedRecovery = data?.reduce((sum: number, r: any) => sum + (r.estimated_value || 0), 0) || 0;
@@ -1269,14 +269,9 @@ export class EnhancedDetectionService {
         id: jobId,
         status: 'completed',
         progress: 100,
-        results: {
-          claimsFound,
-          estimatedRecovery
-        }
+        results: { claimsFound, estimatedRecovery }
       };
-
     } catch (error: any) {
-      logger.error('❌ [AGENT3] Exception getting job status', { jobId, error: error.message });
       return {
         id: jobId,
         status: 'failed',
@@ -1290,15 +285,11 @@ export class EnhancedDetectionService {
    * RETRY DETECTION JOB
    */
   async retryDetectionJob(jobId: string): Promise<{ success: boolean; newJobId: string; message: string }> {
-    logger.info('🔄 [AGENT3] Retrying detection job', { jobId });
-
-    // Extract userId from jobId if possible, or use the jobId
     const newJobId = `retry-${jobId}-${Date.now()}`;
-
     return {
       success: true,
       newJobId,
-      message: 'Job retry initiated. Run triggerDetectionPipeline with appropriate userId.'
+      message: 'Job retry initiated.'
     };
   }
 
@@ -1306,9 +297,6 @@ export class EnhancedDetectionService {
    * DELETE DETECTION JOB / CLEAR RESULTS
    */
   async deleteDetectionJob(jobId: string): Promise<{ success: boolean; message: string }> {
-    logger.info('🗑️ [AGENT3] Deleting detection job', { jobId });
-
-    // Could optionally delete related detection results here
     return {
       success: true,
       message: 'Job deleted successfully'
@@ -1327,72 +315,40 @@ export class EnhancedDetectionService {
     byAnomalyType: Record<string, { count: number; value: number }>;
     bySeverity: Record<string, number>;
   }> {
-    logger.info('📈 [AGENT3] Calculating detection statistics', { userId });
-
     try {
       const { data, error } = await supabaseAdmin
         .from('detection_results')
         .select('*')
         .eq('seller_id', userId);
 
-      if (error) {
-        logger.error('❌ [AGENT3] Error fetching statistics', { userId, error: error.message });
-        return {
-          totalDetections: 0,
-          highConfidence: 0,
-          mediumConfidence: 0,
-          lowConfidence: 0,
-          estimatedRecovery: 0,
-          byAnomalyType: {},
-          bySeverity: {}
-        };
-      }
+      if (error || !data) throw new Error(error?.message || 'No data');
 
-      const results = data || [];
-
-      // Calculate statistics
-      const totalDetections = results.length;
-      const highConfidence = results.filter(r => r.confidence_score >= 0.85).length;
-      const mediumConfidence = results.filter(r => r.confidence_score >= 0.5 && r.confidence_score < 0.85).length;
-      const lowConfidence = results.filter(r => r.confidence_score < 0.5).length;
-      const estimatedRecovery = results.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
-
-      // Group by anomaly type
+      const totalDetections = data.length;
+      const estimatedRecovery = data.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
+      
       const byAnomalyType: Record<string, { count: number; value: number }> = {};
-      for (const r of results) {
+      const bySeverity: Record<string, number> = {};
+
+      for (const r of data) {
         const type = r.anomaly_type || 'unknown';
-        if (!byAnomalyType[type]) {
-          byAnomalyType[type] = { count: 0, value: 0 };
-        }
+        if (!byAnomalyType[type]) byAnomalyType[type] = { count: 0, value: 0 };
         byAnomalyType[type].count++;
         byAnomalyType[type].value += r.estimated_value || 0;
-      }
 
-      // Group by severity
-      const bySeverity: Record<string, number> = {};
-      for (const r of results) {
         const severity = r.severity || 'unknown';
         bySeverity[severity] = (bySeverity[severity] || 0) + 1;
       }
 
-      logger.info('📈 [AGENT3] Statistics calculated', {
-        userId,
-        totalDetections,
-        estimatedRecovery
-      });
-
       return {
         totalDetections,
-        highConfidence,
-        mediumConfidence,
-        lowConfidence,
+        highConfidence: data.filter(r => r.confidence_score >= 0.85).length,
+        mediumConfidence: data.filter(r => r.confidence_score >= 0.5 && r.confidence_score < 0.85).length,
+        lowConfidence: data.filter(r => r.confidence_score < 0.5).length,
         estimatedRecovery,
         byAnomalyType,
         bySeverity
       };
-
-    } catch (error: any) {
-      logger.error('❌ [AGENT3] Exception calculating statistics', { userId, error: error.message });
+    } catch (error) {
       return {
         totalDetections: 0,
         highConfidence: 0,
@@ -1405,9 +361,5 @@ export class EnhancedDetectionService {
     }
   }
 }
-
-// ============================================================================
-// Export Singleton Instance
-// ============================================================================
 
 export default new EnhancedDetectionService();

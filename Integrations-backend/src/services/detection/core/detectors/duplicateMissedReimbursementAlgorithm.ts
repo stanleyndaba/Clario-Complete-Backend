@@ -1,5 +1,5 @@
-import { supabaseAdmin } from '../../../database/supabaseClient';
-import logger from '../../../utils/logger';
+import { supabaseAdmin } from '../../../../database/supabaseClient';
+import logger from '../../../../utils/logger';
 import { resolveTenantId } from './shared/tenantUtils';
 
 // ============================================================================
@@ -91,6 +91,11 @@ export interface RecoveryCohort {
 export interface SentinelDetectionResult {
     seller_id: string;
     sync_id: string;
+
+    // Production Standard Attributes
+    anomaly_type: string;
+    estimated_value: number;
+
     detection_type: SentinelAnomalyType;
     sku?: string;
     fnsku?: string;
@@ -324,6 +329,8 @@ function analyzeRecoveryCohort(
             results.push({
                 seller_id: sellerId,
                 sync_id: syncId,
+                anomaly_type: 'missed_reimbursement',
+                estimated_value: cohort.residual_value_delta,
                 detection_type: 'missed_reimbursement',
                 sku: baseSku,
                 loss_count: cohort.loss_events.length,
@@ -374,6 +381,8 @@ function analyzeRecoveryCohort(
             results.push({
                 seller_id: sellerId,
                 sync_id: syncId,
+                anomaly_type: detection_type,
+                estimated_value: overValue,
                 detection_type,
                 sku: baseSku,
                 loss_count: cohort.loss_events.length,
@@ -413,6 +422,8 @@ function analyzeRecoveryCohort(
             results.push({
                 seller_id: sellerId,
                 sync_id: syncId,
+                anomaly_type: 'ASYMMETRIC_CLAWBACK',
+                estimated_value: delta,
                 detection_type: 'ASYMMETRIC_CLAWBACK',
                 sku: baseSku,
                 loss_count: cohort.loss_events.length,
@@ -443,6 +454,8 @@ function analyzeRecoveryCohort(
             results.push({
                 seller_id: sellerId,
                 sync_id: syncId,
+                anomaly_type: 'GHOST_REVERSAL',
+                estimated_value: missingFoundValue,
                 detection_type: 'GHOST_REVERSAL',
                 sku: baseSku,
                 loss_count: cohort.loss_events.length,
@@ -671,6 +684,28 @@ export async function getRecoveryHealthSummary(sellerId: string): Promise<{
             unmatchedLossValue: 0, clawbackRiskValue: 0, skusAtRisk: 0, actionRequired: false
         };
     }
+}
+
+export async function runSentinelDetection(sellerId: string, syncId: string): Promise<SentinelDetectionResult[]> {
+    logger.info('🔍 [SENTINEL] Starting automated run', { sellerId, syncId });
+    
+    const [losses, reimbursements] = await Promise.all([
+        fetchLossEvents(sellerId, { lookbackDays: 180 }),
+        fetchReimbursementEventsForSentinel(sellerId, { lookbackDays: 180 })
+    ]);
+    
+    const results = await detectDuplicateMissedReimbursements(sellerId, syncId, { 
+        seller_id: sellerId, 
+        sync_id: syncId, 
+        loss_events: losses, 
+        reimbursement_events: reimbursements 
+    });
+    
+    if (results.length > 0) {
+        await storeSentinelResults(results);
+    }
+    
+    return results;
 }
 
 export { THRESHOLD_SHOW_TO_USER, THRESHOLD_RECOMMEND_FILING };

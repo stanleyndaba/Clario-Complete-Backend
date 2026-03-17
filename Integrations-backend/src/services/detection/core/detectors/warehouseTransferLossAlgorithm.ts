@@ -10,8 +10,8 @@
  * - Lost in transit between warehouses
  */
 
-import { supabaseAdmin } from '../../../database/supabaseClient';
-import logger from '../../../utils/logger';
+import { supabaseAdmin } from '../../../../database/supabaseClient';
+import logger from '../../../../utils/logger';
 
 import { resolveTenantId } from './shared/tenantUtils';
 // ============================================================================
@@ -54,6 +54,10 @@ export interface TransferLossResult {
     transfer_id: string;
     sku: string;
     asin?: string;
+
+    // Production Standard Attributes
+    anomaly_type: string;
+    estimated_value: number;
 
     // Loss details
     loss_type: 'partial_loss' | 'total_loss' | 'excessive_delay' | 'pending_too_long';
@@ -122,6 +126,8 @@ export async function detectWarehouseTransferLoss(
                 transfer_id: transfer.transfer_id,
                 sku: transfer.sku,
                 asin: transfer.asin,
+                anomaly_type: 'warehouse_transfer_loss',
+                estimated_value: lossValue,
                 loss_type: isTotal ? 'total_loss' : 'partial_loss',
                 severity: lossValue >= 100 ? 'critical' : lossValue >= 50 ? 'high' : 'medium',
                 quantity_sent: transfer.quantity_sent,
@@ -157,6 +163,8 @@ export async function detectWarehouseTransferLoss(
                 transfer_id: transfer.transfer_id,
                 sku: transfer.sku,
                 asin: transfer.asin,
+                anomaly_type: 'warehouse_transfer_loss',
+                estimated_value: potentialLoss,
                 loss_type: 'excessive_delay',
                 severity: transfer.days_in_transit > 30 ? 'high' : 'medium',
                 quantity_sent: transfer.quantity_sent,
@@ -285,6 +293,19 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
     } catch (err: any) {
         logger.error('🏭 [TRANSFER-LOSS] Error storing results', { error: err.message });
     }
+}
+
+export async function runTransferLossDetection(sellerId: string, syncId: string): Promise<TransferLossResult[]> {
+    logger.info('🏭 [TRANSFER-LOSS] Starting automated run', { sellerId, syncId });
+    
+    const transfers = await fetchTransferRecords(sellerId);
+    const results = await detectWarehouseTransferLoss(sellerId, syncId, transfers);
+    
+    if (results.length > 0) {
+        await storeTransferLossResults(results);
+    }
+    
+    return results;
 }
 
 export { MAX_TRANSIT_DAYS, THRESHOLD_SHOW, MIN_LOSS_VALUE };

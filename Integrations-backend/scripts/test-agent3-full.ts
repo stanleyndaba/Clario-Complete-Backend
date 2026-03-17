@@ -7,7 +7,7 @@ import {
     detectReceivingError,
     detectCaseBreakError,
     detectPrepFeeError
-} from '../src/services/detection/algorithms/inboundAlgorithms';
+} from '../src/services/detection/core/detectors/inboundAlgorithms';
 
 async function runFullTest() {
     const userId = '00000000-0000-0000-0000-000000000001';

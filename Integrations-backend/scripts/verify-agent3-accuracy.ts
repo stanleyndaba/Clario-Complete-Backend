@@ -1,8 +1,8 @@
 
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
-import { detectLostInventory, SyncedData, InventoryLedgerEvent } from '../src/services/detection/algorithms/inventoryAlgorithms';
-import { detectAllFeeOvercharges, FeeSyncedData, FeeEvent, ProductCatalog } from '../src/services/detection/algorithms/feeAlgorithms';
+import { detectLostInventory, SyncedData, InventoryLedgerEvent } from '../src/services/detection/core/detectors/inventoryAlgorithms';
+import { detectAllFeeOvercharges, FeeSyncedData, FeeEvent, ProductCatalog } from '../src/services/detection/core/detectors/feeAlgorithms';
 import { MockDataGenerator } from '../src/services/mockDataGenerator';
 
 async function verifyAgent3Accuracy() {
