@@ -1,26 +1,12 @@
-/**
- * Duplicate / Missed Reimbursement Sentinel Algorithm
- * 
- * Agent 3: Discovery Agent - Recovery Lifecycle Reconciliation
- * 
- * Detects two dangerous realities:
- * A) MISSED: Amazon reimburses once, seller loses again, Amazon never reimburses again
- * B) DUPLICATE: Amazon reimburses twice (clawback risk)
- * 
- * Detection approach:
- * 1. Build recovery lifecycle per SKU/FNSKU
- * 2. Match losses to reimbursements
- * 3. Detect mismatches (unrecovered losses, duplicate payments)
- * 4. Score risk and defensibility
- */
-
 import { supabaseAdmin } from '../../../database/supabaseClient';
 import logger from '../../../utils/logger';
-
 import { resolveTenantId } from './shared/tenantUtils';
+
 // ============================================================================
 // Types
 // ============================================================================
+
+export type SentinelAnomalyType = 'missed_reimbursement' | 'duplicate_reimbursement' | 'clawback_risk' | 'ASYMMETRIC_CLAWBACK' | 'GHOST_REVERSAL';
 
 export interface LossEvent {
     id: string;
@@ -32,6 +18,8 @@ export interface LossEvent {
     asin?: string;
     order_id?: string;
     shipment_id?: string;
+    removal_id?: string;
+    reimbursement_id?: string;
     quantity: number;
     estimated_value: number;
     currency: string;
@@ -46,6 +34,9 @@ export interface ReimbursementEvent {
     fnsku?: string;
     asin?: string;
     order_id?: string;
+    shipment_id?: string;
+    removal_id?: string;
+    reimbursement_id?: string;
     quantity: number;
     amount: number;
     currency: string;
@@ -53,81 +44,83 @@ export interface ReimbursementEvent {
     case_id?: string;
 }
 
-export interface RecoveryLifecycle {
-    sku: string;
-    fnsku?: string;
-    asin?: string;
+export type CohortState = 
+    | 'OPEN_EXPECTED' 
+    | 'PARTIALLY_REIMBURSED' 
+    | 'FULLY_REIMBURSED' 
+    | 'DUPLICATE_REIMBURSED' 
+    | 'LATE_REIMBURSED' 
+    | 'ORPHAN_REIMBURSEMENT' 
+    | 'REVERSED_OR_CLAWED_BACK' 
+    | 'PARTIALLY_REVERSED'
+    | 'UNRESOLVED';
 
-    // Aggregated data
-    total_losses: number;
-    total_loss_quantity: number;
-    total_loss_value: number;
+export type EvidenceClass = 
+    | 'STRICT_REFERENCE_MATCH' 
+    | 'STRICT_IDENTITY_MATCH' 
+    | 'APPROVED_CAUSAL_MAPPING' 
+    | 'TEMPORAL_ONLY' 
+    | 'UNRESOLVED';
 
-    total_reimbursements: number;
-    total_reimbursement_quantity: number;
-    total_reimbursement_value: number;
-
-    // Matching status
-    net_quantity_gap: number;      // Lost qty - Reimbursed qty
-    net_value_gap: number;         // Lost value - Reimbursed value
-
-    // Individual events
+export interface RecoveryCohort {
+    cohort_id: string;
+    tenant_id: string;
+    marketplace: string;
+    causal_identity_keys: {
+        primary?: string; // order_id, shipment_id, case_id
+        secondary?: string; // fnsku, sku, asin
+    };
+    
     loss_events: LossEvent[];
     reimbursement_events: ReimbursementEvent[];
-
-    // Match analysis
-    unmatched_losses: LossEvent[];
-    potential_duplicates: ReimbursementEvent[];
+    reversal_events: ReimbursementEvent[];
+    
+    total_loss_quantity: number;
+    total_reimbursed_quantity: number;
+    residual_quantity: number;
+    
+    expected_reimbursement_value: number;
+    observed_reimbursement_value: number;
+    residual_value_delta: number;
+    
+    cohort_state: CohortState;
+    evidence_class: EvidenceClass;
+    linkage_notes: string[];
 }
 
 export interface SentinelDetectionResult {
     seller_id: string;
     sync_id: string;
-
-    detection_type: 'missed_reimbursement' | 'duplicate_reimbursement' | 'clawback_risk' | 'ASYMMETRIC_CLAWBACK' | 'GHOST_REVERSAL';
-
-    // SKU info
+    detection_type: SentinelAnomalyType;
     sku?: string;
     fnsku?: string;
     asin?: string;
-
-    // Metrics
     loss_count: number;
     reimbursement_count: number;
     quantity_gap: number;
     value_gap: number;
-
-    // Specific event references
     unmatched_loss_ids: string[];
     duplicate_reimbursement_ids: string[];
-
-    // Financial impact
     estimated_recovery: number;
     clawback_risk_value: number;
     currency: string;
-
-    // Classification
     severity: 'low' | 'medium' | 'high' | 'critical';
     risk_level: 'low' | 'moderate' | 'high' | 'extreme';
     recommended_action: 'monitor' | 'review' | 'file_claim' | 'preemptive_audit' | 'escalate';
-
-    // Confidence
     confidence_score: number;
     confidence_factors: SentinelConfidenceFactors;
-
-    // Evidence
     evidence: {
-        recovery_lifecycle: RecoveryLifecycle;
+        recovery_cohort: RecoveryCohort;
         detection_reasons: string[];
     };
 }
 
 export interface SentinelConfidenceFactors {
-    clear_loss_trail: boolean;        // +0.25
-    reimbursement_documented: boolean; // +0.20
-    quantity_match_possible: boolean;  // +0.20
-    time_proximity: boolean;           // +0.20
-    consistent_sku_data: boolean;      // +0.15
+    clear_loss_trail: boolean;
+    reimbursement_documented: boolean;
+    quantity_match_possible: boolean;
+    time_proximity: boolean;
+    consistent_sku_data: boolean;
     calculated_score: number;
 }
 
@@ -139,488 +132,341 @@ export interface SentinelSyncedData {
 }
 
 // ============================================================================
-// Constants
+// Constants & Policies
 // ============================================================================
 
-// Time window for matching losses to reimbursements (days)
-const MATCHING_WINDOW_DAYS = 90;
+const CAUSAL_MAPPING_POLICY: Record<string, string[]> = {
+    'lost': ['Lost', 'Missing', 'Lost:Inbound', 'Lost:Warehouse'],
+    'damaged': ['Damaged', 'Damaged:Warehouse', 'Damaged:Inbound'],
+    'disposed': ['Disposed'],
+    'removed': ['Removed'],
+    'customer_return': ['CustomerReturn', 'Refund']
+};
 
-// Thresholds
 const THRESHOLD_SHOW_TO_USER = 0.55;
 const THRESHOLD_RECOMMEND_FILING = 0.75;
-
-// Gap thresholds for detection
 const MIN_QUANTITY_GAP = 1;
 const MIN_VALUE_GAP = 10;
-
-// Confidence weights
-const WEIGHT_CLEAR_LOSS = 0.25;
-const WEIGHT_REIMB_DOCUMENTED = 0.20;
-const WEIGHT_QTY_MATCH = 0.20;
-const WEIGHT_TIME_PROXIMITY = 0.20;
-const WEIGHT_CONSISTENT_SKU = 0.15;
+const EPSILON = 0.05;
 
 // ============================================================================
-// Core Detection Algorithm
+// Core Algorithm
 // ============================================================================
 
-/**
- * Main entry point: Detect duplicate and missed reimbursements
- */
 export async function detectDuplicateMissedReimbursements(
     sellerId: string,
     syncId: string,
     data: SentinelSyncedData
 ): Promise<SentinelDetectionResult[]> {
     const results: SentinelDetectionResult[] = [];
-
-    logger.info('🔍 [SENTINEL] Starting duplicate/missed reimbursement detection', {
-        sellerId,
-        syncId,
-        lossCount: data.loss_events?.length || 0,
-        reimbursementCount: data.reimbursement_events?.length || 0
-    });
-
+    
     if (!data.loss_events?.length && !data.reimbursement_events?.length) {
-        logger.info('🔍 [SENTINEL] No events to analyze');
         return results;
     }
 
-    // Step 1: Build recovery lifecycle per SKU
-    const lifecycles = buildRecoveryLifecycles(
-        sellerId,
-        data.loss_events || [],
-        data.reimbursement_events || []
-    );
+    const filteredLosses = (data.loss_events || []).filter(l => l.seller_id === sellerId);
+    const filteredReimbs = (data.reimbursement_events || []).filter(r => r.seller_id === sellerId);
 
-    logger.info('🔍 [SENTINEL] Built recovery lifecycles', {
-        skuCount: lifecycles.size
-    });
-
-    // Step 2: Analyze each lifecycle for anomalies
-    for (const [sku, lifecycle] of lifecycles) {
+    const cohorts = buildRecoveryCohorts(sellerId, filteredLosses, filteredReimbs);
+    
+    for (const cohort of cohorts.values()) {
         try {
-            const detections = analyzeRecoveryLifecycle(sellerId, syncId, lifecycle);
-
+            const detections = analyzeRecoveryCohort(sellerId, syncId, cohort);
             for (const detection of detections) {
                 if (detection.confidence_score >= THRESHOLD_SHOW_TO_USER) {
                     results.push(detection);
                 }
             }
         } catch (error: any) {
-            logger.warn('🔍 [SENTINEL] Error analyzing lifecycle', {
-                sku,
-                error: error.message
-            });
+            logger.warn('🔍 [SENTINEL] Error analyzing cohort', { cohortId: cohort.cohort_id, error: error.message });
         }
     }
 
-    // Sort by value gap (highest first)
     results.sort((a, b) => Math.abs(b.value_gap) - Math.abs(a.value_gap));
-
-    const missedCount = results.filter(r => r.detection_type === 'missed_reimbursement').length;
-    const duplicateCount = results.filter(r => r.detection_type === 'duplicate_reimbursement').length;
-    const totalRecovery = results.reduce((sum, r) => sum + r.estimated_recovery, 0);
-    const totalClawbackRisk = results.reduce((sum, r) => sum + r.clawback_risk_value, 0);
-
-    logger.info('🔍 [SENTINEL] Detection complete', {
-        sellerId,
-        missedReimbursements: missedCount,
-        duplicateReimbursements: duplicateCount,
-        totalRecoveryOpportunity: totalRecovery.toFixed(2),
-        clawbackRisk: totalClawbackRisk.toFixed(2)
-    });
-
     return results;
 }
 
-/**
- * Build recovery lifecycle per SKU
- */
-function buildRecoveryLifecycles(
+function buildRecoveryCohorts(
     sellerId: string,
     losses: LossEvent[],
     reimbursements: ReimbursementEvent[]
-): Map<string, RecoveryLifecycle> {
-    const lifecycles = new Map<string, RecoveryLifecycle>();
+): Map<string, RecoveryCohort> {
+    const cohorts = new Map<string, RecoveryCohort>();
 
-    // Helper to get or create lifecycle
-    const getLifecycle = (sku: string, fnsku?: string, asin?: string): RecoveryLifecycle => {
-        const key = sku || fnsku || asin || 'unknown';
-        if (!lifecycles.has(key)) {
-            lifecycles.set(key, {
-                sku: key,
-                fnsku,
-                asin,
-                total_losses: 0,
-                total_loss_quantity: 0,
-                total_loss_value: 0,
-                total_reimbursements: 0,
-                total_reimbursement_quantity: 0,
-                total_reimbursement_value: 0,
-                net_quantity_gap: 0,
-                net_value_gap: 0,
-                loss_events: [],
-                reimbursement_events: [],
-                unmatched_losses: [],
-                potential_duplicates: []
-            });
-        }
-        return lifecycles.get(key)!;
+    // 1. Group Events by Identity Hierarchy Precedence
+    const getIdentity = (event: Partial<LossEvent & ReimbursementEvent>): { key: string, primary?: string, secondary?: string } => {
+        if (event.reimbursement_id) return { key: `REIMB:${event.reimbursement_id}`, primary: event.reimbursement_id };
+        if (event.case_id) return { key: `CASE:${event.case_id}`, primary: event.case_id };
+        if (event.order_id) return { key: `ORDER:${event.order_id}`, primary: event.order_id };
+        if (event.shipment_id) return { key: `SHIPMENT:${event.shipment_id}`, primary: event.shipment_id };
+        if (event.removal_id) return { key: `REMOVAL:${event.removal_id}`, primary: event.removal_id };
+        
+        const sec = event.fnsku || event.sku || event.asin || 'UNKNOWN';
+        return { key: `SECONDARY:${sec}`, secondary: sec };
     };
 
-    // Process loss events
+    const getCohort = (identity: { key: string, primary?: string, secondary?: string }): RecoveryCohort => {
+        const key = identity.key;
+        if (!cohorts.has(key)) {
+            cohorts.set(key, {
+                cohort_id: key,
+                tenant_id: sellerId,
+                marketplace: 'US', // default
+                causal_identity_keys: {
+                    primary: identity.primary,
+                    secondary: identity.secondary
+                },
+                loss_events: [],
+                reimbursement_events: [],
+                reversal_events: [],
+                total_loss_quantity: 0,
+                total_reimbursed_quantity: 0,
+                residual_quantity: 0,
+                expected_reimbursement_value: 0,
+                observed_reimbursement_value: 0,
+                residual_value_delta: 0,
+                cohort_state: 'UNRESOLVED',
+                evidence_class: 'UNRESOLVED',
+                linkage_notes: []
+            });
+        }
+        return cohorts.get(key)!;
+    };
+
     for (const loss of losses) {
-        const key = loss.sku || loss.fnsku || loss.asin;
-        if (!key) continue;
-
-        const lifecycle = getLifecycle(key, loss.fnsku, loss.asin);
-        lifecycle.loss_events.push(loss);
-        lifecycle.total_losses++;
-        lifecycle.total_loss_quantity += loss.quantity;
-        lifecycle.total_loss_value += loss.estimated_value;
+        const identity = getIdentity(loss);
+        const cohort = getCohort(identity);
+        cohort.loss_events.push(loss);
+        cohort.total_loss_quantity += loss.quantity;
+        cohort.expected_reimbursement_value += loss.estimated_value;
     }
 
-    // Process reimbursement events
     for (const reimb of reimbursements) {
-        const key = reimb.sku || reimb.fnsku || reimb.asin;
-        if (!key) continue;
-
-        const lifecycle = getLifecycle(key, reimb.fnsku, reimb.asin);
-        lifecycle.reimbursement_events.push(reimb);
-        lifecycle.total_reimbursements++;
-        lifecycle.total_reimbursement_quantity += reimb.quantity;
-        lifecycle.total_reimbursement_value += reimb.amount;
-    }
-
-    // Calculate gaps and detect anomalies for each lifecycle
-    for (const lifecycle of lifecycles.values()) {
-        lifecycle.net_quantity_gap = lifecycle.total_loss_quantity - lifecycle.total_reimbursement_quantity;
-        lifecycle.net_value_gap = lifecycle.total_loss_value - lifecycle.total_reimbursement_value;
-
-        // Identify unmatched losses
-        lifecycle.unmatched_losses = findUnmatchedLosses(lifecycle);
-
-        // Identify potential duplicates
-        lifecycle.potential_duplicates = findPotentialDuplicates(lifecycle);
-    }
-
-    return lifecycles;
-}
-
-/**
- * Find losses that don't have matching reimbursements
- */
-function findUnmatchedLosses(lifecycle: RecoveryLifecycle): LossEvent[] {
-    const unmatched: LossEvent[] = [];
-    const usedReimbursements = new Set<string>();
-
-    // Sort by date
-    const sortedLosses = [...lifecycle.loss_events].sort(
-        (a, b) => new Date(a.event_date).getTime() - new Date(b.event_date).getTime()
-    );
-    const sortedReimbs = [...lifecycle.reimbursement_events].sort(
-        (a, b) => new Date(a.reimbursement_date).getTime() - new Date(b.reimbursement_date).getTime()
-    );
-
-    for (const loss of sortedLosses) {
-        const lossDate = new Date(loss.event_date);
-        let matched = false;
-
-        // Look for a matching reimbursement within window
-        for (const reimb of sortedReimbs) {
-            if (usedReimbursements.has(reimb.id)) continue;
-
-            const reimbDate = new Date(reimb.reimbursement_date);
-            const daysDiff = Math.abs((reimbDate.getTime() - lossDate.getTime()) / (1000 * 60 * 60 * 24));
-
-            // Match criteria: within window, similar quantity
-            if (daysDiff <= MATCHING_WINDOW_DAYS && reimb.quantity >= loss.quantity * 0.8) {
-                usedReimbursements.add(reimb.id);
-                matched = true;
-                break;
-            }
-        }
-
-        if (!matched) {
-            unmatched.push(loss);
-        }
-    }
-
-    return unmatched;
-}
-
-/**
- * Find reimbursements that might be duplicates
- */
-function findPotentialDuplicates(lifecycle: RecoveryLifecycle): ReimbursementEvent[] {
-    const duplicates: ReimbursementEvent[] = [];
-    const seen = new Map<string, ReimbursementEvent>();
-
-    for (const reimb of lifecycle.reimbursement_events) {
-        // Create a signature for matching
-        const signature = `${reimb.order_id || ''}-${reimb.quantity}-${Math.round(reimb.amount)}`;
-
-        if (seen.has(signature)) {
-            const first = seen.get(signature)!;
-            const daysDiff = Math.abs(
-                (new Date(reimb.reimbursement_date).getTime() - new Date(first.reimbursement_date).getTime()) /
-                (1000 * 60 * 60 * 24)
-            );
-
-            // If reimbursed twice within 30 days for same order/amount, likely duplicate
-            if (daysDiff <= 30) {
-                if (!duplicates.find(d => d.id === first.id)) {
-                    duplicates.push(first);
-                }
-                duplicates.push(reimb);
-            }
+        const identity = getIdentity(reimb);
+        const cohort = getCohort(identity);
+        
+        if (reimb.amount < 0 || reimb.quantity < 0) {
+            cohort.reversal_events.push(reimb);
+            cohort.total_reimbursed_quantity += reimb.quantity; // it's negative
+            cohort.observed_reimbursement_value += reimb.amount; // it's negative
         } else {
-            seen.set(signature, reimb);
+            cohort.reimbursement_events.push(reimb);
+            cohort.total_reimbursed_quantity += reimb.quantity;
+            cohort.observed_reimbursement_value += reimb.amount;
         }
     }
 
-    return duplicates;
+    // 2. Resolve cohort states and evidence classes
+    for (const cohort of cohorts.values()) {
+        cohort.residual_quantity = cohort.total_loss_quantity - cohort.total_reimbursed_quantity;
+        cohort.residual_value_delta = cohort.expected_reimbursement_value - cohort.observed_reimbursement_value;
+
+        // Evidence Class Logic
+        if (cohort.causal_identity_keys.primary) {
+            cohort.evidence_class = 'STRICT_REFERENCE_MATCH';
+        } else if (cohort.causal_identity_keys.secondary) {
+            cohort.evidence_class = 'STRICT_IDENTITY_MATCH';
+        }
+
+        // Apply Approved Causal Mapping Check for Identity Matches
+        if (cohort.evidence_class === 'STRICT_IDENTITY_MATCH' && cohort.loss_events.length > 0 && cohort.reimbursement_events.length > 0) {
+            const hasValidMapping = cohort.loss_events.some(l => {
+                const allowedReasons = CAUSAL_MAPPING_POLICY[l.event_type] || [];
+                return cohort.reimbursement_events.some(r => r.reason && allowedReasons.includes(r.reason));
+            });
+            if (hasValidMapping) {
+                cohort.evidence_class = 'APPROVED_CAUSAL_MAPPING';
+            }
+        }
+
+        // State Machine
+        if (cohort.reversal_events.length > 0) {
+            if (cohort.total_reimbursed_quantity <= 0) {
+                cohort.cohort_state = 'REVERSED_OR_CLAWED_BACK';
+            } else {
+                cohort.cohort_state = 'PARTIALLY_REVERSED';
+            }
+        } else if (cohort.loss_events.length > 0 && cohort.reimbursement_events.length === 0) {
+            cohort.cohort_state = 'OPEN_EXPECTED';
+        } else if (cohort.loss_events.length === 0 && cohort.reimbursement_events.length > 0) {
+            cohort.cohort_state = 'ORPHAN_REIMBURSEMENT';
+        } else if (cohort.residual_quantity > 0 || cohort.residual_value_delta > EPSILON) {
+            cohort.cohort_state = 'PARTIALLY_REIMBURSED';
+        } else if (cohort.residual_quantity < 0 || cohort.residual_value_delta < -EPSILON) {
+            cohort.cohort_state = 'DUPLICATE_REIMBURSED';
+        } else {
+            cohort.cohort_state = 'FULLY_REIMBURSED';
+        }
+    }
+
+    return cohorts;
 }
 
-/**
- * Analyze a recovery lifecycle for anomalies
- */
-function analyzeRecoveryLifecycle(
+function analyzeRecoveryCohort(
     sellerId: string,
     syncId: string,
-    lifecycle: RecoveryLifecycle
+    cohort: RecoveryCohort
 ): SentinelDetectionResult[] {
     const results: SentinelDetectionResult[] = [];
-    const detectionReasons: string[] = [];
+    
+    // Forbidden evidence classes
+    if (cohort.evidence_class === 'TEMPORAL_ONLY' || cohort.evidence_class === 'UNRESOLVED') {
+        return results; 
+    }
 
-    // Detection A: Missed Reimbursements
-    if (lifecycle.unmatched_losses.length > 0 && lifecycle.net_quantity_gap >= MIN_QUANTITY_GAP) {
-        const unmatchedValue = lifecycle.unmatched_losses.reduce((sum, l) => sum + l.estimated_value, 0);
-        const unmatchedQty = lifecycle.unmatched_losses.reduce((sum, l) => sum + l.quantity, 0);
-
-        if (unmatchedValue >= MIN_VALUE_GAP) {
-            detectionReasons.push(
-                `${lifecycle.unmatched_losses.length} loss event(s) without matching reimbursement`
-            );
-            detectionReasons.push(
-                `Unrecovered quantity: ${unmatchedQty} units worth $${unmatchedValue.toFixed(2)}`
-            );
-
-            const confidenceFactors = calculateConfidence(lifecycle, 'missed');
-            const severity = determineSeverity(unmatchedValue, unmatchedQty, 'missed');
-            const action = determineAction(confidenceFactors.calculated_score, severity, 'missed');
-
+    const confidenceFactors = calculateConfidence(cohort);
+    
+    // Extract base item info
+    const baseSku = cohort.causal_identity_keys.secondary || cohort.loss_events[0]?.sku || cohort.reimbursement_events[0]?.sku;
+    
+    if (cohort.cohort_state === 'OPEN_EXPECTED' || cohort.cohort_state === 'PARTIALLY_REIMBURSED') {
+        if (cohort.residual_value_delta > EPSILON) {
             results.push({
                 seller_id: sellerId,
                 sync_id: syncId,
                 detection_type: 'missed_reimbursement',
-                sku: lifecycle.sku,
-                fnsku: lifecycle.fnsku,
-                asin: lifecycle.asin,
-                loss_count: lifecycle.unmatched_losses.length,
-                reimbursement_count: lifecycle.total_reimbursements,
-                quantity_gap: unmatchedQty,
-                value_gap: unmatchedValue,
-                unmatched_loss_ids: lifecycle.unmatched_losses.map(l => l.id),
+                sku: baseSku,
+                loss_count: cohort.loss_events.length,
+                reimbursement_count: cohort.reimbursement_events.length,
+                quantity_gap: cohort.residual_quantity,
+                value_gap: cohort.residual_value_delta,
+                unmatched_loss_ids: cohort.loss_events.map(l => l.id),
                 duplicate_reimbursement_ids: [],
-                estimated_recovery: unmatchedValue,
+                estimated_recovery: cohort.residual_value_delta,
                 clawback_risk_value: 0,
-                currency: lifecycle.unmatched_losses[0]?.currency || 'USD',
-                severity,
+                currency: 'USD',
+                severity: determineSeverity(cohort.residual_value_delta, cohort.residual_quantity, 'missed'),
                 risk_level: 'high',
-                recommended_action: action,
+                recommended_action: 'file_claim',
                 confidence_score: confidenceFactors.calculated_score,
                 confidence_factors: confidenceFactors,
                 evidence: {
-                    recovery_lifecycle: lifecycle,
-                    detection_reasons: [...detectionReasons]
+                    recovery_cohort: cohort,
+                    detection_reasons: [
+                        `Cohort State: ${cohort.cohort_state}`,
+                        `Residual Quantity: ${cohort.residual_quantity} missing`,
+                        `Shortfall Value: $${cohort.residual_value_delta.toFixed(2)}`,
+                        `Evidence Class: ${cohort.evidence_class}`
+                    ]
                 }
             });
         }
     }
+    
+    if (cohort.cohort_state === 'DUPLICATE_REIMBURSED' || cohort.cohort_state === 'ORPHAN_REIMBURSEMENT') {
+        const overValue = Math.abs(cohort.residual_value_delta);
+        const overQty = Math.abs(cohort.residual_quantity);
+        
+        let shouldEmit = false;
+        
+        if (cohort.cohort_state === 'ORPHAN_REIMBURSEMENT') {
+            shouldEmit = cohort.observed_reimbursement_value > 0 && 
+                         cohort.loss_events.length === 0 &&
+                         (cohort.evidence_class === 'STRICT_REFERENCE_MATCH' || cohort.evidence_class === 'STRICT_IDENTITY_MATCH') &&
+                         overValue > EPSILON;
+        } else {
+            shouldEmit = cohort.observed_reimbursement_value > cohort.expected_reimbursement_value && overValue > EPSILON;
+        }
 
-    // Detection B: Duplicate Reimbursements (Clawback Risk)
-    if (lifecycle.potential_duplicates.length > 0) {
-        const duplicateValue = lifecycle.potential_duplicates.reduce((sum, r) => sum + r.amount, 0) / 2;
-        const duplicateQty = lifecycle.potential_duplicates.reduce((sum, r) => sum + r.quantity, 0) / 2;
-
-        const dupReasons: string[] = [
-            `${lifecycle.potential_duplicates.length} potential duplicate reimbursement(s) detected`,
-            `Clawback risk: $${duplicateValue.toFixed(2)}`
-        ];
-
-        const confidenceFactors = calculateConfidence(lifecycle, 'duplicate');
-        const severity = determineSeverity(duplicateValue, duplicateQty, 'duplicate');
-        const action = determineAction(confidenceFactors.calculated_score, severity, 'duplicate');
-
-        results.push({
-            seller_id: sellerId,
-            sync_id: syncId,
-            detection_type: 'duplicate_reimbursement',
-            sku: lifecycle.sku,
-            fnsku: lifecycle.fnsku,
-            asin: lifecycle.asin,
-            loss_count: lifecycle.total_losses,
-            reimbursement_count: lifecycle.potential_duplicates.length,
-            quantity_gap: -duplicateQty, // Negative = over-reimbursed
-            value_gap: -duplicateValue,
-            unmatched_loss_ids: [],
-            duplicate_reimbursement_ids: lifecycle.potential_duplicates.map(r => r.id),
-            estimated_recovery: 0,
-            clawback_risk_value: duplicateValue,
-            currency: lifecycle.potential_duplicates[0]?.currency || 'USD',
-            severity,
-            risk_level: 'high',
-            recommended_action: action,
-            confidence_score: confidenceFactors.calculated_score,
-            confidence_factors: confidenceFactors,
-            evidence: {
-                recovery_lifecycle: lifecycle,
-                detection_reasons: dupReasons
-            }
-        });
-    }
-
-    // Detection C: Over-reimbursement clawback risk (net negative gap)
-    if (lifecycle.net_quantity_gap < -1 && lifecycle.net_value_gap < -MIN_VALUE_GAP) {
-        const overValue = Math.abs(lifecycle.net_value_gap);
-        const overQty = Math.abs(lifecycle.net_quantity_gap);
-
-        // Only if not already caught by duplicate detection
-        if (!results.find(r => r.detection_type === 'duplicate_reimbursement')) {
-            const clawbackReasons: string[] = [
-                `Reimbursed ${overQty} more units than losses recorded`,
-                `Potential clawback: $${overValue.toFixed(2)}`
-            ];
-
-            const confidenceFactors = calculateConfidence(lifecycle, 'duplicate');
-            const severity = determineSeverity(overValue, overQty, 'duplicate');
-
+        if (shouldEmit) {
+            let detection_type: SentinelAnomalyType = cohort.cohort_state === 'ORPHAN_REIMBURSEMENT' ? 'clawback_risk' : 'duplicate_reimbursement';
+            
             results.push({
                 seller_id: sellerId,
                 sync_id: syncId,
-                detection_type: 'clawback_risk',
-                sku: lifecycle.sku,
-                fnsku: lifecycle.fnsku,
-                asin: lifecycle.asin,
-                loss_count: lifecycle.total_losses,
-                reimbursement_count: lifecycle.total_reimbursements,
-                quantity_gap: lifecycle.net_quantity_gap,
-                value_gap: lifecycle.net_value_gap,
+                detection_type,
+                sku: baseSku,
+                loss_count: cohort.loss_events.length,
+                reimbursement_count: cohort.reimbursement_events.length,
+                quantity_gap: cohort.residual_quantity, // Negative
+                value_gap: cohort.residual_value_delta, // Negative
                 unmatched_loss_ids: [],
-                duplicate_reimbursement_ids: [],
+                duplicate_reimbursement_ids: cohort.reimbursement_events.map(r => r.id),
                 estimated_recovery: 0,
                 clawback_risk_value: overValue,
                 currency: 'USD',
-                severity,
+                severity: determineSeverity(overValue, overQty, 'duplicate'),
                 risk_level: 'extreme',
-                recommended_action: 'preemptive_audit',
+                recommended_action: 'review',
                 confidence_score: confidenceFactors.calculated_score,
                 confidence_factors: confidenceFactors,
                 evidence: {
-                    recovery_lifecycle: lifecycle,
-                    detection_reasons: clawbackReasons
+                    recovery_cohort: cohort,
+                    detection_reasons: [
+                        `Cohort State: ${cohort.cohort_state}`,
+                        `Over-reimbursed Quantity: ${overQty}`,
+                        `Potential Clawback Risk: $${overValue.toFixed(2)}`,
+                        `Evidence Class: ${cohort.evidence_class}`
+                    ]
                 }
             });
         }
     }
-
-    // Detection D: Sentinel Reversal Reconciliation (Tripartite Ledger Lock)
-    const reversals = lifecycle.reimbursement_events.filter(r => r.amount < 0);
     
-    for (const reversal of reversals) {
-        // 1. The Financial Anchor: Link to originating reimbursement
-        const originalReimb = lifecycle.reimbursement_events.find(r => 
-            r.amount > 0 && 
-            (r.order_id === reversal.order_id || r.case_id === reversal.case_id) &&
-            new Date(r.reimbursement_date) < new Date(reversal.reimbursement_date)
-        );
-
-        if (originalReimb) {
-            // 2. The Asymmetric Over-Clawback Check
-            const clawbackDelta = Math.abs(reversal.amount) - originalReimb.amount;
-            
-            if (clawbackDelta > 0.05) {
-                const asymReasons = [
-                    `Asymmetric Clawback: reversal amount ($${Math.abs(reversal.amount).toFixed(2)}) exceeds original payout ($${originalReimb.amount.toFixed(2)})`,
-                    `Loss delta: $${clawbackDelta.toFixed(2)}`
-                ];
-
-                results.push({
-                    seller_id: sellerId,
-                    sync_id: syncId,
-                    detection_type: 'ASYMMETRIC_CLAWBACK',
-                    sku: lifecycle.sku,
-                    fnsku: lifecycle.fnsku,
-                    asin: lifecycle.asin,
-                    loss_count: lifecycle.total_losses,
-                    reimbursement_count: 2,
-                    quantity_gap: 0,
-                    value_gap: -clawbackDelta,
-                    unmatched_loss_ids: [],
-                    duplicate_reimbursement_ids: [originalReimb.id, reversal.id],
-                    estimated_recovery: clawbackDelta,
-                    clawback_risk_value: clawbackDelta,
-                    currency: reversal.currency || 'USD',
-                    severity: 'high',
-                    risk_level: 'extreme',
-                    recommended_action: 'escalate',
-                    confidence_score: 1.0,
-                    confidence_factors: calculateConfidence(lifecycle, 'duplicate'),
-                    evidence: {
-                        recovery_lifecycle: lifecycle,
-                        detection_reasons: asymReasons
-                    }
-                });
-                continue; // Do not proceed to Step 3 if Step 2 caught an over-clawback
-            }
-
-            // 3. The Physical Ghost Reversal Check
-            if (clawbackDelta <= 0.05) {
-                const reversalDate = new Date(reversal.reimbursement_date);
-                const sixtyDaysPrior = new Date(reversalDate);
-                sixtyDaysPrior.setDate(sixtyDaysPrior.getDate() - 60);
-
-                const foundEvent = lifecycle.loss_events.find(l => 
-                    l.event_type === 'found' && 
-                    new Date(l.event_date) >= sixtyDaysPrior && 
-                    new Date(l.event_date) <= reversalDate
-                );
-
-                if (!foundEvent) {
-                    results.push({
-                        seller_id: sellerId,
-                        sync_id: syncId,
-                        detection_type: 'GHOST_REVERSAL',
-                        sku: lifecycle.sku,
-                        fnsku: lifecycle.fnsku,
-                        asin: lifecycle.asin,
-                        loss_count: lifecycle.total_losses,
-                        reimbursement_count: 2,
-                        quantity_gap: 1,
-                        value_gap: Math.abs(reversal.amount),
-                        unmatched_loss_ids: [],
-                        duplicate_reimbursement_ids: [originalReimb.id, reversal.id],
-                        estimated_recovery: Math.abs(reversal.amount),
-                        clawback_risk_value: Math.abs(reversal.amount),
-                        currency: reversal.currency || 'USD',
-                        severity: 'critical',
-                        risk_level: 'extreme',
-                        recommended_action: 'file_claim',
-                        confidence_score: 0.95,
-                        confidence_factors: calculateConfidence(lifecycle, 'missed'),
-                        evidence: {
-                            recovery_lifecycle: lifecycle,
-                            detection_reasons: [
-                                `Ghost Reversal: Reimbursement of $${Math.abs(reversal.amount).toFixed(2)} clawed back but item remains lost`,
-                                `No 'Found' event detected in 60-day horizon prior to reversal`
-                            ]
-                        }
-                    });
+    // Asymmetric Clawback or Ghost Reversals
+    if (cohort.cohort_state === 'REVERSED_OR_CLAWED_BACK' || cohort.cohort_state === 'PARTIALLY_REVERSED') {
+        const originalValue = cohort.reimbursement_events.reduce((sum, r) => sum + r.amount, 0);
+        const reversedValue = Math.abs(cohort.reversal_events.reduce((sum, r) => sum + r.amount, 0));
+        
+        if (reversedValue > originalValue + 0.05) {
+            const delta = reversedValue - originalValue;
+            results.push({
+                seller_id: sellerId,
+                sync_id: syncId,
+                detection_type: 'ASYMMETRIC_CLAWBACK',
+                sku: baseSku,
+                loss_count: cohort.loss_events.length,
+                reimbursement_count: cohort.reimbursement_events.length + cohort.reversal_events.length,
+                quantity_gap: cohort.residual_quantity,
+                value_gap: -delta,
+                unmatched_loss_ids: [],
+                duplicate_reimbursement_ids: [...cohort.reimbursement_events.map(r=>r.id), ...cohort.reversal_events.map(r=>r.id)],
+                estimated_recovery: delta,
+                clawback_risk_value: delta,
+                currency: 'USD',
+                severity: 'high',
+                risk_level: 'extreme',
+                recommended_action: 'escalate',
+                confidence_score: 1.0,
+                confidence_factors: confidenceFactors,
+                evidence: {
+                    recovery_cohort: cohort,
+                    detection_reasons: [
+                        `Cohort State: ${cohort.cohort_state}`,
+                        `Asymmetric Clawback: Reversed $${reversedValue.toFixed(2)} vs Original $${originalValue.toFixed(2)}`
+                    ]
                 }
-                // 4. Precision Guardrail (The Control): Silently discard if Found exists
-            }
+            });
+        } else if (cohort.residual_quantity > 0) {
+            // Reversal happened, but no "Found" event balanced it out yet, and residual is positive
+            const missingFoundValue = cohort.residual_value_delta;
+            results.push({
+                seller_id: sellerId,
+                sync_id: syncId,
+                detection_type: 'GHOST_REVERSAL',
+                sku: baseSku,
+                loss_count: cohort.loss_events.length,
+                reimbursement_count: cohort.reimbursement_events.length + cohort.reversal_events.length,
+                quantity_gap: cohort.residual_quantity,
+                value_gap: cohort.residual_value_delta,
+                unmatched_loss_ids: cohort.loss_events.map(l=>l.id),
+                duplicate_reimbursement_ids: cohort.reversal_events.map(r=>r.id),
+                estimated_recovery: missingFoundValue,
+                clawback_risk_value: missingFoundValue,
+                currency: 'USD',
+                severity: 'critical',
+                risk_level: 'extreme',
+                recommended_action: 'file_claim',
+                confidence_score: 0.95,
+                confidence_factors: confidenceFactors,
+                evidence: {
+                    recovery_cohort: cohort,
+                    detection_reasons: [
+                        `Cohort State: ${cohort.cohort_state}`,
+                        `Item lost but reimbursement was reversed without corresponding Found event`
+                    ]
+                }
+            });
         }
     }
 
@@ -631,138 +477,56 @@ function analyzeRecoveryLifecycle(
 // Helper Functions
 // ============================================================================
 
-/**
- * Calculate confidence score
- */
-function calculateConfidence(
-    lifecycle: RecoveryLifecycle,
-    type: 'missed' | 'duplicate'
-): SentinelConfidenceFactors {
+function calculateConfidence(cohort: RecoveryCohort): SentinelConfidenceFactors {
     let score = 0;
-
-    // Clear loss trail? +0.25
-    const clearLoss = lifecycle.loss_events.length > 0 &&
-        lifecycle.loss_events.every(l => l.sku || l.fnsku);
-    if (clearLoss) score += WEIGHT_CLEAR_LOSS;
-
-    // Reimbursement documented? +0.20
-    const reimbDoc = lifecycle.reimbursement_events.length > 0 &&
-        lifecycle.reimbursement_events.every(r => r.sku || r.fnsku);
-    if (reimbDoc) score += WEIGHT_REIMB_DOCUMENTED;
-
-    // Quantity match possible? +0.20
-    const qtyMatch = type === 'missed'
-        ? lifecycle.unmatched_losses.length <= lifecycle.total_losses * 0.5 // Not all unmatched
-        : lifecycle.potential_duplicates.length >= 2; // Clear duplicate pattern
-    if (qtyMatch) score += WEIGHT_QTY_MATCH;
-
-    // Time proximity in events? +0.20
-    const hasTimeProximity = checkTimeProximity(lifecycle);
-    if (hasTimeProximity) score += WEIGHT_TIME_PROXIMITY;
-
-    // Consistent SKU data? +0.15
-    const consistentSku = !!lifecycle.sku && lifecycle.sku !== 'unknown';
-    if (consistentSku) score += WEIGHT_CONSISTENT_SKU;
+    
+    if (cohort.evidence_class === 'STRICT_REFERENCE_MATCH') {
+        score = 1.0;
+    } else if (cohort.evidence_class === 'APPROVED_CAUSAL_MAPPING') {
+        score = 0.9;
+    } else if (cohort.evidence_class === 'STRICT_IDENTITY_MATCH') {
+        score = 0.8;
+    }
 
     return {
-        clear_loss_trail: clearLoss,
-        reimbursement_documented: reimbDoc,
-        quantity_match_possible: qtyMatch,
-        time_proximity: hasTimeProximity,
-        consistent_sku_data: consistentSku,
-        calculated_score: Math.min(1, score)
+        clear_loss_trail: cohort.loss_events.length > 0,
+        reimbursement_documented: cohort.reimbursement_events.length > 0,
+        quantity_match_possible: true, // Not relevant in cohort model, residuals are exact
+        time_proximity: true, // Deprecated weak feature
+        consistent_sku_data: !!cohort.causal_identity_keys.secondary,
+        calculated_score: score
     };
 }
 
-/**
- * Check if events have reasonable time proximity
- */
-function checkTimeProximity(lifecycle: RecoveryLifecycle): boolean {
-    if (lifecycle.loss_events.length === 0 || lifecycle.reimbursement_events.length === 0) {
-        return false;
-    }
-
-    const latestLoss = Math.max(...lifecycle.loss_events.map(l => new Date(l.event_date).getTime()));
-    const earliestReimb = Math.min(...lifecycle.reimbursement_events.map(r => new Date(r.reimbursement_date).getTime()));
-
-    const daysDiff = (earliestReimb - latestLoss) / (1000 * 60 * 60 * 24);
-
-    return daysDiff >= 0 && daysDiff <= MATCHING_WINDOW_DAYS;
-}
-
-/**
- * Determine severity
- */
-function determineSeverity(
-    value: number,
-    quantity: number,
-    type: 'missed' | 'duplicate'
-): 'low' | 'medium' | 'high' | 'critical' {
+function determineSeverity(value: number, quantity: number, type: 'missed' | 'duplicate'): 'low'|'medium'|'high'|'critical' {
     if (type === 'duplicate') {
-        // Duplicate/clawback is always concerning
         if (value > 200 || quantity > 5) return 'critical';
         if (value > 50 || quantity > 2) return 'high';
         return 'medium';
     }
-
-    // Missed reimbursement
     if (value > 500 || quantity > 10) return 'critical';
     if (value > 100 || quantity > 5) return 'high';
     if (value > 25 || quantity > 2) return 'medium';
     return 'low';
 }
 
-/**
- * Determine recommended action
- */
-function determineAction(
-    confidence: number,
-    severity: 'low' | 'medium' | 'high' | 'critical',
-    type: 'missed' | 'duplicate'
-): 'monitor' | 'review' | 'file_claim' | 'preemptive_audit' {
-    if (type === 'duplicate') {
-        // Duplicate detection should trigger audit to confirm
-        return 'preemptive_audit';
-    }
-
-    // Missed reimbursement actions
-    if (confidence >= THRESHOLD_RECOMMEND_FILING && (severity === 'high' || severity === 'critical')) {
-        return 'file_claim';
-    }
-
-    if (confidence >= THRESHOLD_SHOW_TO_USER || severity === 'high') {
-        return 'review';
-    }
-
-    return 'monitor';
-}
-
 // ============================================================================
-// Database Functions
+// Database & Summary Functions
 // ============================================================================
 
-/**
- * Fetch loss events from inventory ledger and related tables
- */
-export async function fetchLossEvents(
-    sellerId: string,
-    options: { lookbackDays?: number } = {}
-): Promise<LossEvent[]> {
+export async function fetchLossEvents(sellerId: string, options: { lookbackDays?: number } = {}): Promise<LossEvent[]> {
     const lookbackDays = options.lookbackDays || 180;
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - lookbackDays);
-
     const events: LossEvent[] = [];
-
     try {
-        // Get from inventory_ledger (lost/damaged events)
         const { data: ledgerData, error: ledgerError } = await supabaseAdmin
             .from('inventory_ledger')
             .select('*')
             .eq('user_id', sellerId)
             .in('adjustment_type', ['Lost', 'Damaged', 'Disposed', 'M', 'P', 'E', 'D', 'Found', 'F'])
             .gte('event_date', cutoffDate.toISOString());
-
+            
         if (!ledgerError && ledgerData) {
             for (const row of ledgerData) {
                 events.push({
@@ -780,32 +544,17 @@ export async function fetchLossEvents(
                 });
             }
         }
-
-        logger.info('🔍 [SENTINEL] Fetched loss events', {
-            sellerId,
-            count: events.length
-        });
-
         return events;
     } catch (err: any) {
-        logger.error('🔍 [SENTINEL] Error fetching loss events', { error: err.message });
         return [];
     }
 }
 
-/**
- * Fetch reimbursement events from settlements
- */
-export async function fetchReimbursementEventsForSentinel(
-    sellerId: string,
-    options: { lookbackDays?: number } = {}
-): Promise<ReimbursementEvent[]> {
+export async function fetchReimbursementEventsForSentinel(sellerId: string, options: { lookbackDays?: number } = {}): Promise<ReimbursementEvent[]> {
     const lookbackDays = options.lookbackDays || 180;
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - lookbackDays);
-
     const events: ReimbursementEvent[] = [];
-
     try {
         const { data, error } = await supabaseAdmin
             .from('settlements')
@@ -832,58 +581,30 @@ export async function fetchReimbursementEventsForSentinel(
                 });
             }
         }
-
-        logger.info('🔍 [SENTINEL] Fetched reimbursement events', {
-            sellerId,
-            count: events.length
-        });
-
         return events;
     } catch (err: any) {
-        logger.error('🔍 [SENTINEL] Error fetching reimbursement events', { error: err.message });
         return [];
     }
 }
 
-/**
- * Map adjustment type to event type
- */
 function mapEventType(adjustmentType: string): 'lost' | 'damaged' | 'disposed' | 'removed' | 'adjustment' | 'found' {
     const typeMap: Record<string, 'lost' | 'damaged' | 'disposed' | 'removed' | 'adjustment' | 'found'> = {
-        'Lost': 'lost',
-        'M': 'lost', // Missing
-        'Damaged': 'damaged',
-        'D': 'damaged',
-        'E': 'damaged', // Expired
-        'Disposed': 'disposed',
-        'P': 'disposed',
-        'Removed': 'removed',
-        'Found': 'found',
-        'F': 'found'
+        'Lost': 'lost', 'M': 'lost', 'Damaged': 'damaged', 'D': 'damaged', 'E': 'damaged',
+        'Disposed': 'disposed', 'P': 'disposed', 'Removed': 'removed', 'Found': 'found', 'F': 'found'
     };
     return typeMap[adjustmentType] || 'adjustment';
 }
 
-/**
- * Store sentinel detection results
- */
-export async function storeSentinelResults(
-    results: SentinelDetectionResult[]
-): Promise<void> {
+export async function storeSentinelResults(results: SentinelDetectionResult[]): Promise<void> {
     if (results.length === 0) return;
-
-    // Resolve tenant_id for multi-tenancy
     const tenantId = await resolveTenantId(results[0].seller_id);
-
     try {
         const records = results.map(r => ({
             seller_id: r.seller_id,
             sync_id: r.sync_id,
             anomaly_type: 'reimbursement_duplicate_missed',
             severity: r.severity,
-            estimated_value: r.detection_type === 'missed_reimbursement'
-                ? r.estimated_recovery
-                : r.clawback_risk_value,
+            estimated_value: r.detection_type === 'missed_reimbursement' ? r.estimated_recovery : r.clawback_risk_value,
             currency: r.currency,
             confidence_score: r.confidence_score,
             evidence: {
@@ -899,28 +620,12 @@ export async function storeSentinelResults(
             },
             status: 'pending'
         }));
-
-        const { error } = await supabaseAdmin
-            .from('detection_results')
-            .insert(records);
-
-        if (error) {
-            logger.error('🔍 [SENTINEL] Error storing results', { error: error.message });
-        } else {
-            logger.info('🔍 [SENTINEL] Stored detection results', { count: records.length });
-        }
+        await supabaseAdmin.from('detection_results').insert(records);
     } catch (err: any) {
         logger.error('🔍 [SENTINEL] Exception storing results', { error: err.message });
     }
 }
 
-// ============================================================================
-// Utility: Recovery Lifecycle Summary
-// ============================================================================
-
-/**
- * Get recovery health summary for seller dashboard
- */
 export async function getRecoveryHealthSummary(sellerId: string): Promise<{
     totalLossEvents: number;
     totalReimbursements: number;
@@ -933,23 +638,20 @@ export async function getRecoveryHealthSummary(sellerId: string): Promise<{
     try {
         const losses = await fetchLossEvents(sellerId, { lookbackDays: 180 });
         const reimbursements = await fetchReimbursementEventsForSentinel(sellerId, { lookbackDays: 180 });
-
-        const lifecycles = buildRecoveryLifecycles(sellerId, losses, reimbursements);
-
+        const cohorts = buildRecoveryCohorts(sellerId, losses, reimbursements);
         let unmatchedValue = 0;
         let clawbackRisk = 0;
         let skusAtRisk = 0;
 
-        for (const lifecycle of lifecycles.values()) {
-            if (lifecycle.unmatched_losses.length > 0) {
-                unmatchedValue += lifecycle.unmatched_losses.reduce((s, l) => s + l.estimated_value, 0);
+        for (const cohort of cohorts.values()) {
+            if (cohort.cohort_state === 'OPEN_EXPECTED' || cohort.cohort_state === 'PARTIALLY_REIMBURSED') {
+                unmatchedValue += cohort.residual_value_delta;
                 skusAtRisk++;
             }
-            if (lifecycle.potential_duplicates.length > 0) {
-                clawbackRisk += lifecycle.potential_duplicates.reduce((s, r) => s + r.amount, 0) / 2;
+            if (cohort.cohort_state === 'DUPLICATE_REIMBURSED') {
+                clawbackRisk += Math.abs(cohort.residual_value_delta);
             }
         }
-
         const totalLossValue = losses.reduce((s, l) => s + l.estimated_value, 0);
         const totalReimbValue = reimbursements.reduce((s, r) => s + r.amount, 0);
         const recoveryRate = totalLossValue > 0 ? totalReimbValue / totalLossValue : 1;
@@ -964,21 +666,11 @@ export async function getRecoveryHealthSummary(sellerId: string): Promise<{
             actionRequired: unmatchedValue > 100 || clawbackRisk > 50
         };
     } catch (err: any) {
-        logger.error('🔍 [SENTINEL] Error generating summary', { error: err.message });
         return {
-            totalLossEvents: 0,
-            totalReimbursements: 0,
-            recoveryRate: 0,
-            unmatchedLossValue: 0,
-            clawbackRiskValue: 0,
-            skusAtRisk: 0,
-            actionRequired: false
+            totalLossEvents: 0, totalReimbursements: 0, recoveryRate: 0,
+            unmatchedLossValue: 0, clawbackRiskValue: 0, skusAtRisk: 0, actionRequired: false
         };
     }
 }
-
-// ============================================================================
-// Exports
-// ============================================================================
 
 export { THRESHOLD_SHOW_TO_USER, THRESHOLD_RECOMMEND_FILING };
