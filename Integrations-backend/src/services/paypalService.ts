@@ -94,6 +94,65 @@ class PaypalService {
       return false;
     }
   }
+
+  /**
+   * Create a drafts invoice in PayPal
+   */
+  async createInvoice(invoiceData: any): Promise<any> {
+    try {
+      const accessToken = await this.getAccessToken();
+      const response = await axios.post(
+        `${this.apiUrl}/v2/invoicing/invoices`,
+        invoiceData,
+        {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=representation'
+          }
+        }
+      );
+
+      logger.info(`✅ [PAYPAL] Invoice created: ${JSON.stringify(response.data)}`);
+      return response.data;
+    } catch (error: any) {
+      logger.error('❌ [PAYPAL] Failed to create invoice', {
+        error: error.response?.data || error.message
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Send a draft invoice to the customer
+   */
+  async sendInvoice(invoiceId: string): Promise<boolean> {
+    try {
+      const accessToken = await this.getAccessToken();
+      await axios.post(
+        `${this.apiUrl}/v2/invoicing/invoices/${invoiceId}/send`,
+        {
+          send_to_recipient: true,
+          send_to_invoicer: false
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      logger.info('✅ [PAYPAL] Invoice sent', { invoiceId });
+      return true;
+    } catch (error: any) {
+      if (error.response?.data) {
+        logger.error(`❌ [PAYPAL] Send Invoice API Error Detail: ${JSON.stringify(error.response.data)}`);
+      }
+      logger.error(`❌ [PAYPAL] Failed to send invoice ${invoiceId}: ${error.message}`);
+      return false;
+    }
+  }
 }
 
 export default new PaypalService();

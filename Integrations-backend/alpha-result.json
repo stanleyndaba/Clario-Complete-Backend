@@ -1,0 +1,5 @@
+{
+  "success": false,
+  "status": "failed",
+  "error": "Seller payout cannot be negative"
+}

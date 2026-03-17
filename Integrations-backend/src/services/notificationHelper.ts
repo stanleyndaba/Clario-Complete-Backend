@@ -55,7 +55,7 @@ export interface FundsDepositedData {
   currency?: string;
   platformFee?: number;
   sellerPayout?: number;
-  billingStatus?: 'charged' | 'pending';
+  billingStatus?: 'charged' | 'pending' | 'sent';
 }
 
 class NotificationHelper {

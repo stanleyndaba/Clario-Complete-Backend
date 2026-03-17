@@ -314,9 +314,8 @@ class BillingWorker {
             platform_fee_cents: feeCalculation.platformFeeCents,
             seller_payout_cents: feeCalculation.sellerPayoutCents,
             currency,
-            stripe_transaction_id: result.stripeTransactionId || null,
-            stripe_payment_intent_id: result.stripePaymentIntentId || null,
-            billing_status: 'charged',
+            paypal_invoice_id: result.paypalInvoiceId || null,
+            billing_status: 'sent',
             idempotency_key: billingRequest.idempotencyKey,
             metadata: {
               retry_count: currentRetryCount,
@@ -337,7 +336,7 @@ class BillingWorker {
         await supabaseAdmin
           .from('dispute_cases')
           .update({
-            billing_status: 'charged',
+            billing_status: 'sent',
             billing_transaction_id: billingTransaction?.id || null,
             platform_fee_cents: feeCalculation.platformFeeCents,
             seller_payout_cents: feeCalculation.sellerPayoutCents,
@@ -363,7 +362,7 @@ class BillingWorker {
             amountRecovered: amountRecoveredCents / 100,
             platformFee: feeCalculation.platformFeeCents / 100,
             sellerPayout: feeCalculation.sellerPayoutCents / 100,
-            stripeTransactionId: result.stripeTransactionId ? String(result.stripeTransactionId) : undefined,
+            paypalInvoiceId: result.paypalInvoiceId,
             duration: 0
           });
         } catch (logError: any) {
@@ -382,7 +381,7 @@ class BillingWorker {
             currency,
             platformFee: feeCalculation.platformFeeCents / 100,
             sellerPayout: feeCalculation.sellerPayoutCents / 100,
-            billingStatus: 'charged'
+            billingStatus: 'sent'
           });
         } catch (notifError: any) {
           logger.warn('⚠️ [BILLING] Failed to send notification', {
@@ -393,11 +392,10 @@ class BillingWorker {
         return {
           success: true,
           billingTransactionId: billingTransaction?.id,
-          stripeTransactionId: result.stripeTransactionId,
-          stripePaymentIntentId: result.stripePaymentIntentId,
+          paypalInvoiceId: result.paypalInvoiceId,
           platformFeeCents: feeCalculation.platformFeeCents,
           sellerPayoutCents: feeCalculation.sellerPayoutCents,
-          status: 'charged'
+          status: 'sent'
         };
 
       } else {

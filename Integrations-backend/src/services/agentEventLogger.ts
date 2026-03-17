@@ -159,6 +159,7 @@ export interface BillingEventData {
   platformFee: number;
   sellerPayout: number;
   stripeTransactionId?: string;
+  paypalInvoiceId?: string;
   duration: number;
   error?: string;
 }
@@ -450,6 +451,7 @@ class AgentEventLogger {
         platformFee: data.platformFee,
         sellerPayout: data.sellerPayout,
         stripeTransactionId: data.stripeTransactionId,
+        paypalInvoiceId: data.paypalInvoiceId,
         error: data.error
       }
     });

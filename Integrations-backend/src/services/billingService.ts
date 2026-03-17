@@ -1,12 +1,6 @@
-/**
- * Billing Service
- * Handles billing operations for recovered amounts
- * Integrates with Stripe Payments API to charge 20% platform fee
- */
-
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
-import axios, { AxiosResponse } from 'axios';
+import paypalService from './paypalService';
 
 export interface BillingRequest {
   disputeId: string;
@@ -20,11 +14,10 @@ export interface BillingRequest {
 export interface BillingResult {
   success: boolean;
   billingTransactionId?: string;
-  stripeTransactionId?: number;
-  stripePaymentIntentId?: string;
+  paypalInvoiceId?: string;
   platformFeeCents?: number;
   sellerPayoutCents?: number;
-  status?: 'pending' | 'charged' | 'failed' | 'disabled';
+  status?: 'pending' | 'charged' | 'failed' | 'disabled' | 'sent';
   error?: string;
 }
 
@@ -35,50 +28,38 @@ export interface FeeCalculation {
   currency: string;
 }
 
-interface CustomerMapResponse {
-  stripeCustomerId: number;
-  isNew: boolean;
-}
-
+/**
+ * Billing Service (Strictly PayPal)
+ * Handles billing operations for recovered amounts via PayPal Invoicing
+ */
 class BillingService {
-  private stripePaymentsUrl: string | null;
   private platformFeePercentage: number = 20; // 20% platform fee
   private minimumFeeCents: number = 50; // $0.50 minimum fee
 
   constructor() {
-    this.stripePaymentsUrl = process.env.STRIPE_PAYMENTS_URL || null;
-    if (this.stripePaymentsUrl) {
-      logger.info('💳 [BILLING] Billing Service initialized', {
-        stripePaymentsUrl: this.stripePaymentsUrl
-      });
-    } else {
-      logger.warn('💳 [BILLING] STRIPE_PAYMENTS_URL not configured - billing service disabled until configured');
-    }
+    logger.info('💳 [BILLING] Billing Service initialized with PayPal');
   }
 
   /**
    * Calculate platform fee (20%) and seller payout (80%)
    */
   calculateFees(amountRecoveredCents: number, currency: string = 'usd'): FeeCalculation {
-    if (amountRecoveredCents <= 0) {
-      throw new Error('Amount must be positive');
+    if (amountRecoveredCents < 0) {
+      throw new Error('Amount recovered cannot be negative');
     }
 
-    // Calculate platform fee (20%)
-    const platformFeeCents = Math.round(
-      (amountRecoveredCents * this.platformFeePercentage) / 100
-    );
+    if (amountRecoveredCents === 0) {
+      return {
+        amountRecoveredCents: 0,
+        platformFeeCents: 0,
+        sellerPayoutCents: 0,
+        currency
+      };
+    }
 
-    // Ensure minimum fee
-    const finalPlatformFee = Math.max(platformFeeCents, this.minimumFeeCents);
-
-    // Calculate seller payout (80%)
+    const platformFeeCents = Math.round((amountRecoveredCents * this.platformFeePercentage) / 100);
+    const finalPlatformFee = Math.min(Math.max(platformFeeCents, this.minimumFeeCents), amountRecoveredCents);
     const sellerPayoutCents = amountRecoveredCents - finalPlatformFee;
-
-    // Validate that seller payout is not negative
-    if (sellerPayoutCents < 0) {
-      throw new Error('Seller payout cannot be negative');
-    }
 
     return {
       amountRecoveredCents,
@@ -89,106 +70,109 @@ class BillingService {
   }
 
   /**
-   * Charge commission via Stripe Payments API
+   * Charge commission via PayPal Invoicing
    */
   async chargeCommission(request: BillingRequest): Promise<BillingResult> {
     try {
-      if (!this.stripePaymentsUrl) {
-        throw new Error('Stripe payments service is not configured (set STRIPE_PAYMENTS_URL)');
-      }
-
-      logger.info('💳 [BILLING] Charging commission', {
+      logger.info('💳 [BILLING] Charging commission via PayPal', {
         disputeId: request.disputeId,
         amountRecoveredCents: request.amountRecoveredCents
       });
 
-      // Fetch seller record to obtain the deterministic Stripe customer ID
-      const { supabaseAdmin } = await import('../database/supabaseClient');
-      const { data: sellerRecord, error: sellerError } = await supabaseAdmin
+      // 1. Fetch user record
+      let userEmail = 'billing-fallback@margin-finance.com';
+      const { data: userRecord, error: userError } = await supabaseAdmin
         .from('users')
-        .select('id, stripe_customer_id, seller_id, amazon_seller_id, email')
+        .select('id, email, seller_id')
         .eq('seller_id', request.userId)
         .single();
 
-      if (sellerError) {
-        throw new Error(`Unable to load seller record: ${sellerError.message}`);
-      }
-
-      const stripeCustomerIdInt = sellerRecord?.stripe_customer_id;
-
-      if (!stripeCustomerIdInt) {
-        logger.warn('⚠️ [BILLING] Stripe customer ID missing for seller - skipping charge', {
-          disputeId: request.disputeId,
-          sellerId: sellerRecord?.seller_id,
-          amazonSellerId: sellerRecord?.amazon_seller_id
+      if (userRecord?.email) {
+        userEmail = userRecord.email;
+      } else {
+        logger.warn('⚠️ [BILLING] Using fallback email for shadow user', {
+          userId: request.userId,
+          fallbackEmail: userEmail
         });
-        // Optional: update dispute status to pending_reconnect here
-        return {
-          success: false,
-          status: 'failed',
-          error: 'Stripe customer ID missing - user must reconnect billing'
-        };
       }
 
-      // Calculate fees
-      const feeCalculation = this.calculateFees(
-        request.amountRecoveredCents,
-        request.currency || 'usd'
-      );
+      // 2. Calculate fees
+      const fees = this.calculateFees(request.amountRecoveredCents, request.currency || 'USD');
 
-      // Generate idempotency key if not provided
-      const idempotencyKey = request.idempotencyKey || 
-        `billing-${request.disputeId}-${Date.now()}`;
-
-      // Call Stripe Payments API
-      const response = await axios.post(
-        `${this.stripePaymentsUrl}/api/v1/stripe/charge-commission`,
-        {
-          userId: stripeCustomerIdInt,
-          amountRecoveredCents: request.amountRecoveredCents,
-          currency: request.currency || 'usd',
-          idempotencyKey,
-          metadata: {
-            disputeId: request.disputeId,
-            recoveryId: request.recoveryId,
-            source: 'billing_worker'
+      // 3. Create PayPal Invoice
+      const invoiceData = {
+        detail: {
+          reference: request.disputeId,
+          currency_code: fees.currency.toUpperCase(),
+          note: "Platform Service Fee (20%) for successful Amazon FBA recovery.",
+          term: "Payable on receipt",
+          payment_term: {
+            term_type: "NET_10"
           }
         },
-        {
-          timeout: 30000,
-          headers: {
-            'Content-Type': 'application/json'
+        invoicer: {
+          business_name: "Margin Finance",
+          email_address: "mvelo@margin-finance.com"
+        },
+        primary_recipients: [
+          {
+            billing_info: {
+              email_address: userRecord?.email || "mvelo.ndaba@gmail.com",
+              name: {
+                given_name: "Valued",
+                surname: "Merchant"
+              }
+            }
           }
+        ],
+        items: [
+          {
+            name: "Recovery Commission (20%)",
+            description: `Commission for recovered funds on dispute ${request.disputeId}`,
+            quantity: "1",
+            unit_amount: {
+              currency_code: fees.currency.toUpperCase(),
+              value: (fees.platformFeeCents / 100).toFixed(2)
+            }
+          }
+        ],
+        configuration: {
+          allow_tip: false,
+          tax_inclusive: false
         }
-      );
+      };
 
-      if (!response.data || !response.data.success) {
-        throw new Error(response.data?.error || 'Failed to charge commission');
+      const paypalInvoice = await paypalService.createInvoice(invoiceData);
+      
+      // 4. Send Invoice immediately
+      const sent = await paypalService.sendInvoice(paypalInvoice.id);
+
+      if (!sent) {
+        throw new Error('Failed to send PayPal invoice after creation');
       }
 
-      const transactionData = response.data.data;
-
-      logger.info('✅ [BILLING] Commission charged successfully', {
+      logger.info('✅ [BILLING] PayPal commission invoice sent successfully', {
         disputeId: request.disputeId,
-        transactionId: transactionData.transactionId,
-        platformFeeCents: feeCalculation.platformFeeCents
+        paypalInvoiceId: paypalInvoice.id,
+        platformFeeCents: fees.platformFeeCents
       });
 
       return {
         success: true,
-        stripeTransactionId: transactionData.transactionId,
-        stripePaymentIntentId: transactionData.paymentIntentId,
-        platformFeeCents: feeCalculation.platformFeeCents,
-        sellerPayoutCents: feeCalculation.sellerPayoutCents,
-        status: transactionData.status || 'pending'
+        paypalInvoiceId: paypalInvoice.id,
+        platformFeeCents: fees.platformFeeCents,
+        sellerPayoutCents: fees.sellerPayoutCents,
+        status: 'sent'
       };
 
     } catch (error: any) {
-      logger.error('❌ [BILLING] Failed to charge commission', {
+      if (error.response?.data) {
+        console.error('❌ [BILLING] PayPal API Error Details:', JSON.stringify(error.response.data, null, 2));
+      }
+      logger.error('❌ [BILLING] Failed to charge commission via PayPal', {
         disputeId: request.disputeId,
         userId: request.userId,
-        error: error.message,
-        response: error.response?.data
+        error: error.message
       });
 
       return {
@@ -200,204 +184,50 @@ class BillingService {
   }
 
   /**
-   * Retrieve or create the integer Stripe customer ID for a given Supabase user UUID.
-   */
-  async getOrCreateStripeCustomerId(externalUserId: string, email: string): Promise<number> {
-    if (!this.stripePaymentsUrl) {
-      throw new Error('Stripe payments service is not configured (set STRIPE_PAYMENTS_URL)');
-    }
-
-    try {
-      const response: AxiosResponse<CustomerMapResponse> = await axios.post(
-        `${this.stripePaymentsUrl}/api/v1/stripe/customer-map`,
-        { externalUserId, email },
-        { timeout: 15000 }
-      );
-
-      if (!response.data?.stripeCustomerId) {
-        throw new Error('Stripe customer mapping response did not include an ID');
-      }
-
-      return response.data.stripeCustomerId;
-    } catch (error: any) {
-      logger.error('❌ [BILLING] Failed to map user to Stripe customer ID', {
-        externalUserId,
-        error: error?.message,
-        response: error?.response?.data
-      });
-      throw new Error('Failed to map user ID for billing integration');
-    }
-  }
-
-  /**
    * Charge commission with retry logic
    */
-  async chargeCommissionWithRetry(
-    request: BillingRequest,
-    maxRetries: number = 3
-  ): Promise<BillingResult> {
-    if (!this.stripePaymentsUrl) {
-      const errorMessage = 'Stripe payments service disabled (STRIPE_PAYMENTS_URL not set)';
-      logger.info('💳 [BILLING] Skipping commission charge - Stripe not configured', {
-        disputeId: request.disputeId,
-        userId: request.userId,
-        error: errorMessage
-      });
-      return {
-        success: false,
-        status: 'disabled',
-        error: errorMessage
-      };
-    }
-
-    let lastError: any;
-    let lastResult: BillingResult | null = null;
+  async chargeCommissionWithRetry(request: BillingRequest, maxRetries: number = 3): Promise<BillingResult> {
+    let lastResult: BillingResult = { success: false, status: 'failed' };
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const result = await this.chargeCommission(request);
-
-        if (result.success) {
-          return result;
-        }
-
+        if (result.success) return result;
         lastResult = result;
-        lastError = new Error(result.error || 'Failed to charge commission');
-
-        if (attempt < maxRetries) {
-          const delay = 2000 * Math.pow(2, attempt); // Exponential backoff
-          logger.warn(`🔄 [BILLING] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, {
-            disputeId: request.disputeId,
-            error: lastError.message
-          });
-          await new Promise(resolve => setTimeout(resolve, delay));
-        }
-
       } catch (error: any) {
-        lastError = error;
-        lastResult = {
-          success: false,
-          status: 'failed',
-          error: error.message
-        };
-
-        if (attempt < maxRetries) {
-          const delay = 2000 * Math.pow(2, attempt);
-          logger.warn(`🔄 [BILLING] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, {
-            disputeId: request.disputeId,
-            error: error.message
-          });
-          await new Promise(resolve => setTimeout(resolve, delay));
-        }
+        lastResult = { success: false, status: 'failed', error: error.message };
+      }
+      
+      if (attempt < maxRetries) {
+        const delay = 1000 * Math.pow(2, attempt);
+        await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
-
-    logger.error('❌ [BILLING] All retry attempts exhausted', {
-      disputeId: request.disputeId,
-      maxRetries,
-      error: lastError?.message
-    });
-
-    return lastResult || {
-      success: false,
-      status: 'failed',
-      error: lastError?.message || 'Failed to charge commission after retries'
-    };
-  }
-
-  /**
-   * Get billing status for a dispute case
-   */
-  async getBillingStatus(disputeId: string): Promise<{
-    billingStatus: string | null;
-    billingTransactionId: string | null;
-    platformFeeCents: number | null;
-    billedAt: string | null;
-  }> {
-    try {
-      // Get dispute case
-      const { data: disputeCase } = await supabaseAdmin
-        .from('dispute_cases')
-        .select('billing_status, billing_transaction_id, platform_fee_cents, billed_at')
-        .eq('id', disputeId)
-        .single();
-
-      if (!disputeCase) {
-        return {
-          billingStatus: null,
-          billingTransactionId: null,
-          platformFeeCents: null,
-          billedAt: null
-        };
-      }
-
-      return {
-        billingStatus: disputeCase.billing_status || null,
-        billingTransactionId: disputeCase.billing_transaction_id || null,
-        platformFeeCents: disputeCase.platform_fee_cents || null,
-        billedAt: disputeCase.billed_at || null
-      };
-
-    } catch (error: any) {
-      logger.error('❌ [BILLING] Failed to get billing status', {
-        disputeId,
-        error: error.message
-      });
-      return {
-        billingStatus: null,
-        billingTransactionId: null,
-        platformFeeCents: null,
-        billedAt: null
-      };
-    }
+    return lastResult;
   }
 
   /**
    * Log billing error
    */
-  async logBillingError(
-    disputeId: string,
-    recoveryId: string | null,
-    userId: string,
-    error: Error | string,
-    retryCount: number = 0,
-    maxRetries: number = 3
-  ): Promise<void> {
+  async logBillingError(disputeId: string, recoveryId: string | null, userId: string, error: Error | string, retryCount: number = 0, maxRetries: number = 3): Promise<void> {
     try {
       const errorMessage = error instanceof Error ? error.message : error;
-      const errorStack = error instanceof Error ? error.stack : null;
-
-      await supabaseAdmin
-        .from('billing_errors')
-        .insert({
-          dispute_id: disputeId,
-          recovery_id: recoveryId,
-          user_id: userId,
-          error_type: 'billing_failed',
-          error_message: errorMessage,
-          error_stack: errorStack,
-          retry_count: retryCount,
-          max_retries: maxRetries,
-          metadata: {
-            timestamp: new Date().toISOString()
-          }
-        });
-
-      logger.debug('📝 [BILLING] Error logged', {
-        disputeId,
-        errorMessage
+      await supabaseAdmin.from('billing_errors').insert({
+        dispute_id: disputeId,
+        recovery_id: recoveryId,
+        user_id: userId,
+        error_type: 'billing_failed_paypal',
+        error_message: errorMessage,
+        retry_count: retryCount,
+        max_retries: maxRetries
       });
-
-    } catch (logError: any) {
-      logger.error('❌ [BILLING] Failed to log error', {
-        disputeId,
-        error: logError.message
-      });
+    } catch (logError) {
+      logger.error('❌ [BILLING] Failed to log error', { disputeId, error: logError });
     }
   }
+
+  // Backwards compatibility for Worker
+  async calculateFeesDeprecated(amount: number) { return this.calculateFees(amount); }
 }
 
-// Export singleton instance
-const billingService = new BillingService();
-export default billingService;
-
+export default new BillingService();

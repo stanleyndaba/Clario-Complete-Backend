@@ -52,61 +52,7 @@ const config = {
   S3_REGION: process.env.S3_REGION,
   S3_PREFIX: process.env.S3_PREFIX || 'opside',
 
-  // Stripe (not used in demo phase)
-  STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY,
-  STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET,
-
-  // OAuth client configuration (optional)
-  GMAIL_CLIENT_ID: process.env.GMAIL_CLIENT_ID,
-  GMAIL_CLIENT_SECRET: process.env.GMAIL_CLIENT_SECRET,
-  GMAIL_REDIRECT_URI: process.env.GMAIL_REDIRECT_URI,
-  GDRIVE_CLIENT_ID: process.env.GDRIVE_CLIENT_ID,
-  GDRIVE_CLIENT_SECRET: process.env.GDRIVE_CLIENT_SECRET,
-  GDRIVE_REDIRECT_URI: process.env.GDRIVE_REDIRECT_URI,
-  // Google Drive - alternative naming convention
-  GOOGLE_DRIVE_CLIENT_ID: process.env.GOOGLE_DRIVE_CLIENT_ID || process.env.GDRIVE_CLIENT_ID,
-  GOOGLE_DRIVE_CLIENT_SECRET: process.env.GOOGLE_DRIVE_CLIENT_SECRET || process.env.GDRIVE_CLIENT_SECRET,
-  GOOGLE_DRIVE_REDIRECT_URI: process.env.GOOGLE_DRIVE_REDIRECT_URI || process.env.GDRIVE_REDIRECT_URI,
-  // Outlook/Microsoft - both naming conventions supported
-  OUTLOOK_CLIENT_ID: process.env.OUTLOOK_CLIENT_ID,
-  OUTLOOK_CLIENT_SECRET: process.env.OUTLOOK_CLIENT_SECRET,
-  OUTLOOK_REDIRECT_URI: process.env.OUTLOOK_REDIRECT_URI,
-  MICROSOFT_CLIENT_ID: process.env.MICROSOFT_CLIENT_ID || process.env.OUTLOOK_CLIENT_ID,
-  MICROSOFT_CLIENT_SECRET: process.env.MICROSOFT_CLIENT_SECRET || process.env.OUTLOOK_CLIENT_SECRET,
-  MICROSOFT_REDIRECT_URI: process.env.MICROSOFT_REDIRECT_URI || process.env.OUTLOOK_REDIRECT_URI,
-  // Dropbox
-  DROPBOX_CLIENT_ID: process.env.DROPBOX_CLIENT_ID,
-  DROPBOX_CLIENT_SECRET: process.env.DROPBOX_CLIENT_SECRET,
-  DROPBOX_REDIRECT_URI: process.env.DROPBOX_REDIRECT_URI,
-  // OneDrive (Microsoft Graph - separate from Outlook)
-  ONEDRIVE_CLIENT_ID: process.env.ONEDRIVE_CLIENT_ID || process.env.MICROSOFT_CLIENT_ID,
-  ONEDRIVE_CLIENT_SECRET: process.env.ONEDRIVE_CLIENT_SECRET || process.env.MICROSOFT_CLIENT_SECRET,
-  ONEDRIVE_REDIRECT_URI: process.env.ONEDRIVE_REDIRECT_URI,
-  // Adobe Sign
-  ADOBESIGN_CLIENT_ID: process.env.ADOBESIGN_CLIENT_ID,
-  ADOBESIGN_CLIENT_SECRET: process.env.ADOBESIGN_CLIENT_SECRET,
-  ADOBESIGN_REDIRECT_URI: process.env.ADOBESIGN_REDIRECT_URI,
-  // Slack
-  SLACK_CLIENT_ID: process.env.SLACK_CLIENT_ID,
-  SLACK_CLIENT_SECRET: process.env.SLACK_CLIENT_SECRET,
-  SLACK_REDIRECT_URI: process.env.SLACK_REDIRECT_URI,
-  STRIPE_CLIENT_ID: process.env.STRIPE_CLIENT_ID,
-  STRIPE_CLIENT_SECRET: process.env.STRIPE_CLIENT_SECRET,
-  STRIPE_REDIRECT_URI: process.env.STRIPE_REDIRECT_URI,
-  GMAIL_AUTH_URL: process.env.GMAIL_AUTH_URL,
-  STRIPE_AUTH_URL: process.env.STRIPE_AUTH_URL,
-  JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
-
-  // Amazon SP-API Mock Data Generator (Phase 1 Testing)
-  // Enable mock data generator when sandbox returns empty data
-  USE_MOCK_DATA_GENERATOR: process.env.USE_MOCK_DATA_GENERATOR !== 'false', // Default: true
-  MOCK_SCENARIO: (process.env.MOCK_SCENARIO as 'normal_week' | 'high_volume' | 'with_issues') || 'normal_week',
-  MOCK_RECORD_COUNT: process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 850, // Enterprise demo: 850 records for $150K+ potential
-
-  // Sync timeout configuration (in milliseconds)
-  SYNC_TIMEOUT_MS: toInt(process.env.SYNC_TIMEOUT_MS, 300 * 1000), // Default: 300 seconds (5 minutes) for ML detection
-
-  // PayPal Integration
+  // PayPal is the exclusive billing provider
   PAYPAL_CLIENT_ID: process.env.PAYPAL_CLIENT_ID,
   PAYPAL_CLIENT_SECRET: process.env.PAYPAL_CLIENT_SECRET,
   PAYPAL_WEBHOOK_ID: process.env.PAYPAL_WEBHOOK_ID,
