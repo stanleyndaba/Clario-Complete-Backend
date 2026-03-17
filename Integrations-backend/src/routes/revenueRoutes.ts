@@ -12,6 +12,7 @@
 import { Router, Request, Response } from 'express';
 import { reimbursementMatcherService } from '../services/reimbursementMatcherService';
 import { commissionInvoiceService } from '../services/commissionInvoiceService';
+import * as paymentController from '../controllers/paymentController';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -265,5 +266,21 @@ router.get('/metrics', async (req: Request, res: Response) => {
         res.status(500).json({ success: false, error: error?.message });
     }
 });
+
+// ════════════════════════════════════════════════════════════════════
+// PAYPAL VAULTING (AUTO-CHARGE)
+// ════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /api/revenue/vault/setup
+ * Get a setup token for PayPal Vaulting
+ */
+router.post('/vault/setup', paymentController.getVaultSetupToken);
+
+/**
+ * POST /api/revenue/vault/finalize
+ * Exchange setup token for payment token and save to user
+ */
+router.post('/vault/finalize', paymentController.finalizeVaulting);
 
 export default router;

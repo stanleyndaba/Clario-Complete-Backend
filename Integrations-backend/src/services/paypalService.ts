@@ -153,6 +153,118 @@ class PaypalService {
       return false;
     }
   }
+  /**
+   * Create a Vault Setup Token for saving a payment method (v3)
+   */
+  async createVaultSetupToken(customerId?: string): Promise<any> {
+    try {
+      const accessToken = await this.getAccessToken();
+      const response = await axios.post(
+        `${this.apiUrl}/v3/vault/setup-tokens`,
+        {
+          payment_source: {
+            paypal: {
+              usage_type: "MERCHANT",
+              customer_type: "CONSUMER",
+              experience_context: {
+                return_url: "https://example.com/return",
+                cancel_url: "https://example.com/cancel"
+              }
+            }
+          }
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      logger.info('✅ [PAYPAL] Vault Setup Token created', { id: response.data.id });
+      return response.data;
+    } catch (error: any) {
+      logger.error('❌ [PAYPAL] Failed to create vault setup token', {
+        error: error.response?.data || error.message
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Create a permanent Payment Token from a Setup Token (v3)
+   */
+  async createPaymentToken(setupTokenId: string): Promise<any> {
+    try {
+      const accessToken = await this.getAccessToken();
+      const response = await axios.post(
+        `${this.apiUrl}/v3/vault/payment-tokens`,
+        {
+          payment_source: {
+            token: {
+              id: setupTokenId,
+              type: "SETUP_TOKEN"
+            }
+          }
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      logger.info('✅ [PAYPAL] Permanent Payment Token created', { id: response.data.id });
+      return response.data;
+    } catch (error: any) {
+      logger.error('❌ [PAYPAL] Failed to create payment token', {
+        error: error.response?.data || error.message
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Charge a saved Payment Token (Auto-Charge)
+   */
+  async chargePaymentToken(paymentTokenId: string, amount: string, currency: string, referenceId: string): Promise<any> {
+    try {
+      const accessToken = await this.getAccessToken();
+      const response = await axios.post(
+        `${this.apiUrl}/v2/checkout/orders`,
+        {
+          intent: "CAPTURE",
+          purchase_units: [
+            {
+              reference_id: referenceId,
+              amount: {
+                currency_code: currency.toUpperCase(),
+                value: amount
+              }
+            }
+          ],
+          payment_source: {
+            vault_id: paymentTokenId
+          }
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      logger.info('✅ [PAYPAL] Auto-charge order created', { id: response.data.id });
+      return response.data;
+    } catch (error: any) {
+      logger.error('❌ [PAYPAL] Failed to charge payment token', {
+        error: error.response?.data || error.message
+      });
+      throw error;
+    }
+  }
 }
 
 export default new PaypalService();

@@ -94,3 +94,59 @@ export const handlePaypalWebhook = async (req: Request, res: Response) => {
     res.status(500).send('Internal Processing error');
   }
 };
+
+/**
+ * Get a PayPal Vault Setup Token
+ */
+export const getVaultSetupToken = async (req: Request, res: Response) => {
+  try {
+    const setupToken = await paypalService.createVaultSetupToken();
+    res.json({ success: true, setupToken });
+  } catch (error: any) {
+    logger.error('❌ [PAYMENT] Failed to get vault setup token', { error: error.message });
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
+ * Finalize Vaulting: Exchange setup token for payment token and save to user
+ */
+export const finalizeVaulting = async (req: Request, res: Response) => {
+  try {
+    const { setupTokenId, sellerId } = req.body;
+    
+    if (!setupTokenId || !sellerId) {
+      return res.status(400).json({ success: false, error: 'setupTokenId and sellerId are required' });
+    }
+
+    // 1. Create permanent payment token
+    const paymentToken = await paypalService.createPaymentToken(setupTokenId);
+    
+    // 2. Save to user in database
+    const { error } = await supabaseAdmin
+      .from('users')
+      .update({
+        paypal_payment_token: paymentToken.id,
+        paypal_email: paymentToken.payment_source?.paypal?.email_address,
+        updated_at: new Date().toISOString()
+      })
+      .eq('seller_id', sellerId);
+
+    if (error) {
+      logger.error('❌ [PAYMENT] Failed to save payment token to user', { error: error.message });
+      throw error;
+    }
+
+    logger.info('✅ [PAYMENT] Payment method vaulted and saved', { sellerId, tokenId: paymentToken.id });
+
+    res.json({ 
+      success: true, 
+      paymentTokenId: paymentToken.id,
+      paypalEmail: paymentToken.payment_source?.paypal?.email_address
+    });
+
+  } catch (error: any) {
+    logger.error('❌ [PAYMENT] Finalize vaulting failed', { error: error.message });
+    res.status(500).json({ success: false, error: error.message });
+  }
+};

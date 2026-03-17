@@ -184,6 +184,68 @@ class BillingService {
   }
 
   /**
+   * Charge commission using a vaulted payment method (Auto-Charge)
+   */
+  async chargeVaultedPayment(request: BillingRequest): Promise<BillingResult> {
+    try {
+      logger.info('💳 [BILLING] Auto-charging via PayPal Vault', {
+        disputeId: request.disputeId,
+        userId: request.userId
+      });
+
+      // 1. Fetch user record for vault token
+      const { data: userRecord, error: userError } = await supabaseAdmin
+        .from('users')
+        .select('id, paypal_payment_token')
+        .eq('seller_id', request.userId)
+        .single();
+
+      if (!userRecord?.paypal_payment_token) {
+        logger.warn('⚠️ [BILLING] No vaulted payment method found for user, falling back to invoice', {
+          userId: request.userId
+        });
+        return this.chargeCommission(request);
+      }
+
+      // 2. Calculate fees
+      const fees = this.calculateFees(request.amountRecoveredCents, request.currency || 'USD');
+
+      // 3. Create PayPal Order using Vault ID
+      const amount = (fees.platformFeeCents / 100).toFixed(2);
+      const chargeResult = await paypalService.chargePaymentToken(
+        userRecord.paypal_payment_token,
+        amount,
+        fees.currency,
+        request.disputeId
+      );
+
+      logger.info('✅ [BILLING] Automated charge successful', {
+        disputeId: request.disputeId,
+        orderId: chargeResult.id
+      });
+
+      return {
+        success: true,
+        platformFeeCents: fees.platformFeeCents,
+        sellerPayoutCents: fees.sellerPayoutCents,
+        status: 'charged',
+        metadata: {
+          paypalOrderId: chargeResult.id
+        }
+      } as any;
+
+    } catch (error: any) {
+      logger.error('❌ [BILLING] Automated charge failed', {
+        disputeId: request.disputeId,
+        error: error.message
+      });
+      
+      // Fallback to invoice if auto-charge fails
+      return this.chargeCommission(request);
+    }
+  }
+
+  /**
    * Charge commission with retry logic
    */
   async chargeCommissionWithRetry(request: BillingRequest, maxRetries: number = 3): Promise<BillingResult> {
