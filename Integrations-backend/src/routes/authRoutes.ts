@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import config from '../config/env';
+import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 
 const router = Router();
 
@@ -60,16 +61,172 @@ router.get('/me', async (req, res) => {
       return;
     }
 
-    // For now, return basic user info from token
-    // TODO: Fetch full user data from database if needed
+    const tenantSlug = ((req.query.tenantSlug as string) || (req.query.tenant_slug as string) || '').trim();
+    const headerTenantId = (req.headers['x-tenant-id'] as string || '').trim();
+    const adminClient = supabaseAdmin || supabase;
+    const safeUserId = convertUserIdToUuid(user_id);
+
+    let tenant: { id: string; slug?: string; name?: string } | null = null;
+    let membership: { role?: string } | null = null;
+
+    if (tenantSlug) {
+      const { data: tenantData, error: tenantError } = await adminClient
+        .from('tenants')
+        .select('id, slug, name')
+        .eq('slug', tenantSlug)
+        .is('deleted_at', null)
+        .maybeSingle();
+
+      if (tenantError) {
+        res.status(500).json({
+          success: false,
+          message: 'Failed to resolve tenant context'
+        });
+        return;
+      }
+
+      if (!tenantData) {
+        res.status(404).json({
+          success: false,
+          message: 'Tenant not found'
+        });
+        return;
+      }
+
+      const { data: membershipData, error: membershipError } = await adminClient
+        .from('tenant_memberships')
+        .select('role')
+        .eq('tenant_id', tenantData.id)
+        .eq('user_id', safeUserId)
+        .eq('is_active', true)
+        .is('deleted_at', null)
+        .maybeSingle();
+
+      if (membershipError) {
+        res.status(500).json({
+          success: false,
+          message: 'Failed to verify tenant membership'
+        });
+        return;
+      }
+
+      if (!membershipData) {
+        res.status(403).json({
+          success: false,
+          message: 'You do not have access to this tenant'
+        });
+        return;
+      }
+
+      tenant = tenantData;
+      membership = membershipData;
+    } else if (headerTenantId) {
+      const { data: membershipData } = await adminClient
+        .from('tenant_memberships')
+        .select('role')
+        .eq('tenant_id', headerTenantId)
+        .eq('user_id', safeUserId)
+        .eq('is_active', true)
+        .is('deleted_at', null)
+        .maybeSingle();
+
+      if (membershipData) {
+        const { data: tenantData } = await adminClient
+          .from('tenants')
+          .select('id, slug, name')
+          .eq('id', headerTenantId)
+          .is('deleted_at', null)
+          .maybeSingle();
+
+        if (tenantData) {
+          tenant = tenantData;
+          membership = membershipData;
+        }
+      }
+    }
+
+    let userQuery = adminClient
+      .from('users')
+      .select('id, email, company_name, amazon_seller_id, seller_id, paypal_payment_token, paypal_email, created_at, last_login_at, tenant_id')
+      .eq('id', safeUserId);
+
+    if (tenant?.id) {
+      userQuery = userQuery.eq('tenant_id', tenant.id);
+    }
+
+    const { data: userRecord, error: userError } = await userQuery.maybeSingle();
+
+    if (userError && userError.code !== 'PGRST116') {
+      res.status(500).json({
+        success: false,
+        message: 'Failed to load user profile'
+      });
+      return;
+    }
+
+    if (tenant?.id && !userRecord) {
+      res.status(404).json({
+        success: false,
+        message: 'No tenant-bound user profile found'
+      });
+      return;
+    }
+
+    let amazon_connected = false;
+    let amazonAccount: { seller_id?: string; display_name?: string; email?: string } | null = null;
+
+    try {
+      let tokenQuery = adminClient
+        .from('tokens')
+        .select('expires_at, tenant_id')
+        .eq('user_id', safeUserId)
+        .eq('provider', 'amazon')
+        .order('updated_at', { ascending: false })
+        .limit(1);
+
+      if (tenant?.id) {
+        tokenQuery = tokenQuery.eq('tenant_id', tenant.id);
+      }
+
+      const { data: amazonToken } = await tokenQuery.maybeSingle();
+      if (amazonToken && (!amazonToken.expires_at || new Date(amazonToken.expires_at) > new Date())) {
+        amazon_connected = true;
+      }
+    } catch (_) {
+      amazon_connected = false;
+    }
+
+    if (userRecord) {
+      amazonAccount = {
+        seller_id: userRecord.amazon_seller_id || userRecord.seller_id || undefined,
+        display_name: userRecord.company_name || undefined,
+        email: userRecord.email || undefined
+      };
+    }
+
+    const resolvedEmail = userRecord?.email || decoded.email || null;
+    const resolvedName = userRecord?.company_name || decoded.name || decoded.company_name || null;
+
     res.json({
-      id: user_id,
-      email: decoded.email || 'user@example.com',
-      name: decoded.name || decoded.company_name || 'User',
-      amazon_connected: !!decoded.amazon_seller_id,
-      stripe_connected: !!decoded.stripe_customer_id,
-      created_at: decoded.created_at || new Date().toISOString(),
-      last_login: decoded.last_login || new Date().toISOString()
+      id: userRecord?.id || safeUserId,
+      email: resolvedEmail,
+      name: resolvedName,
+      company_name: userRecord?.company_name || null,
+      amazon_seller_id: userRecord?.amazon_seller_id || userRecord?.seller_id || null,
+      seller_id: userRecord?.seller_id || null,
+      amazon_connected,
+      amazon_account: amazonAccount,
+      stripe_connected: false,
+      paypal_connected: !!userRecord?.paypal_payment_token,
+      paypal_email: userRecord?.paypal_email || null,
+      paypal_payment_token: userRecord?.paypal_payment_token || null,
+      billing_provider: 'paypal',
+      created_at: userRecord?.created_at || decoded.created_at || null,
+      last_login: userRecord?.last_login_at || decoded.last_login || null,
+      tenant_id: tenant?.id || userRecord?.tenant_id || null,
+      tenant_slug: tenant?.slug || null,
+      tenant_name: tenant?.name || null,
+      role: membership?.role || null
     });
   } catch (error: any) {
     res.status(500).json({
