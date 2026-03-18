@@ -349,8 +349,10 @@ export function detectRefundWithoutReturn(
 // ============================================================================
 
 export async function fetchRefundEvents(sellerId: string, options?: { startDate?: string }): Promise<RefundEvent[]> {
+    const tenantId = await resolveTenantId(sellerId);
     const { data, error } = await supabaseAdmin.from('settlements')
         .select('*')
+        .eq('tenant_id', tenantId)
         .eq('user_id', sellerId)
         .in('transaction_type', ['refund', 'fee'])
         .filter('amount', 'lt', 0);
@@ -366,8 +368,11 @@ export async function fetchRefundEvents(sellerId: string, options?: { startDate?
 }
 
 export async function fetchReturnEvents(sellerId: string, options?: { startDate?: string }): Promise<ReturnEvent[]> {
+    const tenantId = await resolveTenantId(sellerId);
     const { data, error } = await supabaseAdmin.from('returns')
-        .select('*').eq('user_id', sellerId);
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .eq('user_id', sellerId);
     
     if (error) return [];
     return data.map(r => ({
@@ -380,8 +385,12 @@ export async function fetchReturnEvents(sellerId: string, options?: { startDate?
 }
 
 export async function fetchReimbursementEvents(sellerId: string, options?: { startDate?: string }): Promise<ReimbursementEvent[]> {
+    const tenantId = await resolveTenantId(sellerId);
     const { data, error } = await supabaseAdmin.from('settlements')
-        .select('*').eq('user_id', sellerId).eq('transaction_type', 'reimbursement');
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .eq('user_id', sellerId)
+        .eq('transaction_type', 'reimbursement');
     
     if (error) return [];
     return data.map(s => ({

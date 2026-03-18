@@ -525,12 +525,14 @@ export async function fetchDamagedEvents(
     options?: { startDate?: string; limit?: number }
 ): Promise<DamagedEvent[]> {
     try {
+        const tenantId = await resolveTenantId(sellerId);
         logger.info('💥 [BROKEN GOODS] Fetching damaged events from returns table', { sellerId });
 
         // Get returns with damaged/defective items
         const { data: returns, error } = await supabaseAdmin
             .from('returns')
             .select('*')
+            .eq('tenant_id', tenantId)
             .eq('user_id', sellerId)
             .order('returned_date', { ascending: false });
 
@@ -543,9 +545,11 @@ export async function fetchDamagedEvents(
         const events: DamagedEvent[] = [];
         for (const ret of (returns || [])) {
             const disposition = ret.metadata?.disposition?.toUpperCase() || '';
+            const items = Array.isArray(ret.items) ? ret.items : [];
             if (!['DAMAGED', 'UNSELLABLE', 'DEFECTIVE'].includes(disposition)) continue;
+            if (items.length === 0) continue;
 
-            for (const item of (ret.items || [])) {
+            for (const item of items) {
                 events.push({
                     id: `damage-${ret.return_id}-${item.sku || 'item'}`,
                     seller_id: sellerId,
@@ -583,11 +587,13 @@ export async function fetchReimbursementsForDamage(
     options?: { startDate?: string; limit?: number }
 ): Promise<ReimbursementEvent[]> {
     try {
+        const tenantId = await resolveTenantId(sellerId);
         logger.info('💥 [BROKEN GOODS] Fetching reimbursements from settlements', { sellerId });
 
         const { data, error } = await supabaseAdmin
             .from('settlements')
             .select('*')
+            .eq('tenant_id', tenantId)
             .eq('user_id', sellerId)
             .eq('transaction_type', 'reimbursement')
             .order('settlement_date', { ascending: false });

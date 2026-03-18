@@ -7,7 +7,7 @@
 
 import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
-import { resolveTenantId } from './shared/tenantUtils';
+import { relationExists, resolveTenantId } from './shared/tenantUtils';
 
 // ============================================================================
 // Types
@@ -1218,14 +1218,68 @@ function reconcileValuationOwnership(results: FeeDetectionResult[]): FeeDetectio
 }
 
 export async function fetchFeeEvents(sellerId: string, options?: { startDate?: string; limit?: number }) {
-    let query = supabaseAdmin.from('fee_events').select('*').eq('seller_id', sellerId).order('fee_date', { ascending: false });
-    if (options?.startDate) query = query.gte('fee_date', options.startDate);
+    const tenantId = await resolveTenantId(sellerId);
+
+    if (await relationExists('fee_events')) {
+        let query = supabaseAdmin
+            .from('fee_events')
+            .select('*')
+            .eq('tenant_id', tenantId)
+            .eq('seller_id', sellerId)
+            .order('fee_date', { ascending: false });
+        if (options?.startDate) query = query.gte('fee_date', options.startDate);
+        if (options?.limit) query = query.limit(options.limit);
+        const { data } = await query;
+        return data || [];
+    }
+
+    if (!(await relationExists('financial_events'))) {
+        return [];
+    }
+
+    let query = supabaseAdmin
+        .from('financial_events')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .eq('seller_id', sellerId)
+        .eq('event_type', 'fee')
+        .order('event_date', { ascending: false });
+    if (options?.startDate) query = query.gte('event_date', options.startDate);
     if (options?.limit) query = query.limit(options.limit);
     const { data } = await query;
-    return data || [];
+    return (data || []).map((row: any) => ({
+        id: row.id,
+        seller_id: sellerId,
+        order_id: row.amazon_order_id || undefined,
+        shipment_id: row.shipment_id || row.raw_payload?.ShipmentId || undefined,
+        sku: row.sku || row.amazon_sku || undefined,
+        asin: row.asin || row.raw_payload?.ASIN || undefined,
+        fnsku: row.fnsku || row.raw_payload?.FNSKU || undefined,
+        product_name: row.product_name || undefined,
+        fee_type: row.description || row.raw_payload?.FeeType || 'Fee',
+        fee_amount: Number(row.amount || 0) * -1,
+        currency: row.currency || 'USD',
+        item_weight_oz: row.raw_payload?.weight_oz,
+        item_length_in: row.raw_payload?.length_in,
+        item_width_in: row.raw_payload?.width_in,
+        item_height_in: row.raw_payload?.height_in,
+        dimensional_weight_oz: row.raw_payload?.dimensional_weight_oz,
+        cubic_feet: row.raw_payload?.cubic_feet,
+        storage_month: row.raw_payload?.storage_month,
+        storage_type: row.raw_payload?.storage_type,
+        sale_price: row.raw_payload?.sale_price,
+        referral_rate: row.raw_payload?.referral_rate,
+        expected_fee: row.raw_payload?.expected_fee,
+        fee_date: row.event_date,
+        marketplace_id: row.marketplace_id || DEFAULT_MARKETPLACE,
+        created_at: row.created_at,
+    }));
 }
 
 export async function fetchProductCatalog(sellerId: string) {
+    if (!(await relationExists('product_catalog'))) {
+        return [];
+    }
     const { data } = await supabaseAdmin.from('product_catalog').select('*').eq('seller_id', sellerId);
     return data || [];
 }

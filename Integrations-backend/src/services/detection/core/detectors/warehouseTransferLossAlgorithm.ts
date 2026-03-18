@@ -207,6 +207,7 @@ export async function fetchTransferRecords(
     sellerId: string,
     options: { lookbackDays?: number } = {}
 ): Promise<TransferRecord[]> {
+    const tenantId = await resolveTenantId(sellerId);
     const lookbackDays = options.lookbackDays || 90;
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - lookbackDays);
@@ -217,6 +218,7 @@ export async function fetchTransferRecords(
         const { data, error } = await supabaseAdmin
             .from('inventory_transfers')
             .select('*')
+            .eq('tenant_id', tenantId)
             .eq('seller_id', sellerId)
             .gte('transfer_date', cutoffDate.toISOString());
 
@@ -267,6 +269,7 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
     try {
         const records = results.map(r => ({
             seller_id: r.seller_id,
+            tenant_id: tenantId,
             sync_id: r.sync_id,
             anomaly_type: 'warehouse_transfer_loss',
             severity: r.severity,

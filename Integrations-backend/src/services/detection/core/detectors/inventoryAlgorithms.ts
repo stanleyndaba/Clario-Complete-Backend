@@ -280,7 +280,125 @@ export async function runLostInventoryDetection(sellerId: string, syncId: string
     return results;
 }
 
-export async function fetchInventoryLedger(sellerId: string, syncId: string): Promise<SyncedData> { return { seller_id: sellerId, sync_id: syncId, inventory_ledger: [] }; }
+function mapLegacyLedgerEventType(rawType: string | null | undefined): InventoryEventType {
+    const normalized = String(rawType || '').toLowerCase();
+    if (normalized.includes('receipt')) return 'Receipt';
+    if (normalized.includes('shipment')) return 'Shipment';
+    if (normalized.includes('transfer')) return 'Transfer';
+    if (normalized.includes('return')) return 'Return';
+    if (normalized.includes('removal')) return 'Removal';
+    if (normalized.includes('disposal') || normalized.includes('disposed')) return 'Disposal';
+    if (normalized.includes('snapshot') || normalized.includes('balance')) return 'Snapshot';
+    return 'Adjustment';
+}
+
+export async function fetchInventoryLedger(sellerId: string, syncId: string): Promise<SyncedData> {
+    const tenantId = await resolveTenantId(sellerId);
+
+    const [ledgerEvents, legacyLedger, financialEvents, reimbursementSettlements] = await Promise.all([
+        supabaseAdmin
+            .from('inventory_ledger_events')
+            .select('*')
+            .eq('tenant_id', tenantId)
+            .eq('user_id', sellerId)
+            .order('event_date', { ascending: true }),
+        supabaseAdmin
+            .from('inventory_ledger')
+            .select('*')
+            .eq('tenant_id', tenantId)
+            .eq('user_id', sellerId)
+            .order('event_date', { ascending: true }),
+        supabaseAdmin
+            .from('financial_events')
+            .select('*')
+            .eq('tenant_id', tenantId)
+            .eq('seller_id', sellerId)
+            .order('event_date', { ascending: true }),
+        supabaseAdmin
+            .from('settlements')
+            .select('*')
+            .eq('tenant_id', tenantId)
+            .eq('user_id', sellerId)
+            .eq('transaction_type', 'reimbursement')
+            .order('settlement_date', { ascending: true }),
+    ]);
+
+    const liveLedger: InventoryLedgerEvent[] = (ledgerEvents.data || []).map((row: any) => ({
+        id: row.id,
+        seller_id: sellerId,
+        fnsku: row.fnsku,
+        sku: row.sku || undefined,
+        asin: row.asin || undefined,
+        product_name: row.product_name || undefined,
+        event_type: mapLegacyLedgerEventType(row.event_type),
+        quantity: Number(row.quantity || 0),
+        quantity_direction: row.quantity_direction || 'out',
+        warehouse_balance: row.warehouse_balance ?? undefined,
+        event_date: row.event_date,
+        fulfillment_center_id: row.fulfillment_center || row.fulfillment_center_id || undefined,
+        reference_id: row.reference_id || undefined,
+        unit_cost: row.unit_cost ?? undefined,
+        average_sales_price: row.average_sales_price ?? undefined,
+        reason: row.reason || undefined,
+        disposition: row.disposition || undefined,
+        created_at: row.created_at || row.event_date || new Date().toISOString(),
+    }));
+
+    const fallbackLedger: InventoryLedgerEvent[] = (legacyLedger.data || []).map((row: any) => ({
+        id: row.id,
+        seller_id: sellerId,
+        fnsku: row.fnsku,
+        sku: row.sku || undefined,
+        asin: row.asin || undefined,
+        product_name: row.product_name || undefined,
+        event_type: mapLegacyLedgerEventType(row.event_type || row.adjustment_type),
+        quantity: Math.abs(Number(row.quantity || 0)),
+        quantity_direction: Number(row.quantity || 0) >= 0 ? 'in' : 'out',
+        warehouse_balance: row.warehouse_balance ?? undefined,
+        event_date: row.event_date,
+        fulfillment_center_id: row.fulfillment_center_id || undefined,
+        reference_id: row.reference_id || undefined,
+        unit_cost: row.unit_price ?? undefined,
+        average_sales_price: row.average_sales_price ?? undefined,
+        reason: row.adjustment_type || row.reason || undefined,
+        disposition: row.disposition || undefined,
+        created_at: row.created_at || row.event_date || new Date().toISOString(),
+    }));
+
+    const normalizedFinancialEvents = [
+        ...(financialEvents.data || []).map((row: any) => ({
+            seller_id: sellerId,
+            fnsku: row.fnsku || null,
+            sku: row.amazon_sku || row.sku || null,
+            quantity: row.quantity || null,
+            approval_date: row.event_date,
+            created_at: row.created_at,
+            date: row.event_date,
+            fulfillment_center_id: row.fulfillment_center_id || null,
+            event_type: row.event_type,
+            amount: row.amount,
+        })),
+        ...(reimbursementSettlements.data || []).map((row: any) => ({
+            seller_id: sellerId,
+            fnsku: row.metadata?.fnsku || null,
+            sku: row.metadata?.sku || null,
+            quantity: row.metadata?.quantity || null,
+            approval_date: row.settlement_date,
+            created_at: row.created_at,
+            date: row.settlement_date,
+            fulfillment_center_id: row.metadata?.fulfillment_center_id || null,
+            event_type: 'reimbursement',
+            amount: row.amount,
+        })),
+    ];
+
+    return {
+        seller_id: sellerId,
+        sync_id: syncId,
+        inventory_ledger: liveLedger.length > 0 ? liveLedger : fallbackLedger,
+        financial_events: normalizedFinancialEvents,
+    };
+}
 export async function storeDetectionResults(sellerId: string, tenantId: string, results: DetectionResult[]) {
     await supabaseAdmin.from('detection_results').delete().match({ seller_id: sellerId }).in('anomaly_type', ['lost_warehouse', 'lost_in_transit']);
     const records = results.map(r => ({ ...r, tenant_id: tenantId, status: 'detected', created_at: new Date().toISOString() }));

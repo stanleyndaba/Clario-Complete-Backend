@@ -1,6 +1,6 @@
 import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
-import { resolveTenantId } from './shared/tenantUtils';
+import { relationExists, resolveTenantId } from './shared/tenantUtils';
 
 // ============================================================================
 // Types
@@ -528,33 +528,64 @@ function determineSeverity(value: number, quantity: number, type: 'missed' | 'du
 // ============================================================================
 
 export async function fetchLossEvents(sellerId: string, options: { lookbackDays?: number } = {}): Promise<LossEvent[]> {
+    const tenantId = await resolveTenantId(sellerId);
     const lookbackDays = options.lookbackDays || 180;
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - lookbackDays);
     const events: LossEvent[] = [];
     try {
-        const { data: ledgerData, error: ledgerError } = await supabaseAdmin
-            .from('inventory_ledger')
-            .select('*')
-            .eq('user_id', sellerId)
-            .in('adjustment_type', ['Lost', 'Damaged', 'Disposed', 'M', 'P', 'E', 'D', 'Found', 'F'])
-            .gte('event_date', cutoffDate.toISOString());
-            
-        if (!ledgerError && ledgerData) {
-            for (const row of ledgerData) {
-                events.push({
-                    id: row.id || `ledger-${row.event_date}-${row.fnsku}`,
-                    seller_id: sellerId,
-                    event_type: mapEventType(row.adjustment_type),
-                    event_date: row.event_date,
-                    sku: row.sku,
-                    fnsku: row.fnsku,
-                    asin: row.asin,
-                    quantity: Math.abs(row.quantity || 1),
-                    estimated_value: Math.abs(row.unit_price || 0) * Math.abs(row.quantity || 1),
-                    currency: 'USD',
-                    source: 'inventory_ledger'
-                });
+        if (await relationExists('inventory_ledger')) {
+            const { data: ledgerData, error: ledgerError } = await supabaseAdmin
+                .from('inventory_ledger')
+                .select('*')
+                .eq('tenant_id', tenantId)
+                .eq('user_id', sellerId)
+                .in('adjustment_type', ['Lost', 'Damaged', 'Disposed', 'M', 'P', 'E', 'D', 'Found', 'F'])
+                .gte('event_date', cutoffDate.toISOString());
+
+            if (!ledgerError && ledgerData) {
+                for (const row of ledgerData) {
+                    events.push({
+                        id: row.id || `ledger-${row.event_date}-${row.fnsku}`,
+                        seller_id: sellerId,
+                        event_type: mapEventType(row.adjustment_type),
+                        event_date: row.event_date,
+                        sku: row.sku,
+                        fnsku: row.fnsku,
+                        asin: row.asin,
+                        quantity: Math.abs(row.quantity || 1),
+                        estimated_value: Math.abs(row.unit_price || 0) * Math.abs(row.quantity || 1),
+                        currency: 'USD',
+                        source: 'inventory_ledger'
+                    });
+                }
+            }
+        }
+
+        if (events.length === 0 && await relationExists('inventory_ledger_events')) {
+            const { data: ledgerEvents, error: ledgerEventsError } = await supabaseAdmin
+                .from('inventory_ledger_events')
+                .select('*')
+                .eq('tenant_id', tenantId)
+                .eq('user_id', sellerId)
+                .gte('event_date', cutoffDate.toISOString());
+
+            if (!ledgerEventsError && ledgerEvents) {
+                for (const row of ledgerEvents) {
+                    events.push({
+                        id: row.id || `ledger-event-${row.event_date}-${row.fnsku}`,
+                        seller_id: sellerId,
+                        event_type: mapEventType(row.reason || row.event_type),
+                        event_date: row.event_date,
+                        sku: row.sku,
+                        fnsku: row.fnsku,
+                        asin: row.asin,
+                        quantity: Math.abs(row.quantity || 1),
+                        estimated_value: Math.abs(row.unit_cost || row.average_sales_price || 0) * Math.abs(row.quantity || 1),
+                        currency: 'USD',
+                        source: 'inventory_ledger'
+                    });
+                }
             }
         }
         return events;
@@ -564,6 +595,7 @@ export async function fetchLossEvents(sellerId: string, options: { lookbackDays?
 }
 
 export async function fetchReimbursementEventsForSentinel(sellerId: string, options: { lookbackDays?: number } = {}): Promise<ReimbursementEvent[]> {
+    const tenantId = await resolveTenantId(sellerId);
     const lookbackDays = options.lookbackDays || 180;
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - lookbackDays);
@@ -572,6 +604,7 @@ export async function fetchReimbursementEventsForSentinel(sellerId: string, opti
         const { data, error } = await supabaseAdmin
             .from('settlements')
             .select('*')
+            .eq('tenant_id', tenantId)
             .eq('user_id', sellerId)
             .eq('transaction_type', 'reimbursement')
             .gte('settlement_date', cutoffDate.toISOString());
@@ -582,16 +615,45 @@ export async function fetchReimbursementEventsForSentinel(sellerId: string, opti
                     id: row.id,
                     seller_id: sellerId,
                     reimbursement_date: row.settlement_date,
-                    sku: row.sku,
-                    fnsku: row.fnsku,
-                    asin: row.asin,
+                    sku: row.sku || row.metadata?.sku,
+                    fnsku: row.fnsku || row.metadata?.fnsku,
+                    asin: row.asin || row.metadata?.asin,
                     order_id: row.order_id,
-                    quantity: row.quantity || 1,
+                    quantity: row.quantity || row.metadata?.quantity || 1,
                     amount: parseFloat(row.amount) || 0,
                     currency: row.currency || 'USD',
                     reason: row.metadata?.reason,
                     case_id: row.metadata?.case_id
                 });
+            }
+        }
+
+        if (events.length === 0 && await relationExists('financial_events')) {
+            const { data: financialData, error: financialError } = await supabaseAdmin
+                .from('financial_events')
+                .select('*')
+                .eq('tenant_id', tenantId)
+                .eq('seller_id', sellerId)
+                .eq('event_type', 'reimbursement')
+                .gte('event_date', cutoffDate.toISOString());
+
+            if (!financialError && financialData) {
+                for (const row of financialData) {
+                    events.push({
+                        id: row.id,
+                        seller_id: sellerId,
+                        reimbursement_date: row.event_date,
+                        sku: row.sku || row.amazon_sku,
+                        fnsku: row.fnsku || row.raw_payload?.FNSKU,
+                        asin: row.asin || row.raw_payload?.ASIN,
+                        order_id: row.amazon_order_id,
+                        quantity: row.quantity || row.raw_payload?.quantity || 1,
+                        amount: parseFloat(row.amount) || 0,
+                        currency: row.currency || 'USD',
+                        reason: row.description || row.raw_payload?.reason,
+                        case_id: row.raw_payload?.case_id
+                    });
+                }
             }
         }
         return events;
@@ -614,6 +676,7 @@ export async function storeSentinelResults(results: SentinelDetectionResult[]): 
     try {
         const records = results.map(r => ({
             seller_id: r.seller_id,
+            tenant_id: tenantId,
             sync_id: r.sync_id,
             anomaly_type: 'reimbursement_duplicate_missed',
             severity: r.severity,

@@ -865,9 +865,11 @@ export function detectInboundAnomalies(sellerId: string, syncId: string, data: I
  */
 export async function fetchInboundShipmentItems(sellerId: string): Promise<InboundShipmentItem[]> {
     try {
+        const tenantId = await resolveTenantId(sellerId);
         const { data, error } = await supabaseAdmin
             .from('shipments')
             .select('*')
+            .eq('tenant_id', tenantId)
             .eq('user_id', sellerId)
             .order('shipped_date', { ascending: false })
             .limit(1000);
@@ -894,7 +896,7 @@ export async function fetchInboundShipmentItems(sellerId: string): Promise<Inbou
                 fnsku: s.fnsku || s.items?.[0]?.fnsku || s.items?.[0]?.asin || 'UNKNOWN',
                 asin: s.asin || s.items?.[0]?.asin,
                 product_name: s.product_name || s.items?.[0]?.title,
-                quantity_shipped: s.quantity_shipped || s.expected_quantity || s.quantity || 0,
+                quantity_shipped: s.quantity_shipped || s.shipped_quantity || s.expected_quantity || s.quantity || 0,
                 quantity_received: s.quantity_received || s.received_quantity || 0,
                 quantity_in_case: s.metadata?.quantity_in_case,
                 cases_shipped: s.metadata?.cases_shipped,
@@ -924,9 +926,11 @@ export async function fetchInboundShipmentItems(sellerId: string): Promise<Inbou
  */
 export async function fetchInboundReimbursements(sellerId: string): Promise<InboundReimbursement[]> {
     try {
+        const tenantId = await resolveTenantId(sellerId);
         const { data, error } = await supabaseAdmin
             .from('settlements')
             .select('*')
+            .eq('tenant_id', tenantId)
             .eq('user_id', sellerId)
             .eq('transaction_type', 'reimbursement')
             .order('settlement_date', { ascending: false })

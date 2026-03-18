@@ -19,6 +19,21 @@ const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
  */
 export async function resolveTenantId(sellerId: string): Promise<string> {
     try {
+        const { data: membership } = await supabaseAdmin
+            .from('tenant_memberships')
+            .select('tenant_id')
+            .eq('user_id', sellerId)
+            .limit(1)
+            .maybeSingle();
+
+        if (membership?.tenant_id) {
+            return membership.tenant_id;
+        }
+    } catch (e) {
+        logger.warn('Failed to resolve tenant_id from tenant_memberships', { sellerId });
+    }
+
+    try {
         const { data } = await supabaseAdmin
             .from('users')
             .select('tenant_id')
@@ -38,4 +53,17 @@ export async function resolveTenantId(sellerId: string): Promise<string> {
     }
 
     return DEFAULT_TENANT_ID;
+}
+
+export async function relationExists(table: string): Promise<boolean> {
+    try {
+        const { error } = await supabaseAdmin
+            .from(table)
+            .select('*')
+            .limit(1);
+
+        return !error;
+    } catch (error) {
+        return false;
+    }
 }
