@@ -91,7 +91,7 @@ describe('CSV ingestion repair', () => {
   });
 
   it('maps shipments without shipment_type column', async () => {
-    const csv = ['ShipmentId,ShipmentDate,ShipmentStatus', 'S-1,2026-03-18T00:00:00Z,RECEIVED'].join('\n');
+    const csv = ['ShipmentId,ShipmentDate,ShipmentStatus,SKU,ASIN,FNSKU', 'S-1,2026-03-18T00:00:00Z,RECEIVED,SKU-1,ASIN-1,FNSKU-1'].join('\n');
     await service.ingestFiles(
       userId,
       [{ buffer: Buffer.from(csv), originalname: 'shipments.csv', mimetype: 'text/csv' }],
@@ -101,6 +101,8 @@ describe('CSV ingestion repair', () => {
     expect(inserts.shipments?.length).toBe(1);
     expect(Object.keys(inserts.shipments[0])).not.toContain('shipment_type');
     expect(inserts.shipments[0].tenant_id).toBe(tenantId);
+    expect(inserts.shipments[0].items?.[0]?.sku).toBe('SKU-1');
+    expect(inserts.shipments[0].metadata?.sku).toBe('SKU-1');
   });
 
   it('uses real tenant semantics for financial events', async () => {

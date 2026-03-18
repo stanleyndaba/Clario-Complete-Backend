@@ -350,15 +350,20 @@ export function detectRefundWithoutReturn(
 
 export async function fetchRefundEvents(sellerId: string, options?: { startDate?: string }): Promise<RefundEvent[]> {
     const tenantId = await resolveTenantId(sellerId);
-    const { data, error } = await supabaseAdmin.from('settlements')
+    let query = supabaseAdmin.from('settlements')
         .select('*')
         .eq('tenant_id', tenantId)
         .eq('user_id', sellerId)
-        .in('transaction_type', ['refund', 'fee'])
         .filter('amount', 'lt', 0);
+    if (options?.startDate) {
+        query = query.gte('settlement_date', options.startDate);
+    }
+    const { data, error } = await query;
     
     if (error) return [];
-    return data.map(s => ({
+    return (data || [])
+        .filter((s: any) => ['refund', 'fee'].includes(String(s.transaction_type || '').toLowerCase()))
+        .map((s: any) => ({
         id: s.id, seller_id: sellerId, order_id: s.order_id || '',
         sku: s.metadata?.sku, asin: s.metadata?.asin,
         refund_amount: Math.abs(s.amount), currency: s.currency || 'USD',
@@ -369,10 +374,14 @@ export async function fetchRefundEvents(sellerId: string, options?: { startDate?
 
 export async function fetchReturnEvents(sellerId: string, options?: { startDate?: string }): Promise<ReturnEvent[]> {
     const tenantId = await resolveTenantId(sellerId);
-    const { data, error } = await supabaseAdmin.from('returns')
+    let query = supabaseAdmin.from('returns')
         .select('*')
         .eq('tenant_id', tenantId)
         .eq('user_id', sellerId);
+    if (options?.startDate) {
+        query = query.gte('returned_date', options.startDate);
+    }
+    const { data, error } = await query;
     
     if (error) return [];
     return data.map(r => ({
@@ -386,14 +395,20 @@ export async function fetchReturnEvents(sellerId: string, options?: { startDate?
 
 export async function fetchReimbursementEvents(sellerId: string, options?: { startDate?: string }): Promise<ReimbursementEvent[]> {
     const tenantId = await resolveTenantId(sellerId);
-    const { data, error } = await supabaseAdmin.from('settlements')
+    let query = supabaseAdmin.from('settlements')
         .select('*')
         .eq('tenant_id', tenantId)
         .eq('user_id', sellerId)
-        .eq('transaction_type', 'reimbursement');
+        .filter('amount', 'gt', 0);
+    if (options?.startDate) {
+        query = query.gte('settlement_date', options.startDate);
+    }
+    const { data, error } = await query;
     
     if (error) return [];
-    return data.map(s => ({
+    return (data || [])
+        .filter((s: any) => String(s.transaction_type || '').toLowerCase() === 'reimbursement')
+        .map((s: any) => ({
         id: s.id, seller_id: sellerId, order_id: s.order_id,
         sku: s.metadata?.sku, reimbursement_amount: s.amount || 0,
         currency: s.currency || 'USD', reimbursement_date: s.settlement_date,
@@ -436,7 +451,28 @@ export async function storeRefundDetectionResults(results: RefundDetectionResult
         days_remaining: r.days_remaining, tenant_id: tenantId, status: 'detected',
         created_at: new Date().toISOString(), updated_at: new Date().toISOString()
     }));
-    await supabaseAdmin.from('detection_results').upsert(records, { onConflict: 'seller_id,sync_id,anomaly_type' });
+    const { data: existing } = await supabaseAdmin
+        .from('detection_results')
+        .select('anomaly_type,evidence,tenant_id,seller_id')
+        .eq('tenant_id', tenantId)
+        .eq('seller_id', results[0].seller_id)
+        .eq('anomaly_type', 'refund_no_return');
+
+    const existingFingerprints = new Set(
+        (existing || []).map((row: any) =>
+            `refund_no_return|${row.evidence?.refund_event_id || ''}|${row.evidence?.order_id || ''}|${row.evidence?.sku || ''}`
+        )
+    );
+
+    const uniqueRecords = records.filter((row: any) => {
+        const fingerprint = `refund_no_return|${row.evidence?.refund_event_id || ''}|${row.evidence?.order_id || ''}|${row.evidence?.sku || ''}`;
+        if (existingFingerprints.has(fingerprint)) return false;
+        existingFingerprints.add(fingerprint);
+        return true;
+    });
+
+    if (!uniqueRecords.length) return;
+    await supabaseAdmin.from('detection_results').insert(uniqueRecords);
 }
 
 export default {

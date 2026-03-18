@@ -901,8 +901,10 @@ export async function fetchInboundShipmentItems(sellerId: string): Promise<Inbou
                 quantity_in_case: s.metadata?.quantity_in_case,
                 cases_shipped: s.metadata?.cases_shipped,
                 shipment_status: s.status || 'UNKNOWN',
-                shipment_created_date: s.created_at,
-                shipment_closed_date: s.status?.toUpperCase() === 'CLOSED' ? s.sync_timestamp : undefined,
+                shipment_created_date: s.shipped_date || s.created_at,
+                shipment_closed_date: s.status?.toUpperCase() === 'CLOSED'
+                    ? (s.received_date || s.sync_timestamp || s.shipped_date || s.created_at)
+                    : undefined,
                 receiving_discrepancy: s.metadata?.receiving_discrepancy || (s.missing_quantity > 0),
                 discrepancy_reason: s.metadata?.discrepancy_reason,
                 carrier: s.carrier || s.metadata?.carrier,
@@ -932,7 +934,6 @@ export async function fetchInboundReimbursements(sellerId: string): Promise<Inbo
             .select('*')
             .eq('tenant_id', tenantId)
             .eq('user_id', sellerId)
-            .eq('transaction_type', 'reimbursement')
             .order('settlement_date', { ascending: false })
             .limit(500);
 
@@ -941,7 +942,9 @@ export async function fetchInboundReimbursements(sellerId: string): Promise<Inbo
             return [];
         }
 
-        const reimbs: InboundReimbursement[] = (data || []).map(s => ({
+        const reimbs: InboundReimbursement[] = (data || [])
+            .filter((s: any) => String(s.transaction_type || '').toLowerCase() === 'reimbursement')
+            .map((s: any) => ({
             id: s.id || s.settlement_id,
             seller_id: sellerId,
             shipment_id: s.metadata?.shipment_id,
@@ -974,10 +977,28 @@ export async function runInboundDetection(sellerId: string, syncId: string): Pro
 export async function storeInboundDetectionResults(results: InboundDetectionResult[]): Promise<void> {
     if (!results.length) return;
     const tenantId = await resolveTenantId(results[0].seller_id);
-    await supabaseAdmin.from('detection_results').upsert(results.map(r => ({
+    const records = results.map(r => ({
         ...r, discovery_date: r.discovery_date.toISOString(), deadline_date: r.deadline_date.toISOString(),
         tenant_id: tenantId, status: 'detected', created_at: new Date().toISOString()
-    })));
+    }));
+    const { data: existing } = await supabaseAdmin
+        .from('detection_results')
+        .select('anomaly_type,evidence,shipment_id,sku,tenant_id,seller_id')
+        .eq('tenant_id', tenantId)
+        .eq('seller_id', results[0].seller_id);
+    const existingFingerprints = new Set(
+        (existing || []).map((row: any) =>
+            `${row.anomaly_type}|${row.shipment_id || row.evidence?.shipment_id || ''}|${row.sku || ''}`
+        )
+    );
+    const uniqueRecords = records.filter((row: any) => {
+        const fingerprint = `${row.anomaly_type}|${row.shipment_id || row.evidence?.shipment_id || ''}|${row.sku || ''}`;
+        if (existingFingerprints.has(fingerprint)) return false;
+        existingFingerprints.add(fingerprint);
+        return true;
+    });
+    if (!uniqueRecords.length) return;
+    await supabaseAdmin.from('detection_results').insert(uniqueRecords);
 }
 
 export default { detectShipmentMissing, detectShipmentShortage, detectCarrierDamage, detectReceivingError, detectCaseBreakError, detectPrepFeeError, detectInboundAnomalies, runInboundDetection, storeInboundDetectionResults };

@@ -703,21 +703,45 @@ export async function storeDamagedDetectionResults(results: DamagedDetectionResu
             updated_at: new Date().toISOString()
         }));
 
+        const { data: existing } = await supabaseAdmin
+            .from('detection_results')
+            .select('anomaly_type,related_event_ids,evidence,tenant_id,seller_id')
+            .eq('tenant_id', tenantId)
+            .eq('seller_id', results[0].seller_id)
+            .eq('anomaly_type', 'damaged_warehouse');
+
+        const existingFingerprints = new Set(
+            (existing || []).map((row: any) => {
+                const ids = Array.isArray(row.related_event_ids) ? [...row.related_event_ids].sort().join('|') : '';
+                return `damaged_warehouse|${ids}|${row.evidence?.sku || ''}|${row.evidence?.fnsku || ''}`;
+            })
+        );
+
+        const uniqueRecords = records.filter((row: any) => {
+            const ids = Array.isArray(row.related_event_ids) ? [...row.related_event_ids].sort().join('|') : '';
+            const fingerprint = `damaged_warehouse|${ids}|${row.evidence?.sku || ''}|${row.evidence?.fnsku || ''}`;
+            if (existingFingerprints.has(fingerprint)) return false;
+            existingFingerprints.add(fingerprint);
+            return true;
+        });
+
+        if (uniqueRecords.length === 0) {
+            logger.info('💥 [BROKEN GOODS] Detection results already persisted', { count: results.length });
+            return;
+        }
+
         const { error } = await supabaseAdmin
             .from('detection_results')
-            .upsert(records, {
-                onConflict: 'seller_id,sync_id,anomaly_type',
-                ignoreDuplicates: false
-            });
+            .insert(uniqueRecords);
 
         if (error) {
             logger.error('💥 [BROKEN GOODS] Error storing detection results', {
                 error: error.message,
-                count: results.length
+                count: uniqueRecords.length
             });
         } else {
             logger.info('💥 [BROKEN GOODS] Detection results stored', {
-                count: results.length
+                count: uniqueRecords.length
             });
         }
     } catch (err: any) {
