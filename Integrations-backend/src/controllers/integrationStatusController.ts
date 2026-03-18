@@ -144,7 +144,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       const { data: evidenceSources, error: sourcesError } = await supabase
         .from('evidence_sources')
         .select('provider, status, last_sync_at, account_email, permissions')
-        .or(`user_id.eq.${safeUserId},seller_id.eq.${userId}`);
+        .or(`user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`);
 
       if (sourcesError) {
         logger.warn('Failed to fetch evidence sources', { error: sourcesError });

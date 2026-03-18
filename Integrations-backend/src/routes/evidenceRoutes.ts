@@ -14,7 +14,7 @@ import { adobeSignIngestionService } from '../services/adobeSignIngestionService
 import { slackIngestionService } from '../services/slackIngestionService';
 import { unifiedIngestionService } from '../services/unifiedIngestionService';
 import { evidenceMatchingService } from '../services/evidenceMatchingService';
-import { supabase, supabaseAdmin } from '../database/supabaseClient';
+import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import mlScoringService from '../services/mlScoringService';
 
@@ -44,11 +44,12 @@ function isValidUUID(str: string): boolean {
  * Only includes user_id in query if userId is a valid UUID
  */
 function buildUserFilter(userId: string): string {
+  const safeUserId = convertUserIdToUuid(userId);
   if (isValidUUID(userId)) {
     return `user_id.eq.${userId},seller_id.eq.${userId}`;
   }
-  // userId is TEXT (like 'demo-user'), only query by seller_id to avoid UUID type error
-  return `seller_id.eq.${userId}`;
+  // When app user IDs are prefixed/non-UUID, backend persistence normalizes them to UUID.
+  return `user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`;
 }
 
 /**
@@ -159,19 +160,10 @@ router.get('/sources', async (req: Request, res: Response) => {
       error: error?.message || String(error)
     });
 
-    // Return demo source on error for testing
     res.json({
       success: true,
-      sources: [
-        {
-          id: 'demo-gmail',
-          provider: 'gmail',
-          account_email: 'demo@gmail.com',
-          status: 'connected',
-          last_sync_at: new Date().toISOString()
-        }
-      ],
-      note: 'Using demo source (error fetching real sources)'
+      sources: [],
+      note: 'No evidence sources available'
     });
   }
 });

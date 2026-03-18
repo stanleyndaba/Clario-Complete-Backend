@@ -6,6 +6,7 @@ import config from '../config/env';
 import tokenManager from '../utils/tokenManager';
 import oauthStateStore from '../utils/oauthStateStore';
 import { validateRedirectUri } from '../security/validateRedirect';
+import { convertUserIdToUuid } from '../database/supabaseClient';
 
 // Gmail OAuth base URL
 const GMAIL_AUTH_BASE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -530,6 +531,7 @@ export const getGmailStatus = async (req: Request, res: Response) => {
   try {
     // Support both userIdMiddleware (req.userId) and auth middleware (req.user.id)
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const safeUserId = userId ? convertUserIdToUuid(userId) : null;
 
     if (!userId) {
       return res.status(401).json({
@@ -545,7 +547,7 @@ export const getGmailStatus = async (req: Request, res: Response) => {
       const { data: tokenRecord } = await supabase
         .from('tokens')
         .select('access_token_data, expires_at')
-        .eq('user_id', userId)
+        .eq('user_id', safeUserId)
         .eq('provider', 'gmail')
         .limit(1)
         .maybeSingle();
@@ -574,7 +576,7 @@ export const getGmailStatus = async (req: Request, res: Response) => {
       const { data: source } = await supabase
         .from('evidence_sources')
         .select('account_email, last_sync_at')
-        .eq('user_id', userId)
+        .or(`user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`)
         .eq('provider', 'gmail')
         .eq('status', 'connected')
         .maybeSingle();
@@ -642,6 +644,7 @@ export const disconnectGmail = async (req: Request, res: Response) => {
   try {
     // Support both userIdMiddleware (req.userId) and auth middleware (req.user.id)
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const safeUserId = userId ? convertUserIdToUuid(userId) : null;
 
     if (!userId) {
       return res.status(401).json({
@@ -665,7 +668,7 @@ export const disconnectGmail = async (req: Request, res: Response) => {
       await supabase
         .from('evidence_sources')
         .update({ status: 'disconnected', updated_at: new Date().toISOString() })
-        .eq('user_id', userId)
+        .or(`user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`)
         .eq('provider', 'gmail');
     } catch (dbError) {
       logger.warn('Failed to update evidence_sources status', { error: dbError });
