@@ -10,47 +10,47 @@ import detectionService from '../services/detectionService';
 export class AmazonSyncJob {
   private isRunning = false;
 
+  private async resolveTenantId(userId: string): Promise<string> {
+    const { data, error } = await supabase
+      .from('users')
+      .select('tenant_id')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to resolve tenant for sync: ${error.message}`);
+    }
+    if (!data?.tenant_id) {
+      throw new Error('No tenant_id associated with user for sync');
+    }
+    return data.tenant_id;
+  }
+
   async syncUserData(userId: string): Promise<{ syncId: string; summary: { ordersCount: number; claimsCount: number; feesCount: number; inventoryCount: number; shipmentsCount: number; returnsCount: number; settlementsCount: number } }> {
     const syncId = `sync_${userId}_${Date.now()}`;
     
     try {
       logger.info('Starting Amazon sync for user', { userId, syncId });
+      const tenantId = await this.resolveTenantId(userId);
 
-      // Check if user has valid Amazon token (database or environment)
+      // Strict truth: sync is allowed only with a valid DB-backed Amazon token.
       const isConnected = await tokenManager.isTokenValid(userId, 'amazon');
       if (!isConnected) {
-        // Even if no database token, check environment variables for sandbox mode
-        const envRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
-        const envClientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
-        const envClientSecret = process.env.AMAZON_CLIENT_SECRET;
-        
-        if (envRefreshToken && envClientId && envClientSecret) {
-          logger.info('Using environment variables for Amazon connection (sandbox mode)', { 
-            userId, 
-            syncId,
-            hasRefreshToken: !!envRefreshToken,
-            hasClientId: !!envClientId,
-            hasClientSecret: !!envClientSecret
-          });
-          // Continue with sync using environment variables
-        } else {
-          logger.info('User not connected to Amazon (no database token or env vars), skipping sync', { userId, syncId });
-          return { 
-            syncId, 
-            summary: {
-              ordersCount: 0,
-              claimsCount: 0,
-              feesCount: 0,
-              inventoryCount: 0,
-              shipmentsCount: 0,
-              returnsCount: 0,
-              settlementsCount: 0
-            }
-          };
-        }
-      } else {
-        logger.info('User has valid Amazon token, proceeding with sync', { userId, syncId });
+        logger.info('User not connected to Amazon (database token invalid or expired), skipping sync', { userId, syncId });
+        return {
+          syncId,
+          summary: {
+            ordersCount: 0,
+            claimsCount: 0,
+            feesCount: 0,
+            inventoryCount: 0,
+            shipmentsCount: 0,
+            returnsCount: 0,
+            settlementsCount: 0
+          }
+        };
       }
+      logger.info('User has valid Amazon token, proceeding with sync', { userId, syncId });
 
       // Calculate 18 months ago for Phase 1 (used for all data syncs)
       const eighteenMonthsAgo = new Date(Date.now() - 18 * 30 * 24 * 60 * 60 * 1000);
@@ -138,7 +138,7 @@ export class AmazonSyncJob {
         const ordersResult = await ordersService.fetchOrders(userId, eighteenMonthsAgo, now);
         const normalizedOrders = ordersResult.data || [];
         orders = normalizedOrders; // Store for summary
-        await ordersService.saveOrdersToDatabase(userId, normalizedOrders);
+        await ordersService.saveOrdersToDatabase(userId, normalizedOrders, undefined, tenantId);
         
         logger.info('Orders sync completed (SANDBOX TEST DATA)', {
           userId,
@@ -169,7 +169,7 @@ export class AmazonSyncJob {
         
         if (shipments.length > 0) {
           const normalizedShipments = shipmentsService.normalizeShipments(shipments, userId);
-          await shipmentsService.saveShipmentsToDatabase(userId, normalizedShipments);
+          await shipmentsService.saveShipmentsToDatabase(userId, normalizedShipments, undefined, tenantId);
         }
         
         logger.info('Shipments sync completed', {
@@ -201,7 +201,7 @@ export class AmazonSyncJob {
         
         if (returns.length > 0) {
           const normalizedReturns = returnsService.normalizeReturns(returns, userId);
-          await returnsService.saveReturnsToDatabase(userId, normalizedReturns);
+          await returnsService.saveReturnsToDatabase(userId, normalizedReturns, undefined, tenantId);
         }
         
         logger.info('Returns sync completed', {
@@ -233,7 +233,7 @@ export class AmazonSyncJob {
         
         if (settlements.length > 0) {
           const normalizedSettlements = settlementsService.normalizeSettlements(settlements, userId);
-          await settlementsService.saveSettlementsToDatabase(userId, normalizedSettlements);
+          await settlementsService.saveSettlementsToDatabase(userId, normalizedSettlements, undefined, tenantId);
         }
         
         logger.info('Settlements sync completed', {

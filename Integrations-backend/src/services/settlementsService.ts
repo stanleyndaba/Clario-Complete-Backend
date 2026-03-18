@@ -91,31 +91,42 @@ export class SettlementsService {
       const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
       const regionalBaseUrl = (await import('./amazonService')).default.getRegionalBaseUrl(marketplaceId);
 
-      const postedAfter = startDate || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const postedAfter = startDate || new Date(Date.now() - 540 * 24 * 60 * 60 * 1000);
       const postedBefore = endDate || new Date();
 
-      const params: any = {
+      const baseParams: any = {
         PostedAfter: postedAfter.toISOString(),
         PostedBefore: postedBefore.toISOString(),
         MarketplaceIds: marketplaceId
       };
+      const settlements: NormalizedSettlement[] = [];
+      let nextToken: string | null = null;
+      let page = 0;
+      const maxPages = 200;
 
-      // Fetch financial events
-      const response = await axios.get(`${regionalBaseUrl}/finances/v0/financialEvents`, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'x-amz-access-token': accessToken,
-          'Content-Type': 'application/json'
-        },
-        params,
-        timeout: 30000
-      });
+      do {
+        page += 1;
+        const params = nextToken ? { NextToken: nextToken } : { ...baseParams };
 
-      const payload = response.data?.payload || response.data;
-      const financialEvents = payload?.FinancialEvents || {};
+        const response = await axios.get(`${regionalBaseUrl}/finances/v0/financialEvents`, {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'x-amz-access-token': accessToken,
+            'Content-Type': 'application/json'
+          },
+          params,
+          timeout: 30000
+        });
 
-      // Extract settlement data from financial events
-      const settlements = this.extractSettlementsFromFinancialEvents(financialEvents, userId);
+        const payload = response.data?.payload || response.data;
+        const financialEvents = payload?.FinancialEvents || {};
+        settlements.push(...this.extractSettlementsFromFinancialEvents(financialEvents, userId));
+        nextToken = payload?.NextToken || null;
+      } while (nextToken && page < maxPages);
+
+      if (page >= maxPages && nextToken) {
+        logger.warn('Settlements pagination reached max pages', { userId, maxPages });
+      }
 
       logger.info(`Successfully fetched ${settlements.length} settlements from SP-API ${environment}`, {
         settlementCount: settlements.length,
@@ -272,7 +283,7 @@ export class SettlementsService {
   /**
    * Save normalized settlements to database
    */
-  async saveSettlementsToDatabase(userId: string, settlements: NormalizedSettlement[], storeId?: string): Promise<void> {
+  async saveSettlementsToDatabase(userId: string, settlements: NormalizedSettlement[], storeId?: string, tenantId?: string): Promise<void> {
     try {
       logger.info('Saving settlements to database', { userId, count: settlements.length });
 
@@ -286,8 +297,13 @@ export class SettlementsService {
         return;
       }
 
+      if (!tenantId) {
+        throw new Error('tenantId is required to persist settlements');
+      }
+
       const settlementsToInsert = settlements.map(settlement => ({
         user_id: userId,
+        tenant_id: tenantId,
         settlement_id: settlement.settlement_id,
         order_id: settlement.order_id || null,
         transaction_type: settlement.transaction_type,
@@ -311,7 +327,7 @@ export class SettlementsService {
       const { error: insertError } = await supabase
         .from('settlements')
         .upsert(settlementsToInsert, {
-          onConflict: 'user_id,settlement_id,transaction_type',
+          onConflict: 'tenant_id,user_id,settlement_id,transaction_type',
           ignoreDuplicates: false
         });
 

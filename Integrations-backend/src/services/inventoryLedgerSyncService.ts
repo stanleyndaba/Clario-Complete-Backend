@@ -16,6 +16,7 @@ import { logAuditEvent } from '../security/auditLogger';
 
 export interface InventoryLedgerEvent {
     seller_id: string;
+    tenant_id?: string;
     event_date: string;
     fnsku: string;
     asin: string;
@@ -40,7 +41,8 @@ class InventoryLedgerSyncService {
         userId: string,
         startDate?: Date,
         endDate?: Date,
-        storeId?: string
+        storeId?: string,
+        tenantId?: string
     ): Promise<{ success: boolean; count: number; message: string }> {
         try {
             logger.info('📋 [INVENTORY LEDGER] Starting sync', { userId, storeId });
@@ -48,12 +50,12 @@ class InventoryLedgerSyncService {
             // Check if using mock SP-API
             if (process.env.USE_MOCK_SPAPI === 'true') {
                 logger.info('📋 [INVENTORY LEDGER] Using mock data', { userId });
-                return this.syncMockLedger(userId);
+                return this.syncMockLedger(userId, tenantId);
             }
 
             const { spApiReportService } = await import('./spApiReportService');
 
-            const reportStart = startDate || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000); // Default 90 days
+            const reportStart = startDate || new Date(Date.now() - 540 * 24 * 60 * 60 * 1000); // 18 months
             const reportEnd = endDate || new Date();
 
             const records = await spApiReportService.requestAndDownloadReport(
@@ -70,10 +72,10 @@ class InventoryLedgerSyncService {
             }
 
             // Convert report records
-            const ledgerEvents = this.convertReportRecords(records, userId);
+            const ledgerEvents = this.convertReportRecords(records, userId, tenantId);
 
             // Save to database
-            await this.saveLedgerToDatabase(userId, ledgerEvents);
+            await this.saveLedgerToDatabase(userId, ledgerEvents, tenantId);
 
             logger.info(`📋 [INVENTORY LEDGER] Synced ${ledgerEvents.length} ledger events`, { userId });
 
@@ -107,11 +109,12 @@ class InventoryLedgerSyncService {
      * Date, FNSKU, ASIN, MSKU, Title, Event Type, Reference ID,
      * Quantity, Fulfillment Center, Disposition, Reason, Country
      */
-    private convertReportRecords(records: Record<string, string>[], userId: string): InventoryLedgerEvent[] {
+    private convertReportRecords(records: Record<string, string>[], userId: string, tenantId?: string): InventoryLedgerEvent[] {
         return records
             .filter(r => (r['FNSKU'] || r['fnsku']) && (r['Event Type'] || r['event_type'] || r['event-type']))
             .map(record => ({
                 seller_id: userId,
+                tenant_id: tenantId,
                 event_date: record['Date'] || record['date'] || new Date().toISOString(),
                 fnsku: record['FNSKU'] || record['fnsku'] || '',
                 asin: record['ASIN'] || record['asin'] || '',
@@ -130,7 +133,7 @@ class InventoryLedgerSyncService {
     /**
      * Generate mock ledger data for demo mode
      */
-    private async syncMockLedger(userId: string): Promise<{ success: boolean; count: number; message: string }> {
+    private async syncMockLedger(userId: string, tenantId?: string): Promise<{ success: boolean; count: number; message: string }> {
         const now = Date.now();
         const day = 24 * 60 * 60 * 1000;
 
@@ -143,14 +146,14 @@ class InventoryLedgerSyncService {
             { seller_id: userId, event_date: new Date(now - 5 * day).toISOString(), fnsku: 'FN-DEMO-003', asin: 'B0DEMO003', sku: 'DEMO-SKU-003', event_type: 'Adjustments', quantity: -1, fulfillment_center: 'PHX7', disposition: 'SELLABLE', reason_code: 'Lost in warehouse', reference_id: 'ADJ-002' },
         ];
 
-        await this.saveLedgerToDatabase(userId, mockEvents);
+        await this.saveLedgerToDatabase(userId, mockEvents, tenantId);
         return { success: true, count: mockEvents.length, message: `Synced ${mockEvents.length} mock inventory ledger events` };
     }
 
     /**
      * Save ledger events to database with upsert
      */
-    private async saveLedgerToDatabase(userId: string, events: InventoryLedgerEvent[]): Promise<void> {
+    private async saveLedgerToDatabase(userId: string, events: InventoryLedgerEvent[], tenantId?: string): Promise<void> {
         if (events.length === 0) return;
 
         if (typeof supabase.from !== 'function') {
@@ -158,8 +161,13 @@ class InventoryLedgerSyncService {
             return;
         }
 
+        if (!tenantId) {
+            throw new Error('tenantId is required to persist inventory ledger');
+        }
+
         const toInsert = events.map(event => ({
             seller_id: event.seller_id,
+            tenant_id: tenantId,
             event_date: event.event_date,
             fnsku: event.fnsku,
             asin: event.asin,
@@ -180,7 +188,7 @@ class InventoryLedgerSyncService {
         const { error } = await supabase
             .from('inventory_ledger')
             .upsert(toInsert, {
-                onConflict: 'seller_id,event_date,fnsku,event_type,reference_id',
+                onConflict: 'tenant_id,seller_id,event_date,fnsku,event_type,reference_id',
                 ignoreDuplicates: false
             });
 

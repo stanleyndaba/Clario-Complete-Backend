@@ -101,19 +101,34 @@ export class OrdersService {
       // Get access token via store-aware helper
       const accessToken = await this.getAccessToken(userId, storeId);
 
-      // Fetch orders from SP-API
-      const response = await axios.get(`${regionalBaseUrl}/orders/v0/orders`, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'x-amz-access-token': accessToken,
-          'Content-Type': 'application/json'
-        },
-        params,
-        timeout: 30000
-      });
+      const orders: any[] = [];
+      let nextToken: string | null = null;
+      let page = 0;
+      const maxPages = 200;
 
-      const payload = response.data?.payload || response.data;
-      const orders = payload?.Orders || (Array.isArray(payload) ? payload : []);
+      do {
+        page += 1;
+        const requestParams = nextToken ? { NextToken: nextToken } : { ...params };
+
+        const response = await axios.get(`${regionalBaseUrl}/orders/v0/orders`, {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'x-amz-access-token': accessToken,
+            'Content-Type': 'application/json'
+          },
+          params: requestParams,
+          timeout: 30000
+        });
+
+        const payload = response.data?.payload || response.data;
+        const batch = payload?.Orders || (Array.isArray(payload) ? payload : []);
+        orders.push(...batch);
+        nextToken = payload?.NextToken || null;
+      } while (nextToken && page < maxPages);
+
+      if (page >= maxPages && nextToken) {
+        logger.warn('Orders pagination reached max pages', { userId, maxPages });
+      }
 
       logger.info(`Successfully fetched ${orders.length} orders from SP-API ${environment}`, {
         orderCount: orders.length,
@@ -231,7 +246,7 @@ export class OrdersService {
   /**
    * Save normalized orders to database
    */
-  async saveOrdersToDatabase(userId: string, orders: NormalizedOrder[], storeId?: string): Promise<void> {
+  async saveOrdersToDatabase(userId: string, orders: NormalizedOrder[], storeId?: string, tenantId?: string): Promise<void> {
     try {
       logger.info('Saving orders to database', { userId, count: orders.length });
 
@@ -245,9 +260,14 @@ export class OrdersService {
         return;
       }
 
+      if (!tenantId) {
+        throw new Error('tenantId is required to persist orders');
+      }
+
       // Prepare orders for database insertion
       const ordersToInsert = orders.map(order => ({
         user_id: userId,
+        tenant_id: tenantId,
         order_id: order.order_id,
         seller_id: order.seller_id || null,
         marketplace_id: order.marketplace_id,
@@ -275,6 +295,7 @@ export class OrdersService {
           .from('orders')
           .select('order_id')
           .eq('user_id', userId)
+          .eq('tenant_id', tenantId)
           .in('order_id', orderIds);
 
         if (fetchError) {
@@ -318,6 +339,7 @@ export class OrdersService {
                   updated_at: order.updated_at
                 })
                 .eq('user_id', userId)
+                .eq('tenant_id', tenantId)
                 .eq('order_id', order.order_id);
 
               if (updateError) {

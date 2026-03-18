@@ -235,6 +235,7 @@ export class AmazonService {
   private async refreshAccessToken(userId?: string, storeId?: string): Promise<void> {
     try {
       let refreshToken: string | undefined;
+      const strictDbTokenTruth = process.env.AGENT2_STRICT_TOKEN_TRUTH !== 'false';
 
       // First, try to get token from database if userId is provided
       if (userId) {
@@ -247,14 +248,19 @@ export class AmazonService {
             logger.info('Using refresh token from database for user', { userId, storeId });
           }
         } catch (dbError: any) {
-          logger.warn('Could not get token from database, falling back to env vars', {
+          logger.warn('Could not get token from database', {
             error: dbError.message,
             userId
           });
         }
       }
 
-      // Fall back to environment variable if no database token found
+      // In strict mode with user context, do not permit env fallback.
+      if (userId && strictDbTokenTruth && !refreshToken) {
+        throw new Error('No valid database-backed Amazon refresh token found for user context.');
+      }
+
+      // Fall back to environment variable only for non-user-context/system calls.
       if (!refreshToken) {
         refreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
         if (refreshToken) {

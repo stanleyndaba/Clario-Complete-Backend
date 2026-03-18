@@ -3,7 +3,6 @@
  * Phase 2: Continuous Data Sync
  */
 
-import axios from 'axios';
 import logger from '../utils/logger';
 import { supabase } from '../database/supabaseClient';
 import { logAuditEvent } from '../security/auditLogger';
@@ -86,7 +85,7 @@ export class ReturnsService {
 
       const { spApiReportService } = await import('./spApiReportService');
 
-      const reportStart = startDate || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000); // Default 90 days
+      const reportStart = startDate || new Date(Date.now() - 540 * 24 * 60 * 60 * 1000); // 18 months
       const reportEnd = endDate || new Date();
 
       const records = await spApiReportService.requestAndDownloadReport(
@@ -219,7 +218,7 @@ export class ReturnsService {
   /**
    * Save normalized returns to database
    */
-  async saveReturnsToDatabase(userId: string, returns: NormalizedReturn[], storeId?: string): Promise<void> {
+  async saveReturnsToDatabase(userId: string, returns: NormalizedReturn[], storeId?: string, tenantId?: string): Promise<void> {
     try {
       logger.info('Saving returns to database', { userId, count: returns.length });
 
@@ -233,8 +232,13 @@ export class ReturnsService {
         return;
       }
 
+      if (!tenantId) {
+        throw new Error('tenantId is required to persist returns');
+      }
+
       const returnsToInsert = returns.map(returnData => ({
         user_id: userId,
+        tenant_id: tenantId,
         return_id: returnData.return_id,
         order_id: returnData.order_id || null,
         reason: returnData.reason,
@@ -259,6 +263,7 @@ export class ReturnsService {
           .from('returns')
           .select('return_id')
           .eq('user_id', userId)
+          .eq('tenant_id', tenantId)
           .in('return_id', returnIds);
 
         if (!fetchError && existingReturns) {
@@ -290,6 +295,7 @@ export class ReturnsService {
                 updated_at: returnData.updated_at
               })
               .eq('user_id', userId)
+              .eq('tenant_id', tenantId)
               .eq('return_id', returnData.return_id);
 
             if (updateError) {

@@ -3,7 +3,6 @@
  * Phase 2: Continuous Data Sync
  */
 
-import axios from 'axios';
 import logger from '../utils/logger';
 import { supabase } from '../database/supabaseClient';
 import { logAuditEvent } from '../security/auditLogger';
@@ -82,23 +81,25 @@ export class ShipmentsService {
         };
       }
 
-      // For now, we'll use a placeholder approach
-      // In production, this should request and download FBA shipment reports
-      // Report type: GET_FBA_FULFILLMENT_SHIPMENT_DATA
+      const { spApiReportService } = await import('./spApiReportService');
+      const reportStart = startDate || new Date(Date.now() - 540 * 24 * 60 * 60 * 1000); // 18 months
+      const reportEnd = endDate || new Date();
 
-      // Since report processing is async, we'll implement a simplified version
-      // that can be enhanced later with full report processing
-
-      logger.info('Shipments fetch initiated (report-based sync)', {
+      const records = await spApiReportService.requestAndDownloadReport(
         userId,
-        isSandbox: this.isSandbox()
-      });
+        'GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL',
+        reportStart,
+        reportEnd,
+        storeId
+      );
 
-      // Return empty array for now - will be implemented with report processing
+      const shipmentsData = this.convertReportRecords(records);
+      const normalizedShipments = this.normalizeShipments(shipmentsData, userId);
+
       return {
         success: true,
-        data: [],
-        message: `Shipments sync initiated (report processing will be implemented)`
+        data: normalizedShipments,
+        message: `Fetched ${normalizedShipments.length} shipments from SP-API ${environment} (${dataType})`
       };
     } catch (error: any) {
       logger.error('Error fetching shipments from SP-API', {
@@ -168,6 +169,46 @@ export class ShipmentsService {
     });
   }
 
+  private convertReportRecords(records: Record<string, string>[]): any[] {
+    const byShipment = new Map<string, any>();
+
+    for (const record of records) {
+      const shipmentId = record['shipment-id'] || record['shipment_id'] || record['shipment id'] || '';
+      const orderId = record['amazon-order-id'] || record['order-id'] || record['order_id'] || '';
+      const shippedDate = record['shipment-date'] || record['shipped-date'] || record['ship-date'] || '';
+      const key = shipmentId || `${orderId}_${shippedDate}`;
+
+      if (!byShipment.has(key)) {
+        byShipment.set(key, {
+          ShipmentId: shipmentId || `SHIP_${orderId}_${Date.now()}`,
+          AmazonOrderId: orderId || null,
+          TrackingNumber: record['tracking-number'] || record['tracking_number'] || null,
+          ShippedDate: shippedDate || null,
+          ReceivedDate: record['received-date'] || record['received_date'] || null,
+          Carrier: record['carrier'] || null,
+          FulfillmentCenterId: record['fulfillment-center-id'] || record['fulfillment_center_id'] || null,
+          QuantityShipped: 0,
+          QuantityReceived: 0,
+          Items: []
+        });
+      }
+
+      const entry = byShipment.get(key)!;
+      const qtyShipped = parseInt(record['quantity-shipped'] || record['quantity'] || '0', 10) || 0;
+      const qtyReceived = parseInt(record['quantity-received'] || record['received-quantity'] || '0', 10) || qtyShipped;
+
+      entry.QuantityShipped += qtyShipped;
+      entry.QuantityReceived += qtyReceived;
+      entry.Items.push({
+        SellerSKU: record['sku'] || record['seller-sku'] || '',
+        ASIN: record['asin'] || '',
+        QuantityShipped: qtyShipped
+      });
+    }
+
+    return Array.from(byShipment.values());
+  }
+
   /**
    * Determine shipment status based on dates and quantities
    */
@@ -189,7 +230,7 @@ export class ShipmentsService {
   /**
    * Save normalized shipments to database
    */
-  async saveShipmentsToDatabase(userId: string, shipments: NormalizedShipment[], storeId?: string): Promise<void> {
+  async saveShipmentsToDatabase(userId: string, shipments: NormalizedShipment[], storeId?: string, tenantId?: string): Promise<void> {
     try {
       logger.info('Saving shipments to database', { userId, count: shipments.length });
 
@@ -203,8 +244,13 @@ export class ShipmentsService {
         return;
       }
 
+      if (!tenantId) {
+        throw new Error('tenantId is required to persist shipments');
+      }
+
       const shipmentsToInsert = shipments.map(shipment => ({
         user_id: userId,
+        tenant_id: tenantId,
         shipment_id: shipment.shipment_id,
         order_id: shipment.order_id || null,
         tracking_number: shipment.tracking_number || null,
@@ -233,6 +279,7 @@ export class ShipmentsService {
           .from('shipments')
           .select('shipment_id')
           .eq('user_id', userId)
+          .eq('tenant_id', tenantId)
           .in('shipment_id', shipmentIds);
 
         if (!fetchError && existingShipments) {
@@ -266,6 +313,7 @@ export class ShipmentsService {
                 updated_at: shipment.updated_at
               })
               .eq('user_id', userId)
+              .eq('tenant_id', tenantId)
               .eq('shipment_id', shipment.shipment_id);
 
             if (updateError) {

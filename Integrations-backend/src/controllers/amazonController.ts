@@ -805,8 +805,9 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         const queueAvailable = await isQueueHealthy();
 
         if (queueAvailable) {
-          // ✅ Step 2: Add with Deduplication (userId-based, prevents double-click)
+          // ✅ Step 2: Add with tenant-safe deduplication
           const jobId = await addSyncJob(userId, profile.sellerId, {
+            tenantId: tenantIdToUse,
             storeId: storeId || undefined,
             companyName: profile.companyName,
             marketplaces: profile.marketplaces
@@ -816,52 +817,32 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
             logger.info('🎯 [AGENT 1] Job queued successfully (BullMQ)', {
               jobId,
               userId,
+              tenantId: tenantIdToUse,
               sellerId: profile.sellerId
             });
           } else {
             logger.info('🔄 [AGENT 1] Duplicate sync rejected (already pending)', {
               userId,
+              tenantId: tenantIdToUse,
               sellerId: profile.sellerId
             });
           }
         } else {
-          // ✅ Redis is down - run inline sync
-          logger.warn('⚠️ [AGENT 1] Redis down, running inline sync', { userId, storeId });
-          await runInlineSync(userId, storeId || undefined);
+          logger.error('❌ [AGENT 1] Redis queue unavailable - cannot start durable Agent 2 sync', {
+            userId,
+            tenantId: tenantIdToUse,
+            storeId
+          });
+          throw new Error('Sync queue unavailable. Amazon connection saved, but Agent 2 ingestion was not started.');
         }
       } catch (queueError: any) {
-        // Queue operation failed - fall back to inline sync
-        logger.warn('⚠️ [AGENT 1] Queue operation failed, running inline sync', {
+        logger.error('❌ [AGENT 1] Queue operation failed - refusing non-durable fallback', {
           error: queueError.message,
           userId,
+          tenantId: tenantIdToUse,
           storeId
         });
-        await runInlineSync(userId, storeId || undefined);
-      }
-
-      // Helper for inline sync
-      async function runInlineSync(uid: string, sid?: string): Promise<void> {
-        try {
-          const agent2DataSyncService = (await import('../services/agent2DataSyncService')).default;
-          agent2DataSyncService.syncUserData(uid, sid).then((syncResult) => {
-            logger.info('✅ [AGENT 1→2] Inline sync completed', {
-              userId: uid,
-              syncId: syncResult.syncId,
-              success: syncResult.success
-            });
-          }).catch((syncError: any) => {
-            logger.error('❌ [AGENT 1→2] Inline sync failed', {
-              error: syncError.message,
-              userId: uid,
-              storeId: sid
-            });
-          });
-        } catch (fallbackError: any) {
-          logger.error('❌ [AGENT 1] Inline sync setup failed', {
-            error: fallbackError.message,
-            userId: uid
-          });
-        }
+        throw new Error(queueError.message || 'Failed to enqueue Agent 2 sync job.');
       }
 
       // All steps succeeded - prepare success response

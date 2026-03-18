@@ -19,6 +19,7 @@ const QUEUE_NAME = 'onboarding-sync';
 // Job data structure for initial sync
 export interface InitialSyncJobData {
     userId: string;
+    tenantId: string;
     sellerId: string;
     storeId?: string;
     companyName?: string;
@@ -162,12 +163,17 @@ export async function addSyncJob(
     userId: string,
     sellerId: string,
     options?: {
+        tenantId: string;
         storeId?: string;
         companyName?: string;
         marketplaces?: string[];
     }
 ): Promise<string | null> {
     try {
+        if (!options?.tenantId) {
+            throw new Error('tenantId is required for onboarding sync jobs');
+        }
+
         const queue = getQueue();
         if (!queue) {
             logger.warn('[QUEUE] Queue not available, cannot add job');
@@ -176,6 +182,7 @@ export async function addSyncJob(
 
         const job = await queue.add('initial-sync' as any, {
             userId,
+            tenantId: options.tenantId,
             sellerId,
             storeId: options?.storeId,
             companyName: options?.companyName,
@@ -183,14 +190,15 @@ export async function addSyncJob(
             triggeredAt: new Date().toISOString(),
             jobType: 'initial-sync'
         }, {
-            jobId: `sync-${userId}${options?.storeId ? `-${options.storeId}` : ''}`
+            jobId: `sync-${options.tenantId}-${userId}${options?.storeId ? `-${options.storeId}` : ''}`
         });
 
         logger.info('🎯 [QUEUE] Sync job added', {
             jobId: job.id,
             userId,
+            tenantId: options?.tenantId,
             sellerId,
-            deduplicationKey: `sync-${userId}`
+            deduplicationKey: `sync-${options?.tenantId}-${userId}`
         });
 
         return job.id || null;
@@ -210,10 +218,10 @@ export async function addSyncJob(
 export async function queueInitialSync(
     userId: string,
     sellerId: string,
-    options?: { companyName?: string; marketplaces?: string[] }
+    options?: { tenantId: string; companyName?: string; marketplaces?: string[] }
 ): Promise<string> {
     const jobId = await addSyncJob(userId, sellerId, options);
-    return jobId || `fallback-${userId}`;
+    return jobId || `fallback-${options?.tenantId || 'missing-tenant'}-${userId}`;
 }
 
 // ============================================================================

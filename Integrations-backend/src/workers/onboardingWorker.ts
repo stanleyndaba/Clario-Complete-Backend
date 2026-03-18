@@ -52,12 +52,13 @@ function getConnection(): { host: string; port: number; password?: string; tls?:
  * Process a sync job
  */
 async function processSyncJob(job: Job<InitialSyncJobData>): Promise<void> {
-    const { userId, sellerId, storeId, companyName, jobType } = job.data;
+    const { userId, tenantId, sellerId, storeId, companyName, jobType } = job.data;
     const startTime = Date.now();
 
     logger.info(`🏭 [WORKER] Processing ${jobType} job`, {
         jobId: job.id,
         userId,
+        tenantId,
         sellerId,
         storeId,
         attempt: job.attemptsMade + 1
@@ -78,7 +79,7 @@ async function processSyncJob(job: Job<InitialSyncJobData>): Promise<void> {
         } catch (e) { /* SSE non-critical */ }
 
         // Run the sync
-        const syncResult = await agent2DataSyncService.syncUserData(userId, storeId);
+        const syncResult = await agent2DataSyncService.syncUserData(userId, storeId, undefined, undefined, undefined, tenantId);
         const elapsedMs = Date.now() - startTime;
 
         logger.info(`✅ [WORKER] Sync completed`, {

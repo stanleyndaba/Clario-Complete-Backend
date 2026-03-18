@@ -10,6 +10,7 @@ import shipmentsService from '../services/shipmentsService';
 import returnsService from '../services/returnsService';
 import settlementsService from '../services/settlementsService';
 import { logAuditEvent } from '../security/auditLogger';
+import { supabase } from '../database/supabaseClient';
 
 export interface SyncResult {
   success: boolean;
@@ -39,6 +40,22 @@ export class Phase2SyncOrchestrator {
     this.syncJob = new AmazonSyncJob();
   }
 
+  private async resolveTenantId(userId: string): Promise<string> {
+    const { data, error } = await supabase
+      .from('users')
+      .select('tenant_id')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to resolve tenant for Phase 2 sync: ${error.message}`);
+    }
+    if (!data?.tenant_id) {
+      throw new Error('No tenant_id associated with user for Phase 2 sync');
+    }
+    return data.tenant_id;
+  }
+
   /**
    * Execute full Phase 2 sync for a user
    */
@@ -48,6 +65,7 @@ export class Phase2SyncOrchestrator {
     const results: SyncResult[] = [];
 
     logger.info('Starting Phase 2 full sync', { userId, syncId });
+    const tenantId = await this.resolveTenantId(userId);
 
     try {
       // 1. Sync Inventory (existing)
@@ -67,7 +85,7 @@ export class Phase2SyncOrchestrator {
         async () => {
           const result = await ordersService.fetchOrders(userId);
           const normalized = result.data || [];
-          await ordersService.saveOrdersToDatabase(userId, normalized);
+          await ordersService.saveOrdersToDatabase(userId, normalized, undefined, tenantId);
           return { count: normalized.length };
         }
       );
@@ -82,7 +100,7 @@ export class Phase2SyncOrchestrator {
           const shipments = result.data || [];
           if (shipments.length > 0) {
             const normalized = shipmentsService.normalizeShipments(shipments, userId);
-            await shipmentsService.saveShipmentsToDatabase(userId, normalized);
+            await shipmentsService.saveShipmentsToDatabase(userId, normalized, undefined, tenantId);
             return { count: normalized.length };
           }
           return { count: 0 };
@@ -99,7 +117,7 @@ export class Phase2SyncOrchestrator {
           const returns = result.data || [];
           if (returns.length > 0) {
             const normalized = returnsService.normalizeReturns(returns, userId);
-            await returnsService.saveReturnsToDatabase(userId, normalized);
+            await returnsService.saveReturnsToDatabase(userId, normalized, undefined, tenantId);
             return { count: normalized.length };
           }
           return { count: 0 };
@@ -116,7 +134,7 @@ export class Phase2SyncOrchestrator {
           const settlements = result.data || [];
           if (settlements.length > 0) {
             const normalized = settlementsService.normalizeSettlements(settlements, userId);
-            await settlementsService.saveSettlementsToDatabase(userId, normalized);
+            await settlementsService.saveSettlementsToDatabase(userId, normalized, undefined, tenantId);
             return { count: normalized.length };
           }
           return { count: 0 };

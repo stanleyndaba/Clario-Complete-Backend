@@ -84,6 +84,7 @@ export class Agent2DataSyncService {
   private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
   private readonly buildVersion = 'v2025.11.25.fix-agent3'; // Build marker for deployment verification
   private readonly BATCH_SIZE = 1000; // Process 1000 records per batch for large datasets
+  private readonly ONBOARDING_BACKFILL_DAYS = 540; // 18 months
 
   constructor() {
     this.ordersService = new OrdersService();
@@ -128,6 +129,57 @@ export class Agent2DataSyncService {
     });
   }
 
+  private async resolveTenantId(userId: string, providedTenantId?: string): Promise<string> {
+    const { data: membership, error } = await supabaseAdmin
+      .from('tenant_memberships')
+      .select('tenant_id')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .limit(10);
+
+    if (error) {
+      throw new Error(`Failed to resolve tenant membership: ${error.message}`);
+    }
+
+    const tenantIds = (membership || []).map((m: any) => m.tenant_id).filter(Boolean);
+    if (!tenantIds.length) {
+      throw new Error('No active tenant membership found for user');
+    }
+
+    if (providedTenantId) {
+      if (!tenantIds.includes(providedTenantId)) {
+        throw new Error('User does not belong to the provided tenant context');
+      }
+      return providedTenantId;
+    }
+
+    return tenantIds[0];
+  }
+
+  private async assertValidAmazonTenantToken(userId: string, tenantId: string, storeId?: string): Promise<void> {
+    let query = supabaseAdmin
+      .from('tokens')
+      .select('id, expires_at')
+      .eq('user_id', userId)
+      .eq('tenant_id', tenantId)
+      .eq('provider', 'amazon')
+      .gt('expires_at', new Date().toISOString())
+      .order('expires_at', { ascending: false })
+      .limit(1);
+
+    if (storeId) {
+      query = query.eq('store_id', storeId);
+    }
+
+    const { data, error } = await query.maybeSingle();
+    if (error) {
+      throw new Error(`Failed to validate tenant token: ${error.message}`);
+    }
+    if (!data) {
+      throw new Error('No valid Amazon token found for tenant context');
+    }
+  }
+
   /**
    * Main sync method - orchestrates all data fetching and normalization
    */
@@ -136,7 +188,8 @@ export class Agent2DataSyncService {
     storeId?: string,
     startDate?: Date,
     endDate?: Date,
-    parentSyncId?: string
+    parentSyncId?: string,
+    tenantId?: string
   ): Promise<SyncResult> {
     const syncId = `agent2_sync_${userId}_${Date.now()}`;
     const detectionSyncId = parentSyncId || syncId;
@@ -146,65 +199,29 @@ export class Agent2DataSyncService {
     // Build version marker for deployment verification
     console.log(`[AGENT 2] Build: ${this.buildVersion} - Starting sync for ${userId}`);
 
+    const resolvedTenantId = await this.resolveTenantId(userId, tenantId);
+
     logger.info('🔄 [AGENT 2] Starting data sync', {
       userId,
+      tenantId: resolvedTenantId,
       syncId,
       buildVersion: this.buildVersion,
       startDate: startDate?.toISOString(),
       endDate: endDate?.toISOString()
     });
 
-    // Check if user has valid Amazon token from Agent 1
+    // Agent 2 runtime sync is strict: no env fallback, no mock fallback.
+    await this.assertValidAmazonTenantToken(userId, resolvedTenantId, storeId);
     const isConnected = await tokenManager.isTokenValid(userId, 'amazon', storeId);
-
-    // ===============================================
-    // SIMPLIFIED MODE LOGIC (Single Source of Truth)
-    // ===============================================
-    // DEMO_MODE=true  → Generate fake data for testing/demos
-    // DEMO_MODE=false → Require real SP-API connection
-    // Default: true (demo mode) for development, false for production
-    // ===============================================
-    const isDemoMode = process.env.DEMO_MODE === 'true' ||
-      (process.env.NODE_ENV !== 'production' && process.env.DEMO_MODE !== 'false');
-
-    // In production without DEMO_MODE, require real Amazon connection
-    const requiresRealConnection = !isDemoMode && process.env.NODE_ENV === 'production';
-
-    if (requiresRealConnection && !isConnected) {
-      logger.error('❌ [AGENT 2] Production mode requires real Amazon SP-API connection', {
-        userId,
-        syncId,
-        isConnected,
-        isDemoMode
-      });
-      throw new Error('Amazon SP-API connection required. Please connect your Amazon Seller Central account.');
+    if (!isConnected) {
+      throw new Error('Amazon token is missing or expired for this tenant.');
     }
 
-    // Use mock data generator in demo mode OR if not connected (fallback for testing)
-    const useMockGenerator = isDemoMode || !isConnected;
-    const mockScenario: MockScenario = (process.env.MOCK_SCENARIO as MockScenario) || 'realistic';
-
-    // Clear logging of which mode we're in
-    console.log(`[AGENT 2] ═══════════════════════════════════════`);
-    console.log(`[AGENT 2] MODE: ${useMockGenerator ? '🧪 DEMO (Mock Data)' : '🔗 PRODUCTION (Real SP-API)'}`);
-    console.log(`[AGENT 2] DEMO_MODE=${process.env.DEMO_MODE}, NODE_ENV=${process.env.NODE_ENV}`);
-    console.log(`[AGENT 2] Amazon Connected: ${isConnected}`);
-    console.log(`[AGENT 2] Mock Scenario: ${useMockGenerator ? mockScenario : 'N/A'}`);
-    console.log(`[AGENT 2] ═══════════════════════════════════════`);
-
-    if (useMockGenerator) {
-      logger.info('🧪 [AGENT 2] DEMO MODE - Generating mock data for testing', {
-        userId,
-        syncId,
-        scenario: mockScenario,
-        note: 'Set DEMO_MODE=false and connect Amazon account for real data'
-      });
-    } else {
-      console.log('[AGENT 2] ⚠️ NOT in mock mode - will use real SP-API (which may return empty for sandbox users)');
-    }
+    const useMockGenerator = false;
+    const mockScenario: MockScenario = 'realistic';
 
     // Default to last 18 months for initial sync
-    const syncStartDate = startDate || new Date(Date.now() - 18 * 30 * 24 * 60 * 60 * 1000);
+    const syncStartDate = startDate || new Date(Date.now() - this.ONBOARDING_BACKFILL_DAYS * 24 * 60 * 60 * 1000);
     const syncEndDate = endDate || new Date();
 
     const result: SyncResult = {
@@ -230,8 +247,8 @@ export class Agent2DataSyncService {
       },
       errors: [],
       duration: 0,
-      isMock: useMockGenerator,
-      mockScenario: useMockGenerator ? mockScenario : undefined
+      isMock: false,
+      mockScenario: undefined
     };
 
     try {
@@ -254,6 +271,7 @@ export class Agent2DataSyncService {
         const ordersResult = await this.syncOrders(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, storeId);
         result.normalized.orders = ordersResult.data || [];
         result.summary.ordersCount = result.normalized.orders.length;
+        await this.ordersService.saveOrdersToDatabase(userId, result.normalized.orders, storeId, resolvedTenantId);
 
         if (result.summary.ordersCount > 0) {
           const rawVolume = result.normalized.orders.reduce((sum: number, o: any) => sum + (Number(o.total_amount) || 0), 0);
@@ -329,6 +347,7 @@ export class Agent2DataSyncService {
         const shipmentsResult = await this.syncShipments(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, storeId);
         result.normalized.shipments = shipmentsResult.data || [];
         result.summary.shipmentsCount = result.normalized.shipments.length;
+        await this.shipmentsService.saveShipmentsToDatabase(userId, result.normalized.shipments, storeId, resolvedTenantId);
 
         if (result.summary.shipmentsCount > 0) {
           this.sendSyncLog(userId, syncId, {
@@ -384,6 +403,7 @@ export class Agent2DataSyncService {
         const returnsResult = await this.syncReturns(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, storeId);
         result.normalized.returns = returnsResult.data || [];
         result.summary.returnsCount = result.normalized.returns.length;
+        await this.returnsService.saveReturnsToDatabase(userId, result.normalized.returns, storeId, resolvedTenantId);
 
         if (result.summary.returnsCount > 0) {
           this.sendSyncLog(userId, syncId, {
@@ -433,6 +453,7 @@ export class Agent2DataSyncService {
         const settlementsResult = await this.syncSettlements(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, storeId);
         result.normalized.settlements = settlementsResult.data || [];
         result.summary.settlementsCount = result.normalized.settlements.length;
+        await this.settlementsService.saveSettlementsToDatabase(userId, result.normalized.settlements, storeId, resolvedTenantId);
 
         if (result.summary.settlementsCount > 0) {
           this.sendSyncLog(userId, syncId, {
@@ -613,7 +634,7 @@ export class Agent2DataSyncService {
         logger.info('📋 [AGENT 2] Syncing inventory ledger...', { userId, syncId });
 
         const { inventoryLedgerSyncService } = await import('./inventoryLedgerSyncService');
-        const ledgerResult = await inventoryLedgerSyncService.syncInventoryLedger(userId, syncStartDate, syncEndDate, storeId);
+        const ledgerResult = await inventoryLedgerSyncService.syncInventoryLedger(userId, syncStartDate, syncEndDate, storeId, resolvedTenantId);
 
         if (ledgerResult.success && ledgerResult.count > 0) {
           this.sendSyncLog(userId, syncId, {
