@@ -143,6 +143,19 @@ describe('CSV ingestion repair', () => {
     expect(result.results[0].errors[0]).toContain('Missing required headers');
   });
 
+  it('auto-detects financial event header variants without false header failure', async () => {
+    const csv = ['EventType,PostedDate,Amount,OrderId,SKU', 'AdjustmentEvent,2026-03-18T00:00:00Z,4.20,O-1,SKU-1'].join('\n');
+    const result = await service.ingestFiles(
+      userId,
+      [{ buffer: Buffer.from(csv), originalname: 'auto-detect.csv', mimetype: 'text/csv' }],
+      { triggerDetection: false, tenantId }
+    );
+
+    expect(result.results[0].csvType).toBe('financial_events');
+    expect(result.results[0].rowsFailed).toBe(0);
+    expect(result.results[0].errors).toEqual([]);
+  });
+
   it('exposes supported type enablement truth', () => {
     const types = service.getSupportedTypes();
     expect(types.length).toBeGreaterThan(0);

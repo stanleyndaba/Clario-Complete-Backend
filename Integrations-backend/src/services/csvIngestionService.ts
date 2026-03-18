@@ -126,8 +126,6 @@ const CSV_TYPE_SIGNATURES: Record<CSVType, string[][]> = {
         ['settlementId', 'transactionType'],
         ['Settlement ID', 'Transaction Type'],
         ['settlement-id', 'total-amount'],
-        ['EventType', 'PostedDate', 'Amount'],
-        ['EventType', 'PostedDate', 'OrderId', 'SKU', 'Amount'],
     ],
     inventory: [
         ['sellerSku', 'asin'],
@@ -278,16 +276,6 @@ export interface BatchIngestionResult {
 
 const DISABLED_TYPES = new Set<CSVType>([]);
 
-const REQUIRED_HEADERS_BY_TYPE: Record<Exclude<CSVType, 'unknown'>, string[]> = {
-    orders: ['AmazonOrderId', 'PurchaseDate'],
-    shipments: ['ShipmentId', 'ShipmentDate'],
-    returns: ['ReturnId', 'ReturnDate'],
-    settlements: ['SettlementId', 'TransactionType'],
-    inventory: ['SKU'],
-    financial_events: ['EventType', 'PostedDate', 'Amount'],
-    fees: ['FeeAmount', 'PostedDate'],
-};
-
 // ============================================================================
 // CSV Ingestion Service
 // ============================================================================
@@ -399,14 +387,23 @@ export class CSVIngestionService {
             return { ok: false, missing: ['unknown CSV type'] };
         }
 
-        const required = REQUIRED_HEADERS_BY_TYPE[csvType];
-        if (!required || required.length === 0) {
+        const signatures = CSV_TYPE_SIGNATURES[csvType] || [];
+        if (signatures.length === 0) {
             return { ok: true, missing: [] };
         }
 
         const set = new Set(headers.map(h => this.normalizeHeader(h)));
-        const missing = required.filter(h => !set.has(this.normalizeHeader(h)));
-        return { ok: missing.length === 0, missing };
+        const missingBySignature = signatures.map(signature =>
+            signature.filter(h => !set.has(this.normalizeHeader(h)))
+        );
+        const matchedSignature = missingBySignature.find(missing => missing.length === 0);
+
+        if (matchedSignature) {
+            return { ok: true, missing: [] };
+        }
+
+        const bestCandidate = missingBySignature.sort((a, b) => a.length - b.length)[0] || [];
+        return { ok: false, missing: bestCandidate };
     }
 
     private async isDuplicateUpload(
