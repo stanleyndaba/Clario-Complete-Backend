@@ -5,6 +5,10 @@ import logger from '../utils/logger';
 const supabaseUrl = config.SUPABASE_URL;
 const supabaseAnonKey = config.SUPABASE_ANON_KEY;
 const supabaseServiceRoleKey = config.SUPABASE_SERVICE_ROLE_KEY;
+const hasRealSupabaseUrl = !!supabaseUrl && !supabaseUrl.includes('demo-');
+const hasAnySupabaseKey = !!supabaseServiceRoleKey || !!supabaseAnonKey;
+
+export const isRealDatabaseConfigured = hasRealSupabaseUrl && hasAnySupabaseKey;
 
 // Create a demo client if Supabase config is missing
 let supabase: SupabaseClient | any;
@@ -13,7 +17,7 @@ let supabaseAdmin: SupabaseClient | any; // Service role client for admin operat
 // Multi-tenant defaults
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
-if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
+if (!isRealDatabaseConfigured) {
   logger.warn('Using demo Supabase client - no real database connection');
 
   // In-memory store for demo mode
@@ -222,15 +226,6 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
     throw new Error('SUPABASE_URL must be a valid HTTP or HTTPS URL. Please set it in environment variables.');
   }
 
-  if (!supabaseAnonKey || typeof supabaseAnonKey !== 'string') {
-    logger.error('Invalid SUPABASE_ANON_KEY - must be a non-empty string', {
-      key: supabaseAnonKey ? 'present but invalid' : 'missing'
-    });
-    throw new Error('SUPABASE_ANON_KEY must be set in environment variables.');
-  }
-
-  supabase = createClient(supabaseUrl, supabaseAnonKey);
-
   // Create admin client with service role key for storage/admin operations
   if (supabaseServiceRoleKey) {
     supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey, {
@@ -242,6 +237,13 @@ if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('demo-')) {
     logger.info('Supabase admin client created (for storage operations)');
   } else {
     logger.warn('SUPABASE_SERVICE_ROLE_KEY not set - admin operations may be limited');
+    if (!supabaseAnonKey || typeof supabaseAnonKey !== 'string') {
+      logger.error('Invalid SUPABASE_ANON_KEY - must be a non-empty string', {
+        key: supabaseAnonKey ? 'present but invalid' : 'missing'
+      });
+      throw new Error('SUPABASE_ANON_KEY must be set in environment variables when SUPABASE_SERVICE_ROLE_KEY is not set.');
+    }
+    supabase = createClient(supabaseUrl, supabaseAnonKey);
   }
 
   // Prefer admin client for backend operations when available (bypass RLS)

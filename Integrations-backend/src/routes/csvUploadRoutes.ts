@@ -15,6 +15,8 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import logger from '../utils/logger';
 import { csvIngestionService, CSVType } from '../services/csvIngestionService';
+import { isRealDatabaseConfigured } from '../database/supabaseClient';
+import { requireActiveTenant } from '../middleware/tenantMiddleware';
 
 const router = Router();
 
@@ -42,13 +44,28 @@ const upload = multer({
 // POST /api/csv-upload/ingest — Upload and ingest CSV files (auto-detect type)
 // ============================================================================
 
-router.post('/ingest', upload.array('files', 10), async (req: Request, res: Response) => {
+router.post('/ingest', requireActiveTenant, upload.array('files', 10), async (req: Request, res: Response) => {
     try {
+        if (!isRealDatabaseConfigured) {
+            return res.status(503).json({
+                success: false,
+                error: 'CSV upload disabled: real database is not configured.',
+            });
+        }
+
         const userId = (req as any).userId;
         if (!userId) {
             return res.status(401).json({
                 success: false,
                 error: 'User ID is required. Include X-User-Id header or authenticate via session.',
+            });
+        }
+
+        const tenantId = (req as any).tenant?.tenantId as string | undefined;
+        if (!tenantId) {
+            return res.status(400).json({
+                success: false,
+                error: 'Tenant context is required for CSV ingestion.',
             });
         }
 
@@ -74,6 +91,7 @@ router.post('/ingest', upload.array('files', 10), async (req: Request, res: Resp
         const result = await csvIngestionService.ingestFiles(userId, files, {
             triggerDetection,
             storeId,
+            tenantId,
         });
 
         const statusCode = result.success ? 200 : 207; // 207 Multi-Status if partial
@@ -99,13 +117,28 @@ router.post('/ingest', upload.array('files', 10), async (req: Request, res: Resp
 
 const VALID_TYPES: CSVType[] = ['orders', 'shipments', 'returns', 'settlements', 'inventory', 'financial_events', 'fees'];
 
-router.post('/ingest/:type', upload.array('files', 10), async (req: Request, res: Response) => {
+router.post('/ingest/:type', requireActiveTenant, upload.array('files', 10), async (req: Request, res: Response) => {
     try {
+        if (!isRealDatabaseConfigured) {
+            return res.status(503).json({
+                success: false,
+                error: 'CSV upload disabled: real database is not configured.',
+            });
+        }
+
         const userId = (req as any).userId;
         if (!userId) {
             return res.status(401).json({
                 success: false,
                 error: 'User ID is required. Include X-User-Id header or authenticate via session.',
+            });
+        }
+
+        const tenantId = (req as any).tenant?.tenantId as string | undefined;
+        if (!tenantId) {
+            return res.status(400).json({
+                success: false,
+                error: 'Tenant context is required for CSV ingestion.',
             });
         }
 
@@ -139,6 +172,7 @@ router.post('/ingest/:type', upload.array('files', 10), async (req: Request, res
             explicitType: csvType,
             triggerDetection,
             storeId,
+            tenantId,
         });
 
         const statusCode = result.success ? 200 : 207;

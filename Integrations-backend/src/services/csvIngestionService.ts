@@ -11,6 +11,7 @@
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import { v4 as uuidv4 } from 'uuid';
+import crypto from 'crypto';
 
 // ============================================================================
 // CSV Parser (adapted from mockSPAPIService.ts)
@@ -258,6 +259,7 @@ export interface IngestionResult {
     fileName: string;
     rowsProcessed: number;
     rowsInserted: number;
+    rowsSkipped: number;
     rowsFailed: number;
     errors: string[];
     detectionTriggered: boolean;
@@ -273,6 +275,18 @@ export interface BatchIngestionResult {
     detectionJobId?: string;
     syncId: string;
 }
+
+const DISABLED_TYPES = new Set<CSVType>([]);
+
+const REQUIRED_HEADERS_BY_TYPE: Record<Exclude<CSVType, 'unknown'>, string[]> = {
+    orders: ['AmazonOrderId', 'PurchaseDate'],
+    shipments: ['ShipmentId', 'ShipmentDate'],
+    returns: ['ReturnId', 'ReturnDate'],
+    settlements: ['SettlementId', 'TransactionType'],
+    inventory: ['SKU'],
+    financial_events: ['EventType', 'PostedDate', 'Amount'],
+    fees: ['FeeAmount', 'PostedDate'],
+};
 
 // ============================================================================
 // CSV Ingestion Service
@@ -290,8 +304,13 @@ export class CSVIngestionService {
             explicitType?: CSVType;
             triggerDetection?: boolean;
             storeId?: string;
+            tenantId?: string;
         } = {}
     ): Promise<BatchIngestionResult> {
+        if (!options.tenantId) {
+            throw new Error('tenantId is required for CSV ingestion');
+        }
+
         const syncId = `csv_${Date.now()}`;
         const results: IngestionResult[] = [];
         const triggerDetection = options.triggerDetection !== false;
@@ -309,6 +328,7 @@ export class CSVIngestionService {
                 const result = await this.ingestSingleFile(userId, file, syncId, {
                     explicitType: options.explicitType,
                     storeId: options.storeId,
+                    tenantId: options.tenantId,
                 });
                 results.push(result);
             } catch (error: any) {
@@ -318,6 +338,7 @@ export class CSVIngestionService {
                     fileName: file.originalname,
                     rowsProcessed: 0,
                     rowsInserted: 0,
+                    rowsSkipped: 0,
                     rowsFailed: 0,
                     errors: [error.message],
                     detectionTriggered: false,
@@ -328,6 +349,7 @@ export class CSVIngestionService {
         // Trigger detection after all files are imported
         let detectionJobId: string | undefined;
         const anySuccess = results.some(r => r.success && r.rowsInserted > 0);
+        const allSucceeded = results.length > 0 && results.every(r => r.success);
 
         if (triggerDetection && anySuccess) {
             try {
@@ -347,7 +369,7 @@ export class CSVIngestionService {
         }
 
         const batchResult: BatchIngestionResult = {
-            success: anySuccess,
+            success: allSucceeded && anySuccess,
             userId,
             totalFiles: files.length,
             results,
@@ -368,6 +390,89 @@ export class CSVIngestionService {
         return batchResult;
     }
 
+    private normalizeHeader(value: string): string {
+        return value.toLowerCase().replace(/[_\- ]/g, '');
+    }
+
+    private hasRequiredHeaders(csvType: CSVType, headers: string[]): { ok: boolean; missing: string[] } {
+        if (csvType === 'unknown') {
+            return { ok: false, missing: ['unknown CSV type'] };
+        }
+
+        const required = REQUIRED_HEADERS_BY_TYPE[csvType];
+        if (!required || required.length === 0) {
+            return { ok: true, missing: [] };
+        }
+
+        const set = new Set(headers.map(h => this.normalizeHeader(h)));
+        const missing = required.filter(h => !set.has(this.normalizeHeader(h)));
+        return { ok: missing.length === 0, missing };
+    }
+
+    private async isDuplicateUpload(
+        userId: string,
+        tenantId: string,
+        csvType: CSVType,
+        fileName: string,
+        content: Buffer
+    ): Promise<boolean> {
+        const fileHash = crypto.createHash('sha256').update(content).digest('hex');
+
+        const { data, error } = await supabaseAdmin
+            .from('csv_ingestion_runs')
+            .select('id')
+            .eq('tenant_id', tenantId)
+            .eq('user_id', userId)
+            .eq('csv_type', csvType)
+            .eq('file_hash', fileHash)
+            .maybeSingle();
+
+        if (error?.code === '42P01') {
+            logger.warn('CSV duplicate tracking table is not deployed; falling back to row-level idempotency only', {
+                table: 'csv_ingestion_runs',
+                tenantId,
+                userId,
+                csvType,
+            });
+            return false;
+        }
+
+        if (error && error.code !== 'PGRST116') {
+            throw new Error(`Failed duplicate check: ${error.message}`);
+        }
+
+        if (data?.id) {
+            return true;
+        }
+
+        const { error: insertError } = await supabaseAdmin
+            .from('csv_ingestion_runs')
+            .insert({
+                tenant_id: tenantId,
+                user_id: userId,
+                csv_type: csvType,
+                file_name: fileName,
+                file_hash: fileHash,
+                created_at: new Date().toISOString(),
+            });
+
+        if (insertError?.code === '42P01') {
+            logger.warn('CSV duplicate tracking table is not deployed; file-level duplicate registration skipped', {
+                table: 'csv_ingestion_runs',
+                tenantId,
+                userId,
+                csvType,
+            });
+            return false;
+        }
+
+        if (insertError && insertError.code !== '23505') {
+            throw new Error(`Failed duplicate registration: ${insertError.message}`);
+        }
+
+        return insertError?.code === '23505';
+    }
+
     /**
      * Ingest a single CSV file
      */
@@ -375,8 +480,12 @@ export class CSVIngestionService {
         userId: string,
         file: { buffer: Buffer; originalname: string; mimetype: string },
         syncId: string,
-        options: { explicitType?: CSVType; storeId?: string }
+        options: { explicitType?: CSVType; storeId?: string; tenantId?: string }
     ): Promise<IngestionResult> {
+        if (!options.tenantId) {
+            throw new Error('tenantId is required for CSV ingestion');
+        }
+
         const content = file.buffer.toString('utf-8');
         const records = parseCSV(content);
 
@@ -387,6 +496,7 @@ export class CSVIngestionService {
                 fileName: file.originalname,
                 rowsProcessed: 0,
                 rowsInserted: 0,
+                rowsSkipped: 0,
                 rowsFailed: 0,
                 errors: ['CSV file is empty or has no data rows'],
                 detectionTriggered: false,
@@ -404,12 +514,57 @@ export class CSVIngestionService {
                 fileName: file.originalname,
                 rowsProcessed: records.length,
                 rowsInserted: 0,
+                rowsSkipped: 0,
                 rowsFailed: 0,
                 errors: [
                     `Could not detect CSV type from headers: [${headers.slice(0, 10).join(', ')}${headers.length > 10 ? '...' : ''}]. ` +
                     `Supported types: orders, shipments, returns, settlements, inventory, financial_events, fees. ` +
                     `Try specifying the type explicitly via /api/csv-upload/ingest/:type`
                 ],
+                detectionTriggered: false,
+            };
+        }
+
+        if (DISABLED_TYPES.has(csvType)) {
+            return {
+                success: false,
+                csvType,
+                fileName: file.originalname,
+                rowsProcessed: records.length,
+                rowsInserted: 0,
+                rowsSkipped: records.length,
+                rowsFailed: records.length,
+                errors: [`CSV type "${csvType}" is temporarily disabled.`],
+                detectionTriggered: false,
+            };
+        }
+
+        const headerValidation = this.hasRequiredHeaders(csvType, headers);
+        if (!headerValidation.ok) {
+            return {
+                success: false,
+                csvType,
+                fileName: file.originalname,
+                rowsProcessed: records.length,
+                rowsInserted: 0,
+                rowsSkipped: records.length,
+                rowsFailed: records.length,
+                errors: [`Missing required headers for ${csvType}: ${headerValidation.missing.join(', ')}`],
+                detectionTriggered: false,
+            };
+        }
+
+        const duplicate = await this.isDuplicateUpload(userId, options.tenantId, csvType, file.originalname, file.buffer);
+        if (duplicate) {
+            return {
+                success: true,
+                csvType,
+                fileName: file.originalname,
+                rowsProcessed: records.length,
+                rowsInserted: 0,
+                rowsSkipped: records.length,
+                rowsFailed: 0,
+                errors: ['Duplicate file upload detected; ingestion skipped.'],
                 detectionTriggered: false,
             };
         }
@@ -423,7 +578,7 @@ export class CSVIngestionService {
         });
 
         // Route to appropriate ingestion handler
-        const result = await this.ingestByType(userId, csvType, records, syncId, options.storeId);
+        const result = await this.ingestByType(userId, options.tenantId, csvType, records, syncId, options.storeId);
 
         return {
             ...result,
@@ -436,6 +591,7 @@ export class CSVIngestionService {
      */
     private async ingestByType(
         userId: string,
+        tenantId: string,
         csvType: CSVType,
         records: any[],
         syncId: string,
@@ -443,26 +599,27 @@ export class CSVIngestionService {
     ): Promise<Omit<IngestionResult, 'fileName'>> {
         switch (csvType) {
             case 'orders':
-                return this.ingestOrders(userId, records, syncId, storeId);
+                return this.ingestOrders(userId, tenantId, records, syncId, storeId);
             case 'shipments':
-                return this.ingestShipments(userId, records, syncId, storeId);
+                return this.ingestShipments(userId, tenantId, records, syncId, storeId);
             case 'returns':
-                return this.ingestReturns(userId, records, syncId, storeId);
+                return this.ingestReturns(userId, tenantId, records, syncId, storeId);
             case 'settlements':
-                return this.ingestSettlements(userId, records, syncId, storeId);
+                return this.ingestSettlements(userId, tenantId, records, syncId, storeId);
             case 'inventory':
-                return this.ingestInventory(userId, records, syncId, storeId);
+                return this.ingestInventory(userId, tenantId, records, syncId, storeId);
             case 'financial_events':
-                return this.ingestFinancialEvents(userId, records, syncId, storeId);
+                return this.ingestFinancialEvents(userId, tenantId, records, syncId, storeId);
             case 'fees':
-                return this.ingestFees(userId, records, syncId, storeId);
+                return this.ingestFees(userId, tenantId, records, syncId, storeId);
             default:
                 return {
                     success: false,
                     csvType,
                     rowsProcessed: records.length,
                     rowsInserted: 0,
-                    rowsFailed: 0,
+                    rowsSkipped: records.length,
+                    rowsFailed: records.length,
                     errors: [`Unsupported CSV type: ${csvType}`],
                     detectionTriggered: false,
                 };
@@ -473,21 +630,32 @@ export class CSVIngestionService {
     // Type-specific ingestion handlers
     // ============================================================================
 
-    private async ingestOrders(userId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
+    private async ingestOrders(userId: string, tenantId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
         const errors: string[] = [];
         const rows: any[] = [];
+        let skipped = 0;
 
         for (let i = 0; i < records.length; i++) {
             try {
                 const r = records[i];
+                const orderId = getField(r, 'AmazonOrderId', 'amazon-order-id', 'order_id', 'orderId', 'Order ID');
+                const orderDate = getField(r, 'PurchaseDate', 'purchase_date', 'purchaseDate', 'order_date', 'Order Date');
+
+                if (!orderId || !orderDate) {
+                    skipped++;
+                    errors.push(`Row ${i + 1}: Missing required fields (order_id/order_date)`);
+                    continue;
+                }
+
                 rows.push({
                     id: uuidv4(),
+                    tenant_id: tenantId,
                     user_id: userId,
                     store_id: storeId || null,
-                    order_id: getField(r, 'AmazonOrderId', 'amazon-order-id', 'order_id', 'orderId', 'Order ID') || `csv_order_${i}`,
+                    order_id: orderId,
                     seller_id: getField(r, 'SellerId', 'seller_id', 'sellerId') || userId,
                     marketplace_id: getField(r, 'MarketplaceId', 'marketplace_id', 'marketplaceId') || 'ATVPDKIKX0DER',
-                    order_date: getField(r, 'PurchaseDate', 'purchase_date', 'purchaseDate', 'order_date', 'Order Date') || new Date().toISOString(),
+                    order_date: orderDate,
                     order_status: getField(r, 'OrderStatus', 'order_status', 'orderStatus', 'Status') || 'Shipped',
                     fulfillment_channel: getField(r, 'FulfillmentChannel', 'fulfillment_channel', 'fulfillmentChannel') || 'FBA',
                     total_amount: Number(getField(r, 'OrderTotal', 'total_amount', 'totalAmount', 'Amount', 'amount')) || 0,
@@ -503,29 +671,38 @@ export class CSVIngestionService {
                 });
             } catch (error: any) {
                 errors.push(`Row ${i + 1}: ${error.message}`);
+                skipped++;
             }
         }
 
-        return this.batchUpsert('orders', rows, 'orders', errors);
+        return this.batchUpsert('orders', rows, 'orders', errors, skipped);
     }
 
-    private async ingestShipments(userId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
+    private async ingestShipments(userId: string, tenantId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
         const errors: string[] = [];
         const rows: any[] = [];
+        let skipped = 0;
 
         for (let i = 0; i < records.length; i++) {
             try {
                 const r = records[i];
+                const shipmentId = getField(r, 'ShipmentId', 'shipment_id', 'shipmentId', 'Shipment ID');
+                const shippedDate = getField(r, 'ShipmentDate', 'shipment_date', 'shipmentDate', 'shipped_date', 'Date');
+
+                if (!shipmentId || !shippedDate) {
+                    skipped++;
+                    errors.push(`Row ${i + 1}: Missing required fields (shipment_id/shipped_date)`);
+                    continue;
+                }
+
                 rows.push({
                     id: uuidv4(),
+                    tenant_id: tenantId,
                     user_id: userId,
                     store_id: storeId || null,
-                    shipment_id: getField(r, 'ShipmentId', 'shipment_id', 'shipmentId', 'Shipment ID') || `csv_ship_${i}`,
+                    shipment_id: shipmentId,
                     order_id: getField(r, 'AmazonOrderId', 'order_id', 'orderId') || null,
-                    sku: getField(r, 'SKU', 'sku', 'seller-sku', 'FNSKU', 'fnsku') || null,
-                    fnsku: getField(r, 'FNSKU', 'fnsku', 'fn-sku', 'fnSku') || null,
-                    shipment_type: 'INBOUND',
-                    shipped_date: getField(r, 'ShipmentDate', 'shipment_date', 'shipmentDate', 'shipped_date', 'Date') || new Date().toISOString(),
+                    shipped_date: shippedDate,
                     received_date: getField(r, 'ReceivedDate', 'received_date', 'receivedDate') || null,
                     status: getField(r, 'ShipmentStatus', 'status', 'Status') || 'RECEIVED',
                     carrier: getField(r, 'Carrier', 'carrier') || null,
@@ -545,27 +722,39 @@ export class CSVIngestionService {
                 });
             } catch (error: any) {
                 errors.push(`Row ${i + 1}: ${error.message}`);
+                skipped++;
             }
         }
 
-        return this.batchUpsert('shipments', rows, 'shipments', errors);
+        return this.batchUpsert('shipments', rows, 'shipments', errors, skipped);
     }
 
-    private async ingestReturns(userId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
+    private async ingestReturns(userId: string, tenantId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
         const errors: string[] = [];
         const rows: any[] = [];
+        let skipped = 0;
 
         for (let i = 0; i < records.length; i++) {
             try {
                 const r = records[i];
+                const returnId = getField(r, 'ReturnId', 'return_id', 'returnId', 'Return ID');
+                const returnDate = getField(r, 'ReturnDate', 'return_date', 'returnDate', 'returned_date');
+
+                if (!returnId || !returnDate) {
+                    skipped++;
+                    errors.push(`Row ${i + 1}: Missing required fields (return_id/returned_date)`);
+                    continue;
+                }
+
                 rows.push({
                     id: uuidv4(),
+                    tenant_id: tenantId,
                     user_id: userId,
                     store_id: storeId || null,
-                    return_id: getField(r, 'ReturnId', 'return_id', 'returnId', 'Return ID') || `csv_return_${i}`,
+                    return_id: returnId,
                     order_id: getField(r, 'AmazonOrderId', 'order_id', 'orderId') || null,
                     reason: getField(r, 'ReturnReason', 'reason', 'Reason', 'return_reason') || 'CUSTOMER_REQUEST',
-                    returned_date: getField(r, 'ReturnDate', 'return_date', 'returnDate', 'returned_date') || new Date().toISOString(),
+                    returned_date: returnDate,
                     status: getField(r, 'ReturnStatus', 'status', 'Status') || 'RECEIVED',
                     refund_amount: parseAmount(getField(r, 'RefundAmount', 'refund_amount', 'refundAmount', 'Amount')),
                     currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
@@ -581,30 +770,43 @@ export class CSVIngestionService {
                 });
             } catch (error: any) {
                 errors.push(`Row ${i + 1}: ${error.message}`);
+                skipped++;
             }
         }
 
-        return this.batchUpsert('returns', rows, 'returns', errors);
+        return this.batchUpsert('returns', rows, 'returns', errors, skipped);
     }
 
-    private async ingestSettlements(userId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
+    private async ingestSettlements(userId: string, tenantId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
         const errors: string[] = [];
         const rows: any[] = [];
+        let skipped = 0;
 
         for (let i = 0; i < records.length; i++) {
             try {
                 const r = records[i];
+                const settlementId = getField(r, 'SettlementId', 'settlement_id', 'settlementId', 'Settlement ID');
+                const settlementDate = getField(r, 'PostedDate', 'settlement_date', 'posted_date', 'postedDate', 'SettlementDate');
+                const transactionType = getField(r, 'TransactionType', 'transaction_type', 'transactionType', 'type', 'EventType', 'event_type');
+
+                if (!settlementId || !settlementDate || !transactionType) {
+                    skipped++;
+                    errors.push(`Row ${i + 1}: Missing required fields (settlement_id/transaction_type/settlement_date)`);
+                    continue;
+                }
+
                 rows.push({
                     id: uuidv4(),
+                    tenant_id: tenantId,
                     user_id: userId,
                     store_id: storeId || null,
-                    settlement_id: getField(r, 'SettlementId', 'settlement_id', 'settlementId', 'Settlement ID') || `csv_settle_${i}`,
+                    settlement_id: settlementId,
                     order_id: getField(r, 'AmazonOrderId', 'order_id', 'orderId') || null,
-                    transaction_type: getField(r, 'TransactionType', 'transaction_type', 'transactionType', 'type', 'EventType', 'event_type') || 'Order',
+                    transaction_type: transactionType,
                     amount: parseAmount(getField(r, 'Amount', 'amount', 'TotalAmount', 'total_amount')),
                     fees: parseAmount(getField(r, 'Fees', 'fees', 'TotalFees', 'total_fees')),
                     currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
-                    settlement_date: getField(r, 'PostedDate', 'settlement_date', 'posted_date', 'postedDate', 'SettlementDate') || new Date().toISOString(),
+                    settlement_date: settlementDate,
                     fee_breakdown: {},
                     metadata: {},
                     sync_id: syncId,
@@ -616,15 +818,17 @@ export class CSVIngestionService {
                 });
             } catch (error: any) {
                 errors.push(`Row ${i + 1}: ${error.message}`);
+                skipped++;
             }
         }
 
-        return this.batchUpsert('settlements', rows, 'settlements', errors);
+        return this.batchUpsert('settlements', rows, 'settlements', errors, skipped);
     }
 
-    private async ingestInventory(userId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
+    private async ingestInventory(userId: string, tenantId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
         const errors: string[] = [];
         const rows: any[] = [];
+        let skipped = 0;
 
         // Check if this CSV has ledger-style columns (Event Type, Reference ID, Disposition, etc.)
         const hasLedgerColumns = records.length > 0 && (
@@ -636,11 +840,19 @@ export class CSVIngestionService {
         for (let i = 0; i < records.length; i++) {
             try {
                 const r = records[i];
+                const sku = getField(r, 'sellerSku', 'seller-sku', 'sku', 'SKU', 'seller_sku', 'MSKU', 'msku');
+                if (!sku) {
+                    skipped++;
+                    errors.push(`Row ${i + 1}: Missing required field (sku)`);
+                    continue;
+                }
+
                 rows.push({
                     id: uuidv4(),
+                    tenant_id: tenantId,
                     user_id: userId,
                     store_id: storeId || null,
-                    sku: getField(r, 'sellerSku', 'seller-sku', 'sku', 'SKU', 'seller_sku', 'MSKU', 'msku') || `csv_sku_${i}`,
+                    sku,
                     asin: getField(r, 'asin', 'ASIN') || null,
                     fnsku: getField(r, 'fnSku', 'fnsku', 'FNSKU', 'fn_sku') || null,
                     product_name: getField(r, 'productName', 'product_name', 'title', 'Title', 'ProductName') || null,
@@ -661,15 +873,16 @@ export class CSVIngestionService {
                 });
             } catch (error: any) {
                 errors.push(`Row ${i + 1}: ${error.message}`);
+                skipped++;
             }
         }
 
-        const result = await this.batchUpsert('inventory_items', rows, 'inventory', errors);
+        const result = await this.batchUpsert('inventory_items', rows, 'inventory', errors, skipped);
 
         // If this CSV has ledger-style columns, ALSO write to inventory_ledger_events
         // so the Whale Hunter detection algorithm can pick them up
         if (hasLedgerColumns && result.rowsInserted > 0) {
-            await this.ingestInventoryLedgerEvents(userId, records, syncId, storeId);
+            await this.ingestInventoryLedgerEvents(userId, tenantId, records, syncId, storeId);
         }
 
         return result;
@@ -682,6 +895,7 @@ export class CSVIngestionService {
      */
     private async ingestInventoryLedgerEvents(
         userId: string,
+        tenantId: string,
         records: any[],
         syncId: string,
         storeId?: string
@@ -739,6 +953,7 @@ export class CSVIngestionService {
                 ledgerRows.push({
                     id: uuidv4(),
                     user_id: userId,
+                    tenant_id: tenantId,
                     store_id: storeId || null,
                     sync_id: syncId,
                     fnsku,
@@ -793,6 +1008,7 @@ export class CSVIngestionService {
             ledgerRows.push({
                 id: uuidv4(),
                 user_id: userId,
+                tenant_id: tenantId,
                 store_id: storeId || null,
                 sync_id: syncId,
                 fnsku,
@@ -819,7 +1035,7 @@ export class CSVIngestionService {
         }
 
         // Insert into inventory_ledger_events table
-        const result = await this.batchUpsert('inventory_ledger_events', ledgerRows, 'inventory_ledger', []);
+        const result = await this.batchUpsert('inventory_ledger_events', ledgerRows, 'inventory_ledger', [], 0);
 
         logger.info('📊 [CSV INGESTION] Inventory ledger events written', {
             userId,
@@ -831,22 +1047,32 @@ export class CSVIngestionService {
         });
     }
 
-    private async ingestFinancialEvents(userId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
+    private async ingestFinancialEvents(userId: string, tenantId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
         const errors: string[] = [];
         const rows: any[] = [];
+        let skipped = 0;
 
         for (let i = 0; i < records.length; i++) {
             try {
                 const r = records[i];
                 const rawEventType = getField(r, 'EventType', 'event_type', 'eventType', 'type', 'Type');
                 const rawAmount = getField(r, 'Amount', 'amount', 'AdjustmentAmount', 'LiquidationProceedsAmount');
+                const eventDate = getField(r, 'PostedDate', 'event_date', 'postedDate', 'posted_date', 'date', 'Date');
+                if (!rawEventType || eventDate === null || eventDate === undefined || eventDate === '') {
+                    skipped++;
+                    errors.push(`Row ${i + 1}: Missing required fields (event_type/event_date)`);
+                    continue;
+                }
                 rows.push({
                     seller_id: userId,
-                    tenant_id: userId,
+                    tenant_id: tenantId,
+                    store_id: storeId || null,
+                    sync_id: syncId,
+                    source: 'csv_upload',
                     event_type: normalizeEventType(rawEventType),
                     amount: parseAmount(rawAmount),
                     currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
-                    event_date: getField(r, 'PostedDate', 'event_date', 'postedDate', 'posted_date', 'date', 'Date') || new Date().toISOString(),
+                    event_date: eventDate,
                     amazon_order_id: getField(r, 'AmazonOrderId', 'amazon_order_id', 'orderId', 'order_id', 'OrderId') || null,
                     amazon_sku: getField(r, 'SellerSKU', 'sku', 'SKU', 'seller_sku') || null,
                     description: getField(r, 'Description', 'description', 'AdjustmentType') || null,
@@ -855,28 +1081,38 @@ export class CSVIngestionService {
                 });
             } catch (error: any) {
                 errors.push(`Row ${i + 1}: ${error.message}`);
+                skipped++;
             }
         }
 
-        return this.batchUpsert('financial_events', rows, 'financial_events', errors);
+        return this.batchUpsert('financial_events', rows, 'financial_events', errors, skipped);
     }
 
-    private async ingestFees(userId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
+    private async ingestFees(userId: string, tenantId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
         // Fees are stored as financial_events with event_type = 'fee'
         const errors: string[] = [];
         const rows: any[] = [];
+        let skipped = 0;
 
         for (let i = 0; i < records.length; i++) {
             try {
                 const r = records[i];
+                const feeAmount = getField(r, 'FeeAmount', 'fee_amount', 'feeAmount', 'Amount', 'amount');
+                const eventDate = getField(r, 'PostedDate', 'event_date', 'postedDate', 'posted_date', 'date');
+                if (feeAmount === null || feeAmount === undefined || feeAmount === '' || !eventDate) {
+                    skipped++;
+                    errors.push(`Row ${i + 1}: Missing required fields (fee_amount/event_date)`);
+                    continue;
+                }
                 rows.push({
                     id: uuidv4(),
                     seller_id: userId,
+                    tenant_id: tenantId,
                     store_id: storeId || null,
                     event_type: 'fee',
-                    amount: Number(getField(r, 'FeeAmount', 'fee_amount', 'feeAmount', 'Amount', 'amount')) || 0,
+                    amount: Number(feeAmount) || 0,
                     currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
-                    event_date: getField(r, 'PostedDate', 'event_date', 'postedDate', 'posted_date', 'date') || new Date().toISOString(),
+                    event_date: eventDate,
                     amazon_order_id: getField(r, 'AmazonOrderId', 'amazon_order_id', 'orderId', 'order_id') || null,
                     sku: getField(r, 'SellerSKU', 'sku', 'SKU', 'seller_sku') || null,
                     asin: getField(r, 'ASIN', 'asin') || null,
@@ -888,10 +1124,11 @@ export class CSVIngestionService {
                 });
             } catch (error: any) {
                 errors.push(`Row ${i + 1}: ${error.message}`);
+                skipped++;
             }
         }
 
-        return this.batchUpsert('financial_events', rows, 'fees', errors);
+        return this.batchUpsert('financial_events', rows, 'fees', errors, skipped);
     }
 
     // ============================================================================
@@ -905,7 +1142,13 @@ export class CSVIngestionService {
      * Tables without a constraint will fall back to plain .insert().
      */
     private static readonly CONFLICT_KEYS: Record<string, string> = {
-        inventory_ledger_events: 'user_id,fnsku,event_type,event_date,reference_id',
+        orders: 'tenant_id,user_id,order_id',
+        shipments: 'tenant_id,user_id,shipment_id',
+        returns: 'tenant_id,user_id,return_id',
+        settlements: 'tenant_id,user_id,settlement_id,transaction_type',
+        inventory_items: 'tenant_id,user_id,sku,asin,fnsku',
+        inventory_ledger_events: 'tenant_id,user_id,fnsku,event_type,event_date,reference_id',
+        financial_events: 'tenant_id,seller_id,event_type,event_date,amazon_order_id,amazon_sku,amount',
         // Other tables (orders, shipments, returns, settlements, inventory_items, financial_events)
         // do NOT have unique constraints yet — they fall back to .insert() automatically.
     };
@@ -918,7 +1161,8 @@ export class CSVIngestionService {
         table: string,
         rows: any[],
         csvType: string,
-        accumulatedErrors: string[]
+        accumulatedErrors: string[],
+        skipped = 0
     ): Promise<Omit<IngestionResult, 'fileName'>> {
         let inserted = 0;
         let failed = 0;
@@ -927,32 +1171,52 @@ export class CSVIngestionService {
 
         for (let i = 0; i < rows.length; i += BATCH_SIZE) {
             const batch = rows.slice(i, i + BATCH_SIZE);
+            const maxAttempts = 3;
 
-            try {
-                // Use upsert with onConflict when a natural key exists for this table,
-                // otherwise fall back to plain insert (for tables without a unique constraint yet).
-                const query = conflictKey
-                    ? supabaseAdmin.from(table).upsert(batch, { onConflict: conflictKey, ignoreDuplicates: false })
-                    : supabaseAdmin.from(table).insert(batch);
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    // Use upsert with onConflict when a natural key exists for this table,
+                    // otherwise fall back to plain insert (for tables without a unique constraint yet).
+                    const query = conflictKey
+                        ? supabaseAdmin.from(table).upsert(batch, { onConflict: conflictKey, ignoreDuplicates: false })
+                        : supabaseAdmin.from(table).insert(batch);
 
-                const { data, error } = await query;
+                    const { error } = await query;
 
-                if (error) {
-                    logger.error(`❌ [CSV INGESTION] Batch upsert failed for ${table}`, {
-                        error: error.message,
-                        code: error.code,
-                        batchStart: i,
-                        batchSize: batch.length,
-                        conflictKey: conflictKey || 'none (plain insert)',
-                    });
+                    if (error) {
+                        const isRetriable = !error.code && error.message?.includes('fetch failed');
+                        logger.error(`❌ [CSV INGESTION] Batch upsert failed for ${table}`, {
+                            error: error.message,
+                            code: error.code,
+                            batchStart: i,
+                            batchSize: batch.length,
+                            conflictKey: conflictKey || 'none (plain insert)',
+                            attempt,
+                            maxAttempts,
+                        });
+
+                        if (isRetriable && attempt < maxAttempts) {
+                            await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+                            continue;
+                        }
+
+                        accumulatedErrors.push(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+                        failed += batch.length;
+                    } else {
+                        inserted += batch.length;
+                    }
+
+                    break;
+                } catch (error: any) {
+                    const isRetriable = String(error?.message || '').includes('fetch failed');
+                    if (isRetriable && attempt < maxAttempts) {
+                        await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+                        continue;
+                    }
                     accumulatedErrors.push(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
                     failed += batch.length;
-                } else {
-                    inserted += batch.length;
+                    break;
                 }
-            } catch (error: any) {
-                accumulatedErrors.push(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
-                failed += batch.length;
             }
         }
 
@@ -968,8 +1232,9 @@ export class CSVIngestionService {
         return {
             success: inserted > 0,
             csvType: csvType as CSVType,
-            rowsProcessed: rows.length,
+            rowsProcessed: rows.length + skipped,
             rowsInserted: inserted,
+            rowsSkipped: skipped,
             rowsFailed: failed,
             errors: accumulatedErrors,
             detectionTriggered: false,
@@ -1048,6 +1313,7 @@ export class CSVIngestionService {
         description: string;
         targetTable: string;
         exampleHeaders: string[];
+        enabled: boolean;
     }[] {
         return [
             {
@@ -1055,42 +1321,49 @@ export class CSVIngestionService {
                 description: 'Amazon order data (Seller Central > Reports > Orders)',
                 targetTable: 'orders',
                 exampleHeaders: ['AmazonOrderId', 'PurchaseDate', 'OrderStatus', 'OrderTotal', 'FulfillmentChannel', 'CurrencyCode'],
+                enabled: !DISABLED_TYPES.has('orders'),
             },
             {
                 type: 'shipments',
                 description: 'FBA inbound shipment data (Seller Central > Inventory > Shipments)',
                 targetTable: 'shipments',
                 exampleHeaders: ['ShipmentId', 'ShipmentDate', 'DestinationFulfillmentCenterId', 'ShipmentStatus', 'QuantityShipped', 'QuantityReceived'],
+                enabled: !DISABLED_TYPES.has('shipments'),
             },
             {
                 type: 'returns',
                 description: 'Customer return data (Seller Central > Reports > Returns)',
                 targetTable: 'returns',
                 exampleHeaders: ['ReturnId', 'ReturnDate', 'AmazonOrderId', 'ReturnReason', 'RefundAmount', 'ReturnStatus'],
+                enabled: !DISABLED_TYPES.has('returns'),
             },
             {
                 type: 'settlements',
                 description: 'Settlement / payout reports (Seller Central > Reports > Payments)',
                 targetTable: 'settlements',
                 exampleHeaders: ['SettlementId', 'TransactionType', 'Amount', 'Fees', 'PostedDate', 'CurrencyCode'],
+                enabled: !DISABLED_TYPES.has('settlements'),
             },
             {
                 type: 'inventory',
                 description: 'FBA inventory data (Seller Central > Inventory > Manage FBA Inventory)',
                 targetTable: 'inventory_items',
                 exampleHeaders: ['sellerSku', 'asin', 'fnSku', 'availableQuantity', 'reservedQuantity', 'price'],
+                enabled: !DISABLED_TYPES.has('inventory'),
             },
             {
                 type: 'financial_events',
                 description: 'Financial events (adjustments, liquidations, etc.)',
                 targetTable: 'financial_events',
                 exampleHeaders: ['EventType', 'PostedDate', 'Amount', 'AmazonOrderId', 'CurrencyCode'],
+                enabled: !DISABLED_TYPES.has('financial_events'),
             },
             {
                 type: 'fees',
                 description: 'FBA fee data (fulfillment fees, referral fees, storage fees)',
                 targetTable: 'financial_events',
                 exampleHeaders: ['FeeType', 'FeeAmount', 'PostedDate', 'SellerSKU', 'ASIN', 'AmazonOrderId'],
+                enabled: !DISABLED_TYPES.has('fees'),
             },
         ];
     }

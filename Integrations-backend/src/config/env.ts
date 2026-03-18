@@ -2,6 +2,7 @@
  * Centralizes environment variables with sane defaults for demo.
  */
 
+import 'dotenv/config';
 import crypto from 'crypto';
 
 const toInt = (value: string | undefined, fallback: number): number => {
