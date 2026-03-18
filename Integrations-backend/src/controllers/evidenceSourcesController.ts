@@ -10,7 +10,7 @@ import logger from '../utils/logger';
 import config from '../config/env';
 import tokenManager from '../utils/tokenManager';
 import oauthStateStore from '../utils/oauthStateStore';
-import { supabase } from '../database/supabaseClient';
+import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
 
 // OAuth URLs for different providers
 const OAUTH_URLS = {
@@ -236,6 +236,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
     }
 
     const userId = stateData.userId;
+    const dbUserId = convertUserIdToUuid(userId);
     const frontendUrl = stateData.frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
     const tenantSlug = stateData.tenantSlug;
     const storeId = stateData.storeId;
@@ -455,9 +456,18 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
         const { data: existingSource } = await supabase
           .from('evidence_sources')
           .select('id')
-          .eq('user_id', userId)
+          .eq('user_id', dbUserId)
           .eq('provider', provider)
           .maybeSingle();
+
+        const sourceMetadata = {
+          access_token,
+          refresh_token: refresh_token || undefined,
+          expires_at: expires_in ? new Date(Date.now() + expires_in * 1000).toISOString() : undefined,
+          connected_at: new Date().toISOString(),
+          source: `${provider}_oauth`,
+          token_source: 'oauth_callback'
+        };
 
         if (existingSource) {
           // Update existing source
@@ -469,6 +479,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
               last_sync_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
               permissions: scopes,
+              metadata: sourceMetadata,
               tenant_id: tenantId || null,
               store_id: storeId || null
             })
@@ -480,13 +491,14 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
           await supabase
             .from('evidence_sources')
             .insert({
-              user_id: userId,
+              user_id: dbUserId,
+              seller_id: dbUserId,
               provider: provider,
               account_email: accountEmail || 'unknown',
               status: 'connected',
               last_sync_at: new Date().toISOString(),
               permissions: scopes,
-              metadata: {},
+              metadata: sourceMetadata,
               tenant_id: tenantId || null,
               store_id: storeId || null
             });

@@ -291,7 +291,8 @@ export class EvidenceIngestionWorker {
       });
 
       // MULTI-TENANT: Get all active tenants first
-      const { data: tenants, error: tenantError } = await supabaseAdmin
+      const client = supabaseAdmin || supabase;
+      const { data: tenants, error: tenantError } = await client
         .from('tenants')
         .select('id, name, status')
         .in('status', ['active', 'trialing'])
@@ -453,10 +454,28 @@ export class EvidenceIngestionWorker {
     try {
       // Use tenant-scoped query to get evidence sources for this tenant only
       const tenantQuery = createTenantScopedQueryById(tenantId, 'evidence_sources');
-      const { data: sources, error } = await tenantQuery
+      let { data: sources, error } = await tenantQuery
         .select('user_id, seller_id')
         .eq('status', 'connected')
         .in('provider', ['gmail', 'outlook', 'gdrive', 'dropbox']);
+
+      if (error && error.message?.includes('seller_id')) {
+        const retry = await tenantQuery
+          .select('user_id')
+          .eq('status', 'connected')
+          .in('provider', ['gmail', 'outlook', 'gdrive', 'dropbox']);
+        sources = retry.data;
+        error = retry.error;
+      }
+
+      if (error && error.message?.includes('user_id')) {
+        const retry = await tenantQuery
+          .select('seller_id')
+          .eq('status', 'connected')
+          .in('provider', ['gmail', 'outlook', 'gdrive', 'dropbox']);
+        sources = retry.data;
+        error = retry.error;
+      }
 
       if (error) {
         logger.error('❌ [EVIDENCE WORKER] Error fetching active user IDs for tenant', {
@@ -643,12 +662,23 @@ export class EvidenceIngestionWorker {
 
       switch (source.provider) {
         case 'gmail':
-          // Check if user has valid Gmail token before attempting ingestion
-          const hasGmailToken = await tokenManager.isTokenValid(userId, 'gmail');
-          if (!hasGmailToken) {
-            logger.info(`⏭️ [EVIDENCE WORKER] Skipping Gmail ingestion - no valid token for user ${userId}`);
-            stats.skipped = 1;
-            break;
+          // Do not hard-skip based solely on tokenManager. In this codebase, Gmail
+          // connectivity may be represented by a connected evidence source even when
+          // the token manager path is not populated for the same user identifier.
+          try {
+            const hasGmailToken = await tokenManager.isTokenValid(userId, 'gmail');
+            if (!hasGmailToken) {
+              logger.info('ℹ️ [EVIDENCE WORKER] Gmail token not found in tokenManager, attempting ingestion via connected source state', {
+                userId,
+                sourceId: source.id
+              });
+            }
+          } catch (tokenError: any) {
+            logger.debug('Gmail tokenManager check failed; continuing with ingestion attempt', {
+              userId,
+              sourceId: source.id,
+              error: tokenError.message
+            });
           }
 
           result = await gmailIngestionService.ingestEvidenceFromGmail(userId, {
@@ -726,7 +756,8 @@ export class EvidenceIngestionWorker {
 
           // Get recently ingested documents to notify about
           const dbUserIdForDocs = convertUserIdToUuid(userId);
-          const { data: recentDocs } = await supabaseAdmin
+          const client = supabaseAdmin || supabase;
+          const { data: recentDocs } = await client
             .from('evidence_documents')
             .select('id, filename, source')
             .eq('seller_id', dbUserIdForDocs)

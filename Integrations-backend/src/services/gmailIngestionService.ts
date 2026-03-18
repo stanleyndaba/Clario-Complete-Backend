@@ -184,6 +184,7 @@ export class GmailIngestionService {
     const errors: string[] = [];
     let documentsIngested = 0;
     let emailsProcessed = 0;
+    const dbUserId = convertUserIdToUuid(userId);
 
     try {
       logger.info('🔍 [GMAIL INGESTION] Starting evidence ingestion from Gmail', {
@@ -199,7 +200,7 @@ export class GmailIngestionService {
           const { data: sourceData } = await supabase
             .from('evidence_sources')
             .select('metadata')
-            .eq('user_id', userId)
+            .eq('user_id', dbUserId)
             .eq('provider', 'gmail')
             .maybeSingle();
 
@@ -442,7 +443,6 @@ export class GmailIngestionService {
     attachment: GmailDocument
   ): Promise<string | null> {
     try {
-      // Convert userId to UUID for database operations if needed
       const dbUserId = convertUserIdToUuid(userId);
 
       // Check if document already exists (by user_id + external_id + filename)
@@ -831,7 +831,7 @@ export class GmailIngestionService {
       const { data: source } = await supabase
         .from('evidence_sources')
         .select('id, last_sync_at')
-        .eq('user_id', userId)
+        .eq('user_id', convertUserIdToUuid(userId))
         .eq('provider', 'gmail')
         .eq('status', 'connected')
         .maybeSingle();
@@ -840,12 +840,12 @@ export class GmailIngestionService {
       const { count: totalCount } = await supabase
         .from('evidence_documents')
         .select('*', { count: 'exact', head: true })
-        .eq('user_id', userId);
+        .eq('user_id', convertUserIdToUuid(userId));
 
       const { count: processingCount } = await supabase
         .from('evidence_documents')
         .select('*', { count: 'exact', head: true })
-        .eq('user_id', userId)
+        .eq('user_id', convertUserIdToUuid(userId))
         .eq('processing_status', 'processing');
 
       return {

@@ -1,8 +1,9 @@
 import axios from 'axios';
 import config from '../config/env';
 import logger from '../utils/logger';
-import tokenManager from '../utils/tokenManager';
+import tokenManager, { TokenData } from '../utils/tokenManager';
 import { createError } from '../utils/errorHandler';
+import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
 
 export interface GmailEmail {
   id: string;
@@ -58,6 +59,79 @@ export interface GmailMessageResponse {
 export class GmailService {
   private baseUrl = 'https://gmail.googleapis.com/gmail/v1/users/me';
   private authUrl = 'https://oauth2.googleapis.com/token';
+
+  private async getSourceTokenData(userId: string): Promise<TokenData | null> {
+    try {
+      const dbUserId = convertUserIdToUuid(userId);
+      const { data: source, error } = await supabase
+        .from('evidence_sources')
+        .select('metadata')
+        .eq('user_id', dbUserId)
+        .eq('provider', 'gmail')
+        .eq('status', 'connected')
+        .maybeSingle();
+
+      if (error || !source?.metadata) {
+        return null;
+      }
+
+      const metadata = source.metadata || {};
+      if (!metadata.access_token) {
+        return null;
+      }
+
+      const expiresAt = metadata.expires_at
+        ? new Date(metadata.expires_at)
+        : new Date(Date.now() + 55 * 60 * 1000);
+
+      return {
+        accessToken: metadata.access_token,
+        refreshToken: metadata.refresh_token || '',
+        expiresAt
+      };
+    } catch (error: any) {
+      logger.debug('Failed to load Gmail token from evidence source metadata', {
+        userId,
+        error: error.message
+      });
+      return null;
+    }
+  }
+
+  private async persistSourceTokenData(userId: string, tokenData: TokenData): Promise<void> {
+    try {
+      const dbUserId = convertUserIdToUuid(userId);
+      const { data: source } = await supabase
+        .from('evidence_sources')
+        .select('id, metadata')
+        .eq('user_id', dbUserId)
+        .eq('provider', 'gmail')
+        .maybeSingle();
+
+      if (!source?.id) {
+        return;
+      }
+
+      await supabase
+        .from('evidence_sources')
+        .update({
+          metadata: {
+            ...(source.metadata || {}),
+            access_token: tokenData.accessToken,
+            refresh_token: tokenData.refreshToken || undefined,
+            expires_at: tokenData.expiresAt.toISOString(),
+            token_source: 'gmail_service'
+          },
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', source.id);
+    } catch (error: any) {
+      logger.debug('Failed to persist Gmail token into evidence source metadata', {
+        userId,
+        error: error.message
+      });
+    }
+  }
 
   async initiateOAuth(userId: string): Promise<string> {
     try {
@@ -115,7 +189,7 @@ export class GmailService {
   async refreshAccessToken(userId: string): Promise<string> {
     try {
       const tokenStatus = await tokenManager.getTokenWithStatus(userId, 'gmail');
-      const tokenData = tokenStatus?.token;
+      const tokenData = tokenStatus?.token || await this.getSourceTokenData(userId);
 
       if (!tokenData) {
         throw createError('No Gmail token found', 401);
@@ -138,12 +212,22 @@ export class GmailService {
 
       const newTokenData: GmailOAuthResponse = response.data;
       const expiresAt = new Date(Date.now() + newTokenData.expires_in * 1000);
-
-      await tokenManager.refreshToken(userId, 'gmail', {
+      const nextTokenData: TokenData = {
         accessToken: newTokenData.access_token,
-        refreshToken: newTokenData.refresh_token,
+        refreshToken: newTokenData.refresh_token || tokenData.refreshToken,
         expiresAt
-      });
+      };
+
+      try {
+        await tokenManager.refreshToken(userId, 'gmail', nextTokenData);
+      } catch (refreshStoreError: any) {
+        logger.warn('Failed to persist refreshed Gmail token to tokenManager, falling back to evidence source metadata', {
+          userId,
+          error: refreshStoreError.message
+        });
+      }
+
+      await this.persistSourceTokenData(userId, nextTokenData);
 
       logger.info('Gmail access token refreshed', { userId });
       return newTokenData.access_token;
@@ -156,17 +240,18 @@ export class GmailService {
   async getValidAccessToken(userId: string): Promise<string> {
     try {
       const tokenStatus = await tokenManager.getTokenWithStatus(userId, 'gmail');
+      const sourceTokenData = await this.getSourceTokenData(userId);
 
-      if (!tokenStatus) {
+      if (!tokenStatus && !sourceTokenData) {
         throw createError('No Gmail token found', 401);
       }
 
-      if (tokenStatus.isExpired) {
+      if (tokenStatus?.isExpired) {
         logger.info('Gmail token expired, attempting refresh', { userId });
         return await this.refreshAccessToken(userId);
       }
 
-      const tokenData = tokenStatus.token;
+      const tokenData = tokenStatus?.token || sourceTokenData!;
       // Check if token will expire soon (within 5 minutes)
       const expiresIn = tokenData.expiresAt.getTime() - Date.now();
       if (expiresIn < 300000) { // 5 minutes
