@@ -203,15 +203,15 @@ async function main() {
   const settlementsRows = await supabaseAdmin.from('settlements').select('order_id').eq('tenant_id', context.tenantId as any).eq('user_id', context.userId as any);
   const ledgerRows = await supabaseAdmin.from('inventory_ledger_events').select('sku,fnsku,event_type').eq('tenant_id', context.tenantId as any).eq('user_id', context.userId as any);
 
-  const orderIds = new Set((pickIds('orders.csv', readCsvLines(ordersPath)).orderIds || []));
-  const returnOrderIds = new Set((returnsRows.data || []).map((row: any) => row.order_id).filter(Boolean));
-  const settlementOrderIds = new Set((settlementsRows.data || []).map((row: any) => row.order_id).filter(Boolean));
-  const ledgerSkus = new Set((ledgerRows.data || []).map((row: any) => row.sku || row.fnsku).filter(Boolean));
-  const fileSkus = new Set([
+  const orderIds = new Set<string>((pickIds('orders.csv', readCsvLines(ordersPath)).orderIds || []).filter((id): id is string => typeof id === 'string'));
+  const returnOrderIds = new Set<string>(((returnsRows.data || []) as any[]).map((row: any) => row.order_id).filter((id): id is string => typeof id === 'string'));
+  const settlementOrderIds = new Set<string>(((settlementsRows.data || []) as any[]).map((row: any) => row.order_id).filter((id): id is string => typeof id === 'string'));
+  const ledgerSkus = new Set<string>(((ledgerRows.data || []) as any[]).map((row: any) => row.sku || row.fnsku).filter((sku): sku is string => typeof sku === 'string'));
+  const fileSkus = new Set<string>([
     ...(pickIds('shipments1.csv', readCsvLines(path.join(baseDir, 'shipments1.csv'))).shipmentIds ? [] : []),
     ...(pickIds('financial_events.csv', readCsvLines(path.join(baseDir, 'financial_events.csv'))).skus || []),
     ...(pickIds('inventory_ledger_events.csv', readCsvLines(path.join(baseDir, 'inventory_ledger_events.csv'))).skus || []),
-  ]);
+  ].filter((sku): sku is string => typeof sku === 'string'));
 
   const crossTableConsistencyPass =
     [...returnOrderIds].every((id) => orderIds.has(id)) &&
