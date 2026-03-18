@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import logger from '../utils/logger';
 import tokenManager from '../utils/tokenManager';
-import { supabase } from '../database/supabaseClient';
+import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 
 /**
  * Disconnect evidence source provider
@@ -76,31 +76,95 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
 
     // Handle Amazon provider specifically (Agent 1)
     if (provider === 'amazon') {
+      const tenantSlug = ((req.query.tenantSlug as string) || (req.query.tenant_slug as string) || '').trim();
+      const adminClient = supabaseAdmin || supabase;
+      const safeUserId = convertUserIdToUuid(userId);
       let connected = false;
-      let sandboxMode = false;
-      let useMockGenerator = false;
       let lastSync: string | null = null;
       let connectionVerified = false;
 
+      if (!tenantSlug) {
+        return res.status(400).json({
+          success: false,
+          error: 'tenantSlug is required'
+        });
+      }
+
       try {
-        // Check if Amazon token exists in database
-        const amazonToken = await tokenManager.getToken(userId, 'amazon');
-        
-        if (amazonToken && amazonToken.accessToken) {
+        const { data: tenant, error: tenantError } = await adminClient
+          .from('tenants')
+          .select('id')
+          .eq('slug', tenantSlug)
+          .is('deleted_at', null)
+          .maybeSingle();
+
+        if (tenantError) {
+          logger.error('Failed to resolve tenant for Amazon provider status', { error: tenantError, userId, tenantSlug });
+          return res.status(500).json({
+            success: false,
+            error: 'Failed to resolve tenant context'
+          });
+        }
+
+        if (!tenant) {
+          return res.status(404).json({
+            success: false,
+            error: 'Tenant not found'
+          });
+        }
+
+        const { data: membership, error: membershipError } = await adminClient
+          .from('tenant_memberships')
+          .select('id')
+          .eq('tenant_id', tenant.id)
+          .eq('user_id', safeUserId)
+          .eq('is_active', true)
+          .is('deleted_at', null)
+          .maybeSingle();
+
+        if (membershipError) {
+          logger.error('Failed to verify tenant membership for Amazon provider status', {
+            error: membershipError,
+            userId,
+            tenantSlug,
+            tenantId: tenant.id
+          });
+          return res.status(500).json({
+            success: false,
+            error: 'Failed to verify tenant membership'
+          });
+        }
+
+        if (!membership) {
+          return res.status(403).json({
+            success: false,
+            error: 'You do not have access to this tenant'
+          });
+        }
+
+        const { data: amazonToken, error: tokenError } = await adminClient
+          .from('tokens')
+          .select('expires_at, updated_at')
+          .eq('user_id', safeUserId)
+          .eq('provider', 'amazon')
+          .eq('tenant_id', tenant.id)
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (tokenError && tokenError.code !== 'PGRST116') {
+          throw tokenError;
+        }
+
+        if (amazonToken && (!amazonToken.expires_at || new Date(amazonToken.expires_at) > new Date())) {
           connected = true;
           connectionVerified = true;
-          
-          // Check sandbox mode
-          const spapiUrl = process.env.AMAZON_SPAPI_BASE_URL || '';
-          sandboxMode = spapiUrl.includes('sandbox') || process.env.NODE_ENV === 'development';
-          useMockGenerator = process.env.USE_MOCK_DATA_GENERATOR !== 'false';
-          
-          // Get last sync time
+
           try {
-            const { data: lastSyncData } = await supabase
+            const { data: lastSyncData } = await adminClient
               .from('sync_progress')
               .select('updated_at')
-              .eq('user_id', userId)
+              .eq('user_id', safeUserId)
               .eq('status', 'completed')
               .order('updated_at', { ascending: false })
               .limit(1)
@@ -112,45 +176,16 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
           } catch (syncError) {
             logger.debug('Failed to get last sync time', { error: syncError });
           }
-        } else {
-          // Check environment variables (sandbox mode)
-          const envRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
-          const envClientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
-          const envClientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET;
-          
-          if (envRefreshToken && envRefreshToken.trim() !== '' && envClientId && envClientSecret) {
-            connected = true;
-            sandboxMode = true;
-            useMockGenerator = true;
-            
-            // Try to get last sync
-            try {
-              const { data: lastSyncData } = await supabase
-                .from('sync_progress')
-                .select('updated_at')
-                .eq('user_id', userId)
-                .eq('status', 'completed')
-                .order('updated_at', { ascending: false })
-                .limit(1)
-                .maybeSingle();
-              
-              if (lastSyncData?.updated_at) {
-                lastSync = lastSyncData.updated_at;
-              }
-            } catch (syncError) {
-              logger.debug('Failed to get last sync time', { error: syncError });
-            }
-          }
         }
       } catch (error) {
-        logger.warn('Error checking Amazon connection', { error, userId });
+        logger.warn('Error checking Amazon connection', { error, userId, tenantSlug });
       }
 
       return res.json({
         connected,
-        sandboxMode,
-        useMockGenerator,
-        useMockData: useMockGenerator,
+        sandboxMode: false,
+        useMockGenerator: false,
+        useMockData: false,
         lastSync,
         connectionVerified
       });
