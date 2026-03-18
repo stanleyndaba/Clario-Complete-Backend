@@ -61,7 +61,10 @@ function parseCSVLine(line: string, trim: boolean = true): string[] {
  * Parse CSV content into array of objects
  */
 function parseCSV(content: string): any[] {
-    const lines = content.split(/\r?\n/).filter(line => line.trim().length > 0);
+    const lines = content
+        .split(/\r?\n/)
+        .map(line => line.replace(/^\uFEFF/, '').trim())
+        .filter(line => line.length > 0 && !line.startsWith('#'));
     if (lines.length < 2) return []; // Need header + at least 1 data row
 
     const headers = parseCSVLine(lines[0]);
@@ -92,7 +95,7 @@ function parseCSV(content: string): any[] {
 // CSV Type Detection
 // ============================================================================
 
-export type CSVType = 'orders' | 'shipments' | 'returns' | 'settlements' | 'inventory' | 'financial_events' | 'fees' | 'unknown';
+export type CSVType = 'orders' | 'shipments' | 'returns' | 'settlements' | 'inventory' | 'financial_events' | 'fees' | 'transfers' | 'unknown';
 
 /**
  * Signature headers that identify each CSV type.
@@ -103,6 +106,7 @@ const CSV_TYPE_SIGNATURES: Record<CSVType, string[][]> = {
         ['AmazonOrderId', 'PurchaseDate'],
         ['amazon-order-id', 'purchase-date'],
         ['order_id', 'order_date'],
+        ['order_id', 'purchase_date'],
         ['orderId', 'purchaseDate'],
         ['Order ID', 'Purchase Date'],
     ],
@@ -145,6 +149,7 @@ const CSV_TYPE_SIGNATURES: Record<CSVType, string[][]> = {
     financial_events: [
         ['EventType', 'PostedDate', 'Amount', 'Description'],
         ['event_type', 'posted_date', 'amount'],
+        ['event_type', 'event_date', 'amount'],
         ['eventType', 'postedDate', 'amount'],
         ['AdjustmentEventId', 'PostedDate'],
         ['OriginalRemovalOrderId', 'LiquidationProceedsAmount'],
@@ -154,6 +159,11 @@ const CSV_TYPE_SIGNATURES: Record<CSVType, string[][]> = {
         ['fee_type', 'fee_amount'],
         ['feeType', 'feeAmount'],
         ['FeeType', 'PostedDate'],
+    ],
+    transfers: [
+        ['transfer_id', 'sku', 'quantity_sent', 'quantity_received', 'transfer_date'],
+        ['TransferId', 'sku', 'QuantitySent', 'QuantityReceived', 'TransferDate'],
+        ['transfer_id', 'from_fc', 'to_fc'],
     ],
     unknown: [],
 };
@@ -515,7 +525,7 @@ export class CSVIngestionService {
                 rowsFailed: 0,
                 errors: [
                     `Could not detect CSV type from headers: [${headers.slice(0, 10).join(', ')}${headers.length > 10 ? '...' : ''}]. ` +
-                    `Supported types: orders, shipments, returns, settlements, inventory, financial_events, fees. ` +
+                    `Supported types: orders, shipments, returns, settlements, inventory, financial_events, fees, transfers. ` +
                     `Try specifying the type explicitly via /api/csv-upload/ingest/:type`
                 ],
                 detectionTriggered: false,
@@ -609,6 +619,8 @@ export class CSVIngestionService {
                 return this.ingestFinancialEvents(userId, tenantId, records, syncId, storeId);
             case 'fees':
                 return this.ingestFees(userId, tenantId, records, syncId, storeId);
+            case 'transfers':
+                return this.ingestTransfers(userId, tenantId, records, syncId);
             default:
                 return {
                     success: false,
@@ -755,9 +767,16 @@ export class CSVIngestionService {
                     status: getField(r, 'ReturnStatus', 'status', 'Status') || 'RECEIVED',
                     refund_amount: parseAmount(getField(r, 'RefundAmount', 'refund_amount', 'refundAmount', 'Amount')),
                     currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
-                    items: [],
+                    items: [{
+                        sku: getField(r, 'sku', 'SKU', 'sellerSku', 'seller_sku') || null,
+                        asin: getField(r, 'asin', 'ASIN') || null,
+                        quantity: Number(getField(r, 'quantity', 'Quantity')) || 1,
+                    }],
                     is_partial: false,
-                    metadata: {},
+                    metadata: {
+                        disposition: getField(r, 'disposition', 'Disposition') || null,
+                        condition_notes: getField(r, 'condition_notes', 'ConditionNotes', 'conditionNotes') || null,
+                    },
                     sync_id: syncId,
                     sync_timestamp: new Date().toISOString(),
                     source: 'csv_upload',
@@ -831,7 +850,8 @@ export class CSVIngestionService {
         const hasLedgerColumns = records.length > 0 && (
             getField(records[0], 'Event Type', 'event_type', 'EventType') !== null ||
             getField(records[0], 'Disposition', 'disposition') !== null ||
-            getField(records[0], 'Reference ID', 'reference_id', 'ReferenceId') !== null
+            getField(records[0], 'Reference ID', 'reference_id', 'ReferenceId') !== null ||
+            getField(records[0], 'event_id', 'EventId', 'eventId') !== null
         );
 
         for (let i = 0; i < records.length; i++) {
@@ -900,6 +920,7 @@ export class CSVIngestionService {
         const EVENT_TYPE_MAP: Record<string, { eventType: string; direction: 'in' | 'out' }> = {
             'receipts': { eventType: 'Receipt', direction: 'in' },
             'receipt': { eventType: 'Receipt', direction: 'in' },
+            'receive': { eventType: 'Receipt', direction: 'in' },
             'shipments': { eventType: 'Shipment', direction: 'out' },
             'shipment': { eventType: 'Shipment', direction: 'out' },
             'customer shipments': { eventType: 'Shipment', direction: 'out' },
@@ -929,7 +950,7 @@ export class CSVIngestionService {
                 const r = records[i];
                 const rawEventType = getField(r, 'Event Type', 'event_type', 'EventType', 'type') || 'Adjustment';
                 const rawQuantity = Number(getField(r, 'Quantity', 'quantity', 'qty') || 0);
-                const fnsku = getField(r, 'FNSKU', 'fnsku', 'fn_sku', 'fnSku');
+                const fnsku = getField(r, 'FNSKU', 'fnsku', 'fn_sku', 'fnSku', 'sku', 'SKU');
 
                 if (!fnsku) {
                     errors.push(`Row ${i + 1}: Missing FNSKU, skipping ledger event`);
@@ -965,7 +986,7 @@ export class CSVIngestionService {
                     fulfillment_center: getField(r, 'Fulfillment Center', 'fulfillment_center', 'FulfillmentCenter', 'FC', 'warehouse') || null,
                     disposition: getField(r, 'Disposition', 'disposition') || null,
                     reason: getField(r, 'Reason', 'reason') || null,
-                    reference_id: getField(r, 'Reference ID', 'reference_id', 'ReferenceId', 'ref_id') || null,
+                    reference_id: getField(r, 'Reference ID', 'reference_id', 'ReferenceId', 'ref_id', 'event_id', 'EventId', 'eventId') || null,
                     unit_cost: null,
                     average_sales_price: null,
                     country: getField(r, 'Country', 'country') || 'US',
@@ -1060,19 +1081,21 @@ export class CSVIngestionService {
                     errors.push(`Row ${i + 1}: Missing required fields (event_type/event_date)`);
                     continue;
                 }
+                const feeType = getField(r, 'fee_type', 'FeeType', 'feeType');
                 rows.push({
                     seller_id: userId,
                     tenant_id: tenantId,
                     store_id: storeId || null,
                     sync_id: syncId,
                     source: 'csv_upload',
-                    event_type: normalizeEventType(rawEventType),
+                    event_type: feeType ? 'fee' : normalizeEventType(rawEventType),
                     amount: parseAmount(rawAmount),
                     currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
                     event_date: eventDate,
                     amazon_order_id: getField(r, 'AmazonOrderId', 'amazon_order_id', 'orderId', 'order_id', 'OrderId') || null,
                     amazon_sku: getField(r, 'SellerSKU', 'sku', 'SKU', 'seller_sku') || null,
-                    description: getField(r, 'Description', 'description', 'AdjustmentType') || null,
+                    sku: getField(r, 'SellerSKU', 'sku', 'SKU', 'seller_sku') || null,
+                    description: getField(r, 'Description', 'description', 'AdjustmentType', 'fee_type', 'FeeType') || null,
                     raw_payload: r,
                     created_at: new Date().toISOString(),
                 });
@@ -1128,6 +1151,51 @@ export class CSVIngestionService {
         return this.batchUpsert('financial_events', rows, 'fees', errors, skipped);
     }
 
+    private async ingestTransfers(userId: string, tenantId: string, records: any[], syncId: string): Promise<Omit<IngestionResult, 'fileName'>> {
+        const errors: string[] = [];
+        const rows: any[] = [];
+        let skipped = 0;
+
+        for (let i = 0; i < records.length; i++) {
+            try {
+                const r = records[i];
+                const transferId = getField(r, 'transfer_id', 'TransferId', 'transferId');
+                const transferDate = getField(r, 'transfer_date', 'TransferDate', 'transferDate', 'date', 'Date');
+
+                if (!transferId || !transferDate) {
+                    skipped++;
+                    errors.push(`Row ${i + 1}: Missing required fields (transfer_id/transfer_date)`);
+                    continue;
+                }
+
+                rows.push({
+                    id: uuidv4(),
+                    tenant_id: tenantId,
+                    seller_id: userId,
+                    transfer_id: transferId,
+                    sku: getField(r, 'sku', 'SKU', 'sellerSku') || null,
+                    asin: getField(r, 'asin', 'ASIN') || null,
+                    fnsku: getField(r, 'fnsku', 'FNSKU', 'fnSku', 'sku', 'SKU') || null,
+                    source_fc: getField(r, 'from_fc', 'source_fc', 'fromFc', 'SourceFC') || null,
+                    destination_fc: getField(r, 'to_fc', 'destination_fc', 'toFc', 'DestinationFC') || null,
+                    transfer_date: transferDate,
+                    quantity_sent: Number(getField(r, 'quantity_sent', 'QuantitySent')) || 0,
+                    quantity_received: Number(getField(r, 'quantity_received', 'QuantityReceived')) || 0,
+                    status: 'received',
+                    unit_value: Number(getField(r, 'unit_value', 'UnitValue', 'price', 'Price')) || 0,
+                    currency: getField(r, 'currency', 'Currency', 'CurrencyCode') || 'USD',
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                });
+            } catch (error: any) {
+                errors.push(`Row ${i + 1}: ${error.message}`);
+                skipped++;
+            }
+        }
+
+        return this.batchUpsert('inventory_transfers', rows, 'transfers', errors, skipped);
+    }
+
     // ============================================================================
     // Database helpers
     // ============================================================================
@@ -1146,6 +1214,7 @@ export class CSVIngestionService {
         inventory_items: 'tenant_id,user_id,sku,asin,fnsku',
         inventory_ledger_events: 'tenant_id,user_id,fnsku,event_type,event_date,reference_id',
         financial_events: 'tenant_id,seller_id,event_type,event_date,amazon_order_id,amazon_sku,amount',
+        inventory_transfers: 'tenant_id,seller_id,transfer_id',
         // Other tables (orders, shipments, returns, settlements, inventory_items, financial_events)
         // do NOT have unique constraints yet — they fall back to .insert() automatically.
     };
@@ -1181,9 +1250,14 @@ export class CSVIngestionService {
                     const { error } = await query;
 
                     if (error) {
-                        const isRetriable = !error.code && error.message?.includes('fetch failed');
+                        const errorMessage =
+                            error.message ||
+                            error.details ||
+                            error.hint ||
+                            JSON.stringify(error);
+                        const isRetriable = !error.code && errorMessage.includes('fetch failed');
                         logger.error(`❌ [CSV INGESTION] Batch upsert failed for ${table}`, {
-                            error: error.message,
+                            error: errorMessage,
                             code: error.code,
                             batchStart: i,
                             batchSize: batch.length,
@@ -1197,7 +1271,7 @@ export class CSVIngestionService {
                             continue;
                         }
 
-                        accumulatedErrors.push(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+                        accumulatedErrors.push(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${errorMessage}`);
                         failed += batch.length;
                     } else {
                         inserted += batch.length;
@@ -1205,12 +1279,17 @@ export class CSVIngestionService {
 
                     break;
                 } catch (error: any) {
-                    const isRetriable = String(error?.message || '').includes('fetch failed');
+                    const errorMessage =
+                        error?.message ||
+                        error?.details ||
+                        error?.hint ||
+                        JSON.stringify(error);
+                    const isRetriable = String(errorMessage).includes('fetch failed');
                     if (isRetriable && attempt < maxAttempts) {
                         await new Promise(resolve => setTimeout(resolve, 500 * attempt));
                         continue;
                     }
-                    accumulatedErrors.push(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+                    accumulatedErrors.push(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${errorMessage}`);
                     failed += batch.length;
                     break;
                 }
@@ -1361,6 +1440,13 @@ export class CSVIngestionService {
                 targetTable: 'financial_events',
                 exampleHeaders: ['FeeType', 'FeeAmount', 'PostedDate', 'SellerSKU', 'ASIN', 'AmazonOrderId'],
                 enabled: !DISABLED_TYPES.has('fees'),
+            },
+            {
+                type: 'transfers',
+                description: 'Inventory transfer data between fulfillment centers',
+                targetTable: 'inventory_transfers',
+                exampleHeaders: ['transfer_id', 'sku', 'from_fc', 'to_fc', 'quantity_sent', 'quantity_received', 'transfer_date'],
+                enabled: !DISABLED_TYPES.has('transfers'),
             },
         ];
     }

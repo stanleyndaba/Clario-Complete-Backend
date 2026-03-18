@@ -126,6 +126,9 @@ import {
   fetchLossEvents,
 } from '../../src/services/detection/core/detectors/duplicateMissedReimbursementAlgorithm';
 import {
+  fetchTransferRecords,
+} from '../../src/services/detection/core/detectors/warehouseTransferLossAlgorithm';
+import {
   getAgent3AlgorithmStatuses,
 } from '../../src/services/detection/core/productionConnectionStatus';
 
@@ -290,6 +293,48 @@ describe('Agent 3 production connection repair', () => {
 
     expect(lossEvents).toHaveLength(1);
     expect(lossEvents[0].fnsku).toBe('FNSKU-1');
+  });
+
+  it('Transfer Loss can read tenant-scoped inventory transfers when the rail exists', async () => {
+    tables.tenant_memberships = [{ user_id: 'user-1', tenant_id: 'tenant-a' }];
+    tables.inventory_transfers = [
+      {
+        id: 'TR-1',
+        tenant_id: 'tenant-a',
+        seller_id: 'user-1',
+        transfer_id: 'XFER-1',
+        sku: 'SKU-1',
+        asin: 'ASIN-1',
+        fnsku: 'FNSKU-1',
+        source_fc: 'PHX6',
+        destination_fc: 'MDW2',
+        transfer_date: '2026-01-01T00:00:00Z',
+        quantity_sent: 10,
+        quantity_received: 8,
+        status: 'received',
+        unit_value: 15,
+        currency: 'USD',
+      },
+      {
+        id: 'TR-2',
+        tenant_id: 'tenant-b',
+        seller_id: 'user-1',
+        transfer_id: 'XFER-2',
+        sku: 'SKU-2',
+        transfer_date: '2026-01-02T00:00:00Z',
+        quantity_sent: 99,
+        quantity_received: 0,
+        status: 'pending',
+        unit_value: 15,
+        currency: 'USD',
+      },
+    ];
+
+    const transfers = await fetchTransferRecords('user-1');
+
+    expect(transfers).toHaveLength(1);
+    expect(transfers[0].transfer_id).toBe('XFER-1');
+    expect(transfers[0].quantity_missing).toBe(2);
   });
 
   it('surfaces disconnected algorithms as disabled instead of silent zero output', async () => {

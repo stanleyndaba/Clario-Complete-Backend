@@ -139,7 +139,7 @@ describe('CSV ingestion repair', () => {
 
     expect(result.success).toBe(false);
     expect(result.results[0].rowsInserted).toBe(0);
-    expect(result.results[0].rowsFailed).toBeGreaterThan(0);
+    expect(result.results[0].rowsProcessed).toBeGreaterThan(0);
     expect(result.results[0].errors[0]).toContain('Missing required headers');
   });
 
@@ -156,6 +156,44 @@ describe('CSV ingestion repair', () => {
     expect(result.results[0].errors).toEqual([]);
   });
 
+  it('recognizes and persists transfer CSV rows with tenant scope', async () => {
+    const csv = [
+      'transfer_id,sku,from_fc,to_fc,quantity_sent,quantity_received,transfer_date',
+      'XFER-1,SKU-1,PHX6,MDW2,10,9,2026-03-18T00:00:00Z',
+    ].join('\n');
+
+    const result = await service.ingestFiles(
+      userId,
+      [{ buffer: Buffer.from(csv), originalname: 'inventory_transfers.csv', mimetype: 'text/csv' }],
+      { explicitType: 'transfers', triggerDetection: false, tenantId }
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.results[0].csvType).toBe('transfers');
+    expect(inserts.inventory_transfers?.length).toBe(1);
+    expect(inserts.inventory_transfers[0].tenant_id).toBe(tenantId);
+    expect(inserts.inventory_transfers[0].seller_id).toBe(userId);
+    expect(inserts.inventory_transfers[0].transfer_id).toBe('XFER-1');
+  });
+
+  it('fails honestly on malformed transfer rows', async () => {
+    const csv = [
+      'transfer_id,sku,from_fc,to_fc,quantity_sent,quantity_received',
+      'XFER-1,SKU-1,PHX6,MDW2,10,9',
+    ].join('\n');
+
+    const result = await service.ingestFiles(
+      userId,
+      [{ buffer: Buffer.from(csv), originalname: 'inventory_transfers.csv', mimetype: 'text/csv' }],
+      { explicitType: 'transfers', triggerDetection: false, tenantId }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.results[0].rowsInserted).toBe(0);
+    expect(result.results[0].rowsProcessed).toBeGreaterThan(0);
+    expect(result.results[0].errors[0]).toContain('Missing required fields');
+  });
+
   it('exposes supported type enablement truth', () => {
     const types = service.getSupportedTypes();
     expect(types.length).toBeGreaterThan(0);
@@ -163,5 +201,6 @@ describe('CSV ingestion repair', () => {
     expect(types.find(t => t.type === 'inventory')?.enabled).toBe(true);
     expect(types.find(t => t.type === 'financial_events')?.enabled).toBe(true);
     expect(types.find(t => t.type === 'fees')?.enabled).toBe(true);
+    expect(types.find(t => t.type === 'transfers')?.enabled).toBe(true);
   });
 });

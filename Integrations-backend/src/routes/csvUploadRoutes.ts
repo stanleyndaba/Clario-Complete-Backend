@@ -115,7 +115,7 @@ router.post('/ingest', requireActiveTenant, upload.array('files', 10), async (re
 // POST /api/csv-upload/ingest/:type — Upload CSV with explicit type
 // ============================================================================
 
-const VALID_TYPES: CSVType[] = ['orders', 'shipments', 'returns', 'settlements', 'inventory', 'financial_events', 'fees'];
+const VALID_TYPES: CSVType[] = ['orders', 'shipments', 'returns', 'settlements', 'inventory', 'financial_events', 'fees', 'transfers'];
 
 router.post('/ingest/:type', requireActiveTenant, upload.array('files', 10), async (req: Request, res: Response) => {
     try {
