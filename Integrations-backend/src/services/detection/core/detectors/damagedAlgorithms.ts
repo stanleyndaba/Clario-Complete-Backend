@@ -683,6 +683,7 @@ export async function storeDamagedDetectionResults(results: DamagedDetectionResu
     const tenantId = await resolveTenantId(results[0].seller_id);
 
     try {
+        const nowIso = new Date().toISOString();
         const records = results.map(r => ({
             seller_id: r.seller_id,
             sync_id: r.sync_id,
@@ -699,49 +700,116 @@ export async function storeDamagedDetectionResults(results: DamagedDetectionResu
             tenant_id: tenantId,
 
             status: 'detected',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
+            created_at: nowIso,
+            updated_at: nowIso
         }));
 
-        const { data: existing } = await supabaseAdmin
+        const damagedTypes = [...new Set(results.map(r => r.anomaly_type))];
+        const { data: existing, error: existingError } = await supabaseAdmin
             .from('detection_results')
-            .select('anomaly_type,related_event_ids,evidence,tenant_id,seller_id')
+            .select('id,anomaly_type,related_event_ids,evidence,tenant_id,seller_id,created_at')
             .eq('tenant_id', tenantId)
             .eq('seller_id', results[0].seller_id)
-            .eq('anomaly_type', 'damaged_warehouse');
+            .in('anomaly_type', damagedTypes as any);
 
-        const existingFingerprints = new Set(
-            (existing || []).map((row: any) => {
-                const ids = Array.isArray(row.related_event_ids) ? [...row.related_event_ids].sort().join('|') : '';
-                return `damaged_warehouse|${ids}|${row.evidence?.sku || ''}|${row.evidence?.fnsku || ''}`;
-            })
-        );
-
-        const uniqueRecords = records.filter((row: any) => {
-            const ids = Array.isArray(row.related_event_ids) ? [...row.related_event_ids].sort().join('|') : '';
-            const fingerprint = `damaged_warehouse|${ids}|${row.evidence?.sku || ''}|${row.evidence?.fnsku || ''}`;
-            if (existingFingerprints.has(fingerprint)) return false;
-            existingFingerprints.add(fingerprint);
-            return true;
-        });
-
-        if (uniqueRecords.length === 0) {
-            logger.info('💥 [BROKEN GOODS] Detection results already persisted', { count: results.length });
-            return;
+        if (existingError) {
+            throw new Error(existingError.message);
         }
 
-        const { error } = await supabaseAdmin
-            .from('detection_results')
-            .insert(uniqueRecords);
+        const fingerprintFor = (row: any) => {
+            const ids = Array.isArray(row.related_event_ids) ? [...row.related_event_ids].sort().join('|') : '';
+            return `${row.anomaly_type}|${ids}|${row.evidence?.damage_event_id || ''}|${row.evidence?.sku || ''}|${row.evidence?.fnsku || ''}`;
+        };
 
-        if (error) {
-            logger.error('💥 [BROKEN GOODS] Error storing detection results', {
-                error: error.message,
-                count: uniqueRecords.length
+        const existingByFingerprint = new Map<string, any[]>();
+        for (const row of existing || []) {
+            const fingerprint = fingerprintFor(row);
+            const rows = existingByFingerprint.get(fingerprint) || [];
+            rows.push(row);
+            existingByFingerprint.set(fingerprint, rows);
+        }
+
+        const inserts: any[] = [];
+        const updates: Array<{ id: string; payload: any }> = [];
+        const duplicateDeletes: string[] = [];
+
+        for (const record of records) {
+            const fingerprint = fingerprintFor(record);
+            const matchingRows = (existingByFingerprint.get(fingerprint) || []).sort((a, b) =>
+                new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+            );
+
+            if (!matchingRows.length) {
+                inserts.push(record);
+                continue;
+            }
+
+            const keeper = matchingRows[0];
+            updates.push({
+                id: keeper.id,
+                payload: {
+                    sync_id: record.sync_id,
+                    severity: record.severity,
+                    estimated_value: record.estimated_value,
+                    currency: record.currency,
+                    confidence_score: record.confidence_score,
+                    evidence: record.evidence,
+                    related_event_ids: record.related_event_ids,
+                    discovery_date: record.discovery_date,
+                    deadline_date: record.deadline_date,
+                    days_remaining: record.days_remaining,
+                    status: record.status,
+                    updated_at: nowIso
+                }
             });
-        } else {
-            logger.info('💥 [BROKEN GOODS] Detection results stored', {
-                count: uniqueRecords.length
+
+            for (const duplicate of matchingRows.slice(1)) {
+                duplicateDeletes.push(duplicate.id);
+            }
+        }
+
+        for (const update of updates) {
+            const { error: updateError } = await supabaseAdmin
+                .from('detection_results')
+                .update(update.payload)
+                .eq('id', update.id);
+            if (updateError) {
+                throw new Error(updateError.message);
+            }
+        }
+
+        if (duplicateDeletes.length > 0) {
+            const { error: deleteError } = await supabaseAdmin
+                .from('detection_results')
+                .delete()
+                .in('id', duplicateDeletes);
+            if (deleteError) {
+                throw new Error(deleteError.message);
+            }
+        }
+
+        if (inserts.length > 0) {
+            const { error } = await supabaseAdmin
+                .from('detection_results')
+                .insert(inserts);
+
+            if (error) {
+                logger.error('💥 [BROKEN GOODS] Error storing detection results', {
+                    error: error.message,
+                    count: inserts.length
+                });
+                throw new Error(error.message);
+            }
+        }
+
+        logger.info('💥 [BROKEN GOODS] Detection results stored', {
+            inserted: inserts.length,
+            updated: updates.length,
+            deduped: duplicateDeletes.length
+        });
+        if (inserts.length === 0 && updates.length > 0 && duplicateDeletes.length === 0) {
+            logger.info('💥 [BROKEN GOODS] Detection results already persisted', {
+                count: results.length
             });
         }
     } catch (err: any) {

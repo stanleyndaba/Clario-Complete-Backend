@@ -977,6 +977,7 @@ export async function runInboundDetection(sellerId: string, syncId: string): Pro
 export async function storeInboundDetectionResults(results: InboundDetectionResult[]): Promise<void> {
     if (!results.length) return;
     const tenantId = await resolveTenantId(results[0].seller_id);
+    const nowIso = new Date().toISOString();
     const records = results.map(r => ({
         seller_id: r.seller_id,
         sync_id: r.sync_id,
@@ -998,11 +999,12 @@ export async function storeInboundDetectionResults(results: InboundDetectionResu
         days_remaining: r.days_remaining,
         tenant_id: tenantId,
         status: 'detected',
-        created_at: new Date().toISOString()
+        created_at: nowIso,
+        updated_at: nowIso
     }));
     const { data: existing, error: existingError } = await supabaseAdmin
         .from('detection_results')
-        .select('id,anomaly_type,evidence,tenant_id,seller_id')
+        .select('id,anomaly_type,evidence,tenant_id,seller_id,created_at')
         .eq('tenant_id', tenantId)
         .eq('seller_id', results[0].seller_id);
     if (existingError) {
@@ -1013,27 +1015,84 @@ export async function storeInboundDetectionResults(results: InboundDetectionResu
         });
         throw new Error(`Inbound dedupe lookup failed: ${existingError.message}`);
     }
-    const existingFingerprints = new Set(
-        (existing || []).map((row: any) =>
-            `${row.anomaly_type}|${row.evidence?.shipment_id || ''}|${row.evidence?.sku || ''}`
-        )
-    );
-    const uniqueRecords = records.filter((row: any) => {
+    const existingByFingerprint = new Map<string, any[]>();
+    for (const row of existing || []) {
         const fingerprint = `${row.anomaly_type}|${row.evidence?.shipment_id || ''}|${row.evidence?.sku || ''}`;
-        if (existingFingerprints.has(fingerprint)) return false;
-        existingFingerprints.add(fingerprint);
-        return true;
-    });
-    if (!uniqueRecords.length) return;
-    const { error: insertError } = await supabaseAdmin.from('detection_results').insert(uniqueRecords);
-    if (insertError) {
-        logger.error('📦 [INBOUND] Failed to persist inbound detections', {
-            sellerId: results[0].seller_id,
-            tenantId,
-            insertCount: uniqueRecords.length,
-            error: insertError.message
+        const rows = existingByFingerprint.get(fingerprint) || [];
+        rows.push(row);
+        existingByFingerprint.set(fingerprint, rows);
+    }
+
+    const inserts: any[] = [];
+    const updates: Array<{ id: string; payload: any }> = [];
+    const duplicateDeletes: string[] = [];
+
+    for (const record of records) {
+        const fingerprint = `${record.anomaly_type}|${record.evidence?.shipment_id || ''}|${record.evidence?.sku || ''}`;
+        const matchingRows = (existingByFingerprint.get(fingerprint) || []).sort((a, b) =>
+            new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+        );
+
+        if (!matchingRows.length) {
+            inserts.push(record);
+            continue;
+        }
+
+        const keeper = matchingRows[0];
+        updates.push({
+            id: keeper.id,
+            payload: {
+                sync_id: record.sync_id,
+                severity: record.severity,
+                estimated_value: record.estimated_value,
+                currency: record.currency,
+                confidence_score: record.confidence_score,
+                evidence: record.evidence,
+                related_event_ids: record.related_event_ids,
+                discovery_date: record.discovery_date,
+                deadline_date: record.deadline_date,
+                days_remaining: record.days_remaining,
+                status: record.status,
+                updated_at: nowIso
+            }
         });
-        throw new Error(`Inbound detection insert failed: ${insertError.message}`);
+
+        for (const duplicate of matchingRows.slice(1)) {
+            duplicateDeletes.push(duplicate.id);
+        }
+    }
+
+    for (const update of updates) {
+        const { error: updateError } = await supabaseAdmin
+            .from('detection_results')
+            .update(update.payload)
+            .eq('id', update.id);
+        if (updateError) {
+            throw new Error(`Inbound detection update failed: ${updateError.message}`);
+        }
+    }
+
+    if (duplicateDeletes.length > 0) {
+        const { error: deleteError } = await supabaseAdmin
+            .from('detection_results')
+            .delete()
+            .in('id', duplicateDeletes);
+        if (deleteError) {
+            throw new Error(`Inbound duplicate cleanup failed: ${deleteError.message}`);
+        }
+    }
+
+    if (inserts.length > 0) {
+        const { error: insertError } = await supabaseAdmin.from('detection_results').insert(inserts);
+        if (insertError) {
+            logger.error('📦 [INBOUND] Failed to persist inbound detections', {
+                sellerId: results[0].seller_id,
+                tenantId,
+                insertCount: inserts.length,
+                error: insertError.message
+            });
+            throw new Error(`Inbound detection insert failed: ${insertError.message}`);
+        }
     }
 }
 

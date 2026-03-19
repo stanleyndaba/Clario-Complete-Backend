@@ -324,31 +324,40 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
 
         const inserts: any[] = [];
         const updates: Array<{ id: string; payload: any }> = [];
+        const duplicateDeletes: string[] = [];
 
         for (const record of records) {
             const fingerprint = `${record.evidence.transfer_id || ''}|${record.evidence.sku || ''}|${record.evidence.loss_type || ''}`;
-            const matchingRows = existingByFingerprint.get(fingerprint) || [];
+            const matchingRows = (existingByFingerprint.get(fingerprint) || []).sort((a, b) =>
+                new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+            );
             if (!matchingRows.length) {
                 inserts.push(record);
                 continue;
             }
 
-            for (const existingRow of matchingRows) {
-                if (existingRow.discovery_date && existingRow.deadline_date && existingRow.days_remaining !== null && existingRow.days_remaining !== undefined) {
-                    continue;
+            const keeper = matchingRows[0];
+            const discoveryIso = keeper.discovery_date || keeper.created_at || record.discovery_date;
+            const deadlineIso = keeper.deadline_date || new Date(new Date(discoveryIso).getTime() + 60 * 86400000).toISOString();
+            const remaining = keeper.days_remaining ?? Math.max(0, Math.ceil((new Date(deadlineIso).getTime() - Date.now()) / 86400000));
+            updates.push({
+                id: keeper.id,
+                payload: {
+                    sync_id: record.sync_id,
+                    severity: record.severity,
+                    estimated_value: record.estimated_value,
+                    currency: record.currency,
+                    confidence_score: record.confidence_score,
+                    discovery_date: discoveryIso,
+                    deadline_date: deadlineIso,
+                    days_remaining: remaining,
+                    evidence: record.evidence,
+                    status: record.status
                 }
+            });
 
-                const discoveryIso = existingRow.discovery_date || existingRow.created_at || record.discovery_date;
-                const deadlineIso = existingRow.deadline_date || new Date(new Date(discoveryIso).getTime() + 60 * 86400000).toISOString();
-                const remaining = existingRow.days_remaining ?? Math.max(0, Math.ceil((new Date(deadlineIso).getTime() - Date.now()) / 86400000));
-                updates.push({
-                    id: existingRow.id,
-                    payload: {
-                        discovery_date: discoveryIso,
-                        deadline_date: deadlineIso,
-                        days_remaining: remaining
-                    }
-                });
+            for (const duplicate of matchingRows.slice(1)) {
+                duplicateDeletes.push(duplicate.id);
             }
         }
 
@@ -362,6 +371,16 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
             }
         }
 
+        if (duplicateDeletes.length > 0) {
+            const { error: deleteError } = await supabaseAdmin
+                .from('detection_results')
+                .delete()
+                .in('id', duplicateDeletes);
+            if (deleteError) {
+                throw new Error(deleteError.message);
+            }
+        }
+
         if (inserts.length > 0) {
             const { error: insertError } = await supabaseAdmin.from('detection_results').insert(inserts);
             if (insertError) {
@@ -369,7 +388,7 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
             }
         }
 
-        logger.info('🏭 [TRANSFER-LOSS] Stored results', { inserted: inserts.length, updated: updates.length });
+        logger.info('🏭 [TRANSFER-LOSS] Stored results', { inserted: inserts.length, updated: updates.length, deduped: duplicateDeletes.length });
     } catch (err: any) {
         logger.error('🏭 [TRANSFER-LOSS] Error storing results', { error: err.message });
     }
