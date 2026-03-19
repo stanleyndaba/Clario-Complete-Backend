@@ -90,15 +90,24 @@ class RefundFilingWorker {
   private controlQueue: Queue;
   private controlWorker: Worker;
   private automator: AmazonSubmissionAutomator;
+  private queueInfrastructureAvailable: boolean = false;
+  private queueInfrastructureReason: string | null = null;
 
   constructor() {
     this.automator = new AmazonSubmissionAutomator();
     
-    const redisUrl = process.env.REDIS_URL;
-    if (!redisUrl) {
-      const errorMsg = '❌ [FATAL] [REFUND FILING] REDIS_URL is not configured. Infrastructure startup failed.';
-      logger.error(errorMsg);
-      throw new Error(errorMsg);
+    const redisUrl = (process.env.REDIS_URL || '').trim();
+    if (!redisUrl || redisUrl === '-' || redisUrl.toLowerCase() === 'false' || redisUrl.toLowerCase() === 'disabled') {
+      this.queueInfrastructureReason = 'REDIS_URL is missing or explicitly disabled';
+      logger.warn('[REFUND FILING] Queue infrastructure disabled', {
+        reason: this.queueInfrastructureReason,
+        redisConfigured: Boolean(redisUrl)
+      });
+      this.submissionQueue = undefined as any;
+      this.submissionWorker = undefined as any;
+      this.controlQueue = undefined as any;
+      this.controlWorker = undefined as any;
+      return;
     }
 
     let redisConfig: any;
@@ -115,9 +124,15 @@ class RefundFilingWorker {
           }
         })
       };
+      this.queueInfrastructureAvailable = true;
     } catch (error: any) {
+      this.queueInfrastructureReason = `Invalid REDIS_URL: ${error.message}`;
       logger.error('[REFUND FILING] Failed to parse REDIS_URL', { error: error.message });
-      throw error;
+      this.submissionQueue = undefined as any;
+      this.submissionWorker = undefined as any;
+      this.controlQueue = undefined as any;
+      this.controlWorker = undefined as any;
+      return;
     }
 
 
@@ -182,6 +197,12 @@ class RefundFilingWorker {
    */
   async addJob(caseId: string, sellerId: string): Promise<Job> {
     logger.info(`📥 [AGENT 7] Manual trigger: Enqueueing case ${caseId} for seller ${sellerId}`);
+
+    if (!this.queueInfrastructureAvailable || !this.submissionQueue) {
+      throw new Error(
+        `Refund filing queue unavailable: ${this.queueInfrastructureReason || 'Redis infrastructure not configured'}`
+      );
+    }
     
     return await this.submissionQueue.add(
       `filing_${caseId}`,
@@ -305,6 +326,13 @@ class RefundFilingWorker {
   * Start the worker
   */
   start(): void {
+    if (!this.queueInfrastructureAvailable) {
+      logger.warn(' [REFUND FILING] Worker not started because queue infrastructure is unavailable', {
+        reason: this.queueInfrastructureReason
+      });
+      return;
+    }
+
     if (this.cronJob) {
       logger.warn(' [REFUND FILING] Worker already started');
       return;
@@ -1548,6 +1576,16 @@ class RefundFilingWorker {
         // 🎯 AGENT 7: Distributed Submission Protocol (Fortress Queue)
         // We push to BullMQ to enable global rate limiting and tenant isolation.
         try {
+          if (!this.queueInfrastructureAvailable || !this.submissionQueue) {
+            logger.warn(' [AGENT 7] Skipping queue enqueue because refund filing infrastructure is unavailable', {
+              disputeId: disputeCase.id,
+              sellerId: disputeCase.seller_id,
+              reason: this.queueInfrastructureReason
+            });
+            stats.failed++;
+            continue;
+          }
+
           await this.submissionQueue.add(
             `filing_${disputeCase.id}`,
             { 
