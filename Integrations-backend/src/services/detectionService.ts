@@ -617,42 +617,13 @@ export class DetectionService {
         mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
       });
 
-      // For sandbox: If no financial events, create mock events from claims table for testing
+      // PATCH 4: Mock/sandbox detection generation DISABLED
+      // Mock events from claims table are no longer injected.
+      // Only enhancedDetectionService.ts (frozen flagship detectors) may produce detections.
       if (isSandbox && financialEvents.length === 0) {
-        logger.info('No financial events found - checking claims table for sandbox test data', {
+        logger.warn('⚠️ [LEGACY] No financial events found in sandbox — mock injection DISABLED (Patch 4)', {
           seller_id: job.seller_id
         });
-
-        const { data: claims } = await supabase
-          .from('claims')
-          .select('*')
-          .eq('user_id', job.seller_id)
-          .eq('provider', 'amazon')
-          .limit(100);
-
-        if (claims && claims.length > 0) {
-          // Convert claims to financial events format for detection
-          const mockEvents = claims.map((claim: any) => ({
-            id: claim.id,
-            seller_id: job.seller_id,
-            event_type: claim.type || 'fee',
-            amount: parseFloat(claim.amount) || 0,
-            currency: claim.currency || 'USD',
-            event_date: claim.created_at || new Date().toISOString(),
-            amazon_order_id: claim.order_id || claim.amazon_order_id,
-            raw_payload: claim.raw_data || {}
-          }));
-
-          logger.info('Using claims as mock financial events for sandbox detection', {
-            seller_id: job.seller_id,
-            mock_event_count: mockEvents.length
-          });
-
-          // Use mock events for detection
-          for (const mockEvent of mockEvents) {
-            financialEvents.push(mockEvent);
-          }
-        }
       }
 
       // Step 2: Get inventory discrepancies from database
@@ -1578,73 +1549,16 @@ export class DetectionService {
 
   /**
    * Store detection results in database
+   * PATCH 3: DISABLED — Legacy detection path blocked from writing to detection_results.
+   * Only enhancedDetectionService.ts (frozen flagship detectors) may write detections.
    */
   private async storeDetectionResults(results: DetectionResult[]): Promise<void> {
-    if (results.length === 0) return;
-
-    // Fetch tenant_id (CRITICAL for multi-tenancy)
-    const sellerId = results[0].seller_id;
-    let tenantId: string | null = null;
-    try {
-      const { data } = await supabase.from('users').select('tenant_id').eq('id', sellerId).single();
-      if (data) tenantId = data.tenant_id;
-    } catch (e) {
-      logger.warn('Failed to fetch tenant_id in storeDetectionResults', { sellerId });
-    }
-
-    // Fallback for sandbox/test mode
-    if (!tenantId && (process.env.NODE_ENV === 'development' || process.env.ENABLE_MOCK_DETECTION === 'true')) {
-      tenantId = sellerId;
-    }
-
-    try {
-      const { error } = await supabase
-        .from('detection_results')
-        .insert(
-          results.map(result => {
-            // Recalculate days remaining before storing (in case time passed)
-            const { deadlineDate, daysRemaining } = result.deadline_date && result.discovery_date ?
-              this.calculateDeadline(new Date(result.discovery_date)) :
-              result.deadline_date ?
-                { deadlineDate: new Date(result.deadline_date), daysRemaining: result.days_remaining || 0 } :
-                { deadlineDate: null, daysRemaining: null };
-
-            return {
-              tenant_id: tenantId,
-              seller_id: result.seller_id,
-              sync_id: result.sync_id,
-              anomaly_type: result.anomaly_type,
-              severity: result.severity,
-              estimated_value: result.estimated_value,
-              currency: result.currency,
-              confidence_score: result.confidence_score,
-              evidence: result.evidence,
-              related_event_ids: result.related_event_ids || [],
-              discovery_date: result.discovery_date ? new Date(result.discovery_date).toISOString() : new Date().toISOString(),
-              deadline_date: deadlineDate ? deadlineDate.toISOString() : null,
-              days_remaining: daysRemaining,
-              expired: daysRemaining !== null && daysRemaining === 0,
-              expiration_alert_sent: false
-            };
-          })
-        );
-
-      if (error) {
-        logger.error('Error storing detection results', { error });
-        throw new Error(`Failed to store detection results: ${error.message}`);
-      }
-
-      logger.info('Detection results stored successfully', {
-        count: results.length,
-        with_deadlines: results.filter(r => r.deadline_date).length
-      });
-
-      // Check for expiring claims and send alerts
-      await this.checkExpiringClaims(results.map(r => r.seller_id));
-    } catch (error) {
-      logger.error('Error in storeDetectionResults', { error });
-      throw error;
-    }
+    // PATCH 3: Block all writes from legacy detection path
+    logger.warn('⚠️ [LEGACY] storeDetectionResults BLOCKED — legacy detection write path disabled (Patch 3)', {
+      results_count: results.length,
+      seller_id: results[0]?.seller_id || 'unknown'
+    });
+    return;
   }
 
   /**
@@ -1700,12 +1614,9 @@ export class DetectionService {
       // Fall back to supabase if supabaseAdmin is not available
       const { supabaseAdmin, supabase: supabaseClient } = await import('../database/supabaseClient');
       const client = supabaseAdmin || supabaseClient;
-
-      // SANDBOX MODE: In sandbox/demo mode, show ALL detection results regardless of seller_id
-      // This is because sandbox has no real SP-API and seller_ids in data don't match user IDs
-      const isSandbox = process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') ||
-        process.env.NODE_ENV === 'development' ||
-        !process.env.AMAZON_LWA_CLIENT_ID;
+      if (!sellerId) {
+        return [];
+      }
 
       let query = client
         .from('detection_results')
@@ -1718,10 +1629,8 @@ export class DetectionService {
         query = query.eq('tenant_id', tenantId);
       }
 
-      // Only filter by seller_id in production mode with real SP-API
-      if (!isSandbox && sellerId && sellerId !== 'demo-user') {
-        query = query.eq('seller_id', sellerId);
-      }
+      // Product reads must always be seller-truthful.
+      query = query.eq('seller_id', sellerId);
 
       if (syncId) {
         query = query.eq('sync_id', syncId);
@@ -1741,6 +1650,51 @@ export class DetectionService {
       return data as DetectionResultRecord[];
     } catch (error) {
       logger.error('Error in getDetectionResults', { error, sellerId });
+      throw error;
+    }
+  }
+
+  async getDetectionResultsTotal(
+    sellerId: string,
+    syncId?: string,
+    status?: string,
+    tenantId?: string
+  ): Promise<number> {
+    try {
+      const { supabaseAdmin, supabase: supabaseClient } = await import('../database/supabaseClient');
+      const client = supabaseAdmin || supabaseClient;
+      if (!sellerId) {
+        return 0;
+      }
+
+      let query = client
+        .from('detection_results')
+        .select('id', { count: 'exact', head: true });
+
+      if (tenantId) {
+        query = query.eq('tenant_id', tenantId);
+      }
+
+      query = query.eq('seller_id', sellerId);
+
+      if (syncId) {
+        query = query.eq('sync_id', syncId);
+      }
+
+      if (status) {
+        query = query.eq('status', status);
+      }
+
+      const { count, error } = await query;
+
+      if (error) {
+        logger.error('Error fetching detection results total', { error, sellerId, tenantId, syncId, status });
+        throw new Error(`Failed to fetch detection results total: ${error.message}`);
+      }
+
+      return count || 0;
+    } catch (error) {
+      logger.error('Error in getDetectionResultsTotal', { error, sellerId, tenantId, syncId, status });
       throw error;
     }
   }

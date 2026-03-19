@@ -267,7 +267,13 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
     const tenantId = await resolveTenantId(results[0].seller_id);
 
     try {
-        const records = results.map(r => ({
+        const now = new Date();
+        const records = results.map(r => {
+            const discoveryDate = new Date(now);
+            const deadlineDate = new Date(discoveryDate.getTime() + 60 * 86400000);
+            const daysRemaining = Math.max(0, Math.ceil((deadlineDate.getTime() - now.getTime()) / 86400000));
+
+            return {
             seller_id: r.seller_id,
             tenant_id: tenantId,
             sync_id: r.sync_id,
@@ -276,6 +282,9 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
             estimated_value: r.loss_value,
             currency: r.currency,
             confidence_score: r.confidence_score,
+            discovery_date: discoveryDate.toISOString(),
+            deadline_date: deadlineDate.toISOString(),
+            days_remaining: daysRemaining,
             evidence: {
                 transfer_id: r.transfer_id,
                 sku: r.sku,
@@ -289,10 +298,78 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
                 detection_reasons: r.evidence.detection_reasons
             },
             status: 'pending'
-        }));
+            };
+        });
 
-        await supabaseAdmin.from('detection_results').insert(records);
-        logger.info('🏭 [TRANSFER-LOSS] Stored results', { count: records.length });
+        const { data: existing, error: existingError } = await supabaseAdmin
+            .from('detection_results')
+            .select('id,created_at,discovery_date,deadline_date,days_remaining,evidence')
+            .eq('tenant_id', tenantId)
+            .eq('seller_id', results[0].seller_id)
+            .eq('anomaly_type', 'warehouse_transfer_loss');
+
+        if (existingError) {
+            throw new Error(existingError.message);
+        }
+
+        const existingByFingerprint = new Map<string, any[]>();
+        for (const row of existing || []) {
+            const fingerprint = `${row.evidence?.transfer_id || ''}|${row.evidence?.sku || ''}|${row.evidence?.loss_type || ''}`;
+            if (fingerprint) {
+                const rows = existingByFingerprint.get(fingerprint) || [];
+                rows.push(row);
+                existingByFingerprint.set(fingerprint, rows);
+            }
+        }
+
+        const inserts: any[] = [];
+        const updates: Array<{ id: string; payload: any }> = [];
+
+        for (const record of records) {
+            const fingerprint = `${record.evidence.transfer_id || ''}|${record.evidence.sku || ''}|${record.evidence.loss_type || ''}`;
+            const matchingRows = existingByFingerprint.get(fingerprint) || [];
+            if (!matchingRows.length) {
+                inserts.push(record);
+                continue;
+            }
+
+            for (const existingRow of matchingRows) {
+                if (existingRow.discovery_date && existingRow.deadline_date && existingRow.days_remaining !== null && existingRow.days_remaining !== undefined) {
+                    continue;
+                }
+
+                const discoveryIso = existingRow.discovery_date || existingRow.created_at || record.discovery_date;
+                const deadlineIso = existingRow.deadline_date || new Date(new Date(discoveryIso).getTime() + 60 * 86400000).toISOString();
+                const remaining = existingRow.days_remaining ?? Math.max(0, Math.ceil((new Date(deadlineIso).getTime() - Date.now()) / 86400000));
+                updates.push({
+                    id: existingRow.id,
+                    payload: {
+                        discovery_date: discoveryIso,
+                        deadline_date: deadlineIso,
+                        days_remaining: remaining
+                    }
+                });
+            }
+        }
+
+        for (const update of updates) {
+            const { error: updateError } = await supabaseAdmin
+                .from('detection_results')
+                .update(update.payload)
+                .eq('id', update.id);
+            if (updateError) {
+                throw new Error(updateError.message);
+            }
+        }
+
+        if (inserts.length > 0) {
+            const { error: insertError } = await supabaseAdmin.from('detection_results').insert(inserts);
+            if (insertError) {
+                throw new Error(insertError.message);
+            }
+        }
+
+        logger.info('🏭 [TRANSFER-LOSS] Stored results', { inserted: inserts.length, updated: updates.length });
     } catch (err: any) {
         logger.error('🏭 [TRANSFER-LOSS] Error storing results', { error: err.message });
     }

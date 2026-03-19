@@ -978,27 +978,63 @@ export async function storeInboundDetectionResults(results: InboundDetectionResu
     if (!results.length) return;
     const tenantId = await resolveTenantId(results[0].seller_id);
     const records = results.map(r => ({
-        ...r, discovery_date: r.discovery_date.toISOString(), deadline_date: r.deadline_date.toISOString(),
-        tenant_id: tenantId, status: 'detected', created_at: new Date().toISOString()
+        seller_id: r.seller_id,
+        sync_id: r.sync_id,
+        anomaly_type: r.anomaly_type,
+        severity: r.severity,
+        estimated_value: r.estimated_value,
+        currency: r.currency,
+        confidence_score: r.confidence_score,
+        evidence: {
+            ...r.evidence,
+            shipment_id: r.shipment_id,
+            sku: r.sku,
+            fnsku: r.fnsku,
+            product_name: r.product_name
+        },
+        related_event_ids: r.related_event_ids,
+        discovery_date: r.discovery_date.toISOString(),
+        deadline_date: r.deadline_date.toISOString(),
+        days_remaining: r.days_remaining,
+        tenant_id: tenantId,
+        status: 'detected',
+        created_at: new Date().toISOString()
     }));
-    const { data: existing } = await supabaseAdmin
+    const { data: existing, error: existingError } = await supabaseAdmin
         .from('detection_results')
-        .select('anomaly_type,evidence,shipment_id,sku,tenant_id,seller_id')
+        .select('id,anomaly_type,evidence,tenant_id,seller_id')
         .eq('tenant_id', tenantId)
         .eq('seller_id', results[0].seller_id);
+    if (existingError) {
+        logger.error('📦 [INBOUND] Failed to load existing detections for dedupe', {
+            sellerId: results[0].seller_id,
+            tenantId,
+            error: existingError.message
+        });
+        throw new Error(`Inbound dedupe lookup failed: ${existingError.message}`);
+    }
     const existingFingerprints = new Set(
         (existing || []).map((row: any) =>
-            `${row.anomaly_type}|${row.shipment_id || row.evidence?.shipment_id || ''}|${row.sku || ''}`
+            `${row.anomaly_type}|${row.evidence?.shipment_id || ''}|${row.evidence?.sku || ''}`
         )
     );
     const uniqueRecords = records.filter((row: any) => {
-        const fingerprint = `${row.anomaly_type}|${row.shipment_id || row.evidence?.shipment_id || ''}|${row.sku || ''}`;
+        const fingerprint = `${row.anomaly_type}|${row.evidence?.shipment_id || ''}|${row.evidence?.sku || ''}`;
         if (existingFingerprints.has(fingerprint)) return false;
         existingFingerprints.add(fingerprint);
         return true;
     });
     if (!uniqueRecords.length) return;
-    await supabaseAdmin.from('detection_results').insert(uniqueRecords);
+    const { error: insertError } = await supabaseAdmin.from('detection_results').insert(uniqueRecords);
+    if (insertError) {
+        logger.error('📦 [INBOUND] Failed to persist inbound detections', {
+            sellerId: results[0].seller_id,
+            tenantId,
+            insertCount: uniqueRecords.length,
+            error: insertError.message
+        });
+        throw new Error(`Inbound detection insert failed: ${insertError.message}`);
+    }
 }
 
 export default { detectShipmentMissing, detectShipmentShortage, detectCarrierDamage, detectReceivingError, detectCaseBreakError, detectPrepFeeError, detectInboundAnomalies, runInboundDetection, storeInboundDetectionResults };

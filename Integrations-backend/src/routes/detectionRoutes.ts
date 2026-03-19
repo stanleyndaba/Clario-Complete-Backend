@@ -64,6 +64,12 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
       parseInt(offset as string, 10),
       tenantId
     );
+    const total = await detectionService.getDetectionResultsTotal(
+      userId,
+      undefined,
+      status,
+      tenantId
+    );
 
     // Enhance results with document counts from dispute_evidence_links
     const { supabase } = await import('../database/supabaseClient');
@@ -89,7 +95,7 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
       });
     }
 
-    return res.json({ success: true, results, total: results.length });
+    return res.json({ success: true, results, total });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
   }
