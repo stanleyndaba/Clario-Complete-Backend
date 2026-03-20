@@ -1,5 +1,6 @@
 import { Response } from 'express';
 import logger from './logger';
+import { normalizeAgent10EventPayload } from './agent10Event';
 
 class SSEHub {
   private connections: Map<string, Map<string, Set<Response>>> = new Map();
@@ -99,7 +100,9 @@ class SSEHub {
 
     // Determine target connections
     let targetSets: Set<Response>[] = [];
-    const targetSlug = tenantSlug || data?.tenantSlug || data?.tenant_slug || data?.slug;
+    const rawData = data && typeof data === 'object' ? data : {};
+    const normalized = normalizeAgent10EventPayload(event, rawData);
+    const targetSlug = tenantSlug || rawData?.tenantSlug || rawData?.tenant_slug || rawData?.slug;
 
     if (targetSlug) {
       const set = userMap.get(targetSlug);
@@ -113,7 +116,7 @@ class SSEHub {
       return false;
     }
 
-    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    const payload = `event: ${event}\ndata: ${JSON.stringify(normalized)}\n\n`;
     let successCount = 0;
     let errorCount = 0;
     const deadConnections: { res: Response, slug: string }[] = [];

@@ -1089,6 +1089,7 @@ class EvidenceMatchingService {
       try {
         const notificationHelper = (await import('../services/notificationHelper')).default;
         await notificationHelper.notifyEvidenceFound(userId, {
+          tenantId,
           documentId: result.evidence_document_id,
           source: 'unknown' as 'gmail' | 'outlook' | 'drive' | 'dropbox',
           fileName: 'Evidence Document',

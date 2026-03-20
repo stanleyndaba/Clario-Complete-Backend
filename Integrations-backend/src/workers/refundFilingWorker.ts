@@ -1941,6 +1941,7 @@ class RefundFilingWorker {
         try {
           const notificationHelper = (await import('../services/notificationHelper')).default;
           await notificationHelper.notifyCaseFiled(disputeCase.seller_id, {
+            tenantId: disputeCase.tenant_id,
             disputeId,
             caseId: result.submission_id,
             amazonCaseId: result.amazon_case_id,
@@ -2029,7 +2030,7 @@ class RefundFilingWorker {
 
       const { data: disputeCase } = await supabaseAdmin
         .from('dispute_cases')
-        .select('seller_id, recovery_status')
+        .select('seller_id, recovery_status, tenant_id')
         .eq('id', disputeId)
         .single();
 
@@ -2075,6 +2076,7 @@ class RefundFilingWorker {
 
           if (caseData) {
             await notificationHelper.notifyRefundApproved(caseData.seller_id, {
+              tenantId: disputeCase?.tenant_id,
               disputeId,
               amazonCaseId: statusResult.amazon_case_id || caseData.provider_case_id,
               claimAmount: caseData.claim_amount || 0,

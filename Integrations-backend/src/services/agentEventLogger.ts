@@ -6,6 +6,7 @@
 
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
+import { inferAgent10PrimaryEntityId, inferAgent10PrimaryEntityType } from '../utils/agent10Event';
 
 export enum AgentType {
   DATA_SYNC = 'data_sync',          // Agent 2
@@ -294,9 +295,17 @@ class AgentEventLogger {
           user_id: dbUserId,
           tenant_id: tenantId,
           agent: data.agent,
+          agent_name: data.agent,
           event_type: data.eventType,
           success: data.success,
-          metadata: data.metadata,
+          metadata: {
+            ...data.metadata,
+            event_type: data.eventType,
+            timestamp: new Date().toISOString(),
+            tenant_id: tenantId,
+            entity_type: inferAgent10PrimaryEntityType(data.metadata),
+            entity_id: inferAgent10PrimaryEntityId(data.metadata)
+          },
           created_at: new Date().toISOString()
         });
 

@@ -7,9 +7,11 @@
 import logger from '../utils/logger';
 import { notificationService, NotificationEvent } from '../notifications/services/notification_service';
 import { NotificationType, NotificationPriority, NotificationChannel } from '../notifications/models/notification';
-import websocketService from './websocketService';
+import { supabaseAdmin } from '../database/supabaseClient';
+import { normalizeAgent10EventPayload } from '../utils/agent10Event';
 
 export interface ClaimDetectedData {
+  tenantId?: string;
   claimId?: string;
   amount?: number;
   count?: number;        // For bulk detections
@@ -23,6 +25,7 @@ export interface ClaimDetectedData {
 }
 
 export interface EvidenceFoundData {
+  tenantId?: string;
   documentId: string;
   source: 'gmail' | 'outlook' | 'drive' | 'dropbox';
   fileName: string;
@@ -32,6 +35,7 @@ export interface EvidenceFoundData {
 }
 
 export interface CaseFiledData {
+  tenantId?: string;
   disputeId: string;
   caseId?: string;
   amazonCaseId?: string;
@@ -41,6 +45,7 @@ export interface CaseFiledData {
 }
 
 export interface RefundApprovedData {
+  tenantId?: string;
   disputeId: string;
   amazonCaseId?: string;
   claimAmount: number;
@@ -49,6 +54,7 @@ export interface RefundApprovedData {
 }
 
 export interface FundsDepositedData {
+  tenantId?: string;
   disputeId: string;
   recoveryId?: string;
   amount: number;
@@ -59,6 +65,56 @@ export interface FundsDepositedData {
 }
 
 class NotificationHelper {
+  private async resolveRecipients(targetId: string, explicitTenantId?: string): Promise<{ tenantId?: string; userIds: string[] }> {
+    let query = supabaseAdmin
+      .from('users')
+      .select('id, tenant_id')
+      .or(`id.eq.${targetId},seller_id.eq.${targetId}`);
+
+    if (explicitTenantId) {
+      query = query.eq('tenant_id', explicitTenantId);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      logger.warn('Failed to resolve notification recipients', {
+        targetId,
+        explicitTenantId,
+        error: error.message
+      });
+      return { tenantId: explicitTenantId, userIds: [] };
+    }
+
+    const userIds = Array.from(new Set((data || []).map((row: any) => row.id).filter(Boolean))) as string[];
+    const tenantId = explicitTenantId || data?.[0]?.tenant_id;
+    return { tenantId, userIds };
+  }
+
+  private async dispatchNotification(
+    targetId: string,
+    event: Omit<NotificationEvent, 'user_id'>,
+    trackingType: string
+  ): Promise<void> {
+    const { tenantId, userIds } = await this.resolveRecipients(targetId, event.tenant_id);
+
+    if (!tenantId || userIds.length === 0) {
+      logger.warn('Skipping notification - no valid recipient context', {
+        targetId,
+        tenantId,
+        trackingType
+      });
+      return;
+    }
+
+    for (const userId of userIds) {
+      await notificationService.createNotification({
+        ...event,
+        user_id: userId,
+        tenant_id: tenantId
+      });
+      this._logDelivery(userId, trackingType, true);
+    }
+  }
 
   /**
    * Internal helper: non-blocking Agent 11 feed for notification delivery
@@ -108,14 +164,14 @@ class NotificationHelper {
         message = `Margin identified discrepancies Amazon likely owes you for. Reviewing and validating evidence now.`;
       }
 
-      const event: NotificationEvent = {
+      const event: Omit<NotificationEvent, 'user_id'> = {
         type: NotificationType.CLAIM_DETECTED,
-        user_id: userId,
+        tenant_id: data.tenantId,
         title,
         message,
         priority: NotificationPriority.HIGH,
         channel: NotificationChannel.BOTH,
-        payload: {
+        payload: normalizeAgent10EventPayload(NotificationType.CLAIM_DETECTED, {
           claimId: data.claimId,
           count: data.count,
           amount,
@@ -124,22 +180,15 @@ class NotificationHelper {
           orderId: data.orderId,
           sku: data.sku,
           isBulk
-        },
+        }, {
+          tenantId: data.tenantId,
+          entityType: data.claimId ? 'detection_result' : 'unknown',
+          entityId: data.claimId
+        }),
         immediate: true
       };
 
-      await notificationService.createNotification(event);
-
-      // Also send via WebSocket for real-time delivery
-      websocketService.sendNotificationToUser(userId, {
-        type: 'success',
-        title,
-        message,
-        data: event.payload
-      });
-
-      // 🎯 AGENT 11 FEED: Log notification delivery
-      this._logDelivery(userId, 'claim_detected', true);
+      await this.dispatchNotification(userId, event, 'claim_detected');
 
     } catch (error: any) {
       logger.error('❌ [NOTIFICATIONS] Failed to notify claim detected', {
@@ -169,36 +218,29 @@ class NotificationHelper {
         message = `Purchase invoices, delivery confirmations, and inventory trails linked to claims.`;
       }
 
-      const event: NotificationEvent = {
+      const event: Omit<NotificationEvent, 'user_id'> = {
         type: NotificationType.EVIDENCE_FOUND,
-        user_id: userId,
+        tenant_id: data.tenantId,
         title,
         message,
         priority: data.matchFound ? NotificationPriority.HIGH : NotificationPriority.NORMAL,
         channel: NotificationChannel.BOTH,
-        payload: {
+        payload: normalizeAgent10EventPayload(NotificationType.EVIDENCE_FOUND, {
           documentId: data.documentId,
           source: data.source,
           fileName: data.fileName,
           parsed: data.parsed || false,
           matchFound: data.matchFound || false,
           disputeId: data.disputeId
-        },
+        }, {
+          tenantId: data.tenantId,
+          entityType: data.documentId ? 'evidence_document' : 'unknown',
+          entityId: data.documentId
+        }),
         immediate: true
       };
 
-      await notificationService.createNotification(event);
-
-      // Also send via WebSocket
-      websocketService.sendNotificationToUser(userId, {
-        type: data.matchFound ? 'success' : 'info',
-        title,
-        message,
-        data: event.payload
-      });
-
-      // 🎯 AGENT 11 FEED
-      this._logDelivery(userId, 'evidence_found', true);
+      await this.dispatchNotification(userId, event, 'evidence_found');
 
     } catch (error: any) {
       logger.error('❌ [NOTIFICATIONS] Failed to notify evidence found', {
@@ -220,38 +262,31 @@ class NotificationHelper {
         status: data.status
       });
 
-      const event: NotificationEvent = {
+      const event: Omit<NotificationEvent, 'user_id'> = {
         type: NotificationType.CASE_FILED,
-        user_id: userId,
+        tenant_id: data.tenantId,
         title: data.status === 'filed' ? `Submitted ${data.caseId ? 'Claim' : 'Claims'} to Amazon` : 'Preparing Amazon Claim Filing',
         message: data.status === 'filed'
           ? `Filed with structured evidence packages and audit references.`
           : `Preparing evidence packages and constructing audit trails for filing.`,
         priority: NotificationPriority.HIGH,
         channel: NotificationChannel.BOTH,
-        payload: {
+        payload: normalizeAgent10EventPayload(NotificationType.CASE_FILED, {
           disputeId: data.disputeId,
           caseId: data.caseId,
           amazonCaseId: data.amazonCaseId,
           claimAmount: data.claimAmount,
           currency: data.currency || 'usd',
           status: data.status
-        },
+        }, {
+          tenantId: data.tenantId,
+          entityType: 'dispute_case',
+          entityId: data.disputeId
+        }),
         immediate: true
       };
 
-      await notificationService.createNotification(event);
-
-      // Also send via WebSocket
-      websocketService.sendNotificationToUser(userId, {
-        type: data.status === 'filed' ? 'success' : 'info',
-        title: event.title,
-        message: event.message,
-        data: event.payload
-      });
-
-      // 🎯 AGENT 11 FEED
-      this._logDelivery(userId, 'case_filed', true);
+      await this.dispatchNotification(userId, event, 'case_filed');
 
     } catch (error: any) {
       logger.error('❌ [NOTIFICATIONS] Failed to notify case filed', {
@@ -277,35 +312,28 @@ class NotificationHelper {
       const currency = data.currency || 'USD';
       const currencySymbol = currency === 'USD' ? '$' : currency + ' ';
 
-      const event: NotificationEvent = {
+      const event: Omit<NotificationEvent, 'user_id'> = {
         type: NotificationType.REFUND_APPROVED,
-        user_id: userId,
+        tenant_id: data.tenantId,
         title: `Recovered ${currencySymbol}${approvedAmount.toFixed(2)}`,
         message: `Amazon approved the reimbursement. Cleared and scheduled for payout.`,
         priority: NotificationPriority.URGENT,
         channel: NotificationChannel.BOTH,
-        payload: {
+        payload: normalizeAgent10EventPayload(NotificationType.REFUND_APPROVED, {
           disputeId: data.disputeId,
           amazonCaseId: data.amazonCaseId,
           claimAmount: data.claimAmount,
           approvedAmount,
           currency: data.currency || 'usd'
-        },
+        }, {
+          tenantId: data.tenantId,
+          entityType: 'dispute_case',
+          entityId: data.disputeId
+        }),
         immediate: true
       };
 
-      await notificationService.createNotification(event);
-
-      // Also send via WebSocket
-      websocketService.sendNotificationToUser(userId, {
-        type: 'success',
-        title: `Recovered ${currencySymbol}${approvedAmount.toFixed(2)}`,
-        message: `Amazon approved the reimbursement. Cleared and scheduled for payout.`,
-        data: event.payload
-      });
-
-      // 🎯 AGENT 11 FEED
-      this._logDelivery(userId, 'refund_approved', true);
+      await this.dispatchNotification(userId, event, 'refund_approved');
 
     } catch (error: any) {
       logger.error('❌ [NOTIFICATIONS] Failed to notify refund approved', {
@@ -339,14 +367,14 @@ class NotificationHelper {
         message += `. Platform fee (20%): ${data.currency || '$'}${platformFee.toFixed(2)}, Your payout: ${data.currency || '$'}${sellerPayout.toFixed(2)}`;
       }
 
-      const event: NotificationEvent = {
+      const event: Omit<NotificationEvent, 'user_id'> = {
         type: NotificationType.FUNDS_DEPOSITED,
-        user_id: userId,
+        tenant_id: data.tenantId,
         title: `Deposit Confirmed: ${formattedAmount}`,
         message: message,
         priority: NotificationPriority.URGENT,
         channel: NotificationChannel.BOTH,
-        payload: {
+        payload: normalizeAgent10EventPayload(NotificationType.FUNDS_DEPOSITED, {
           disputeId: data.disputeId,
           recoveryId: data.recoveryId,
           amount: data.amount,
@@ -354,22 +382,15 @@ class NotificationHelper {
           platformFee: data.platformFee,
           sellerPayout: data.sellerPayout,
           billingStatus: data.billingStatus
-        },
+        }, {
+          tenantId: data.tenantId,
+          entityType: data.recoveryId ? 'recovery' : 'dispute_case',
+          entityId: data.recoveryId || data.disputeId
+        }),
         immediate: true
       };
 
-      await notificationService.createNotification(event);
-
-      // Also send via WebSocket
-      websocketService.sendNotificationToUser(userId, {
-        type: 'success',
-        title,
-        message: message + '.',
-        data: event.payload
-      });
-
-      // 🎯 AGENT 11 FEED
-      this._logDelivery(userId, 'funds_deposited', true);
+      await this.dispatchNotification(userId, event, 'funds_deposited');
 
     } catch (error: any) {
       logger.error('❌ [NOTIFICATIONS] Failed to notify funds deposited', {
@@ -390,29 +411,22 @@ class NotificationHelper {
     message: string,
     priority: NotificationPriority = NotificationPriority.NORMAL,
     channel: NotificationChannel = NotificationChannel.BOTH,
-    payload?: Record<string, any>
+    payload?: Record<string, any>,
+    tenantId?: string
   ): Promise<void> {
     try {
-      const event: NotificationEvent = {
+      const event: Omit<NotificationEvent, 'user_id'> = {
         type: eventType,
-        user_id: userId,
+        tenant_id: tenantId,
         title,
         message,
         priority,
         channel,
-        payload,
+        payload: normalizeAgent10EventPayload(eventType, payload, { tenantId }),
         immediate: true
       };
 
-      await notificationService.createNotification(event);
-
-      // Also send via WebSocket
-      websocketService.sendNotificationToUser(userId, {
-        type: priority === NotificationPriority.URGENT || priority === NotificationPriority.HIGH ? 'success' : 'info',
-        title,
-        message,
-        data: payload
-      });
+      await this.dispatchNotification(userId, event, eventType);
 
     } catch (error: any) {
       logger.error('❌ [NOTIFICATIONS] Failed to notify user', {
@@ -431,28 +445,21 @@ class NotificationHelper {
       const title = count > 1 ? `Amazon Challenged ${count} Claims — Escalating` : `Amazon Challenged Claim — Escalating`;
       const message = `We’re reviewing their response and preparing counter-evidence.`;
 
-      const event: NotificationEvent = {
+      const event: Omit<NotificationEvent, 'user_id'> = {
         type: NotificationType.AMAZON_CHALLENGE,
-        user_id: userId,
+        tenant_id: undefined,
         title,
         message,
         priority: NotificationPriority.HIGH,
         channel: NotificationChannel.BOTH,
-        payload: {
+        payload: normalizeAgent10EventPayload(NotificationType.AMAZON_CHALLENGE, {
           count,
           disputeIds: data.disputeIds
-        },
+        }),
         immediate: true
       };
 
-      await notificationService.createNotification(event);
-
-      websocketService.sendNotificationToUser(userId, {
-        type: 'warning',
-        title,
-        message,
-        data: event.payload
-      });
+      await this.dispatchNotification(userId, event, 'amazon_challenge');
     } catch (error: any) {
       logger.error('❌ [NOTIFICATIONS] Failed to notify Amazon challenge', { userId, error: error.message });
     }

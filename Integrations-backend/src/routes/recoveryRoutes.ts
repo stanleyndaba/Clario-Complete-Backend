@@ -3,6 +3,7 @@ import { getLogger } from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import { compositePdfService } from '../services/compositePdfService';
 import { timelineService } from '../services/timelineService';
+import { extractAgent10EntityIds } from '../utils/agent10Event';
 
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -94,7 +95,7 @@ router.get('/:id', async (req: Request, res: Response) => {
                 claim_number: disputeCase.claim_id || disputeCase.case_number,
                 evidence: disputeCase.evidence || {},
                 // Include events directly in detail response
-                events: await fetchEventsForRecovery(id, userId),
+                events: await fetchEventsForRecovery(id, userId, tenantId),
                 // Generate dynamic strategy
                 ...generateCaseStrategy(disputeCase)
             });
@@ -137,7 +138,7 @@ router.get('/:id', async (req: Request, res: Response) => {
                 claim_number: detectionResult.claim_number,
                 evidence: detectionResult.evidence || {},
                 // Include events directly in detail response
-                events: await fetchEventsForRecovery(id, userId),
+                events: await fetchEventsForRecovery(id, userId, tenantId),
                 // Generate dynamic strategy
                 ...generateCaseStrategy(detectionResult)
             });
@@ -430,13 +431,68 @@ router.post('/:id/resubmit', async (req: Request, res: Response) => {
 /**
  * Internal helper to fetch and aggregate events for a recovery
  */
-async function fetchEventsForRecovery(id: string, userId: string) {
+function buildAgent10OrFilter(prefix: string, ids: string[]): string {
+    const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+    const keys = [
+        'entity_id',
+        'dispute_case_id',
+        'disputeId',
+        'dispute_id',
+        'case_id',
+        'caseId',
+        'detection_id',
+        'claim_id',
+        'claimId',
+        'document_id',
+        'documentId',
+        'recovery_id',
+        'recoveryId'
+    ];
+
+    return uniqueIds
+        .flatMap((value) => keys.map((key) => `${prefix}->>${key}.eq.${value}`))
+        .join(',');
+}
+
+function mapAgentEventTypeToTimelineStatus(eventType: string): string {
+    const value = (eventType || '').toLowerCase();
+    if (value.includes('billing')) return 'billing';
+    if (value.includes('recovery')) return 'recovery';
+    if (value.includes('matching')) return 'matched';
+    if (value.includes('ingestion')) return 'evidence';
+    if (value.includes('parsing')) return 'parsing';
+    if (value.includes('filing')) return 'filed';
+    return value || 'recorded';
+}
+
+function formatAgentEventMessage(event: any): string {
+    const metadata = event.metadata || {};
+    switch (event.event_type) {
+        case 'matching_completed':
+            return `Evidence matched with confidence ${metadata.confidence ?? 'unknown'}.`;
+        case 'filing_completed':
+        case 'case_approved':
+            return `Claim filing status updated in Amazon.`;
+        case 'recovery_detected':
+        case 'recovery_reconciled':
+            return `Recovery detected for ${formatCurrency(metadata.actualAmount || metadata.expectedAmount || 0, 'USD')}.`;
+        case 'billing_completed':
+            return `Billing recorded for ${formatCurrency(metadata.amountRecovered || 0, 'USD')}.`;
+        case 'ingestion_completed':
+            return `Evidence ingestion completed.`;
+        default:
+            return event.event_type || 'Event recorded';
+    }
+}
+
+async function fetchEventsForRecovery(id: string, userId: string, tenantId: string) {
     try {
         // First, try to find in detection_results (claims)
         const { data: detectionResult } = await supabaseAdmin
             .from('detection_results')
             .select('*')
             .eq('id', id)
+            .eq('tenant_id', tenantId)
             .single();
 
         // If not found in detection_results, try dispute_cases
@@ -446,137 +502,74 @@ async function fetchEventsForRecovery(id: string, userId: string) {
                 .from('dispute_cases')
                 .select('*')
                 .eq('id', id)
+                .eq('tenant_id', tenantId)
                 .single();
             disputeCase = dispCase;
         }
 
         if (!detectionResult && !disputeCase) return [];
 
-        const record = detectionResult || disputeCase;
-        const evidence = record.evidence || {};
-        const sku = evidence.sku || record.sku;
-        const shipmentId = evidence.shipment_id || record.shipment_id || record.provider_case_id;
-
         const events: any[] = [];
+        const relatedIds = [
+            id,
+            detectionResult?.id,
+            disputeCase?.id,
+            disputeCase?.detection_result_id
+        ].filter(Boolean) as string[];
 
-        // 1. Get notifications
+        const notificationFilter = buildAgent10OrFilter('payload', relatedIds);
         const { data: notifications } = await supabaseAdmin
             .from('notifications')
             .select('*')
             .eq('user_id', userId)
-            .or(`payload->>claim_id.eq.${id},payload->>case_id.eq.${id},payload->>dispute_id.eq.${id}`)
+            .eq('tenant_id', tenantId)
+            .or(notificationFilter)
             .order('created_at', { ascending: false });
 
         if (notifications) {
             notifications.forEach((notif: any) => {
+                const ids = extractAgent10EntityIds(notif.payload || {});
+                const docIds = [ids.documentId].filter(Boolean);
                 events.push({
                     id: `notif-${notif.id}`,
-                    type: notif.type,
+                    type: 'notification',
                     status: mapNotificationTypeToStatus(notif.type),
                     at: notif.created_at,
+                    claimId: ids.disputeCaseId || ids.detectionId || id,
                     message: notif.message,
-                    amount: notif.payload?.amount,
-                    currency: notif.payload?.currency || 'USD'
+                    amount: notif.payload?.amount || notif.payload?.approvedAmount || notif.payload?.claimAmount,
+                    currency: notif.payload?.currency || 'USD',
+                    docIds,
+                    source: 'notification',
+                    eventType: notif.payload?.event_type || notif.type
                 });
             });
         }
 
-        // 2. Main record events
-        if (detectionResult) {
-            events.push({
-                id: `detected-${detectionResult.id}`,
-                type: 'claim',
-                status: 'detected',
-                at: detectionResult.created_at || detectionResult.discovery_date,
-                message: `Claim detected: ${detectionResult.anomaly_type} - ${formatCurrency(detectionResult.estimated_value || 0, detectionResult.currency || 'USD')}`
-            });
-        } else if (disputeCase) {
-            events.push({
-                id: `case-created-${disputeCase.id}`,
-                type: 'claim',
-                status: 'filed',
-                at: disputeCase.created_at,
-                message: `Claim filed for ${formatCurrency(disputeCase.claim_amount, disputeCase.currency)}`
-            });
-        }
-
-        // 3. Logistics Logs
-        if (sku || shipmentId) {
-            let ledgerQuery = supabaseAdmin
-                .from('inventory_ledger')
-                .select('*')
-                .eq('seller_id', userId);
-
-            if (shipmentId) ledgerQuery = ledgerQuery.eq('reference_id', shipmentId);
-            else if (sku) ledgerQuery = ledgerQuery.eq('sku', sku);
-
-            const { data: ledgerEntries } = await ledgerQuery.order('event_date', { ascending: false });
-            if (ledgerEntries) {
-                ledgerEntries.forEach((entry: any) => {
-                    events.push({
-                        id: `ledger-${entry.id}`,
-                        type: 'logistics',
-                        status: entry.event_type?.toUpperCase(),
-                        at: entry.event_date,
-                        message: `${entry.event_type}: ${entry.quantity > 0 ? '+' : ''}${entry.quantity} units at ${entry.fulfillment_center || 'Warehouse'}`,
-                        reference: entry.reference_id,
-                        confirmation: entry.reason_code || 'AMAZON_CONFIRMED'
-                    });
-                });
-            }
-        }
-
-        // 4. Shipment Lifecycle
-        if (shipmentId) {
-            const { data: shipment } = await supabaseAdmin
-                .from('shipments')
-                .select('*')
-                .eq('user_id', userId)
-                .eq('shipment_id', shipmentId)
-                .single();
-
-            if (shipment) {
-                if (shipment.shipped_date) {
-                    events.push({
-                        id: `shipment-shipped-${shipment.id}`,
-                        type: 'logistics',
-                        status: 'FBA_SHIPMENT_CREATE',
-                        at: shipment.shipped_date,
-                        message: `Shipment ${shipment.shipment_id} created/shipped via ${shipment.carrier || 'Carrier'}`,
-                        reference: shipment.shipment_id,
-                        confirmation: 'SELLER_CONFIRMED'
-                    });
-                }
-                if (shipment.received_date) {
-                    events.push({
-                        id: `shipment-received-${shipment.id}`,
-                        type: 'logistics',
-                        status: 'FBA_RECEIVING_SCAN',
-                        at: shipment.received_date,
-                        message: `Shipment ${shipment.shipment_id} received at ${shipment.warehouse_location || 'FC'}`,
-                        reference: shipment.shipment_id,
-                        confirmation: 'AMAZON_CONFIRMED'
-                    });
-                }
-            }
-        }
-
-        // 5. Evidence Documents
-        const { data: docs } = await supabaseAdmin
-            .from('documents')
-            .select('id, created_at, source')
-            .eq('user_id', userId)
-            .or(`metadata->>claim_id.eq.${id},metadata->>case_id.eq.${id}`)
+        const agentEventFilter = buildAgent10OrFilter('metadata', relatedIds);
+        const { data: agentEvents } = await supabaseAdmin
+            .from('agent_events')
+            .select('id, agent, agent_name, event_type, created_at, metadata, tenant_id, user_id')
+            .eq('tenant_id', tenantId)
+            .or(agentEventFilter)
             .order('created_at', { ascending: false });
 
-        if (docs) {
-            docs.forEach((doc: any) => {
+        if (agentEvents) {
+            agentEvents.forEach((event: any) => {
+                const ids = extractAgent10EntityIds(event.metadata || {});
                 events.push({
-                    id: `evidence-${doc.id}`,
-                    type: 'evidence',
-                    status: 'uploaded',
-                    at: doc.created_at,
-                    message: `Evidence uploaded from ${doc.source || 'source'}`
+                    id: `agent-${event.id}`,
+                    type: 'agent_event',
+                    status: mapAgentEventTypeToTimelineStatus(event.event_type),
+                    at: event.created_at,
+                    claimId: ids.disputeCaseId || ids.detectionId || id,
+                    message: formatAgentEventMessage(event),
+                    amount: event.metadata?.actualAmount || event.metadata?.amountRecovered || event.metadata?.expectedAmount,
+                    currency: event.metadata?.currency || 'USD',
+                    docIds: [ids.documentId].filter(Boolean),
+                    source: 'agent_event',
+                    eventType: event.event_type,
+                    agentName: event.agent_name || event.agent
                 });
             });
         }
@@ -671,244 +664,7 @@ router.get('/:id/events', async (req: Request, res: Response) => {
 
         logger.info('Fetching timeline events for recovery', { recoveryId: id, userId, tenantId });
 
-        // First, try to find in detection_results (claims)
-        const { data: detectionResult, error: detError } = await supabaseAdmin
-            .from('detection_results')
-            .select('*')
-            .eq('id', id)
-            .eq('tenant_id', tenantId)
-            .single();
-
-        // If not found in detection_results, try dispute_cases
-        let disputeCase: any = null;
-        if (!detectionResult) {
-            const { data: dispCase, error: caseError } = await supabaseAdmin
-                .from('dispute_cases')
-                .select('*')
-                .eq('id', id)
-                .eq('tenant_id', tenantId)
-                .single();
-            disputeCase = dispCase;
-        }
-
-        if (!detectionResult && !disputeCase) {
-            logger.warn('Recovery not found in either table', { id, userId });
-            return res.status(404).json({ error: 'Recovery not found' });
-        }
-
-        // Extract metadata for granular lookups
-        const record = detectionResult || disputeCase;
-        const evidence = record.evidence || {};
-        const sku = evidence.sku || record.sku;
-        const asin = evidence.asin || record.asin;
-        const shipmentId = evidence.shipment_id || record.shipment_id || record.provider_case_id;
-
-        // Build timeline events from multiple sources
-        const events: any[] = [];
-
-        // 1. Get notifications related to this claim
-        const { data: notifications } = await supabaseAdmin
-            .from('notifications')
-            .select('*')
-            .eq('user_id', userId)
-            .or(`payload->>claim_id.eq.${id},payload->>case_id.eq.${id},payload->>dispute_id.eq.${id}`)
-            .order('created_at', { ascending: false });
-
-        if (notifications) {
-            notifications.forEach((notif: any) => {
-                events.push({
-                    id: `notif-${notif.id}`,
-                    type: notif.type,
-                    status: mapNotificationTypeToStatus(notif.type),
-                    at: notif.created_at,
-                    claimId: id,
-                    message: notif.message,
-                    amount: notif.payload?.amount,
-                    currency: notif.payload?.currency || 'USD',
-                    docIds: notif.payload?.document_ids || []
-                });
-            });
-        }
-
-        // 2. Create events based on source (detection_results or dispute_cases)
-        if (detectionResult) {
-            // This is a detection result (claim not yet filed)
-            events.push({
-                id: `detection-${detectionResult.id}`,
-                type: 'claim',
-                status: detectionResult.status || 'detected',
-                at: detectionResult.updated_at || detectionResult.created_at,
-                claimId: id,
-                message: getStatusMessage(detectionResult.status || 'detected', detectionResult.estimated_value),
-                amount: detectionResult.estimated_value,
-                currency: detectionResult.currency || 'USD',
-                docIds: []
-            });
-
-            // Event for initial detection
-            events.push({
-                id: `detected-${detectionResult.id}`,
-                type: 'claim',
-                status: 'detected',
-                at: detectionResult.created_at || detectionResult.discovery_date,
-                claimId: id,
-                message: `Claim detected: ${detectionResult.anomaly_type || 'Unknown type'} - ${formatCurrency(detectionResult.estimated_value || 0, detectionResult.currency || 'USD')}`,
-                amount: detectionResult.estimated_value,
-                currency: detectionResult.currency || 'USD',
-                docIds: []
-            });
-        } else if (disputeCase) {
-            // This is a dispute case (filed claim)
-            if (disputeCase.status) {
-                events.push({
-                    id: `case-status-${disputeCase.id}`,
-                    type: 'claim',
-                    status: disputeCase.status,
-                    at: disputeCase.updated_at || disputeCase.created_at,
-                    claimId: id,
-                    message: getStatusMessage(disputeCase.status, disputeCase.claim_amount),
-                    amount: disputeCase.claim_amount,
-                    currency: disputeCase.currency || 'USD',
-                    docIds: []
-                });
-            }
-
-            // Event for case creation
-            events.push({
-                id: `case-created-${disputeCase.id}`,
-                type: 'claim',
-                status: 'filed',
-                at: disputeCase.created_at,
-                claimId: id,
-                message: `Claim filed for ${formatCurrency(disputeCase.claim_amount, disputeCase.currency)}`,
-                amount: disputeCase.claim_amount,
-                currency: disputeCase.currency || 'USD',
-                docIds: []
-            });
-        }
-
-        // 4. Get evidence/documents linked to this case
-        const { data: evidenceDocs } = await supabaseAdmin
-            .from('documents')
-            .select('id, created_at, source, metadata')
-            .eq('user_id', userId)
-            .or(`metadata->>claim_id.eq.${id},metadata->>case_id.eq.${id},metadata->>dispute_id.eq.${id}`)
-            .order('created_at', { ascending: false });
-
-        if (evidenceDocs) {
-            evidenceDocs.forEach((doc: any) => {
-                events.push({
-                    id: `evidence-${doc.id}`,
-                    type: 'evidence',
-                    status: 'uploaded',
-                    at: doc.created_at,
-                    claimId: id,
-                    message: `Evidence uploaded from ${doc.source || 'unknown source'}`,
-                    docIds: [doc.id]
-                });
-            });
-        }
-
-        // 5. Add refund/payment events if applicable
-        if (disputeCase.status === 'approved' || disputeCase.status === 'paid') {
-            events.push({
-                id: `refund-approved-${disputeCase.id}`,
-                type: 'refund',
-                status: 'approved',
-                at: disputeCase.updated_at || disputeCase.created_at,
-                claimId: id,
-                message: `Refund approved: ${formatCurrency(disputeCase.claim_amount, disputeCase.currency)}`,
-                amount: disputeCase.claim_amount,
-                currency: disputeCase.currency || 'USD',
-                docIds: []
-            });
-        }
-
-        if (disputeCase.status === 'paid') {
-            const paidDate = disputeCase.paid_at || disputeCase.updated_at;
-            events.push({
-                id: `funds-deposited-${disputeCase.id}`,
-                type: 'refund',
-                status: 'deposited',
-                at: paidDate,
-                claimId: id,
-                message: `Funds deposited: ${formatCurrency(disputeCase.claim_amount, disputeCase.currency)}`,
-                amount: disputeCase.claim_amount,
-                currency: disputeCase.currency || 'USD',
-                docIds: []
-            });
-        }
-
-        // 6. Get Granular Logistics Logs (Inventory Ledger)
-        if (sku || shipmentId) {
-            let ledgerQuery = supabaseAdmin
-                .from('inventory_ledger')
-                .select('*')
-                .eq('seller_id', userId);
-
-            if (shipmentId) {
-                ledgerQuery = ledgerQuery.eq('reference_id', shipmentId);
-            } else if (sku) {
-                ledgerQuery = ledgerQuery.eq('sku', sku);
-            }
-
-            const { data: ledgerEntries } = await ledgerQuery.order('event_date', { ascending: false });
-
-            if (ledgerEntries) {
-                ledgerEntries.forEach((entry: any) => {
-                    events.push({
-                        id: `ledger-${entry.id}`,
-                        type: 'logistics',
-                        status: entry.event_type?.toUpperCase(),
-                        at: entry.event_date,
-                        claimId: id,
-                        message: `${entry.event_type}: ${entry.quantity > 0 ? '+' : ''}${entry.quantity} units at ${entry.fulfillment_center || 'Warehouse'}`,
-                        reference: entry.reference_id,
-                        confirmation: entry.reason_code || 'AMAZON_CONFIRMED'
-                    });
-                });
-            }
-        }
-
-        // 7. Get Shipment Lifecycle (Shipments)
-        if (shipmentId) {
-            const { data: shipment } = await supabaseAdmin
-                .from('shipments')
-                .select('*')
-                .eq('user_id', userId)
-                .eq('shipment_id', shipmentId)
-                .single();
-
-            if (shipment) {
-                if (shipment.shipped_date) {
-                    events.push({
-                        id: `shipment-shipped-${shipment.id}`,
-                        type: 'logistics',
-                        status: 'FBA_SHIPMENT_CREATE',
-                        at: shipment.shipped_date,
-                        claimId: id,
-                        message: `Shipment ${shipment.shipment_id} created/shipped via ${shipment.carrier || 'Carrier'}`,
-                        reference: shipment.shipment_id,
-                        confirmation: 'SELLER_CONFIRMED'
-                    });
-                }
-                if (shipment.received_date) {
-                    events.push({
-                        id: `shipment-received-${shipment.id}`,
-                        type: 'logistics',
-                        status: 'FBA_RECEIVING_SCAN',
-                        at: shipment.received_date,
-                        claimId: id,
-                        message: `Shipment ${shipment.shipment_id} received at ${shipment.warehouse_location || 'FC'}`,
-                        reference: shipment.shipment_id,
-                        confirmation: 'AMAZON_CONFIRMED'
-                    });
-                }
-            }
-        }
-
-        // Sort events by timestamp (most recent first)
-        events.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+        const events = await fetchEventsForRecovery(id, userId, tenantId);
 
         logger.info('Timeline events retrieved successfully', {
             recoveryId: id,
@@ -930,29 +686,40 @@ router.get('/:id/events', async (req: Request, res: Response) => {
 router.get('/:id/status', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
-        // Support multiple auth methods: req.user, X-User-Id header, or demo-user fallback
-        const userId = (req as any).user?.id || req.headers['x-user-id'] as string || 'demo-user';
-
-        if (!userId) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
+        const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
 
         const { data: disputeCase, error } = await supabaseAdmin
             .from('dispute_cases')
             .select('status, claim_amount, currency, updated_at')
             .eq('id', id)
-            .eq('user_id', userId)
+            .eq('tenant_id', tenantId)
             .single();
 
-        if (error || !disputeCase) {
+        if (!error && disputeCase) {
+            return res.json({
+                status: disputeCase.status,
+                amount: disputeCase.claim_amount,
+                currency: disputeCase.currency || 'USD',
+                lastUpdated: disputeCase.updated_at
+            });
+        }
+
+        const { data: detectionResult, error: detectionError } = await supabaseAdmin
+            .from('detection_results')
+            .select('status, estimated_value, currency, updated_at, created_at')
+            .eq('id', id)
+            .eq('tenant_id', tenantId)
+            .single();
+
+        if (detectionError || !detectionResult) {
             return res.status(404).json({ error: 'Recovery not found' });
         }
 
         return res.json({
-            status: disputeCase.status,
-            amount: disputeCase.claim_amount,
-            currency: disputeCase.currency || 'USD',
-            lastUpdated: disputeCase.updated_at
+            status: detectionResult.status || 'Open',
+            amount: detectionResult.estimated_value,
+            currency: detectionResult.currency || 'USD',
+            lastUpdated: detectionResult.updated_at || detectionResult.created_at
         });
 
     } catch (error: any) {

@@ -7,6 +7,10 @@ import { AuthenticatedRequest } from '../../middleware/authMiddleware';
 const logger = getLogger('NotificationController');
 
 export class NotificationController {
+  private getTenantId(req: AuthenticatedRequest): string | undefined {
+    return (req as any).tenant?.tenantId || undefined;
+  }
+
   /**
    * Get all notifications for the authenticated user
    * GET /notifications
@@ -33,6 +37,7 @@ export class NotificationController {
       // Build filters
       const filters: any = {
         user_id: userId,
+        tenant_id: this.getTenantId(req),
         limit: parseInt(limit as string),
         offset: parseInt(offset as string)
       };
@@ -99,7 +104,7 @@ export class NotificationController {
       }
 
       // Ensure user can only access their own notifications
-      if (notification.user_id !== userId) {
+      if (notification.user_id !== userId || (this.getTenantId(req) && notification.tenant_id !== this.getTenantId(req))) {
         res.status(403).json({ error: 'Access denied' });
         return;
       }
@@ -138,10 +143,20 @@ export class NotificationController {
 
       let result;
       if (Array.isArray(notificationIds)) {
-        // Mark multiple notifications as read
-        result = await notificationService.markMultipleAsRead(notificationIds);
+        const scoped: any[] = [];
+        for (const id of notificationIds) {
+          const notification = await notificationService.getNotificationById(id);
+          if (notification && notification.user_id === userId && (!this.getTenantId(req) || notification.tenant_id === this.getTenantId(req))) {
+            scoped.push(id);
+          }
+        }
+        result = await notificationService.markMultipleAsRead(scoped);
       } else {
-        // Mark single notification as read
+        const existing = await notificationService.getNotificationById(notificationIds);
+        if (!existing || existing.user_id !== userId || (this.getTenantId(req) && existing.tenant_id !== this.getTenantId(req))) {
+          res.status(403).json({ error: 'Access denied' });
+          return;
+        }
         const notification = await notificationService.markAsRead(notificationIds);
         result = [notification];
       }
@@ -175,7 +190,7 @@ export class NotificationController {
         return;
       }
 
-      const count = await notificationService.markAllAsRead(userId);
+      const count = await notificationService.markAllAsRead(userId, this.getTenantId(req));
 
       res.json({
         success: true,
@@ -239,6 +254,7 @@ export class NotificationController {
       const notificationEvent = {
         type: type as NotificationType,
         user_id: userId,
+        tenant_id: this.getTenantId(req),
         title,
         message,
         priority: priority as NotificationPriority || NotificationPriority.NORMAL,
@@ -296,7 +312,7 @@ export class NotificationController {
       }
 
       // Ensure user can only update their own notifications
-      if (existingNotification.user_id !== userId) {
+      if (existingNotification.user_id !== userId || (this.getTenantId(req) && existingNotification.tenant_id !== this.getTenantId(req))) {
         res.status(403).json({ error: 'Access denied' });
         return;
       }
@@ -343,7 +359,7 @@ export class NotificationController {
       }
 
       // Ensure user can only delete their own notifications
-      if (existingNotification.user_id !== userId) {
+      if (existingNotification.user_id !== userId || (this.getTenantId(req) && existingNotification.tenant_id !== this.getTenantId(req))) {
         res.status(403).json({ error: 'Access denied' });
         return;
       }
@@ -375,7 +391,7 @@ export class NotificationController {
         return;
       }
 
-      const stats = await notificationService.getNotificationStats(userId);
+      const stats = await notificationService.getNotificationStats(userId, this.getTenantId(req));
 
       res.json({
         success: true,

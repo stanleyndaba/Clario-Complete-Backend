@@ -492,6 +492,7 @@ class BillingWorker {
         try {
           const notificationHelper = (await import('../services/notificationHelper')).default;
           await notificationHelper.notifyFundsDeposited(userId, {
+            tenantId,
             disputeId,
             recoveryId: recoveryId || undefined,
             amount: amountRecoveredCents / 100,

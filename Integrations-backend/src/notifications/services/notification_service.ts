@@ -11,6 +11,8 @@ import Notification, {
 import { EmailService } from './delivery/email_service';
 import websocketService from '../../services/websocketService';
 import sseHub from '../../utils/sseHub';
+import { supabaseAdmin } from '../../database/supabaseClient';
+import { normalizeAgent10EventPayload } from '../../utils/agent10Event';
 // Disable BullMQ worker for demo stability (avoid QueueScheduler import issues)
 class NoopNotificationWorker {
   async initialize(): Promise<void> { return; }
@@ -23,6 +25,7 @@ const logger = getLogger('NotificationService');
 export interface NotificationEvent {
   type: NotificationType;
   user_id: string;
+  tenant_id?: string;
   title: string;
   message: string;
   priority?: NotificationPriority;
@@ -240,10 +243,10 @@ export class NotificationService {
   /**
    * Mark all notifications as read for a user
    */
-  async markAllAsRead(userId: string): Promise<number> {
+  async markAllAsRead(userId: string, tenantId?: string): Promise<number> {
     try {
       logger.info('Marking all notifications as read', { userId });
-      const count = await Notification.markAllAsRead(userId);
+      const count = await Notification.markAllAsRead(userId, tenantId);
       logger.info('All notifications marked as read successfully', { userId, count });
       return count;
     } catch (error) {
@@ -296,11 +299,11 @@ export class NotificationService {
   /**
    * Get notification statistics for a user
    */
-  async getNotificationStats(user_id: string): Promise<NotificationStats> {
+  async getNotificationStats(user_id: string, tenant_id?: string): Promise<NotificationStats> {
     try {
       logger.info('Fetching notification stats for user', { user_id });
 
-      const allNotifications = await Notification.findMany({ user_id });
+      const allNotifications = await Notification.findMany({ user_id, tenant_id });
 
       const stats: NotificationStats = {
         total: allNotifications.length,
@@ -410,21 +413,37 @@ export class NotificationService {
    */
   private async deliverViaWebSocket(notification: Notification): Promise<void> {
     try {
-      const payload = {
+      const tenantSlug = await this.resolveTenantSlug(notification.tenant_id);
+      const websocketPayload = {
         type: this.getNotificationType(notification.priority),
         title: notification.title,
         message: notification.message,
+        data: notification.payload
+      };
+      const payload = normalizeAgent10EventPayload('notification', {
+        type: notification.type,
+        title: notification.title,
+        message: notification.message,
+        payload: notification.payload,
         data: notification.payload,
         timestamp: notification.created_at,
         id: notification.id,
-        read: false
-      };
+        status: notification.status,
+        priority: notification.priority,
+        channel: notification.channel,
+        created_at: notification.created_at,
+        updated_at: notification.updated_at,
+        read: false,
+        tenant_id: notification.tenant_id
+      }, {
+        tenantId: notification.tenant_id
+      });
 
       // Send via Socket.IO
-      websocketService.sendNotificationToUser(notification.user_id, payload);
+      websocketService.sendNotificationToUser(notification.user_id, websocketPayload);
 
       // Send via SSE
-      sseHub.sendEvent(notification.user_id, 'notification', payload);
+      sseHub.sendEvent(notification.user_id, 'notification', payload, tenantSlug || undefined);
 
       logger.debug('Notification sent via Realtime (WebSocket + SSE)', {
         id: notification.id,
@@ -452,6 +471,25 @@ export class NotificationService {
       default:
         return 'info';
     }
+  }
+
+  private async resolveTenantSlug(tenantId?: string): Promise<string | null> {
+    if (!tenantId) return null;
+    const { data, error } = await supabaseAdmin
+      .from('tenants')
+      .select('slug')
+      .eq('id', tenantId)
+      .single();
+
+    if (error) {
+      logger.warn('Failed to resolve tenant slug for notification delivery', {
+        tenantId,
+        error: error.message
+      });
+      return null;
+    }
+
+    return data?.slug || null;
   }
 
   /**

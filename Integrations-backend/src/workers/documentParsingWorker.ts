@@ -460,6 +460,7 @@ export class DocumentParsingWorker {
 
         if (doc) {
           await notificationHelper.notifyEvidenceFound(document.seller_id, {
+            tenantId,
             documentId: document.id,
             source: (doc.source || 'unknown') as 'gmail' | 'outlook' | 'drive' | 'dropbox',
             fileName: doc.filename || 'Unknown',

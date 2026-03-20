@@ -8,6 +8,7 @@ const logger = getLogger('NotificationModel');
 export interface NotificationData {
   id: string;
   user_id: string;
+  tenant_id: string;
   type: NotificationType;
   title: string;
   message: string;
@@ -69,6 +70,7 @@ export enum NotificationChannel {
 // Request/Response types
 export interface CreateNotificationRequest {
   user_id: string;
+  tenant_id?: string;
   type: NotificationType;
   title: string;
   message: string;
@@ -87,6 +89,7 @@ export interface UpdateNotificationRequest {
 
 export interface NotificationFilters {
   user_id?: string;
+  tenant_id?: string;
   type?: NotificationType;
   status?: NotificationStatus;
   priority?: NotificationPriority;
@@ -99,6 +102,7 @@ export interface NotificationFilters {
 export class Notification {
   id: string;
   user_id: string;
+  tenant_id: string;
   type: NotificationType;
   title: string;
   message: string;
@@ -115,6 +119,7 @@ export class Notification {
   constructor(data: NotificationData) {
     this.id = data.id;
     this.user_id = data.user_id;
+    this.tenant_id = data.tenant_id;
     this.type = data.type;
     this.title = data.title;
     this.message = data.message;
@@ -138,7 +143,7 @@ export class Notification {
       const client = supabaseAdmin || supabase;
 
       // Resolve tenant_id from user's membership (notifications table requires tenant_id NOT NULL)
-      let tenantId: string | null = null;
+      let tenantId: string | null = data.tenant_id || null;
       const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
       try {
@@ -243,6 +248,9 @@ export class Notification {
       // Apply filters
       if (filters.user_id) {
         query = query.eq('user_id', filters.user_id);
+      }
+      if (filters.tenant_id) {
+        query = query.eq('tenant_id', filters.tenant_id);
       }
       if (filters.type) {
         query = query.eq('type', filters.type);
@@ -402,12 +410,12 @@ export class Notification {
   /**
    * Mark all notifications as read for a user
    */
-  static async markAllAsRead(userId: string): Promise<number> {
+  static async markAllAsRead(userId: string, tenantId?: string): Promise<number> {
     try {
       // Use admin client to bypass RLS (backend services need to update notifications)
       const client = supabaseAdmin || supabase;
 
-      const { data, error, count } = await client
+      let query = client
         .from('notifications')
         .update({
           status: NotificationStatus.READ,
@@ -415,15 +423,20 @@ export class Notification {
           updated_at: new Date().toISOString()
         })
         .eq('user_id', userId)
-        .eq('status', NotificationStatus.PENDING)
-        .select('id', { count: 'exact' });
+        .eq('status', NotificationStatus.PENDING);
+
+      if (tenantId) {
+        query = query.eq('tenant_id', tenantId);
+      }
+
+      const { data, error, count } = await query.select('id', { count: 'exact' });
 
       if (error) {
         logger.error('Error marking all notifications as read:', error);
         throw new Error(`Failed to mark all notifications as read: ${error.message}`);
       }
 
-      logger.info('Marked all notifications as read', { userId, count: count || 0 });
+      logger.info('Marked all notifications as read', { userId, tenantId, count: count || 0 });
       return count || 0;
     } catch (error) {
       logger.error('Error in Notification.markAllAsRead:', error);

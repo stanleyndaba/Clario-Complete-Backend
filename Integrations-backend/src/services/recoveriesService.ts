@@ -485,6 +485,7 @@ class RecoveriesService {
         try {
           const notificationHelper = (await import('../services/notificationHelper')).default;
           await notificationHelper.notifyFundsDeposited(userId, {
+            tenantId,
             disputeId: match.disputeId,
             recoveryId: recovery.id,
             amount: match.actualAmount,

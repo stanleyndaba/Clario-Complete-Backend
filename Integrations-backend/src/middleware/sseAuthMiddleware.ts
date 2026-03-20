@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import config from '../config/env';
 import logger from '../utils/logger';
+import { normalizeAgent10EventPayload } from '../utils/agent10Event';
 
 export interface AuthenticatedSSERequest extends Request {
   user?: {
@@ -203,13 +204,14 @@ export const sendSSEEvent = (
   id?: string
 ): void => {
   try {
+    const normalized = normalizeAgent10EventPayload(event, data);
     let eventData = `event: ${event}\n`;
 
     if (id) {
       eventData += `id: ${id}\n`;
     }
 
-    eventData += `data: ${JSON.stringify(data)}\n\n`;
+    eventData += `data: ${JSON.stringify(normalized)}\n\n`;
 
     res.write(eventData);
   } catch (error) {
