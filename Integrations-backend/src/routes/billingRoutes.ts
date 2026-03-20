@@ -5,20 +5,54 @@ import { invoicePdfService } from '../services/invoicePdfService';
 
 const router = Router();
 
+async function resolveBillingScope(req: any) {
+    const userId = (req.query.userId as string) || req.userId;
+    const tenantSlug = ((req.query.tenantSlug as string) || (req.query.tenant_slug as string) || '').trim();
+    const headerTenantId = ((req.headers['x-tenant-id'] as string) || '').trim();
+
+    if (!userId) {
+        throw new Error('User ID required');
+    }
+
+    let tenantId = headerTenantId;
+
+    if (!tenantId && tenantSlug) {
+        const { data: tenantData, error: tenantError } = await supabaseAdmin
+            .from('tenants')
+            .select('id')
+            .eq('slug', tenantSlug)
+            .is('deleted_at', null)
+            .maybeSingle();
+
+        if (tenantError) {
+            throw new Error('Failed to resolve tenant context');
+        }
+
+        if (!tenantData?.id) {
+            throw new Error('Tenant not found');
+        }
+
+        tenantId = tenantData.id;
+    }
+
+    if (!tenantId) {
+        throw new Error('Tenant context required');
+    }
+
+    return { userId, tenantId };
+}
+
 // Get raw billing transactions
 router.get('/transactions', async (req, res) => {
     try {
-        const userId = req.query.userId as string || (req as any).userId;
+        const { userId, tenantId } = await resolveBillingScope(req);
         const limit = parseInt(req.query.limit as string) || 50;
         const offset = parseInt(req.query.offset as string) || 0;
-
-        if (!userId) {
-            return res.status(400).json({ success: false, error: 'User ID required' });
-        }
 
         const { data, error, count } = await supabaseAdmin
             .from('billing_transactions')
             .select('*', { count: 'exact' })
+            .eq('tenant_id', tenantId)
             .eq('user_id', userId)
             .order('created_at', { ascending: false })
             .range(offset, offset + limit - 1);
@@ -29,9 +63,14 @@ router.get('/transactions', async (req, res) => {
             id: tx.id,
             recovery_id: tx.recovery_id,
             amount: (tx.amount_recovered_cents || 0) / 100,
+            confirmed_recovered_amount: (tx.amount_recovered_cents || 0) / 100,
             platform_fee: (tx.platform_fee_cents || 0) / 100,
+            credit_applied: (tx.credit_applied_cents || 0) / 100,
+            amount_due: (tx.amount_due_cents || 0) / 100,
+            credit_balance_remaining: (tx.credit_balance_after_cents || 0) / 100,
             seller_payout: (tx.seller_payout_cents || 0) / 100,
             status: tx.billing_status,
+            paypal_invoice_id: tx.paypal_invoice_id || tx.metadata?.paypal_invoice_id || null,
             created_at: tx.created_at
         }));
 
@@ -49,17 +88,14 @@ router.get('/transactions', async (req, res) => {
 // Get billing transactions (invoices)
 router.get('/invoices', async (req, res) => {
     try {
-        const userId = req.query.userId as string || (req as any).userId;
+        const { userId, tenantId } = await resolveBillingScope(req);
         const limit = parseInt(req.query.limit as string) || 50;
         const offset = parseInt(req.query.offset as string) || 0;
-
-        if (!userId) {
-            return res.status(400).json({ success: false, error: 'User ID required' });
-        }
 
         const { data, error, count } = await supabaseAdmin
             .from('billing_transactions')
             .select('*', { count: 'exact' })
+            .eq('tenant_id', tenantId)
             .eq('user_id', userId)
             .order('created_at', { ascending: false })
             .range(offset, offset + limit - 1);
@@ -73,12 +109,17 @@ router.get('/invoices', async (req, res) => {
             period_start: tx.created_at,
             period_end: tx.created_at, // Instant transaction
             total_amount: (tx.amount_recovered_cents || 0) / 100,
+            confirmed_recovered_amount: (tx.amount_recovered_cents || 0) / 100,
             platform_fee: (tx.platform_fee_cents || 0) / 100,
+            credit_applied: (tx.credit_applied_cents || 0) / 100,
             commission: (tx.platform_fee_cents || 0) / 100,
-            amount_charged: (tx.platform_fee_cents || 0) / 100,
-            status: tx.billing_status === 'charged' ? 'Paid' : tx.billing_status,
+            amount_due: (tx.amount_due_cents || 0) / 100,
+            amount_charged: (tx.amount_due_cents || 0) / 100,
+            available_credit_balance: (tx.credit_balance_after_cents || 0) / 100,
+            status: tx.billing_status,
             created_at: tx.created_at,
-            recovery_claim_ids: [tx.recovery_id]
+            recovery_claim_ids: [tx.recovery_id],
+            paypal_invoice_id: tx.paypal_invoice_id || tx.metadata?.paypal_invoice_id || null
         }));
 
         res.json({
@@ -95,31 +136,67 @@ router.get('/invoices', async (req, res) => {
 // Get billing status summary
 router.get('/status', async (req, res) => {
     try {
-        const userId = req.query.userId as string || (req as any).userId;
-        if (!userId) {
-            return res.status(400).json({ success: false, error: 'User ID required' });
-        }
+        const { userId, tenantId } = await resolveBillingScope(req);
 
         // Calculate totals
         const { data, error } = await supabaseAdmin
             .from('billing_transactions')
-            .select('amount_recovered_cents, platform_fee_cents, billing_status')
+            .select('amount_recovered_cents, platform_fee_cents, credit_applied_cents, amount_due_cents, credit_balance_after_cents, billing_status, created_at')
+            .eq('tenant_id', tenantId)
             .eq('user_id', userId);
 
         if (error) throw error;
 
         const totalRecovered = data.reduce((sum, tx) => sum + (tx.amount_recovered_cents || 0), 0) / 100;
         const totalFees = data.reduce((sum, tx) => sum + (tx.platform_fee_cents || 0), 0) / 100;
+        const totalCreditApplied = data.reduce((sum, tx) => sum + (tx.credit_applied_cents || 0), 0) / 100;
+        const outstandingStatuses = ['pending', 'sent', 'due', 'overdue'];
+        const totalAmountDue = data
+            .filter(tx => outstandingStatuses.includes(tx.billing_status))
+            .reduce((sum, tx) => sum + (tx.amount_due_cents || 0), 0) / 100;
         const pendingBilling = data
-            .filter(tx => tx.billing_status === 'pending')
-            .reduce((sum, tx) => sum + (tx.platform_fee_cents || 0), 0) / 100;
+            .filter(tx => outstandingStatuses.includes(tx.billing_status))
+            .reduce((sum, tx) => sum + (tx.amount_due_cents || 0), 0) / 100;
+        const { data: creditLedger } = await supabaseAdmin
+            .from('billing_credit_ledger')
+            .select('transaction_type, amount_cents')
+            .eq('tenant_id', tenantId)
+            .or(`user_id.eq.${userId},seller_id.eq.${userId}`);
+
+        const { data: currentCycle } = await supabaseAdmin
+            .from('recovery_cycles')
+            .select('id, cycle_type, created_at')
+            .eq('tenant_id', tenantId)
+            .or(`user_id.eq.${userId},seller_id.eq.${userId}`)
+            .eq('status', 'active')
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+        const availableCreditBalance = ((creditLedger || []).reduce((balance, row) => {
+            if (row.transaction_type === 'credit_added') return balance + (row.amount_cents || 0);
+            if (row.transaction_type === 'credit_applied') return Math.max(0, balance - (row.amount_cents || 0));
+            return balance;
+        }, 0)) / 100;
+        const lastBillingDate = data
+            .map(tx => tx.created_at)
+            .filter(Boolean)
+            .sort()
+            .reverse()[0];
 
         res.json({
             success: true,
             status: {
                 total_recovered: totalRecovered,
                 total_fees: totalFees,
-                pending_billing: pendingBilling
+                total_credit_applied: totalCreditApplied,
+                total_amount_due: totalAmountDue,
+                pending_billing: pendingBilling,
+                available_credit_balance: availableCreditBalance,
+                last_billing_date: lastBillingDate,
+                current_recovery_cycle_id: currentCycle?.id || null,
+                current_recovery_cycle_type: currentCycle?.cycle_type || null,
+                current_recovery_cycle_started_at: currentCycle?.created_at || null
             }
         });
 
@@ -133,11 +210,7 @@ router.get('/status', async (req, res) => {
 router.get('/invoices/:invoiceId/pdf', async (req, res) => {
     try {
         const { invoiceId } = req.params;
-        const userId = req.query.userId as string || (req as any).userId;
-
-        if (!userId) {
-            return res.status(400).json({ success: false, error: 'User ID required' });
-        }
+        const { userId, tenantId } = await resolveBillingScope(req);
 
         if (!invoiceId) {
             return res.status(400).json({ success: false, error: 'Invoice ID required' });
@@ -145,7 +218,7 @@ router.get('/invoices/:invoiceId/pdf', async (req, res) => {
 
         logger.info('[BILLING] Generating PDF invoice', { invoiceId, userId });
 
-        const pdfBuffer = await invoicePdfService.generateInvoicePdf(invoiceId, userId);
+        const pdfBuffer = await invoicePdfService.generateInvoicePdf(invoiceId, userId, tenantId);
 
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename="invoice-${invoiceId}.pdf"`);

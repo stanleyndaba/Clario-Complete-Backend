@@ -156,6 +156,13 @@ class SchedulerService {
             const seenUserIds = new Set<string>();
 
             for (const source of sources) {
+                if (!source.user_id || typeof source.user_id !== 'string' || source.user_id.trim() === '') {
+                    logger.warn('[SCHEDULER] Skipping evidence source with invalid user_id', {
+                        userId: source.user_id
+                    });
+                    continue;
+                }
+
                 if (seenUserIds.has(source.user_id)) {
                     continue; // Skip duplicate user entries
                 }

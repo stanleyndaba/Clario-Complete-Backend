@@ -11,6 +11,7 @@ import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import billingService, { BillingRequest, BillingResult } from '../services/billingService';
+import billingCreditService from '../services/billingCreditService';
 
 export interface BillingStats {
   processed: number;
@@ -201,8 +202,8 @@ class BillingWorker {
           continue;
         }
 
-        // Get actual payout amount (use actual_payout_amount if available, otherwise claim_amount)
-        const amountRecovered = disputeCase.actual_payout_amount || disputeCase.claim_amount;
+        // Bill only on confirmed payout truth.
+        const amountRecovered = disputeCase.actual_payout_amount;
         if (!amountRecovered || amountRecovered <= 0) {
           stats.skipped++;
           logger.warn('⏭️ [BILLING] Invalid amount, skipping', {
@@ -218,19 +219,26 @@ class BillingWorker {
         // Get recovery ID if exists (tenant-scoped)
         const recoveryQuery = createTenantScopedQueryById(tenantId, 'recoveries');
         const { data: recovery } = await recoveryQuery
-          .select('id')
+          .select('id, recovery_cycle_id')
           .eq('dispute_id', disputeCase.id)
           .limit(1)
           .single();
+
+        const stableIdempotencyKey = recovery?.id
+          ? `billing-recovery-${recovery.id}`
+          : `billing-dispute-${disputeCase.id}`;
 
         // Process billing
         const result = await this.processBillingForRecovery(
           disputeCase.id,
           recovery?.id || null,
+          recovery?.recovery_cycle_id || null,
           disputeCase.seller_id,
+          tenantId,
           amountRecoveredCents,
           disputeCase.currency || 'usd',
-          disputeCase.billing_retry_count || 0
+          disputeCase.billing_retry_count || 0,
+          stableIdempotencyKey
         );
 
         if (result.success) {
@@ -264,19 +272,53 @@ class BillingWorker {
   async processBillingForRecovery(
     disputeId: string,
     recoveryId: string | null,
+    recoveryCycleId: string | null,
     userId: string,
+    tenantId: string,
     amountRecoveredCents: number,
     currency: string,
-    currentRetryCount: number
+    currentRetryCount: number,
+    stableIdempotencyKey: string
   ): Promise<BillingResult> {
     try {
       logger.info('💳 [BILLING] Processing billing for recovery', {
         disputeId,
         recoveryId,
         userId,
+        tenantId,
         amountRecoveredCents,
         currency
       });
+
+      const { data: existingTransaction, error: existingError } = await supabaseAdmin
+        .from('billing_transactions')
+        .select('id, billing_status, recovery_id, dispute_id, credit_applied_cents, amount_due_cents, platform_fee_cents, seller_payout_cents, credit_balance_after_cents, paypal_invoice_id')
+        .eq('idempotency_key', stableIdempotencyKey)
+        .maybeSingle();
+
+      if (existingError) {
+        throw new Error(`Failed to check existing billing transaction: ${existingError.message}`);
+      }
+
+      if (existingTransaction && existingTransaction.billing_status !== 'failed') {
+        logger.info('ℹ️ [BILLING] Existing billing transaction found, reusing', {
+          disputeId,
+          recoveryId,
+          billingTransactionId: existingTransaction.id,
+          billingStatus: existingTransaction.billing_status
+        });
+
+        return {
+          success: true,
+          billingTransactionId: existingTransaction.id,
+          paypalInvoiceId: existingTransaction.paypal_invoice_id || undefined,
+          platformFeeCents: existingTransaction.platform_fee_cents || 0,
+          sellerPayoutCents: existingTransaction.seller_payout_cents || 0,
+          amountDueCents: existingTransaction.amount_due_cents || 0,
+          creditAppliedCents: existingTransaction.credit_applied_cents || 0,
+          status: existingTransaction.billing_status
+        };
+      }
 
       // Update billing status to 'processing' (if column exists)
       await supabaseAdmin
@@ -287,57 +329,130 @@ class BillingWorker {
         })
         .eq('id', disputeId);
 
-      // Charge commission with retry
+      const feeCalculation = billingService.calculateFees(amountRecoveredCents, currency);
+      const creditPreview = await billingCreditService.previewCreditApplication(
+        {
+          tenantId,
+          userId,
+          sellerId: userId
+        },
+        feeCalculation.platformFeeCents
+      );
+
       const billingRequest: BillingRequest = {
         disputeId,
         recoveryId: recoveryId || undefined,
         userId,
         amountRecoveredCents,
+        platformFeeCents: feeCalculation.platformFeeCents,
+        sellerPayoutCents: feeCalculation.sellerPayoutCents,
+        creditAppliedCents: creditPreview.creditAppliedCents,
+        amountDueCents: creditPreview.amountDueCents,
         currency,
-        idempotencyKey: `billing-${disputeId}-${Date.now()}`
+        idempotencyKey: stableIdempotencyKey
       };
 
-      const result = await billingService.chargeCommissionWithRetry(billingRequest, 3);
-
-      // Calculate fees for logging
-      const feeCalculation = billingService.calculateFees(amountRecoveredCents, currency);
+      let result: BillingResult;
+      if (creditPreview.amountDueCents <= 0) {
+        result = {
+          success: true,
+          platformFeeCents: feeCalculation.platformFeeCents,
+          sellerPayoutCents: feeCalculation.sellerPayoutCents,
+          amountDueCents: 0,
+          creditAppliedCents: creditPreview.creditAppliedCents,
+          status: 'credited'
+        };
+      } else {
+        result = await billingService.chargeCommissionWithRetry(billingRequest, 3);
+      }
 
       if (result.success) {
-        // Create billing transaction record
-        const { data: billingTransaction, error: insertError } = await supabaseAdmin
-          .from('billing_transactions')
-          .insert({
-            dispute_id: disputeId,
-            recovery_id: recoveryId,
-            user_id: userId,
-            amount_recovered_cents: amountRecoveredCents,
-            platform_fee_cents: feeCalculation.platformFeeCents,
-            seller_payout_cents: feeCalculation.sellerPayoutCents,
-            currency,
-            paypal_invoice_id: result.paypalInvoiceId || null,
-            billing_status: 'sent',
-            idempotency_key: billingRequest.idempotencyKey,
-            metadata: {
-              retry_count: currentRetryCount,
-              processed_at: new Date().toISOString()
-            }
-          })
-          .select()
-          .single();
+        const transactionPayload = {
+          dispute_id: disputeId,
+          recovery_id: recoveryId,
+          recovery_cycle_id: recoveryCycleId,
+          tenant_id: tenantId,
+          user_id: userId,
+          amount_recovered_cents: amountRecoveredCents,
+          platform_fee_cents: feeCalculation.platformFeeCents,
+          seller_payout_cents: feeCalculation.sellerPayoutCents,
+          credit_applied_cents: creditPreview.creditAppliedCents,
+          amount_due_cents: creditPreview.amountDueCents,
+          credit_balance_after_cents: creditPreview.balanceAfterCents,
+          currency,
+          paypal_invoice_id: result.paypalInvoiceId || null,
+          provider: 'paypal',
+          billing_type: 'success_fee',
+          billing_status: creditPreview.amountDueCents <= 0 ? 'credited' : (result.status || 'sent'),
+          idempotency_key: billingRequest.idempotencyKey,
+          metadata: {
+            retry_count: currentRetryCount,
+            processed_at: new Date().toISOString(),
+            credit_applied_cents: creditPreview.creditAppliedCents,
+            amount_due_cents: creditPreview.amountDueCents,
+            credit_balance_after_cents: creditPreview.balanceAfterCents
+          }
+        };
 
-        if (insertError) {
+        let billingTransaction: any = null;
+        let insertError: any = null;
+
+        if (existingTransaction?.id) {
+          const { data, error } = await supabaseAdmin
+            .from('billing_transactions')
+            .update({
+              ...transactionPayload,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', existingTransaction.id)
+            .select()
+            .single();
+          billingTransaction = data;
+          insertError = error;
+        } else {
+          const { data, error } = await supabaseAdmin
+            .from('billing_transactions')
+            .insert(transactionPayload)
+            .select()
+            .single();
+          billingTransaction = data;
+          insertError = error;
+        }
+
+        if (insertError || !billingTransaction?.id) {
           logger.error('❌ [BILLING] Failed to create billing transaction', {
             disputeId,
-            error: insertError.message
+            error: insertError?.message
           });
+          throw new Error(`Failed to create billing transaction: ${insertError?.message || 'unknown error'}`);
         }
+
+        const creditApplyResult = await billingCreditService.applyCreditToBilling(
+          {
+            tenantId,
+            userId,
+            sellerId: userId
+          },
+          billingTransaction.id,
+          recoveryCycleId,
+          creditPreview.creditAppliedCents,
+          'paypal'
+        );
+
+        await supabaseAdmin
+          .from('billing_transactions')
+          .update({
+            credit_balance_after_cents: creditApplyResult.balanceAfterCents,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', billingTransaction.id);
 
         // Update dispute case
         await supabaseAdmin
           .from('dispute_cases')
           .update({
-            billing_status: 'sent',
-            billing_transaction_id: billingTransaction?.id || null,
+            billing_status: creditPreview.amountDueCents <= 0 ? 'credited' : (result.status || 'sent'),
+            billing_transaction_id: billingTransaction.id,
             platform_fee_cents: feeCalculation.platformFeeCents,
             seller_payout_cents: feeCalculation.sellerPayoutCents,
             billed_at: new Date().toISOString(),
@@ -348,8 +463,10 @@ class BillingWorker {
 
         logger.info('✅ [BILLING] Billing completed successfully', {
           disputeId,
-          billingTransactionId: billingTransaction?.id,
-          platformFeeCents: feeCalculation.platformFeeCents
+          billingTransactionId: billingTransaction.id,
+          platformFeeCents: feeCalculation.platformFeeCents,
+          creditAppliedCents: creditPreview.creditAppliedCents,
+          amountDueCents: creditPreview.amountDueCents
         });
 
         // 🎯 AGENT 11 INTEGRATION: Log billing event
@@ -377,11 +494,11 @@ class BillingWorker {
           await notificationHelper.notifyFundsDeposited(userId, {
             disputeId,
             recoveryId: recoveryId || undefined,
-            amount: amountRecoveredCents / 100, // Convert cents to dollars
+            amount: amountRecoveredCents / 100,
             currency,
             platformFee: feeCalculation.platformFeeCents / 100,
             sellerPayout: feeCalculation.sellerPayoutCents / 100,
-            billingStatus: 'sent'
+            billingStatus: creditPreview.amountDueCents <= 0 ? 'credited' : 'sent'
           });
         } catch (notifError: any) {
           logger.warn('⚠️ [BILLING] Failed to send notification', {
@@ -391,11 +508,13 @@ class BillingWorker {
 
         return {
           success: true,
-          billingTransactionId: billingTransaction?.id,
+          billingTransactionId: billingTransaction.id,
           paypalInvoiceId: result.paypalInvoiceId,
           platformFeeCents: feeCalculation.platformFeeCents,
           sellerPayoutCents: feeCalculation.sellerPayoutCents,
-          status: 'sent'
+          amountDueCents: creditPreview.amountDueCents,
+          creditAppliedCents: creditPreview.creditAppliedCents,
+          status: creditPreview.amountDueCents <= 0 ? 'credited' : 'sent'
         };
 
       } else {

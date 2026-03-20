@@ -12,9 +12,11 @@ interface InvoiceData {
     dateIssued: string;
     periodStart?: string;
     periodEnd?: string;
-    status: 'paid' | 'due' | 'overdue' | 'pending';
+    status: 'paid' | 'due' | 'overdue' | 'pending' | 'sent' | 'credited' | 'failed' | 'charged';
     totalRecovered: number;
     commission: number;
+    creditApplied?: number;
+    creditBalanceRemaining?: number;
     amountCharged: number;
     recoveryClaimIds?: string[];
     tenantId?: string;
@@ -36,11 +38,11 @@ class InvoicePdfService {
     /**
      * Generate PDF invoice for a given invoice ID
      */
-    async generateInvoicePdf(invoiceId: string, userId: string): Promise<Buffer> {
-        logger.info('[INVOICE PDF] Generating invoice', { invoiceId, userId });
+    async generateInvoicePdf(invoiceId: string, userId: string, tenantId: string): Promise<Buffer> {
+        logger.info('[INVOICE PDF] Generating invoice', { invoiceId, userId, tenantId });
 
         // Fetch invoice data
-        const invoice = await this.getInvoiceData(invoiceId, userId);
+        const invoice = await this.getInvoiceData(invoiceId, userId, tenantId);
         if (!invoice) {
             throw new Error(`Invoice not found: ${invoiceId}`);
         }
@@ -55,14 +57,27 @@ class InvoicePdfService {
     /**
      * Fetch invoice data from database
      */
-    private async getInvoiceData(invoiceId: string, userId: string): Promise<InvoiceData | null> {
+    private async getInvoiceData(invoiceId: string, userId: string, tenantId: string): Promise<InvoiceData | null> {
         try {
+            const { data: transactionData, error: transactionError } = await supabase
+                .from('billing_transactions')
+                .select('*')
+                .eq('id', invoiceId)
+                .eq('tenant_id', tenantId)
+                .eq('user_id', userId)
+                .maybeSingle();
+
+            if (!transactionError && transactionData) {
+                return this.mapTransactionData(transactionData);
+            }
+
             const { data, error } = await supabase
                 .from('billing_invoices')
                 .select('*')
                 .eq('id', invoiceId)
+                .eq('tenant_id', tenantId)
                 .eq('user_id', userId)
-                .single();
+                .maybeSingle();
 
             if (error || !data) {
                 // Try alternative lookup by invoice_id column
@@ -70,11 +85,12 @@ class InvoicePdfService {
                     .from('billing_invoices')
                     .select('*')
                     .eq('invoice_id', invoiceId)
+                    .eq('tenant_id', tenantId)
                     .eq('user_id', userId)
-                    .single();
+                    .maybeSingle();
 
                 if (altError || !altData) {
-                    logger.warn('[INVOICE PDF] Invoice not found', { invoiceId, userId });
+                    logger.warn('[INVOICE PDF] Invoice not found', { invoiceId, userId, tenantId });
                     return null;
                 }
                 return this.mapInvoiceData(altData);
@@ -87,6 +103,25 @@ class InvoicePdfService {
         }
     }
 
+    private mapTransactionData(data: any): InvoiceData {
+        return {
+            id: data.id,
+            dateIssued: data.created_at || new Date().toISOString(),
+            periodStart: data.created_at,
+            periodEnd: data.created_at,
+            status: (data.billing_status || 'pending').toLowerCase(),
+            totalRecovered: (data.amount_recovered_cents || 0) / 100,
+            commission: (data.platform_fee_cents || 0) / 100,
+            creditApplied: (data.credit_applied_cents || 0) / 100,
+            creditBalanceRemaining: (data.credit_balance_after_cents || 0) / 100,
+            amountCharged: (data.amount_due_cents || 0) / 100,
+            recoveryClaimIds: data.recovery_id ? [data.recovery_id] : [],
+            tenantId: data.tenant_id,
+            companyName: data.company_name,
+            taxId: data.tax_id,
+        };
+    }
+
     private mapInvoiceData(data: any): InvoiceData {
         return {
             id: data.invoice_id || data.id,
@@ -96,6 +131,8 @@ class InvoicePdfService {
             status: data.status?.toLowerCase() || 'paid',
             totalRecovered: data.total_amount || 0,
             commission: data.platform_fee || 0,
+            creditApplied: data.credit_applied || 0,
+            creditBalanceRemaining: data.available_credit_balance || 0,
             amountCharged: data.platform_fee || 0,
             recoveryClaimIds: data.recovery_ids || [],
             tenantId: data.tenant_id,
@@ -256,23 +293,25 @@ class InvoicePdfService {
         doc.fontSize(10).font('Helvetica').fillColor('#6B7280');
         doc.text('Total Recovered:', 360, summaryY + 15);
         doc.text('Commission (20%):', 360, summaryY + 35);
+        doc.text('Credit Applied:', 360, summaryY + 55);
 
         doc.fontSize(10).font('Helvetica').fillColor('#374151');
         doc.text(this.formatCurrency(invoice.totalRecovered), 460, summaryY + 15, { align: 'right', width: 75 });
         doc.text(this.formatCurrency(invoice.commission), 460, summaryY + 35, { align: 'right', width: 75 });
+        doc.text(this.formatCurrency(invoice.creditApplied || 0), 460, summaryY + 55, { align: 'right', width: 75 });
 
         // Divider
-        doc.moveTo(360, summaryY + 55).lineTo(535, summaryY + 55).stroke('#E5E7EB');
+        doc.moveTo(360, summaryY + 75).lineTo(535, summaryY + 75).stroke('#E5E7EB');
 
         // Total Due
         doc.fontSize(12).font('Helvetica-Bold').fillColor('#111827');
-        doc.text('Amount Due:', 360, summaryY + 70);
-        doc.text(this.formatCurrency(invoice.amountCharged), 460, summaryY + 70, { align: 'right', width: 75 });
+        doc.text('Amount Due:', 360, summaryY + 90);
+        doc.text(this.formatCurrency(invoice.amountCharged), 460, summaryY + 90, { align: 'right', width: 75 });
 
         // Net to Seller (info)
         const netToSeller = invoice.totalRecovered - invoice.commission;
         doc.fontSize(9).font('Helvetica').fillColor('#059669');
-        doc.text(`Your Net Recovered: ${this.formatCurrency(netToSeller)}`, 50, summaryY + 70);
+        doc.text(`Your Net Recovered: ${this.formatCurrency(netToSeller)}`, 50, summaryY + 90);
     }
 
     private renderFooter(doc: PDFKit.PDFDocument): void {

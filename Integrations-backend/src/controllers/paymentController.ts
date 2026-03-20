@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import paypalService from '../services/paypalService';
 import { supabaseAdmin } from '../database/supabaseClient';
+import billingCreditService from '../services/billingCreditService';
 import logger from '../utils/logger';
 
 /**
@@ -37,17 +38,20 @@ export const handlePaypalWebhook = async (req: Request, res: Response) => {
     let amount: string | undefined;
     let currency: string | undefined;
     let customId: string | undefined;
+    let providerPaymentId: string | undefined;
 
     if (eventType === 'CHECKOUT.ORDER.APPROVED') {
       // CHECKOUT.ORDER.APPROVED structure
       amount = resource?.purchase_units?.[0]?.amount?.value;
       currency = resource?.purchase_units?.[0]?.amount?.currency_code;
       customId = resource?.purchase_units?.[0]?.custom_id;
+      providerPaymentId = resource?.id || resource?.purchase_units?.[0]?.payments?.captures?.[0]?.id;
     } else {
       // PAYMENT.SALE.COMPLETED structure
       amount = resource?.amount?.total;
       currency = resource?.amount?.currency;
       customId = resource?.custom_id;
+      providerPaymentId = resource?.id || resource?.parent_payment;
     }
 
     if (amount !== '99.00' || currency !== 'USD') {
@@ -69,6 +73,34 @@ export const handlePaypalWebhook = async (req: Request, res: Response) => {
     }
 
     logger.info(`⛓️ [FORTRESS] Verified payment for User: ${customId}. Initiating Paywall Lift.`);
+
+    const { data: userRecord, error: userLookupError } = await supabaseAdmin
+      .from('users')
+      .select('id, seller_id, tenant_id')
+      .eq('id', customId)
+      .single();
+
+    if (userLookupError || !userRecord?.id || !userRecord?.tenant_id) {
+      logger.error('❌ [BILLING] Failed to resolve user for prepaid credit', {
+        customId,
+        error: userLookupError?.message
+      });
+      return res.status(500).send('User Resolution Failed');
+    }
+
+    const sellerId = userRecord.seller_id || userRecord.id;
+    const externalPaymentId = providerPaymentId || `paypal-${eventType}-${customId}-${amount}-${currency}`;
+
+    await billingCreditService.recordPriorityPrepaidCredit(
+      {
+        tenantId: userRecord.tenant_id,
+        userId: userRecord.id,
+        sellerId
+      },
+      externalPaymentId,
+      9900,
+      'paypal'
+    );
 
     // 5. ATOMIC STATE TRANSITION
     // Update the profile/user table to grant "Agent 7" filing powers.

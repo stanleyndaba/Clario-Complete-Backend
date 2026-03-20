@@ -48,10 +48,11 @@ class RecoveriesService {
   /**
    * Detect payouts from Amazon SP-API for a user
    */
-  async detectPayouts(userId: string, startDate?: Date, endDate?: Date): Promise<any[]> {
+  async detectPayouts(userId: string, startDate?: Date, endDate?: Date, tenantId?: string): Promise<any[]> {
     try {
       logger.info('🔍 [RECOVERIES] Detecting payouts from Amazon', {
         userId,
+        tenantId,
         startDate: startDate?.toISOString(),
         endDate: endDate?.toISOString()
       });
@@ -62,6 +63,10 @@ class RecoveriesService {
         .select('*')
         .eq('seller_id', userId);
 
+      if (tenantId) {
+        query.eq('tenant_id', tenantId);
+      }
+
       // store_id intentionally omitted - column not in DB schema yet
       /*
       if (storeId) {
@@ -70,7 +75,7 @@ class RecoveriesService {
       */
 
       const { data: financialEvents, error } = await query
-        .eq('event_type', 'Reimbursement')
+        .in('event_type', ['reimbursement', 'Reimbursement'])
         .gte('event_date', startDate?.toISOString() || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
         .lte('event_date', endDate?.toISOString() || new Date().toISOString())
         .order('event_date', { ascending: false })
@@ -84,24 +89,54 @@ class RecoveriesService {
         return [];
       }
 
-      // Also try fetching from Amazon Service (if available)
+      // Transform financial events to payout format
+      const payouts = (financialEvents || []).map((event: any) => ({
+        id: event.id,
+        amazonReimbursementId: event.amazon_event_id,
+        orderId: event.amazon_order_id,
+        amount: this.extractPayoutAmount(event),
+        currency: event.currency || 'USD',
+        status: 'paid',
+        payoutDate: event.event_date,
+        sku: event.amazon_sku || event.raw_payload?.SellerSKU || event.raw_payload?.seller_sku,
+        asin: event.raw_payload?.ASIN || event.raw_payload?.asin,
+        metadata: event.raw_payload || {}
+      })).filter((event: any) => event.amount > 0);
+
+      logger.info('[Agent8] payout events loaded', {
+        userId,
+        tenantId,
+        financialEventRows: financialEvents?.length || 0,
+        usablePayouts: payouts.length
+      });
+
+      if (payouts.length > 0) {
+        logger.info('✅ [RECOVERIES] Using reimbursement events from database', {
+          userId,
+          tenantId,
+          usablePayouts: payouts.length
+        });
+        return payouts;
+      }
+
+      // Only fall back to Amazon Service when the database does not already contain payout truth.
       try {
         const { default: amazonService } = await import('./amazonService');
         const claims = await amazonService.fetchClaims(userId, startDate, endDate);
 
         // Filter for approved/reimbursed claims
-        const payouts = (claims || []).filter((claim: any) =>
+        const amazonPayouts = (claims || []).filter((claim: any) =>
           claim.status === 'approved' || claim.status === 'paid'
         );
 
         logger.info('✅ [RECOVERIES] Detected payouts', {
           userId,
-          count: payouts.length,
+          count: amazonPayouts.length,
           fromFinancialEvents: financialEvents?.length || 0,
-          fromAmazonService: payouts.length
+          fromAmazonService: amazonPayouts.length
         });
 
-        return payouts;
+        return amazonPayouts;
 
       } catch (error: any) {
         logger.warn('⚠️ [RECOVERIES] Could not fetch from Amazon Service, using database only', {
@@ -109,19 +144,6 @@ class RecoveriesService {
           error: error.message
         });
       }
-
-      // Transform financial events to payout format
-      const payouts = (financialEvents || []).map((event: any) => ({
-        id: event.id,
-        amazonReimbursementId: event.amazon_event_id,
-        orderId: event.amazon_order_id,
-        amount: parseFloat(event.amount?.toString() || '0'),
-        currency: event.currency || 'USD',
-        status: 'paid',
-        payoutDate: event.event_date,
-        sku: event.amazon_sku,
-        metadata: event.raw_payload || {}
-      }));
 
       return payouts;
 
@@ -137,10 +159,11 @@ class RecoveriesService {
   /**
    * Match payout to a claim/dispute case
    */
-  async matchPayoutToClaim(payout: any, userId: string): Promise<PayoutMatch | null> {
+  async matchPayoutToClaim(payout: any, userId: string, tenantId?: string): Promise<PayoutMatch | null> {
     try {
       logger.info('🔗 [RECOVERIES] Matching payout to claim', {
         userId,
+        tenantId,
         payoutId: payout.id,
         orderId: payout.orderId,
         amount: payout.amount
@@ -151,7 +174,7 @@ class RecoveriesService {
       const amazonCaseId = payout.amazonCaseId || payout.metadata?.amazon_case_id || payout.metadata?.case_id;
 
       if (amazonCaseId) {
-        const { data: disputeCase } = await supabaseAdmin
+        let caseQuery = supabaseAdmin
           .from('dispute_cases')
           .select(`
             id, seller_id, claim_amount, currency, status, provider_case_id,
@@ -160,8 +183,13 @@ class RecoveriesService {
           `)
           .eq('seller_id', userId)
           .eq('provider_case_id', amazonCaseId)
-          .eq('status', 'approved')
-          .single();
+          .eq('status', 'approved');
+
+        if (tenantId) {
+          caseQuery = caseQuery.eq('tenant_id', tenantId);
+        }
+
+        const { data: disputeCase } = await caseQuery.single();
 
         if (disputeCase) {
           return this.createMatch(disputeCase, payout);
@@ -170,7 +198,7 @@ class RecoveriesService {
 
       // Try to match by amount (fuzzy match) - order_id is in detection_results.evidence
       // Get all approved cases and filter by order_id from evidence JSONB
-      const { data: disputeCases } = await supabaseAdmin
+      let disputeCasesQuery = supabaseAdmin
         .from('dispute_cases')
         .select(`
           id, seller_id, claim_amount, currency, status, provider_case_id,
@@ -181,9 +209,32 @@ class RecoveriesService {
         .eq('status', 'approved')
         .limit(50);
 
-      if (disputeCases && disputeCases.length > 0 && payout.orderId) {
+      if (tenantId) {
+        disputeCasesQuery = disputeCasesQuery.eq('tenant_id', tenantId);
+      }
+
+      const { data: disputeCases } = await disputeCasesQuery;
+
+      const approvedCases = disputeCases || [];
+
+      if (payout.amazonReimbursementId && approvedCases.length > 0) {
+        for (const disputeCase of approvedCases) {
+          const evidence = disputeCase.detection_results?.evidence || {};
+          const reimbursementId =
+            evidence.amazon_reimbursement_id ||
+            evidence.reimbursement_id ||
+            evidence.amazon_event_id ||
+            null;
+
+          if (reimbursementId && reimbursementId === payout.amazonReimbursementId) {
+            return this.createMatch(disputeCase, payout);
+          }
+        }
+      }
+
+      if (approvedCases.length > 0 && payout.orderId) {
         // Filter by order_id from detection_results.evidence
-        const matchingCases = disputeCases.filter((dc: any) => {
+        const matchingCases = approvedCases.filter((dc: any) => {
           const evidence = dc.detection_results?.evidence || {};
           return evidence.order_id === payout.orderId;
         });
@@ -202,11 +253,11 @@ class RecoveriesService {
       }
 
       // Try to match by SKU + date range (last resort)
-      if (payout.sku && disputeCases && disputeCases.length > 0) {
+      if ((payout.sku || payout.asin) && approvedCases.length > 0) {
         // Filter by SKU from detection_results.evidence
-        const matchingCases = disputeCases.filter((dc: any) => {
+        const matchingCases = approvedCases.filter((dc: any) => {
           const evidence = dc.detection_results?.evidence || {};
-          return evidence.sku === payout.sku;
+          return evidence.sku === payout.sku || evidence.asin === payout.asin;
         });
 
         // Find best match by amount
@@ -227,8 +278,38 @@ class RecoveriesService {
         }
       }
 
+      // Strict amount fallback: only if there is exactly one unambiguous close candidate for this seller.
+      if (approvedCases.length > 0) {
+        const candidates = approvedCases
+          .map((disputeCase: any) => {
+            const expectedAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
+            const difference = Math.abs(expectedAmount - payout.amount);
+            const threshold = Math.max(expectedAmount * 0.05, 1.00);
+            return {
+              disputeCase,
+              expectedAmount,
+              difference,
+              threshold
+            };
+          })
+          .filter((candidate: any) => candidate.expectedAmount > 0 && candidate.difference <= candidate.threshold)
+          .sort((a: any, b: any) => a.difference - b.difference);
+
+        if (candidates.length === 1) {
+          logger.warn('[Agent8] Strict amount fallback match', {
+            disputeId: candidates[0].disputeCase.id,
+            payoutId: payout.id,
+            expectedAmount: candidates[0].expectedAmount,
+            actualAmount: payout.amount,
+            difference: candidates[0].difference
+          });
+          return this.createMatch(candidates[0].disputeCase, payout);
+        }
+      }
+
       logger.warn('⚠️ [RECOVERIES] No matching claim found for payout', {
         userId,
+        tenantId,
         payoutId: payout.id,
         orderId: payout.orderId,
         amount: payout.amount
@@ -279,10 +360,11 @@ class RecoveriesService {
   /**
    * Reconcile payout with expected claim amount
    */
-  async reconcilePayout(match: PayoutMatch, userId: string): Promise<ReconciliationResult> {
+  async reconcilePayout(match: PayoutMatch, userId: string, tenantId?: string): Promise<ReconciliationResult> {
     try {
       logger.info('💰 [RECOVERIES] Reconciling payout', {
         userId,
+        tenantId,
         disputeId: match.disputeId,
         expectedAmount: match.expectedAmount,
         actualAmount: match.actualAmount,
@@ -301,6 +383,7 @@ class RecoveriesService {
         .insert({
           dispute_id: match.disputeId,
           user_id: userId,
+          tenant_id: tenantId,
           // store_id intentionally omitted - column not in DB schema yet
           amazon_case_id: match.amazonCaseId,
           expected_amount: match.expectedAmount,
@@ -344,7 +427,7 @@ class RecoveriesService {
       });
 
       // Update dispute case
-      await supabaseAdmin
+      let disputeUpdateQuery = supabaseAdmin
         .from('dispute_cases')
         .update({
           recovery_status: status === 'reconciled' ? 'reconciled' : 'discrepancy',
@@ -356,10 +439,26 @@ class RecoveriesService {
         })
         .eq('id', match.disputeId);
 
+      if (tenantId) {
+        disputeUpdateQuery = disputeUpdateQuery.eq('tenant_id', tenantId);
+      }
+
+      await disputeUpdateQuery;
+
       logger.info('✅ [RECOVERIES] Payout reconciled', {
         recoveryId: recovery.id,
         disputeId: match.disputeId,
         status
+      });
+      logger.info('[Agent8] payout detected → case matched → recovery created', {
+        tenantId,
+        userId,
+        disputeId: match.disputeId,
+        recoveryId: recovery.id,
+        reimbursementId: match.amazonReimbursementId,
+        expectedAmount: match.expectedAmount,
+        actualAmount: match.actualAmount,
+        reconciliationStatus: status
       });
 
       // 🎯 AGENT 11 INTEGRATION: Log recovery event
@@ -428,20 +527,26 @@ class RecoveriesService {
   /**
    * Process recovery for a single approved case
    */
-  async processRecoveryForCase(disputeId: string, userId: string): Promise<ReconciliationResult | null> {
+  async processRecoveryForCase(disputeId: string, userId: string, tenantId?: string): Promise<ReconciliationResult | null> {
     try {
       logger.info('🔄 [RECOVERIES] Processing recovery for case', {
         disputeId,
-        userId
+        userId,
+        tenantId
       });
 
       // Get dispute case
-      const { data: disputeCase } = await supabaseAdmin
+      let disputeCaseQuery = supabaseAdmin
         .from('dispute_cases')
         .select('*')
         .eq('id', disputeId)
-        .eq('seller_id', userId)
-        .single();
+        .eq('seller_id', userId);
+
+      if (tenantId) {
+        disputeCaseQuery = disputeCaseQuery.eq('tenant_id', tenantId);
+      }
+
+      const { data: disputeCase } = await disputeCaseQuery.single();
 
       if (!disputeCase) {
         logger.warn('⚠️ [RECOVERIES] Dispute case not found', { disputeId, userId });
@@ -466,16 +571,17 @@ class RecoveriesService {
       const payouts = await this.detectPayouts(
         userId,
         new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
-        new Date()
+        new Date(),
+        tenantId
       );
 
       // Try to match payout to this case
       for (const payout of payouts) {
-        const match = await this.matchPayoutToClaim(payout, userId);
+        const match = await this.matchPayoutToClaim(payout, userId, tenantId);
 
         if (match && match.disputeId === disputeId) {
           // Found match - reconcile
-          return await this.reconcilePayout(match, userId);
+          return await this.reconcilePayout(match, userId, tenantId);
         }
       }
 
@@ -528,6 +634,21 @@ class RecoveriesService {
         error: error.message
       });
     }
+  }
+
+  private extractPayoutAmount(event: any): number {
+    const directAmount = Number(event.amount ?? 0);
+    if (Number.isFinite(directAmount) && directAmount !== 0) {
+      return directAmount;
+    }
+
+    const payloadAmount = Number(
+      event.raw_payload?.AdjustmentAmount?.CurrencyAmount ??
+      event.raw_payload?.amount ??
+      0
+    );
+
+    return Number.isFinite(payloadAmount) ? payloadAmount : 0;
   }
 }
 

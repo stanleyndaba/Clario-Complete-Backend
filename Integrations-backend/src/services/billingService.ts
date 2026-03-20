@@ -7,6 +7,10 @@ export interface BillingRequest {
   recoveryId?: string;
   userId: string;
   amountRecoveredCents: number;
+  platformFeeCents?: number;
+  sellerPayoutCents?: number;
+  creditAppliedCents?: number;
+  amountDueCents?: number;
   currency?: string;
   idempotencyKey?: string;
 }
@@ -17,7 +21,9 @@ export interface BillingResult {
   paypalInvoiceId?: string;
   platformFeeCents?: number;
   sellerPayoutCents?: number;
-  status?: 'pending' | 'charged' | 'failed' | 'disabled' | 'sent';
+  amountDueCents?: number;
+  creditAppliedCents?: number;
+  status?: 'pending' | 'charged' | 'credited' | 'failed' | 'disabled' | 'sent';
   error?: string;
 }
 
@@ -97,14 +103,26 @@ class BillingService {
       }
 
       // 2. Calculate fees
-      const fees = this.calculateFees(request.amountRecoveredCents, request.currency || 'USD');
+      const fees = request.platformFeeCents !== undefined && request.sellerPayoutCents !== undefined
+        ? {
+            amountRecoveredCents: request.amountRecoveredCents,
+            platformFeeCents: request.platformFeeCents,
+            sellerPayoutCents: request.sellerPayoutCents,
+            currency: request.currency || 'USD'
+          }
+        : this.calculateFees(request.amountRecoveredCents, request.currency || 'USD');
+
+      const amountDueCents = request.amountDueCents ?? fees.platformFeeCents;
+      const creditAppliedCents = request.creditAppliedCents ?? 0;
 
       // 3. Create PayPal Invoice
       const invoiceData = {
         detail: {
           reference: request.disputeId,
           currency_code: fees.currency.toUpperCase(),
-          note: "Platform Service Fee (20%) for successful Amazon FBA recovery.",
+          note: creditAppliedCents > 0
+            ? `Platform Service Fee (20%) for successful Amazon FBA recovery. Prepaid credit applied: ${(creditAppliedCents / 100).toFixed(2)} ${fees.currency.toUpperCase()}.`
+            : "Platform Service Fee (20%) for successful Amazon FBA recovery.",
           term: "Payable on receipt",
           payment_term: {
             term_type: "NET_10"
@@ -132,7 +150,7 @@ class BillingService {
             quantity: "1",
             unit_amount: {
               currency_code: fees.currency.toUpperCase(),
-              value: (fees.platformFeeCents / 100).toFixed(2)
+              value: (amountDueCents / 100).toFixed(2)
             }
           }
         ],
@@ -162,6 +180,8 @@ class BillingService {
         paypalInvoiceId: paypalInvoice.id,
         platformFeeCents: fees.platformFeeCents,
         sellerPayoutCents: fees.sellerPayoutCents,
+        amountDueCents,
+        creditAppliedCents,
         status: 'sent'
       };
 
@@ -228,6 +248,8 @@ class BillingService {
         success: true,
         platformFeeCents: fees.platformFeeCents,
         sellerPayoutCents: fees.sellerPayoutCents,
+        amountDueCents: request.amountDueCents ?? fees.platformFeeCents,
+        creditAppliedCents: request.creditAppliedCents ?? 0,
         status: 'charged',
         metadata: {
           paypalOrderId: chargeResult.id

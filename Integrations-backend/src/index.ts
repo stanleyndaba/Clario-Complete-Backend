@@ -148,10 +148,21 @@ app.use(cors({
       'https://opside-complete-frontend.onrender.com',
       'http://localhost:8080',
       'http://localhost:5173',
+      'http://localhost:4173',
       'http://localhost:3000',
+      'http://127.0.0.1:8080',
+      'http://127.0.0.1:5173',
+      'http://127.0.0.1:4173',
+      'http://127.0.0.1:3000',
       'https://margin-finance.com',
       'https://www.margin-finance.com'
     ];
+
+    const isLocalDevOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+    if (isLocalDevOrigin) {
+      logger.debug('CORS: Allowing local development origin', { origin });
+      return callback(null, true);
+    }
 
     // Allow all Vercel preview deployments and onrender.com domains (pattern matching)
     // This handles changing frontend domains automatically
@@ -499,6 +510,21 @@ if (process.env.NODE_ENV !== 'test') {
     // Initialize background jobs asynchronously (don't block server startup)
     setImmediate(() => {
       try {
+        const backgroundJobsEnabled =
+          process.env.ENABLE_BACKGROUND_JOBS === 'true' ||
+          (
+            process.env.NODE_ENV === 'production' &&
+            process.env.ENABLE_BACKGROUND_JOBS !== 'false'
+          );
+
+        if (!backgroundJobsEnabled) {
+          logger.info('Background jobs skipped for local runtime', {
+            nodeEnv: process.env.NODE_ENV,
+            reason: 'ENABLE_BACKGROUND_JOBS not set to true outside production'
+          });
+          return;
+        }
+
         // Initialize orchestration job manager (sets up queue processors)
         OrchestrationJobManager.initialize();
         logger.info('Orchestration job manager initialized');

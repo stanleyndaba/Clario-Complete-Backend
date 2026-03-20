@@ -202,7 +202,7 @@ class RecoveriesWorker {
         )
       `)
       .eq('status', 'approved')
-      .in('recovery_status', ['pending', null])
+      .or('recovery_status.eq.pending,recovery_status.eq.detecting,recovery_status.is.null')
       .limit(50);
 
     if (error) {
@@ -247,7 +247,8 @@ class RecoveriesWorker {
           () => recoveriesService.detectPayouts(
             userId,
             new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
-            new Date()
+            new Date(),
+            tenantId
           ),
           3,
           2000
@@ -265,14 +266,14 @@ class RecoveriesWorker {
             // Try to match payout to this case
             let matched = false;
             for (const payout of payouts) {
-              const match = await recoveriesService.matchPayoutToClaim(payout, userId);
+              const match = await recoveriesService.matchPayoutToClaim(payout, userId, tenantId);
 
               if (match && match.disputeId === disputeCase.id) {
                 matched = true;
                 stats.matched++;
 
                 // Reconcile the payout
-                const result = await recoveriesService.reconcilePayout(match, userId);
+                const result = await recoveriesService.reconcilePayout(match, userId, tenantId);
 
                 if (result.success) {
                   if (result.status === 'reconciled') {
@@ -344,7 +345,14 @@ class RecoveriesWorker {
         userId
       });
 
-      return await recoveriesService.processRecoveryForCase(disputeId, userId);
+      const { data: disputeCase } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('tenant_id')
+        .eq('id', disputeId)
+        .eq('seller_id', userId)
+        .single();
+
+      return await recoveriesService.processRecoveryForCase(disputeId, userId, disputeCase?.tenant_id);
 
     } catch (error: any) {
       logger.error('❌ [RECOVERIES] Failed to process recovery for case', {
