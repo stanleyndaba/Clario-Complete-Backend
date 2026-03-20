@@ -288,11 +288,11 @@ export class EvidenceMatchingWorker {
     try {
       const userIds = new Set<string>();
 
-      // Get users with pending claims for this tenant
+      // Get users with match-eligible claims for this tenant
       const claimsQuery = createTenantScopedQueryById(tenantId, 'detection_results');
       const { data: pendingClaims, error: claimsError } = await claimsQuery
         .select('seller_id')
-        .eq('status', 'pending')
+        .in('status', ['detected', 'pending'])
         .limit(100);
 
       if (!claimsError && pendingClaims) {
@@ -339,11 +339,11 @@ export class EvidenceMatchingWorker {
       const client = supabaseAdmin || supabase;
       const userIds = new Set<string>();
 
-      // Get users with pending claims (detection_results)
+      // Get users with match-eligible claims (detection_results)
       const { data: pendingClaims, error: claimsError } = await client
         .from('detection_results')
         .select('seller_id')
-        .eq('status', 'pending')
+        .in('status', ['detected', 'pending'])
         .limit(100);
 
       if (!claimsError && pendingClaims) {
@@ -398,11 +398,13 @@ export class EvidenceMatchingWorker {
     try {
       logger.info(`🔗 [EVIDENCE MATCHING WORKER] Matching evidence for user: ${userId}`, { tenantId });
 
-      // Get pending claims for this user - scope by tenant_id
+      // Get match-eligible claims for this user - scope by tenant_id
       const claims = await this.getPendingClaimsForUser(userId, tenantId);
+      const docsCount = await this.getCompletedDocumentCountForUser(userId, tenantId);
 
       if (claims.length === 0) {
         logger.debug(`ℹ️ [EVIDENCE MATCHING WORKER] No pending claims for user ${userId}`);
+        logger.info(`[Agent6] detections=0 docs=${docsCount} candidates=0 matches=0 auto_submitted=0`);
         return { success: true, matches: 0 };
       }
 
@@ -558,7 +560,7 @@ export class EvidenceMatchingWorker {
   }
 
   /**
-   * Get pending claims (detection_results) for a user
+   * Get match-eligible claims (detection_results) for a user
    */
   private async getPendingClaimsForUser(userId: string, tenantId: string): Promise<ClaimData[]> {
     try {
@@ -567,10 +569,10 @@ export class EvidenceMatchingWorker {
       // Get detection_results that need matching - scope by tenant_id
       const { data: results, error } = await client
         .from('detection_results')
-        .select('id, seller_id, anomaly_type, estimated_value, currency, confidence_score, evidence, related_event_ids, tenant_id')
+        .select('id, seller_id, anomaly_type, estimated_value, currency, confidence_score, match_confidence, status, evidence, related_event_ids, tenant_id')
         .eq('tenant_id', tenantId)
         .eq('seller_id', userId)
-        .eq('status', 'pending')
+        .in('status', ['detected', 'pending'])
         .limit(50);
 
       if (error) {
@@ -585,8 +587,54 @@ export class EvidenceMatchingWorker {
         return [];
       }
 
+      const detectionIds = results.map((result: any) => result.id).filter(Boolean);
+      const detectionIdsWithEvidence = new Set<string>();
+
+      if (detectionIds.length > 0) {
+        const { data: existingCases, error: casesError } = await client
+          .from('dispute_cases')
+          .select('detection_result_id, evidence_attachments')
+          .eq('tenant_id', tenantId)
+          .eq('seller_id', userId)
+          .in('detection_result_id', detectionIds);
+
+        if (casesError) {
+          logger.warn('⚠️ [EVIDENCE MATCHING WORKER] Error fetching existing dispute cases', {
+            userId,
+            error: casesError.message
+          });
+        } else if (existingCases) {
+          existingCases.forEach((disputeCase: any) => {
+            const attachments = disputeCase?.evidence_attachments;
+            const hasEvidenceAttachment = Array.isArray(attachments)
+              ? attachments.some((attachment: any) => attachment?.document_id)
+              : Boolean(attachments?.document_id);
+
+            if (hasEvidenceAttachment && disputeCase.detection_result_id) {
+              detectionIdsWithEvidence.add(disputeCase.detection_result_id);
+            }
+          });
+        }
+      }
+
+      const eligibleResults = results.filter((result: any) => {
+        if (result.status === 'disputed') {
+          return false;
+        }
+
+        if (Number(result.match_confidence || 0) > 0) {
+          return false;
+        }
+
+        if (detectionIdsWithEvidence.has(result.id)) {
+          return false;
+        }
+
+        return true;
+      });
+
       // Transform to ClaimData format
-      return results.map((result: any) => {
+      return eligibleResults.map((result: any) => {
         const evidence = result.evidence || {};
         return {
           claim_id: result.id,
@@ -607,6 +655,35 @@ export class EvidenceMatchingWorker {
         error: error.message
       });
       return [];
+    }
+  }
+
+  private async getCompletedDocumentCountForUser(userId: string, tenantId: string): Promise<number> {
+    try {
+      const client = supabaseAdmin || supabase;
+      const { count, error } = await client
+        .from('evidence_documents')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenant_id', tenantId)
+        .or(`seller_id.eq.${userId},user_id.eq.${userId}`)
+        .eq('parser_status', 'completed')
+        .not('parsed_metadata', 'is', null);
+
+      if (error) {
+        logger.warn('⚠️ [EVIDENCE MATCHING WORKER] Error counting completed documents', {
+          userId,
+          error: error.message
+        });
+        return 0;
+      }
+
+      return count || 0;
+    } catch (error: any) {
+      logger.warn('⚠️ [EVIDENCE MATCHING WORKER] Error counting completed documents', {
+        userId,
+        error: error.message
+      });
+      return 0;
     }
   }
 

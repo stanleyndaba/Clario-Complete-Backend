@@ -1050,17 +1050,8 @@ class EvidenceMatchingService {
         confidence: result.final_confidence
       });
 
-      // Store evidence link
-      await this.storeEvidenceLink(tenantId, result, 'auto_match');
-
-      // Update detection result status
-      await this.updateDetectionResultStatus(tenantId, result.dispute_id, 'disputed', result.final_confidence);
-
-      // 🎯 AGENT 7 INTEGRATION: Create dispute case from matched evidence
-      // Agent 7 (Refund Filing Worker) will pick up cases with filing_status = 'pending'
       const { supabaseAdmin } = await import('../database/supabaseClient');
 
-      // First get the detection result details to create the dispute case
       const { data: detectionResult, error: fetchError } = await supabaseAdmin
         .from('detection_results')
         .select('id, seller_id, anomaly_type, estimated_value, currency, evidence, claim_number')
@@ -1068,103 +1059,47 @@ class EvidenceMatchingService {
         .single();
 
       if (fetchError || !detectionResult) {
-        logger.error('❌ [EVIDENCE MATCHING] Failed to fetch detection result for filing', {
-          disputeId: result.dispute_id,
-          error: fetchError?.message || 'Not found'
-        });
-        return;
+        throw new Error(`Failed to fetch detection result for filing: ${fetchError?.message || 'Not found'}`);
       }
 
-      // Create or update dispute case
-      const caseNumber = `CASE-${Date.now().toString(36).toUpperCase()}-${result.dispute_id.slice(0, 8).toUpperCase()}`;
-      const disputeCaseData = {
-        seller_id: detectionResult.seller_id,
-        tenant_id: tenantId,
-        detection_result_id: result.dispute_id,
-        case_number: caseNumber,
-        status: 'pending',
-        claim_amount: detectionResult.estimated_value || 0,
-        currency: detectionResult.currency || 'USD',
-        case_type: detectionResult.anomaly_type || 'amazon_fba',
-        provider: 'amazon',
-        filing_status: 'pending', // Agent 7 will pick this up
-        evidence_attachments: {
-          document_id: result.evidence_document_id,
-          match_confidence: result.final_confidence,
-          match_type: result.match_type,
-          matched_fields: result.matched_fields || [],
-          matched_at: new Date().toISOString()
-        },
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      };
+      const disputeCase = await this.ensureDisputeCaseForMatch(tenantId, detectionResult, result);
 
-      // Check if dispute case already exists for this detection result - scope by tenant_id
-      const { data: existingCase } = await supabaseAdmin
-        .from('dispute_cases')
-        .select('id')
-        .eq('detection_result_id', result.dispute_id)
-        .eq('tenant_id', tenantId)
-        .single();
-
-      let disputeCase;
-      let insertError;
-
-      if (existingCase) {
-        // Update existing case
-        const { data, error } = await supabaseAdmin
-          .from('dispute_cases')
-          .update({
-            status: 'pending',
-            filing_status: 'pending',
-            evidence_attachments: disputeCaseData.evidence_attachments,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', existingCase.id)
-          .eq('tenant_id', tenantId)
-          .select('id')
-          .single();
-        disputeCase = data;
-        insertError = error;
-      } else {
-        // Create new dispute case
-        const { data, error } = await supabaseAdmin
-          .from('dispute_cases')
-          .insert(disputeCaseData)
-          .select('id')
-          .single();
-        disputeCase = data;
-        insertError = error;
+      if (!disputeCase?.id) {
+        throw new Error('Dispute case must exist before attaching evidence');
       }
 
-      if (insertError) {
-        logger.error('❌ [EVIDENCE MATCHING] Failed to create dispute case', {
-          disputeId: result.dispute_id,
-          error: insertError.message
-        });
-      } else {
-        logger.info('📝 [EVIDENCE MATCHING] Dispute case created/updated for Agent 7 filing', {
-          disputeId: result.dispute_id,
-          caseId: disputeCase?.id,
-          caseNumber
-        });
+      await this.storeEvidenceLink(tenantId, disputeCase.id, result, 'auto_match');
 
-        // 🎯 AGENT 10 INTEGRATION: Notify when evidence is matched
-        try {
-          const notificationHelper = (await import('../services/notificationHelper')).default;
-          await notificationHelper.notifyEvidenceFound(userId, {
-            documentId: result.evidence_document_id,
-            source: 'unknown' as 'gmail' | 'outlook' | 'drive' | 'dropbox',
-            fileName: 'Evidence Document',
-            parsed: true,
-            matchFound: true,
-            disputeId: disputeCase?.id || result.dispute_id
-          });
-        } catch (notifError: any) {
-          logger.warn('⚠️ [EVIDENCE MATCHING] Failed to send notification', {
-            error: notifError.message
-          });
-        }
+      await this.updateDisputeCaseEvidenceAttachment(tenantId, disputeCase.id, {
+        document_id: result.evidence_document_id,
+        match_confidence: result.final_confidence,
+        match_type: result.match_type,
+        matched_fields: result.matched_fields || [],
+        matched_at: new Date().toISOString()
+      });
+
+      await this.updateDetectionResultStatus(tenantId, result.dispute_id, 'disputed', result.final_confidence);
+
+      logger.info('📝 [EVIDENCE MATCHING] Dispute case created/updated for Agent 7 filing', {
+        disputeId: result.dispute_id,
+        caseId: disputeCase.id,
+        caseNumber: disputeCase.case_number
+      });
+
+      try {
+        const notificationHelper = (await import('../services/notificationHelper')).default;
+        await notificationHelper.notifyEvidenceFound(userId, {
+          documentId: result.evidence_document_id,
+          source: 'unknown' as 'gmail' | 'outlook' | 'drive' | 'dropbox',
+          fileName: 'Evidence Document',
+          parsed: true,
+          matchFound: true,
+          disputeId: disputeCase.id
+        });
+      } catch (notifError: any) {
+        logger.warn('⚠️ [EVIDENCE MATCHING] Failed to send notification', {
+          error: notifError.message
+        });
       }
 
       // Call auto-submit endpoint (if exists) - non-critical
@@ -1173,7 +1108,8 @@ class EvidenceMatchingService {
         await axios.post(
           endpoint,
           {
-            dispute_id: result.dispute_id,
+            dispute_id: disputeCase.id,
+            detection_result_id: result.dispute_id,
             evidence_document_id: result.evidence_document_id,
             confidence: result.final_confidence,
             reasoning: result.reasoning
@@ -1215,8 +1151,11 @@ class EvidenceMatchingService {
         confidence: result.final_confidence
       });
 
-      // Store evidence link
-      await this.storeEvidenceLink(tenantId, result, 'ml_suggested');
+      logger.info('ℹ️ [EVIDENCE MATCHING] Deferring dispute_evidence_links write until a dispute case exists', {
+        detectionId: result.dispute_id,
+        evidenceId: result.evidence_document_id,
+        linkType: 'ml_suggested'
+      });
 
       // Generate smart prompt question
       const question = this.generateSmartPromptQuestion(result);
@@ -1272,8 +1211,11 @@ class EvidenceMatchingService {
         confidence: result.final_confidence
       });
 
-      // Store evidence link with low confidence
-      await this.storeEvidenceLink(tenantId, result, 'manual_review');
+      logger.info('ℹ️ [EVIDENCE MATCHING] Deferring dispute_evidence_links write until a dispute case exists', {
+        detectionId: result.dispute_id,
+        evidenceId: result.evidence_document_id,
+        linkType: 'manual_review'
+      });
 
       // Update detection result status
       await this.updateDetectionResultStatus(tenantId, result.dispute_id, 'pending', result.final_confidence);
@@ -1293,17 +1235,22 @@ class EvidenceMatchingService {
    */
   private async storeEvidenceLink(
     tenantId: string,
+    disputeCaseId: string,
     result: MatchingResult,
     linkType: 'auto_match' | 'ml_suggested' | 'manual_review'
   ): Promise<void> {
     try {
       const client = supabaseAdmin || supabase;
 
+      if (!disputeCaseId) {
+        throw new Error('Dispute case must exist before attaching evidence');
+      }
+
       // Check if dispute_evidence_links table exists - include tenant_id if possible
       const { error: insertError } = await client
         .from('dispute_evidence_links')
         .insert({
-          dispute_case_id: result.dispute_id,
+          dispute_case_id: disputeCaseId,
           evidence_document_id: result.evidence_document_id,
           tenant_id: tenantId,
           relevance_score: result.final_confidence,
@@ -1321,7 +1268,8 @@ class EvidenceMatchingService {
       }
 
       logger.info('✅ [EVIDENCE MATCHING] Stored evidence link', {
-        disputeId: result.dispute_id,
+        disputeCaseId,
+        detectionId: result.dispute_id,
         evidenceId: result.evidence_document_id,
         linkType
       });
@@ -1330,6 +1278,93 @@ class EvidenceMatchingService {
         error: error.message
       });
       throw error;
+    }
+  }
+
+  private async ensureDisputeCaseForMatch(tenantId: string, detectionResult: any, result: MatchingResult): Promise<any> {
+    const { supabaseAdmin } = await import('../database/supabaseClient');
+
+    const baseCaseData = {
+      seller_id: detectionResult.seller_id,
+      tenant_id: tenantId,
+      detection_result_id: result.dispute_id,
+      status: 'pending',
+      claim_amount: detectionResult.estimated_value || 0,
+      currency: detectionResult.currency || 'USD',
+      case_type: detectionResult.anomaly_type || 'amazon_fba',
+      provider: 'amazon',
+      filing_status: 'pending',
+      updated_at: new Date().toISOString()
+    };
+
+    const { data: existingCase, error: existingCaseError } = await supabaseAdmin
+      .from('dispute_cases')
+      .select('id, case_number')
+      .eq('detection_result_id', result.dispute_id)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+
+    if (existingCaseError) {
+      throw new Error(`Failed to lookup dispute case: ${existingCaseError.message}`);
+    }
+
+    if (existingCase?.id) {
+      const { data: updatedCase, error: updateError } = await supabaseAdmin
+        .from('dispute_cases')
+        .update(baseCaseData)
+        .eq('id', existingCase.id)
+        .eq('tenant_id', tenantId)
+        .select('id, case_number')
+        .single();
+
+      if (updateError || !updatedCase) {
+        throw new Error(`Failed to update dispute case: ${updateError?.message || 'Unknown update failure'}`);
+      }
+
+      return updatedCase;
+    }
+
+    const caseNumber = `CASE-${Date.now().toString(36).toUpperCase()}-${result.dispute_id.slice(0, 8).toUpperCase()}`;
+    const { data: createdCase, error: createError } = await supabaseAdmin
+      .from('dispute_cases')
+      .insert({
+        ...baseCaseData,
+        case_number: caseNumber,
+        created_at: new Date().toISOString()
+      })
+      .select('id, case_number')
+      .single();
+
+    if (createError || !createdCase) {
+      throw new Error(`Failed to create dispute case: ${createError?.message || 'Unknown create failure'}`);
+    }
+
+    return createdCase;
+  }
+
+  private async updateDisputeCaseEvidenceAttachment(
+    tenantId: string,
+    disputeCaseId: string,
+    evidenceAttachment: {
+      document_id: string;
+      match_confidence: number;
+      match_type: string;
+      matched_fields: string[];
+      matched_at: string;
+    }
+  ): Promise<void> {
+    const { supabaseAdmin } = await import('../database/supabaseClient');
+    const { error } = await supabaseAdmin
+      .from('dispute_cases')
+      .update({
+        evidence_attachments: evidenceAttachment,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', disputeCaseId)
+      .eq('tenant_id', tenantId);
+
+    if (error) {
+      throw new Error(`Failed to update dispute case evidence attachment: ${error.message}`);
     }
   }
 
