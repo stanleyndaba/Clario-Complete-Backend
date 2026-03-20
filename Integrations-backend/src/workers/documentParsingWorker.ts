@@ -57,6 +57,7 @@ export class DocumentParsingWorker {
   // Track documents that have already failed to prevent re-processing
   private failedDocIds: Set<string> = new Set();
   private readonly MAX_FAILED_CACHE = 1000;
+  private readonly MAX_PROCESSING_AGE_MS = 15 * 60 * 1000;
 
   constructor() {
     // Initialize
@@ -256,9 +257,8 @@ export class DocumentParsingWorker {
     try {
       const tenantQuery = createTenantScopedQueryById(tenantId, 'evidence_documents');
       const { data: documents, error } = await tenantQuery
-        .select('id, seller_id, filename, content_type')
-        .is('parsed_metadata', null)
-        .or('content_type.ilike.%pdf%,content_type.eq.application/pdf,filename.ilike.%.pdf')
+        .select('id, seller_id, filename, content_type, storage_path, parsed_metadata, parser_status, parser_started_at, parser_completed_at, parser_error')
+        .in('parser_status', ['pending', 'processing'])
         .limit(50)
         .order('created_at', { ascending: true });
 
@@ -270,13 +270,19 @@ export class DocumentParsingWorker {
         return [];
       }
 
-      // Additional filter for parsable docs
-      const parsableDocs = (documents || []).filter((doc: any) => {
-        const contentType = doc.content_type?.toLowerCase() || '';
-        const filename = doc.filename?.toLowerCase() || '';
-        return contentType.includes('pdf') || filename.endsWith('.pdf') ||
-          contentType.includes('text') || filename.endsWith('.txt');
-      });
+      const parsableDocs: Array<{ id: string; seller_id: string; filename: string; content_type: string }> = [];
+
+      for (const doc of documents || []) {
+        const normalizedStatus = await this.normalizeDocumentState(doc);
+        if (normalizedStatus === 'pending') {
+          parsableDocs.push({
+            id: doc.id,
+            seller_id: doc.seller_id,
+            filename: doc.filename,
+            content_type: doc.content_type
+          });
+        }
+      }
 
       return parsableDocs
         .filter((doc: any) => !this.failedDocIds.has(doc.id)) // Skip known failures
@@ -309,9 +315,8 @@ export class DocumentParsingWorker {
       // Filter for PDFs only - PNGs and images can't be parsed by pdfExtractor
       let { data: documents, error } = await client
         .from('evidence_documents')
-        .select('id, seller_id, filename, content_type')
-        .is('parsed_metadata', null)
-        .or('content_type.ilike.%pdf%,content_type.eq.application/pdf,filename.ilike.%.pdf')
+        .select('id, seller_id, filename, content_type, storage_path, parsed_metadata, parser_status, parser_started_at, parser_completed_at, parser_error')
+        .in('parser_status', ['pending', 'processing'])
         .limit(100) // Increased from 50 to process more docs per run
         .order('created_at', { ascending: true });
 
@@ -321,9 +326,8 @@ export class DocumentParsingWorker {
         // (indicating they haven't been parsed yet)
         const retry = await client
           .from('evidence_documents')
-          .select('id, seller_id, filename, content_type')
-          .or('supplier_name.is.null,invoice_number.is.null')
-          .or('content_type.ilike.%pdf%,content_type.eq.application/pdf,filename.ilike.%.pdf')
+          .select('id, seller_id, filename, content_type, storage_path, parsed_metadata, parser_status, parser_started_at, parser_completed_at, parser_error')
+          .in('parser_status', ['pending', 'processing'])
           .limit(100)
           .order('created_at', { ascending: true });
         documents = retry.data;
@@ -337,13 +341,19 @@ export class DocumentParsingWorker {
         return [];
       }
 
-      // Additional filter: only return PDFs and TXT files (double-check in case DB filter didn't work)
-      const parsableDocs = (documents || []).filter((doc: any) => {
-        const contentType = doc.content_type?.toLowerCase() || '';
-        const filename = doc.filename?.toLowerCase() || '';
-        return contentType.includes('pdf') || filename.endsWith('.pdf') ||
-          contentType.includes('text') || filename.endsWith('.txt');
-      });
+      const parsableDocs: Array<{ id: string; seller_id: string; filename: string; content_type: string }> = [];
+
+      for (const doc of documents || []) {
+        const normalizedStatus = await this.normalizeDocumentState(doc);
+        if (normalizedStatus === 'pending') {
+          parsableDocs.push({
+            id: doc.id,
+            seller_id: doc.seller_id,
+            filename: doc.filename,
+            content_type: doc.content_type
+          });
+        }
+      }
 
       logger.info(`📄 [DOCUMENT PARSING WORKER] Found ${parsableDocs.length} documents to parse (out of ${documents?.length || 0} total pending)`, {
         totalPending: documents?.length || 0,
@@ -515,6 +525,8 @@ export class DocumentParsingWorker {
           .update({
             parsed_metadata: {
               _parse_failed: true,
+              parser_status: 'failed',
+              parse_state: 'failed',
               error: (error.message || 'Unknown error').substring(0, 500),
               failed_at: new Date().toISOString(),
               retry_eligible: false
@@ -560,6 +572,82 @@ export class DocumentParsingWorker {
     }
   }
 
+  private async normalizeDocumentState(doc: any): Promise<'pending' | 'processing' | 'completed' | 'failed'> {
+    const parsedMetadata = doc.parsed_metadata || null;
+    const parserStatus = doc.parser_status || 'pending';
+    const contentType = doc.content_type?.toLowerCase() || '';
+    const filename = doc.filename?.toLowerCase() || '';
+    const isParsable =
+      contentType.includes('pdf') ||
+      filename.endsWith('.pdf') ||
+      contentType.includes('text') ||
+      filename.endsWith('.txt');
+
+    if (parsedMetadata && !parsedMetadata._parse_failed) {
+      if (parserStatus !== 'completed') {
+        await this.updateDocumentStatus(doc.id, 'completed', parsedMetadata.confidence_score);
+      }
+      return 'completed';
+    }
+
+    if (parsedMetadata?._parse_failed) {
+      if (parserStatus !== 'failed') {
+        await this.updateDocumentStatus(doc.id, 'failed', undefined, parsedMetadata.error || 'Parsing failed');
+      }
+      return 'failed';
+    }
+
+    if (!isParsable) {
+      await this.markDocumentFailed(doc.id, 'Unsupported document type for parser', 'not_parseable');
+      return 'failed';
+    }
+
+    if (!doc.storage_path) {
+      await this.markDocumentFailed(doc.id, 'Raw file missing from storage', 'not_parseable');
+      return 'failed';
+    }
+
+    if (parserStatus === 'processing' && doc.parser_started_at) {
+      const startedAtMs = Date.parse(doc.parser_started_at);
+      if (!Number.isNaN(startedAtMs) && (Date.now() - startedAtMs) < this.MAX_PROCESSING_AGE_MS) {
+        return 'processing';
+      }
+    }
+
+    if (parserStatus !== 'pending') {
+      await this.updateDocumentStatus(doc.id, 'pending');
+    }
+
+    return 'pending';
+  }
+
+  private async markDocumentFailed(
+    documentId: string,
+    errorMessage: string,
+    parseState: 'failed' | 'not_parseable' = 'failed'
+  ): Promise<void> {
+    const client = supabaseAdmin || supabase;
+    const now = new Date().toISOString();
+
+    await client
+      .from('evidence_documents')
+      .update({
+        parser_status: 'failed',
+        parser_error: errorMessage,
+        parser_completed_at: now,
+        updated_at: now,
+        parsed_metadata: {
+          _parse_failed: true,
+          parser_status: 'failed',
+          parse_state: parseState,
+          error: errorMessage.substring(0, 500),
+          failed_at: now,
+          retry_eligible: false
+        }
+      })
+      .eq('id', documentId);
+  }
+
   /**
    * Update document parsing status
    */
@@ -574,6 +662,7 @@ export class DocumentParsingWorker {
       const now = new Date().toISOString();
 
       const updateData: any = {
+        parser_status: status,
         updated_at: now
       };
 
@@ -629,6 +718,7 @@ export class DocumentParsingWorker {
 
       // Prepare structured JSON output including extracted arrays for frontend
       const structuredData = {
+        parser_status: 'completed',
         supplier_name: parsedData.supplier_name,
         invoice_number: parsedData.invoice_number,
         invoice_date: parsedData.invoice_date || parsedData.document_date,

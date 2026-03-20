@@ -60,6 +60,18 @@ function isProductEvidenceDocument(document: any): boolean {
   return document?.metadata?.ingestion_method !== 'demo_seed';
 }
 
+function getAuthoritativeParserStatus(doc: any): string {
+  const parsedMetadata = doc?.parsed_metadata || {};
+  const metadata = doc?.metadata || {};
+
+  if (parsedMetadata?._parse_failed) return 'failed';
+  if (parsedMetadata && Object.keys(parsedMetadata).length > 0) {
+    return parsedMetadata.parser_status || 'completed';
+  }
+
+  return doc?.parser_status || metadata?.parser_status || 'pending';
+}
+
 /**
  * GET /api/evidence/sources
  * Get all connected evidence sources for the current user
@@ -2759,14 +2771,14 @@ router.get('/v1/evidence/documents/:documentId', async (req: Request, res: Respo
 
     // Extract parsed data from metadata or document fields
     const metadata = doc.metadata || {};
-    const parsedMetadata = metadata.parsed_data || metadata.parsed_metadata || metadata;
+    const parsedMetadata = doc.parsed_metadata || metadata.parsed_data || metadata.parsed_metadata || metadata;
 
     // Build response in expected format
     const response = {
       id: doc.id,
       filename: doc.filename || doc.original_filename,
       processing_status: doc.status || 'completed',
-      parser_status: metadata.parser_status || doc.parser_status || 'completed',
+      parser_status: getAuthoritativeParserStatus(doc),
       parser_confidence: metadata.parser_confidence || metadata.confidence_score || doc.parser_confidence || 0.95,
       parsed_metadata: {
         supplier_name: parsedMetadata.supplier_name || parsedMetadata.supplier || doc.supplier_name,
@@ -2841,6 +2853,9 @@ router.post('/v1/evidence/parse/:documentId', async (req: Request, res: Response
       .from('evidence_documents')
       .update({
         parser_status: 'pending',
+        parser_error: null,
+        parser_started_at: null,
+        parser_completed_at: null,
         parsed_metadata: null,
         updated_at: new Date().toISOString()
       })

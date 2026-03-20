@@ -10,6 +10,18 @@ function isProductDocument(doc: any) {
     return doc?.metadata?.ingestion_method !== 'demo_seed';
 }
 
+function getAuthoritativeParserStatus(doc: any) {
+    const parsedMetadata = doc?.parsed_metadata || {};
+    const metadata = doc?.metadata || {};
+
+    if (parsedMetadata?._parse_failed) return 'failed';
+    if (parsedMetadata && Object.keys(parsedMetadata).length > 0) {
+        return parsedMetadata.parser_status || 'completed';
+    }
+
+    return doc?.parser_status || metadata?.parser_status || 'pending';
+}
+
 // Configure multer for file uploads (memory storage)
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -234,7 +246,7 @@ router.get('/', async (req: Request, res: Response) => {
                 invoice: invoice,
                 amount: amount,
                 parsedVia: extractionMethod,
-                parser_status: parsedMetadata.parser_status || doc.parser_status || metadata.parser_status || 'pending',
+                parser_status: getAuthoritativeParserStatus(doc),
                 parser_confidence: confidence,
                 linkedSKUs: lineItems.length || 0,
                 // Include raw data for debugging
@@ -343,7 +355,7 @@ router.get('/:id', async (req: Request, res: Response) => {
             invoice: parsedMetadata.invoice_number || doc.invoice_number || nestedParsedData.invoice_number || null,
             amount: parsedMetadata.total_amount || doc.total_amount || nestedParsedData.total_amount || null,
             // Parser status
-            parser_status: parsedMetadata.parser_status || doc.parser_status || metadata.parser_status || 'pending',
+            parser_status: getAuthoritativeParserStatus(doc),
             parser_confidence: parsedMetadata.confidence_score || doc.parser_confidence || nestedParsedData.confidence_score || null,
             parsedVia: parsedMetadata.extraction_method || nestedParsedData.extraction_method || metadata.parser_type || null,
             // Extracted entities
@@ -641,6 +653,9 @@ router.post('/:id/reparse', async (req: Request, res: Response) => {
             .from('evidence_documents')
             .update({
                 parser_status: 'pending',
+                parser_error: null,
+                parser_started_at: null,
+                parser_completed_at: null,
                 parsed_metadata: null,
                 updated_at: new Date().toISOString()
             })
