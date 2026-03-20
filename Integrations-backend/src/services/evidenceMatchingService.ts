@@ -30,6 +30,7 @@ export interface MatchingJobResponse {
 
 export interface ClaimData {
   claim_id: string;
+  seller_id?: string;
   claim_type: string;
   amount: number;
   confidence: number;
@@ -130,29 +131,29 @@ class EvidenceMatchingService {
   /**
    * Match claims against parsed documents by Order ID, ASIN, or SKU
    * Primary matching method - no external API dependency
-   * Uses 'extracted' column (not parsed_metadata) for document data
+   * Uses parsed_metadata as the primary structured source for document data
    */
   private async matchClaimsToDocuments(userId: string, tenantId: string, claims: ClaimData[]): Promise<MatchingJobResponse> {
     logger.info('🔍 [EVIDENCE MATCHING] Matching claims to documents', { userId, tenantId, claimsCount: claims.length });
 
     try {
-      // Get documents with extracted data for user
-      // IMPORTANT: Documents may be stored with EITHER 'user_id' (UUID - Document Library) OR 'seller_id' (TEXT - programmatic ingestion)
-      // We need to handle the case where userId might be TEXT (not UUID) - can't query user_id with non-UUID value
+      const normalizedUserId = String(userId).trim();
 
-      // Get documents with extracted data for user - scope by tenant_id
+      // Get documents with extracted data for the specific seller/user and tenant
       const { data: documents, error: docError } = await supabaseAdmin
         .from('evidence_documents')
         .select('id, filename, extracted, parsed_metadata, raw_text, storage_path, parser_status, user_id, seller_id, tenant_id')
-        .eq('tenant_id', tenantId);
+        .eq('tenant_id', tenantId)
+        .or(`seller_id.eq.${normalizedUserId},user_id.eq.${normalizedUserId}`);
 
       if (docError) {
         logger.error('❌ [EVIDENCE MATCHING] Failed to fetch documents', { error: docError.message, tenantId });
-        return { matches: 0, auto_submits: 0, smart_prompts: 0, results: [] };
+        throw new Error(`Failed to fetch documents: ${docError.message}`);
       }
 
       if (!documents || documents.length === 0) {
         logger.warn('⚠️ [EVIDENCE MATCHING] No documents found for tenant', { userId, tenantId });
+        logger.info(`[Agent6] detections=${claims.length} docs=0 candidates=0 matches=0 auto_submitted=0`);
         return { matches: 0, auto_submits: 0, smart_prompts: 0, results: [] };
       }
 
@@ -179,8 +180,11 @@ class EvidenceMatchingService {
       const docBolNumbers: Map<string, any[]> = new Map(); // Bill of Lading numbers
 
       for (const doc of documents) {
-        // Get extracted data from either 'extracted' or 'parsed_metadata' column
-        let extracted = doc.extracted || doc.parsed_metadata;
+        const parsedMetadataSource = doc.parsed_metadata && Object.keys(doc.parsed_metadata).length > 0
+          ? doc.parsed_metadata
+          : null;
+        // Prefer parsed_metadata; extracted is only a fallback
+        let extracted = parsedMetadataSource || doc.extracted || {};
         if (typeof extracted === 'string') {
           try {
             extracted = JSON.parse(extracted);
@@ -444,12 +448,13 @@ class EvidenceMatchingService {
       if (claims.length === 0) {
         const { data: dbClaims } = await supabaseAdmin
           .from('detection_results')
-          .select('id, anomaly_type, estimated_value, currency, evidence, confidence_score, related_event_ids, tenant_id')
+          .select('id, seller_id, anomaly_type, estimated_value, currency, evidence, confidence_score, related_event_ids, tenant_id')
           .eq('tenant_id', tenantId);
 
         if (dbClaims) {
           claimsToMatch = dbClaims.map((d: any) => ({
             claim_id: d.id,
+            seller_id: d.seller_id,
             claim_type: d.anomaly_type || 'unknown',
             amount: d.estimated_value || 0,
             confidence: d.confidence_score || 0.5,
@@ -465,8 +470,13 @@ class EvidenceMatchingService {
       let matchCount = 0;
       let autoSubmitCount = 0;
       let smartPromptCount = 0;
+      let candidateMatchCount = 0;
 
       for (const claim of claimsToMatch) {
+        if (claim.seller_id && String(claim.seller_id).trim() !== normalizedUserId) {
+          continue;
+        }
+
         const claimEvidence = typeof claim.evidence === 'string' ? JSON.parse(claim.evidence) : (claim.evidence || {});
 
         // Helper to normalize values
@@ -634,8 +644,19 @@ class EvidenceMatchingService {
         }
 
         if (matchedDocs.length > 0) {
+          const sellerMatchedDocs = matchedDocs.filter((doc: any) => {
+            const docSeller = doc.seller_id ? String(doc.seller_id).trim() : null;
+            const docUser = doc.user_id ? String(doc.user_id).trim() : null;
+            return docSeller === normalizedUserId || docUser === normalizedUserId;
+          });
+
+          if (sellerMatchedDocs.length === 0) {
+            continue;
+          }
+
+          candidateMatchCount++;
           matchCount++;
-          const bestDoc = matchedDocs[0];
+          const bestDoc = sellerMatchedDocs[0];
           const confidence = baseConfidence;
 
           // Determine action based on confidence
@@ -669,10 +690,13 @@ class EvidenceMatchingService {
 
       logger.info('📊 [EVIDENCE MATCHING] Local matching complete', {
         claims: claimsToMatch.length,
+        documentsConsidered: documents.length,
+        candidateMatches: candidateMatchCount,
         matches: matchCount,
         autoSubmits: autoSubmitCount,
         smartPrompts: smartPromptCount
       });
+      logger.info(`[Agent6] detections=${claimsToMatch.length} docs=${documents.length} candidates=${candidateMatchCount} matches=${matchCount} auto_submitted=${autoSubmitCount}`);
 
       return {
         matches: matchCount,
@@ -683,7 +707,7 @@ class EvidenceMatchingService {
 
     } catch (error: any) {
       logger.error('❌ [EVIDENCE MATCHING] Local matching failed', { error: error.message, stack: error.stack });
-      return { matches: 0, auto_submits: 0, smart_prompts: 0, results: [] };
+      throw error;
     }
   }
 
@@ -734,14 +758,15 @@ class EvidenceMatchingService {
             .eq('tenant_id', tenantId)
             .not('evidence', 'is', null);
 
-          if (simpleDetections && simpleDetections.length > 0) {
-            claims = simpleDetections.map((d: any) => {
-              const ev = typeof d.evidence === 'string' ? JSON.parse(d.evidence) : (d.evidence || {});
-              return {
-                claim_id: d.id,
-                claim_type: d.anomaly_type || 'unknown',
-                amount: d.estimated_value || 0,
-                confidence: d.confidence_score || 0.5,
+      if (simpleDetections && simpleDetections.length > 0) {
+        claims = simpleDetections.map((d: any) => {
+          const ev = typeof d.evidence === 'string' ? JSON.parse(d.evidence) : (d.evidence || {});
+          return {
+            claim_id: d.id,
+            seller_id: d.seller_id,
+            claim_type: d.anomaly_type || 'unknown',
+            amount: d.estimated_value || 0,
+            confidence: d.confidence_score || 0.5,
                 currency: d.currency || 'USD',
                 evidence: ev,
                 asin: ev.asin,
@@ -1292,21 +1317,19 @@ class EvidenceMatchingService {
         });
 
       if (insertError) {
-        // Table might not exist - that's OK
-        logger.debug('⚠️ [EVIDENCE MATCHING] dispute_evidence_links table may not exist', {
-          error: insertError.message
-        });
-      } else {
-        logger.info('✅ [EVIDENCE MATCHING] Stored evidence link', {
-          disputeId: result.dispute_id,
-          evidenceId: result.evidence_document_id,
-          linkType
-        });
+        throw new Error(`Failed to store evidence link: ${insertError.message}`);
       }
+
+      logger.info('✅ [EVIDENCE MATCHING] Stored evidence link', {
+        disputeId: result.dispute_id,
+        evidenceId: result.evidence_document_id,
+        linkType
+      });
     } catch (error: any) {
-      logger.warn('⚠️ [EVIDENCE MATCHING] Failed to store evidence link', {
+      logger.error('❌ [EVIDENCE MATCHING] Failed to store evidence link', {
         error: error.message
       });
+      throw error;
     }
   }
 
@@ -1339,16 +1362,14 @@ class EvidenceMatchingService {
         .eq('tenant_id', tenantId);
 
       if (error) {
-        logger.debug('⚠️ [EVIDENCE MATCHING] Failed to update detection result', {
-          detectionId,
-          error: error.message
-        });
+        throw new Error(`Failed to update detection result: ${error.message}`);
       }
     } catch (error: any) {
-      logger.warn('⚠️ [EVIDENCE MATCHING] Error updating detection result', {
+      logger.error('❌ [EVIDENCE MATCHING] Error updating detection result', {
         detectionId,
         error: error.message
       });
+      throw error;
     }
   }
 

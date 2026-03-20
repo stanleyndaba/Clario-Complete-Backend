@@ -569,6 +569,7 @@ export class EvidenceMatchingWorker {
         .from('detection_results')
         .select('id, seller_id, anomaly_type, estimated_value, currency, confidence_score, evidence, related_event_ids, tenant_id')
         .eq('tenant_id', tenantId)
+        .eq('seller_id', userId)
         .eq('status', 'pending')
         .limit(50);
 
@@ -589,6 +590,7 @@ export class EvidenceMatchingWorker {
         const evidence = result.evidence || {};
         return {
           claim_id: result.id,
+          seller_id: result.seller_id,
           claim_type: result.anomaly_type,
           amount: result.estimated_value,
           confidence: result.confidence_score,
