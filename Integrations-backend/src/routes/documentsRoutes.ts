@@ -6,6 +6,10 @@ import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
+function isProductDocument(doc: any) {
+    return doc?.metadata?.ingestion_method !== 'demo_seed';
+}
+
 // Configure multer for file uploads (memory storage)
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -185,11 +189,12 @@ router.get('/', async (req: Request, res: Response) => {
 
         logger.info('📂 [DOCUMENTS] Fetching documents', { userId, finalUserId, tenantId });
 
-        // Fetch documents from Supabase - scope by tenant_id
+        // Fetch documents from Supabase - scope by tenant_id and current user/seller
         const { data: documents, error } = await supabaseAdmin
             .from('evidence_documents')
             .select('*')
             .eq('tenant_id', tenantId)
+            .or(`user_id.eq.${finalUserId},seller_id.eq.${finalUserId},seller_id.eq.${userId}`)
             .order('created_at', { ascending: false });
 
         if (error) {
@@ -201,7 +206,7 @@ router.get('/', async (req: Request, res: Response) => {
         // The frontend expects: id, name, uploadDate, status, supplier, invoice, amount, parsedVia, etc.
         // Worker stores parsed data in: parsed_metadata column (primary) or metadata column (fallback)
         // Also check direct columns (supplier_name, invoice_number, total_amount) for legacy compatibility
-        const formattedDocuments = documents.map(doc => {
+        const formattedDocuments = (documents || []).filter(isProductDocument).map(doc => {
             // Primary: parsed_metadata (where documentParsingWorker stores data)
             const parsedMetadata = doc.parsed_metadata || {};
             // Fallback: metadata column (may contain parsed_data or parsed_metadata nested)
@@ -223,7 +228,7 @@ router.get('/', async (req: Request, res: Response) => {
                 status: doc.status || 'uploaded',
                 size: doc.size_bytes,
                 type: doc.content_type,
-                source: doc.source_id ? 'gmail' : 'upload',
+                source: doc.provider || (doc.source_id ? 'connected_source' : 'upload'),
                 // Parsed fields for table display
                 supplier: supplier,
                 invoice: invoice,

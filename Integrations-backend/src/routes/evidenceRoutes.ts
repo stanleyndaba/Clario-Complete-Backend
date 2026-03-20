@@ -52,6 +52,14 @@ function buildUserFilter(userId: string): string {
   return `user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`;
 }
 
+function isProductEvidenceSource(source: any): boolean {
+  return source?.metadata?.test !== true && source?.account_email !== 'unknown@placeholder.invalid';
+}
+
+function isProductEvidenceDocument(document: any): boolean {
+  return document?.metadata?.ingestion_method !== 'demo_seed';
+}
+
 /**
  * GET /api/evidence/sources
  * Get all connected evidence sources for the current user
@@ -59,26 +67,39 @@ function buildUserFilter(userId: string): string {
 router.get('/sources', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    const tenantId = (req as any).tenant?.tenantId;
 
     logger.info('📋 [EVIDENCE] Fetching evidence sources', { userId });
 
     // Try to get sources from evidence_sources table
-    const { data: sources, error } = await supabaseAdmin
+    let sourcesQuery = supabaseAdmin
       .from('evidence_sources')
       .select('*')
       .or(buildUserFilter(userId))
       .order('created_at', { ascending: false });
+
+    if (tenantId) {
+      sourcesQuery = sourcesQuery.eq('tenant_id', tenantId);
+    }
+
+    const { data: sources, error } = await sourcesQuery;
 
     if (error) {
       logger.warn('⚠️ [EVIDENCE] Error fetching evidence sources, checking integrations table', { error: error.message });
 
       // Fallback: Check evidence_sources table for connected OAuth integrations
       try {
-        const { data: integrations, error: intError } = await supabaseAdmin
+        let integrationsQuery = supabaseAdmin
           .from('evidence_sources')
           .select('*')
           .or(buildUserFilter(userId))
           .eq('status', 'connected');
+
+        if (tenantId) {
+          integrationsQuery = integrationsQuery.eq('tenant_id', tenantId);
+        }
+
+        const { data: integrations, error: intError } = await integrationsQuery;
 
         if (intError || !integrations || integrations.length === 0) {
           // No connected integrations found - return empty sources
@@ -89,7 +110,9 @@ router.get('/sources', async (req: Request, res: Response) => {
         }
 
         // Map integrations to sources format
-        const mappedSources = integrations.map((int: any) => ({
+        const mappedSources = integrations
+          .filter((int: any) => isProductEvidenceSource(int))
+          .map((int: any) => ({
           id: int.id,
           provider: int.provider,
           account_email: int.email || int.account_email || `${int.provider}@connected.local`,
@@ -111,21 +134,31 @@ router.get('/sources', async (req: Request, res: Response) => {
     }
 
     // Filter to connected sources only
-    const connectedSources = (sources || []).filter((s: any) => s.status === 'connected' || s.is_active);
+    const connectedSources = (sources || [])
+      .filter((s: any) => isProductEvidenceSource(s))
+      .filter((s: any) => s.status === 'connected' || s.is_active);
 
     // If no sources found, check integrations table as fallback
     if (connectedSources.length === 0) {
       try {
-        const { data: integrations } = await supabaseAdmin
+        let integrationsQuery = supabaseAdmin
           .from('evidence_sources')
           .select('*')
           .or(buildUserFilter(userId))
           .eq('status', 'connected');
 
-        if (integrations && integrations.length > 0) {
+        if (tenantId) {
+          integrationsQuery = integrationsQuery.eq('tenant_id', tenantId);
+        }
+
+        const { data: integrations } = await integrationsQuery;
+
+        const productIntegrations = (integrations || []).filter((int: any) => isProductEvidenceSource(int));
+
+        if (productIntegrations.length > 0) {
           return res.json({
             success: true,
-            sources: integrations.map((int: any) => ({
+            sources: productIntegrations.map((int: any) => ({
               id: int.id,
               provider: int.provider,
               account_email: int.email || int.account_email || int.metadata?.email || `${int.provider}@connected.local`,
@@ -815,19 +848,58 @@ router.post('/ingest/gmail', async (req: Request, res: Response) => {
 router.get('/status', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const tenantId = (req as any).tenant?.tenantId;
 
-    if (!userId) {
+    if (!userId || !tenantId) {
       return res.status(401).json({
         success: false,
         error: 'Unauthorized'
       });
     }
 
-    const status = await gmailIngestionService.getIngestionStatus(userId);
+    const safeUserId = convertUserIdToUuid(userId);
+    const userFilter = isValidUUID(userId)
+      ? `user_id.eq.${userId},seller_id.eq.${userId}`
+      : `user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`;
+
+    const { data: sources, error: sourcesError } = await supabaseAdmin
+      .from('evidence_sources')
+      .select('status, last_sync_at, metadata, account_email')
+      .eq('tenant_id', tenantId)
+      .or(userFilter);
+
+    if (sourcesError) {
+      throw sourcesError;
+    }
+
+    const connectedSources = (sources || [])
+      .filter((source: any) => isProductEvidenceSource(source))
+      .filter((source: any) => source.status === 'connected');
+
+    const { data: documents, error: documentsError } = await supabaseAdmin
+      .from('evidence_documents')
+      .select('id, metadata, processing_status')
+      .eq('tenant_id', tenantId)
+      .or(userFilter);
+
+    if (documentsError) {
+      throw documentsError;
+    }
+
+    const productDocuments = (documents || []).filter((document: any) => isProductEvidenceDocument(document));
+    const processingCount = productDocuments.filter((document: any) => document.processing_status === 'processing').length;
+    const lastIngestion = connectedSources
+      .map((source: any) => source.last_sync_at)
+      .filter(Boolean)
+      .sort()
+      .reverse()[0];
 
     res.json({
       success: true,
-      ...status
+      hasConnectedSource: connectedSources.length > 0,
+      lastIngestion: lastIngestion || undefined,
+      documentsCount: productDocuments.length,
+      processingCount
     });
   } catch (error: any) {
     logger.error('❌ [EVIDENCE] Error getting ingestion status', {
@@ -1589,6 +1661,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
 router.get('/sources', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const tenantId = (req as any).tenant?.tenantId;
 
     if (!userId) {
       return res.status(401).json({
@@ -1598,19 +1671,29 @@ router.get('/sources', async (req: Request, res: Response) => {
     }
 
     // Try user_id first, fallback to seller_id if needed
-    let { data: sources, error } = await supabase
+    let sourcesQuery = supabase
       .from('evidence_sources')
       .select('id, provider, account_email, status, last_sync_at, created_at, metadata')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
 
+    if (tenantId) {
+      sourcesQuery = sourcesQuery.eq('tenant_id', tenantId);
+    }
+
+    let { data: sources, error } = await sourcesQuery;
+
     // If user_id doesn't exist, try seller_id
     if (error && error.message?.includes('column') && error.message?.includes('user_id')) {
-      const retry = await supabase
+      let retryQuery = supabase
         .from('evidence_sources')
         .select('id, provider, account_email, status, last_sync_at, created_at, metadata')
         .eq('seller_id', userId)
         .order('created_at', { ascending: false });
+      if (tenantId) {
+        retryQuery = retryQuery.eq('tenant_id', tenantId);
+      }
+      const retry = await retryQuery;
       sources = retry.data;
       error = retry.error;
     }
@@ -1627,10 +1710,12 @@ router.get('/sources', async (req: Request, res: Response) => {
       });
     }
 
+    const productSources = (sources || []).filter((source: any) => isProductEvidenceSource(source));
+
     res.json({
       success: true,
-      sources: sources || [],
-      count: sources?.length || 0
+      sources: productSources,
+      count: productSources.length
     });
   } catch (error: any) {
     logger.error('❌ [EVIDENCE] Error in sources endpoint', {
@@ -2977,17 +3062,44 @@ router.post('/matching/:id/approve', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
     const matchId = req.params.id;
+    const tenantId = (req as any).tenant?.tenantId;
 
-    logger.info('✅ [EVIDENCE MATCHING] Approving smart prompt', { userId, matchId });
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
 
-    // Update the match result to approved
-    const { error } = await supabaseAdmin
-      .from('evidence_match_results')
+    logger.info('✅ [EVIDENCE MATCHING] Approving smart prompt', { userId, matchId, tenantId });
+
+    const client = supabaseAdmin || supabase;
+    const { data: existingCase, error: fetchError } = await client
+      .from('dispute_cases')
+      .select('id, evidence_attachments, tenant_id')
+      .eq('id', matchId)
+      .eq('tenant_id', tenantId)
+      .single();
+
+    if (fetchError || !existingCase) {
+      return res.status(404).json({
+        success: false,
+        error: 'Match not found'
+      });
+    }
+
+    const updatedAttachments = {
+      ...(existingCase.evidence_attachments || {}),
+      action_taken: 'approved',
+      approved_at: new Date().toISOString(),
+      approved_by: userId
+    };
+
+    const { error } = await client
+      .from('dispute_cases')
       .update({
-        action_taken: 'approved',
+        evidence_attachments: updatedAttachments,
         updated_at: new Date().toISOString()
       })
-      .eq('id', matchId);
+      .eq('id', matchId)
+      .eq('tenant_id', tenantId);
 
     if (error) throw error;
 
@@ -3019,18 +3131,45 @@ router.post('/matching/:id/reject', async (req: Request, res: Response) => {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
     const matchId = req.params.id;
     const { reason } = req.body;
+    const tenantId = (req as any).tenant?.tenantId;
 
-    logger.info('❌ [EVIDENCE MATCHING] Rejecting smart prompt', { userId, matchId, reason });
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
 
-    // Update the match result to rejected
-    const { error } = await supabaseAdmin
-      .from('evidence_match_results')
+    logger.info('❌ [EVIDENCE MATCHING] Rejecting smart prompt', { userId, matchId, reason, tenantId });
+
+    const client = supabaseAdmin || supabase;
+    const { data: existingCase, error: fetchError } = await client
+      .from('dispute_cases')
+      .select('id, evidence_attachments, tenant_id')
+      .eq('id', matchId)
+      .eq('tenant_id', tenantId)
+      .single();
+
+    if (fetchError || !existingCase) {
+      return res.status(404).json({
+        success: false,
+        error: 'Match not found'
+      });
+    }
+
+    const updatedAttachments = {
+      ...(existingCase.evidence_attachments || {}),
+      action_taken: 'rejected',
+      rejection_reason: reason || 'User rejected',
+      rejected_at: new Date().toISOString(),
+      rejected_by: userId
+    };
+
+    const { error } = await client
+      .from('dispute_cases')
       .update({
-        action_taken: 'rejected',
-        reasoning: reason ? `Rejected: ${reason}` : 'User rejected',
+        evidence_attachments: updatedAttachments,
         updated_at: new Date().toISOString()
       })
-      .eq('id', matchId);
+      .eq('id', matchId)
+      .eq('tenant_id', tenantId);
 
     if (error) throw error;
 

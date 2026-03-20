@@ -8,6 +8,13 @@ import { Request, Response } from 'express';
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
 
+function isProductEvidenceSource(source: {
+  metadata?: any;
+  account_email?: string | null;
+}) {
+  return source.metadata?.test !== true && source.account_email !== 'unknown@placeholder.invalid';
+}
+
 /**
  * Get integration status with evidence providers
  * GET /api/v1/integrations/status
@@ -198,7 +205,9 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
           logger.warn('Failed to fetch evidence sources', { error: sourcesError });
         }
       } else if (evidenceSources && evidenceSources.length > 0) {
-        const amazonSource = evidenceSources.find(source => source.provider === 'amazon' && source.status === 'connected');
+        const productEvidenceSources = evidenceSources.filter(isProductEvidenceSource);
+
+        const amazonSource = productEvidenceSources.find(source => source.provider === 'amazon' && source.status === 'connected');
         if (amazonSource) {
           response.amazon_connected = true;
           response.amazon_account = {
@@ -212,11 +221,11 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         }
 
         // Check if any non-Amazon evidence source is connected
-        const hasConnectedSource = evidenceSources.some(source => source.provider !== 'amazon' && source.status === 'connected');
+        const hasConnectedSource = productEvidenceSources.some(source => source.provider !== 'amazon' && source.status === 'connected');
         response.docs_connected = hasConnectedSource;
 
         // Get last ingestion time
-        const connectedSources = evidenceSources.filter(source => source.provider !== 'amazon' && source.status === 'connected');
+        const connectedSources = productEvidenceSources.filter(source => source.provider !== 'amazon' && source.status === 'connected');
         if (connectedSources.length > 0) {
           const lastIngest = connectedSources
             .map(source => source.last_sync_at)
@@ -230,7 +239,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         }
 
         // Populate provider-specific status
-        for (const source of evidenceSources) {
+        for (const source of productEvidenceSources) {
           const provider = source.provider as keyof typeof response.providerIngest;
 
           if (provider && provider in response.providerIngest) {
@@ -288,48 +297,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       }
     }
 
-    // Token fallback must remain tenant-scoped. We only accept rows explicitly bound
-    // to the resolved tenant and refuse user-global fallback here.
-    const docProviders = ['gmail', 'outlook', 'gdrive', 'dropbox', 'slack', 'adobe_sign', 'onedrive'] as const;
-    for (const provider of docProviders) {
-      if (!response.providerIngest[provider].connected) {
-        try {
-          const { data: tokenRecord, error: tokenError } = await adminClient
-            .from('tokens')
-            .select('expires_at')
-            .eq('user_id', safeUserId)
-            .eq('provider', provider)
-            .eq('tenant_id', tenant.id)
-            .order('updated_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
-
-          if (tokenError && tokenError.code !== 'PGRST116') {
-            const isTenantColumnIssue = tokenError.code === 'PGRST204' ||
-              tokenError.message?.includes('tenant_id') ||
-              tokenError.message?.includes('does not exist');
-            if (!isTenantColumnIssue) {
-              throw tokenError;
-            }
-          }
-
-          if (tokenRecord) {
-            const isExpired = new Date(tokenRecord.expires_at) <= new Date();
-            if (!isExpired) {
-              response.providerIngest[provider].connected = true;
-              response.docs_connected = true;
-              logger.info(`Detected ${provider} connection via tenant-scoped token fallback`, {
-                userId,
-                tenantId: tenant.id,
-                tenantSlug
-              });
-            }
-          }
-        } catch (tokenError) {
-          logger.debug(`${provider} status check fallback failed`, { error: tokenError });
-        }
-      }
-    }
+    // Product connection truth for evidence providers comes from evidence_sources only.
 
     response.agent2_ready = response.amazon_connected;
 
