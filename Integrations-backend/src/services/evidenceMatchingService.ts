@@ -1246,22 +1246,58 @@ class EvidenceMatchingService {
         throw new Error('Dispute case must exist before attaching evidence');
       }
 
-      // Check if dispute_evidence_links table exists - include tenant_id if possible
+      const linkRecord = {
+        dispute_case_id: disputeCaseId,
+        evidence_document_id: result.evidence_document_id,
+        tenant_id: tenantId,
+        relevance_score: result.final_confidence,
+        matched_context: {
+          match_type: result.match_type,
+          matched_fields: result.matched_fields,
+          reasoning: result.reasoning,
+          rule_score: result.rule_score,
+          ml_score: result.ml_score
+        }
+      };
+
+      const { data: existingLink, error: existingLinkError } = await client
+        .from('dispute_evidence_links')
+        .select('id')
+        .eq('dispute_case_id', disputeCaseId)
+        .eq('evidence_document_id', result.evidence_document_id)
+        .maybeSingle();
+
+      if (existingLinkError) {
+        throw new Error(`Failed to lookup evidence link: ${existingLinkError.message}`);
+      }
+
+      if (existingLink?.id) {
+        const { error: updateError } = await client
+          .from('dispute_evidence_links')
+          .update({
+            tenant_id: tenantId,
+            relevance_score: result.final_confidence,
+            matched_context: linkRecord.matched_context
+          })
+          .eq('id', existingLink.id);
+
+        if (updateError) {
+          throw new Error(`Failed to update existing evidence link: ${updateError.message}`);
+        }
+
+        logger.info('ℹ️ [EVIDENCE MATCHING] Reused existing evidence link', {
+          disputeCaseId,
+          detectionId: result.dispute_id,
+          evidenceId: result.evidence_document_id,
+          linkType,
+          linkId: existingLink.id
+        });
+        return;
+      }
+
       const { error: insertError } = await client
         .from('dispute_evidence_links')
-        .insert({
-          dispute_case_id: disputeCaseId,
-          evidence_document_id: result.evidence_document_id,
-          tenant_id: tenantId,
-          relevance_score: result.final_confidence,
-          matched_context: {
-            match_type: result.match_type,
-            matched_fields: result.matched_fields,
-            reasoning: result.reasoning,
-            rule_score: result.rule_score,
-            ml_score: result.ml_score
-          }
-        });
+        .insert(linkRecord);
 
       if (insertError) {
         throw new Error(`Failed to store evidence link: ${insertError.message}`);
