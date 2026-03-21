@@ -6,11 +6,65 @@ import { timelineService } from '../services/timelineService';
 import { extractAgent10EntityIds } from '../utils/agent10Event';
 import { notificationService } from '../notifications/services/notification_service';
 import { NotificationChannel, NotificationPriority, NotificationType } from '../notifications/models/notification';
+import recoveriesWorker from '../workers/recoveriesWorker';
 
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
 const router = Router();
 const logger = getLogger('RecoveryRoutes');
+
+/**
+ * POST /api/recoveries/:id/process
+ * Deterministically process payout detection + reconciliation for one approved case
+ * Uses the same recoveries worker/service path as production approval handling.
+ */
+router.post('/:id/process', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
+
+        const { data: disputeCase, error } = await supabaseAdmin
+            .from('dispute_cases')
+            .select('id, seller_id, status, recovery_status, tenant_id')
+            .eq('id', id)
+            .eq('tenant_id', tenantId)
+            .single();
+
+        if (error || !disputeCase) {
+            return res.status(404).json({
+                success: false,
+                error: 'Recovery case not found'
+            });
+        }
+
+        const result = await recoveriesWorker.processRecoveryForCase(disputeCase.id, disputeCase.seller_id);
+
+        if (!result) {
+            return res.status(200).json({
+                success: true,
+                processed: false,
+                status: disputeCase.status,
+                recovery_status: disputeCase.recovery_status,
+                message: disputeCase.status !== 'approved'
+                    ? 'Case is not approved yet, so recovery processing was skipped.'
+                    : 'No payout match was found yet for this approved case.'
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            processed: true,
+            result
+        });
+
+    } catch (error: any) {
+        logger.error('Error processing recovery for case', { error: error.message, stack: error.stack });
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to process recovery for case'
+        });
+    }
+});
 
 /**
  * GET /api/recoveries/:id
