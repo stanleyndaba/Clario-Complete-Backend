@@ -387,7 +387,7 @@ export class EvidenceMatchingWorker {
   /**
    * Match evidence for a single user
    */
-  private async matchEvidenceForUser(userId: string, tenantId: string): Promise<{
+  private async matchEvidenceForUser(userId: string, tenantId: string, providedClaims?: ClaimData[]): Promise<{
     success: boolean;
     matches?: number;
     autoSubmitted?: number;
@@ -399,7 +399,7 @@ export class EvidenceMatchingWorker {
       logger.info(`🔗 [EVIDENCE MATCHING WORKER] Matching evidence for user: ${userId}`, { tenantId });
 
       // Get match-eligible claims for this user - scope by tenant_id
-      const claims = await this.getPendingClaimsForUser(userId, tenantId);
+      const claims = providedClaims || await this.getPendingClaimsForUser(userId, tenantId);
       const docsCount = await this.getCompletedDocumentCountForUser(userId, tenantId);
 
       if (claims.length === 0) {
@@ -465,6 +465,9 @@ export class EvidenceMatchingWorker {
         matchingResult.results || []
       );
 
+      const resultContexts = await this.resolveMatchingResultContexts(tenantId, matchingResult.results || []);
+      const primaryContext = resultContexts.length === 1 ? resultContexts[0] : null;
+
       logger.info(`✅ [EVIDENCE MATCHING WORKER] Successfully matched evidence for user ${userId}`, {
         matches: matchingResult.matches,
         autoSubmitted: processedStats.autoSubmitted,
@@ -476,18 +479,26 @@ export class EvidenceMatchingWorker {
         type: 'matching',
         status: 'completed',
         userId,
+        dispute_case_id: primaryContext?.disputeCaseId,
+        detection_id: primaryContext?.detectionId,
+        document_id: primaryContext?.documentId,
+        entity_type: primaryContext?.documentId ? 'evidence_document' : (primaryContext?.disputeCaseId ? 'dispute_case' : 'unknown'),
+        entity_id: primaryContext?.documentId || primaryContext?.disputeCaseId || primaryContext?.detectionId,
         matches: matchingResult.matches || 0,
         autoSubmitted: processedStats.autoSubmitted || 0,
         smartPromptsCreated: processedStats.smartPromptsCreated || 0,
         held: processedStats.held || 0,
-        results: (matchingResult.results || []).map((r: any) => ({
-          claim_id: r.dispute_id,
-          detection_id: r.dispute_id,
-          document_id: r.evidence_document_id,
-          confidence_score: r.final_confidence,
-          match_type: r.match_type,
-          action_taken: (r.final_confidence || 0) >= 0.85 ? 'auto_submit'
-            : (r.final_confidence || 0) >= 0.5 ? 'smart_prompt'
+        results: resultContexts.map((ctx: any) => ({
+          claim_id: ctx.disputeCaseId || ctx.detectionId,
+          dispute_case_id: ctx.disputeCaseId,
+          detection_id: ctx.detectionId,
+          document_id: ctx.documentId,
+          entity_type: ctx.documentId ? 'evidence_document' : (ctx.disputeCaseId ? 'dispute_case' : 'detection_result'),
+          entity_id: ctx.documentId || ctx.disputeCaseId || ctx.detectionId,
+          confidence_score: ctx.result.final_confidence,
+          match_type: ctx.result.match_type,
+          action_taken: (ctx.result.final_confidence || 0) >= 0.85 ? 'auto_submit'
+            : (ctx.result.final_confidence || 0) >= 0.5 ? 'smart_prompt'
               : 'no_action'
         })),
         message: `Evidence matching completed: ${matchingResult.matches || 0} matches found`,
@@ -536,10 +547,14 @@ export class EvidenceMatchingWorker {
         const agentEventLogger = (await import('../services/agentEventLogger')).default;
         const matchingStartTime = Date.now();
 
-        for (const result of (matchingResult.results || [])) {
+        for (const ctx of resultContexts) {
+          const result = ctx.result;
           await agentEventLogger.logEvidenceMatching({
             userId,
-            disputeId: result.dispute_id || '',
+            disputeId: ctx.disputeCaseId || ctx.detectionId || result.dispute_id || '',
+            disputeCaseId: ctx.disputeCaseId,
+            detectionId: ctx.detectionId || result.dispute_id || '',
+            documentId: ctx.documentId || result.evidence_document_id,
             success: true,
             confidence: result.final_confidence || 0,
             action: (result.final_confidence || 0) >= 0.85 ? 'auto_submit'
@@ -677,6 +692,48 @@ export class EvidenceMatchingWorker {
     }
   }
 
+  private async resolveMatchingResultContexts(
+    tenantId: string,
+    results: MatchingResult[]
+  ): Promise<Array<{
+    result: MatchingResult;
+    detectionId: string;
+    disputeCaseId?: string;
+    documentId: string;
+  }>> {
+    if (!results.length) {
+      return [];
+    }
+
+    const detectionIds = Array.from(new Set(results.map((result) => result.dispute_id).filter(Boolean)));
+    const { data: disputeCases, error } = await supabaseAdmin
+      .from('dispute_cases')
+      .select('id, detection_result_id')
+      .eq('tenant_id', tenantId)
+      .in('detection_result_id', detectionIds);
+
+    if (error) {
+      logger.warn('⚠️ [EVIDENCE MATCHING WORKER] Failed to resolve dispute case linkage for matching events', {
+        tenantId,
+        error: error.message
+      });
+    }
+
+    const disputeCaseByDetectionId = new Map<string, string>();
+    (disputeCases || []).forEach((disputeCase: any) => {
+      if (disputeCase?.detection_result_id && disputeCase?.id) {
+        disputeCaseByDetectionId.set(disputeCase.detection_result_id, disputeCase.id);
+      }
+    });
+
+    return results.map((result) => ({
+      result,
+      detectionId: result.dispute_id,
+      disputeCaseId: disputeCaseByDetectionId.get(result.dispute_id),
+      documentId: result.evidence_document_id
+    }));
+  }
+
   private async getCompletedDocumentCountForUser(userId: string, tenantId: string): Promise<number> {
     try {
       const client = supabaseAdmin || supabase;
@@ -770,7 +827,7 @@ export class EvidenceMatchingWorker {
   /**
    * Manually trigger matching for a user (for testing)
    */
-  async triggerManualMatching(userId: string, tenantId: string): Promise<{
+  async triggerManualMatching(userId: string, tenantId: string, claims?: ClaimData[]): Promise<{
     success: boolean;
     matches?: number;
     autoSubmitted?: number;
@@ -779,7 +836,7 @@ export class EvidenceMatchingWorker {
     error?: string;
   }> {
     logger.info(`🔧 [EVIDENCE MATCHING WORKER] Manual matching triggered for user: ${userId}`, { tenantId });
-    return await this.matchEvidenceForUser(userId, tenantId);
+    return await this.matchEvidenceForUser(userId, tenantId, claims);
   }
 
   /**

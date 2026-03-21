@@ -123,6 +123,9 @@ export interface ParsingEventData {
 export interface MatchingEventData {
   userId: string;
   disputeId: string;
+  disputeCaseId?: string;
+  detectionId?: string;
+  documentId?: string;
   success: boolean;
   confidence: number;
   action: 'auto_submit' | 'smart_prompt' | 'hold';
@@ -375,8 +378,10 @@ class AgentEventLogger {
       eventType: data.success ? EventType.MATCHING_COMPLETED : EventType.MATCHING_FAILED,
       success: data.success,
       metadata: {
-        disputeId: data.disputeId,
-        detection_id: data.disputeId,
+        disputeId: data.disputeCaseId || data.disputeId,
+        dispute_case_id: data.disputeCaseId,
+        detection_id: data.detectionId || data.disputeId,
+        document_id: data.documentId,
         duration: data.duration,
         confidence: data.confidence,
         action: data.action,

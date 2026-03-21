@@ -470,6 +470,33 @@ function mapAgentEventTypeToTimelineStatus(eventType: string): string {
     return value || 'recorded';
 }
 
+function eventBelongsToRecovery(
+    ids: ReturnType<typeof extractAgent10EntityIds>,
+    canonical: {
+        disputeCaseId?: string;
+        detectionId?: string;
+    }
+): boolean {
+    if (canonical.disputeCaseId) {
+        if (ids.disputeCaseId) {
+            return ids.disputeCaseId === canonical.disputeCaseId;
+        }
+        if (ids.detectionId && canonical.detectionId) {
+            return ids.detectionId === canonical.detectionId;
+        }
+        return false;
+    }
+
+    if (canonical.detectionId) {
+        if (ids.disputeCaseId) {
+            return false;
+        }
+        return ids.detectionId === canonical.detectionId;
+    }
+
+    return false;
+}
+
 function formatAgentEventMessage(event: any): string {
     const metadata = event.metadata || {};
     switch (event.event_type) {
@@ -493,16 +520,25 @@ function formatAgentEventMessage(event: any): string {
 async function fetchEventsForRecovery(id: string, userId: string, tenantId: string) {
     try {
         // First, try to find in detection_results (claims)
-        const { data: detectionResult } = await supabaseAdmin
+        const { data: directDetectionResult } = await supabaseAdmin
             .from('detection_results')
             .select('*')
             .eq('id', id)
             .eq('tenant_id', tenantId)
             .single();
 
-        // If not found in detection_results, try dispute_cases
+        let detectionResult: any = directDetectionResult;
         let disputeCase: any = null;
-        if (!detectionResult) {
+
+        if (detectionResult) {
+            const { data: linkedCase } = await supabaseAdmin
+                .from('dispute_cases')
+                .select('*')
+                .eq('detection_result_id', detectionResult.id)
+                .eq('tenant_id', tenantId)
+                .maybeSingle();
+            disputeCase = linkedCase;
+        } else {
             const { data: dispCase } = await supabaseAdmin
                 .from('dispute_cases')
                 .select('*')
@@ -510,11 +546,25 @@ async function fetchEventsForRecovery(id: string, userId: string, tenantId: stri
                 .eq('tenant_id', tenantId)
                 .single();
             disputeCase = dispCase;
+
+            if (disputeCase?.detection_result_id) {
+                const { data: linkedDetection } = await supabaseAdmin
+                    .from('detection_results')
+                    .select('*')
+                    .eq('id', disputeCase.detection_result_id)
+                    .eq('tenant_id', tenantId)
+                    .maybeSingle();
+                detectionResult = linkedDetection;
+            }
         }
 
         if (!detectionResult && !disputeCase) return [];
 
         const events: any[] = [];
+        const canonical = {
+            disputeCaseId: disputeCase?.id,
+            detectionId: detectionResult?.id || disputeCase?.detection_result_id
+        };
         const relatedIds = [
             id,
             detectionResult?.id,
@@ -534,6 +584,9 @@ async function fetchEventsForRecovery(id: string, userId: string, tenantId: stri
         if (notifications) {
             notifications.forEach((notif: any) => {
                 const ids = extractAgent10EntityIds(notif.payload || {});
+                if (!eventBelongsToRecovery(ids, canonical)) {
+                    return;
+                }
                 const docIds = [ids.documentId].filter(Boolean);
                 events.push({
                     id: `notif-${notif.id}`,
@@ -562,6 +615,9 @@ async function fetchEventsForRecovery(id: string, userId: string, tenantId: stri
         if (agentEvents) {
             agentEvents.forEach((event: any) => {
                 const ids = extractAgent10EntityIds(event.metadata || {});
+                if (!eventBelongsToRecovery(ids, canonical)) {
+                    return;
+                }
                 events.push({
                     id: `agent-${event.id}`,
                     type: 'agent_event',

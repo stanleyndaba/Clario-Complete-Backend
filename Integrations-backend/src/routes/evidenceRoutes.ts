@@ -17,6 +17,7 @@ import { evidenceMatchingService } from '../services/evidenceMatchingService';
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import mlScoringService from '../services/mlScoringService';
+import evidenceMatchingWorker from '../workers/evidenceMatchingWorker';
 
 // Type for multer file
 interface MulterFile {
@@ -2006,51 +2007,31 @@ router.post('/matching/run', async (req: Request, res: Response) => {
       claimsProvided: claims?.length || 'auto-fetch'
     });
 
-    // Send SSE event for matching start
-    try {
-      const sseHub = (await import('../utils/sseHub')).default;
-      sseHub.sendEvent(userId, 'evidence_matching_started', {
-        userId,
-        timestamp: new Date().toISOString()
-      });
-    } catch (sseError) {
-      logger.debug('Failed to send SSE event for matching start', { error: sseError });
-    }
-
-    // Run evidence matching with retry logic
     const tenantId = (req as any).tenant?.tenantId;
     if (!tenantId) {
       return res.status(401).json({ success: false, error: 'Unauthorized: Tenant context missing' });
     }
-    const result = await evidenceMatchingService.runMatchingWithRetry(userId, tenantId, claims);
+    const result = await evidenceMatchingWorker.triggerManualMatching(userId, tenantId, claims);
 
-    // Send SSE event for matching completion
-    try {
-      const sseHub = (await import('../utils/sseHub')).default;
-      sseHub.sendEvent(userId, 'evidence_matching_completed', {
-        userId,
-        matches: result.matches,
-        autoSubmits: result.auto_submits,
-        smartPrompts: result.smart_prompts,
-        timestamp: new Date().toISOString()
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        error: result.error || 'Failed to run evidence matching'
       });
-    } catch (sseError) {
-      logger.debug('Failed to send SSE event for matching completion', { error: sseError });
     }
 
     logger.info('✅ [EVIDENCE MATCHING] Evidence matching completed', {
       userId,
       matches: result.matches,
-      autoSubmits: result.auto_submits,
-      smartPrompts: result.smart_prompts
+      autoSubmits: result.autoSubmitted,
+      smartPrompts: result.smartPromptsCreated
     });
 
     res.json({
       success: true,
       matches: result.matches,
-      auto_submits: result.auto_submits,
-      smart_prompts: result.smart_prompts,
-      results: result.results,
+      auto_submits: result.autoSubmitted,
+      smart_prompts: result.smartPromptsCreated,
       message: `Matched ${result.matches} documents to claims`
     });
   } catch (error: any) {
@@ -3034,24 +3015,31 @@ router.post('/matching/run', async (req: Request, res: Response) => {
 
     logger.info('🔍 [EVIDENCE MATCHING] Starting matching process', { userId, tenantId, isDemo: userId === 'demo-user' });
 
-    // Run matching via the evidenceMatchingService
-    const result = await evidenceMatchingService.runMatchingWithRetry(userId, tenantId);
+    const { claims } = req.body;
+    const result = await evidenceMatchingWorker.triggerManualMatching(userId, tenantId, claims);
+
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        error: result.error || 'Failed to run evidence matching'
+      });
+    }
 
     logger.info('✅ [EVIDENCE MATCHING] Matching completed', {
       userId,
       tenantId,
       matches: result.matches,
-      autoSubmits: result.auto_submits,
-      smartPrompts: result.smart_prompts
+      autoSubmits: result.autoSubmitted,
+      smartPrompts: result.smartPromptsCreated
     });
 
     res.json({
       success: true,
       message: `Matching completed: ${result.matches} matches found`,
       matches: result.matches,
-      auto_submits: result.auto_submits,
-      smart_prompts: result.smart_prompts,
-      results: result.results || []
+      auto_submits: result.autoSubmitted,
+      smart_prompts: result.smartPromptsCreated,
+      results: []
     });
   } catch (error: any) {
     logger.error('❌ [EVIDENCE MATCHING] Error running matching', {
