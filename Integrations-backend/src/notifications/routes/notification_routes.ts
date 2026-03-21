@@ -196,45 +196,6 @@ router.get('/stats', notificationController.getNotificationStats.bind(notificati
 
 /**
  * @swagger
- * /notifications/{id}:
- *   get:
- *     summary: Get a specific notification by ID
- *     tags: [Notifications]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *           format: uuid
- *         description: Notification ID
- *     responses:
- *       200:
- *         description: Notification retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   $ref: '#/components/schemas/Notification'
- *       401:
- *         description: User not authenticated
- *       403:
- *         description: Access denied
- *       404:
- *         description: Notification not found
- *       500:
- *         description: Internal server error
- */
-router.get('/:id', notificationController.getNotificationById.bind(notificationController));
-
-/**
- * @swagger
  * /notifications/mark-read:
  *   post:
  *     summary: Mark notifications as read
