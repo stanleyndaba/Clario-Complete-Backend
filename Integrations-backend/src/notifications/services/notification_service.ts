@@ -92,15 +92,20 @@ export class NotificationService {
         immediate: event.immediate
       });
 
+      const normalizedPayload = normalizeAgent10EventPayload(event.type, event.payload, {
+        tenantId: event.tenant_id
+      });
+
       // Create the notification in the database
       const notification = await Notification.create({
         user_id: event.user_id,
+        tenant_id: event.tenant_id,
         type: event.type,
         title: event.title,
         message: event.message,
         priority: event.priority,
         channel: event.channel,
-        payload: event.payload,
+        payload: normalizedPayload,
         expires_at: event.expires_at
       });
 

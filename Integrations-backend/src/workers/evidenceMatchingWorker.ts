@@ -472,30 +472,49 @@ export class EvidenceMatchingWorker {
         held: processedStats.held
       });
 
+      const matchingEventData = {
+        type: 'matching',
+        status: 'completed',
+        userId,
+        matches: matchingResult.matches || 0,
+        autoSubmitted: processedStats.autoSubmitted || 0,
+        smartPromptsCreated: processedStats.smartPromptsCreated || 0,
+        held: processedStats.held || 0,
+        results: (matchingResult.results || []).map((r: any) => ({
+          claim_id: r.dispute_id,
+          detection_id: r.dispute_id,
+          document_id: r.evidence_document_id,
+          confidence_score: r.final_confidence,
+          match_type: r.match_type,
+          action_taken: (r.final_confidence || 0) >= 0.85 ? 'auto_submit'
+            : (r.final_confidence || 0) >= 0.5 ? 'smart_prompt'
+              : 'no_action'
+        })),
+        message: `Evidence matching completed: ${matchingResult.matches || 0} matches found`,
+        timestamp: new Date().toISOString()
+      };
+
+      // 🎯 Persist aggregate matching event before live delivery
+      try {
+        const agentEventModule = await import('../services/agentEventLogger');
+        const agentEventLogger = agentEventModule.default;
+        await agentEventLogger.logEvent({
+          userId,
+          tenantId,
+          agent: agentEventModule.AgentType.EVIDENCE_MATCHING,
+          eventType: agentEventModule.EventType.MATCHING_COMPLETED,
+          success: true,
+          metadata: matchingEventData
+        });
+      } catch (eventLogError: any) {
+        logger.warn('⚠️ [EVIDENCE MATCHING WORKER] Failed to persist aggregate matching event', {
+          error: eventLogError.message
+        });
+      }
+
       // 🎯 Send SSE event for matching completion
       try {
         const sseHub = (await import('../utils/sseHub')).default;
-        const matchingEventData = {
-          type: 'matching',
-          status: 'completed',
-          userId,
-          matches: matchingResult.matches || 0,
-          autoSubmitted: processedStats.autoSubmitted || 0,
-          smartPromptsCreated: processedStats.smartPromptsCreated || 0,
-          held: processedStats.held || 0,
-          results: (matchingResult.results || []).map((r: any) => ({
-            claim_id: r.dispute_id,
-            document_id: r.evidence_document_id,
-            confidence_score: r.final_confidence,
-            match_type: r.match_type,
-            action_taken: (r.final_confidence || 0) >= 0.85 ? 'auto_submit'
-              : (r.final_confidence || 0) >= 0.5 ? 'smart_prompt'
-                : 'no_action'
-          })),
-          message: `Evidence matching completed: ${matchingResult.matches || 0} matches found`,
-          timestamp: new Date().toISOString()
-        };
-
         // Send as specific event name
         sseHub.sendEvent(userId, 'matching_completed', matchingEventData);
 

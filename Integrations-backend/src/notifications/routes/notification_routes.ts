@@ -144,6 +144,58 @@ router.get('/', notificationController.getNotifications.bind(notificationControl
 
 /**
  * @swagger
+ * /notifications/stats:
+ *   get:
+ *     summary: Get notification statistics for the authenticated user
+ *     tags: [Notifications]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Notification statistics retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     total:
+ *                       type: integer
+ *                       description: Total number of notifications
+ *                     unread:
+ *                       type: integer
+ *                       description: Number of unread notifications
+ *                     read:
+ *                       type: integer
+ *                       description: Number of read notifications
+ *                     pending:
+ *                       type: integer
+ *                       description: Number of pending notifications
+ *                     failed:
+ *                       type: integer
+ *                       description: Number of failed notifications
+ *                     by_type:
+ *                       type: object
+ *                       description: Count of notifications by type
+ *                     by_priority:
+ *                       type: object
+ *                       description: Count of notifications by priority
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *       401:
+ *         description: User not authenticated
+ *       500:
+ *         description: Internal server error
+ */
+router.get('/stats', notificationController.getNotificationStats.bind(notificationController));
+
+/**
+ * @swagger
  * /notifications/{id}:
  *   get:
  *     summary: Get a specific notification by ID
@@ -633,8 +685,6 @@ router.delete('/:id', notificationController.deleteNotification.bind(notificatio
  *       500:
  *         description: Internal server error
  */
-router.get('/stats', notificationController.getNotificationStats.bind(notificationController));
-
 /**
  * @swagger
  * /notifications/types:

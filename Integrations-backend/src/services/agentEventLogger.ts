@@ -6,7 +6,7 @@
 
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
-import { inferAgent10PrimaryEntityId, inferAgent10PrimaryEntityType } from '../utils/agent10Event';
+import { normalizeAgent10EventPayload } from '../utils/agent10Event';
 
 export enum AgentType {
   DATA_SYNC = 'data_sync',          // Agent 2
@@ -289,23 +289,19 @@ class AgentEventLogger {
       const { convertUserIdToUuid } = require('../database/supabaseClient');
       const dbUserId = convertUserIdToUuid(data.userId);
 
+      const normalizedMetadata = normalizeAgent10EventPayload(data.eventType, data.metadata, {
+        tenantId,
+      });
+
       const { error } = await supabaseAdmin
         .from('agent_events')
         .insert({
           user_id: dbUserId,
           tenant_id: tenantId,
           agent: data.agent,
-          agent_name: data.agent,
           event_type: data.eventType,
           success: data.success,
-          metadata: {
-            ...data.metadata,
-            event_type: data.eventType,
-            timestamp: new Date().toISOString(),
-            tenant_id: tenantId,
-            entity_type: inferAgent10PrimaryEntityType(data.metadata),
-            entity_id: inferAgent10PrimaryEntityId(data.metadata)
-          },
+          metadata: normalizedMetadata,
           created_at: new Date().toISOString()
         });
 
@@ -380,6 +376,7 @@ class AgentEventLogger {
       success: data.success,
       metadata: {
         disputeId: data.disputeId,
+        detection_id: data.disputeId,
         duration: data.duration,
         confidence: data.confidence,
         action: data.action,
@@ -411,6 +408,7 @@ class AgentEventLogger {
       success: data.success,
       metadata: {
         disputeId: data.disputeId,
+        dispute_case_id: data.disputeId,
         duration: data.duration,
         amazonCaseId: data.amazonCaseId,
         status: data.status,
@@ -435,7 +433,9 @@ class AgentEventLogger {
       success: data.success,
       metadata: {
         disputeId: data.disputeId,
+        dispute_case_id: data.disputeId,
         recoveryId: data.recoveryId,
+        recovery_id: data.recoveryId,
         duration: data.duration,
         expectedAmount: data.expectedAmount,
         actualAmount: data.actualAmount,
@@ -455,6 +455,7 @@ class AgentEventLogger {
       success: data.success,
       metadata: {
         disputeId: data.disputeId,
+        dispute_case_id: data.disputeId,
         duration: data.duration,
         amountRecovered: data.amountRecovered,
         platformFee: data.platformFee,

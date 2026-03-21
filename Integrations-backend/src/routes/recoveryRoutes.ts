@@ -4,6 +4,8 @@ import { supabaseAdmin } from '../database/supabaseClient';
 import { compositePdfService } from '../services/compositePdfService';
 import { timelineService } from '../services/timelineService';
 import { extractAgent10EntityIds } from '../utils/agent10Event';
+import { notificationService } from '../notifications/services/notification_service';
+import { NotificationChannel, NotificationPriority, NotificationType } from '../notifications/models/notification';
 
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -308,21 +310,24 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
             table: 'detection_results'
         });
 
-        // Create notification for the user
+        // Create persisted + live notification for the user
         try {
-            await supabaseAdmin.from('notifications').insert({
+            await notificationService.createNotification({
                 user_id: userId,
-                type: 'case_filed',
+                tenant_id: tenantId,
+                type: NotificationType.CASE_FILED,
+                title: `Submitted Claim ${caseNumber}`,
                 message: `Claim ${caseNumber} submitted for ${formatCurrency(detectionResult.estimated_value || 0, detectionResult.currency || 'USD')}`,
+                priority: NotificationPriority.HIGH,
+                channel: NotificationChannel.BOTH,
                 payload: {
-                    claim_id: id,
-                    case_id: newCase.id,
+                    detection_id: id,
+                    dispute_case_id: newCase.id,
                     case_number: caseNumber,
                     amount: detectionResult.estimated_value,
                     currency: detectionResult.currency || 'USD'
                 },
-                is_read: false,
-                created_at: new Date().toISOString()
+                immediate: true
             });
         } catch (notifError) {
             logger.warn('Failed to create notification', { error: notifError });
@@ -549,7 +554,7 @@ async function fetchEventsForRecovery(id: string, userId: string, tenantId: stri
         const agentEventFilter = buildAgent10OrFilter('metadata', relatedIds);
         const { data: agentEvents } = await supabaseAdmin
             .from('agent_events')
-            .select('id, agent, agent_name, event_type, created_at, metadata, tenant_id, user_id')
+            .select('id, agent, event_type, created_at, metadata, tenant_id, user_id')
             .eq('tenant_id', tenantId)
             .or(agentEventFilter)
             .order('created_at', { ascending: false });
