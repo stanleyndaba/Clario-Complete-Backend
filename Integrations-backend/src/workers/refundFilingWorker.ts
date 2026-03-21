@@ -18,6 +18,11 @@ import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import refundFilingService, { FilingRequest, FilingResult, CaseStatus } from '../services/refundFilingService';
 import featureFlagService from '../services/featureFlagService';
 import { AmazonSubmissionAutomator } from '../services/AmazonSubmissionAutomator';
+import {
+  classifyRejectionReason,
+  getRejectionPreventionDecision,
+  recordRejectionMemory
+} from '../services/rejectionClassifier';
 
 
 /**
@@ -1183,9 +1188,11 @@ class RefundFilingWorker {
         currency, 
         status, 
         filing_status, 
+        evidence_attachments,
         retry_count,
         detection_results!inner (
-          evidence
+          evidence,
+          anomaly_type
         ),
         dispute_evidence_links!inner (
           evidence_document_id
@@ -1309,9 +1316,49 @@ class RefundFilingWorker {
 
         // Extract order details from detection_results.evidence JSONB
         const detectionEvidence = (disputeCase as any).detection_results?.evidence || {};
+        const anomalyType = (disputeCase as any).detection_results?.anomaly_type || disputeCase.case_type || 'unknown';
         const orderId = detectionEvidence.order_id || '';
         const asin = detectionEvidence.asin || undefined;
         const sku = detectionEvidence.sku || undefined;
+
+        const rejectionPreventionDecision = await getRejectionPreventionDecision({
+          userId: disputeCase.seller_id,
+          anomalyType,
+          orderId,
+          evidenceIds
+        });
+
+        if (rejectionPreventionDecision) {
+          logger.warn('[BLOCK] [REFUND FILING] Rejection memory changed filing behavior', {
+            disputeId: disputeCase.id,
+            anomalyType,
+            rejectionCategory: rejectionPreventionDecision.category,
+            reason: rejectionPreventionDecision.reason
+          });
+          stats.skipped++;
+
+          const preventionQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+          const { error: preventionError } = await preventionQuery
+            .update({
+              filing_status: rejectionPreventionDecision.filingStatus,
+              ...(rejectionPreventionDecision.status ? { status: rejectionPreventionDecision.status } : {}),
+              evidence_attachments: {
+                ...((disputeCase as any).evidence_attachments || {}),
+                ...rejectionPreventionDecision.metadata
+              },
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', disputeCase.id);
+
+          if (preventionError) {
+            logger.error('[ERROR] [REFUND FILING] Failed to apply rejection memory rule', {
+              disputeId: disputeCase.id,
+              error: preventionError.message
+            });
+          }
+
+          continue;
+        }
 
         // DUPLICATE PREVENTION: Check if this order already has an active case
         // This is CRITICAL - filing duplicates = Amazon support abuse flag
@@ -1668,7 +1715,19 @@ class RefundFilingWorker {
       // Get cases that have been filed but not yet closed
       const { data: filedCases, error } = await supabaseAdmin
         .from('dispute_cases')
-        .select('id, seller_id, filing_status')
+        .select(`
+          id,
+          seller_id,
+          filing_status,
+          detection_result_id,
+          case_type,
+          claim_amount,
+          currency,
+          detection_results (
+            anomaly_type,
+            evidence
+          )
+        `)
         .eq('filing_status', 'filed')
         .not('status', 'in', '(approved,rejected,closed)')
         .limit(100);
@@ -1752,6 +1811,7 @@ class RefundFilingWorker {
             // If denied, mark for retry with stronger evidence
             if (statusResult.status === 'denied' && submission.status !== 'denied') {
               const rejectionReason = statusResult.error || statusResult.resolution || 'Unknown reason';
+              const rejectionCategory = classifyRejectionReason(rejectionReason);
               logger.warn(' [REFUND FILING] Case denied, marking for retry', {
                 disputeId: disputeCase.id,
                 rejectionReason: rejectionReason
@@ -1769,6 +1829,28 @@ class RefundFilingWorker {
               } catch (learnError: any) {
                 logger.warn(' [REFUND FILING] Failed to process rejection for learning', {
                   error: learnError.message
+                });
+              }
+
+              try {
+                await recordRejectionMemory({
+                  userId: disputeCase.seller_id,
+                  disputeId: disputeCase.id,
+                  detectionResultId: (disputeCase as any).detection_result_id,
+                  anomalyType: (disputeCase as any).detection_results?.anomaly_type || (disputeCase as any).case_type,
+                  claimType: (disputeCase as any).case_type,
+                  amazonCaseId: statusResult.amazon_case_id,
+                  claimAmount: Number((disputeCase as any).claim_amount || 0),
+                  currency: (disputeCase as any).currency || 'USD',
+                  rawReasonText: rejectionReason,
+                  rejectionCategory,
+                  orderId: (disputeCase as any).detection_results?.evidence?.order_id || null,
+                  timestamp: new Date()
+                });
+              } catch (memoryError: any) {
+                logger.warn(' [REFUND FILING] Failed to store rejection memory', {
+                  disputeId: disputeCase.id,
+                  error: memoryError.message
                 });
               }
 
@@ -1792,14 +1874,13 @@ class RefundFilingWorker {
 
               // P7: SMART REJECTION CLASSIFIER
               // Route based on denial category rather than blindly retrying every denial.
-              const rejectionCategory = this.classifyRejection(rejectionReason);
               logger.info(' [REFUND FILING] Rejection classified', {
                 disputeId: disputeCase.id,
                 rejectionCategory,
                 rejectionReason
               });
 
-              if (rejectionCategory === 'already_resolved') {
+              if (rejectionCategory === 'ALREADY_REIMBURSED') {
                 // Amazon says it's already paid — mark FAILED, don't waste retry budget
                 logger.warn(' [REFUND FILING] Rejection: already resolved — marking FAILED, no retry', { disputeId: disputeCase.id });
                 await supabaseAdmin.from('dispute_cases').update({
@@ -1808,7 +1889,7 @@ class RefundFilingWorker {
                   updated_at: new Date().toISOString()
                 }).eq('id', disputeCase.id);
 
-              } else if (rejectionCategory === 'wrong_claim_type') {
+              } else if (rejectionCategory === 'INVALID_CLAIM' || rejectionCategory === 'OUT_OF_WINDOW') {
                 // Claim type mismatch — needs human to re-categorise, don't auto-retry
                 logger.warn(' [REFUND FILING] Rejection: wrong claim type — routing to manual review', { disputeId: disputeCase.id });
                 await supabaseAdmin.from('dispute_cases').update({
@@ -2030,7 +2111,20 @@ class RefundFilingWorker {
 
       const { data: disputeCase } = await supabaseAdmin
         .from('dispute_cases')
-        .select('seller_id, recovery_status, tenant_id, detection_result_id')
+        .select(`
+          seller_id,
+          recovery_status,
+          tenant_id,
+          detection_result_id,
+          case_type,
+          claim_amount,
+          currency,
+          evidence_attachments,
+          detection_results (
+            anomaly_type,
+            evidence
+          )
+        `)
         .eq('id', disputeId)
         .single();
 
@@ -2110,6 +2204,8 @@ class RefundFilingWorker {
       }
 
       if (newStatus === 'rejected' && previousStatus !== 'rejected') {
+        const rejectionReason = statusResult.error || statusResult.resolution || 'Case rejected by Amazon status polling';
+        const rejectionCategory = classifyRejectionReason(rejectionReason);
         try {
           const { upsertOutcomeForDispute } = await import('../services/detection/confidenceCalibrator');
           await upsertOutcomeForDispute({
@@ -2118,12 +2214,34 @@ class RefundFilingWorker {
             recovery_amount: 0,
             amazon_case_id: statusResult.amazon_case_id,
             resolution_date: new Date(),
-            notes: statusResult.error || statusResult.resolution || 'Case rejected by Amazon status polling'
+            notes: rejectionReason
           });
         } catch (calibrationError: any) {
           logger.warn(' [REFUND FILING] Failed to sync rejection outcome to calibrator', {
             disputeId,
             error: calibrationError.message
+          });
+        }
+
+        try {
+          await recordRejectionMemory({
+            userId: disputeCase?.seller_id || '',
+            disputeId,
+            detectionResultId: (disputeCase as any)?.detection_result_id,
+            anomalyType: (disputeCase as any)?.detection_results?.anomaly_type || (disputeCase as any)?.case_type,
+            claimType: (disputeCase as any)?.case_type,
+            amazonCaseId: statusResult.amazon_case_id,
+            claimAmount: Number((disputeCase as any)?.claim_amount || 0),
+            currency: (disputeCase as any)?.currency || 'USD',
+            rawReasonText: rejectionReason,
+            rejectionCategory,
+            orderId: (disputeCase as any)?.detection_results?.evidence?.order_id || null,
+            timestamp: new Date()
+          });
+        } catch (memoryError: any) {
+          logger.warn(' [REFUND FILING] Failed to persist rejection memory from status update', {
+            disputeId,
+            error: memoryError.message
           });
         }
       }
