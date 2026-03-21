@@ -13,6 +13,198 @@ const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 const router = Router();
 const logger = getLogger('RecoveryRoutes');
 
+function getEvidenceDocumentCount(record: any, documents: any[]): number {
+    if (Array.isArray(documents) && documents.length > 0) {
+        return documents.length;
+    }
+
+    if (record?.evidence_attachments?.document_id) {
+        return 1;
+    }
+
+    if (Array.isArray(record?.matched_document_ids)) {
+        return record.matched_document_ids.length;
+    }
+
+    return 0;
+}
+
+function deriveNextStepContext(record: any, documents: any[]) {
+    const status = String(record?.status || '').toLowerCase();
+    const filingStatus = String(record?.filing_status || '').toLowerCase();
+    const recoveryStatus = String(record?.recovery_status || '').toLowerCase();
+    const billingStatus = String(record?.billing_status || '').toLowerCase();
+    const rejectionCategory = record?.evidence_attachments?.rejection_category || null;
+    const rejectionReason = record?.evidence_attachments?.raw_reason_text || null;
+    const evidenceCount = getEvidenceDocumentCount(record, documents);
+    const hasEvidence = evidenceCount > 0;
+
+    if (billingStatus === 'completed') {
+        return {
+            key: 'billing_completed',
+            title: 'Billing completed',
+            description: 'Recovery payout has been reconciled and billing is complete.',
+            generated: false
+        };
+    }
+
+    if (billingStatus === 'pending' && recoveryStatus === 'reconciled') {
+        return {
+            key: 'billing_pending',
+            title: 'Billing pending',
+            description: 'Payout is reconciled. Billing is the next system step.',
+            generated: false
+        };
+    }
+
+    if (recoveryStatus === 'reconciled') {
+        return {
+            key: 'payout_reconciled',
+            title: 'Payout reconciled',
+            description: 'Funds were detected and reconciled against this case.',
+            generated: false
+        };
+    }
+
+    if (['rejected', 'denied'].includes(status) || rejectionCategory) {
+        return {
+            key: 'rejected_needs_review',
+            title: 'Rejected and needs review',
+            description: rejectionReason || 'Amazon rejected this case. Review the rejection reason before resubmitting.',
+            generated: false
+        };
+    }
+
+    if (status === 'approved') {
+        return {
+            key: 'approved_awaiting_payout',
+            title: 'Approved and awaiting payout',
+            description: 'Amazon approved the case. The system is now waiting for reimbursement to appear and reconcile.',
+            generated: false
+        };
+    }
+
+    if (['filed', 'submitted', 'resubmitted', 'filing'].includes(filingStatus) || ['submitted', 'under review', 'under_review', 'in_progress', 'processing'].includes(status)) {
+        return {
+            key: 'filed_awaiting_amazon',
+            title: 'Filed and awaiting Amazon',
+            description: 'The claim has been filed. The next update should come from Amazon status changes or payout detection.',
+            generated: false
+        };
+    }
+
+    if (!hasEvidence) {
+        return {
+            key: 'waiting_for_evidence',
+            title: 'Waiting for evidence',
+            description: 'Evidence is not attached yet. Matching or manual upload is needed before filing can proceed.',
+            generated: false
+        };
+    }
+
+    if (['pending', 'retrying'].includes(filingStatus) || ['pending', 'new', 'open', 'detected'].includes(status)) {
+        return {
+            key: 'queued_for_filing',
+            title: 'Queued for filing',
+            description: 'The case has evidence attached and is waiting for the filing workflow to act on it.',
+            generated: false
+        };
+    }
+
+    return {
+        key: 'manual_review_required',
+        title: 'Manual review required',
+        description: 'This case needs operator review because the current backend state does not map cleanly to an automated next step.',
+        generated: false
+    };
+}
+
+function buildGeneratedContext(record: any) {
+    return {
+        summaryLabel: 'Generated summary from backend case fields',
+        strategyLabel: 'Generated strategy from backend case state',
+        trustLabel: 'Generated risk guidance from backend case signals',
+        generated: true,
+        basedOn: {
+            status: record?.status || null,
+            filing_status: record?.filing_status || null,
+            recovery_status: record?.recovery_status || null,
+            billing_status: record?.billing_status || null,
+            evidence_document_id: record?.evidence_attachments?.document_id || null
+        }
+    };
+}
+
+function buildCaseResponse(record: any, documents: any[], events: any[], objectType: 'case' | 'detection') {
+    const requestedAmount = typeof record?.claim_amount === 'number'
+        ? record.claim_amount
+        : (typeof record?.estimated_value === 'number' ? record.estimated_value : 0);
+    const approvedAmount = typeof record?.recovery_amount === 'number'
+        ? record.recovery_amount
+        : null;
+    const actualPayoutAmount = typeof record?.actual_payout_amount === 'number'
+        ? record.actual_payout_amount
+        : null;
+    const evidenceSummary = {
+        matched_document_count: getEvidenceDocumentCount(record, documents),
+        has_documents: getEvidenceDocumentCount(record, documents) > 0,
+        match_type: record?.evidence_attachments?.match_type || null,
+        match_confidence: record?.evidence_attachments?.match_confidence || null
+    };
+
+    return {
+        id: record.id,
+        object_type: objectType,
+        dispute_case_id: objectType === 'case' ? record.id : null,
+        detection_result_id: objectType === 'case' ? (record.detection_result_id || null) : record.id,
+        title: record.case_type || record.anomaly_type || 'Claim Details',
+        status: record.status || null,
+        filing_status: record.filing_status || null,
+        recovery_status: record.recovery_status || null,
+        billing_status: record.billing_status || null,
+        updated_at: record.updated_at || record.created_at || null,
+        createdDate: record.created_at || record.discovery_date || null,
+        expectedPayoutDate: record.expected_payout_date || null,
+        sku: record.sku || record.evidence?.sku || 'N/A',
+        asin: record.asin || record.evidence?.asin || null,
+        productName: record.case_type || record.anomaly_type || 'Unknown Product',
+        amazonCaseId: record.provider_case_id || record.amazon_case_id || null,
+        currency: record.currency || 'USD',
+        case_number: record.case_number || null,
+        claim_number: record.claim_id || record.case_number || record.claim_number || null,
+        seller_id: record.seller_id || null,
+        user_id: record.user_id || null,
+        store_name: record.store_name || null,
+        prior_case_id: record.prior_case_id || null,
+        warehouse: record.warehouse || null,
+        facility: record.facility || record.evidence?.fulfillment_center || null,
+        order_id: record.order_id || record.evidence?.order_id || null,
+        units_lost: record.units_lost ?? record.quantity ?? null,
+        units_is_verified: record.units_is_verified === true,
+        unit_cost: record.unit_cost ?? null,
+        confidence_score: typeof record.confidence_score === 'number' ? record.confidence_score : null,
+        anomaly_type: record.anomaly_type || record.case_type || null,
+        estimated_claim_value: objectType === 'detection'
+            ? (typeof record.estimated_value === 'number' ? record.estimated_value : requestedAmount)
+            : requestedAmount,
+        requested_amount: requestedAmount,
+        approved_amount: approvedAmount,
+        actual_payout_amount: actualPayoutAmount,
+        billed_amount: typeof record.billed_amount === 'number' ? record.billed_amount : null,
+        documents,
+        evidence_attachments: record.evidence_attachments || null,
+        evidence: record.evidence || {},
+        evidence_summary: evidenceSummary,
+        rejection_category: record?.evidence_attachments?.rejection_category || null,
+        rejection_reason: record?.evidence_attachments?.raw_reason_text || null,
+        duplicate_blocked: record.filing_status === 'duplicate_blocked' || record.duplicate_blocked === true,
+        generated_context: buildGeneratedContext(record),
+        next_step_context: deriveNextStepContext(record, documents),
+        events,
+        ...generateCaseStrategy(record)
+    };
+}
+
 /**
  * POST /api/recoveries/:id/process
  * Deterministically process payout detection + reconciliation for one approved case
@@ -103,7 +295,8 @@ router.get('/:id', async (req: Request, res: Response) => {
             const { data: docLinks } = await supabaseAdmin
                 .from('dispute_evidence_links')
                 .select('evidence_document_id')
-                .eq('dispute_case_id', disputeCase.id);
+                .eq('dispute_case_id', disputeCase.id)
+                .eq('tenant_id', tenantId);
 
             let documents: any[] = [];
             if (docLinks && docLinks.length > 0) {
@@ -111,7 +304,8 @@ router.get('/:id', async (req: Request, res: Response) => {
                 const { data: docs } = await supabaseAdmin
                     .from('evidence_documents')
                     .select('id, filename, doc_type, created_at, metadata, extracted')
-                    .in('id', docIds);
+                    .in('id', docIds)
+                    .eq('tenant_id', tenantId);
                 documents = docs || [];
             }
             // Also check evidence_attachments for document_id (set by matching flow)
@@ -120,6 +314,7 @@ router.get('/:id', async (req: Request, res: Response) => {
                     .from('evidence_documents')
                     .select('id, filename, doc_type, created_at, metadata, extracted')
                     .eq('id', disputeCase.evidence_attachments.document_id)
+                    .eq('tenant_id', tenantId)
                     .single();
                 if (matchedDoc) {
                     documents = [{
@@ -131,30 +326,12 @@ router.get('/:id', async (req: Request, res: Response) => {
                 }
             }
 
-            return res.json({
-                id: disputeCase.id,
-                title: disputeCase.case_type || 'Claim Details',
-                status: disputeCase.status,
-                guaranteedAmount: disputeCase.claim_amount || 0,
-                expectedPayoutDate: disputeCase.expected_payout_date,
-                createdDate: disputeCase.created_at,
-                sku: disputeCase.sku || 'N/A',
-                productName: disputeCase.case_type || 'Unknown Product',
-                amazonCaseId: disputeCase.provider_case_id || disputeCase.amazon_case_id,
-                currency: disputeCase.currency || 'USD',
-                filing_status: disputeCase.filing_status,
-                case_number: disputeCase.case_number,
+            return res.json(buildCaseResponse(
+                disputeCase,
                 documents,
-                // Add evidence_attachments for frontend to access match details
-                evidence_attachments: disputeCase.evidence_attachments,
-                // Add fields for detailed view
-                claim_number: disputeCase.claim_id || disputeCase.case_number,
-                evidence: disputeCase.evidence || {},
-                // Include events directly in detail response
-                events: await fetchEventsForRecovery(id, userId, tenantId),
-                // Generate dynamic strategy
-                ...generateCaseStrategy(disputeCase)
-            });
+                await fetchEventsForRecovery(disputeCase.id, userId, tenantId),
+                'case'
+            ));
         }
 
         // Try detection_results (unfiled claims) — scoped by tenant
@@ -173,31 +350,17 @@ router.get('/:id', async (req: Request, res: Response) => {
                 const { data: docs } = await supabaseAdmin
                     .from('evidence_documents')
                     .select('id, filename, doc_type, created_at, metadata')
-                    .in('id', matchedDocIds);
+                    .in('id', matchedDocIds)
+                    .eq('tenant_id', tenantId);
                 documents = docs || [];
             }
 
-            return res.json({
-                id: detectionResult.id,
-                title: detectionResult.anomaly_type || 'Claim Details',
-                status: detectionResult.status || 'Open',
-                guaranteedAmount: detectionResult.estimated_value || 0,
-                expectedPayoutDate: null,
-                createdDate: detectionResult.created_at || detectionResult.discovery_date,
-                sku: detectionResult.sku || detectionResult.evidence?.sku || 'N/A',
-                asin: detectionResult.asin || detectionResult.evidence?.asin,
-                productName: detectionResult.anomaly_type || 'Unknown Product',
-                currency: detectionResult.currency || 'USD',
-                confidence_score: detectionResult.confidence_score,
+            return res.json(buildCaseResponse(
+                detectionResult,
                 documents,
-                // Add fields for detailed view
-                claim_number: detectionResult.claim_number,
-                evidence: detectionResult.evidence || {},
-                // Include events directly in detail response
-                events: await fetchEventsForRecovery(id, userId, tenantId),
-                // Generate dynamic strategy
-                ...generateCaseStrategy(detectionResult)
-            });
+                await fetchEventsForRecovery(detectionResult.id, userId, tenantId),
+                'detection'
+            ));
         }
 
         // Not found
@@ -571,7 +734,7 @@ function formatAgentEventMessage(event: any): string {
     }
 }
 
-async function fetchEventsForRecovery(id: string, userId: string, tenantId: string) {
+async function fetchEventsForRecovery(id: string, _userId: string, tenantId: string) {
     try {
         // First, try to find in detection_results (claims)
         const { data: directDetectionResult } = await supabaseAdmin
@@ -630,7 +793,6 @@ async function fetchEventsForRecovery(id: string, userId: string, tenantId: stri
         const { data: notifications } = await supabaseAdmin
             .from('notifications')
             .select('*')
-            .eq('user_id', userId)
             .eq('tenant_id', tenantId)
             .or(notificationFilter)
             .order('created_at', { ascending: false });
