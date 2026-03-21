@@ -82,7 +82,8 @@ export class UnifiedIngestionService {
    */
   async ingestFromAllSources(
     userId: string,
-    options: IngestionOptions = {}
+    options: IngestionOptions = {},
+    tenantId?: string
   ): Promise<UnifiedIngestionResult> {
     const startTime = Date.now();
     const errors: string[] = [];
@@ -98,7 +99,7 @@ export class UnifiedIngestionService {
       });
 
       // Get connected sources
-      const connectedSources = await this.getConnectedSources(userId, options.providers);
+      const connectedSources = await this.getConnectedSources(userId, options.providers, tenantId);
 
       if (connectedSources.length === 0) {
         logger.warn('⚠️ [UNIFIED INGESTION] No connected evidence sources found', {
@@ -189,7 +190,8 @@ export class UnifiedIngestionService {
    */
   private async getConnectedSources(
     userId: string,
-    providerFilter?: string[]
+    providerFilter?: string[],
+    tenantId?: string
   ): Promise<Array<{ provider: string; accountEmail?: string }>> {
     try {
       let query = supabase
@@ -197,6 +199,10 @@ export class UnifiedIngestionService {
         .select('provider, account_email')
         .eq('user_id', userId)
         .eq('status', 'connected');
+
+      if (tenantId) {
+        query = query.eq('tenant_id', tenantId);
+      }
 
       if (providerFilter && providerFilter.length > 0) {
         query = query.in('provider', providerFilter);

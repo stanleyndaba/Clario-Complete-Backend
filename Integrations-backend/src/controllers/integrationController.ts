@@ -9,11 +9,19 @@ import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supaba
 async function disconnectEvidenceSource(req: Request, res: Response, provider: string) {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const tenantId = (req as any).tenant?.tenantId;
     
     if (!userId) {
       return res.status(401).json({
         ok: false,
         error: 'Authentication required'
+      });
+    }
+
+    if (!tenantId) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Tenant context is required'
       });
     }
 
@@ -39,6 +47,7 @@ async function disconnectEvidenceSource(req: Request, res: Response, provider: s
           status: 'disconnected', 
           updated_at: new Date().toISOString() 
         })
+        .eq('tenant_id', tenantId)
         .eq('user_id', userId)
         .eq('provider', provider);
     } catch (dbError) {

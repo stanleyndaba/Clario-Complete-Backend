@@ -8,6 +8,106 @@ import { Request, Response } from 'express';
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
 
+type ProviderKey = 'amazon' | 'gmail' | 'outlook' | 'gdrive' | 'dropbox' | 'slack' | 'adobe_sign' | 'onedrive';
+
+interface EvidenceFilters {
+  senderPatterns: string[];
+  excludeSenders: string[];
+  subjectKeywords: string[];
+  excludeSubjects: string[];
+  fileTypes: { pdf: boolean; images: boolean; spreadsheets: boolean; docs: boolean; shipping: boolean };
+  fileNamePatterns: string[];
+  folders: string[];
+  dateRange: 'last_30' | 'last_90' | 'last_12_months' | 'last_18_months' | 'since_last_sync' | 'all';
+  skipDuplicates: boolean;
+  skipExisting: boolean;
+}
+
+interface ProviderStatus {
+  provider: ProviderKey;
+  source_id?: string;
+  connected: boolean;
+  auth_valid: boolean;
+  needs_reconnect: boolean;
+  last_ingest_at?: string;
+  last_success_at?: string;
+  error_state?: string;
+  error_message?: string;
+  ingestion_state: 'disconnected' | 'unverified' | 'no_data' | 'stale' | 'current' | 'failed';
+  has_data: boolean;
+  account_email?: string;
+  scopes?: string[];
+}
+
+const DEFAULT_FILTERS: EvidenceFilters = {
+  senderPatterns: [
+    '*@fedex.com', '*@ups.com', '*@dhl.com', '*@usps.com', '*@ontrac.com', '*@freight*',
+    '*@amazon.com', '*@sellercentral.amazon.*', '*@payments.amazon.com',
+    '*@shipstation.com', '*@shipbob.com', '*@easyship.com', '*@flexport.com', '*@deliverr.com',
+    '*invoice*', '*billing*', '*accounts*', '*finance*'
+  ],
+  excludeSenders: ['*newsletter*', '*marketing*', '*promo*', '*noreply*advertising*', '*survey*'],
+  subjectKeywords: [
+    'invoice', 'tax invoice', 'proforma', 'receipt', 'PO', 'purchase order', 'packing slip', 'commercial invoice', 'vendor invoice', 'supplier',
+    'bill of lading', 'BOL', 'waybill', 'tracking', 'shipment', 'dispatch', 'airwaybill', 'AWB', 'freight', 'manifest', 'booking confirmation', 'carrier',
+    'POD', 'proof of delivery', 'delivery confirmation', 'signed', 'delivered', 'received',
+    'return authorization', 'RMA', 'return label', 'return confirmed', 'refund issued', 'credit note', 'credit memo', 'refund', 'return request',
+    'ASN', 'advance shipment notice', 'packing list', 'shipment summary', 'inventory', 'pick list', 'pack slip',
+    'reimbursement', 'case', 'FBA', 'removal order', 'liquidation'
+  ],
+  excludeSubjects: ['unsubscribe', 'promotional', 'survey', 'feedback request', 'rate your'],
+  fileTypes: { pdf: true, images: true, spreadsheets: true, docs: false, shipping: true },
+  fileNamePatterns: [
+    'invoice', 'inv-', 'inv_', 'receipt', 'tax-invoice', 'purchase-order', 'po-', 'po_', 'packing-slip', 'commercial-invoice', 'proforma',
+    'bol', 'bill-of-lading', 'waybill', 'awb', 'tracking', 'manifest', 'shipment', 'freight', 'dispatch', 'booking',
+    'pod', 'proof-of-delivery', 'delivery', 'signed', 'confirmation',
+    'rma', 'return', 'credit-note', 'credit-memo', 'refund',
+    'asn', 'packing-list', 'pack-list', 'pick-list', 'inventory',
+    'FBA', 'reimburse', 'removal', 'liquidation', 'order'
+  ],
+  folders: ['/Invoices', '/Shipping', '/Returns', '/Credits', '/Amazon', '/Finance', '/Inventory'],
+  dateRange: 'last_18_months',
+  skipDuplicates: true,
+  skipExisting: true
+};
+
+function parseScopes(permissions: any): string[] | undefined {
+  if (!permissions) return undefined;
+  if (Array.isArray(permissions)) return permissions;
+  if (typeof permissions === 'string') {
+    try {
+      const parsed = JSON.parse(permissions);
+      return Array.isArray(parsed) ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function parseExpiry(source: any): Date | null {
+  const raw = source?.metadata?.expires_at || source?.metadata?.token_expires_at;
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function computeIngestionState(connected: boolean, authValid: boolean, hasData: boolean, lastIngestAt?: string, sourceStatus?: string, errorMessage?: string): ProviderStatus['ingestion_state'] {
+  if (!connected) return 'disconnected';
+  if (sourceStatus === 'error' || errorMessage) return 'failed';
+  if (!authValid) return 'unverified';
+  if (!lastIngestAt && !hasData) return 'unverified';
+  if (!hasData) return 'no_data';
+  if (!lastIngestAt) return 'current';
+
+  const lastIngest = new Date(lastIngestAt);
+  if (Number.isNaN(lastIngest.getTime())) return 'current';
+
+  const ageMs = Date.now() - lastIngest.getTime();
+  const staleThresholdMs = 7 * 24 * 60 * 60 * 1000;
+  return ageMs > staleThresholdMs ? 'stale' : 'current';
+}
+
 function isProductEvidenceSource(source: {
   metadata?: any;
   account_email?: string | null;
@@ -44,7 +144,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
 
     const { data: tenant, error: tenantError } = await adminClient
       .from('tenants')
-      .select('id, slug, name')
+      .select('id, slug, name, settings')
       .eq('slug', tenantSlug)
       .is('deleted_at', null)
       .maybeSingle();
@@ -115,6 +215,12 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       docs_connected: boolean;
       lastSync: string | null;
       lastIngest: string | null;
+      evidenceSettings: {
+        autoCollect: boolean;
+        schedule: string;
+        filters: EvidenceFilters;
+      };
+      providers: Record<ProviderKey, ProviderStatus>;
       providerIngest: {
         gmail: { connected: boolean; lastIngest?: string; scopes?: string[]; email?: string; error?: string };
         outlook: { connected: boolean; lastIngest?: string; scopes?: string[]; email?: string; error?: string };
@@ -134,6 +240,21 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       docs_connected: false,
       lastSync: null,
       lastIngest: null,
+      evidenceSettings: {
+        autoCollect: tenant.settings?.evidenceIngestion?.autoCollect !== false,
+        schedule: tenant.settings?.evidenceIngestion?.schedule || 'daily_0200',
+        filters: tenant.settings?.evidenceIngestion?.filters || DEFAULT_FILTERS
+      },
+      providers: {
+        amazon: { provider: 'amazon', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false },
+        gmail: { provider: 'gmail', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false },
+        outlook: { provider: 'outlook', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false },
+        gdrive: { provider: 'gdrive', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false },
+        dropbox: { provider: 'dropbox', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false },
+        slack: { provider: 'slack', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false },
+        adobe_sign: { provider: 'adobe_sign', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false },
+        onedrive: { provider: 'onedrive', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false }
+      },
       providerIngest: {
         gmail: { connected: false },
         outlook: { connected: false },
@@ -173,6 +294,9 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         }
       } else if (amazonToken && (!amazonToken.expires_at || new Date(amazonToken.expires_at) > new Date())) {
         response.amazon_connected = true;
+        response.providers.amazon.connected = true;
+        response.providers.amazon.auth_valid = true;
+        response.providers.amazon.ingestion_state = 'unverified';
       }
     } catch (amazonError) {
       logger.debug('Error checking Amazon connection', { error: amazonError });
@@ -184,9 +308,27 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
 
     // Check evidence sources from database for the resolved tenant only.
     try {
+      const { data: providerDocuments } = await adminClient
+        .from('evidence_documents')
+        .select('provider, created_at')
+        .eq('tenant_id', tenant.id)
+        .or(`user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`);
+
+      const providerDocumentStats = new Map<string, { count: number; lastDocumentAt?: string }>();
+      for (const doc of providerDocuments || []) {
+        const key = (doc.provider || '').toLowerCase();
+        if (!key) continue;
+        const current = providerDocumentStats.get(key) || { count: 0, lastDocumentAt: undefined };
+        current.count += 1;
+        if (doc.created_at && (!current.lastDocumentAt || doc.created_at > current.lastDocumentAt)) {
+          current.lastDocumentAt = doc.created_at;
+        }
+        providerDocumentStats.set(key, current);
+      }
+
       const { data: evidenceSources, error: sourcesError } = await adminClient
         .from('evidence_sources')
-        .select('provider, status, last_sync_at, account_email, permissions, seller_id, display_name, metadata')
+        .select('id, provider, status, last_sync_at, account_email, permissions, seller_id, display_name, metadata')
         .eq('tenant_id', tenant.id)
         .or(`user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`);
 
@@ -218,6 +360,8 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
               ? amazonSource.metadata.marketplaces
               : undefined
           };
+          response.providers.amazon.source_id = amazonSource.id;
+          response.providers.amazon.account_email = amazonSource.account_email || undefined;
         }
 
         // Check if any non-Amazon evidence source is connected
@@ -241,26 +385,49 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         // Populate provider-specific status
         for (const source of productEvidenceSources) {
           const provider = source.provider as keyof typeof response.providerIngest;
+          const providerKey = source.provider as ProviderKey;
+          const documentStats = providerDocumentStats.get(source.provider) || providerDocumentStats.get(source.provider.toLowerCase()) || { count: 0 };
+          const expiry = parseExpiry(source);
+          const authValid = source.status === 'connected' && (!expiry || expiry > new Date());
+          const errorMessage = source.metadata?.last_error || source.metadata?.error || undefined;
+          const hasData = (documentStats.count || 0) > 0;
+          const lastSuccessAt = documentStats.lastDocumentAt || source.last_sync_at || undefined;
+          const ingestionState = computeIngestionState(
+            source.status === 'connected',
+            authValid,
+            hasData,
+            source.last_sync_at || undefined,
+            source.status,
+            errorMessage
+          );
+
+          if (providerKey in response.providers) {
+            response.providers[providerKey] = {
+              provider: providerKey,
+              source_id: source.id,
+              connected: source.status === 'connected',
+              auth_valid: authValid,
+              needs_reconnect: source.status === 'connected' ? !authValid : source.status === 'error',
+              last_ingest_at: source.last_sync_at || undefined,
+              last_success_at: lastSuccessAt,
+              error_state: source.status === 'error' ? 'provider_error' : (!authValid && source.status === 'connected' ? 'auth_invalid' : undefined),
+              error_message: errorMessage,
+              ingestion_state: ingestionState,
+              has_data: hasData,
+              account_email: source.account_email || undefined,
+              scopes: parseScopes(source.permissions)
+            };
+          }
 
           if (provider && provider in response.providerIngest) {
-            let scopes: string[] | undefined;
-            if (source.permissions) {
-              if (typeof source.permissions === 'string') {
-                try {
-                  scopes = JSON.parse(source.permissions);
-                } catch {
-                  scopes = undefined;
-                }
-              } else if (Array.isArray(source.permissions)) {
-                scopes = source.permissions;
-              }
-            }
+            const scopes = parseScopes(source.permissions);
             
             response.providerIngest[provider] = {
               connected: source.status === 'connected',
               lastIngest: source.last_sync_at || undefined,
               scopes: scopes,
-              email: source.account_email || undefined
+              email: source.account_email || undefined,
+              error: errorMessage
             };
           }
         }
@@ -296,6 +463,16 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         });
       }
     }
+
+    const connectedNonAmazonProviders = (Object.entries(response.providers) as Array<[ProviderKey, ProviderStatus]>)
+      .filter(([provider]) => provider !== 'amazon' && response.providers[provider].connected);
+    response.docs_connected = connectedNonAmazonProviders.length > 0;
+
+    response.providers.amazon.auth_valid = response.amazon_connected;
+    response.providers.amazon.needs_reconnect = response.providers.amazon.connected && !response.providers.amazon.auth_valid;
+    response.providers.amazon.ingestion_state = response.providers.amazon.connected
+      ? (response.providers.amazon.auth_valid ? 'unverified' : 'failed')
+      : 'disconnected';
 
     // Product connection truth for evidence providers comes from evidence_sources only.
 

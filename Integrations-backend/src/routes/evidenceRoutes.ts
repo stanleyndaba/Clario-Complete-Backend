@@ -73,6 +73,123 @@ function getAuthoritativeParserStatus(doc: any): string {
   return doc?.parser_status || metadata?.parser_status || 'pending';
 }
 
+const DEFAULT_EVIDENCE_INGESTION_SETTINGS = {
+  autoCollect: true,
+  schedule: 'daily_0200',
+  filters: {
+    senderPatterns: [
+      '*@fedex.com', '*@ups.com', '*@dhl.com', '*@usps.com', '*@ontrac.com', '*@freight*',
+      '*@amazon.com', '*@sellercentral.amazon.*', '*@payments.amazon.com',
+      '*@shipstation.com', '*@shipbob.com', '*@easyship.com', '*@flexport.com', '*@deliverr.com',
+      '*invoice*', '*billing*', '*accounts*', '*finance*'
+    ],
+    excludeSenders: ['*newsletter*', '*marketing*', '*promo*', '*noreply*advertising*', '*survey*'],
+    subjectKeywords: [
+      'invoice', 'tax invoice', 'proforma', 'receipt', 'PO', 'purchase order', 'packing slip', 'commercial invoice', 'vendor invoice', 'supplier',
+      'bill of lading', 'BOL', 'waybill', 'tracking', 'shipment', 'dispatch', 'airwaybill', 'AWB', 'freight', 'manifest', 'booking confirmation', 'carrier',
+      'POD', 'proof of delivery', 'delivery confirmation', 'signed', 'delivered', 'received',
+      'return authorization', 'RMA', 'return label', 'return confirmed', 'refund issued', 'credit note', 'credit memo', 'refund', 'return request',
+      'ASN', 'advance shipment notice', 'packing list', 'shipment summary', 'inventory', 'pick list', 'pack slip',
+      'reimbursement', 'case', 'FBA', 'removal order', 'liquidation'
+    ],
+    excludeSubjects: ['unsubscribe', 'promotional', 'survey', 'feedback request', 'rate your'],
+    fileTypes: { pdf: true, images: true, spreadsheets: true, docs: false, shipping: true },
+    fileNamePatterns: [
+      'invoice', 'inv-', 'inv_', 'receipt', 'tax-invoice', 'purchase-order', 'po-', 'po_', 'packing-slip', 'commercial-invoice', 'proforma',
+      'bol', 'bill-of-lading', 'waybill', 'awb', 'tracking', 'manifest', 'shipment', 'freight', 'dispatch', 'booking',
+      'pod', 'proof-of-delivery', 'delivery', 'signed', 'confirmation',
+      'rma', 'return', 'credit-note', 'credit-memo', 'refund',
+      'asn', 'packing-list', 'pack-list', 'pick-list', 'inventory',
+      'FBA', 'reimburse', 'removal', 'liquidation', 'order'
+    ],
+    folders: ['/Invoices', '/Shipping', '/Returns', '/Credits', '/Amazon', '/Finance', '/Inventory'],
+    dateRange: 'last_18_months',
+    skipDuplicates: true,
+    skipExisting: true
+  }
+};
+
+function getTenantIdOrReject(req: Request, res: Response): string | null {
+  const tenantId = (req as any).tenant?.tenantId;
+  if (!tenantId) {
+    res.status(400).json({
+      ok: false,
+      error: 'Tenant context is required'
+    });
+    return null;
+  }
+  return tenantId;
+}
+
+async function loadTenantEvidenceSettings(tenantId: string) {
+  const { data: tenant, error } = await supabaseAdmin
+    .from('tenants')
+    .select('settings')
+    .eq('id', tenantId)
+    .single();
+
+  if (error) throw error;
+
+  return {
+    tenantSettings: tenant?.settings || {},
+    evidenceIngestion: tenant?.settings?.evidenceIngestion || DEFAULT_EVIDENCE_INGESTION_SETTINGS
+  };
+}
+
+async function persistTenantEvidenceSettings(tenantId: string, nextEvidenceIngestion: any) {
+  const { tenantSettings } = await loadTenantEvidenceSettings(tenantId);
+  const nextSettings = {
+    ...tenantSettings,
+    evidenceIngestion: nextEvidenceIngestion
+  };
+
+  const { error } = await supabaseAdmin
+    .from('tenants')
+    .update({
+      settings: nextSettings,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', tenantId);
+
+  if (error) throw error;
+}
+
+async function syncTenantEvidenceSourceMetadata(tenantId: string, userId: string, patch: Record<string, any>) {
+  const safeUserId = convertUserIdToUuid(userId);
+  const userFilter = isValidUUID(userId)
+    ? `user_id.eq.${userId},seller_id.eq.${userId}`
+    : `user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`;
+
+  const { data: sources, error } = await supabaseAdmin
+    .from('evidence_sources')
+    .select('id, metadata')
+    .eq('tenant_id', tenantId)
+    .or(userFilter);
+
+  if (error) throw error;
+
+  for (const source of sources || []) {
+    const currentMetadata = source.metadata || {};
+    const nextMetadata = {
+      ...currentMetadata,
+      ...patch,
+      ingestion_settings: {
+        ...(currentMetadata.ingestion_settings || {}),
+        ...patch
+      }
+    };
+
+    await supabaseAdmin
+      .from('evidence_sources')
+      .update({
+        metadata: nextMetadata,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', source.id)
+      .eq('tenant_id', tenantId);
+  }
+}
+
 /**
  * GET /api/evidence/sources
  * Get all connected evidence sources for the current user
@@ -690,9 +807,16 @@ router.post('/ingest/slack', async (req: Request, res: Response) => {
  */
 router.post('/ingest/all', async (req: Request, res: Response) => {
   try {
-    // Allow demo-user fallback for testing
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const tenantId = getTenantIdOrReject(req, res);
 
+    if (!tenantId) return;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
 
     const { providers, query, maxResults, autoParse, folderId, folderPath } = req.body;
 
@@ -724,7 +848,7 @@ router.post('/ingest/all', async (req: Request, res: Response) => {
       autoParse: autoParse !== false,
       folderId,
       folderPath
-    });
+    }, tenantId);
 
     // Send SSE event for ingestion completion
     try {
@@ -934,6 +1058,9 @@ router.get('/status', async (req: Request, res: Response) => {
 router.post('/auto-collect', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const tenantId = getTenantIdOrReject(req, res);
+
+    if (!tenantId) return;
 
     if (!userId) {
       return res.status(401).json({
@@ -943,21 +1070,23 @@ router.post('/auto-collect', async (req: Request, res: Response) => {
     }
 
     const { enabled } = req.body;
+    const { evidenceIngestion } = await loadTenantEvidenceSettings(tenantId);
+    const nextSettings = {
+      ...evidenceIngestion,
+      autoCollect: enabled !== false
+    };
 
-    // Store auto-collect setting in database (evidence_sources metadata or user settings)
-    try {
-      const { supabase } = await import('../database/supabaseClient');
-      // Update user settings or evidence source metadata
-      // For now, just return success
-      logger.info('Auto-collect setting updated', { userId, enabled });
-    } catch (dbError) {
-      logger.warn('Failed to update auto-collect setting', { error: dbError });
-    }
+    await persistTenantEvidenceSettings(tenantId, nextSettings);
+    await syncTenantEvidenceSourceMetadata(tenantId, userId, {
+      autoCollect: nextSettings.autoCollect
+    });
+
+    logger.info('Auto-collect setting updated', { userId, tenantId, enabled: nextSettings.autoCollect });
 
     res.json({
       ok: true,
-      enabled: enabled,
-      message: `Auto-collect ${enabled ? 'enabled' : 'disabled'}`
+      enabled: nextSettings.autoCollect,
+      message: `Auto-collect ${nextSettings.autoCollect ? 'enabled' : 'disabled'}`
     });
   } catch (error: any) {
     logger.error('Error updating auto-collect setting', {
@@ -978,6 +1107,9 @@ router.post('/auto-collect', async (req: Request, res: Response) => {
 router.post('/schedule', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const tenantId = getTenantIdOrReject(req, res);
+
+    if (!tenantId) return;
 
     if (!userId) {
       return res.status(401).json({
@@ -996,20 +1128,23 @@ router.post('/schedule', async (req: Request, res: Response) => {
         error: `Invalid schedule. Valid schedules: ${validSchedules.join(', ')}`
       });
     }
+    const { evidenceIngestion } = await loadTenantEvidenceSettings(tenantId);
+    const nextSettings = {
+      ...evidenceIngestion,
+      schedule
+    };
 
-    // Store schedule in database
-    try {
-      const { supabase } = await import('../database/supabaseClient');
-      // Update user settings or evidence source metadata
-      logger.info('Evidence ingestion schedule updated', { userId, schedule });
-    } catch (dbError) {
-      logger.warn('Failed to update schedule', { error: dbError });
-    }
+    await persistTenantEvidenceSettings(tenantId, nextSettings);
+    await syncTenantEvidenceSourceMetadata(tenantId, userId, {
+      schedule: nextSettings.schedule
+    });
+
+    logger.info('Evidence ingestion schedule updated', { userId, tenantId, schedule: nextSettings.schedule });
 
     res.json({
       ok: true,
-      schedule: schedule,
-      message: `Schedule set to ${schedule}`
+      schedule: nextSettings.schedule,
+      message: `Schedule set to ${nextSettings.schedule}`
     });
   } catch (error: any) {
     logger.error('Error updating schedule', {
@@ -1030,6 +1165,9 @@ router.post('/schedule', async (req: Request, res: Response) => {
 router.post('/filters', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const tenantId = getTenantIdOrReject(req, res);
+
+    if (!tenantId) return;
 
     if (!userId) {
       return res.status(401).json({
@@ -1074,22 +1212,18 @@ router.post('/filters', async (req: Request, res: Response) => {
       skipExisting: skipExisting !== false // Default true
     };
 
-    // Store filters in database (evidence_sources metadata)
-    try {
-      const { supabase } = await import('../database/supabaseClient');
-      // Update evidence source metadata with filters
-      await supabase
-        .from('evidence_sources')
-        .update({
-          metadata: filters,
-          updated_at: new Date().toISOString()
-        })
-        .eq('user_id', userId);
+    const { evidenceIngestion } = await loadTenantEvidenceSettings(tenantId);
+    const nextSettings = {
+      ...evidenceIngestion,
+      filters
+    };
 
-      logger.info('Evidence ingestion filters updated', { userId, filterKeys: Object.keys(filters) });
-    } catch (dbError) {
-      logger.warn('Failed to update filters in database', { error: dbError });
-    }
+    await persistTenantEvidenceSettings(tenantId, nextSettings);
+    await syncTenantEvidenceSourceMetadata(tenantId, userId, {
+      filters
+    });
+
+    logger.info('Evidence ingestion filters updated', { userId, tenantId, filterKeys: Object.keys(filters) });
 
     res.json({
       ok: true,
@@ -1751,6 +1885,9 @@ router.get('/sources/:id', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     const { id } = req.params;
+    const tenantId = getTenantIdOrReject(req, res);
+
+    if (!tenantId) return;
 
     if (!userId) {
       return res.status(401).json({
@@ -1764,6 +1901,7 @@ router.get('/sources/:id', async (req: Request, res: Response) => {
       .from('evidence_sources')
       .select('*')
       .eq('id', id)
+      .eq('tenant_id', tenantId)
       .eq('user_id', userId)
       .single();
 
@@ -1773,6 +1911,7 @@ router.get('/sources/:id', async (req: Request, res: Response) => {
         .from('evidence_sources')
         .select('*')
         .eq('id', id)
+        .eq('tenant_id', tenantId)
         .eq('seller_id', userId)
         .single();
       source = retry.data;
@@ -1823,6 +1962,9 @@ router.get('/sources/:id/status', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     const { id } = req.params;
+    const tenantId = getTenantIdOrReject(req, res);
+
+    if (!tenantId) return;
 
     if (!userId) {
       return res.status(401).json({
@@ -1836,6 +1978,7 @@ router.get('/sources/:id/status', async (req: Request, res: Response) => {
       .from('evidence_sources')
       .select('id, provider, status, last_sync_at, metadata')
       .eq('id', id)
+      .eq('tenant_id', tenantId)
       .eq('user_id', userId)
       .single();
 
@@ -1845,6 +1988,7 @@ router.get('/sources/:id/status', async (req: Request, res: Response) => {
         .from('evidence_sources')
         .select('id, provider, status, last_sync_at, metadata')
         .eq('id', id)
+        .eq('tenant_id', tenantId)
         .eq('seller_id', userId)
         .single();
       source = retry.data;
@@ -1900,6 +2044,9 @@ router.delete('/sources/:id', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     const { id } = req.params;
+    const tenantId = getTenantIdOrReject(req, res);
+
+    if (!tenantId) return;
 
     if (!userId) {
       return res.status(401).json({
@@ -1917,6 +2064,7 @@ router.delete('/sources/:id', async (req: Request, res: Response) => {
         updated_at: new Date().toISOString()
       })
       .eq('id', id)
+      .eq('tenant_id', tenantId)
       .eq('user_id', userId)
       .select('id, provider')
       .single();
@@ -1930,6 +2078,7 @@ router.delete('/sources/:id', async (req: Request, res: Response) => {
           updated_at: new Date().toISOString()
         })
         .eq('id', id)
+        .eq('tenant_id', tenantId)
         .eq('seller_id', userId)
         .select('id, provider')
         .single();
