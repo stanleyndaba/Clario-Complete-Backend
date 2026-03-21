@@ -56,16 +56,21 @@ class EvidenceAuditService {
     /**
      * Get complete audit trail for a document
      */
-    async getDocumentAuditTrail(documentId: string): Promise<DocumentAuditTrail | null> {
+    async getDocumentAuditTrail(documentId: string, tenantId?: string): Promise<DocumentAuditTrail | null> {
         try {
             logger.info('📋 [AUDIT] Getting audit trail for document', { documentId });
 
             // Get document details
-            const { data: doc, error: docError } = await supabaseAdmin
+            let docQuery = supabaseAdmin
                 .from('evidence_documents')
                 .select('*')
-                .eq('id', documentId)
-                .single();
+                .eq('id', documentId);
+
+            if (tenantId) {
+                docQuery = docQuery.eq('tenant_id', tenantId);
+            }
+
+            const { data: doc, error: docError } = await docQuery.single();
 
             if (docError || !doc) {
                 logger.warn('⚠️ [AUDIT] Document not found', { documentId });

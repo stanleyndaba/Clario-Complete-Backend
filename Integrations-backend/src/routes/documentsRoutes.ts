@@ -643,10 +643,32 @@ router.delete('/:id', async (req: Request, res: Response) => {
 router.post('/:id/reparse', async (req: Request, res: Response) => {
     try {
         const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+        const tenantId = (req as any).tenant?.tenantId;
         const docId = req.params.id;
         const finalUserId = convertUserIdToUuid(userId);
 
-        logger.info('🔄 [DOCUMENTS] Re-parse request', { docId, userId });
+        if (!tenantId) {
+            return res.status(401).json({
+                success: false,
+                error: 'Unauthorized'
+            });
+        }
+
+        logger.info('🔄 [DOCUMENTS] Re-parse request', { docId, userId, tenantId });
+
+        const { data: existingDoc, error: existingDocError } = await supabaseAdmin
+            .from('evidence_documents')
+            .select('id, storage_path, content_type')
+            .eq('id', docId)
+            .eq('tenant_id', tenantId)
+            .single();
+
+        if (existingDocError || !existingDoc) {
+            return res.status(404).json({
+                success: false,
+                error: 'Document not found'
+            });
+        }
 
         // Reset parser_status to pending
         const { error: updateError } = await supabaseAdmin
@@ -659,7 +681,8 @@ router.post('/:id/reparse', async (req: Request, res: Response) => {
                 parsed_metadata: null,
                 updated_at: new Date().toISOString()
             })
-            .eq('id', docId);
+            .eq('id', docId)
+            .eq('tenant_id', tenantId);
 
         if (updateError) {
             throw updateError;
@@ -684,18 +707,12 @@ router.post('/:id/reparse', async (req: Request, res: Response) => {
         // Try to trigger actual parsing if pdfExtractor is available
         try {
             // Get document from storage
-            const { data: doc } = await supabaseAdmin
-                .from('evidence_documents')
-                .select('storage_path, content_type')
-                .eq('id', docId)
-                .single();
-
-            if (doc?.storage_path && doc.content_type?.includes('pdf')) {
+            if (existingDoc.storage_path && existingDoc.content_type?.includes('pdf')) {
                 // Download file from Supabase Storage
                 const { data: fileData, error: downloadError } = await supabaseAdmin
                     .storage
                     .from('evidence-documents')
-                    .download(doc.storage_path);
+                    .download(existingDoc.storage_path);
 
                 if (!downloadError && fileData) {
                     const buffer = Buffer.from(await fileData.arrayBuffer());

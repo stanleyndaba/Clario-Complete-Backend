@@ -2753,29 +2753,43 @@ router.get('/v1/evidence/documents/:documentId', async (req: Request, res: Respo
     // Extract parsed data from metadata or document fields
     const metadata = doc.metadata || {};
     const parsedMetadata = doc.parsed_metadata || metadata.parsed_data || metadata.parsed_metadata || metadata;
+    const parserConfidence =
+      parsedMetadata.confidence_score ??
+      metadata.parser_confidence ??
+      metadata.confidence_score ??
+      doc.parser_confidence ??
+      null;
 
     // Build response in expected format
     const response = {
       id: doc.id,
       filename: doc.filename || doc.original_filename,
+      original_filename: doc.original_filename,
       processing_status: doc.status || 'completed',
       parser_status: getAuthoritativeParserStatus(doc),
-      parser_confidence: metadata.parser_confidence || metadata.confidence_score || doc.parser_confidence || 0.95,
+      parser_confidence: parserConfidence,
       parsed_metadata: {
         supplier_name: parsedMetadata.supplier_name || parsedMetadata.supplier || doc.supplier_name,
         invoice_number: parsedMetadata.invoice_number || parsedMetadata.invoice_no || doc.invoice_number,
         invoice_date: parsedMetadata.invoice_date || parsedMetadata.date,
         total_amount: parsedMetadata.total_amount || parsedMetadata.total || parsedMetadata.amount,
-        currency: parsedMetadata.currency || 'USD',
+        currency: parsedMetadata.currency || doc.currency || null,
         line_items: parsedMetadata.line_items || parsedMetadata.items || [],
-        confidence_score: parsedMetadata.confidence_score || metadata.parser_confidence || 0.95
+        confidence_score: parserConfidence
       },
       // Include raw doc data for fallback
       name: doc.filename || doc.original_filename,
       uploadDate: doc.created_at,
+      created_at: doc.created_at,
+      updated_at: doc.updated_at,
       status: doc.status,
       size: doc.size_bytes,
       type: doc.content_type,
+      content_type: doc.content_type,
+      source: doc.source,
+      provider: doc.provider,
+      parser_error: doc.parser_error,
+      seller_id: doc.seller_id,
       supplier: parsedMetadata.supplier_name || parsedMetadata.supplier,
       invoice: parsedMetadata.invoice_number || parsedMetadata.invoice_no,
       // Include extractedData if available (for legacy compatibility)
@@ -2792,7 +2806,9 @@ router.get('/v1/evidence/documents/:documentId', async (req: Request, res: Respo
         dates: []
       },
       // Include raw_text excerpt for preview
-      raw_text_preview: doc.raw_text ? doc.raw_text.substring(0, 500) : null
+      raw_text_preview: (doc.raw_text || parsedMetadata.raw_text || null)
+        ? String(doc.raw_text || parsedMetadata.raw_text).substring(0, 500)
+        : null
     };
 
     logger.info('✅ [EVIDENCE] Document with parsed data fetched', {
@@ -3287,10 +3303,32 @@ import { evidenceAuditService } from '../services/evidenceAuditService';
 router.get('/documents/:id/linked-claims', async (req: Request, res: Response) => {
   try {
     const documentId = req.params.id;
+    const tenantId = (req as any).tenant?.tenantId;
 
-    logger.info('📊 [DOC GRAPH] Getting linked claims for document', { documentId });
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
 
-    const linkedClaims = await documentGraphService.getLinkedClaims(documentId);
+    logger.info('📊 [DOC GRAPH] Getting linked claims for document', { documentId, tenantId });
+
+    const { data: document, error: documentError } = await supabaseAdmin
+      .from('evidence_documents')
+      .select('id, tenant_id')
+      .eq('id', documentId)
+      .eq('tenant_id', tenantId)
+      .single();
+
+    if (documentError || !document) {
+      return res.status(404).json({
+        success: false,
+        error: 'Document not found'
+      });
+    }
+
+    const linkedClaims = await documentGraphService.getLinkedClaims(documentId, tenantId);
 
     res.json({
       success: true,
@@ -3478,10 +3516,18 @@ router.get('/products/:identifier/documents', async (req: Request, res: Response
 router.get('/documents/:id/audit', async (req: Request, res: Response) => {
   try {
     const documentId = req.params.id;
+    const tenantId = (req as any).tenant?.tenantId;
 
-    logger.info('📋 [AUDIT] Getting audit trail for document', { documentId });
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
 
-    const auditTrail = await evidenceAuditService.getDocumentAuditTrail(documentId);
+    logger.info('📋 [AUDIT] Getting audit trail for document', { documentId, tenantId });
+
+    const auditTrail = await evidenceAuditService.getDocumentAuditTrail(documentId, tenantId);
 
     if (!auditTrail) {
       return res.status(404).json({

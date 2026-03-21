@@ -50,7 +50,7 @@ class DocumentGraphService {
     /**
      * Get all claims linked to a specific document
      */
-    async getLinkedClaims(documentId: string): Promise<LinkedClaim[]> {
+    async getLinkedClaims(documentId: string, tenantId?: string): Promise<LinkedClaim[]> {
         try {
             logger.info('📊 [DOC GRAPH] Getting linked claims for document', { documentId });
 
@@ -68,22 +68,27 @@ class DocumentGraphService {
             dispute_type,
             claim_amount,
             currency,
-            status
+            status,
+            tenant_id
           )
         `)
                 .eq('evidence_document_id', documentId);
 
             if (error) {
                 logger.warn('⚠️ [DOC GRAPH] Error querying links, trying fallback', { error: error.message });
-                return this.getLinkedClaimsFromDetections(documentId);
+                return this.getLinkedClaimsFromDetections(documentId, tenantId);
             }
 
             if (!links || links.length === 0) {
                 // Try fallback via detection_results
-                return this.getLinkedClaimsFromDetections(documentId);
+                return this.getLinkedClaimsFromDetections(documentId, tenantId);
             }
 
-            const linkedClaims: LinkedClaim[] = links.map((link: any) => {
+            const filteredLinks = tenantId
+                ? (links as any[]).filter((link: any) => !link.dispute_cases?.tenant_id || link.dispute_cases?.tenant_id === tenantId)
+                : (links as any[]);
+
+            const linkedClaims: LinkedClaim[] = filteredLinks.map((link: any) => {
                 const dispute = link.dispute_cases;
                 const context = typeof link.matched_context === 'string'
                     ? JSON.parse(link.matched_context)
@@ -120,13 +125,19 @@ class DocumentGraphService {
     /**
      * Fallback: Get linked claims from detection_results matched_documents field
      */
-    private async getLinkedClaimsFromDetections(documentId: string): Promise<LinkedClaim[]> {
+    private async getLinkedClaimsFromDetections(documentId: string, tenantId?: string): Promise<LinkedClaim[]> {
         try {
             // Search detection_results where this doc might be in evidence or matched_docs
-            const { data: detections } = await supabaseAdmin
+            let query = supabaseAdmin
                 .from('detection_results')
-                .select('id, claim_number, anomaly_type, estimated_value, currency, created_at, match_confidence')
+                .select('id, claim_number, anomaly_type, estimated_value, currency, created_at, match_confidence, tenant_id')
                 .or(`matched_document_ids.cs.{${documentId}},evidence->>'document_id'.eq.${documentId}`);
+
+            if (tenantId) {
+                query = query.eq('tenant_id', tenantId);
+            }
+
+            const { data: detections } = await query;
 
             if (!detections || detections.length === 0) {
                 return [];
