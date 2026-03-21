@@ -480,6 +480,26 @@ class RecoveriesService {
         });
       }
 
+      // AGENT 11 REAL LOOP: feed reimbursement truth into the confidence calibrator.
+      try {
+        const { upsertOutcomeForDispute } = await import('./detection/confidenceCalibrator');
+        await upsertOutcomeForDispute({
+          dispute_id: match.disputeId,
+          actual_outcome: status === 'reconciled' ? 'approved' : 'partial',
+          recovery_amount: Number(match.actualAmount || 0),
+          amazon_case_id: match.amazonCaseId,
+          resolution_date: match.payoutDate ? new Date(match.payoutDate) : new Date(),
+          notes: status === 'reconciled'
+            ? 'Reimbursement detected and reconciled'
+            : `Reimbursement detected with ${status} outcome`
+        });
+      } catch (calibrationError: any) {
+        logger.warn('⚠️ [RECOVERIES] Failed to sync reimbursement outcome to calibrator', {
+          disputeId: match.disputeId,
+          error: calibrationError.message
+        });
+      }
+
       // 🎯 AGENT 10 INTEGRATION: Notify when funds are deposited (reconciled)
       if (status === 'reconciled') {
         try {

@@ -53,6 +53,15 @@ export interface OutcomeRecord {
     notes?: string;
 }
 
+export interface DisputeOutcomeSync {
+    dispute_id: string;
+    actual_outcome: 'approved' | 'rejected' | 'partial' | 'pending' | 'expired';
+    recovery_amount?: number;
+    amazon_case_id?: string;
+    resolution_date?: Date;
+    notes?: string;
+}
+
 // ============================================================================
 // Calibration Cache
 // ============================================================================
@@ -287,6 +296,108 @@ export async function updateOutcome(
         return true;
     } catch (err: any) {
         logger.error('🧠 [CALIBRATOR] Exception updating outcome', { error: err.message });
+        return false;
+    }
+}
+
+/**
+ * Upsert an outcome for a dispute case using its linked detection result.
+ * This is the production bridge from case/recovery lifecycle truth into the
+ * confidence calibrator.
+ */
+export async function upsertOutcomeForDispute(disputeOutcome: DisputeOutcomeSync): Promise<boolean> {
+    try {
+        const { data: disputeCase, error: disputeError } = await supabaseAdmin
+            .from('dispute_cases')
+            .select('id, seller_id, detection_result_id, claim_amount, provider_case_id, created_at')
+            .eq('id', disputeOutcome.dispute_id)
+            .maybeSingle();
+
+        if (disputeError) {
+            logger.error('🧠 [CALIBRATOR] Error loading dispute case for outcome sync', {
+                disputeId: disputeOutcome.dispute_id,
+                error: disputeError.message
+            });
+            return false;
+        }
+
+        if (!disputeCase?.detection_result_id) {
+            logger.warn('🧠 [CALIBRATOR] Skipping outcome sync without detection linkage', {
+                disputeId: disputeOutcome.dispute_id
+            });
+            return false;
+        }
+
+        const { data: detectionResult, error: detectionError } = await supabaseAdmin
+            .from('detection_results')
+            .select('id, seller_id, anomaly_type, confidence_score, estimated_value, created_at')
+            .eq('id', disputeCase.detection_result_id)
+            .maybeSingle();
+
+        if (detectionError) {
+            logger.error('🧠 [CALIBRATOR] Error loading detection result for outcome sync', {
+                disputeId: disputeOutcome.dispute_id,
+                detectionResultId: disputeCase.detection_result_id,
+                error: detectionError.message
+            });
+            return false;
+        }
+
+        if (!detectionResult) {
+            logger.warn('🧠 [CALIBRATOR] Detection result missing for outcome sync', {
+                disputeId: disputeOutcome.dispute_id,
+                detectionResultId: disputeCase.detection_result_id
+            });
+            return false;
+        }
+
+        const { data: existingRows, error: existingError } = await supabaseAdmin
+            .from('detection_outcomes')
+            .select('id')
+            .eq('detection_result_id', disputeCase.detection_result_id)
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+        if (existingError) {
+            logger.error('🧠 [CALIBRATOR] Error checking existing detection outcome', {
+                disputeId: disputeOutcome.dispute_id,
+                detectionResultId: disputeCase.detection_result_id,
+                error: existingError.message
+            });
+            return false;
+        }
+
+        const sellerId = disputeCase.seller_id || detectionResult.seller_id;
+        const amazonCaseId = disputeOutcome.amazon_case_id || disputeCase.provider_case_id;
+
+        if (existingRows && existingRows.length > 0) {
+            return await updateOutcome(disputeCase.detection_result_id, {
+                actual_outcome: disputeOutcome.actual_outcome,
+                recovery_amount: disputeOutcome.recovery_amount ?? 0,
+                amazon_case_id: amazonCaseId,
+                resolution_date: disputeOutcome.resolution_date || new Date(),
+                notes: disputeOutcome.notes
+            });
+        }
+
+        return await recordOutcome({
+            detection_result_id: disputeCase.detection_result_id,
+            seller_id: sellerId,
+            anomaly_type: detectionResult.anomaly_type,
+            predicted_confidence: Number(detectionResult.confidence_score || 0),
+            estimated_value: Number(detectionResult.estimated_value || disputeCase.claim_amount || 0),
+            actual_outcome: disputeOutcome.actual_outcome,
+            recovery_amount: disputeOutcome.recovery_amount ?? 0,
+            amazon_case_id: amazonCaseId,
+            claim_filed_date: disputeCase.created_at ? new Date(disputeCase.created_at) : detectionResult.created_at ? new Date(detectionResult.created_at) : undefined,
+            resolution_date: disputeOutcome.resolution_date || new Date(),
+            notes: disputeOutcome.notes
+        });
+    } catch (err: any) {
+        logger.error('🧠 [CALIBRATOR] Exception syncing dispute outcome', {
+            disputeId: disputeOutcome.dispute_id,
+            error: err.message
+        });
         return false;
     }
 }

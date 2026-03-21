@@ -2030,7 +2030,7 @@ class RefundFilingWorker {
 
       const { data: disputeCase } = await supabaseAdmin
         .from('dispute_cases')
-        .select('seller_id, recovery_status, tenant_id')
+        .select('seller_id, recovery_status, tenant_id, detection_result_id')
         .eq('id', disputeId)
         .single();
 
@@ -2087,6 +2087,43 @@ class RefundFilingWorker {
         } catch (notifError: any) {
           logger.warn(' [REFUND FILING] Failed to send notification', {
             error: notifError.message
+          });
+        }
+
+        // AGENT 11 REAL LOOP: Feed approval outcome into detection calibration.
+        try {
+          const { upsertOutcomeForDispute } = await import('../services/detection/confidenceCalibrator');
+          await upsertOutcomeForDispute({
+            dispute_id: disputeId,
+            actual_outcome: 'approved',
+            recovery_amount: Number(statusResult.amount_approved || 0),
+            amazon_case_id: statusResult.amazon_case_id || caseData?.provider_case_id,
+            resolution_date: new Date(),
+            notes: 'Case approved by Amazon status polling'
+          });
+        } catch (calibrationError: any) {
+          logger.warn(' [REFUND FILING] Failed to sync approval outcome to calibrator', {
+            disputeId,
+            error: calibrationError.message
+          });
+        }
+      }
+
+      if (newStatus === 'rejected' && previousStatus !== 'rejected') {
+        try {
+          const { upsertOutcomeForDispute } = await import('../services/detection/confidenceCalibrator');
+          await upsertOutcomeForDispute({
+            dispute_id: disputeId,
+            actual_outcome: 'rejected',
+            recovery_amount: 0,
+            amazon_case_id: statusResult.amazon_case_id,
+            resolution_date: new Date(),
+            notes: statusResult.error || statusResult.resolution || 'Case rejected by Amazon status polling'
+          });
+        } catch (calibrationError: any) {
+          logger.warn(' [REFUND FILING] Failed to sync rejection outcome to calibrator', {
+            disputeId,
+            error: calibrationError.message
           });
         }
       }
