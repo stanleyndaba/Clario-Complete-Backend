@@ -45,6 +45,21 @@ export interface NotificationStats {
   by_priority: Record<string, number>;
 }
 
+type NotificationPreferenceId =
+  | 'recovery-guaranteed'
+  | 'payout-confirmed'
+  | 'invoice-issued'
+  | 'document-processed'
+  | 'weekly-summary';
+
+const NOTIFICATION_TYPE_TO_PREFERENCE: Partial<Record<NotificationType, NotificationPreferenceId>> = {
+  [NotificationType.CASE_FILED]: 'recovery-guaranteed',
+  [NotificationType.REFUND_APPROVED]: 'recovery-guaranteed',
+  [NotificationType.FUNDS_DEPOSITED]: 'payout-confirmed',
+  [NotificationType.EVIDENCE_FOUND]: 'document-processed',
+  [NotificationType.WEEKLY_SUMMARY]: 'weekly-summary'
+};
+
 export class NotificationService {
   private emailService: EmailService;
   private worker: NoopNotificationWorker;
@@ -84,13 +99,27 @@ export class NotificationService {
   /**
    * Create and queue a notification
    */
-  async createNotification(event: NotificationEvent): Promise<Notification> {
+  async createNotification(event: NotificationEvent): Promise<Notification | null> {
     try {
       logger.info('Creating notification', {
         type: event.type,
         user_id: event.user_id,
         immediate: event.immediate
       });
+
+      const effectiveChannel = await this.resolveEffectiveChannel(
+        event.user_id,
+        event.type,
+        event.channel || NotificationChannel.IN_APP
+      );
+
+      if (!effectiveChannel) {
+        logger.info('Notification suppressed by user preference', {
+          type: event.type,
+          user_id: event.user_id
+        });
+        return null;
+      }
 
       const normalizedPayload = normalizeAgent10EventPayload(event.type, event.payload, {
         tenantId: event.tenant_id
@@ -104,8 +133,11 @@ export class NotificationService {
         title: event.title,
         message: event.message,
         priority: event.priority,
-        channel: event.channel,
-        payload: normalizedPayload,
+        channel: effectiveChannel,
+        payload: {
+          ...normalizedPayload,
+          preference_toggle_id: this.mapNotificationTypeToPreferenceId(event.type)
+        },
         expires_at: event.expires_at
       });
 
@@ -117,7 +149,7 @@ export class NotificationService {
         await this.worker.queueNotification(notification.id);
       }
 
-      logger.info('Notification created and queued successfully', { id: notification.id });
+      logger.info('Notification created and queued successfully', { id: notification.id, channel: notification.channel });
       return notification;
     } catch (error) {
       logger.error('Error creating notification:', error);
@@ -138,7 +170,9 @@ export class NotificationService {
       for (const promise of promises) {
         try {
           const notification = await promise;
-          notifications.push(notification);
+          if (notification) {
+            notifications.push(notification);
+          }
         } catch (error) {
           logger.error('Error creating notification in batch:', error);
           // Continue with other notifications
@@ -381,19 +415,37 @@ export class NotificationService {
         channel: notification.channel
       });
 
+      const effectiveChannel = await this.resolveEffectiveChannel(
+        notification.user_id,
+        notification.type,
+        notification.channel
+      );
+
+      if (!effectiveChannel) {
+        await notification.update({
+          status: NotificationStatus.EXPIRED
+        });
+        logger.info('Notification delivery skipped by user preference', {
+          id: notification.id,
+          type: notification.type,
+          userId: notification.user_id
+        });
+        return;
+      }
+
       const deliveryPromises: Promise<void>[] = [];
 
       // Deliver via WebSocket if in-app or both
-      if (notification.channel === NotificationChannel.IN_APP ||
-        notification.channel === NotificationChannel.BOTH) {
+      if (effectiveChannel === NotificationChannel.IN_APP ||
+        effectiveChannel === NotificationChannel.BOTH) {
         deliveryPromises.push(
           this.deliverViaWebSocket(notification)
         );
       }
 
       // Deliver via email if email or both
-      if (notification.channel === NotificationChannel.EMAIL ||
-        notification.channel === NotificationChannel.BOTH) {
+      if (effectiveChannel === NotificationChannel.EMAIL ||
+        effectiveChannel === NotificationChannel.BOTH) {
         deliveryPromises.push(
           this.emailService.sendNotification(notification)
         );
@@ -475,6 +527,67 @@ export class NotificationService {
         return 'info';
       default:
         return 'info';
+    }
+  }
+
+  private mapNotificationTypeToPreferenceId(type: NotificationType): NotificationPreferenceId | undefined {
+    return NOTIFICATION_TYPE_TO_PREFERENCE[type];
+  }
+
+  private async getUserNotificationPreferences(userId: string): Promise<Record<string, { email?: boolean; inApp?: boolean }>> {
+    const { data, error } = await supabaseAdmin
+      .from('user_notification_preferences')
+      .select('preferences')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error) {
+      logger.warn('Failed to load user notification preferences', {
+        userId,
+        error: error.message
+      });
+      return {};
+    }
+
+    const preferences = { ...((data?.preferences || {}) as Record<string, { email?: boolean; inApp?: boolean }>) };
+    if (preferences['monthly-summary'] && !preferences['weekly-summary']) {
+      preferences['weekly-summary'] = preferences['monthly-summary'];
+    }
+    return preferences;
+  }
+
+  private async resolveEffectiveChannel(
+    userId: string,
+    type: NotificationType,
+    requestedChannel: NotificationChannel
+  ): Promise<NotificationChannel | null> {
+    const preferenceId = this.mapNotificationTypeToPreferenceId(type);
+    if (!preferenceId) {
+      return requestedChannel;
+    }
+
+    const preferences = await this.getUserNotificationPreferences(userId);
+    const savedPreference = preferences[preferenceId];
+
+    if (!savedPreference) {
+      return requestedChannel;
+    }
+
+    const emailAllowed = savedPreference.email !== false;
+    const inAppAllowed = savedPreference.inApp !== false;
+
+    switch (requestedChannel) {
+      case NotificationChannel.BOTH:
+        if (emailAllowed && inAppAllowed) return NotificationChannel.BOTH;
+        if (emailAllowed) return NotificationChannel.EMAIL;
+        if (inAppAllowed) return NotificationChannel.IN_APP;
+        return null;
+      case NotificationChannel.EMAIL:
+        return emailAllowed ? NotificationChannel.EMAIL : null;
+      case NotificationChannel.IN_APP:
+        return inAppAllowed ? NotificationChannel.IN_APP : null;
+      default:
+        return requestedChannel;
     }
   }
 

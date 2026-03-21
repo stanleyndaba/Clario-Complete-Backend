@@ -266,6 +266,15 @@ export class NotificationController {
 
       const notification = await notificationService.createNotification(notificationEvent);
 
+      if (!notification) {
+        res.status(200).json({
+          success: true,
+          data: null,
+          message: 'Notification suppressed by user preferences'
+        });
+        return;
+      }
+
       res.status(201).json({
         success: true,
         data: notification,

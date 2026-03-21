@@ -412,18 +412,26 @@ router.get('/preferences', async (req: any, res) => {
     try {
         const userId = req.userId || req.user?.id || req.headers['x-user-id'] || 'demo-user';
 
-        // Try to get from database
+        // Preferences are user-global, not tenant-scoped
         const { supabaseAdmin } = await import('../../database/supabaseClient');
         const { data, error } = await supabaseAdmin
             .from('user_notification_preferences')
             .select('*')
             .eq('user_id', userId)
-            .single();
+            .maybeSingle();
+
+        if (error) {
+            return res.status(500).json({ success: false, error: 'Failed to fetch preferences' });
+        }
 
         if (data) {
+            const preferences = { ...(data.preferences || {}) };
+            if (preferences['monthly-summary'] && !preferences['weekly-summary']) {
+                preferences['weekly-summary'] = preferences['monthly-summary'];
+            }
             return res.json({
                 success: true,
-                data: data.preferences || {}
+                data: preferences
             });
         }
 
@@ -437,7 +445,7 @@ router.get('/preferences', async (req: any, res) => {
                 'team-member-joins': { email: true, inApp: true },
                 'document-processed': { email: false, inApp: true },
                 'device-login': { email: true, inApp: true },
-                'monthly-summary': { email: true, inApp: false },
+                'weekly-summary': { email: true, inApp: false },
                 'product-updates': { email: false, inApp: true }
             }
         });
@@ -468,11 +476,14 @@ router.get('/preferences', async (req: any, res) => {
 router.put('/preferences', async (req: any, res) => {
     try {
         const userId = req.userId || req.user?.id || req.headers['x-user-id'] || 'demo-user';
-        const preferences = req.body;
+        const preferences = { ...(req.body || {}) };
+        if (preferences['monthly-summary'] && !preferences['weekly-summary']) {
+            preferences['weekly-summary'] = preferences['monthly-summary'];
+        }
+        delete preferences['monthly-summary'];
 
         const { supabaseAdmin } = await import('../../database/supabaseClient');
 
-        // Upsert preferences
         const { error } = await supabaseAdmin
             .from('user_notification_preferences')
             .upsert({
@@ -482,8 +493,7 @@ router.put('/preferences', async (req: any, res) => {
             }, { onConflict: 'user_id' });
 
         if (error) {
-            console.warn('Failed to save preferences to DB:', error.message);
-            // Still return success - frontend will use its local state
+            return res.status(500).json({ success: false, error: 'Failed to save preferences' });
         }
 
         res.json({
@@ -775,18 +785,26 @@ router.get('/preferences', async (req: any, res) => {
     try {
         const userId = req.userId || req.user?.id || req.headers['x-user-id'] || 'demo-user';
 
-        // Try to get from database
+        // Preferences are user-global, not tenant-scoped
         const { supabaseAdmin } = await import('../../database/supabaseClient');
         const { data, error } = await supabaseAdmin
             .from('user_notification_preferences')
             .select('*')
             .eq('user_id', userId)
-            .single();
+            .maybeSingle();
+
+        if (error) {
+            return res.status(500).json({ success: false, error: 'Failed to fetch preferences' });
+        }
 
         if (data) {
+            const preferences = { ...(data.preferences || {}) };
+            if (preferences['monthly-summary'] && !preferences['weekly-summary']) {
+                preferences['weekly-summary'] = preferences['monthly-summary'];
+            }
             return res.json({
                 success: true,
-                data: data.preferences || {}
+                data: preferences
             });
         }
 
@@ -800,7 +818,7 @@ router.get('/preferences', async (req: any, res) => {
                 'team-member-joins': { email: true, inApp: true },
                 'document-processed': { email: false, inApp: true },
                 'device-login': { email: true, inApp: true },
-                'monthly-summary': { email: true, inApp: false },
+                'weekly-summary': { email: true, inApp: false },
                 'product-updates': { email: false, inApp: true }
             }
         });
@@ -831,11 +849,14 @@ router.get('/preferences', async (req: any, res) => {
 router.put('/preferences', async (req: any, res) => {
     try {
         const userId = req.userId || req.user?.id || req.headers['x-user-id'] || 'demo-user';
-        const preferences = req.body;
+        const preferences = { ...(req.body || {}) };
+        if (preferences['monthly-summary'] && !preferences['weekly-summary']) {
+            preferences['weekly-summary'] = preferences['monthly-summary'];
+        }
+        delete preferences['monthly-summary'];
 
         const { supabaseAdmin } = await import('../../database/supabaseClient');
 
-        // Upsert preferences
         const { error } = await supabaseAdmin
             .from('user_notification_preferences')
             .upsert({
@@ -845,8 +866,7 @@ router.put('/preferences', async (req: any, res) => {
             }, { onConflict: 'user_id' });
 
         if (error) {
-            console.warn('Failed to save preferences to DB:', error.message);
-            // Still return success - frontend will use its local state
+            return res.status(500).json({ success: false, error: 'Failed to save preferences' });
         }
 
         res.json({
