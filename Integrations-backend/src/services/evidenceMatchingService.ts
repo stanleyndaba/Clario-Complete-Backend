@@ -1327,10 +1327,16 @@ class EvidenceMatchingService {
       detection_result_id: result.dispute_id,
       status: 'pending',
       claim_amount: detectionResult.estimated_value || 0,
+      estimated_recovery_amount: detectionResult.estimated_value || 0,
+      approved_amount: null,
+      recovered_amount: null,
       currency: detectionResult.currency || 'USD',
       case_type: detectionResult.anomaly_type || 'amazon_fba',
       provider: 'amazon',
       filing_status: 'pending',
+      eligible_to_file: false,
+      block_reasons: [],
+      last_error: null,
       updated_at: new Date().toISOString()
     };
 

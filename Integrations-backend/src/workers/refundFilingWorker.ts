@@ -23,6 +23,7 @@ import {
   getRejectionPreventionDecision,
   recordRejectionMemory
 } from '../services/rejectionClassifier';
+import { evaluateAndPersistCaseEligibility } from '../services/agent7EligibilityService';
 
 
 /**
@@ -1252,6 +1253,16 @@ class RefundFilingWorker {
           continue;
         }
 
+        const eligibility = await evaluateAndPersistCaseEligibility(disputeCase.id, tenantId);
+        if (!eligibility.eligible) {
+          logger.info('[BLOCK] [REFUND FILING] Case failed central eligibility gate', {
+            disputeId: disputeCase.id,
+            reasons: eligibility.reasons
+          });
+          stats.skipped++;
+          continue;
+        }
+
         // KILL SWITCH LAYER 1: Check for dangerous filenames (credit notes, returns, refunds)
         // These MUST NEVER be submitted to Amazon - instant fraud flag
         const dangerousDocCheck = await this.hasDangerousDocuments(evidenceIds, disputeCase.seller_id);
@@ -1268,6 +1279,9 @@ class RefundFilingWorker {
           const { error: qErr } = await quarantineQuery
             .update({
               filing_status: 'quarantined_dangerous_doc',
+              eligible_to_file: false,
+              block_reasons: ['dangerous_document_filename'],
+              last_error: `Dangerous evidence filename detected: ${dangerousDocCheck.dangerousFilenames.join(', ')}`,
               updated_at: new Date().toISOString()
             })
             .eq('id', disputeCase.id);
@@ -1297,10 +1311,9 @@ class RefundFilingWorker {
           const { error: qErr } = await quarantineQuery
             .update({
               filing_status: 'quarantined_dangerous_doc',
-              metadata: {
-                quarantine_reason: 'dangerous_content',
-                dangerous_findings: dangerousContentCheck.dangerousFindings
-              },
+              eligible_to_file: false,
+              block_reasons: ['dangerous_document_content'],
+              last_error: `Dangerous evidence content detected: ${dangerousContentCheck.dangerousFindings.join(', ')}`,
               updated_at: new Date().toISOString()
             })
             .eq('id', disputeCase.id);
@@ -1342,6 +1355,9 @@ class RefundFilingWorker {
             .update({
               filing_status: rejectionPreventionDecision.filingStatus,
               ...(rejectionPreventionDecision.status ? { status: rejectionPreventionDecision.status } : {}),
+              eligible_to_file: false,
+              block_reasons: [rejectionPreventionDecision.reason],
+              last_error: rejectionPreventionDecision.reason,
               evidence_attachments: {
                 ...((disputeCase as any).evidence_attachments || {}),
                 ...rejectionPreventionDecision.metadata
@@ -1373,12 +1389,15 @@ class RefundFilingWorker {
 
             // Mark this case as duplicate to prevent future processing (tenant-scoped)
             const duplicateQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-            const { error: dErr } = await duplicateQuery
-              .update({
-                filing_status: 'duplicate_blocked',
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', disputeCase.id);
+          const { error: dErr } = await duplicateQuery
+            .update({
+              filing_status: 'duplicate_blocked',
+              eligible_to_file: false,
+              block_reasons: ['duplicate_active_claim_for_order'],
+              last_error: `Duplicate active claim exists for order ${orderId}`,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', disputeCase.id);
 
             if (dErr) {
               logger.error('[ERROR] [REFUND FILING] Failed to mark case as duplicate', { disputeId: disputeCase.id, error: dErr.message });
@@ -1415,6 +1434,9 @@ class RefundFilingWorker {
           const { error: rErr } = await reimbursedQuery
             .update({
               filing_status: 'already_reimbursed',
+              eligible_to_file: false,
+              block_reasons: ['already_reimbursed'],
+              last_error: 'Amazon has already reimbursed this item or shipment',
               updated_at: new Date().toISOString()
             })
             .eq('id', disputeCase.id);
@@ -1464,7 +1486,10 @@ class RefundFilingWorker {
           });
           stats.skipped++;
           await supabaseAdmin.from('dispute_cases').update({
-            filing_status: 'skipped_low_value',
+            filing_status: 'blocked',
+            eligible_to_file: false,
+            block_reasons: ['claim_below_minimum_threshold'],
+            last_error: `Claim below minimum filing threshold (${RefundFilingWorker.MIN_FILING_THRESHOLD})`,
             updated_at: new Date().toISOString()
           }).eq('id', disputeCase.id);
           continue;
@@ -1482,6 +1507,9 @@ class RefundFilingWorker {
           await supabaseAdmin.from('dispute_cases').update({
             filing_status: 'pending_approval',
             status: 'needs_dimension_proof',
+            eligible_to_file: false,
+            block_reasons: ['dimension_proof_required'],
+            last_error: 'Physical dimension proof is required before filing this claim type',
             updated_at: new Date().toISOString()
           }).eq('id', disputeCase.id);
           continue;
@@ -1497,8 +1525,10 @@ class RefundFilingWorker {
           });
           stats.skipped++;
           await supabaseAdmin.from('dispute_cases').update({
-            filing_status: 'blocked_invalid_date',
-            metadata: { block_reason: dateValidation.reason },
+            filing_status: 'blocked',
+            eligible_to_file: false,
+            block_reasons: ['invalid_invoice_date'],
+            last_error: dateValidation.reason,
             updated_at: new Date().toISOString()
           }).eq('id', disputeCase.id);
           continue;
@@ -1515,7 +1545,9 @@ class RefundFilingWorker {
           stats.skipped++;
           await supabaseAdmin.from('dispute_cases').update({
             filing_status: 'pending_approval',
-            metadata: { approval_reason: 'weak_pod_evidence', weak_pods: podValidation.weakPods },
+            eligible_to_file: false,
+            block_reasons: ['weak_pod_evidence'],
+            last_error: `Weak proof of delivery evidence: ${podValidation.weakPods.join(', ')}`,
             updated_at: new Date().toISOString()
           }).eq('id', disputeCase.id);
           continue;
@@ -1539,12 +1571,9 @@ class RefundFilingWorker {
           const { error: mErr } = await mismatchQuery
             .update({
               filing_status: 'pending_approval',
-              metadata: {
-                approval_reason: 'amount_mismatch',
-                claim_amount: claimAmount,
-                invoice_amount: amountValidation.invoiceAmount,
-                variance: amountValidation.variance
-              },
+              eligible_to_file: false,
+              block_reasons: ['amount_mismatch'],
+              last_error: amountValidation.reason,
               updated_at: new Date().toISOString()
             })
             .eq('id', disputeCase.id);
@@ -1575,6 +1604,9 @@ class RefundFilingWorker {
           const { error: aErr } = await approvalQuery
             .update({
               filing_status: 'pending_approval',
+              eligible_to_file: false,
+              block_reasons: ['manual_approval_required_high_value'],
+              last_error: `Manual approval required for claim amount ${claimAmount}`,
               updated_at: new Date().toISOString()
             })
             .eq('id', disputeCase.id);
@@ -1894,7 +1926,9 @@ class RefundFilingWorker {
                 logger.warn(' [REFUND FILING] Rejection: wrong claim type — routing to manual review', { disputeId: disputeCase.id });
                 await supabaseAdmin.from('dispute_cases').update({
                   filing_status: 'pending_approval',
-                  metadata: { approval_reason: 'wrong_claim_type', rejection_reason: rejectionReason },
+                  eligible_to_file: false,
+                  block_reasons: ['wrong_claim_type'],
+                  last_error: rejectionReason,
                   updated_at: new Date().toISOString()
                 }).eq('id', disputeCase.id);
 
@@ -1957,13 +1991,14 @@ class RefundFilingWorker {
     try {
       const updates: any = {
         filing_status: 'filed',
-        status: 'auto_submitted',
+        status: 'submitted',
+        amazon_case_id: result.amazon_case_id || null,
+        submission_date: new Date().toISOString(),
+        last_error: null,
+        eligible_to_file: true,
+        block_reasons: [],
         updated_at: new Date().toISOString()
       };
-
-      if (result.amazon_case_id) {
-        updates.provider_case_id = result.amazon_case_id;
-      }
 
       const { error } = await supabaseAdmin
         .from('dispute_cases')
@@ -1979,7 +2014,7 @@ class RefundFilingWorker {
         // Create submission record
         const { data: disputeCase } = await supabaseAdmin
           .from('dispute_cases')
-          .select('seller_id')
+          .select('seller_id, tenant_id, claim_amount, currency')
           .eq('id', disputeId)
           .single();
 
@@ -1988,6 +2023,7 @@ class RefundFilingWorker {
           .insert({
             dispute_id: disputeId,
             user_id: disputeCase?.seller_id,
+            tenant_id: disputeCase?.tenant_id,
             submission_id: result.submission_id,
             amazon_case_id: result.amazon_case_id,
             status: result.status,
@@ -2064,6 +2100,7 @@ class RefundFilingWorker {
         .update({
           filing_status: 'retrying',
           retry_count: newRetryCount,
+          last_error: result.error_message || 'Filing failed',
           updated_at: new Date().toISOString()
         })
         .eq('id', disputeId);
@@ -2080,6 +2117,7 @@ class RefundFilingWorker {
         .update({
           filing_status: 'failed',
           retry_count: newRetryCount,
+          last_error: result.error_message || 'Filing failed',
           updated_at: new Date().toISOString()
         })
         .eq('id', disputeId);
@@ -2133,9 +2171,15 @@ class RefundFilingWorker {
         updated_at: new Date().toISOString()
       };
 
+      if (statusResult.amazon_case_id) {
+        updates.amazon_case_id = statusResult.amazon_case_id;
+      }
+
       // AGENT 8 INTEGRATION: Mark for recovery detection when approved
       if (newStatus === 'approved' && previousStatus !== 'approved') {
         updates.recovery_status = 'pending';
+        updates.approved_amount = Number(statusResult.amount_approved || 0) || (disputeCase as any)?.approved_amount || (disputeCase as any)?.claim_amount || null;
+        updates.last_error = null;
         logger.info(' [REFUND FILING] Case approved, marked for recovery detection by Agent 8', {
           disputeId
         });
@@ -2143,7 +2187,7 @@ class RefundFilingWorker {
         // Fetch case data for logging and notifications
         const { data: caseData } = await supabaseAdmin
           .from('dispute_cases')
-          .select('seller_id, claim_amount, currency, provider_case_id')
+          .select('seller_id, claim_amount, currency, amazon_case_id')
           .eq('id', disputeId)
           .single();
 
@@ -2155,7 +2199,7 @@ class RefundFilingWorker {
             disputeId,
             success: true,
             status: 'approved',
-            amazonCaseId: statusResult.amazon_case_id || caseData?.provider_case_id,
+            amazonCaseId: statusResult.amazon_case_id || caseData?.amazon_case_id,
             duration: 0
           });
         } catch (logError: any) {
@@ -2172,7 +2216,7 @@ class RefundFilingWorker {
             await notificationHelper.notifyRefundApproved(caseData.seller_id, {
               tenantId: disputeCase?.tenant_id,
               disputeId,
-              amazonCaseId: statusResult.amazon_case_id || caseData.provider_case_id,
+              amazonCaseId: statusResult.amazon_case_id || caseData.amazon_case_id,
               claimAmount: caseData.claim_amount || 0,
               currency: caseData.currency || 'usd',
               approvedAmount: statusResult.amount_approved || 0
@@ -2191,7 +2235,7 @@ class RefundFilingWorker {
             dispute_id: disputeId,
             actual_outcome: 'approved',
             recovery_amount: Number(statusResult.amount_approved || 0),
-            amazon_case_id: statusResult.amazon_case_id || caseData?.provider_case_id,
+            amazon_case_id: statusResult.amazon_case_id || caseData?.amazon_case_id,
             resolution_date: new Date(),
             notes: 'Case approved by Amazon status polling'
           });
@@ -2206,6 +2250,11 @@ class RefundFilingWorker {
       if (newStatus === 'rejected' && previousStatus !== 'rejected') {
         const rejectionReason = statusResult.error || statusResult.resolution || 'Case rejected by Amazon status polling';
         const rejectionCategory = classifyRejectionReason(rejectionReason);
+        updates.rejection_reason = rejectionReason;
+        updates.rejected_at = new Date().toISOString();
+        updates.last_error = rejectionReason;
+        updates.eligible_to_file = false;
+        updates.block_reasons = ['rejected_by_amazon'];
         try {
           const { upsertOutcomeForDispute } = await import('../services/detection/confidenceCalibrator');
           await upsertOutcomeForDispute({

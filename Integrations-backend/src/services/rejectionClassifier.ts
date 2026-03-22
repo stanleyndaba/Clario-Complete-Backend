@@ -256,7 +256,7 @@ export async function getRejectionPreventionDecision(params: {
       case 'OUT_OF_WINDOW':
         return {
           blocked: true,
-          filingStatus: 'blocked_rejection_memory',
+          filingStatus: 'blocked',
           status: 'closed',
           reason: `Blocked by rejection memory: ${rawReason}`,
           category,
@@ -270,7 +270,7 @@ export async function getRejectionPreventionDecision(params: {
       case 'INVALID_CLAIM':
         return {
           blocked: true,
-          filingStatus: 'blocked_rejection_memory',
+          filingStatus: 'blocked',
           status: 'closed',
           reason: `Blocked by rejection memory: ${rawReason}`,
           category,

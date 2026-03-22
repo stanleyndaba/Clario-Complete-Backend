@@ -1,45 +1,122 @@
 import { Router } from 'express';
 import { optionalAuth } from '../middleware/authMiddleware';
-import { supabaseAdmin } from '../database/supabaseClient';
+import { supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
-
-const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+import refundFilingWorker from '../workers/refundFilingWorker';
+import { evaluateAndPersistCaseEligibility } from '../services/agent7EligibilityService';
 
 const router = Router();
 
-// Apply optional authentication - allows demo-user access
+// Routes still use optional auth at the router level, but dispute access itself is strict.
 router.use(optionalAuth);
+
+async function resolveDisputeScope(req: any) {
+  const tenantSlug = String(req.query.tenantSlug || req.query.tenant_slug || '').trim() || null;
+  const requestTenantId = String(req.tenant?.tenantId || '').trim() || null;
+  const requestTenantSlug = String(req.tenant?.tenantSlug || '').trim() || null;
+  const userId = String(req.userId || req.user?.id || '').trim() || null;
+
+  if (requestTenantId && userId) {
+    return {
+      tenantId: requestTenantId,
+      tenantSlug: requestTenantSlug || tenantSlug,
+      userId
+    };
+  }
+
+  if (!tenantSlug) {
+    throw new Error('Tenant context required');
+  }
+
+  if (!userId) {
+    throw new Error('Tenant access requires authenticated user');
+  }
+
+  const { data: tenant, error: tenantError } = await supabaseAdmin
+    .from('tenants')
+    .select('id, slug')
+    .eq('slug', tenantSlug)
+    .is('deleted_at', null)
+    .maybeSingle();
+
+  if (tenantError) {
+    throw new Error('Failed to resolve tenant context');
+  }
+
+  if (!tenant) {
+    throw new Error('Tenant not found');
+  }
+
+  const safeUserId = convertUserIdToUuid(userId);
+  const { data: membership, error: membershipError } = await supabaseAdmin
+    .from('tenant_memberships')
+    .select('id')
+    .eq('tenant_id', tenant.id)
+    .eq('user_id', safeUserId)
+    .eq('is_active', true)
+    .is('deleted_at', null)
+    .maybeSingle();
+
+  if (membershipError) {
+    throw new Error('Failed to verify tenant membership');
+  }
+
+  if (!membership) {
+    throw new Error('You do not have access to this tenant');
+  }
+
+  return {
+    tenantId: tenant.id,
+    tenantSlug: tenant.slug || tenantSlug,
+    userId
+  };
+}
+
+async function resolvePaidSellerIdentity(userId: string) {
+  const { data: user, error } = await supabaseAdmin
+    .from('users')
+    .select('is_paid_beta, amazon_seller_id')
+    .eq('id', userId)
+    .single();
+
+  if (error || !user?.is_paid_beta) {
+    throw new Error('Upgrade required to file disputes ($99 Beta Activation)');
+  }
+
+  return {
+    sellerId: user.amazon_seller_id || userId
+  };
+}
+
+function getDisputeRouteStatusCode(error: any) {
+  const message = String(error?.message || '');
+
+  if (
+    message.includes('Tenant context required') ||
+    message.includes('Tenant not found')
+  ) {
+    return 400;
+  }
+
+  if (
+    message.includes('authenticated user') ||
+    message.includes('access') ||
+    message.includes('Upgrade required')
+  ) {
+    return 403;
+  }
+
+  if (message.includes('not found')) {
+    return 404;
+  }
+
+  return 500;
+}
 
 router.get('/', async (req, res) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
-    const requestedTenantSlug = String(req.query.tenantSlug || req.query.tenant_slug || '').trim() || null;
-    const requestTenantId = (req as any).tenant?.tenantId || null;
+    const { tenantId } = await resolveDisputeScope(req as any);
     const { status, limit } = req.query;
-
-    let tenantId = requestTenantId || DEFAULT_TENANT_ID;
-
-    if (requestedTenantSlug) {
-      const { data: tenant, error: tenantError } = await supabaseAdmin
-        .from('tenants')
-        .select('id')
-        .eq('slug', requestedTenantSlug)
-        .is('deleted_at', null)
-        .maybeSingle();
-
-      if (tenantError) {
-        throw tenantError;
-      }
-
-      if (!tenant) {
-        return res.status(404).json({
-          success: false,
-          message: 'Tenant not found'
-        });
-      }
-
-      tenantId = tenant.id;
-    }
 
     // Build query with tenant isolation
     let query = supabaseAdmin
@@ -66,8 +143,8 @@ router.get('/', async (req, res) => {
       ...c,
       // Frontend expects these specific field names
       amount: c.claim_amount || c.amount || 0,
-      claim_id: c.detection_result_id || c.claim_id || c.id,
-      amazon_case_id: c.provider_case_id || c.amazon_case_id || null,
+      claim_id: c.detection_result_id || null,
+      amazon_case_id: c.amazon_case_id || null,
       case_type: c.case_type || c.dispute_type || 'unknown',
       filing_status: c.filing_status || null,
       retry_count: c.retry_count || 0,
@@ -79,9 +156,10 @@ router.get('/', async (req, res) => {
       total: mappedCases.length
     });
   } catch (error: any) {
-    res.status(500).json({
+    const message = String(error?.message || '');
+    res.status(getDisputeRouteStatusCode(error)).json({
       success: false,
-      message: error?.message || 'Internal server error'
+      message: message || 'Internal server error'
     });
   }
 });
@@ -395,6 +473,22 @@ router.post('/payments/report', async (req, res) => {
 router.get('/:id/brief', async (req, res) => {
   try {
     const { id } = req.params;
+    const { tenantId } = await resolveDisputeScope(req as any);
+    const { data: disputeCase, error: caseError } = await supabaseAdmin
+      .from('dispute_cases')
+      .select('id')
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+
+    if (caseError) throw caseError;
+    if (!disputeCase) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dispute case not found'
+      });
+    }
+
     const disputeService = (await import('../services/disputeService')).default;
 
     const pdfBuffer = await disputeService.generateDisputeBrief(id);
@@ -404,7 +498,7 @@ router.get('/:id/brief', async (req, res) => {
     res.send(pdfBuffer);
   } catch (error: any) {
     console.error('[dispute-brief] Error:', error);
-    res.status(500).json({
+    res.status(getDisputeRouteStatusCode(error)).json({
       success: false,
       message: error?.message || 'Internal server error'
     });
@@ -414,8 +508,7 @@ router.get('/:id/brief', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
-    const { supabaseAdmin } = await import('../database/supabaseClient');
+    const { tenantId } = await resolveDisputeScope(req as any);
 
     const { data: dispute, error } = await supabaseAdmin
       .from('dispute_cases')
@@ -438,7 +531,7 @@ router.get('/:id', async (req, res) => {
         // Ensure camelCase for frontend compatibility if needed, or just pass snake_case
         // Frontend likely expects camelCase based on other parts of the app
         caseNumber: dispute.case_number,
-        claimId: dispute.claim_id,
+        claimId: dispute.detection_result_id || null,
         createdAt: dispute.created_at,
         updatedAt: dispute.updated_at,
         recoveryStatus: dispute.recovery_status,
@@ -446,50 +539,53 @@ router.get('/:id', async (req, res) => {
         billingStatus: dispute.billing_status,
         billingTransactionId: dispute.billing_transaction_id,
         platformFeeCents: dispute.platform_fee_cents,
-        billedAt: dispute.billed_at
+        billedAt: dispute.billed_at,
+        amazon_case_id: dispute.amazon_case_id || null
       }
     });
   } catch (error: any) {
-    res.status(500).json({
+    const message = String(error?.message || '');
+    const statusCode = getDisputeRouteStatusCode(error);
+    res.status(statusCode).json({
       success: false,
-      message: error?.message || 'Internal server error'
+      message: message || 'Internal server error'
     });
   }
 });
 
 router.post('/', async (_req, res) => {
-  try {
-    res.json({
-      success: true,
-      disputeId: 'dispute-' + Date.now(),
-      message: 'Dispute created successfully'
-    });
-  } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      message: error?.message || 'Internal server error'
-    });
-  }
+  return res.status(501).json({
+    success: false,
+    message: 'Direct dispute creation is not supported on this route. Dispute cases must be created from real detections and evidence matching.'
+  });
 });
 
 router.post('/:id/submit', async (_req, res) => {
-  try {
-    res.json({
-      success: true,
-      message: 'Dispute submitted to Amazon',
-      caseId: 'AMZ-CASE-' + Date.now()
-    });
-  } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      message: error?.message || 'Internal server error'
-    });
-  }
+  return res.status(410).json({
+    success: false,
+    message: 'Legacy direct submit is disabled. Use the real Agent 7 filing queue instead.'
+  });
 });
 
 router.get('/:id/audit-log', async (req, res) => {
   try {
     const { id } = req.params;
+    const { tenantId } = await resolveDisputeScope(req as any);
+
+    const { data: disputeCase, error: caseError } = await supabaseAdmin
+      .from('dispute_cases')
+      .select('id')
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+
+    if (caseError) throw caseError;
+    if (!disputeCase) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dispute case not found'
+      });
+    }
 
     // Get audit log from database
     const { supabase } = await import('../database/supabaseClient');
@@ -508,7 +604,7 @@ router.get('/:id/audit-log', async (req, res) => {
       auditLog: auditLog || []
     });
   } catch (error: any) {
-    res.status(500).json({
+    res.status(getDisputeRouteStatusCode(error)).json({
       success: false,
       message: error?.message || 'Internal server error'
     });
@@ -520,29 +616,29 @@ router.get('/:id/audit-log', async (req, res) => {
 router.put('/:id/resolve', async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = (req as any).user?.id;
+    const { tenantId } = await resolveDisputeScope(req as any);
     const { resolution_status, resolution_notes, resolution_amount } = req.body || {};
+    const timestamp = new Date().toISOString();
+    const { data: updatedCase, error } = await supabaseAdmin
+      .from('dispute_cases')
+      .update({
+        status: resolution_status || 'resolved',
+        resolution_notes,
+        resolution_amount,
+        updated_at: timestamp
+      })
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .select('*')
+      .maybeSingle();
 
-    if (!userId) {
-      return res.status(401).json({
+    if (error) throw error;
+    if (!updatedCase) {
+      return res.status(404).json({
         success: false,
-        message: 'Authentication required'
+        message: 'Dispute case not found'
       });
     }
-
-    // Import dispute service
-    const disputeService = (await import('../services/disputeService')).default;
-
-    // Create resolution object
-    const resolution = {
-      dispute_case_id: id,
-      resolution_status: resolution_status || 'resolved',
-      resolution_notes,
-      resolution_amount,
-      provider_response: { resolved_by: userId, resolved_at: new Date().toISOString() }
-    };
-
-    const updatedCase = await disputeService.processCaseResolution(resolution);
 
     res.json({
       success: true,
@@ -550,13 +646,7 @@ router.put('/:id/resolve', async (req, res) => {
       dispute: updatedCase
     });
   } catch (error: any) {
-    if (error.message === 'Dispute case not found') {
-      return res.status(404).json({
-        success: false,
-        message: error.message
-      });
-    }
-    res.status(500).json({
+    res.status(getDisputeRouteStatusCode(error)).json({
       success: false,
       message: error?.message || 'Internal server error'
     });
@@ -568,28 +658,25 @@ router.put('/:id/resolve', async (req, res) => {
 router.post('/:id/deny', async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = (req as any).user?.id;
+    const { tenantId, userId } = await resolveDisputeScope(req as any);
     const { rejectionReason, amazonCaseId } = req.body;
 
-    if (!userId) {
-      return res.status(401).json({ success: false, message: 'Unauthorized' });
-    }
-
-    const { supabaseAdmin } = await import('../database/supabaseClient');
     const learningWorker = (await import('../workers/learningWorker')).default;
-    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
 
     // 1. Update case status to Denied
     const { error } = await supabaseAdmin
       .from('dispute_cases')
       .update({
-        status: 'Denied',
+        status: 'rejected',
+        filing_status: 'failed',
         recovery_status: 'denied',
+        rejection_reason: rejectionReason || 'Unknown rejection',
+        rejected_at: new Date().toISOString(),
+        last_error: rejectionReason || 'Unknown rejection',
+        amazon_case_id: amazonCaseId || null,
         updated_at: new Date().toISOString(),
-        metadata: {
-          rejection_reason: rejectionReason,
-          amazon_case_id: amazonCaseId
-        }
+        eligible_to_file: false,
+        block_reasons: rejectionReason ? ['rejected_by_amazon'] : ['rejected_without_reason']
       })
       .eq('id', id)
       .eq('tenant_id', tenantId);
@@ -619,7 +706,7 @@ router.post('/:id/deny', async (req, res) => {
     });
 
   } catch (error: any) {
-    res.status(500).json({
+    res.status(getDisputeRouteStatusCode(error)).json({
       success: false,
       message: error?.message || 'Internal server error'
     });
@@ -630,7 +717,7 @@ router.post('/:id/deny', async (req, res) => {
 // Trigger immediate filing for a pending case (Agent 7 manual trigger)
 router.post('/file-now', async (req, res) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
+    const { tenantId, userId } = await resolveDisputeScope(req as any);
     logger.info(`🔍 [DISPUTE] Financial Sentry check for user: ${userId}`);
     const { dispute_id } = req.body;
 
@@ -641,53 +728,67 @@ router.post('/file-now', async (req, res) => {
       });
     }
 
-    // 1. FINANCIAL SENTRY: Check is_paid_beta flag
-    const { data: user, error: userError } = await supabaseAdmin
-      .from('users')
-      .select('is_paid_beta, amazon_seller_id')
-      .eq('id', userId)
+    const { sellerId } = await resolvePaidSellerIdentity(userId);
+    const { data: caseData, error: fetchError } = await supabaseAdmin
+      .from('dispute_cases')
+      .select('id, filing_status')
+      .eq('id', dispute_id)
+      .eq('tenant_id', tenantId)
       .single();
 
-    logger.info(`🔍 [DISPUTE] User data found: ${JSON.stringify(user)}, Error: ${userError?.message}`);
-
-    if (userError || !user?.is_paid_beta) {
-      logger.warn(`🚨 [SECURITY] Unauthorized filing attempt for unpaid user: ${userId}`, { dispute_id });
-      return res.status(403).json({
+    if (fetchError || !caseData) {
+      return res.status(404).json({
         success: false,
-        message: 'Upgrade required to file disputes ($99 Beta Activation)'
+        message: 'Dispute case not found'
       });
     }
 
-    const sellerId = user.amazon_seller_id || userId; // Fallback to userId if amazon_seller_id is missing
+    const { eligible, reasons, disputeCase } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
+    if (!eligible) {
+      return res.status(409).json({
+        success: false,
+        message: 'Case is blocked and cannot be filed',
+        filing_status: disputeCase?.filing_status || 'blocked',
+        block_reasons: reasons
+      });
+    }
 
-    // 2. QUEUE HANDOFF: Enqueue job via refundFilingWorker
-    const refundFilingWorker = (await import('../workers/refundFilingWorker')).default;
-    
-    // Ensure the case is in 'pending' status so the worker can pick it up
-    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
+    if (['submitting', 'filed', 'recovering', 'payment_required'].includes(String(disputeCase?.filing_status || '').toLowerCase())) {
+      return res.status(409).json({
+        success: false,
+        message: `Case is not queueable from filing state: ${disputeCase?.filing_status || 'unknown'}`
+      });
+    }
+
     await supabaseAdmin
       .from('dispute_cases')
       .update({
         filing_status: 'pending',
+        eligible_to_file: true,
+        block_reasons: [],
+        last_error: null,
         updated_at: new Date().toISOString()
       })
       .eq('id', dispute_id)
       .eq('tenant_id', tenantId);
 
-    // Enqueue the job
     const job = await refundFilingWorker.addJob(dispute_id, sellerId);
 
     res.json({
       success: true,
-      message: 'Filing request received and queued.',
-      jobId: job.id
+      message: 'Case queued for filing.',
+      jobId: job.id,
+      filing_status: 'pending',
+      queued: true
     });
 
   } catch (error: any) {
     console.error('[file-now] Error:', error);
-    res.status(500).json({
+    const message = String(error?.message || '');
+    const statusCode = getDisputeRouteStatusCode(error);
+    res.status(statusCode).json({
       success: false,
-      message: error?.message || 'Internal server error'
+      message: message || 'Internal server error'
     });
   }
 });
@@ -696,8 +797,8 @@ router.post('/file-now', async (req, res) => {
 // Retry a failed filing with stronger evidence (Agent 7 retry)
 router.post('/retry-filing', async (req, res) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
-    const { dispute_id, claim_id, collect_stronger_evidence } = req.body;
+    const { tenantId, userId } = await resolveDisputeScope(req as any);
+    const { dispute_id } = req.body;
 
     if (!dispute_id) {
       return res.status(400).json({
@@ -706,11 +807,7 @@ router.post('/retry-filing', async (req, res) => {
       });
     }
 
-    // Import services
-    const refundFilingService = (await import('../services/refundFilingService')).default;
-
-    // Get the dispute case details
-    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
+    const { sellerId } = await resolvePaidSellerIdentity(userId);
     const { data: caseData, error: fetchError } = await supabaseAdmin
       .from('dispute_cases')
       .select('*')
@@ -725,86 +822,49 @@ router.post('/retry-filing', async (req, res) => {
       });
     }
 
-    // Increment retry count
-    const newRetryCount = (caseData.retry_count || 0) + 1;
+    const { eligible, reasons, disputeCase } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
+    if (!eligible) {
+      return res.status(409).json({
+        success: false,
+        message: 'Case is blocked and cannot be retried',
+        filing_status: disputeCase?.filing_status || 'blocked',
+        block_reasons: reasons
+      });
+    }
 
-    // Update status to 'retrying'
+    const newRetryCount = Number(caseData.retry_count || 0) + 1;
     await supabaseAdmin
       .from('dispute_cases')
       .update({
         filing_status: 'retrying',
         retry_count: newRetryCount,
-        filing_error: null,
+        last_error: null,
+        eligible_to_file: true,
+        block_reasons: [],
         updated_at: new Date().toISOString()
       })
       .eq('id', dispute_id)
       .eq('tenant_id', tenantId);
 
-    // Collect stronger evidence if requested
-    let evidenceIds = caseData.evidence_document_ids || [];
-    if (collect_stronger_evidence) {
-      try {
-        const additionalEvidence = await refundFilingService.collectStrongerEvidence(dispute_id, userId);
-        evidenceIds = [...new Set([...evidenceIds, ...additionalEvidence])];
-      } catch (err: any) {
-        console.warn('[retry-filing] Could not collect stronger evidence:', err.message);
-      }
-    }
-
-    // Prepare filing request with enhanced evidence
-    const filingRequest = {
-      dispute_id,
-      user_id: userId,
-      order_id: caseData.order_id || '',
-      asin: caseData.asin || '',
-      sku: caseData.sku || '',
-      claim_type: caseData.case_type || caseData.dispute_type || 'unknown',
-      amount_claimed: caseData.claim_amount || caseData.amount || 0,
-      currency: caseData.currency || 'USD',
-      evidence_document_ids: evidenceIds,
-      confidence_score: caseData.confidence_score || 0.85
-    };
-
-    // File the dispute with retry (async)
-    refundFilingService.fileDisputeWithRetry(filingRequest, newRetryCount)
-      .then(async (result) => {
-        await supabaseAdmin
-          .from('dispute_cases')
-          .update({
-            filing_status: result.success ? 'submitted' : 'failed',
-            provider_case_id: result.amazon_case_id || caseData.provider_case_id || null,
-            filing_error: result.error_message || null,
-            evidence_document_ids: evidenceIds,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', dispute_id);
-      })
-      .catch(async (err) => {
-        console.error('[retry-filing] Retry error:', err);
-        await supabaseAdmin
-          .from('dispute_cases')
-          .update({
-            filing_status: 'failed',
-            filing_error: err.message || 'Retry failed',
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', dispute_id);
-      });
+    const job = await refundFilingWorker.addJob(dispute_id, sellerId);
 
     res.json({
       success: true,
-      message: 'Retry initiated with enhanced evidence',
+      message: 'Retry queued for filing',
+      jobId: job.id,
       dispute_id,
       filing_status: 'retrying',
       retry_count: newRetryCount,
-      evidence_count: evidenceIds.length
+      queued: true
     });
 
   } catch (error: any) {
     console.error('[retry-filing] Error:', error);
-    res.status(500).json({
+    const message = String(error?.message || '');
+    const statusCode = getDisputeRouteStatusCode(error);
+    res.status(statusCode).json({
       success: false,
-      message: error?.message || 'Internal server error'
+      message: message || 'Internal server error'
     });
   }
 });
@@ -813,8 +873,8 @@ router.post('/retry-filing', async (req, res) => {
 // Approve a high-value claim that was flagged for manual review (Agent 7 approval)
 router.post('/approve-filing', async (req, res) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
-    const { dispute_id, claim_id } = req.body;
+    const { tenantId, userId } = await resolveDisputeScope(req as any);
+    const { dispute_id } = req.body;
 
     if (!dispute_id) {
       return res.status(400).json({
@@ -823,8 +883,7 @@ router.post('/approve-filing', async (req, res) => {
       });
     }
 
-    // Get the dispute case details
-    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
+    const { sellerId } = await resolvePaidSellerIdentity(userId);
     const { data: caseData, error: fetchError } = await supabaseAdmin
       .from('dispute_cases')
       .select('*')
@@ -847,41 +906,53 @@ router.post('/approve-filing', async (req, res) => {
       });
     }
 
-    // Update status from pending_approval to pending (ready for filing)
+    const { eligible, reasons } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
+    if (!eligible) {
+      return res.status(409).json({
+        success: false,
+        message: 'Case remains blocked after approval review',
+        filing_status: 'blocked',
+        block_reasons: reasons
+      });
+    }
+
     const { error: updateError } = await supabaseAdmin
       .from('dispute_cases')
       .update({
         filing_status: 'pending',
-        metadata: {
-          ...(caseData.metadata || {}),
-          approved_by: userId,
-          approved_at: new Date().toISOString(),
-          original_status: 'pending_approval'
-        },
+        eligible_to_file: true,
+        block_reasons: [],
+        last_error: null,
         updated_at: new Date().toISOString()
       })
-      .eq('id', dispute_id);
+      .eq('id', dispute_id)
+      .eq('tenant_id', tenantId);
 
     if (updateError) {
       throw updateError;
     }
 
-    // Log the approval
-    console.log(`[approve-filing] User ${userId} approved high-value claim ${dispute_id}`);
+    console.log(`[approve-filing] User ${userId} approved claim ${dispute_id}`);
+
+    const job = await refundFilingWorker.addJob(dispute_id, sellerId);
 
     res.json({
       success: true,
       message: 'Claim approved and queued for filing',
       dispute_id,
       filing_status: 'pending',
-      approved_by: userId
+      approved_by: userId,
+      jobId: job.id,
+      queued: true
     });
 
   } catch (error: any) {
     console.error('[approve-filing] Error:', error);
-    res.status(500).json({
+    const message = String(error?.message || '');
+    const statusCode = getDisputeRouteStatusCode(error);
+    res.status(statusCode).json({
       success: false,
-      message: error?.message || 'Internal server error'
+      message: message || 'Internal server error'
     });
   }
 });

@@ -133,12 +133,7 @@ async function resolveScope(filters: DisputeCaseQueueFilters): Promise<ResolvedS
 }
 
 function deriveApprovedAmount(record: any): number | null {
-  const recoveryAmount = toMoney(record?.recovery_amount);
-  if (recoveryAmount !== null) return recoveryAmount;
-  if (APPROVED_STATUSES.has(normalize(record?.status))) {
-    return toMoney(record?.claim_amount);
-  }
-  return null;
+  return toMoney(record?.approved_amount);
 }
 
 function getMatchedDocumentCount(record: any, linkedDocumentCount: number) {
@@ -151,16 +146,14 @@ function getMatchedDocumentCount(record: any, linkedDocumentCount: number) {
 function deriveEvidenceState(record: any, matchedDocumentCount: number) {
   const filingStatus = normalize(record?.filing_status);
   const rejectionCategory = record?.evidence_attachments?.rejection_category || null;
-  const rejectionReason = record?.evidence_attachments?.raw_reason_text || record?.metadata?.rejection_reason || null;
-  const quarantineReason = record?.metadata?.quarantine_reason || null;
-  const approvalReason = record?.metadata?.approval_reason || null;
+  const rejectionReason = record?.rejection_reason || null;
+  const blockReasons = Array.isArray(record?.block_reasons) ? record.block_reasons : [];
   const matchConfidence = toNumber(record?.evidence_attachments?.match_confidence);
 
   if (matchedDocumentCount === 0) return 'Missing Evidence';
-  if (rejectionCategory || rejectionReason || quarantineReason || REVIEW_FILINGS.has(filingStatus)) return 'Needs Review';
+  if (rejectionCategory || rejectionReason || blockReasons.length > 0 || filingStatus === 'blocked' || REVIEW_FILINGS.has(filingStatus)) return 'Needs Review';
   if (matchConfidence !== null && matchConfidence < 0.5) return 'Weak Evidence';
-  if (approvalReason && approvalReason !== 'ready_to_file') return 'Needs Review';
-  if (['pending', 'retrying'].includes(filingStatus)) return 'Ready';
+  if (record?.eligible_to_file === true && ['pending', 'retrying'].includes(filingStatus)) return 'Ready';
   return 'Matched';
 }
 
@@ -177,9 +170,10 @@ function deriveNextAction(row: any) {
   if (REJECTED_STATUSES.has(status) || row.rejection_reason || row.rejection_category) return 'Review rejection';
   if (APPROVED_STATUSES.has(status)) return 'Waiting for payout';
   if (FILED_STATUSES.has(filingStatus)) return 'Filed / awaiting Amazon';
+  if (filingStatus === 'blocked' || row.eligible_to_file === false) return 'Blocked';
   if (row.evidence_state === 'Missing Evidence') return 'Waiting for evidence';
   if (row.evidence_state === 'Weak Evidence' || row.evidence_state === 'Needs Review') return 'Needs review';
-  if (['pending', 'retrying'].includes(filingStatus)) return 'Ready to file';
+  if (row.eligible_to_file === true && ['pending', 'retrying'].includes(filingStatus)) return 'Ready to file';
   return 'Manual review';
 }
 
@@ -300,13 +294,13 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     const matchedDocumentCount = getMatchedDocumentCount(record, evidenceCountByCase.get(record.id) || 0);
     const requestedAmount = toMoney(record.claim_amount);
     const approvedAmount = deriveApprovedAmount(record);
-    const actualPayoutAmount = toMoney(record.actual_payout_amount);
+    const actualPayoutAmount = toMoney(record.recovered_amount ?? record.actual_payout_amount);
     const billedAmount = latestBilling?.platform_fee_cents != null
       ? Number((Number(latestBilling.platform_fee_cents) / 100).toFixed(2))
       : toMoney(record?.billed_amount);
     const billingStatus = normalize(latestBilling?.billing_status || record.billing_status) || null;
     const rejectionCategory = record?.evidence_attachments?.rejection_category || null;
-    const rejectionReason = record?.evidence_attachments?.raw_reason_text || record?.metadata?.rejection_reason || null;
+    const rejectionReason = record?.rejection_reason || null;
     const evidenceState = deriveEvidenceState(record, matchedDocumentCount);
 
     const row = {
@@ -320,6 +314,8 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       filing_status: record.filing_status || null,
       recovery_status: record.recovery_status || null,
       billing_status: billingStatus,
+      eligible_to_file: record.eligible_to_file === true,
+      block_reasons: Array.isArray(record.block_reasons) ? record.block_reasons : [],
       requested_amount: requestedAmount,
       approved_amount: approvedAmount,
       actual_payout_amount: actualPayoutAmount,
@@ -331,7 +327,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       rejection_reason: rejectionReason,
       created_at: record.created_at || null,
       updated_at: record.updated_at || record.created_at || null,
-      amazon_case_id: record.provider_case_id || null,
+      amazon_case_id: record.amazon_case_id || null,
       store_name: storeById.get(record.store_id) || null,
       order_id: record.order_id || detection?.order_id || null,
       sku: record.sku || detection?.sku || null,

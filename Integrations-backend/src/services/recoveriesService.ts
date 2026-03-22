@@ -432,7 +432,9 @@ class RecoveriesService {
         .update({
           recovery_status: status === 'reconciled' ? 'reconciled' : 'discrepancy',
           reconciled_at: status === 'reconciled' ? new Date().toISOString() : null,
+          approved_amount: match.expectedAmount,
           actual_payout_amount: match.actualAmount,
+          recovered_amount: match.actualAmount,
           // 🎯 AGENT 9 INTEGRATION: Set billing_status = 'pending' when reconciled
           billing_status: status === 'reconciled' ? 'pending' : null,
           updated_at: new Date().toISOString()

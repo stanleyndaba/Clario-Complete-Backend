@@ -22,6 +22,7 @@ export interface FilingRequest {
     dispute_id: string;
     user_id: string;
     order_id: string;
+    shipment_id?: string;
     asin?: string;
     sku?: string;
     claim_type: string;
@@ -79,7 +80,7 @@ class RefundFilingService {
     }
 
     /**
-    * File a dispute case via Python SP-API service (mock for MVP)
+    * File a dispute case via Python SP-API service
     */
     async fileDispute(request: FilingRequest): Promise<FilingResult> {
         try {
@@ -99,11 +100,11 @@ class RefundFilingService {
                 amount: request.amount_claimed,
                 currency: request.currency,
                 orderId: request.order_id,
-                shipmentId: (request as any).shipment_id || request.order_id, // Fallback if shipment_id not provided
+                shipmentId: request.shipment_id || undefined,
                 asin: request.asin,
                 sku: request.sku,
                 evidenceFilenames: evidenceDocuments.map(d => d.filename),
-                quantity: (request as any).quantity || 1
+                quantity: (request.metadata?.quantity as number | undefined) || 1
             };
 
             const brief = briefGeneratorService.generateBrief(context);
@@ -124,7 +125,7 @@ class RefundFilingService {
                 policy_cited: brief.policyCited
             };
 
-            // DRY RUN Support: Write to local file instead of calling API
+            // DRY RUN Support: persist the payload for inspection, but never pretend filing succeeded.
             if (process.env.DRY_RUN === 'true' || (global as any).DRY_RUN === true) {
                 const outputDir = path.join(process.cwd(), 'test_output');
                 if (!fs.existsSync(outputDir)) {
@@ -139,10 +140,9 @@ class RefundFilingService {
                 logger.info('[DRY RUN] Case payload saved safely', { filePath });
 
                 return {
-                    success: true,
-                    submission_id: `DRY-RUN-${request.dispute_id.slice(0, 8)}`,
-                    amazon_case_id: `MOCK-${request.dispute_id.slice(0, 8)}`,
-                    status: 'submitted'
+                    success: false,
+                    status: 'failed',
+                    error_message: 'DRY_RUN is enabled. Submission payload was captured, but no real Amazon filing occurred.'
                 };
             }
 

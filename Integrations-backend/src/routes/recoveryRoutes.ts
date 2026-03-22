@@ -101,15 +101,15 @@ function isRecoveryRelevant(record: any): boolean {
         isApprovedCase(record) ||
         normalize(record?.recovery_status) ||
         normalize(record?.billing_status) ||
-        toNumber(record?.actual_payout_amount) > 0 ||
+        toNumber(record?.recovered_amount ?? record?.actual_payout_amount) > 0 ||
         record?.expected_payout_date
     );
 }
 
 function deriveApprovedAmount(record: any): number | null {
-    const recoveryAmount = toOptionalAmount(record?.recovery_amount);
-    if (recoveryAmount !== null) {
-        return recoveryAmount;
+    const approvedAmount = toOptionalAmount(record?.approved_amount);
+    if (approvedAmount !== null) {
+        return approvedAmount;
     }
 
     if (isApprovedCase(record)) {
@@ -241,7 +241,7 @@ function deriveNextStepContext(record: any, documents: any[]) {
     const recoveryStatus = String(record?.recovery_status || '').toLowerCase();
     const billingStatus = String(record?.billing_status || '').toLowerCase();
     const rejectionCategory = record?.evidence_attachments?.rejection_category || null;
-    const rejectionReason = record?.evidence_attachments?.raw_reason_text || null;
+    const rejectionReason = record?.rejection_reason || null;
     const evidenceCount = getEvidenceDocumentCount(record, documents);
     const hasEvidence = evidenceCount > 0;
 
@@ -344,13 +344,17 @@ function buildGeneratedContext(record: any) {
 function buildCaseResponse(record: any, documents: any[], events: any[], objectType: 'case' | 'detection') {
     const requestedAmount = typeof record?.claim_amount === 'number'
         ? record.claim_amount
-        : (typeof record?.estimated_value === 'number' ? record.estimated_value : 0);
-    const approvedAmount = typeof record?.recovery_amount === 'number'
-        ? record.recovery_amount
+        : (typeof record?.estimated_recovery_amount === 'number'
+            ? record.estimated_recovery_amount
+            : (typeof record?.estimated_value === 'number' ? record.estimated_value : 0));
+    const approvedAmount = typeof record?.approved_amount === 'number'
+        ? record.approved_amount
         : null;
-    const actualPayoutAmount = typeof record?.actual_payout_amount === 'number'
-        ? record.actual_payout_amount
-        : null;
+    const actualPayoutAmount = typeof record?.recovered_amount === 'number'
+        ? record.recovered_amount
+        : (typeof record?.actual_payout_amount === 'number'
+            ? record.actual_payout_amount
+            : null);
     const evidenceSummary = {
         matched_document_count: getEvidenceDocumentCount(record, documents),
         has_documents: getEvidenceDocumentCount(record, documents) > 0,
@@ -374,7 +378,7 @@ function buildCaseResponse(record: any, documents: any[], events: any[], objectT
         sku: record.sku || record.evidence?.sku || 'N/A',
         asin: record.asin || record.evidence?.asin || null,
         productName: record.case_type || record.anomaly_type || 'Unknown Product',
-        amazonCaseId: record.provider_case_id || record.amazon_case_id || null,
+        amazonCaseId: record.amazon_case_id || null,
         currency: record.currency || 'USD',
         case_number: record.case_number || null,
         claim_number: record.claim_id || record.case_number || record.claim_number || null,
@@ -391,7 +395,9 @@ function buildCaseResponse(record: any, documents: any[], events: any[], objectT
         confidence_score: typeof record.confidence_score === 'number' ? record.confidence_score : null,
         anomaly_type: record.anomaly_type || record.case_type || null,
         estimated_claim_value: objectType === 'detection'
-            ? (typeof record.estimated_value === 'number' ? record.estimated_value : requestedAmount)
+            ? (typeof record.estimated_recovery_amount === 'number'
+                ? record.estimated_recovery_amount
+                : (typeof record.estimated_value === 'number' ? record.estimated_value : requestedAmount))
             : requestedAmount,
         requested_amount: requestedAmount,
         approved_amount: approvedAmount,
@@ -402,7 +408,7 @@ function buildCaseResponse(record: any, documents: any[], events: any[], objectT
         evidence: record.evidence || {},
         evidence_summary: evidenceSummary,
         rejection_category: record?.evidence_attachments?.rejection_category || null,
-        rejection_reason: record?.evidence_attachments?.raw_reason_text || null,
+        rejection_reason: record?.rejection_reason || null,
         duplicate_blocked: record.filing_status === 'duplicate_blocked' || record.duplicate_blocked === true,
         generated_context: buildGeneratedContext(record),
         next_step_context: deriveNextStepContext(record, documents),
@@ -464,7 +470,7 @@ router.get('/ledger', async (req: Request, res: Response) => {
 
         const ledgerRows = recoveryRelevantCases.map((record: any) => {
             const approvedAmount = deriveApprovedAmount(record);
-            const actualPayoutAmount = toOptionalAmount(record.actual_payout_amount);
+            const actualPayoutAmount = toOptionalAmount(record.recovered_amount ?? record.actual_payout_amount);
             const latestBilling = latestBillingByDisputeId.get(record.id);
             const billingStatus = normalize(latestBilling?.billing_status || record.billing_status) || null;
             const reconciliationStatus = deriveReconciliationStatus(record, approvedAmount, actualPayoutAmount);
@@ -478,8 +484,8 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 recovery_id: record.id,
                 dispute_case_id: record.id,
                 detection_result_id: record.detection_result_id || null,
-                case_number: record.case_number || record.claim_number || record.provider_case_id || record.id.slice(0, 8),
-                provider_case_id: record.provider_case_id || record.amazon_case_id || null,
+                case_number: record.case_number || record.claim_number || record.amazon_case_id || record.id.slice(0, 8),
+                provider_case_id: record.amazon_case_id || null,
                 merchant_reference: record.store_name || record.seller_id || null,
                 status: record.status || null,
                 recovery_status: record.recovery_status || null,

@@ -109,6 +109,31 @@ Regards,
 Inventory Audit Team
         `.trim()
     },
+    fc_lost_or_damaged: {
+        subject: (ctx) => `Reimbursement Request: FC Inventory Loss/Damage - ${ctx.sku || ctx.asin || 'Product'} - ${ctx.shipmentId || ctx.orderId || 'Reference Required'}`,
+        policy: 'FBA Inventory Reimbursement Policy - FC Lost/Damaged Inventory',
+        body: (ctx) => `
+Dear Amazon Seller Support Team,
+
+We are requesting reimbursement for inventory that was lost or damaged while under Amazon's control at the fulfillment center.
+
+Reference Details:
+- Reference ID: ${ctx.shipmentId || ctx.orderId || 'N/A'}
+- SKU/ASIN: ${ctx.sku || ctx.asin || 'N/A'}
+- Quantity Impacted: ${ctx.quantity || 1}
+- Requested Amount: ${ctx.amount} ${ctx.currency}
+
+This filing is limited to a single fulfillment-center loss or damage issue and is supported by the attached sourcing-cost and inventory evidence.
+
+Attached Evidence:
+${ctx.evidenceFilenames.map(f => `- ${f}`).join('\n')}
+
+Please review the attached proof and process reimbursement under the applicable FBA lost/damaged inventory policy.
+
+Regards,
+Inventory Audit Team
+        `.trim()
+    },
     default: {
         subject: (ctx) => `Inquiry: Discrepancy Detected for Order/Shipment ${ctx.orderId || ctx.shipmentId || 'N/A'}`,
         policy: 'FBA General Reimbursement Policy',
@@ -133,6 +158,22 @@ Inventory Audit Team
     }
 };
 
+export function resolveBriefTemplateType(caseType: string): keyof typeof BRIEF_TEMPLATES {
+    const type = caseType.toLowerCase();
+
+    if (type.includes('warehouse') || type.includes('damage') || type.includes('fulfillment') || type.includes('fc_')) {
+        return 'fc_lost_or_damaged';
+    }
+    if (type.includes('inbound') || type.includes('shipment') || type.includes('missing') || type.includes('lost')) {
+        return 'missing_inbound_shipment';
+    }
+    if (type.includes('return') || type.includes('refund')) {
+        return 'refund_without_return';
+    }
+
+    return 'default';
+}
+
 class BriefGeneratorService {
     /**
      * Generate a legal brief (Subject + Body) for a claim
@@ -144,17 +185,8 @@ class BriefGeneratorService {
         });
 
         // Normalize type
-        const type = ctx.caseType.toLowerCase();
-        let template = BRIEF_TEMPLATES[type] || BRIEF_TEMPLATES.default;
-
-        // Special handling for variations
-        if (type.includes('missing') || type.includes('lost')) {
-            template = BRIEF_TEMPLATES.missing_inbound_shipment;
-        } else if (type.includes('return') || type.includes('refund')) {
-            template = BRIEF_TEMPLATES.refund_without_return;
-        } else if (type.includes('damage')) {
-            template = BRIEF_TEMPLATES.damaged_warehouse;
-        }
+        const templateKey = resolveBriefTemplateType(ctx.caseType);
+        const template = BRIEF_TEMPLATES[templateKey] || BRIEF_TEMPLATES.default;
 
         return {
             subject: template.subject(ctx),
