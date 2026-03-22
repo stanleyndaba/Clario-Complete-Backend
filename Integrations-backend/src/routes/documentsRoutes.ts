@@ -3,6 +3,7 @@ import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supaba
 import logger from '../utils/logger';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
+import { evidenceAuditService } from '../services/evidenceAuditService';
 
 const router = Router();
 
@@ -20,6 +21,119 @@ function getAuthoritativeParserStatus(doc: any) {
     }
 
     return doc?.parser_status || metadata?.parser_status || 'pending';
+}
+
+function getNormalizedParsedMetadata(doc: any) {
+    const parsedMetadata = doc?.parsed_metadata || {};
+    const metadata = doc?.metadata || {};
+    const nestedParsedData = metadata?.parsed_data || metadata?.parsed_metadata || {};
+
+    return {
+        parsedMetadata,
+        metadata,
+        nestedParsedData,
+        supplier: parsedMetadata.supplier_name || doc?.supplier_name || nestedParsedData.supplier_name || nestedParsedData.supplier || metadata.supplier_name || null,
+        invoice: parsedMetadata.invoice_number || doc?.invoice_number || nestedParsedData.invoice_number || nestedParsedData.invoice_no || metadata.invoice_number || null,
+        amount: parsedMetadata.total_amount || doc?.total_amount || nestedParsedData.total_amount || nestedParsedData.total || nestedParsedData.amount || metadata.total_amount || null,
+        lineItems: parsedMetadata.line_items || nestedParsedData.line_items || nestedParsedData.items || [],
+        confidence: parsedMetadata.confidence_score || doc?.parser_confidence || nestedParsedData.confidence_score || metadata.parser_confidence || null,
+        extractionMethod: parsedMetadata.extraction_method || nestedParsedData.extraction_method || metadata.parser_type || metadata.parsedVia || null
+    };
+}
+
+function getSourceDisplay(doc: any) {
+    return doc?.provider || doc?.source || (doc?.source_id ? 'connected_source' : 'upload') || 'unknown';
+}
+
+function getExtractionSignalCount(doc: any, normalized: ReturnType<typeof getNormalizedParsedMetadata>) {
+    const extracted = doc?.extracted || {};
+    let signals = 0;
+
+    if (normalized.supplier) signals += 1;
+    if (normalized.invoice) signals += 1;
+    if (typeof normalized.amount === 'number') signals += 1;
+    if ((normalized.lineItems || []).length > 0) signals += 1;
+    if ((extracted.order_ids || []).length > 0) signals += 1;
+    if ((extracted.asins || []).length > 0) signals += 1;
+    if ((extracted.skus || []).length > 0) signals += 1;
+    if ((extracted.invoice_numbers || []).length > 0) signals += 1;
+    if ((extracted.tracking_numbers || []).length > 0) signals += 1;
+
+    return signals;
+}
+
+function buildLockerState(doc: any, linkedClaimCount: number, strongestMatchConfidence: number | null, extractionSignalCount: number) {
+    const parserStatus = getAuthoritativeParserStatus(doc);
+
+    if (parserStatus === 'failed') {
+        return {
+            evidence_state: 'Parsing Failed',
+            usable_as_evidence: false,
+            usability_reason: 'Parsing failed. Reparse or replace the file before it can support a case.',
+            needs_review: true
+        };
+    }
+
+    if (parserStatus === 'pending' || parserStatus === 'processing') {
+        return {
+            evidence_state: 'Not Parsed',
+            usable_as_evidence: false,
+            usability_reason: 'Parsing has not completed yet.',
+            needs_review: false
+        };
+    }
+
+    if (extractionSignalCount < 2) {
+        return {
+            evidence_state: 'Parsing Partial',
+            usable_as_evidence: false,
+            usability_reason: 'Parsing completed, but key fields are still missing.',
+            needs_review: true
+        };
+    }
+
+    if (linkedClaimCount === 0) {
+        return {
+            evidence_state: 'Unmatched',
+            usable_as_evidence: false,
+            usability_reason: 'No authoritative case linkage exists yet.',
+            needs_review: true
+        };
+    }
+
+    if (strongestMatchConfidence == null) {
+        return {
+            evidence_state: 'Linked Weakly',
+            usable_as_evidence: false,
+            usability_reason: 'The document is linked to a case, but linkage confidence is unavailable.',
+            needs_review: true
+        };
+    }
+
+    if (strongestMatchConfidence >= 0.85) {
+        return {
+            evidence_state: 'Usable',
+            usable_as_evidence: true,
+            usability_reason: 'Parsed successfully and strongly linked to at least one case.',
+            needs_review: false
+        };
+    }
+
+    if (strongestMatchConfidence >= 0.5) {
+        return {
+            evidence_state: 'Linked Strongly',
+            usable_as_evidence: false,
+            usability_reason: 'Linked to a case, but still below automatic-use confidence.',
+            needs_review: true
+        };
+    }
+
+    return {
+        evidence_state: 'Linked Weakly',
+        usable_as_evidence: false,
+        usability_reason: 'Linked to a case with weak confidence.',
+        needs_review: true
+    };
 }
 
 // Configure multer for file uploads (memory storage)
@@ -265,6 +379,299 @@ router.get('/', async (req: Request, res: Response) => {
         res.status(500).json({
             success: false,
             error: 'Failed to fetch documents',
+            message: error?.message || String(error)
+        });
+    }
+});
+
+/**
+ * GET /api/documents/inventory
+ * Authoritative Evidence Locker inventory payload
+ */
+router.get('/inventory', async (req: Request, res: Response) => {
+    try {
+        const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+        const tenantId = (req as any).tenant?.tenantId;
+
+        if (!userId || !tenantId) {
+            return res.status(401).json({
+                success: false,
+                error: 'Unauthorized'
+            });
+        }
+
+        const finalUserId = convertUserIdToUuid(userId);
+        const q = String(req.query.q || '').trim().toLowerCase();
+        const parserStatus = String(req.query.parserStatus || '').trim().toLowerCase();
+        const providerFilter = String(req.query.provider || '').trim().toLowerCase();
+        const linkedFilter = String(req.query.linked || '').trim().toLowerCase();
+        const sortBy = String(req.query.sortBy || 'created_at');
+        const sortDir = String(req.query.sortDir || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
+        const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+        const pageSize = Math.min(100, Math.max(1, parseInt(String(req.query.pageSize || '10'), 10) || 10));
+
+        logger.info('📚 [DOCUMENTS] Fetching authoritative locker inventory', {
+            userId,
+            tenantId,
+            q,
+            parserStatus,
+            providerFilter,
+            linkedFilter,
+            sortBy,
+            sortDir,
+            page,
+            pageSize
+        });
+
+        const { data: documents, error } = await supabaseAdmin
+            .from('evidence_documents')
+            .select('*')
+            .eq('tenant_id', tenantId)
+            .or(`user_id.eq.${finalUserId},seller_id.eq.${finalUserId},seller_id.eq.${userId}`);
+
+        if (error) {
+            throw error;
+        }
+
+        const productDocuments = (documents || []).filter(isProductDocument);
+        const documentIds = productDocuments.map(doc => doc.id);
+
+        let linksByDocument = new Map<string, any[]>();
+
+        if (documentIds.length > 0) {
+            const { data: links, error: linksError } = await supabaseAdmin
+                .from('dispute_evidence_links')
+                .select(`
+                    evidence_document_id,
+                    dispute_case_id,
+                    relevance_score,
+                    matched_context,
+                    created_at,
+                    dispute_cases!inner(
+                        id,
+                        case_number,
+                        claim_number,
+                        tenant_id
+                    )
+                `)
+                .in('evidence_document_id', documentIds);
+
+            if (linksError) {
+                logger.warn('⚠️ [DOCUMENTS] Failed to fetch locker linkage data', {
+                    tenantId,
+                    error: linksError.message
+                });
+            } else {
+                for (const link of links || []) {
+                    const disputeCase = (link as any).dispute_cases;
+                    if (disputeCase?.tenant_id && disputeCase.tenant_id !== tenantId) {
+                        continue;
+                    }
+
+                    const documentLinks = linksByDocument.get(link.evidence_document_id) || [];
+                    documentLinks.push(link);
+                    linksByDocument.set(link.evidence_document_id, documentLinks);
+                }
+            }
+        }
+
+        const allRows = productDocuments.map(doc => {
+            const normalized = getNormalizedParsedMetadata(doc);
+            const documentLinks = linksByDocument.get(doc.id) || [];
+            const strongestMatchConfidence = documentLinks.length > 0
+                ? Math.max(...documentLinks.map((link: any) => Number(link.relevance_score || 0)))
+                : null;
+            const strongestMatchType = documentLinks.length > 0
+                ? (() => {
+                    const strongest = documentLinks.reduce((best: any, current: any) =>
+                        Number(current.relevance_score || 0) > Number(best?.relevance_score || 0) ? current : best,
+                        null
+                    );
+                    let matchedContext = strongest?.matched_context || {};
+                    if (typeof matchedContext === 'string') {
+                        try {
+                            matchedContext = JSON.parse(matchedContext);
+                        } catch {
+                            matchedContext = {};
+                        }
+                    }
+                    return matchedContext.match_type || null;
+                })()
+                : null;
+            const extractionSignalCount = getExtractionSignalCount(doc, normalized);
+            const lockerState = buildLockerState(doc, documentLinks.length, strongestMatchConfidence, extractionSignalCount);
+            const sourceDisplay = getSourceDisplay(doc);
+
+            return {
+                id: doc.id,
+                name: doc.filename || doc.original_filename || 'Untitled document',
+                filename: doc.filename || doc.original_filename || 'Untitled document',
+                original_filename: doc.original_filename || null,
+                created_at: doc.created_at,
+                updated_at: doc.updated_at,
+                uploadDate: doc.created_at,
+                status: doc.status || 'uploaded',
+                processing_status: doc.processing_status || doc.status || 'uploaded',
+                parser_status: getAuthoritativeParserStatus(doc),
+                parser_confidence: normalized.confidence,
+                parser_error: doc.parser_error || null,
+                extraction_signal_count: extractionSignalCount,
+                source: doc.source || null,
+                provider: doc.provider || null,
+                source_display: sourceDisplay,
+                content_type: doc.content_type || null,
+                size_bytes: doc.size_bytes || null,
+                supplier: normalized.supplier,
+                invoice: normalized.invoice,
+                amount: normalized.amount,
+                parsedVia: normalized.extractionMethod,
+                parsed_metadata: doc.parsed_metadata || null,
+                extracted: doc.extracted || null,
+                linked_case_count: documentLinks.length,
+                linked_case_ids: documentLinks.map((link: any) => link.dispute_case_id),
+                linked_case_refs: documentLinks.map((link: any) => {
+                    const disputeCase = (link as any).dispute_cases;
+                    return disputeCase?.case_number || disputeCase?.claim_number || link.dispute_case_id;
+                }),
+                strongest_match_confidence: strongestMatchConfidence,
+                strongest_match_type: strongestMatchType,
+                linkage_strength: documentLinks.length === 0
+                    ? 'none'
+                    : (strongestMatchConfidence != null && strongestMatchConfidence >= 0.85 ? 'strong' : 'weak'),
+                evidence_state: lockerState.evidence_state,
+                usable_as_evidence: lockerState.usable_as_evidence,
+                usability_reason: lockerState.usability_reason,
+                needs_review: lockerState.needs_review
+            };
+        });
+
+        let filteredRows = allRows.filter(row => {
+            if (parserStatus && row.parser_status?.toLowerCase() !== parserStatus) {
+                return false;
+            }
+
+            if (providerFilter) {
+                const providerCandidate = (row.provider || row.source || row.source_display || '').toLowerCase();
+                if (providerCandidate !== providerFilter) {
+                    return false;
+                }
+            }
+
+            if (linkedFilter === 'linked' && row.linked_case_count === 0) {
+                return false;
+            }
+
+            if (linkedFilter === 'unlinked' && row.linked_case_count > 0) {
+                return false;
+            }
+
+            if (q) {
+                const extracted = row.extracted || {};
+                const searchBlob = [
+                    row.name,
+                    row.original_filename,
+                    row.supplier,
+                    row.invoice,
+                    row.source_display,
+                    row.content_type,
+                    ...(extracted.order_ids || []),
+                    ...(extracted.asins || []),
+                    ...(extracted.skus || []),
+                    ...(extracted.invoice_numbers || []),
+                    ...(extracted.tracking_numbers || []),
+                    ...(row.linked_case_refs || [])
+                ].filter(Boolean).join(' ').toLowerCase();
+
+                if (!searchBlob.includes(q)) {
+                    return false;
+                }
+            }
+
+            return true;
+        });
+
+        const sorter = (a: any, b: any) => {
+            let comparison = 0;
+
+            switch (sortBy) {
+                case 'name':
+                    comparison = String(a.name || '').localeCompare(String(b.name || ''));
+                    break;
+                case 'parser_status':
+                    comparison = String(a.parser_status || '').localeCompare(String(b.parser_status || ''));
+                    break;
+                case 'linked_case_count':
+                    comparison = Number(a.linked_case_count || 0) - Number(b.linked_case_count || 0);
+                    break;
+                case 'strongest_match_confidence':
+                    comparison = Number(a.strongest_match_confidence || 0) - Number(b.strongest_match_confidence || 0);
+                    break;
+                case 'updated_at':
+                    comparison = new Date(a.updated_at || a.created_at).getTime() - new Date(b.updated_at || b.created_at).getTime();
+                    break;
+                case 'created_at':
+                default:
+                    comparison = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+                    break;
+            }
+
+            return sortDir === 'asc' ? comparison : -comparison;
+        };
+
+        filteredRows = [...filteredRows].sort(sorter);
+
+        const totalDocuments = allRows.length;
+        const filteredResults = filteredRows.length;
+        const totalPages = Math.max(1, Math.ceil(filteredResults / pageSize));
+        const safePage = Math.min(page, totalPages);
+        const pageStart = (safePage - 1) * pageSize;
+        const pageRows = filteredRows.slice(pageStart, pageStart + pageSize);
+
+        const recentAuditDocIds = filteredRows.slice(0, Math.min(filteredRows.length, 25)).map(row => row.id);
+        const auditTrails = await Promise.all(
+            recentAuditDocIds.map(documentId => evidenceAuditService.getDocumentAuditTrail(documentId, tenantId))
+        );
+        const recentEvents = auditTrails
+            .filter(Boolean)
+            .flatMap((trail: any) => trail.events.map((event: any) => ({
+                id: event.id,
+                documentId: trail.documentId,
+                filename: trail.filename,
+                eventType: event.eventType,
+                timestamp: event.timestamp,
+                narrative: event.narrative
+            })))
+            .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+            .slice(0, 50);
+
+        res.json({
+            success: true,
+            documents: pageRows,
+            metrics: {
+                totalDocuments,
+                filteredResults,
+                parsed: filteredRows.filter(row => row.parser_status === 'completed').length,
+                matched: filteredRows.filter(row => row.linked_case_count > 0).length,
+                failed: filteredRows.filter(row => row.parser_status === 'failed').length,
+                needsReview: filteredRows.filter(row => row.needs_review).length
+            },
+            pagination: {
+                page: safePage,
+                pageSize,
+                totalPages,
+                totalResults: filteredResults
+            },
+            recentEvents
+        });
+    } catch (error: any) {
+        logger.error('❌ [DOCUMENTS] Error fetching locker inventory', {
+            error: error?.message || String(error),
+            stack: error?.stack
+        });
+
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch document inventory',
             message: error?.message || String(error)
         });
     }
