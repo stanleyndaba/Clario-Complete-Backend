@@ -35,6 +35,7 @@ const REVIEW_FILINGS = new Set([
   'already_reimbursed',
   'skipped_low_value'
 ]);
+const INVALID_TENANT_SLUGS = new Set(['default', 'beta', 'null', 'undefined']);
 
 function normalize(value: unknown): string {
   return String(value || '').trim().toLowerCase();
@@ -79,6 +80,10 @@ async function resolveScope(filters: DisputeCaseQueueFilters): Promise<ResolvedS
       tenantId: requestTenantId,
       tenantSlug: requestTenantSlug || tenantSlug
     };
+  }
+
+  if (tenantSlug && INVALID_TENANT_SLUGS.has(tenantSlug.toLowerCase())) {
+    throw new Error('Invalid tenant context');
   }
 
   if (!tenantSlug) {

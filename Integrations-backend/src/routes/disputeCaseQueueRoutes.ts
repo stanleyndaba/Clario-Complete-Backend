@@ -34,7 +34,7 @@ router.get('/', async (req: Request, res: Response) => {
       lower.includes('authentication') || lower.includes('authenticated') ? 401 :
       lower.includes('tenant not found') ? 404 :
       lower.includes('access') ? 403 :
-      lower.includes('tenant context required') ? 400 :
+      lower.includes('tenant context required') || lower.includes('invalid tenant context') ? 400 :
       500;
 
     return res.status(statusCode).json({
