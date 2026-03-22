@@ -7,11 +7,217 @@ import { extractAgent10EntityIds } from '../utils/agent10Event';
 import { notificationService } from '../notifications/services/notification_service';
 import { NotificationChannel, NotificationPriority, NotificationType } from '../notifications/models/notification';
 import recoveriesWorker from '../workers/recoveriesWorker';
+import { convertUserIdToUuid } from '../database/supabaseClient';
 
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
 const router = Router();
 const logger = getLogger('RecoveryRoutes');
+
+const APPROVED_CASE_STATUSES = new Set(['approved', 'won']);
+const RECOVERY_RECONCILED_STATUSES = new Set(['reconciled']);
+const BILLING_COMPLETE_STATUSES = new Set(['paid', 'charged', 'credited', 'completed']);
+
+function normalize(value: unknown): string {
+    return String(value || '').trim().toLowerCase();
+}
+
+function toNumber(value: unknown): number {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function toOptionalAmount(value: unknown): number | null {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+async function resolveRecoveriesScope(req: Request): Promise<{ tenantId: string; tenantSlug: string | null }> {
+    const tenantSlug = String(req.query.tenantSlug || req.query.tenant_slug || '').trim() || null;
+    const requestTenantId = String((req as any).tenant?.tenantId || '').trim();
+    const requestTenantSlug = String((req as any).tenant?.tenantSlug || '').trim() || null;
+    const userId = String((req as any).user?.id || (req as any).userId || '').trim();
+
+    if (requestTenantId) {
+        return {
+            tenantId: requestTenantId,
+            tenantSlug: requestTenantSlug || tenantSlug
+        };
+    }
+
+    if (!tenantSlug) {
+        throw new Error('Tenant context required');
+    }
+
+    const safeUserId = userId ? convertUserIdToUuid(userId) : null;
+    const { data: tenant, error: tenantError } = await supabaseAdmin
+        .from('tenants')
+        .select('id, slug')
+        .eq('slug', tenantSlug)
+        .is('deleted_at', null)
+        .maybeSingle();
+
+    if (tenantError) {
+        throw new Error('Failed to resolve tenant context');
+    }
+
+    if (!tenant) {
+        throw new Error('Tenant not found');
+    }
+
+    if (!safeUserId) {
+        throw new Error('Tenant access requires authenticated user');
+    }
+
+    const { data: membership, error: membershipError } = await supabaseAdmin
+        .from('tenant_memberships')
+        .select('id')
+        .eq('tenant_id', tenant.id)
+        .eq('user_id', safeUserId)
+        .eq('is_active', true)
+        .is('deleted_at', null)
+        .maybeSingle();
+
+    if (membershipError) {
+        throw new Error('Failed to verify tenant membership');
+    }
+
+    if (!membership) {
+        throw new Error('You do not have access to this tenant');
+    }
+
+    return {
+        tenantId: tenant.id,
+        tenantSlug: tenant.slug || tenantSlug
+    };
+}
+
+function isApprovedCase(record: any): boolean {
+    return APPROVED_CASE_STATUSES.has(normalize(record?.status));
+}
+
+function isRecoveryRelevant(record: any): boolean {
+    return Boolean(
+        isApprovedCase(record) ||
+        normalize(record?.recovery_status) ||
+        normalize(record?.billing_status) ||
+        toNumber(record?.actual_payout_amount) > 0 ||
+        record?.expected_payout_date
+    );
+}
+
+function deriveApprovedAmount(record: any): number | null {
+    const recoveryAmount = toOptionalAmount(record?.recovery_amount);
+    if (recoveryAmount !== null) {
+        return recoveryAmount;
+    }
+
+    if (isApprovedCase(record)) {
+        const claimAmount = toOptionalAmount(record?.claim_amount);
+        if (claimAmount !== null) {
+            return claimAmount;
+        }
+    }
+
+    return null;
+}
+
+function deriveReconciliationStatus(record: any, approvedAmount: number | null, actualPayoutAmount: number | null): string {
+    const recoveryStatus = normalize(record?.recovery_status);
+
+    if (actualPayoutAmount !== null && approvedAmount !== null && actualPayoutAmount < approvedAmount) {
+        return 'partial_recovery';
+    }
+
+    if (RECOVERY_RECONCILED_STATUSES.has(recoveryStatus)) {
+        return 'reconciled';
+    }
+
+    if (actualPayoutAmount !== null) {
+        return 'payout_detected';
+    }
+
+    if (isApprovedCase(record)) {
+        return 'pending_payout';
+    }
+
+    if (recoveryStatus) {
+        return recoveryStatus.replace(/\s+/g, '_');
+    }
+
+    return 'unknown';
+}
+
+function deriveOperatorState(record: any, reconciliationStatus: string, billingStatus: string): string {
+    if (reconciliationStatus === 'partial_recovery') {
+        return 'partial_payout_review';
+    }
+
+    if (reconciliationStatus === 'reconciled' && BILLING_COMPLETE_STATUSES.has(billingStatus)) {
+        return 'billing_complete';
+    }
+
+    if (reconciliationStatus === 'reconciled') {
+        return 'billing_pending';
+    }
+
+    if (reconciliationStatus === 'payout_detected') {
+        return 'payout_detected_not_reconciled';
+    }
+
+    if (reconciliationStatus === 'pending_payout') {
+        return 'waiting_for_payout';
+    }
+
+    return 'investigation_required';
+}
+
+function buildRecoveriesBlockers(rows: any[]) {
+    const waitingForPayout = rows.filter((row: any) => row.operator_state === 'waiting_for_payout').length;
+    const payoutDetected = rows.filter((row: any) => row.operator_state === 'payout_detected_not_reconciled').length;
+    const partialRecovery = rows.filter((row: any) => row.reconciliation_status === 'partial_recovery').length;
+    const billingPending = rows.filter((row: any) => row.operator_state === 'billing_pending').length;
+    const investigations = rows.filter((row: any) => row.investigation_required).length;
+
+    return [
+        waitingForPayout > 0 ? { key: 'waiting_for_payout', label: 'Waiting for payout', count: waitingForPayout, severity: 'medium' } : null,
+        payoutDetected > 0 ? { key: 'payout_detected_not_reconciled', label: 'Payout detected, not reconciled', count: payoutDetected, severity: 'high' } : null,
+        partialRecovery > 0 ? { key: 'partial_recovery', label: 'Partial recovery review needed', count: partialRecovery, severity: 'high' } : null,
+        billingPending > 0 ? { key: 'billing_pending', label: 'Billing pending', count: billingPending, severity: 'low' } : null,
+        investigations > 0 ? { key: 'investigation_required', label: 'Investigation required', count: investigations, severity: 'high' } : null,
+    ].filter(Boolean);
+}
+
+function buildRecoveriesSummary(rows: any[]) {
+    const approvedRows = rows.filter((row: any) => isApprovedCase({ status: row.status }));
+    const pendingPayoutRows = rows.filter((row: any) => row.reconciliation_status === 'pending_payout');
+    const reconciledRows = rows.filter((row: any) => row.reconciliation_status === 'reconciled');
+    const partialRows = rows.filter((row: any) => row.reconciliation_status === 'partial_recovery');
+    const unreconciledRows = rows.filter((row: any) => ['payout_detected', 'partial_recovery'].includes(row.reconciliation_status));
+    const billedRows = rows.filter((row: any) => BILLING_COMPLETE_STATUSES.has(normalize(row.billing_status)));
+    const investigationRows = rows.filter((row: any) => row.investigation_required);
+    const billingPendingRows = rows.filter((row: any) => row.operator_state === 'billing_pending');
+
+    return {
+        approved_count: approvedRows.length,
+        pending_payout_count: pendingPayoutRows.length,
+        reconciled_count: reconciledRows.length,
+        partial_recovery_count: partialRows.length,
+        unreconciled_count: unreconciledRows.length,
+        investigation_required_count: investigationRows.length,
+        billing_pending_count: billingPendingRows.length,
+        recovered_cash_total: Number(rows.reduce((sum: number, row: any) => sum + toNumber(row.actual_payout_amount), 0).toFixed(2)),
+        approved_value_total: Number(rows.reduce((sum: number, row: any) => sum + toNumber(row.approved_amount), 0).toFixed(2)),
+        pending_payout_total: Number(pendingPayoutRows.reduce((sum: number, row: any) => sum + toNumber(row.approved_amount), 0).toFixed(2)),
+        billed_revenue_total: Number(rows.reduce((sum: number, row: any) => sum + toNumber(row.billing_revenue_amount), 0).toFixed(2)),
+        last_updated_at: rows
+            .map((row: any) => row.last_updated_at)
+            .filter(Boolean)
+            .sort()
+            .reverse()[0] || null,
+        blockers: buildRecoveriesBlockers(rows),
+    };
+}
 
 function getEvidenceDocumentCount(record: any, documents: any[]): number {
     if (Array.isArray(documents) && documents.length > 0) {
@@ -204,6 +410,205 @@ function buildCaseResponse(record: any, documents: any[], events: any[], objectT
         ...generateCaseStrategy(record)
     };
 }
+
+/**
+ * GET /api/recoveries/ledger
+ * Authoritative tenant-scoped recoveries and payout state for the mounted Recovery Pipeline page
+ */
+router.get('/ledger', async (req: Request, res: Response) => {
+    try {
+        const { tenantId } = await resolveRecoveriesScope(req);
+        const search = String(req.query.search || '').trim().toLowerCase();
+        const statusFilter = normalize(req.query.status);
+        const reconciliationFilter = normalize(req.query.reconciliation_status);
+        const billingFilter = normalize(req.query.billing_status);
+        const dateRange = normalize(req.query.date_range || 'all') || 'all';
+        const sortBy = String(req.query.sort_by || 'last_updated_at').trim();
+        const sortDir = normalize(req.query.sort_dir) === 'asc' ? 'asc' : 'desc';
+        const page = Math.max(1, Number(req.query.page || 1));
+        const pageSize = Math.min(100, Math.max(1, Number(req.query.page_size || 10)));
+
+        const { data: disputeCases, error: disputeError } = await supabaseAdmin
+            .from('dispute_cases')
+            .select('*')
+            .eq('tenant_id', tenantId);
+
+        if (disputeError) {
+            throw disputeError;
+        }
+
+        const recoveryRelevantCases = (disputeCases || []).filter(isRecoveryRelevant);
+        const disputeIds = recoveryRelevantCases.map((row: any) => row.id).filter(Boolean);
+
+        let latestBillingByDisputeId = new Map<string, any>();
+        if (disputeIds.length > 0) {
+            const { data: billingTransactions, error: billingError } = await supabaseAdmin
+                .from('billing_transactions')
+                .select('id, dispute_id, billing_status, platform_fee_cents, created_at, updated_at')
+                .eq('tenant_id', tenantId)
+                .in('dispute_id', disputeIds);
+
+            if (billingError) {
+                throw billingError;
+            }
+
+            (billingTransactions || []).forEach((transaction: any) => {
+                const existing = latestBillingByDisputeId.get(transaction.dispute_id);
+                const existingTime = existing ? new Date(existing.updated_at || existing.created_at || 0).getTime() : 0;
+                const candidateTime = new Date(transaction.updated_at || transaction.created_at || 0).getTime();
+                if (!existing || candidateTime >= existingTime) {
+                    latestBillingByDisputeId.set(transaction.dispute_id, transaction);
+                }
+            });
+        }
+
+        const ledgerRows = recoveryRelevantCases.map((record: any) => {
+            const approvedAmount = deriveApprovedAmount(record);
+            const actualPayoutAmount = toOptionalAmount(record.actual_payout_amount);
+            const latestBilling = latestBillingByDisputeId.get(record.id);
+            const billingStatus = normalize(latestBilling?.billing_status || record.billing_status) || null;
+            const reconciliationStatus = deriveReconciliationStatus(record, approvedAmount, actualPayoutAmount);
+            const operatorState = deriveOperatorState(record, reconciliationStatus, billingStatus || '');
+            const expectedPayoutAmount = actualPayoutAmount === null && record.expected_payout_date ? approvedAmount : null;
+            const billingRevenueAmount = latestBilling?.platform_fee_cents != null
+                ? Number((toNumber(latestBilling.platform_fee_cents) / 100).toFixed(2))
+                : toOptionalAmount(record.billed_amount);
+
+            return {
+                recovery_id: record.id,
+                dispute_case_id: record.id,
+                detection_result_id: record.detection_result_id || null,
+                case_number: record.case_number || record.claim_number || record.provider_case_id || record.id.slice(0, 8),
+                provider_case_id: record.provider_case_id || record.amazon_case_id || null,
+                merchant_reference: record.store_name || record.seller_id || null,
+                status: record.status || null,
+                recovery_status: record.recovery_status || null,
+                billing_status: billingStatus,
+                approved_amount: approvedAmount,
+                actual_payout_amount: actualPayoutAmount,
+                expected_payout_amount: expectedPayoutAmount,
+                billed_revenue_amount: billingRevenueAmount,
+                reconciliation_status: reconciliationStatus,
+                operator_state: operatorState,
+                investigation_required: operatorState === 'investigation_required' || reconciliationStatus === 'partial_recovery',
+                currency: record.currency || 'USD',
+                expected_payout_date: record.expected_payout_date || null,
+                recovered_at: actualPayoutAmount !== null && reconciliationStatus === 'reconciled'
+                    ? (record.updated_at || record.created_at || null)
+                    : null,
+                detected_at: record.created_at || null,
+                last_updated_at: latestBilling?.updated_at || record.updated_at || record.created_at || null,
+            };
+        });
+
+        const summary = buildRecoveriesSummary(ledgerRows);
+
+        const filteredRows = ledgerRows.filter((row: any) => {
+            const haystack = [
+                row.case_number,
+                row.provider_case_id,
+                row.dispute_case_id,
+                row.detection_result_id,
+                row.merchant_reference,
+                row.status,
+                row.recovery_status,
+                row.billing_status,
+                row.operator_state
+            ]
+                .filter(Boolean)
+                .join(' ')
+                .toLowerCase();
+
+            const searchMatch = !search || haystack.includes(search);
+            const statusMatch = !statusFilter || statusFilter === 'all' || normalize(row.operator_state) === statusFilter;
+            const reconciliationMatch = !reconciliationFilter || reconciliationFilter === 'all' || normalize(row.reconciliation_status) === reconciliationFilter;
+            const billingMatch = !billingFilter || billingFilter === 'all' || normalize(row.billing_status) === billingFilter;
+
+            let dateMatch = true;
+            if (dateRange !== 'all') {
+                const days = Number(dateRange);
+                const candidate = new Date(row.last_updated_at || row.detected_at || 0);
+                if (Number.isFinite(days) && !Number.isNaN(candidate.getTime())) {
+                    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+                    dateMatch = candidate.getTime() >= cutoff;
+                }
+            }
+
+            return searchMatch && statusMatch && reconciliationMatch && billingMatch && dateMatch;
+        });
+
+        const sortValue = (row: any): string | number => {
+            switch (sortBy) {
+                case 'approved_amount':
+                    return toNumber(row.approved_amount);
+                case 'actual_payout_amount':
+                    return toNumber(row.actual_payout_amount);
+                case 'expected_payout_amount':
+                    return toNumber(row.expected_payout_amount);
+                case 'case_number':
+                    return String(row.case_number || '');
+                case 'status':
+                    return String(row.operator_state || '');
+                case 'last_updated_at':
+                default:
+                    return new Date(row.last_updated_at || row.detected_at || 0).getTime();
+            }
+        };
+
+        filteredRows.sort((a: any, b: any) => {
+            const left = sortValue(a);
+            const right = sortValue(b);
+            if (typeof left === 'string' || typeof right === 'string') {
+                const compare = String(left).localeCompare(String(right));
+                return sortDir === 'asc' ? compare : -compare;
+            }
+            return sortDir === 'asc' ? Number(left) - Number(right) : Number(right) - Number(left);
+        });
+
+        const totalFiltered = filteredRows.length;
+        const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
+        const safePage = Math.min(page, totalPages);
+        const start = (safePage - 1) * pageSize;
+        const rows = filteredRows.slice(start, start + pageSize);
+
+        return res.json({
+            success: true,
+            summary,
+            rows,
+            pagination: {
+                page: safePage,
+                page_size: pageSize,
+                total_filtered: totalFiltered,
+                total_pages: totalPages,
+                total_rows: ledgerRows.length
+            },
+            filters: {
+                search,
+                status: statusFilter || 'all',
+                reconciliation_status: reconciliationFilter || 'all',
+                billing_status: billingFilter || 'all',
+                date_range: dateRange,
+                sort_by: sortBy,
+                sort_dir: sortDir
+            }
+        });
+    } catch (error: any) {
+        const message = error?.message || 'Failed to fetch recoveries ledger';
+        const status = message === 'Tenant not found'
+            ? 404
+            : (message.includes('access') ? 403 : (message.includes('Tenant context required') || message.includes('authenticated user') ? 400 : 500));
+
+        logger.error('Error fetching recoveries ledger', {
+            error: message,
+            stack: error?.stack
+        });
+
+        return res.status(status).json({
+            success: false,
+            error: message
+        });
+    }
+});
 
 /**
  * POST /api/recoveries/:id/process
