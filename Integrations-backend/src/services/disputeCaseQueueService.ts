@@ -200,36 +200,6 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     throw new Error('Failed to count dispute cases');
   }
 
-  const baseSelect = `
-    id,
-    tenant_id,
-    seller_id,
-    store_id,
-    case_number,
-    claim_id,
-    case_type,
-    status,
-    filing_status,
-    recovery_status,
-    billing_status,
-    claim_amount,
-    recovery_amount,
-    actual_payout_amount,
-    currency,
-    provider_case_id,
-    detection_result_id,
-    expected_payout_date,
-    evidence_attachments,
-    evidence_document_ids,
-    metadata,
-    created_at,
-    updated_at,
-    order_id,
-    sku,
-    asin,
-    platform_fee_cents
-  `;
-
   const rows: any[] = [];
   const batchSize = 1000;
   let from = 0;
@@ -237,7 +207,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
   while (true) {
     let disputeQuery = supabaseAdmin
       .from('dispute_cases')
-      .select(baseSelect)
+      .select('*')
       .eq('tenant_id', scope.tenantId)
       .order('updated_at', { ascending: false })
       .range(from, from + batchSize - 1);
@@ -257,7 +227,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
 
     const { data: batch, error: disputeError } = await disputeQuery;
     if (disputeError) {
-      throw new Error('Failed to load dispute cases');
+      throw new Error(`Failed to load dispute cases: ${disputeError.message || 'unknown query error'}`);
     }
 
     const disputeCases = batch || [];
@@ -334,7 +304,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     const actualPayoutAmount = toMoney(record.actual_payout_amount);
     const billedAmount = latestBilling?.platform_fee_cents != null
       ? Number((Number(latestBilling.platform_fee_cents) / 100).toFixed(2))
-      : (record?.platform_fee_cents != null ? Number((Number(record.platform_fee_cents) / 100).toFixed(2)) : null);
+      : toMoney(record?.billed_amount);
     const billingStatus = normalize(latestBilling?.billing_status || record.billing_status) || null;
     const rejectionCategory = record?.evidence_attachments?.rejection_category || null;
     const rejectionReason = record?.evidence_attachments?.raw_reason_text || record?.metadata?.rejection_reason || null;
