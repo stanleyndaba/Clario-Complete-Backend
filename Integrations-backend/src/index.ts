@@ -61,6 +61,7 @@ import tenantRoutes from './routes/tenantRoutes';
 import storeRoutes from './routes/storeRoutes';
 import waitlistRoutes from './routes/waitlistRoutes';
 import paymentRoutes from './routes/paymentRoutes';
+import supportRoutes from './routes/supportRoutes';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -446,6 +447,9 @@ logger.info('Notes routes registered at /api/notes');
 // Tenant management routes (multi-tenant SaaS)
 app.use('/api/tenant', tenantRoutes);
 logger.info('Tenant routes registered at /api/tenant');
+
+app.use('/api/support', supportRoutes);
+logger.info('Support routes registered at /api/support');
 
 app.use('/api/v1/stores', storeRoutes);
 logger.info('Store routes registered at /api/v1/stores');

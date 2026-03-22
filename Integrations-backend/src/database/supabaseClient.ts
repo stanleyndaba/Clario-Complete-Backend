@@ -32,6 +32,7 @@ if (!isRealDatabaseConfigured) {
     dispute_evidence_links: [],
     financial_events: [],
     notifications: [],
+    support_requests: [],
     recovery_lifecycle_logs: [],
     detection_results: [],
     user_notes: [],
