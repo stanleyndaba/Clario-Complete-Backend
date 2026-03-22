@@ -75,26 +75,20 @@ async function resolveScope(filters: DisputeCaseQueueFilters): Promise<ResolvedS
   const requestTenantSlug = String(filters.requestTenantSlug || '').trim() || null;
   const userId = String(filters.userId || '').trim() || null;
 
-  if (requestTenantId) {
-    return {
-      tenantId: requestTenantId,
-      tenantSlug: requestTenantSlug || tenantSlug
-    };
-  }
-
   if (tenantSlug && INVALID_TENANT_SLUGS.has(tenantSlug.toLowerCase())) {
     throw new Error('Invalid tenant context');
   }
 
   if (!tenantSlug) {
+    if (requestTenantId) {
+      return {
+        tenantId: requestTenantId,
+        tenantSlug: requestTenantSlug || null
+      };
+    }
     throw new Error('Tenant context required');
   }
 
-  if (!userId) {
-    throw new Error('Authenticated user required');
-  }
-
-  const safeUserId = convertUserIdToUuid(userId);
   const { data: tenant, error: tenantError } = await supabaseAdmin
     .from('tenants')
     .select('id, slug')
@@ -110,21 +104,26 @@ async function resolveScope(filters: DisputeCaseQueueFilters): Promise<ResolvedS
     throw new Error('Tenant not found');
   }
 
-  const { data: membership, error: membershipError } = await supabaseAdmin
-    .from('tenant_memberships')
-    .select('id')
-    .eq('tenant_id', tenant.id)
-    .eq('user_id', safeUserId)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-    .maybeSingle();
+  if (userId) {
+    const safeUserId = convertUserIdToUuid(userId);
+    const { data: membership, error: membershipError } = await supabaseAdmin
+      .from('tenant_memberships')
+      .select('id')
+      .eq('tenant_id', tenant.id)
+      .eq('user_id', safeUserId)
+      .eq('is_active', true)
+      .is('deleted_at', null)
+      .maybeSingle();
 
-  if (membershipError) {
-    throw new Error('Failed to verify tenant membership');
-  }
+    if (membershipError) {
+      throw new Error('Failed to verify tenant membership');
+    }
 
-  if (!membership) {
-    throw new Error('You do not have access to this tenant');
+    if (!membership && requestTenantId !== tenant.id) {
+      throw new Error('You do not have access to this tenant');
+    }
+  } else if (requestTenantId && requestTenantId !== tenant.id) {
+    throw new Error('Invalid tenant context');
   }
 
   return {

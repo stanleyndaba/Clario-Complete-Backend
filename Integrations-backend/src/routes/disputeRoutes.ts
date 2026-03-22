@@ -13,8 +13,33 @@ router.use(optionalAuth);
 router.get('/', async (req, res) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
-    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
+    const requestedTenantSlug = String(req.query.tenantSlug || req.query.tenant_slug || '').trim() || null;
+    const requestTenantId = (req as any).tenant?.tenantId || null;
     const { status, limit } = req.query;
+
+    let tenantId = requestTenantId || DEFAULT_TENANT_ID;
+
+    if (requestedTenantSlug) {
+      const { data: tenant, error: tenantError } = await supabaseAdmin
+        .from('tenants')
+        .select('id')
+        .eq('slug', requestedTenantSlug)
+        .is('deleted_at', null)
+        .maybeSingle();
+
+      if (tenantError) {
+        throw tenantError;
+      }
+
+      if (!tenant) {
+        return res.status(404).json({
+          success: false,
+          message: 'Tenant not found'
+        });
+      }
+
+      tenantId = tenant.id;
+    }
 
     // Build query with tenant isolation
     let query = supabaseAdmin
