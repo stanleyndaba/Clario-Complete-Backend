@@ -23,6 +23,42 @@ import logger from '../utils/logger';
 import crypto from 'crypto';
 
 const router = Router();
+const DEMO_TENANT_SLUG = 'demo-workspace';
+
+function isDemoTenant(tenant: any): boolean {
+    return tenant?.slug === DEMO_TENANT_SLUG || tenant?.metadata?.is_demo_workspace === true;
+}
+
+async function getDemoTenant() {
+    const { data } = await supabaseAdmin
+        .from('tenants')
+        .select('id, name, slug, plan, status, metadata')
+        .eq('slug', DEMO_TENANT_SLUG)
+        .is('deleted_at', null)
+        .maybeSingle();
+
+    return data || null;
+}
+
+async function ensureDemoTenantMembership(userId: string, tenantId: string) {
+    const { error } = await supabaseAdmin
+        .from('tenant_memberships')
+        .upsert({
+            tenant_id: tenantId,
+            user_id: userId,
+            role: 'viewer',
+            is_active: true,
+            accepted_at: new Date().toISOString()
+        }, {
+            onConflict: 'tenant_id,user_id'
+        });
+
+    if (error) {
+        throw error;
+    }
+
+    return { role: 'viewer' as const };
+}
 
 /**
  * GET /api/tenant/current
@@ -81,6 +117,18 @@ router.get('/list', async (req: Request, res: Response) => {
             status: (m.tenants as any).status,
             role: m.role
         })) || [];
+
+        const demoTenant = await getDemoTenant();
+        if (demoTenant && !tenants.some(t => t.id === demoTenant.id)) {
+            tenants.push({
+                id: demoTenant.id,
+                name: demoTenant.name,
+                slug: demoTenant.slug,
+                plan: demoTenant.plan,
+                status: demoTenant.status,
+                role: 'viewer'
+            });
+        }
 
         res.json({
             success: true,
@@ -214,7 +262,7 @@ router.post('/switch', async (req: Request, res: Response) => {
         if (tenantId) {
             const { data } = await supabaseAdmin
                 .from('tenants')
-                .select('id, name, slug, plan, status')
+                .select('id, name, slug, plan, status, metadata')
                 .eq('id', tenantId)
                 .is('deleted_at', null)
                 .single();
@@ -222,7 +270,7 @@ router.post('/switch', async (req: Request, res: Response) => {
         } else {
             const { data } = await supabaseAdmin
                 .from('tenants')
-                .select('id, name, slug, plan, status')
+                .select('id, name, slug, plan, status, metadata')
                 .eq('slug', tenantSlug)
                 .is('deleted_at', null)
                 .single();
@@ -234,7 +282,7 @@ router.post('/switch', async (req: Request, res: Response) => {
         }
 
         // Check membership
-        const { data: membership } = await supabaseAdmin
+        let { data: membership } = await supabaseAdmin
             .from('tenant_memberships')
             .select('role')
             .eq('user_id', userId)
@@ -244,17 +292,23 @@ router.post('/switch', async (req: Request, res: Response) => {
             .single();
 
         if (!membership) {
-            return res.status(403).json({ error: 'You do not have access to this workspace' });
+            if (isDemoTenant(tenant)) {
+                membership = await ensureDemoTenantMembership(userId, tenant.id);
+            } else {
+                return res.status(403).json({ error: 'You do not have access to this workspace' });
+            }
         }
 
         // Update last active tenant
-        await supabaseAdmin
-            .from('users')
-            .update({
-                last_active_tenant_id: tenant.id,
-                last_active_at: new Date().toISOString()
-            })
-            .eq('id', userId);
+        if (!isDemoTenant(tenant)) {
+            await supabaseAdmin
+                .from('users')
+                .update({
+                    last_active_tenant_id: tenant.id,
+                    last_active_at: new Date().toISOString()
+                })
+                .eq('id', userId);
+        }
 
         res.json({
             success: true,

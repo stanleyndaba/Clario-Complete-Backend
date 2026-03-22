@@ -18,6 +18,7 @@ export interface TenantContext {
  * Default tenant ID for demo/migration mode
  */
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+const DEMO_TENANT_SLUG = 'demo-workspace';
 
 /**
  * Paths that skip tenant resolution
@@ -61,7 +62,7 @@ function extractTenantSlugFromPath(path: string): string | null {
 async function getTenantBySlug(slug: string): Promise<any | null> {
     const { data, error } = await supabaseAdmin
         .from('tenants')
-        .select('id, name, slug, plan, status')
+        .select('id, name, slug, plan, status, metadata')
         .eq('slug', slug)
         .is('deleted_at', null)
         .single();
@@ -76,7 +77,7 @@ async function getTenantBySlug(slug: string): Promise<any | null> {
 async function getTenantById(tenantId: string): Promise<any | null> {
     const { data, error } = await supabaseAdmin
         .from('tenants')
-        .select('id, name, slug, plan, status')
+        .select('id, name, slug, plan, status, metadata')
         .eq('id', tenantId)
         .is('deleted_at', null)
         .single();
@@ -100,6 +101,31 @@ async function getUserMembership(userId: string, tenantId: string): Promise<any 
 
     if (error || !data) return null;
     return data;
+}
+
+function isDemoTenant(tenant: any): boolean {
+    return tenant?.slug === DEMO_TENANT_SLUG || tenant?.metadata?.is_demo_workspace === true;
+}
+
+async function ensureDemoMembership(userId: string, tenantId: string): Promise<any | null> {
+    const { error } = await supabaseAdmin
+        .from('tenant_memberships')
+        .upsert({
+            tenant_id: tenantId,
+            user_id: userId,
+            role: 'viewer',
+            is_active: true,
+            accepted_at: new Date().toISOString()
+        }, {
+            onConflict: 'tenant_id,user_id'
+        });
+
+    if (error) {
+        logger.error('Failed to create demo workspace membership', { error, userId, tenantId });
+        return null;
+    }
+
+    return { role: 'viewer', is_active: true };
 }
 
 /**
@@ -202,9 +228,15 @@ export async function tenantMiddleware(req: Request, res: Response, next: NextFu
             if (tenant) {
                 membership = await getUserMembership(userId, tenant.id);
                 if (!membership) {
-                    logger.warn('User does not have access to tenant', { userId, tenantSlug: pathSlug });
-                    res.status(403).json({ error: 'You do not have access to this workspace' });
-                    return;
+                    if (isDemoTenant(tenant)) {
+                        membership = await ensureDemoMembership(userId, tenant.id);
+                    }
+
+                    if (!membership) {
+                        logger.warn('User does not have access to tenant', { userId, tenantSlug: pathSlug });
+                        res.status(403).json({ error: 'You do not have access to this workspace' });
+                        return;
+                    }
                 }
             }
         }
@@ -216,6 +248,12 @@ export async function tenantMiddleware(req: Request, res: Response, next: NextFu
                 membership = await getUserMembership(userId, headerTenantId);
                 if (membership) {
                     tenant = await getTenantById(headerTenantId);
+                } else {
+                    const headerTenant = await getTenantById(headerTenantId);
+                    if (headerTenant && isDemoTenant(headerTenant)) {
+                        membership = await ensureDemoMembership(userId, headerTenant.id);
+                        tenant = headerTenant;
+                    }
                 }
             }
         }
@@ -271,9 +309,11 @@ export async function tenantMiddleware(req: Request, res: Response, next: NextFu
         } as TenantContext;
 
         // Update last active tenant (async, don't wait)
-        updateLastActiveTenant(userId, tenant.id).catch(err =>
-            logger.warn('Failed to update last active tenant', { error: err.message })
-        );
+        if (!isDemoTenant(tenant)) {
+            updateLastActiveTenant(userId, tenant.id).catch(err =>
+                logger.warn('Failed to update last active tenant', { error: err.message })
+            );
+        }
 
         logger.debug('Tenant context resolved', {
             tenantId: tenant.id,
