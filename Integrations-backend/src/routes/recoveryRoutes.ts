@@ -676,8 +676,13 @@ router.post('/:id/process', async (req: Request, res: Response) => {
 router.get('/:id', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
-        const userId = (req as any).user?.id || req.headers['x-user-id'] as string || 'demo-user';
-        const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
+        let tenantId: string;
+        try {
+            ({ tenantId } = await resolveRecoveriesScope(req));
+        } catch (scopeError: any) {
+            return res.status(400).json({ error: scopeError?.message || 'Tenant context required' });
+        }
+        const userId = String((req as any).user?.id || req.headers['x-user-id'] || '').trim();
 
         logger.info('Fetching recovery details', { recoveryId: id, userId, tenantId });
 
@@ -714,7 +719,7 @@ router.get('/:id', async (req: Request, res: Response) => {
                 const docIds = docLinks.map(l => l.evidence_document_id);
                 const { data: docs } = await supabaseAdmin
                     .from('evidence_documents')
-                    .select('id, filename, doc_type, created_at, metadata, extracted')
+                    .select('id, filename, doc_type, created_at, ingested_at, source_provider, parser_version, match_confidence, metadata, parsed_metadata, extracted')
                     .in('id', docIds)
                     .eq('tenant_id', tenantId);
                 documents = docs || [];
@@ -723,7 +728,7 @@ router.get('/:id', async (req: Request, res: Response) => {
             else if (disputeCase.evidence_attachments?.document_id) {
                 const { data: matchedDoc } = await supabaseAdmin
                     .from('evidence_documents')
-                    .select('id, filename, doc_type, created_at, metadata, extracted')
+                    .select('id, filename, doc_type, created_at, ingested_at, source_provider, parser_version, match_confidence, metadata, parsed_metadata, extracted')
                     .eq('id', disputeCase.evidence_attachments.document_id)
                     .eq('tenant_id', tenantId)
                     .single();
@@ -760,7 +765,7 @@ router.get('/:id', async (req: Request, res: Response) => {
             if (matchedDocIds && Array.isArray(matchedDocIds) && matchedDocIds.length > 0) {
                 const { data: docs } = await supabaseAdmin
                     .from('evidence_documents')
-                    .select('id, filename, doc_type, created_at, metadata')
+                    .select('id, filename, doc_type, created_at, ingested_at, source_provider, parser_version, match_confidence, metadata, parsed_metadata, extracted')
                     .in('id', matchedDocIds)
                     .eq('tenant_id', tenantId);
                 documents = docs || [];

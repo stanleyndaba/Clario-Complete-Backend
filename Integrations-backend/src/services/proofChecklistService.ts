@@ -74,20 +74,20 @@ class ProofChecklistService {
      */
     async getClaimProofChecklist(
         claimId: string,
-        userId: string
+        tenantId: string
     ): Promise<ClaimProofChecklist | null> {
         try {
-            logger.info('📋 [PROOF] Getting proof checklist for claim', { claimId, userId });
+            logger.info('📋 [PROOF] Getting proof checklist for claim', { claimId, tenantId });
 
             // Get claim details
-            const claim = await this.getClaimDetails(claimId);
+            const claim = await this.getClaimDetails(claimId, tenantId);
             if (!claim) {
                 logger.warn('⚠️ [PROOF] Claim not found', { claimId });
                 return null;
             }
 
             // Get linked documents
-            const documents = await this.getLinkedDocuments(claimId, userId, claim.sku, claim.asin);
+            const documents = await this.getLinkedDocuments(claimId, tenantId, claim.sku, claim.asin);
 
             // Analyze each proof category
             const ownership = this.analyzeProofCategory('ownership', documents, claim);
@@ -142,10 +142,10 @@ class ProofChecklistService {
         }
     }
 
-    /**
-     * Get claim details
-     */
-    private async getClaimDetails(claimId: string): Promise<{
+    private async getClaimDetails(
+        claimId: string,
+        tenantId: string
+    ): Promise<{
         sku?: string;
         asin?: string;
         claimType?: string;
@@ -156,6 +156,7 @@ class ProofChecklistService {
                 .from('detection_results')
                 .select('sku, asin, anomaly_type, evidence')
                 .eq('id', claimId)
+                .eq('tenant_id', tenantId)
                 .single();
 
             if (detection) {
@@ -172,38 +173,36 @@ class ProofChecklistService {
             logger.debug('[PROOF] detection_results lookup failed, trying other tables');
         }
 
-        // Try claims table
-        try {
-            const { data: claim } = await supabaseAdmin
-                .from('claims')
-                .select('sku, asin, claim_type, evidence')
-                .eq('id', claimId)
-                .single();
-
-            if (claim) {
-                const evidence = typeof claim.evidence === 'string'
-                    ? JSON.parse(claim.evidence)
-                    : claim.evidence || {};
-                return {
-                    sku: claim.sku || evidence.sku,
-                    asin: claim.asin || evidence.asin,
-                    claimType: claim.claim_type
-                };
-            }
-        } catch (e) {
-            logger.debug('[PROOF] claims lookup failed, trying dispute_cases');
-        }
-
-        // Try dispute_cases (only select columns we know exist)
+        // Try dispute_cases and linked detection_result
         try {
             const { data: dispute } = await supabaseAdmin
                 .from('dispute_cases')
-                .select('id, case_number, case_type, evidence_document_ids, claim_amount')
+                .select('id, case_type, detection_result_id')
                 .eq('id', claimId)
+                .eq('tenant_id', tenantId)
                 .single();
 
             if (dispute) {
-                // Dispute cases don't have sku/asin directly, return minimal data
+                if (dispute.detection_result_id) {
+                    const { data: linkedDetection } = await supabaseAdmin
+                        .from('detection_results')
+                        .select('sku, asin, anomaly_type, evidence')
+                        .eq('id', dispute.detection_result_id)
+                        .eq('tenant_id', tenantId)
+                        .maybeSingle();
+
+                    if (linkedDetection) {
+                        const evidence = typeof linkedDetection.evidence === 'string'
+                            ? JSON.parse(linkedDetection.evidence)
+                            : linkedDetection.evidence || {};
+                        return {
+                            sku: linkedDetection.sku || evidence.sku,
+                            asin: linkedDetection.asin || evidence.asin,
+                            claimType: linkedDetection.anomaly_type || dispute.case_type
+                        };
+                    }
+                }
+
                 return {
                     claimType: dispute.case_type
                 };
@@ -212,12 +211,8 @@ class ProofChecklistService {
             logger.debug('[PROOF] dispute_cases lookup failed');
         }
 
-        // If no claim found in any table, return minimal object to allow checklist generation
-        // This prevents "Unable to check proof requirements" for valid claim IDs
-        logger.warn('[PROOF] Claim not found in any table, returning minimal checklist', { claimId });
-        return {
-            claimType: 'unknown'
-        };
+        logger.warn('[PROOF] Claim not found in any tenant-scoped table', { claimId, tenantId });
+        return null;
     }
 
     /**
@@ -225,7 +220,7 @@ class ProofChecklistService {
      */
     private async getLinkedDocuments(
         claimId: string,
-        userId: string,
+        tenantId: string,
         sku?: string,
         asin?: string
     ): Promise<any[]> {
@@ -237,10 +232,11 @@ class ProofChecklistService {
             .select(`
         evidence_document_id,
         evidence_documents!inner(
-          id, filename, doc_type, parsed_metadata, match_confidence
+          id, filename, doc_type, source_provider, parser_version, parsed_metadata, extracted, match_confidence
         )
       `)
-            .eq('dispute_case_id', claimId);
+            .eq('dispute_case_id', claimId)
+            .eq('tenant_id', tenantId);
 
         if (links) {
             for (const link of links) {
@@ -253,6 +249,10 @@ class ProofChecklistService {
                         id: doc.id,
                         filename: doc.filename,
                         type: doc.doc_type,
+                        source_provider: doc.source_provider,
+                        parser_version: doc.parser_version,
+                        extracted: doc.extracted,
+                        match_confidence: doc.match_confidence,
                         ...meta
                     });
                 }
@@ -263,8 +263,8 @@ class ProofChecklistService {
         if (documents.length === 0 && (sku || asin)) {
             const { data: matchedDocs } = await supabaseAdmin
                 .from('evidence_documents')
-                .select('id, filename, doc_type, parsed_metadata')
-                .eq('seller_id', userId)
+                .select('id, filename, doc_type, source_provider, parser_version, extracted, match_confidence, parsed_metadata')
+                .eq('tenant_id', tenantId)
                 .eq('parser_status', 'completed')
                 .limit(10);
 
@@ -282,6 +282,10 @@ class ProofChecklistService {
                             id: doc.id,
                             filename: doc.filename,
                             type: doc.doc_type,
+                            source_provider: doc.source_provider,
+                            parser_version: doc.parser_version,
+                            extracted: doc.extracted,
+                            match_confidence: doc.match_confidence,
                             ...meta
                         });
                     }

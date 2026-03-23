@@ -3705,10 +3705,12 @@ router.get('/documents/:id/audit', async (req: Request, res: Response) => {
 router.get('/claims/:id/audit', async (req: Request, res: Response) => {
   try {
     const claimId = req.params.id;
+    const tenantId = getTenantIdOrReject(req, res);
+    if (!tenantId) return;
 
-    logger.info('📋 [AUDIT] Getting evidence audit trail for claim', { claimId });
+    logger.info('📋 [AUDIT] Getting evidence audit trail for claim', { claimId, tenantId });
 
-    const auditTrails = await evidenceAuditService.getClaimEvidenceAuditTrail(claimId);
+    const auditTrails = await evidenceAuditService.getClaimEvidenceAuditTrail(claimId, tenantId);
 
     // Flatten all events and sort by timestamp
     const allEvents = auditTrails.flatMap(trail =>
@@ -3793,11 +3795,12 @@ import { proofChecklistService } from '../services/proofChecklistService';
 router.get('/claims/:id/proof-checklist', async (req: Request, res: Response) => {
   try {
     const claimId = req.params.id;
-    const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
+    const tenantId = getTenantIdOrReject(req, res);
+    if (!tenantId) return;
 
-    logger.info('📋 [PROOF] Getting proof checklist for claim', { claimId, userId });
+    logger.info('📋 [PROOF] Getting proof checklist for claim', { claimId, tenantId });
 
-    const checklist = await proofChecklistService.getClaimProofChecklist(claimId, userId);
+    const checklist = await proofChecklistService.getClaimProofChecklist(claimId, tenantId);
 
     if (!checklist) {
       return res.status(404).json({

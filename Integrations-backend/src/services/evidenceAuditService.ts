@@ -115,13 +115,13 @@ class EvidenceAuditService {
                     timestamp: doc.parsed_at,
                     actor: 'system',
                     details: {
-                        parserVersion: doc.parser_version || PARSER_VERSION,
+                        parserVersion: doc.parser_version || undefined,
                         extractedFields,
                         confidence: meta.confidence || doc.match_confidence
                     },
                     narrative: this.generateNarrative('parsed', {
                         filename: doc.filename,
-                        parserVersion: doc.parser_version || PARSER_VERSION,
+                        parserVersion: doc.parser_version || 'unknown',
                         fieldCount: extractedFields.length
                     })
                 });
@@ -140,7 +140,7 @@ class EvidenceAuditService {
             }
 
             // 3. Get claim linking events from dispute_evidence_links
-            const { data: links } = await supabaseAdmin
+            let linksQuery = supabaseAdmin
                 .from('dispute_evidence_links')
                 .select(`
           id,
@@ -151,6 +151,12 @@ class EvidenceAuditService {
         `)
                 .eq('evidence_document_id', documentId)
                 .order('created_at', { ascending: true });
+
+            if (tenantId) {
+                linksQuery = linksQuery.eq('tenant_id', tenantId);
+            }
+
+            const { data: links } = await linksQuery;
 
             if (links && links.length > 0) {
                 for (const link of links) {
@@ -219,11 +225,17 @@ class EvidenceAuditService {
             }
 
             // 5. Check for filing events
-            const { data: filingEvents } = await supabaseAdmin
+            let filingQuery = supabaseAdmin
                 .from('dispute_cases')
                 .select('id, case_number, status, filing_status, created_at, updated_at')
                 .in('id', links?.map(l => l.dispute_case_id) || [])
                 .eq('filing_status', 'filed');
+
+            if (tenantId) {
+                filingQuery = filingQuery.eq('tenant_id', tenantId);
+            }
+
+            const { data: filingEvents } = await filingQuery;
 
             if (filingEvents && filingEvents.length > 0) {
                 for (const filing of filingEvents) {
@@ -260,7 +272,7 @@ class EvidenceAuditService {
                     ingestedAt: doc.ingested_at || doc.created_at,
                     ingestedFrom: doc.source_provider || doc.source || 'manual_upload',
                     parsedAt: doc.parsed_at,
-                    parserVersion: doc.parser_version || PARSER_VERSION,
+                    parserVersion: doc.parser_version || undefined,
                     linkedClaims,
                     lastActivity: lastEvent?.timestamp || doc.updated_at
                 }
@@ -275,23 +287,25 @@ class EvidenceAuditService {
     /**
      * Get audit trail for all documents linked to a claim
      */
-    async getClaimEvidenceAuditTrail(claimId: string): Promise<DocumentAuditTrail[]> {
+    async getClaimEvidenceAuditTrail(claimId: string, tenantId: string): Promise<DocumentAuditTrail[]> {
         try {
-            logger.info('📋 [AUDIT] Getting evidence audit trail for claim', { claimId });
+            logger.info('📋 [AUDIT] Getting evidence audit trail for claim', { claimId, tenantId });
 
             // Get all linked documents
             const { data: links } = await supabaseAdmin
                 .from('dispute_evidence_links')
                 .select('evidence_document_id')
-                .eq('dispute_case_id', claimId);
+                .eq('dispute_case_id', claimId)
+                .eq('tenant_id', tenantId);
 
             if (!links || links.length === 0) {
                 // Try detection_results
                 const { data: detection } = await supabaseAdmin
                     .from('detection_results')
-                    .select('matched_document_ids, timeline, created_at, status, anomaly_type')
+                    .select('matched_document_ids')
                     .eq('id', claimId)
-                    .single();
+                    .eq('tenant_id', tenantId)
+                    .maybeSingle();
 
                 if (detection?.matched_document_ids) {
                     const docIds = Array.isArray(detection.matched_document_ids)
@@ -300,26 +314,10 @@ class EvidenceAuditService {
 
                     const trails: DocumentAuditTrail[] = [];
                     for (const docId of docIds) {
-                        const trail = await this.getDocumentAuditTrail(docId);
+                        const trail = await this.getDocumentAuditTrail(docId, tenantId);
                         if (trail) trails.push(trail);
                     }
                     return trails;
-                }
-
-                // No evidence documents linked - generate synthetic audit trail from claim timeline
-                if (detection?.timeline || detection?.created_at) {
-                    return this.generateSyntheticAuditTrail(claimId, detection);
-                }
-
-                // Try claims table
-                const { data: claim } = await supabaseAdmin
-                    .from('claims')
-                    .select('timeline, created_at, status, claim_type')
-                    .eq('id', claimId)
-                    .single();
-
-                if (claim?.timeline || claim?.created_at) {
-                    return this.generateSyntheticAuditTrail(claimId, claim);
                 }
 
                 return [];
@@ -327,7 +325,7 @@ class EvidenceAuditService {
 
             const trails: DocumentAuditTrail[] = [];
             for (const link of links) {
-                const trail = await this.getDocumentAuditTrail(link.evidence_document_id);
+                const trail = await this.getDocumentAuditTrail(link.evidence_document_id, tenantId);
                 if (trail) trails.push(trail);
             }
 
