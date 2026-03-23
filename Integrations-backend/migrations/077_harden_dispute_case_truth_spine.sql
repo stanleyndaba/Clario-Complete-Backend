@@ -4,6 +4,7 @@
 BEGIN;
 
 ALTER TABLE dispute_cases
+  ADD COLUMN IF NOT EXISTS amazon_case_id TEXT,
   ADD COLUMN IF NOT EXISTS estimated_recovery_amount DECIMAL(12,2),
   ADD COLUMN IF NOT EXISTS approved_amount DECIMAL(12,2),
   ADD COLUMN IF NOT EXISTS recovered_amount DECIMAL(12,2),
@@ -32,24 +33,60 @@ ALTER TABLE dispute_cases ADD CONSTRAINT dispute_cases_filing_status_check
     'pending_approval'
   ));
 
-UPDATE dispute_cases
-SET
-  estimated_recovery_amount = COALESCE(estimated_recovery_amount, claim_amount),
-  approved_amount = COALESCE(
-    approved_amount,
-    CASE
-      WHEN lower(COALESCE(status, '')) IN ('approved', 'won') THEN claim_amount
-      ELSE NULL
-    END
-  ),
-  recovered_amount = COALESCE(recovered_amount, actual_payout_amount),
-  rejection_reason = COALESCE(rejection_reason, evidence_attachments ->> 'raw_reason_text'),
-  amazon_case_id = COALESCE(NULLIF(amazon_case_id, ''), NULLIF(provider_case_id, '')),
-  block_reasons = CASE
-    WHEN jsonb_typeof(block_reasons) = 'array' THEN block_reasons
-    ELSE '[]'::jsonb
-  END
-WHERE TRUE;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_name = 'dispute_cases'
+      AND column_name = 'provider_case_id'
+  ) THEN
+    EXECUTE $update_with_provider$
+      UPDATE dispute_cases
+      SET
+        estimated_recovery_amount = COALESCE(estimated_recovery_amount, claim_amount),
+        approved_amount = COALESCE(
+          approved_amount,
+          CASE
+            WHEN lower(COALESCE(status, '')) IN ('approved', 'won') THEN claim_amount
+            ELSE NULL
+          END
+        ),
+        recovered_amount = COALESCE(recovered_amount, actual_payout_amount),
+        rejection_reason = COALESCE(rejection_reason, evidence_attachments ->> 'raw_reason_text'),
+        amazon_case_id = COALESCE(NULLIF(amazon_case_id, ''), NULLIF(provider_case_id, '')),
+        block_reasons = CASE
+          WHEN jsonb_typeof(block_reasons) = 'array' THEN block_reasons
+          ELSE '[]'::jsonb
+        END
+      WHERE TRUE
+    $update_with_provider$;
+  ELSE
+    EXECUTE $update_without_provider$
+      UPDATE dispute_cases
+      SET
+        estimated_recovery_amount = COALESCE(estimated_recovery_amount, claim_amount),
+        approved_amount = COALESCE(
+          approved_amount,
+          CASE
+            WHEN lower(COALESCE(status, '')) IN ('approved', 'won') THEN claim_amount
+            ELSE NULL
+          END
+        ),
+        recovered_amount = COALESCE(recovered_amount, actual_payout_amount),
+        rejection_reason = COALESCE(rejection_reason, evidence_attachments ->> 'raw_reason_text'),
+        block_reasons = CASE
+          WHEN jsonb_typeof(block_reasons) = 'array' THEN block_reasons
+          ELSE '[]'::jsonb
+        END
+      WHERE TRUE
+    $update_without_provider$;
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_dispute_cases_amazon_case_id
+  ON dispute_cases(amazon_case_id)
+  WHERE amazon_case_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_dispute_cases_eligible_to_file
   ON dispute_cases(tenant_id, eligible_to_file, filing_status);
