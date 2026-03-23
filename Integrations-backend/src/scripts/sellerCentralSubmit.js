@@ -3,59 +3,10 @@
 const fs = require("fs");
 const path = require("path");
 const puppeteer = require("puppeteer");
+const { getSellerCentralReadiness, truthy } = require("./sellerCentralConfig");
 
 function readJsonFile(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
-}
-
-function truthy(value) {
-  return String(value || "").trim().toLowerCase() === "true" || String(value || "").trim() === "1";
-}
-
-function envSelectorMap() {
-  if (process.env.SELLER_CENTRAL_SELECTOR_MAP) {
-    try {
-      return JSON.parse(process.env.SELLER_CENTRAL_SELECTOR_MAP);
-    } catch (_err) {
-      // Fall through to individual env vars.
-    }
-  }
-
-  return {
-    subject: process.env.SELLER_CENTRAL_SUBJECT_SELECTOR,
-    body: process.env.SELLER_CENTRAL_BODY_SELECTOR,
-    attachmentInput: process.env.SELLER_CENTRAL_ATTACHMENT_SELECTOR,
-    submit: process.env.SELLER_CENTRAL_SUBMIT_SELECTOR,
-    confirmation: process.env.SELLER_CENTRAL_CONFIRMATION_SELECTOR,
-    externalCaseId: process.env.SELLER_CENTRAL_CASE_ID_SELECTOR,
-    authCheck: process.env.SELLER_CENTRAL_AUTH_CHECK_SELECTOR,
-    orderId: process.env.SELLER_CENTRAL_ORDER_ID_SELECTOR,
-    shipmentId: process.env.SELLER_CENTRAL_SHIPMENT_ID_SELECTOR,
-    asin: process.env.SELLER_CENTRAL_ASIN_SELECTOR,
-    sku: process.env.SELLER_CENTRAL_SKU_SELECTOR,
-    quantity: process.env.SELLER_CENTRAL_QUANTITY_SELECTOR,
-    amountClaimed: process.env.SELLER_CENTRAL_AMOUNT_SELECTOR,
-    claimType: process.env.SELLER_CENTRAL_CLAIM_TYPE_SELECTOR,
-  };
-}
-
-function validateConfig(payload, selectors) {
-  if (!process.env.SELLER_CENTRAL_CASE_URL) {
-    return "SELLER_CENTRAL_CASE_URL is not configured.";
-  }
-  if (!(process.env.SELLER_CENTRAL_SESSION_PATH || process.env.SELLER_CENTRAL_COOKIES_JSON)) {
-    return "Seller Central session is unavailable.";
-  }
-  const requiredSelectors = ["subject", "body", "attachmentInput", "submit"];
-  for (const key of requiredSelectors) {
-    if (!selectors[key]) {
-      return `Missing Seller Central selector config for ${key}.`;
-    }
-  }
-  if (!payload.attachments || payload.attachments.length === 0) {
-    return "No attachment files were provided to the browser adapter.";
-  }
-  return null;
 }
 
 async function applySession(page) {
@@ -133,6 +84,20 @@ async function extractText(page, selector) {
   return text || null;
 }
 
+async function inspectSubmitButton(page, selector) {
+  await page.waitForSelector(selector, { timeout: 15000 });
+  return page.$eval(selector, (element) => {
+    element.scrollIntoView({ behavior: "instant", block: "center" });
+    const disabled = Boolean(element.disabled) || element.getAttribute("aria-disabled") === "true";
+    const rect = element.getBoundingClientRect();
+    return {
+      disabled,
+      text: (element.textContent || "").trim(),
+      visible: rect.width > 0 && rect.height > 0,
+    };
+  });
+}
+
 async function run() {
   const inputPath = process.argv[2];
   if (!inputPath) {
@@ -140,16 +105,17 @@ async function run() {
   }
 
   const payload = readJsonFile(inputPath);
-  const selectors = envSelectorMap();
-  const configError = validateConfig(payload, selectors);
-  if (configError) {
+  const readiness = getSellerCentralReadiness(process.env);
+  const selectors = readiness.selectorMap;
+  if (!readiness.ready) {
     return {
       downstream_submission_attempted: false,
       downstream_submission_confirmed: false,
+      pre_submit_path_completed: false,
       external_case_id: null,
       status: "failed",
-      raw_response_or_trace: { configError },
-      failure_reason: configError,
+      raw_response_or_trace: { readiness },
+      failure_reason: readiness.missing.join("; "),
       submission_id: payload.submission_id,
     };
   }
@@ -175,6 +141,7 @@ async function run() {
         return {
           downstream_submission_attempted: false,
           downstream_submission_confirmed: false,
+          pre_submit_path_completed: false,
           external_case_id: null,
           status: "failed",
           raw_response_or_trace: {
@@ -210,6 +177,7 @@ async function run() {
       return {
         downstream_submission_attempted: false,
         downstream_submission_confirmed: false,
+        pre_submit_path_completed: false,
         external_case_id: null,
         status: "failed",
         raw_response_or_trace: {
@@ -224,7 +192,27 @@ async function run() {
       };
     }
 
-    await page.waitForSelector(selectors.submit, { timeout: 15000 });
+    const submitState = await inspectSubmitButton(page, selectors.submit);
+    const dryRunPreSubmit = truthy(process.env.SELLER_CENTRAL_DRY_RUN_PRE_SUBMIT);
+    if (dryRunPreSubmit) {
+      return {
+        downstream_submission_attempted: false,
+        downstream_submission_confirmed: false,
+        pre_submit_path_completed: true,
+        external_case_id: null,
+        status: "packaged_for_submission",
+        raw_response_or_trace: {
+          url: page.url(),
+          title: await page.title(),
+          attachmentCount: uploadedCount,
+          submitButton: submitState,
+          screenshot: await maybeScreenshot(page, "pre-submit"),
+        },
+        failure_reason: null,
+        submission_id: payload.submission_id,
+      };
+    }
+
     await page.click(selectors.submit);
     submissionAttempted = true;
 
@@ -254,6 +242,7 @@ async function run() {
     return {
       downstream_submission_attempted: submissionAttempted,
       downstream_submission_confirmed: confirmed,
+      pre_submit_path_completed: false,
       external_case_id: externalCaseId,
       status: confirmed ? "submission_confirmed" : "submission_attempted",
       raw_response_or_trace: {
@@ -261,6 +250,7 @@ async function run() {
         title: await page.title(),
         confirmationText,
         attachmentCount: uploadedCount,
+        submitButton: submitState,
         screenshot: await maybeScreenshot(page, confirmed ? "confirmed" : "attempted"),
       },
       failure_reason: confirmed ? null : "Seller Central submit was attempted but no visible confirmation was captured.",
@@ -270,6 +260,7 @@ async function run() {
     return {
       downstream_submission_attempted: submissionAttempted,
       downstream_submission_confirmed: false,
+      pre_submit_path_completed: false,
       external_case_id: null,
       status: submissionAttempted ? "submission_attempted" : "failed",
       raw_response_or_trace: {
@@ -293,6 +284,7 @@ run()
       JSON.stringify({
         downstream_submission_attempted: false,
         downstream_submission_confirmed: false,
+        pre_submit_path_completed: false,
         external_case_id: null,
         status: "failed",
         raw_response_or_trace: {

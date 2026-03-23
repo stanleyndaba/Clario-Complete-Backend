@@ -1,0 +1,19 @@
+{
+  "subject": "textarea[name='subject']",
+  "body": "textarea[name='description']",
+  "attachmentInput": "input[type='file']",
+  "continueButtons": [
+    "button[data-testid='continue']"
+  ],
+  "submit": "button[type='submit']",
+  "confirmation": "[data-testid='case-confirmation']",
+  "externalCaseId": "[data-testid='case-id']",
+  "authCheck": "nav[aria-label='Seller Central']",
+  "orderId": "input[name='orderId']",
+  "shipmentId": "input[name='shipmentId']",
+  "asin": "input[name='asin']",
+  "sku": "input[name='sku']",
+  "quantity": "input[name='quantity']",
+  "amountClaimed": "input[name='amount']",
+  "claimType": "select[name='claimType']"
+}

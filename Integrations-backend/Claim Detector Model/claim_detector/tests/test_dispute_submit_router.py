@@ -392,3 +392,55 @@ def test_seller_central_adapter_fails_truthfully_without_session(monkeypatch, tm
     assert result["status"] == "failed"
     assert result["downstream_submission_attempted"] is False
     assert "session" in (result["failure_reason"] or "").lower()
+
+
+def test_seller_central_readiness_reports_missing_config(monkeypatch):
+    monkeypatch.delenv("SELLER_CENTRAL_SESSION_PATH", raising=False)
+    monkeypatch.delenv("SELLER_CENTRAL_COOKIES_JSON", raising=False)
+    monkeypatch.delenv("SELLER_CENTRAL_CASE_URL", raising=False)
+    monkeypatch.delenv("SELLER_CENTRAL_DRY_RUN_PRE_SUBMIT", raising=False)
+    monkeypatch.delenv("SELLER_CENTRAL_SELECTOR_MAP", raising=False)
+    monkeypatch.delenv("SELLER_CENTRAL_SUBJECT_SELECTOR", raising=False)
+    monkeypatch.delenv("SELLER_CENTRAL_BODY_SELECTOR", raising=False)
+    monkeypatch.delenv("SELLER_CENTRAL_ATTACHMENT_SELECTOR", raising=False)
+    monkeypatch.delenv("SELLER_CENTRAL_SUBMIT_SELECTOR", raising=False)
+    monkeypatch.delenv("SELLER_CENTRAL_CONTINUE_SELECTORS", raising=False)
+    monkeypatch.setattr(seller_central_adapter.shutil, "which", lambda _name: "node")
+
+    readiness = seller_central_adapter.get_seller_central_readiness()
+
+    assert readiness["ready"] is False
+    assert "SELLER_CENTRAL_CASE_URL" in readiness["missing"]
+    assert "SELLER_CENTRAL_SESSION_PATH or SELLER_CENTRAL_COOKIES_JSON" in readiness["missing"]
+    assert "SELLER_CENTRAL_DRY_RUN_PRE_SUBMIT=true" in readiness["missing"]
+    assert "selector:subject" in readiness["missing"]
+    assert "selector:continueButtons" in readiness["missing"]
+
+
+def test_seller_central_readiness_reports_ready_when_config_present(monkeypatch, tmp_path):
+    session_path = tmp_path / "seller-session.json"
+    session_path.write_text(json.dumps({"cookies": []}), encoding="utf-8")
+
+    monkeypatch.setenv("SELLER_CENTRAL_SESSION_PATH", str(session_path))
+    monkeypatch.setenv("SELLER_CENTRAL_CASE_URL", "https://sellercentral.example.com/support")
+    monkeypatch.setenv("SELLER_CENTRAL_DRY_RUN_PRE_SUBMIT", "true")
+    monkeypatch.setenv(
+        "SELLER_CENTRAL_SELECTOR_MAP",
+        json.dumps({
+            "subject": "#subject",
+            "body": "#body",
+            "attachmentInput": "#attachments",
+            "continueButtons": ["#continue"],
+            "submit": "#submit",
+        }),
+    )
+    monkeypatch.setattr(seller_central_adapter.shutil, "which", lambda _name: "node")
+    monkeypatch.setattr(seller_central_adapter, "_script_path", lambda: session_path)
+
+    readiness = seller_central_adapter.get_seller_central_readiness()
+
+    assert readiness["ready"] is True
+    assert readiness["session_source_present"] is True
+    assert readiness["case_url_present"] is True
+    assert readiness["selector_config_present"] is True
+    assert readiness["dry_run_enabled"] is True

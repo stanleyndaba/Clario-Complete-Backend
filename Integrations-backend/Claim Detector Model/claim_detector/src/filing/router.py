@@ -276,6 +276,7 @@ def _build_response(parsed: ParsedSubmission, downstream_result: Dict[str, Any])
         "status": downstream_result.get("status"),
         "accepted_by_python": downstream_result.get("accepted_by_python", False),
         "packaged_for_submission": downstream_result.get("packaged_for_submission", False),
+        "pre_submit_path_completed": downstream_result.get("pre_submit_path_completed", False),
         "downstream_submission_attempted": downstream_result.get("downstream_submission_attempted", False),
         "downstream_submission_confirmed": downstream_result.get("downstream_submission_confirmed", False),
         "raw_response_or_trace": downstream_result.get("raw_response_or_trace"),
