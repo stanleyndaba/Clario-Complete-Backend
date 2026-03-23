@@ -25,6 +25,7 @@ from ..src.evidence.controllers import evidence_router
 from ..src.ev.router import ev_router
 from ..src.monitoring.router import monitoring_router
 from ..src.acg.router import acg_router
+from ..src.filing.router import disputes_router
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -55,6 +56,7 @@ app.include_router(evidence_router)
 app.include_router(ev_router, prefix="/ev")
 app.include_router(monitoring_router, prefix="/monitoring")
 app.include_router(acg_router, prefix="/acg")
+app.include_router(disputes_router)
 
 # Initialize unified model
 model = None
