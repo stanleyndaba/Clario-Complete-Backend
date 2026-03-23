@@ -27,130 +27,120 @@ export interface BriefContext {
     evidenceFilenames: string[];
 }
 
+function listEvidence(ctx: BriefContext): string {
+    if (!ctx.evidenceFilenames.length) {
+        return '- No verified files included';
+    }
+    return ctx.evidenceFilenames.map(f => `- ${f}`).join('\n');
+}
+
 const BRIEF_TEMPLATES: Record<string, {
     subject: (ctx: BriefContext) => string;
     body: (ctx: BriefContext) => string;
     policy: string;
 }> = {
     missing_inbound_shipment: {
-        subject: (ctx) => `Reimbursement Request: Inbound Shipment ${ctx.shipmentId || 'N/A'} - ${ctx.sku || ctx.asin || 'Product'} - Quantity Discrepancy`,
-        policy: 'FBA Policy 9.1: Inventory Reimbursement - Inbound Shipments',
+        subject: (ctx) => `Reimbursement Request - Inbound Shipment ${ctx.shipmentId || 'Reference Required'} - ${ctx.sku || ctx.asin || 'Product'}`,
+        policy: 'Inbound shipment reimbursement review',
         body: (ctx) => `
 Dear Amazon Seller Support Team,
 
-We are writing to request a reimbursement for a quantity discrepancy identifying in shipment ${ctx.shipmentId || 'N/A'}.
+Claim Type: Inbound shipment discrepancy
+Shipment ID: ${ctx.shipmentId || 'Unavailable'}
+Order ID: ${ctx.orderId || 'Unavailable'}
+SKU/ASIN: ${ctx.sku || ctx.asin || 'Unavailable'}
+Quantity: ${ctx.quantity || 1}
+Requested Amount: ${ctx.amount} ${ctx.currency}
 
-Details of the Discrepancy:
-- Shipment ID: ${ctx.shipmentId || 'N/A'}
-- SKU/ASIN: ${ctx.sku || ctx.asin || 'N/A'}
-- Expected Quantity: ${ctx.quantity || 1}
-- Received Quantity: 0
-- Discrepancy: ${ctx.quantity || 1} unit(s)
-- Estimated Value: ${ctx.amount} ${ctx.currency}
+Attached Files:
+${listEvidence(ctx)}
 
-Per FBA Policy 9.1 (Inventory Reimbursement), Amazon is responsible for items that are lost or damaged while under Amazon's control during the inbound process. Our records confirm that this shipment was delivered and accepted at the fulfillment center, yet the specified units were never added to our available inventory.
-
-Attached Evidence:
-${ctx.evidenceFilenames.map(f => `- ${f}`).join('\n')}
-
-Please review the attached documentation and issue the corresponding reimbursement to our account.
+Please review the identifiers and attached files for this single inbound reimbursement request.
 
 Regards,
 Inventory Audit Team
         `.trim()
     },
     refund_without_return: {
-        subject: (ctx) => `Discrepancy: Order ${ctx.orderId || 'N/A'} - Refunded Without Return - FBA Policy Compliance`,
-        policy: 'FBA Policy: Customer Return Reimbursement',
+        subject: (ctx) => `Reimbursement Request - Refunded Without Return - Order ${ctx.orderId || 'Reference Required'}`,
+        policy: 'Refund without return review',
         body: (ctx) => `
 Dear Amazon Seller Support Team,
 
-We have identified an order where the customer was issued a refund, but the product was not returned to our inventory within the mandatory 45-day window.
+Claim Type: Refunded without return
+Order ID: ${ctx.orderId || 'Unavailable'}
+SKU/ASIN: ${ctx.sku || ctx.asin || 'Unavailable'}
+Quantity: ${ctx.quantity || 1}
+Requested Amount: ${ctx.amount} ${ctx.currency}
+Reference Date: ${ctx.date || 'Unavailable'}
 
-Order Details:
-- Order ID: ${ctx.orderId || 'N/A'}
-- Product: ${ctx.sku || ctx.asin || 'N/A'}
-- Refund Amount: ${ctx.amount} ${ctx.currency}
-- Refund Date: ${ctx.date || 'N/A'}
+Attached Files:
+${listEvidence(ctx)}
 
-According to Amazon's Customer Return Policy, if a customer is refunded but the item is not returned to the fulfillment center within 45 days, the seller is entitled to a reimbursement. Our audits show that the 45-day window has expired, and no return has been processed for this order.
-
-Attached Evidence:
-${ctx.evidenceFilenames.map(f => `- ${f}`).join('\n')}
-
-We request that you verify this discrepancy and process the reimbursement for the fair market value of the item.
+Please review this single reimbursement request using the attached records and order identifiers.
 
 Regards,
 Inventory Audit Team
         `.trim()
     },
     damaged_warehouse: {
-        subject: (ctx) => `Inventory Damage: ${ctx.sku || ctx.asin || 'Product'} - FBA Policy 9.2 (Warehouse Damage Liability)`,
-        policy: 'FBA Policy 9.2: Warehouse Damage Liability',
+        subject: (ctx) => `Reimbursement Request - Warehouse Damage - ${ctx.sku || ctx.asin || 'Product'}`,
+        policy: 'Warehouse damage reimbursement review',
         body: (ctx) => `
 Dear Amazon Seller Support Team,
 
-This is a request for reimbursement for inventory that was damaged while being handled within Amazon's fulfillment center.
+Claim Type: Warehouse-damaged inventory
+Shipment/Reference ID: ${ctx.shipmentId || ctx.orderId || 'Unavailable'}
+SKU/ASIN: ${ctx.sku || ctx.asin || 'Unavailable'}
+Quantity: ${ctx.quantity || 1}
+Requested Amount: ${ctx.amount} ${ctx.currency}
 
-Case Details:
-- SKU/ASIN: ${ctx.sku || ctx.asin || 'N/A'}
-- Condition: Damaged (Warehouse)
-- Impacted Units: ${ctx.quantity || 1}
-- Estimated Value: ${ctx.amount} ${ctx.currency}
+Attached Files:
+${listEvidence(ctx)}
 
-Per FBA Policy 9.2, Amazon assumes responsibility for inventory that is damaged by Amazon or by a third party providing services on Amazon's behalf. Our data indicates that these units were in sellable condition upon arrival but were subsequently marked as damaged while in Amazon's possession.
-
-Attached Evidence:
-${ctx.evidenceFilenames.map(f => `- ${f}`).join('\n')}
-
-Please process the reimbursement for the damaged units as per the standard FBA reimbursement valuation.
+Please review the attached records for this single warehouse-damage reimbursement request.
 
 Regards,
 Inventory Audit Team
         `.trim()
     },
     fc_lost_or_damaged: {
-        subject: (ctx) => `Reimbursement Request: FC Inventory Loss/Damage - ${ctx.sku || ctx.asin || 'Product'} - ${ctx.shipmentId || ctx.orderId || 'Reference Required'}`,
-        policy: 'FBA Inventory Reimbursement Policy - FC Lost/Damaged Inventory',
+        subject: (ctx) => `Reimbursement Request - FC Inventory Loss/Damage - ${ctx.sku || ctx.asin || 'Product'} - ${ctx.shipmentId || ctx.orderId || 'Reference Required'}`,
+        policy: 'FC lost or damaged inventory review',
         body: (ctx) => `
 Dear Amazon Seller Support Team,
 
-We are requesting reimbursement for inventory that was lost or damaged while under Amazon's control at the fulfillment center.
+Claim Type: FC lost or damaged inventory
+Reference ID: ${ctx.shipmentId || ctx.orderId || 'Unavailable'}
+SKU/ASIN: ${ctx.sku || ctx.asin || 'Unavailable'}
+Quantity: ${ctx.quantity || 1}
+Requested Amount: ${ctx.amount} ${ctx.currency}
 
-Reference Details:
-- Reference ID: ${ctx.shipmentId || ctx.orderId || 'N/A'}
-- SKU/ASIN: ${ctx.sku || ctx.asin || 'N/A'}
-- Quantity Impacted: ${ctx.quantity || 1}
-- Requested Amount: ${ctx.amount} ${ctx.currency}
+Attached Files:
+${listEvidence(ctx)}
 
-This filing is limited to a single fulfillment-center loss or damage issue and is supported by the attached sourcing-cost and inventory evidence.
-
-Attached Evidence:
-${ctx.evidenceFilenames.map(f => `- ${f}`).join('\n')}
-
-Please review the attached proof and process reimbursement under the applicable FBA lost/damaged inventory policy.
+Please review the attached records for this single FC reimbursement request.
 
 Regards,
 Inventory Audit Team
         `.trim()
     },
     default: {
-        subject: (ctx) => `Inquiry: Discrepancy Detected for Order/Shipment ${ctx.orderId || ctx.shipmentId || 'N/A'}`,
-        policy: 'FBA General Reimbursement Policy',
+        subject: (ctx) => `Reimbursement Request - ${ctx.orderId || ctx.shipmentId || 'Reference Required'}`,
+        policy: 'General reimbursement review',
         body: (ctx) => `
 Dear Amazon Seller Support Team,
 
-We have detected a financial discrepancy regarding our FBA inventory/orders that requires your verification.
+Claim Type: ${ctx.caseType || 'General discrepancy'}
+Reference ID: ${ctx.orderId || ctx.shipmentId || 'Unavailable'}
+SKU/ASIN: ${ctx.sku || ctx.asin || 'Unavailable'}
+Quantity: ${ctx.quantity || 1}
+Requested Amount: ${ctx.amount} ${ctx.currency}
 
-Summary:
-- Reference ID: ${ctx.orderId || ctx.shipmentId || 'N/A'}
-- SKU/ASIN: ${ctx.sku || ctx.asin || 'N/A'}
-- Discrepancy Amount: ${ctx.amount} ${ctx.currency}
+Attached Files:
+${listEvidence(ctx)}
 
-We have performed a full reconciliation of our records and found that this transaction remains unresolved. We request that you review the details and provide a resolution or reimbursement in accordance with FBA policies.
-
-Attached Evidence:
-${ctx.evidenceFilenames.map(f => `- ${f}`).join('\n')}
+Please review the attached records for this reimbursement request.
 
 Regards,
 Inventory Audit Team

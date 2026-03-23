@@ -35,6 +35,59 @@ export interface FilingRequest {
     metadata?: Record<string, any>;
 }
 
+interface EvidenceDocumentRecord {
+    id: string;
+    filename: string;
+    content_type: string | null;
+    size_bytes: number | null;
+    file_url?: string | null;
+    storage_path?: string | null;
+    doc_type?: string | null;
+    parsed_metadata?: Record<string, any>;
+    extracted?: Record<string, any>;
+    metadata?: Record<string, any>;
+    source_provider?: string | null;
+    created_at?: string | null;
+    ingested_at?: string | null;
+}
+
+interface SubmissionAttachment {
+    id: string;
+    filename: string;
+    contentType: string;
+    sizeBytes: number;
+    docType: string;
+    sourceProvider?: string | null;
+    parsedMetadata: Record<string, any>;
+    extracted: Record<string, any>;
+    metadata: Record<string, any>;
+    createdAt?: string | null;
+    ingestedAt?: string | null;
+    bytes: Buffer;
+    sha256: string;
+    categories: string[];
+}
+
+interface AttachmentPack {
+    attachments: SubmissionAttachment[];
+    manifest: Array<{
+        id: string;
+        filename: string;
+        content_type: string;
+        size_bytes: number;
+        doc_type: string;
+        categories: string[];
+        sha256: string;
+        source_provider?: string | null;
+    }>;
+    labels: string[];
+}
+
+type ClaimAttachmentProfile = {
+    key: 'inbound' | 'fc_damage' | 'refund_return' | 'generic';
+    requiredCategories: string[][];
+};
+
 export interface FilingResult {
     success: boolean;
     submission_id?: string;
@@ -79,6 +132,291 @@ class RefundFilingService {
         };
     }
 
+    private resolveClaimAttachmentProfile(claimType: string): ClaimAttachmentProfile {
+        const normalized = (claimType || '').toLowerCase();
+
+        if (
+            normalized.includes('inbound') ||
+            normalized.includes('shipment') ||
+            normalized.includes('lost') ||
+            normalized.includes('missing')
+        ) {
+            return {
+                key: 'inbound',
+                requiredCategories: [
+                    ['invoice', 'purchase_order'],
+                    ['proof_of_delivery', 'shipping'],
+                    ['inventory', 'reference']
+                ]
+            };
+        }
+
+        if (
+            normalized.includes('warehouse') ||
+            normalized.includes('damage') ||
+            normalized.includes('fulfillment') ||
+            normalized.includes('fc_')
+        ) {
+            return {
+                key: 'fc_damage',
+                requiredCategories: [
+                    ['invoice', 'purchase_order'],
+                    ['inventory']
+                ]
+            };
+        }
+
+        if (normalized.includes('refund') || normalized.includes('return')) {
+            return {
+                key: 'refund_return',
+                requiredCategories: [
+                    ['invoice', 'purchase_order'],
+                    ['reference']
+                ]
+            };
+        }
+
+        return {
+            key: 'generic',
+            requiredCategories: [
+                ['invoice', 'purchase_order']
+            ]
+        };
+    }
+
+    private classifyDocumentCategories(document: EvidenceDocumentRecord): string[] {
+        const docType = String(document.doc_type || '').toLowerCase();
+        const filename = String(document.filename || '').toLowerCase();
+        const extracted = document.extracted || {};
+        const parsed = document.parsed_metadata || {};
+        const filenameAndType = `${filename} ${docType}`;
+
+        const categories = new Set<string>();
+
+        if (
+            docType === 'invoice' ||
+            /invoice|receipt|commercial invoice|tax invoice|vendor invoice|supplier/.test(filenameAndType)
+        ) {
+            categories.add('invoice');
+        }
+
+        if (
+            docType === 'po' ||
+            /purchase order|\bpo\b/.test(filenameAndType)
+        ) {
+            categories.add('purchase_order');
+        }
+
+        if (
+            docType === 'shipping' ||
+            /shipment|shipping|tracking|bill of lading|\bbol\b|awb|waybill|manifest/.test(filenameAndType) ||
+            Boolean(extracted?.shipment_id || extracted?.fba_shipment_id || parsed?.tracking_numbers?.length)
+        ) {
+            categories.add('shipping');
+        }
+
+        if (
+            /proof of delivery|\bpod\b|delivery confirmation/.test(filenameAndType) ||
+            Boolean(parsed?.signed_by || parsed?.delivery_date || extracted?.signed_by)
+        ) {
+            categories.add('proof_of_delivery');
+        }
+
+        if (
+            /inventory|ledger|adjustment|reconciliation/.test(filenameAndType) ||
+            Boolean(extracted?.event_ids?.length || extracted?.calculated_stock !== undefined || parsed?.inventory_adjustment_id)
+        ) {
+            categories.add('inventory');
+        }
+
+        if (
+            extracted?.shipment_id ||
+            extracted?.fba_shipment_id ||
+            extracted?.order_id ||
+            extracted?.reference_id ||
+            parsed?.shipment_id ||
+            parsed?.order_id
+        ) {
+            categories.add('reference');
+        }
+
+        if (categories.size === 0) {
+            categories.add('supporting');
+        }
+
+        return Array.from(categories);
+    }
+
+    private async downloadEvidenceBytes(document: EvidenceDocumentRecord): Promise<Buffer> {
+        if (document.storage_path) {
+            const { data, error } = await supabaseAdmin
+                .storage
+                .from('evidence-documents')
+                .download(document.storage_path);
+
+            if (error || !data) {
+                throw new Error(`Failed to download storage object for ${document.filename}: ${error?.message || 'missing file'}`);
+            }
+
+            return Buffer.from(await data.arrayBuffer());
+        }
+
+        if (document.file_url) {
+            const response = await axios.get(document.file_url, {
+                responseType: 'arraybuffer',
+                timeout: 60000
+            });
+            return Buffer.from(response.data);
+        }
+
+        throw new Error(`Evidence document ${document.id} has no storage path or file URL`);
+    }
+
+    private async buildAttachmentPack(
+        evidenceDocuments: EvidenceDocumentRecord[],
+        claimType: string
+    ): Promise<AttachmentPack> {
+        const profile = this.resolveClaimAttachmentProfile(claimType);
+        const attachments: SubmissionAttachment[] = [];
+
+        for (const document of evidenceDocuments) {
+            const bytes = await this.downloadEvidenceBytes(document);
+            const contentType = document.content_type || 'application/octet-stream';
+            const sizeBytes = document.size_bytes || bytes.length;
+            const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+            const categories = this.classifyDocumentCategories(document);
+
+            attachments.push({
+                id: document.id,
+                filename: document.filename,
+                contentType,
+                sizeBytes,
+                docType: document.doc_type || 'other',
+                sourceProvider: document.source_provider || null,
+                parsedMetadata: document.parsed_metadata || {},
+                extracted: document.extracted || {},
+                metadata: document.metadata || {},
+                createdAt: document.created_at || null,
+                ingestedAt: document.ingested_at || null,
+                bytes,
+                sha256,
+                categories
+            });
+        }
+
+        const missingGroups = profile.requiredCategories.filter((group) =>
+            !attachments.some((attachment) => group.some((category) => attachment.categories.includes(category)))
+        );
+
+        if (missingGroups.length > 0) {
+            const missing = missingGroups.map((group) => group.join('|')).join(', ');
+            throw new Error(`Submission blocked: missing required attachment categories for ${profile.key}: ${missing}`);
+        }
+
+        return {
+            attachments,
+            manifest: attachments.map((attachment) => ({
+                id: attachment.id,
+                filename: attachment.filename,
+                content_type: attachment.contentType,
+                size_bytes: attachment.sizeBytes,
+                doc_type: attachment.docType,
+                categories: attachment.categories,
+                sha256: attachment.sha256,
+                source_provider: attachment.sourceProvider || null
+            })),
+            labels: attachments.map((attachment) =>
+                `${attachment.filename} (${attachment.categories.join(', ')})`
+            )
+        };
+    }
+
+    private async postMultipartSubmission(
+        payload: Record<string, any>,
+        attachmentPack: AttachmentPack,
+        userId: string,
+        idempotencyKey: string,
+        httpClient: ReturnType<typeof createSellerHttpClient>
+    ) {
+        const FormDataCtor = (globalThis as any).FormData;
+        const BlobCtor = (globalThis as any).Blob;
+
+        if (!FormDataCtor || !BlobCtor) {
+            throw new Error('Runtime FormData/Blob support is unavailable');
+        }
+
+        const form = new FormDataCtor();
+
+        for (const [key, value] of Object.entries(payload)) {
+            if (value === undefined || value === null) continue;
+
+            if (typeof value === 'object') {
+                form.append(key, JSON.stringify(value));
+            } else {
+                form.append(key, String(value));
+            }
+        }
+
+        for (const attachment of attachmentPack.attachments) {
+            const blob = new BlobCtor([attachment.bytes], { type: attachment.contentType });
+            form.append('attachments', blob, attachment.filename);
+        }
+
+        return httpClient.post(
+            `${this.pythonApiUrl}/api/v1/disputes/submit`,
+            form,
+            {
+                headers: this.buildServiceHeaders(userId, 'file-dispute-multipart', {
+                    'X-User-Id': userId,
+                    'x-amzn-idempotency-key': idempotencyKey
+                }),
+                timeout: 120000
+            }
+        );
+    }
+
+    private async postJsonSubmission(
+        payload: Record<string, any>,
+        attachmentPack: AttachmentPack,
+        userId: string,
+        idempotencyKey: string,
+        httpClient: ReturnType<typeof createSellerHttpClient>
+    ) {
+        const evidenceDocuments = attachmentPack.attachments.map((attachment) => ({
+            id: attachment.id,
+            filename: attachment.filename,
+            content_type: attachment.contentType,
+            size_bytes: attachment.sizeBytes,
+            doc_type: attachment.docType,
+            categories: attachment.categories,
+            parsed_metadata: attachment.parsedMetadata,
+            extracted: attachment.extracted,
+            metadata: attachment.metadata,
+            source_provider: attachment.sourceProvider || null,
+            created_at: attachment.createdAt || null,
+            ingested_at: attachment.ingestedAt || null,
+            sha256: attachment.sha256,
+            file_bytes_base64: attachment.bytes.toString('base64')
+        }));
+
+        return httpClient.post(
+            `${this.pythonApiUrl}/api/v1/disputes/submit`,
+            {
+                ...payload,
+                evidence_documents: evidenceDocuments,
+                attachment_manifest: attachmentPack.manifest
+            },
+            {
+                headers: this.buildServiceHeaders(userId, 'file-dispute-json', {
+                    'Content-Type': 'application/json',
+                    'X-User-Id': userId,
+                    'x-amzn-idempotency-key': idempotencyKey
+                }),
+                timeout: 120000
+            }
+        );
+    }
+
     /**
     * File a dispute case via Python SP-API service
     */
@@ -93,6 +431,7 @@ class RefundFilingService {
 
             // Get evidence documents
             const evidenceDocuments = await this.getEvidenceDocuments(request.evidence_document_ids, request.user_id);
+            const attachmentPack = await this.buildAttachmentPack(evidenceDocuments, request.claim_type);
 
             // Prepare payload for Python API
             const context = {
@@ -103,7 +442,7 @@ class RefundFilingService {
                 shipmentId: request.shipment_id || undefined,
                 asin: request.asin,
                 sku: request.sku,
-                evidenceFilenames: evidenceDocuments.map(d => d.filename),
+                evidenceFilenames: attachmentPack.labels,
                 quantity: (request.metadata?.quantity as number | undefined) || 1
             };
 
@@ -113,16 +452,19 @@ class RefundFilingService {
                 dispute_id: request.dispute_id,
                 user_id: request.user_id,
                 order_id: request.order_id,
+                shipment_id: request.shipment_id,
                 asin: request.asin,
                 sku: request.sku,
                 claim_type: request.claim_type,
+                quantity: (request.metadata?.quantity as number | undefined) || 1,
                 amount_claimed: request.amount_claimed,
                 currency: request.currency,
-                evidence_documents: evidenceDocuments,
+                attachment_manifest: attachmentPack.manifest,
                 confidence_score: request.confidence_score,
                 subject: brief.subject,
                 body: brief.body,
-                policy_cited: brief.policyCited
+                policy_cited: brief.policyCited,
+                metadata: request.metadata || {}
             };
 
             // DRY RUN Support: persist the payload for inspection, but never pretend filing succeeded.
@@ -135,7 +477,10 @@ class RefundFilingService {
                 const fileName = `case_payload_${request.dispute_id.slice(0, 8)}.json`;
                 const filePath = path.join(outputDir, fileName);
 
-                fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+                fs.writeFileSync(filePath, JSON.stringify({
+                    payload,
+                    attachments: attachmentPack.manifest
+                }, null, 2));
 
                 logger.info('[DRY RUN] Case payload saved safely', { filePath });
 
@@ -163,18 +508,16 @@ class RefundFilingService {
             }
             // -------------------------------
 
-            const response = await httpClient.post(
-                `${this.pythonApiUrl}/api/v1/disputes/submit`,
-                payload,
-                {
-                    headers: this.buildServiceHeaders(request.user_id, 'file-dispute', {
-                        'Content-Type': 'application/json',
-                        'X-User-Id': request.user_id,
-                        'x-amzn-idempotency-key': idempotencyKey
-                    }),
-                    timeout: 120000 // 120 seconds
-                }
-            );
+            let response;
+            try {
+                response = await this.postMultipartSubmission(payload, attachmentPack, request.user_id, idempotencyKey, httpClient);
+            } catch (multipartError: any) {
+                logger.warn('[REFUND FILING] Multipart submission failed, retrying with JSON attachment bytes', {
+                    disputeId: request.dispute_id,
+                    error: multipartError.message
+                });
+                response = await this.postJsonSubmission(payload, attachmentPack, request.user_id, idempotencyKey, httpClient);
+            }
 
             // Log proxy info for audit
             logger.debug('[REFUND FILING] Request routed through proxy', {
@@ -409,11 +752,11 @@ class RefundFilingService {
     /**
     * Get evidence documents by IDs
     */
-    private async getEvidenceDocuments(evidenceIds: string[], userId: string): Promise<any[]> {
+    private async getEvidenceDocuments(evidenceIds: string[], userId: string): Promise<EvidenceDocumentRecord[]> {
         try {
             const { data: documents, error } = await supabaseAdmin
                 .from('evidence_documents')
-                .select('id, filename, content_type, size_bytes, file_url, parsed_metadata')
+                .select('id, filename, content_type, size_bytes, file_url, storage_path, doc_type, parsed_metadata, extracted, metadata, created_at')
                 .in('id', evidenceIds)
                 .eq('seller_id', userId);
 
@@ -427,8 +770,15 @@ class RefundFilingService {
                 filename: doc.filename,
                 content_type: doc.content_type,
                 size_bytes: doc.size_bytes,
-                download_url: doc.file_url,
-                parsed_metadata: doc.parsed_metadata || {}
+                file_url: doc.file_url,
+                storage_path: (doc as any).storage_path || null,
+                doc_type: (doc as any).doc_type || null,
+                parsed_metadata: doc.parsed_metadata || {},
+                extracted: (doc as any).extracted || {},
+                metadata: (doc as any).metadata || {},
+                source_provider: null,
+                created_at: (doc as any).created_at || null,
+                ingested_at: null
             }));
 
         } catch (error: any) {
