@@ -65,9 +65,10 @@ const selectAuthoritativeQueueRow = (
 };
 
 const hasExplicitTenantSignal = (req: AuthenticatedRequest): boolean => {
-  const headerTenantId = req.headers['x-tenant-id'];
-  const queryTenantSlug = (req as any).query?.tenantSlug;
-  const fullPath = req.originalUrl?.split('?')[0] || req.path;
+  const requestLike = req as any;
+  const headerTenantId = requestLike.headers?.['x-tenant-id'];
+  const queryTenantSlug = requestLike.query?.tenantSlug;
+  const fullPath = requestLike.originalUrl?.split('?')[0] || requestLike.path;
   const pathTenantMatch = /^\/app\/[^/]+/.test(fullPath);
 
   return Boolean(
