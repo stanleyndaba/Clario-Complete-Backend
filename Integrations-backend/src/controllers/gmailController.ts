@@ -283,9 +283,11 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
     }
 
     // Persist provider connection truth for the Integrations status API.
+    let sourceState = 'synced';
     try {
       const adminClient = supabaseAdmin || supabase;
       const dbUserId = convertUserIdToUuid(userId);
+      const nowIso = new Date().toISOString();
       const scopes = [
         'https://www.googleapis.com/auth/gmail.readonly',
         'https://www.googleapis.com/auth/gmail.modify'
@@ -294,69 +296,85 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
         access_token,
         refresh_token: refresh_token || undefined,
         expires_at: new Date(Date.now() + (expires_in * 1000)).toISOString(),
-        connected_at: new Date().toISOString(),
+        connected_at: nowIso,
         source: 'gmail_oauth',
         token_source: 'gmail_callback'
       };
 
-      let existingSourceQuery = adminClient
-        .from('evidence_sources')
-        .select('id')
-        .eq('user_id', dbUserId)
-        .eq('provider', 'gmail');
-
-      existingSourceQuery = tenantId
-        ? existingSourceQuery.eq('tenant_id', tenantId)
-        : existingSourceQuery.is('tenant_id', null);
-
-      const { data: existingSource, error: existingSourceError } = await existingSourceQuery.maybeSingle();
-
-      if (existingSourceError) {
-        throw existingSourceError;
-      }
-
-      if (existingSource?.id) {
-        const { error: updateError } = await adminClient
-          .from('evidence_sources')
-          .update({
-            status: 'connected',
-            account_email: userEmail,
-            last_sync_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            permissions: scopes,
-            metadata: sourceMetadata,
-            tenant_id: tenantId || null
-          })
-          .eq('id', existingSource.id);
-
-        if (updateError) throw updateError;
+      if (!tenantId) {
+        sourceState = 'deferred';
+        logger.warn('Skipping Gmail evidence source sync because tenant could not be resolved from OAuth state', {
+          userId,
+          frontendUrl
+        });
       } else {
-        const { error: insertError } = await adminClient
+        const { data: existingSources, error: existingSourceError } = await adminClient
           .from('evidence_sources')
-          .insert({
-            user_id: dbUserId,
-            seller_id: dbUserId,
-            provider: 'gmail',
-            account_email: userEmail,
-            status: 'connected',
-            last_sync_at: new Date().toISOString(),
-            permissions: scopes,
-            metadata: sourceMetadata,
-            tenant_id: tenantId || null
-          });
+          .select('id, updated_at, created_at')
+          .eq('tenant_id', tenantId)
+          .eq('provider', 'gmail')
+          .or(`user_id.eq.${dbUserId},seller_id.eq.${dbUserId},seller_id.eq.${userId}`)
+          .order('updated_at', { ascending: false })
+          .order('created_at', { ascending: false })
+          .limit(5);
 
-        if (insertError) throw insertError;
+        if (existingSourceError) {
+          throw existingSourceError;
+        }
+
+        const existingSource = Array.isArray(existingSources) && existingSources.length > 0
+          ? existingSources[0]
+          : null;
+
+        if (existingSource?.id) {
+          const { error: updateError } = await adminClient
+            .from('evidence_sources')
+            .update({
+              user_id: dbUserId,
+              seller_id: dbUserId,
+              status: 'connected',
+              account_email: userEmail,
+              last_sync_at: nowIso,
+              updated_at: nowIso,
+              permissions: scopes,
+              metadata: sourceMetadata,
+              tenant_id: tenantId
+            })
+            .eq('id', existingSource.id);
+
+          if (updateError) throw updateError;
+        } else {
+          const { error: insertError } = await adminClient
+            .from('evidence_sources')
+            .insert({
+              user_id: dbUserId,
+              seller_id: dbUserId,
+              provider: 'gmail',
+              account_email: userEmail,
+              status: 'connected',
+              last_sync_at: nowIso,
+              permissions: scopes,
+              metadata: sourceMetadata,
+              tenant_id: tenantId
+            });
+
+          if (insertError) throw insertError;
+        }
+
+        logger.info('Gmail evidence source synced', {
+          userId,
+          tenantId,
+          email: userEmail,
+          existingCount: Array.isArray(existingSources) ? existingSources.length : 0
+        });
       }
-
-      logger.info('Gmail evidence source upserted', { userId, tenantId, email: userEmail });
     } catch (sourceError: any) {
-      logger.error('Failed to persist Gmail evidence source state', {
+      sourceState = 'deferred';
+      logger.warn('Failed to persist Gmail evidence source state after successful OAuth; continuing with token-backed connection', {
         error: sourceError?.message || String(sourceError),
         userId,
         tenantId
       });
-      const defaultFrontendUrl = frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
-      return res.redirect(`${defaultFrontendUrl}/auth/error?reason=${encodeURIComponent('gmail_source_upsert_failed')}`);
     }
 
     // Use frontend URL from state, or fallback to env var
@@ -371,13 +389,19 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
       url.searchParams.append('email', userEmail);
       url.searchParams.append('auth_bridge', 'true');
       url.searchParams.append('gmail_connected', 'true');
+      if (sourceState !== 'synced') {
+        url.searchParams.append('gmail_source_state', sourceState);
+      }
 
       const finalUrl = url.toString();
       logger.info('Redirecting to success page after Gmail OAuth', { finalUrl });
       return res.redirect(302, finalUrl);
     } catch (err) {
       // Fallback redirect
-      const redirectUrl = `${cleanBase}${successPath}?status=ok&provider=gmail&gmail_connected=true&email=${encodeURIComponent(userEmail)}&auth_bridge=true`;
+      const extraParams = sourceState !== 'synced'
+        ? `&gmail_source_state=${encodeURIComponent(sourceState)}`
+        : '';
+      const redirectUrl = `${cleanBase}${successPath}?status=ok&provider=gmail&gmail_connected=true&email=${encodeURIComponent(userEmail)}&auth_bridge=true${extraParams}`;
       return res.redirect(302, redirectUrl);
     }
   } catch (error: any) {
