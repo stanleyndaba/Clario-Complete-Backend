@@ -194,7 +194,9 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
             const unresolved = Math.max(0, physicalLoss - nettedUnits);
 
             if (unresolved > 0.1) {
-                const avgP = sorted.find(e => (e.average_sales_price || e.unit_cost))?.average_sales_price || 20;
+                const priceSource = sorted.find(e => (e.average_sales_price || e.unit_cost));
+                const avgP = priceSource?.average_sales_price || priceSource?.unit_cost || 20;
+                const valuationSource = priceSource ? 'data' : 'fallback';
                 results.push({
                     seller_id: sellerId, sync_id: syncId,
                     anomaly_type: matureUnresolved >= Math.max(balanceGap, netAdj) ? 'lost_in_transit' : 'lost_warehouse',
@@ -213,7 +215,9 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
                         reimbursement_linkage_mode: reData.linkage,
                         linkage_score: reData.modifier,
                         physical_loss_units: physicalLoss,
-                        netted_reimbursement_units: nettedUnits
+                        netted_reimbursement_units: nettedUnits,
+                        valuation_source: valuationSource,
+                        unit_price_used: avgP
                     }
                 });
             }
@@ -400,8 +404,54 @@ export async function fetchInventoryLedger(sellerId: string, syncId: string): Pr
     };
 }
 export async function storeDetectionResults(sellerId: string, tenantId: string, results: DetectionResult[]) {
-    await supabaseAdmin.from('detection_results').delete().match({ seller_id: sellerId }).in('anomaly_type', ['lost_warehouse', 'lost_in_transit']);
-    const records = results.map(r => ({ ...r, tenant_id: tenantId, status: 'detected', created_at: new Date().toISOString() }));
-    await supabaseAdmin.from('detection_results').insert(records);
+    // PATCH: Safe soft-replacement — never delete existing detections
+    // If this run produced zero results, do NOT touch existing detections
+    if (results.length === 0) {
+        logger.info('🐋 [WHALE HUNTER] Zero results — preserving existing detections', { sellerId });
+        return;
+    }
+
+    // Step 1: Mark existing detections as superseded (soft-delete, not hard-delete)
+    await supabaseAdmin
+        .from('detection_results')
+        .update({ status: 'superseded', updated_at: new Date().toISOString() })
+        .match({ seller_id: sellerId })
+        .in('anomaly_type', ['lost_warehouse', 'lost_in_transit'])
+        .in('status', ['detected', 'pending']); // Only supersede active detections, not resolved/disputed ones
+
+    // Step 2: Fingerprint deduplication — don't insert duplicates of existing records
+    const { data: existing } = await supabaseAdmin
+        .from('detection_results')
+        .select('evidence, anomaly_type')
+        .eq('seller_id', sellerId)
+        .in('anomaly_type', ['lost_warehouse', 'lost_in_transit']);
+
+    const existingFingerprints = new Set(
+        (existing || []).map((row: any) =>
+            `${row.anomaly_type}|${row.evidence?.fnsku || ''}|${row.evidence?.physical_loss_units || ''}`
+        )
+    );
+
+    const records = results.map(r => ({
+        ...r,
+        tenant_id: tenantId,
+        status: 'detected',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+    }));
+
+    const uniqueRecords = records.filter(r => {
+        const fp = `${r.anomaly_type}|${(r as any).evidence?.fnsku || ''}|${(r as any).evidence?.physical_loss_units || ''}`;
+        if (existingFingerprints.has(fp)) return false;
+        existingFingerprints.add(fp);
+        return true;
+    });
+
+    if (uniqueRecords.length > 0) {
+        await supabaseAdmin.from('detection_results').insert(uniqueRecords);
+        logger.info('🐋 [WHALE HUNTER] Stored new detections (existing preserved as superseded)', {
+            sellerId, newCount: uniqueRecords.length, totalResults: results.length
+        });
+    }
 }
 export default { detectLostInventory, fetchInventoryLedger, runLostInventoryDetection, storeDetectionResults };

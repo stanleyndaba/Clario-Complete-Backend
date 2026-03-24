@@ -1,0 +1,520 @@
+[
+  {
+    "tab": "Audits",
+    "clicked": "Audits10+",
+    "text": "0\nACCOUNT\nHEALTHY\nOVERVIEW\nRECOVERY PIPELINE\nDOCUMENTS AND FILES\nREFUND RECOVERIES\nTRANSACTION HISTORY\nBILLING\nV1.0.0-GOLD\nMORE\nOVERVIEW\nAUDITS\n10+\nDISPUTE CLAIMS\n47\nCASES WITH EVIDENCE\nQUICK NOTICE\nANOMALY LEDGER\nDISCREPANCIES\nDISCREPANCIES\n50\nCLAIMS\n47\nRECOVERED\n$250.00\nEXPORT CLAIM BATCH\nSHOW PROCESSED\nTYPE\tFOUND ON\tESTIMATED VALUE\tCERTAINTY\tSTATUS\tACTION\n\nWAREHOUSE TRANSFER LOSS\nID: 33E1F295\n\tN/A\t$15.00\t\n80%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nWAREHOUSE TRANSFER LOSS\nID: FE15124A\n\tN/A\t$15.00\t\n80%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nWAREHOUSE TRANSFER LOSS\nID: B8415204\n\tN/A\t$15.00\t\n80%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nWAREHOUSE TRANSFER LOSS\nID: DAFB8EF6\n\tN/A\t$15.00\t\n80%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nDAMAGED WAREHOUSE\nID: 335C3951\n\tMAR 18, 2026\t$15.00\t\n66%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nDAMAGED WAREHOUSE\nID: 3F302CAB\n\tMAR 18, 2026\t$15.00\t\n66%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nDAMAGED WAREHOUSE\nID: AE9AEA08\n\tMAR 18, 2026\t$15.00\t\n66%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nDAMAGED WAREHOUSE\nID: 2A024E1C\n\tMAR 18, 2026\t$15.00\t\n66%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nDAMAGED WAREHOUSE\nID: FA5E6D4B\n\tMAR 18, 2026\t$15.00\t\n66%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nDAMAGED WAREHOUSE\nID: 50E19729\n\tMAR 18, 2026\t$15.00\t\n66%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nWAREHOUSE TRANSFER LOSS\nID: BD4C6803\n\tN/A\t$15.00\t\n80%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nWAREHOUSE TRANSFER LOSS\nID: 8C215928\n\tN/A\t$15.00\t\n80%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nWAREHOUSE TRANSFER LOSS\nID: D29FD989\n\tN/A\t$15.00\t\n80%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nWAREHOUSE TRANSFER LOSS\nID: 6654C45E\n\tN/A\t$15.00\t\n80%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: F1B75F17\n\tMAR 17, 2026\t$8,790.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 702F6309\n\tMAR 17, 2026\t$870.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: A8EA92BE\n\tMAR 17, 2026\t$1,440.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 8B3B1AFE\n\tMAR 17, 2026\t$630.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: A7176175\n\tMAR 17, 2026\t$900.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 92EEB31B\n\tMAR 17, 2026\t$360.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 3C95D336\n\tMAR 17, 2026\t$1,230.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: AB40B861\n\tMAR 17, 2026\t$1,110.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: C55465A1\n\tMAR 17, 2026\t$720.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 79118928\n\tMAR 17, 2026\t$1,650.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: EA4E2980\n\tMAR 17, 2026\t$810.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 5388CC8F\n\tMAR 17, 2026\t$1,260.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 59B9380F\n\tMAR 17, 2026\t$540.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 922EF468\n\tMAR 17, 2026\t$1,800.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: B376CE14\n\tMAR 17, 2026\t$660.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 72C57FCE\n\tMAR 17, 2026\t$990.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 7445EC7E\n\tMAR 17, 2026\t$780.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 5C33C200\n\tMAR 17, 2026\t$1,140.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: A77B3D61\n\tMAR 17, 2026\t$600.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 7CEC6303\n\tMAR 17, 2026\t$960.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 2B8A8EAB\n\tMAR 17, 2026\t$1,350.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 7AFFA8A0\n\tMAR 17, 2026\t$840.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 559D9FA5\n\tMAR 17, 2026\t$1,200.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: 798D0D5C\n\tMAR 17, 2026\t$1,050.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nLOST IN TRANSIT\nID: F940F71D\n\tMAR 17, 2026\t$1,500.00\t\n90%\n\t\nDETECTED\n\t\nSTART RECOVERING\n\n\nMISSING UNIT\nID: D4444444\n\tN/A\t$126.41\t\n95%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nMISSING UNIT\nID: D4444444\n\tN/A\t$126.41\t\n95%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nMISSING UNIT\nID: D4444444\n\tN/A\t$126.41\t\n95%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nMISSING UNIT\nID: D4444444\n\tN/A\t$126.41\t\n95%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nMISSING UNIT\nID: D4444444\n\tN/A\t$126.41\t\n95%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nMISSING UNIT\nID: D4444444\n\tN/A\t$126.41\t\n95%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nMISSING UNIT\nID: D4444444\n\tN/A\t$126.41\t\n95%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nMISSING UNIT\nID: D4444444\n\tN/A\t$126.41\t\n95%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nMISSING UNIT\nID: D3333333\n\tN/A\t$126.41\t\n95%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nMISSING UNIT\nID: D2222222\n\tN/A\t$126.41\t\n95%\n\t\nPENDING\n\t\nSTART RECOVERING\n\n\nMISSING UNIT\nID: 2E88028B\n\tDEC 30, 2025\t$690.35\t\n93%\n\t\nPENDING\n\t\nSTART RECOVERING\nENGINE_STATUS: MONITORING\n|\nLAST UPDATED:\n10:52:44 AM\n|\nACCOUNT SHIELDED:\nGLOBAL FBA\nAUDIT ENGINE V4.2",
+    "responses": [
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/metrics/track",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/tenant/current",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/metrics/track",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/notifications?limit=50&tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/tenant/list",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/sse/status?tenantSlug=default",
+        "status": 200,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/sse/notifications?tenantSlug=default",
+        "status": 200,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/tenant/plan",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/tenant/current",
+        "status": 200,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/tenant/list",
+        "status": 200,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/notifications?limit=50&tenantSlug=default",
+        "status": 200,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/tenant/plan",
+        "status": 200,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/metrics/track",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/tenant/current?slug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/status?tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/auth/me?tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/status?tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/evidence/sources?tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/stores?tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/sse/status?tenantSlug=default",
+        "status": 200,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/sse/notifications?tenantSlug=default",
+        "status": 200,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/tenant/current?slug=default",
+        "status": 200,
+        "body": "{\"success\":true,\"tenant\":{\"id\":\"00000000-0000-0000-0000-000000000001\",\"name\":\"Demo Tenant\",\"slug\":\"default\",\"plan\":\"enterprise\",\"status\":\"active\",\"role\":\"owner\"}}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/notifications?limit=50&tenantSlug=default",
+        "status": 200,
+        "body": "{\"success\":true,\"data\":[],\"meta\":{\"count\":0,\"filters\":{\"user_id\":\"07b4f03d-352e-473f-a316-af97d9017d69\",\"limit\":50,\"offset\":0},\"timestamp\":\"2026-03-19T08:52:32.594Z\"}}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/auth/me?tenantSlug=default",
+        "status": 401,
+        "body": "{\"success\":false,\"message\":\"Authentication required\"}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/stores?tenantSlug=default",
+        "status": 404,
+        "body": "{\"error\":true,\"errorId\":\"err_1773910352701_jjxxyxu5g\",\"code\":\"INTERNAL_ERROR\",\"message\":\"Not found - /api/v1/integrations/amazon/stores?tenantSlug=default\",\"statusCode\":404}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/evidence/sources?tenantSlug=default",
+        "status": 200,
+        "body": "{\"success\":true,\"sources\":[]}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/metrics/track",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/tenant/list",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/tenant/plan",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://margin-finance.com/api/sse/status?tenantSlug=default",
+        "status": 200,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/upcoming-payments?tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/detections/results?limit=50&tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/detections/statistics?tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/gmail/status?tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/recoveries?tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/recoveries?tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/evidence/status?tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/status?tenantSlug=default",
+        "status": 200,
+        "body": "{\"tenantId\":\"00000000-0000-0000-0000-000000000001\",\"tenantSlug\":\"default\",\"tenantName\":\"Demo Tenant\",\"amazon_connected\":false,\"amazon_account\":null,\"agent2_ready\":false,\"docs_connected\":false,\"lastSync\":null,\"lastIngest\":null,\"providerIngest\":{\"gmail\":{\"connected\":false,\"lastIngest\":\"2026-03-18T02:00:03.264+00:00\",\"scopes\":[],\"email\":\"Martin Links <martinlinks618@gmail.com>\"},\"outlook\":{\"connected\":false},\"gdrive\":{\"connected\":false},\"dropbox\":{\"connected\":false},\"slack\":{\"connected\":false},\"adobe_sign\":{\"connected\":false},\"onedrive\":{\"connected\":false}}}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/stores?tenantSlug=default",
+        "status": 404,
+        "body": "{\"error\":true,\"errorId\":\"err_1773910356051_j33l38hpm\",\"code\":\"INTERNAL_ERROR\",\"message\":\"Not found - /api/v1/integrations/amazon/stores?tenantSlug=default\",\"statusCode\":404}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/evidence/sources?tenantSlug=default",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/gmail/status?tenantSlug=default",
+        "status": 401,
+        "body": "{\"success\":false,\"message\":\"Access token required\"}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/detections/statistics?tenantSlug=default",
+        "status": 200,
+        "body": "{\"success\":true,\"statistics\":{\"total_anomalies\":27,\"total_value\":33430,\"by_severity\":{\"high\":{\"count\":13,\"value\":9450},\"medium\":{\"count\":2,\"value\":460},\"critical\":{\"count\":12,\"value\":23520}},\"by_type\":{\"missing_inbound_shipment\":{\"count\":1,\"value\":150},\"inventory_discrepancy\":{\"count\":1,\"value\":100},\"lost_in_transit\":{\"count\":25,\"value\":33180}},\"expiring_soon\":0,\"expired_count\":0,\"by_confidence\":{\"high\":27,\"medium\":0,\"low\":0}}}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/upcoming-payments?tenantSlug=default",
+        "status": 200,
+        "body": "{\"success\":true,\"recoveries\":[],\"total\":0,\"breakdown\":{\"dispute_cases\":0,\"detection_results\":0}}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/recoveries?tenantSlug=default",
+        "status": 200,
+        "body": "{\"totalAmount\":250,\"currency\":\"USD\",\"claimCount\":2,\"recoveredCount\":1,\"pendingCount\":1,\"source\":\"dispute_cases\",\"dataSource\":\"agent7_pipeline\",\"message\":\"1 claims approved\"}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/detections/results?limit=50&tenantSlug=default",
+        "status": 200,
+        "body": "{\"success\":true,\"results\":[{\"id\":\"33e1f295-061a-4bd4-82a0-8111ebcd374e\",\"seller_id\":\"cf6d8078-e83a-472a-baf5-d241eb7ab36e\",\"sync_id\":\"csv_1773876169111\",\"anomaly_type\":\"warehouse_transfer_loss\",\"severity\":\"medium\",\"estimated_value\":15,\"currency\":\"USD\",\"confidence_score\":0.8,\"evidence\":{\"sku\":\"SKU-DOODAD-C\",\"loss_type\":\"partial_loss\",\"source_fc\":\"MDW2\",\"transfer_id\":\"XFER-114\",\"quantity_lost\":1,\"quantity_sent\":33,\"destination_fc\":\"RIC3\",\"days_in_transit\":7,\"detection_reasons\":[\"1 units missing from transfer\",\"Sent: 33, Received: 32\",\"Route: MDW2 → RIC3\"],\"quantity_received\":32},\"status\":\"pending\",\"related_event_ids\":[],\"created_at\":\"2026-03-18T23:23:01.074513+00:00\",\"updated_at\":\"2026-03-18T23:23:01.074513+00:00\",\"discovery_date\":null,\"deadline_date\":null,\"days_remaining\":null,\"expiration_alert_sent\":false,\"expired\":false,\"match_confidence\":null,\"claim_number\":\"CL-2603-234421-a116\",\"timeline\":[],\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"amazon_case_id\":null,\"matched_document_ids\":[],\"matched_document_count\":0},{\"id\":\"fe15124a-73d7-4fd7-8d78-337d07e203a6\",\"seller_id\":\"cf6d8078-e83a-472a-baf5-d241eb7ab36e\",\"sync_id\":\"csv_1773876169111\",\"anomaly_type\":\"warehouse_transfer_loss\",\"severity\":\"medium\",\"estimated_value\":15,\"currency\":\"USD\",\"confidence_score\":0.8,\"evidence\":{\"sku\":\"SKU-WIDGET-A\",\"loss_type\":\"partial_loss\",\"source_fc\":\"MDW2\",\"transfer_id\":\"XFER-105\",\"quantity_lost\":1,\"quantity_sent\":40,\"destination_fc\":\"RIC3\",\"days_in_transit\":16,\"detection_reasons\":[\"1 units missing from transfer\",\"Sent: 40, Received: 39\",\"Route: MDW2 → RIC3\"],\"quantity_received\":39},\"status\":\"pending\",\"related_event_ids\":[],\"created_at\":\"2026-03-18T23:23:01.074513+00:00\",\"updated_at\":\"2026-03-18T23:23:01.074513+00:00\",\"discovery_date\":null,\"deadline_date\":null,\"days_remaining\":null,\"expiration_alert_sent\":false,\"expired\":false,\"match_confidence\":null,\"claim_number\":\"CL-2603-234420-239e\",\"timeline\":[],\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"amazon_case_id\":null,\"matched_document_ids\":[],\"matched_document_count\":0},{\"id\":\"b8415204-e0e9-4ba4-8d79-f1699ca4dfb0\",\"seller_id\":\"cf6d8078-e83a-472a-baf5-d241eb7ab36e\",\"sync_id\":\"agent3-closure-final-1773868576447\",\"anomaly_type\":\"warehouse_transfer_loss\",\"severity\":\"medium\",\"estimated_value\":15,\"currency\":\"USD\",\"confidence_score\":0.8,\"evidence\":{\"sku\":\"SKU-DOODAD-C\",\"loss_type\":\"partial_loss\",\"source_fc\":\"MDW2\",\"transfer_id\":\"XFER-114\",\"quantity_lost\":1,\"quantity_sent\":33,\"destination_fc\":\"RIC3\",\"days_in_transit\":7,\"detection_reasons\":[\"1 units missing from transfer\",\"Sent: 33, Received: 32\",\"Route: MDW2 → RIC3\"],\"quantity_received\":32},\"status\":\"pending\",\"related_event_ids\":[],\"created_at\":\"2026-03-18T21:16:20.873166+00:00\",\"updated_at\":\"2026-03-18T21:16:20.873166+00:00\",\"discovery_date\":null,\"deadline_date\":null,\"days_remaining\":null,\"expiration_alert_sent\":false,\"expired\":false,\"match_confidence\":null,\"claim_number\":\"CL-2603-234419-a8ea\",\"timeline\":[],\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"amazon_case_id\":null,\"matched_document_ids\":[],\"matched_document_count\":0},{\"id\":\"dafb8ef6-7f6f-4359-98e4-30d94caf2c78\",\"seller_id\":\"cf6d8078-e83a-472a-baf5-d241eb7ab36e\",\"sync_id\":\"agent3-closure-final-1773868576447\",\"anomaly_type\":\"warehouse_transfer_loss\",\"severity\":\"medium\",\"estimated_value\":15,\"currency\":\"USD\",\"confidence_score\":0.8,\"evidence\":{\"sku\":\"SKU-WIDGET-A\",\"loss_type\":\"partial_loss\",\"source_fc\":\"MDW2\",\"transfer_id\":\"XFER-105\",\"quantity_lost\":1,\"quantity_sent\":40,\"destination_fc\":\"RIC3\",\"days_in_transit\":16,\"detection_reasons\":[\"1 units missing from transfer\",\"Sent: 40, Received: 39\",\"Route: MDW2 → RIC3\"],\"quantity_received\":39},\"status\":\"pending\",\"related_event_ids\":[],\"created_at\":\"2026-03-18T21:16:20.873166+00:00\",\"updated_at\":\"2026-03-18T21:16:20.873166+00:00\",\"discovery_date\":null,\"deadline_date\":null,\"days_remaining\":null,\"expiration_alert_sent\":false,\"expired\":false,\"match_confidence\":null,\"claim_number\":\"CL-2603-234418-1ccd\",\"timeline\":[],\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"amazon_case_id\":null,\"matched_document_ids\":[],\"matched_document_count\":0},{\"id\":\"335c3951-97d1-45cb-9fa1-81d939276997\",\"seller_id\":\"cf6d8078-e83a-472a-baf5-d241eb7ab36e\",\"sync_id\":\"agent3-closure-1773868119771\",\"anomaly_type\":\"damaged_warehouse\",\"severity\":\"low\",\"estimated_value\":15,\"currency\":\"USD\",\"confidence_score\":0.66,\"evidence\":{\"sku\":\"SKU-CONTRA-D\",\"asin\":null,\"fnsku\":\"UNKNOWN\",\"unit_value\":15,\"damage_date\":\"2025-01-23T10:15:00+00:00\",\"disposition\":\"DAMAGED\",\"reason_code\":\"Q\",\"total_value\":15,\"recovery_found\":false,\"damage_event_id\":\"damage-RET-2025-01-23-002-SKU-CONTRA-D\",\"valuation_basis\":\"Static industry default fallback\",\"evidence_summary\":\"[NO_RECOVERY] Reconciliation: 1.0 units un-reconciled. Source: DEFAULT_FALLBACK ($15.00/unit). Expected: $15.00, Reimbursed: $0.00. Shortfall: $15.00.\",\"quantity_damaged\":1,\"reimbursed_value\":0,\"unresolved_units\":1,\"valuation_source\":\"DEFAULT_FALL"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/recoveries?tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/evidence/status?tenantSlug=default",
+        "status": 200,
+        "body": "{\"success\":true,\"hasConnectedSource\":false,\"documentsCount\":24,\"processingCount\":24}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/recoveries?tenantSlug=default",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/recoveries?tenantSlug=default",
+        "status": 401,
+        "body": "{\"error\":true,\"message\":\"Authentication required\",\"status_code\":401}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/detections/results?tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/metrics/track",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/status?tenantSlug=default",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/metrics/recoveries?tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/detections/results?tenantSlug=default",
+        "status": 200,
+        "body": "{\"success\":true,\"results\":[{\"id\":\"33e1f295-061a-4bd4-82a0-8111ebcd374e\",\"seller_id\":\"cf6d8078-e83a-472a-baf5-d241eb7ab36e\",\"sync_id\":\"csv_1773876169111\",\"anomaly_type\":\"warehouse_transfer_loss\",\"severity\":\"medium\",\"estimated_value\":15,\"currency\":\"USD\",\"confidence_score\":0.8,\"evidence\":{\"sku\":\"SKU-DOODAD-C\",\"loss_type\":\"partial_loss\",\"source_fc\":\"MDW2\",\"transfer_id\":\"XFER-114\",\"quantity_lost\":1,\"quantity_sent\":33,\"destination_fc\":\"RIC3\",\"days_in_transit\":7,\"detection_reasons\":[\"1 units missing from transfer\",\"Sent: 33, Received: 32\",\"Route: MDW2 → RIC3\"],\"quantity_received\":32},\"status\":\"pending\",\"related_event_ids\":[],\"created_at\":\"2026-03-18T23:23:01.074513+00:00\",\"updated_at\":\"2026-03-18T23:23:01.074513+00:00\",\"discovery_date\":null,\"deadline_date\":null,\"days_remaining\":null,\"expiration_alert_sent\":false,\"expired\":false,\"match_confidence\":null,\"claim_number\":\"CL-2603-234421-a116\",\"timeline\":[],\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"amazon_case_id\":null,\"matched_document_ids\":[],\"matched_document_count\":0},{\"id\":\"fe15124a-73d7-4fd7-8d78-337d07e203a6\",\"seller_id\":\"cf6d8078-e83a-472a-baf5-d241eb7ab36e\",\"sync_id\":\"csv_1773876169111\",\"anomaly_type\":\"warehouse_transfer_loss\",\"severity\":\"medium\",\"estimated_value\":15,\"currency\":\"USD\",\"confidence_score\":0.8,\"evidence\":{\"sku\":\"SKU-WIDGET-A\",\"loss_type\":\"partial_loss\",\"source_fc\":\"MDW2\",\"transfer_id\":\"XFER-105\",\"quantity_lost\":1,\"quantity_sent\":40,\"destination_fc\":\"RIC3\",\"days_in_transit\":16,\"detection_reasons\":[\"1 units missing from transfer\",\"Sent: 40, Received: 39\",\"Route: MDW2 → RIC3\"],\"quantity_received\":39},\"status\":\"pending\",\"related_event_ids\":[],\"created_at\":\"2026-03-18T23:23:01.074513+00:00\",\"updated_at\":\"2026-03-18T23:23:01.074513+00:00\",\"discovery_date\":null,\"deadline_date\":null,\"days_remaining\":null,\"expiration_alert_sent\":false,\"expired\":false,\"match_confidence\":null,\"claim_number\":\"CL-2603-234420-239e\",\"timeline\":[],\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"amazon_case_id\":null,\"matched_document_ids\":[],\"matched_document_count\":0},{\"id\":\"b8415204-e0e9-4ba4-8d79-f1699ca4dfb0\",\"seller_id\":\"cf6d8078-e83a-472a-baf5-d241eb7ab36e\",\"sync_id\":\"agent3-closure-final-1773868576447\",\"anomaly_type\":\"warehouse_transfer_loss\",\"severity\":\"medium\",\"estimated_value\":15,\"currency\":\"USD\",\"confidence_score\":0.8,\"evidence\":{\"sku\":\"SKU-DOODAD-C\",\"loss_type\":\"partial_loss\",\"source_fc\":\"MDW2\",\"transfer_id\":\"XFER-114\",\"quantity_lost\":1,\"quantity_sent\":33,\"destination_fc\":\"RIC3\",\"days_in_transit\":7,\"detection_reasons\":[\"1 units missing from transfer\",\"Sent: 33, Received: 32\",\"Route: MDW2 → RIC3\"],\"quantity_received\":32},\"status\":\"pending\",\"related_event_ids\":[],\"created_at\":\"2026-03-18T21:16:20.873166+00:00\",\"updated_at\":\"2026-03-18T21:16:20.873166+00:00\",\"discovery_date\":null,\"deadline_date\":null,\"days_remaining\":null,\"expiration_alert_sent\":false,\"expired\":false,\"match_confidence\":null,\"claim_number\":\"CL-2603-234419-a8ea\",\"timeline\":[],\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"amazon_case_id\":null,\"matched_document_ids\":[],\"matched_document_count\":0},{\"id\":\"dafb8ef6-7f6f-4359-98e4-30d94caf2c78\",\"seller_id\":\"cf6d8078-e83a-472a-baf5-d241eb7ab36e\",\"sync_id\":\"agent3-closure-final-1773868576447\",\"anomaly_type\":\"warehouse_transfer_loss\",\"severity\":\"medium\",\"estimated_value\":15,\"currency\":\"USD\",\"confidence_score\":0.8,\"evidence\":{\"sku\":\"SKU-WIDGET-A\",\"loss_type\":\"partial_loss\",\"source_fc\":\"MDW2\",\"transfer_id\":\"XFER-105\",\"quantity_lost\":1,\"quantity_sent\":40,\"destination_fc\":\"RIC3\",\"days_in_transit\":16,\"detection_reasons\":[\"1 units missing from transfer\",\"Sent: 40, Received: 39\",\"Route: MDW2 → RIC3\"],\"quantity_received\":39},\"status\":\"pending\",\"related_event_ids\":[],\"created_at\":\"2026-03-18T21:16:20.873166+00:00\",\"updated_at\":\"2026-03-18T21:16:20.873166+00:00\",\"discovery_date\":null,\"deadline_date\":null,\"days_remaining\":null,\"expiration_alert_sent\":false,\"expired\":false,\"match_confidence\":null,\"claim_number\":\"CL-2603-234418-1ccd\",\"timeline\":[],\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"amazon_case_id\":null,\"matched_document_ids\":[],\"matched_document_count\":0},{\"id\":\"50e19729-311c-4b7d-901e-c17ad875f94d\",\"seller_id\":\"cf6d8078-e83a-472a-baf5-d241eb7ab36e\",\"sync_id\":\"agent3-closure-1773868119771\",\"anomaly_type\":\"damaged_warehouse\",\"severity\":\"low\",\"estimated_value\":15,\"currency\":\"USD\",\"confidence_score\":0.66,\"evidence\":{\"sku\":\"SKU-WIDGET-A\",\"asin\":null,\"fnsku\":\"UNKNOWN\",\"unit_value\":15,\"damage_date\":\"2025-02-01T17:00:00+00:00\",\"disposition\":\"DAMAGED\",\"reason_code\":\"Q\",\"total_value\":15,\"recovery_found\":false,\"damage_event_id\":\"damage-RET-2025-02-01-011-SKU-WIDGET-A\",\"valuation_basis\":\"Static industry default fallback\",\"evidence_summary\":\"[NO_RECOVERY] Reconciliation: 1.0 units un-reconciled. Source: DEFAULT_FALLBACK ($15.00/unit). Expected: $15.00, Reimbursed: $0.00. Shortfall: $15.00.\",\"quantity_damaged\":1,\"reimbursed_value\":0,\"unresolved_units\":1,\"valuation_source\":\"DEFAULT_FALL"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/metrics/recoveries?tenantSlug=default",
+        "status": 200,
+        "body": "{\"success\":true,\"totalClaimsFound\":962,\"valueInProgress\":14113.979999999996,\"currentlyInProgress\":0,\"successRate30d\":65,\"avgDaysToRecovery\":14,\"pendingCount\":63,\"approvedCount\":624,\"monthlyTrend\":[],\"dashboard\":{\"today\":0,\"todayGrowth\":0,\"thisWeek\":0,\"thisWeekGrowth\":0,\"thisMonth\":0,\"thisMonthGrowth\":0,\"currency\":\"USD\",\"updatedAt\":\"2026-03-19T08:52:41.357Z\"}}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/recoveries?tenantSlug=default",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/disputes?tenantSlug=default&limit=500",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/disputes?tenantSlug=default&limit=500",
+        "status": 200,
+        "body": "{\"success\":true,\"cases\":[{\"id\":\"e3333333-3333-4333-b333-000057970543\",\"seller_id\":\"DEMO_SELLER_001\",\"detection_result_id\":\"d4444444-4444-4444-b444-000057970543\",\"case_number\":\"AMZ-AGENT7-57970543\",\"status\":\"pending\",\"claim_amount\":126.41,\"currency\":\"USD\",\"case_type\":\"amazon_fba\",\"provider\":\"amazon\",\"submission_date\":null,\"resolution_date\":null,\"resolution_amount\":null,\"resolution_notes\":null,\"evidence_attachments\":{},\"provider_case_id\":null,\"provider_response\":{},\"created_at\":\"2026-03-15T06:59:34.998265+00:00\",\"updated_at\":\"2026-03-15T06:59:42.536588+00:00\",\"expected_amount\":null,\"expected_paid_date\":null,\"confidence\":null,\"filing_status\":\"pending\",\"retry_count\":0,\"recovery_status\":\"pending\",\"reconciled_at\":null,\"actual_payout_amount\":null,\"billing_status\":null,\"billing_transaction_id\":null,\"platform_fee_cents\":null,\"seller_payout_cents\":null,\"billed_at\":null,\"billing_retry_count\":0,\"expected_payout_date\":null,\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"idempotency_key\":null,\"amount\":126.41,\"claim_id\":\"d4444444-4444-4444-b444-000057970543\",\"amazon_case_id\":null},{\"id\":\"e3333333-3333-4333-b333-000057793168\",\"seller_id\":\"DEMO_SELLER_001\",\"detection_result_id\":\"d4444444-4444-4444-b444-000057793168\",\"case_number\":\"AMZ-AGENT7-57793168\",\"status\":\"pending\",\"claim_amount\":126.41,\"currency\":\"USD\",\"case_type\":\"amazon_fba\",\"provider\":\"amazon\",\"submission_date\":null,\"resolution_date\":null,\"resolution_amount\":null,\"resolution_notes\":null,\"evidence_attachments\":{},\"provider_case_id\":null,\"provider_response\":{},\"created_at\":\"2026-03-15T06:56:37.491146+00:00\",\"updated_at\":\"2026-03-15T06:56:42.924744+00:00\",\"expected_amount\":null,\"expected_paid_date\":null,\"confidence\":null,\"filing_status\":\"pending\",\"retry_count\":0,\"recovery_status\":\"pending\",\"reconciled_at\":null,\"actual_payout_amount\":null,\"billing_status\":null,\"billing_transaction_id\":null,\"platform_fee_cents\":null,\"seller_payout_cents\":null,\"billed_at\":null,\"billing_retry_count\":0,\"expected_payout_date\":null,\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"idempotency_key\":null,\"amount\":126.41,\"claim_id\":\"d4444444-4444-4444-b444-000057793168\",\"amazon_case_id\":null},{\"id\":\"e3333333-3333-4333-b333-000057371559\",\"seller_id\":\"DEMO_SELLER_001\",\"detection_result_id\":\"d4444444-4444-4444-b444-000057371559\",\"case_number\":\"AMZ-AGENT7-57371559\",\"status\":\"pending\",\"claim_amount\":126.41,\"currency\":\"USD\",\"case_type\":\"amazon_fba\",\"provider\":\"amazon\",\"submission_date\":null,\"resolution_date\":null,\"resolution_amount\":null,\"resolution_notes\":null,\"evidence_attachments\":{},\"provider_case_id\":null,\"provider_response\":{},\"created_at\":\"2026-03-15T06:49:35.657881+00:00\",\"updated_at\":\"2026-03-15T06:49:40.582322+00:00\",\"expected_amount\":null,\"expected_paid_date\":null,\"confidence\":null,\"filing_status\":\"pending\",\"retry_count\":0,\"recovery_status\":\"pending\",\"reconciled_at\":null,\"actual_payout_amount\":null,\"billing_status\":null,\"billing_transaction_id\":null,\"platform_fee_cents\":null,\"seller_payout_cents\":null,\"billed_at\":null,\"billing_retry_count\":0,\"expected_payout_date\":null,\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"idempotency_key\":null,\"amount\":126.41,\"claim_id\":\"d4444444-4444-4444-b444-000057371559\",\"amazon_case_id\":null},{\"id\":\"e3333333-3333-4333-b333-000057237602\",\"seller_id\":\"DEMO_SELLER_001\",\"detection_result_id\":\"d4444444-4444-4444-b444-000057237602\",\"case_number\":\"AMZ-AGENT7-57237602\",\"status\":\"pending\",\"claim_amount\":126.41,\"currency\":\"USD\",\"case_type\":\"amazon_fba\",\"provider\":\"amazon\",\"submission_date\":null,\"resolution_date\":null,\"resolution_amount\":null,\"resolution_notes\":null,\"evidence_attachments\":{},\"provider_case_id\":null,\"provider_response\":{},\"created_at\":\"2026-03-15T06:47:20.330155+00:00\",\"updated_at\":\"2026-03-15T06:47:20.011+00:00\",\"expected_amount\":null,\"expected_paid_date\":null,\"confidence\":null,\"filing_status\":\"payment_required\",\"retry_count\":0,\"recovery_status\":\"pending\",\"reconciled_at\":null,\"actual_payout_amount\":null,\"billing_status\":null,\"billing_transaction_id\":null,\"platform_fee_cents\":null,\"seller_payout_cents\":null,\"billed_at\":null,\"billing_retry_count\":0,\"expected_payout_date\":null,\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"idempotency_key\":null,\"amount\":126.41,\"claim_id\":\"d4444444-4444-4444-b444-000057237602\",\"amazon_case_id\":null},{\"id\":\"e3333333-3333-4333-b333-000056070840\",\"seller_id\":\"DEMO_SELLER_001\",\"detection_result_id\":\"d4444444-4444-4444-b444-000056070840\",\"case_number\":\"AMZ-AGENT7-56070840\",\"status\":\"pending\",\"claim_amount\":126.41,\"currency\":\"USD\",\"case_type\":\"amazon_fba\",\"provider\":\"amazon\",\"submission_date\":null,\"resolution_date\":null,\"resolution_amount\":null,\"resolution_notes\":null,\"evidence_attachments\":{},\"provider_case_id\":null,\"provider_response\":{},\"created_at\":\"2026-03-15T06:27:52.243756+00:00\",\"updated_at\":\"2026-03-15T06:27:56.379962+00:00\",\"expected_amount\":null,\"expected_paid_date\":null,\"confidence\":null,\"filing_status\":\"pending\",\"retry_count\":0,\""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/metrics/recoveries?tenantSlug=default",
+        "status": 200,
+        "body": "{\"success\":true,\"totalClaimsFound\":962,\"valueInProgress\":14113.979999999996,\"currentlyInProgress\":0,\"successRate30d\":65,\"avgDaysToRecovery\":14,\"pendingCount\":63,\"approvedCount\":624,\"monthlyTrend\":[],\"dashboard\":{\"today\":0,\"todayGrowth\":0,\"thisWeek\":0,\"thisWeekGrowth\":0,\"thisMonth\":0,\"thisMonthGrowth\":0,\"currency\":\"USD\",\"updatedAt\":\"2026-03-19T08:52:42.923Z\"}}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/disputes?tenantSlug=default&limit=500",
+        "status": 304,
+        "body": ""
+      }
+    ],
+    "failures": [
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/sse/status?tenantSlug=default",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/sse/notifications?tenantSlug=default",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/sse/status?tenantSlug=default",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/sse/notifications?tenantSlug=default",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "url": "https://margin-finance.com/api/sse/status?tenantSlug=default",
+        "error": "net::ERR_ABORTED"
+      }
+    ]
+  },
+  {
+    "tab": "Cases with Evidence",
+    "clicked": "Cases with Evidence",
+    "text": "0\nACCOUNT\nHEALTHY\nOVERVIEW\nRECOVERY PIPELINE\nDOCUMENTS AND FILES\nREFUND RECOVERIES\nTRANSACTION HISTORY\nBILLING\nV1.0.0-GOLD\nMORE\nOVERVIEW\nAUDITS\n10+\nDISPUTE CLAIMS\n47\nCASES WITH EVIDENCE\nQUICK NOTICE\nEVIDENCE_CORRELATION_MATRIX\n\nACTIVE_CORRELATIONS: 2 NODES_IDENTIFIED\n\nRUN_CORRELATION\nPENDING_REVIEW\nAUTO_SUBMITTED\n2\nHELD_REJECTED\nALL_VECTORS\n2\nQUEUE_FULLY_AUDITED\n\nNO MATCHES CURRENTLY REQUIRE MANUAL CONFIRMATION. AUTONOMOUS ENGINE HAS FINALIZED ALL ACTIVE CORRELATIONS.",
+    "responses": [
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/metrics/track",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/auth/me?tenantSlug=default",
+        "status": 401,
+        "body": "{\"success\":false,\"message\":\"Authentication required\"}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/tenant/current?slug=default",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/sse/status?tenantSlug=default",
+        "status": 200,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/metrics/track",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/stores?tenantSlug=default",
+        "status": 404,
+        "body": "{\"error\":true,\"errorId\":\"err_1773910367260_m7d5d9haz\",\"code\":\"INTERNAL_ERROR\",\"message\":\"Not found - /api/v1/integrations/amazon/stores?tenantSlug=default\",\"statusCode\":404}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/notifications?limit=50&tenantSlug=default",
+        "status": 200,
+        "body": "{\"success\":true,\"data\":[],\"meta\":{\"count\":0,\"filters\":{\"user_id\":\"07b4f03d-352e-473f-a316-af97d9017d69\",\"limit\":50,\"offset\":0},\"timestamp\":\"2026-03-19T08:52:47.374Z\"}}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/evidence/sources?tenantSlug=default",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/tenant/list",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/tenant/plan",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://margin-finance.com/api/sse/status?tenantSlug=default",
+        "status": 200,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/status?tenantSlug=default",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/gmail/status?tenantSlug=default",
+        "status": 401,
+        "body": "{\"success\":false,\"message\":\"Access token required\"}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/stores?tenantSlug=default",
+        "status": 404,
+        "body": "{\"error\":true,\"errorId\":\"err_1773910369819_bgq2r071d\",\"code\":\"INTERNAL_ERROR\",\"message\":\"Not found - /api/v1/integrations/amazon/stores?tenantSlug=default\",\"statusCode\":404}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/detections/statistics?tenantSlug=default",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/detections/results?limit=50&tenantSlug=default",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/evidence/sources?tenantSlug=default",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/recoveries?tenantSlug=default",
+        "status": 200,
+        "body": "{\"totalAmount\":250,\"currency\":\"USD\",\"claimCount\":2,\"recoveredCount\":1,\"pendingCount\":1,\"source\":\"dispute_cases\",\"dataSource\":\"agent7_pipeline\",\"message\":\"1 claims approved\"}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/upcoming-payments?tenantSlug=default",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/evidence/status?tenantSlug=default",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/recoveries?tenantSlug=default",
+        "status": 401,
+        "body": "{\"error\":true,\"message\":\"Authentication required\",\"status_code\":401}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/recoveries?tenantSlug=default",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/evidence/matching/results?limit=100&tenantSlug=default",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/metrics/track",
+        "status": 204,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/detections/results?tenantSlug=default",
+        "status": 200,
+        "body": "{\"success\":true,\"results\":[{\"id\":\"33e1f295-061a-4bd4-82a0-8111ebcd374e\",\"seller_id\":\"cf6d8078-e83a-472a-baf5-d241eb7ab36e\",\"sync_id\":\"csv_1773876169111\",\"anomaly_type\":\"warehouse_transfer_loss\",\"severity\":\"medium\",\"estimated_value\":15,\"currency\":\"USD\",\"confidence_score\":0.8,\"evidence\":{\"sku\":\"SKU-DOODAD-C\",\"loss_type\":\"partial_loss\",\"source_fc\":\"MDW2\",\"transfer_id\":\"XFER-114\",\"quantity_lost\":1,\"quantity_sent\":33,\"destination_fc\":\"RIC3\",\"days_in_transit\":7,\"detection_reasons\":[\"1 units missing from transfer\",\"Sent: 33, Received: 32\",\"Route: MDW2 → RIC3\"],\"quantity_received\":32},\"status\":\"pending\",\"related_event_ids\":[],\"created_at\":\"2026-03-18T23:23:01.074513+00:00\",\"updated_at\":\"2026-03-18T23:23:01.074513+00:00\",\"discovery_date\":null,\"deadline_date\":null,\"days_remaining\":null,\"expiration_alert_sent\":false,\"expired\":false,\"match_confidence\":null,\"claim_number\":\"CL-2603-234421-a116\",\"timeline\":[],\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"amazon_case_id\":null,\"matched_document_ids\":[],\"matched_document_count\":0},{\"id\":\"fe15124a-73d7-4fd7-8d78-337d07e203a6\",\"seller_id\":\"cf6d8078-e83a-472a-baf5-d241eb7ab36e\",\"sync_id\":\"csv_1773876169111\",\"anomaly_type\":\"warehouse_transfer_loss\",\"severity\":\"medium\",\"estimated_value\":15,\"currency\":\"USD\",\"confidence_score\":0.8,\"evidence\":{\"sku\":\"SKU-WIDGET-A\",\"loss_type\":\"partial_loss\",\"source_fc\":\"MDW2\",\"transfer_id\":\"XFER-105\",\"quantity_lost\":1,\"quantity_sent\":40,\"destination_fc\":\"RIC3\",\"days_in_transit\":16,\"detection_reasons\":[\"1 units missing from transfer\",\"Sent: 40, Received: 39\",\"Route: MDW2 → RIC3\"],\"quantity_received\":39},\"status\":\"pending\",\"related_event_ids\":[],\"created_at\":\"2026-03-18T23:23:01.074513+00:00\",\"updated_at\":\"2026-03-18T23:23:01.074513+00:00\",\"discovery_date\":null,\"deadline_date\":null,\"days_remaining\":null,\"expiration_alert_sent\":false,\"expired\":false,\"match_confidence\":null,\"claim_number\":\"CL-2603-234420-239e\",\"timeline\":[],\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"amazon_case_id\":null,\"matched_document_ids\":[],\"matched_document_count\":0},{\"id\":\"b8415204-e0e9-4ba4-8d79-f1699ca4dfb0\",\"seller_id\":\"cf6d8078-e83a-472a-baf5-d241eb7ab36e\",\"sync_id\":\"agent3-closure-final-1773868576447\",\"anomaly_type\":\"warehouse_transfer_loss\",\"severity\":\"medium\",\"estimated_value\":15,\"currency\":\"USD\",\"confidence_score\":0.8,\"evidence\":{\"sku\":\"SKU-DOODAD-C\",\"loss_type\":\"partial_loss\",\"source_fc\":\"MDW2\",\"transfer_id\":\"XFER-114\",\"quantity_lost\":1,\"quantity_sent\":33,\"destination_fc\":\"RIC3\",\"days_in_transit\":7,\"detection_reasons\":[\"1 units missing from transfer\",\"Sent: 33, Received: 32\",\"Route: MDW2 → RIC3\"],\"quantity_received\":32},\"status\":\"pending\",\"related_event_ids\":[],\"created_at\":\"2026-03-18T21:16:20.873166+00:00\",\"updated_at\":\"2026-03-18T21:16:20.873166+00:00\",\"discovery_date\":null,\"deadline_date\":null,\"days_remaining\":null,\"expiration_alert_sent\":false,\"expired\":false,\"match_confidence\":null,\"claim_number\":\"CL-2603-234419-a8ea\",\"timeline\":[],\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"amazon_case_id\":null,\"matched_document_ids\":[],\"matched_document_count\":0},{\"id\":\"dafb8ef6-7f6f-4359-98e4-30d94caf2c78\",\"seller_id\":\"cf6d8078-e83a-472a-baf5-d241eb7ab36e\",\"sync_id\":\"agent3-closure-final-1773868576447\",\"anomaly_type\":\"warehouse_transfer_loss\",\"severity\":\"medium\",\"estimated_value\":15,\"currency\":\"USD\",\"confidence_score\":0.8,\"evidence\":{\"sku\":\"SKU-WIDGET-A\",\"loss_type\":\"partial_loss\",\"source_fc\":\"MDW2\",\"transfer_id\":\"XFER-105\",\"quantity_lost\":1,\"quantity_sent\":40,\"destination_fc\":\"RIC3\",\"days_in_transit\":16,\"detection_reasons\":[\"1 units missing from transfer\",\"Sent: 40, Received: 39\",\"Route: MDW2 → RIC3\"],\"quantity_received\":39},\"status\":\"pending\",\"related_event_ids\":[],\"created_at\":\"2026-03-18T21:16:20.873166+00:00\",\"updated_at\":\"2026-03-18T21:16:20.873166+00:00\",\"discovery_date\":null,\"deadline_date\":null,\"days_remaining\":null,\"expiration_alert_sent\":false,\"expired\":false,\"match_confidence\":null,\"claim_number\":\"CL-2603-234418-1ccd\",\"timeline\":[],\"tenant_id\":\"00000000-0000-0000-0000-000000000001\",\"deleted_at\":null,\"amazon_case_id\":null,\"matched_document_ids\":[],\"matched_document_count\":0},{\"id\":\"335c3951-97d1-45cb-9fa1-81d939276997\",\"seller_id\":\"cf6d8078-e83a-472a-baf5-d241eb7ab36e\",\"sync_id\":\"agent3-closure-1773868119771\",\"anomaly_type\":\"damaged_warehouse\",\"severity\":\"low\",\"estimated_value\":15,\"currency\":\"USD\",\"confidence_score\":0.66,\"evidence\":{\"sku\":\"SKU-CONTRA-D\",\"asin\":null,\"fnsku\":\"UNKNOWN\",\"unit_value\":15,\"damage_date\":\"2025-01-23T10:15:00+00:00\",\"disposition\":\"DAMAGED\",\"reason_code\":\"Q\",\"total_value\":15,\"recovery_found\":false,\"damage_event_id\":\"damage-RET-2025-01-23-002-SKU-CONTRA-D\",\"valuation_basis\":\"Static industry default fallback\",\"evidence_summary\":\"[NO_RECOVERY] Reconciliation: 1.0 units un-reconciled. Source: DEFAULT_FALLBACK ($15.00/unit). Expected: $15.00, Reimbursed: $0.00. Shortfall: $15.00.\",\"quantity_damaged\":1,\"reimbursed_value\":0,\"unresolved_units\":1,\"valuation_source\":\"DEFAULT_FALL"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/metrics/recoveries?tenantSlug=default",
+        "status": 200,
+        "body": "{\"success\":true,\"totalClaimsFound\":962,\"valueInProgress\":14113.979999999996,\"currentlyInProgress\":0,\"successRate30d\":65,\"avgDaysToRecovery\":14,\"pendingCount\":63,\"approvedCount\":624,\"monthlyTrend\":[],\"dashboard\":{\"today\":0,\"todayGrowth\":0,\"thisWeek\":0,\"thisWeekGrowth\":0,\"thisMonth\":0,\"thisMonthGrowth\":0,\"currency\":\"USD\",\"updatedAt\":\"2026-03-19T08:52:52.939Z\"}}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/status?tenantSlug=default",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/disputes?tenantSlug=default&limit=500",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/evidence/matching/results?limit=100&tenantSlug=default",
+        "status": 200,
+        "body": "{\"success\":true,\"results\":[{\"id\":\"dd5f09f9-b5e7-4841-83da-a477b5462ee9\",\"claim_id\":\"dd5f09f9-b5e7-4841-83da-a477b5462ee9\",\"document_id\":\"50f00a01-82cb-4621-abd6-0cae84b2145e\",\"confidence_score\":0.95,\"match_type\":\"order_id\",\"action_taken\":\"auto_submit\",\"matched_fields\":[\"order_id:112-3270422-9942878\"],\"reasoning\":\"\",\"created_at\":\"2025-12-30T22:47:07.235Z\",\"claim_type\":\"inventory_discrepancy\",\"claim_status\":\"approved\",\"claim_amount\":100,\"document_details\":{\"filename\":\"Order ID1.pdf\",\"doc_type\":\"invoice\"},\"filename\":\"Order ID1.pdf\"},{\"id\":\"bbb8246a-1a9b-45cb-b6bc-4ae8dd2bd0d4\",\"claim_id\":\"bbb8246a-1a9b-45cb-b6bc-4ae8dd2bd0d4\",\"document_id\":\"243b24f7-03cb-42c7-95e0-d4ab22e134a9\",\"confidence_score\":0.95,\"match_type\":\"order_id\",\"action_taken\":\"auto_submit\",\"matched_fields\":[\"order_id:112-2237725-4708080\"],\"reasoning\":\"\",\"created_at\":\"2026-02-25T21:29:21.570Z\",\"claim_type\":\"missing_inbound_shipment\",\"claim_status\":\"pending\",\"claim_amount\":150,\"document_details\":{\"filename\":\"Order ID5.pdf\",\"doc_type\":\"invoice\"},\"filename\":\"Order ID5.pdf\"}],\"total\":2,\"limit\":100,\"offset\":0}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/recoveries?tenantSlug=default",
+        "status": 304,
+        "body": ""
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/metrics/recoveries?tenantSlug=default",
+        "status": 200,
+        "body": "{\"success\":true,\"totalClaimsFound\":962,\"valueInProgress\":14113.979999999996,\"currentlyInProgress\":0,\"successRate30d\":65,\"avgDaysToRecovery\":14,\"pendingCount\":63,\"approvedCount\":624,\"monthlyTrend\":[],\"dashboard\":{\"today\":0,\"todayGrowth\":0,\"thisWeek\":0,\"thisWeekGrowth\":0,\"thisMonth\":0,\"thisMonthGrowth\":0,\"currency\":\"USD\",\"updatedAt\":\"2026-03-19T08:52:56.515Z\"}}"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/disputes?tenantSlug=default&limit=500",
+        "status": 304,
+        "body": ""
+      }
+    ],
+    "failures": [
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/metrics/track",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/v1/integrations/amazon/recoveries?tenantSlug=default",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/sse/status?tenantSlug=default",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "url": "https://opside-node-api-woco.onrender.com/api/sse/notifications?tenantSlug=default",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "url": "https://margin-finance.com/api/sse/status?tenantSlug=default",
+        "error": "net::ERR_ABORTED"
+      }
+    ]
+  }
+]

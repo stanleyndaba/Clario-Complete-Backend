@@ -247,20 +247,37 @@ export class EnhancedDetectionService {
 
   /**
    * GET DETECTION JOB STATUS
+   * PATCHED: Added seller_id isolation to prevent cross-tenant data leakage
    */
-  async getDetectionJob(jobId: string): Promise<{
+  async getDetectionJob(jobId: string, userId?: string): Promise<{
     id: string;
     status: string;
     progress: number;
     results: { claimsFound: number; estimatedRecovery: number };
   }> {
-    logger.info('📋 [AGENT3] Getting detection job status', { jobId });
+    logger.info('📋 [AGENT3] Getting detection job status', { jobId, userId });
 
     try {
-      const { data, error } = await supabaseAdmin
+      let query = supabaseAdmin
         .from('detection_results')
         .select('estimated_value')
         .limit(100);
+
+      // PATCH: Enforce strict tenant isolation
+      if (userId) {
+        query = query.eq('seller_id', userId);
+      } else {
+        // If no userId provided, return empty — never leak cross-tenant data
+        logger.warn('⚠️ [AGENT3] getDetectionJob called without userId — returning empty for safety');
+        return {
+          id: jobId,
+          status: 'completed',
+          progress: 100,
+          results: { claimsFound: 0, estimatedRecovery: 0 }
+        };
+      }
+
+      const { data, error } = await query;
 
       const claimsFound = data?.length || 0;
       const estimatedRecovery = data?.reduce((sum: number, r: any) => sum + (r.estimated_value || 0), 0) || 0;

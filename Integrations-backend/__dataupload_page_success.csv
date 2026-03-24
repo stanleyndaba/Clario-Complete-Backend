@@ -1,0 +1,2 @@
+AmazonOrderId,PurchaseDate,OrderStatus,OrderTotal,FulfillmentChannel,CurrencyCode,SellerSKU,ASIN
+PAGE-AUDIT-1773875906522,2026-03-19T10:00:00Z,Shipped,42.50,FBA,USD,SKU-PAGE-AUDIT,ASINPAGE123
