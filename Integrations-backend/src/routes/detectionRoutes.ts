@@ -64,6 +64,19 @@ const selectAuthoritativeQueueRow = (
   })[0];
 };
 
+const hasExplicitTenantSignal = (req: AuthenticatedRequest): boolean => {
+  const headerTenantId = req.headers['x-tenant-id'];
+  const queryTenantSlug = (req as any).query?.tenantSlug;
+  const fullPath = req.originalUrl?.split('?')[0] || req.path;
+  const pathTenantMatch = /^\/app\/[^/]+/.test(fullPath);
+
+  return Boolean(
+    (typeof headerTenantId === 'string' && headerTenantId.trim()) ||
+    (typeof queryTenantSlug === 'string' && queryTenantSlug.trim()) ||
+    pathTenantMatch
+  );
+};
+
 // Auth middleware - allows both JWT tokens, service role key, and userIdMiddleware
 router.use(async (req, res, next) => {
   try {
@@ -113,6 +126,9 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
     }
     if (!tenantId) {
       return res.status(400).json({ success: false, error: { code: 'TENANT_REQUIRED', message: 'Tenant context is required for detection results.' } });
+    }
+    if (!hasExplicitTenantSignal(req)) {
+      return res.status(400).json({ success: false, error: { code: 'TENANT_REQUIRED', message: 'Explicit tenant context is required for detection results.' } });
     }
     const { status, syncId, limit = 100, offset = 0 } = (req as any).query;
     const filteredSyncId = typeof syncId === 'string' && syncId.trim() ? syncId.trim() : undefined;
@@ -194,6 +210,9 @@ router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
     }
     if (!tenantId) {
       return res.status(400).json({ success: false, error: { code: 'TENANT_REQUIRED', message: 'Tenant context is required for detection status.' } });
+    }
+    if (!hasExplicitTenantSignal(req)) {
+      return res.status(400).json({ success: false, error: { code: 'TENANT_REQUIRED', message: 'Explicit tenant context is required for detection status.' } });
     }
 
     const { supabaseAdmin } = await import('../database/supabaseClient');

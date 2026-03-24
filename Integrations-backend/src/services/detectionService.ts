@@ -5,6 +5,7 @@ import axios from 'axios';
 
 export interface DetectionJob {
   seller_id: string;
+  tenant_id?: string;
   sync_id: string;
   timestamp: string;
 }
@@ -112,6 +113,7 @@ export class DetectionService {
       const { error: dbError } = await supabase
         .from('detection_queue')
         .insert({
+          tenant_id: job.tenant_id,
           seller_id: job.seller_id,
           sync_id: job.sync_id,
           status: 'pending',

@@ -353,7 +353,7 @@ export class CSVIngestionService {
 
         if (triggerDetection && anySuccess) {
             try {
-                detectionJobId = await this.triggerDetection(userId, syncId);
+                detectionJobId = await this.triggerDetection(userId, syncId, options.tenantId);
                 logger.info('🔍 [CSV INGESTION] Detection triggered after CSV import', {
                     userId,
                     syncId,
@@ -1334,14 +1334,14 @@ export class CSVIngestionService {
     /**
      * Trigger Agent 3 detection pipeline after CSV data is ingested
      */
-    private async triggerDetection(userId: string, syncId: string): Promise<string> {
+    private async triggerDetection(userId: string, syncId: string, tenantId: string): Promise<string> {
         const jobId = `csv_detection_${userId}_${Date.now()}`;
         const isSandbox =
             process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') ||
             process.env.NODE_ENV === 'development';
 
         try {
-            await this.recordDetectionQueueStatus(userId, syncId, 'processing', {
+            await this.recordDetectionQueueStatus(userId, tenantId, syncId, 'processing', {
                 jobId,
                 isSandbox,
                 payload: { source: 'csv_upload', engine: 'enhanced' },
@@ -1359,7 +1359,7 @@ export class CSVIngestionService {
             );
 
             if (!result.success) {
-                await this.recordDetectionQueueStatus(userId, syncId, 'failed', {
+                await this.recordDetectionQueueStatus(userId, tenantId, syncId, 'failed', {
                     jobId: result.jobId || jobId,
                     isSandbox,
                     errorMessage: result.message || 'Enhanced detection pipeline returned unsuccessful state.',
@@ -1373,7 +1373,7 @@ export class CSVIngestionService {
                 throw new Error(result.message || 'Enhanced detection pipeline returned unsuccessful state.');
             }
 
-            await this.recordDetectionQueueStatus(userId, syncId, 'completed', {
+            await this.recordDetectionQueueStatus(userId, tenantId, syncId, 'completed', {
                 jobId: result.jobId,
                 isSandbox,
                 payload: {
@@ -1405,6 +1405,7 @@ export class CSVIngestionService {
                 const detectionService = (await import('./detectionService')).default;
                 await detectionService.enqueueDetectionJob({
                     seller_id: userId,
+                    tenant_id: tenantId,
                     sync_id: syncId,
                     timestamp: new Date().toISOString(),
                 });
@@ -1412,7 +1413,7 @@ export class CSVIngestionService {
                 return jobId;
             } catch (fallbackError: any) {
                 try {
-                    await this.recordDetectionQueueStatus(userId, syncId, 'failed', {
+                    await this.recordDetectionQueueStatus(userId, tenantId, syncId, 'failed', {
                         jobId,
                         isSandbox,
                         errorMessage: fallbackError.message,
@@ -1444,6 +1445,7 @@ export class CSVIngestionService {
 
     private async recordDetectionQueueStatus(
         userId: string,
+        tenantId: string,
         syncId: string,
         status: DetectionQueueStatus,
         options: {
@@ -1474,6 +1476,7 @@ export class CSVIngestionService {
         const { data: updatedRows, error: updateError } = await supabaseAdmin
             .from('detection_queue')
             .update(nextValues)
+            .eq('tenant_id', tenantId)
             .eq('seller_id', userId)
             .eq('sync_id', syncId)
             .select('id');
@@ -1489,6 +1492,7 @@ export class CSVIngestionService {
         const { error: insertError } = await supabaseAdmin
             .from('detection_queue')
             .insert({
+                tenant_id: tenantId,
                 seller_id: userId,
                 sync_id: syncId,
                 created_at: nowIso,
