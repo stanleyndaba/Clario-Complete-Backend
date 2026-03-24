@@ -79,6 +79,7 @@ const OAUTH_URLS = {
 export const connectEvidenceSource = async (req: Request, res: Response) => {
   try {
     const { provider } = req.params;
+    const frontendUrl = req.query.frontend_url as string;
     const redirectUri = req.query.redirect_uri as string;
     const tenantSlug = (req.query.tenant_slug as string) || (req.query.tenantSlug as string);
     const storeId = (req.query.store_id as string) || (req.query.storeId as string);
@@ -116,9 +117,30 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
     const defaultRedirectUri = `${backendUrl}/api/v1/integrations/${provider}/callback`;
     const callbackRedirectUri = redirectUri || defaultRedirectUri;
 
+    let normalizedFrontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    if (frontendUrl) {
+      try {
+        const parsed = new URL(frontendUrl);
+        normalizedFrontendUrl = `${parsed.protocol}//${parsed.host}`;
+      } catch {
+        logger.warn('Invalid frontend_url provided for evidence source OAuth, falling back to FRONTEND_URL', {
+          provider,
+          frontendUrl
+        });
+      }
+    }
+
     // Generate state for CSRF protection
     const state = crypto.randomBytes(32).toString('hex');
-    await oauthStateStore.setState(state, userId, callbackRedirectUri, tenantSlug, undefined, storeId);
+    await oauthStateStore.setState(
+      state,
+      userId,
+      normalizedFrontendUrl,
+      tenantSlug,
+      undefined,
+      storeId,
+      defaultRedirectUri
+    );
 
     // Build OAuth URL based on provider
     let authUrl: string;
@@ -190,7 +212,9 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
     logger.info('Evidence source OAuth initiated', {
       userId,
       provider,
+      frontendUrl: normalizedFrontendUrl,
       redirectUri: callbackRedirectUri,
+      oauthRedirectUri: defaultRedirectUri,
       hasClientId: !!oauthConfig.clientId
     });
 
