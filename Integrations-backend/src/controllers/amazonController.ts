@@ -438,6 +438,9 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     let marketplaceIdFromState: string | undefined = undefined;
     let tenantSlug = '';
+    let syncStartMode: 'queued' | 'direct' | 'duplicate' | 'none' = 'none';
+    let syncStartMessage = '';
+    let syncIdForResponse: string | null = null;
 
     // Retrieve stored context from OAuth state EARLY to provide context for fallbacks
     if (state) {
@@ -797,15 +800,14 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         logger.error('Error in evidence source linking step', { error: sourceEx.message, userId });
       }
 
-      // Step 7: Queue initial sync job (Agent 2: Continuous Data Sync via BullMQ)
+      // Step 7: Start Agent 2 sync. Prefer durable BullMQ enqueue, but fall back to
+      // direct sync execution if Redis infrastructure is unavailable.
       try {
         const { isQueueHealthy, addSyncJob } = await import('../queues/ingestionQueue');
 
-        // ✅ Step 1: Check Redis Health
         const queueAvailable = await isQueueHealthy();
 
         if (queueAvailable) {
-          // ✅ Step 2: Add with tenant-safe deduplication
           const jobId = await addSyncJob(userId, profile.sellerId, {
             tenantId: tenantIdToUse,
             storeId: storeId || undefined,
@@ -814,6 +816,9 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           });
 
           if (jobId) {
+            syncStartMode = 'queued';
+            syncIdForResponse = jobId;
+            syncStartMessage = 'Agent 2 sync queued through BullMQ.';
             logger.info('🎯 [AGENT 1] Job queued successfully (BullMQ)', {
               jobId,
               userId,
@@ -821,6 +826,8 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
               sellerId: profile.sellerId
             });
           } else {
+            syncStartMode = 'duplicate';
+            syncStartMessage = 'Existing Agent 2 sync already queued for this user.';
             logger.info('🔄 [AGENT 1] Duplicate sync rejected (already pending)', {
               userId,
               tenantId: tenantIdToUse,
@@ -828,21 +835,56 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
             });
           }
         } else {
-          logger.error('❌ [AGENT 1] Redis queue unavailable - cannot start durable Agent 2 sync', {
+          logger.warn('⚠️ [AGENT 1] Redis queue unavailable - falling back to direct Agent 2 sync', {
             userId,
             tenantId: tenantIdToUse,
             storeId
           });
-          throw new Error('Sync queue unavailable. Amazon connection saved, but Agent 2 ingestion was not started.');
+
+          try {
+            const directSync = await syncJobManager.startSync(userId, storeId || undefined);
+            syncStartMode = 'direct';
+            syncIdForResponse = directSync.syncId;
+            syncStartMessage = 'Agent 2 sync started directly because the queue was unavailable.';
+
+            logger.info('✅ [AGENT 1] Direct Agent 2 fallback started successfully', {
+              userId,
+              tenantId: tenantIdToUse,
+              storeId,
+              syncId: directSync.syncId,
+              status: directSync.status
+            });
+          } catch (directSyncError: any) {
+            const directMessage = String(directSyncError?.message || '');
+
+            if (directMessage.toLowerCase().includes('sync already in progress')) {
+              syncStartMode = 'duplicate';
+              syncStartMessage = directMessage;
+              logger.info('🔄 [AGENT 1] Direct fallback found an active sync already running', {
+                userId,
+                tenantId: tenantIdToUse,
+                storeId,
+                message: directMessage
+              });
+            } else {
+              logger.error('❌ [AGENT 1] Direct Agent 2 fallback also failed', {
+                error: directMessage,
+                userId,
+                tenantId: tenantIdToUse,
+                storeId
+              });
+              throw new Error(`Amazon connection saved, but Agent 2 could not be started: ${directMessage || 'Unknown sync startup failure'}`);
+            }
+          }
         }
       } catch (queueError: any) {
-        logger.error('❌ [AGENT 1] Queue operation failed - refusing non-durable fallback', {
+        logger.error('❌ [AGENT 1] Agent 2 startup failed after queue/direct fallback attempts', {
           error: queueError.message,
           userId,
           tenantId: tenantIdToUse,
           storeId
         });
-        throw new Error(queueError.message || 'Failed to enqueue Agent 2 sync job.');
+        throw new Error(queueError.message || 'Failed to start Agent 2 sync job.');
       }
 
       // All steps succeeded - prepare success response
@@ -918,16 +960,18 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       res.header('Access-Control-Allow-Credentials', 'true');
       res.header('Content-Type', 'application/json');
 
-      return res.status(200).json({
-        ok: true,
-        connected: true,
-        success: result?.success ?? true,
-        message: result?.message || 'Amazon connection successful',
-        data: result?.data,
-        userId,
-        sellerId
-      });
-    }
+        return res.status(200).json({
+          ok: true,
+          connected: true,
+          success: result?.success ?? true,
+          message: syncStartMessage || result?.message || 'Amazon connection successful',
+          data: result?.data,
+          userId,
+          sellerId,
+          syncStartMode,
+          syncId: syncIdForResponse
+        });
+      }
 
     // For GET requests, redirect to frontend
     // Cleanup stored state (one-time use)
@@ -950,6 +994,8 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       url.searchParams.append('auth_bridge', 'true'); // Signal for frontend to bypass immediate auth-guard
       if (tenantSlug) url.searchParams.append('tenant_slug', tenantSlug);
       if (marketplaceIdForRedirect) url.searchParams.append('marketplaceId', marketplaceIdForRedirect);
+      url.searchParams.append('sync_start_mode', syncStartMode);
+      if (syncIdForResponse) url.searchParams.append('sync_id', syncIdForResponse);
 
       finalRedirectUrl = url.toString();
     } catch (urlErr) {
