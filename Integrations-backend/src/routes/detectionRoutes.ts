@@ -177,7 +177,7 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
       const { supabaseAdmin } = await import('../database/supabaseClient');
       const { data: queueRows } = await supabaseAdmin
         .from('detection_queue')
-        .select('id, sync_id, status, processed_at, created_at, error_message, is_sandbox')
+        .select('id, sync_id, status, processed_at, created_at, error_message')
         .eq('seller_id', userId)
         .eq('sync_id', filteredSyncId)
         .order('created_at', { ascending: false })
@@ -219,7 +219,7 @@ router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
     const { supabaseAdmin } = await import('../database/supabaseClient');
     const { data: queueRows } = await supabaseAdmin
       .from('detection_queue')
-      .select('id, sync_id, status, processed_at, created_at, error_message, is_sandbox')
+      .select('id, sync_id, status, processed_at, created_at, error_message')
       .eq('seller_id', userId)
       .eq('sync_id', syncId)
       .order('created_at', { ascending: false })

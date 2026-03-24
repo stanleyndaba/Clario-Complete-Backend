@@ -108,7 +108,7 @@ export class DetectionService {
         mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
       });
 
-      // Store in database for persistence (include sandbox flag)
+      // Store in database for persistence (include sandbox flag in payload only)
       const jobWithSandbox = { ...job, is_sandbox: isSandbox };
       const { error: dbError } = await supabase
         .from('detection_queue')
@@ -118,13 +118,12 @@ export class DetectionService {
           sync_id: job.sync_id,
           status: 'pending',
           priority: 1,
-          payload: jobWithSandbox,
-          is_sandbox: isSandbox
+          payload: jobWithSandbox
         });
 
       if (dbError) {
         logger.error('Error storing detection job in database', { error: dbError, job });
-        // Continue anyway - we'll try to process directly
+        throw new Error(`Failed to persist detection queue row: ${dbError.message}`);
       }
 
       // Try to add to Redis queue for immediate processing

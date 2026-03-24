@@ -368,12 +368,29 @@ export class CSVIngestionService {
             }
         }
 
+        const detectionTriggered = !!detectionJobId;
+        const unifiedResults = results.map(result => {
+            if (!result.success || result.rowsInserted <= 0) {
+                return {
+                    ...result,
+                    detectionTriggered: false,
+                    detectionJobId: undefined,
+                };
+            }
+
+            return {
+                ...result,
+                detectionTriggered,
+                detectionJobId: detectionTriggered ? detectionJobId : undefined,
+            };
+        });
+
         const batchResult: BatchIngestionResult = {
             success: allSucceeded && anySuccess,
             userId,
             totalFiles: files.length,
-            results,
-            detectionTriggered: !!detectionJobId,
+            results: unifiedResults,
+            detectionTriggered,
             detectionJobId,
             syncId,
         };
@@ -384,7 +401,7 @@ export class CSVIngestionService {
             totalFiles: files.length,
             successCount: results.filter(r => r.success).length,
             totalRowsInserted: results.reduce((sum, r) => sum + r.rowsInserted, 0),
-            detectionTriggered: !!detectionJobId,
+            detectionTriggered,
         });
 
         return batchResult;
@@ -1460,6 +1477,7 @@ export class CSVIngestionService {
             source: 'csv_upload',
             syncId,
             ...(options.jobId ? { jobId: options.jobId } : {}),
+            ...(options.isSandbox !== undefined ? { isSandbox: !!options.isSandbox } : {}),
             ...(options.payload || {}),
         };
 
@@ -1467,7 +1485,6 @@ export class CSVIngestionService {
             status,
             priority: 1,
             payload,
-            is_sandbox: !!options.isSandbox,
             processed_at: status === 'completed' || status === 'failed' ? nowIso : null,
             error_message: status === 'failed' ? options.errorMessage || 'Detection failed' : null,
             updated_at: nowIso,
