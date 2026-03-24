@@ -8,6 +8,62 @@ const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
 const router = Router();
 
+type DetectionQueueStatusRow = {
+  id?: string | null;
+  sync_id?: string | null;
+  status?: string | null;
+  processed_at?: string | null;
+  created_at?: string | null;
+  error_message?: string | null;
+  is_sandbox?: boolean | null;
+};
+
+const statusPriority = (status?: string | null): number => {
+  switch (status) {
+    case 'failed':
+      return 4;
+    case 'completed':
+      return 3;
+    case 'processing':
+      return 2;
+    case 'pending':
+      return 1;
+    default:
+      return 0;
+  }
+};
+
+const compareIsoDesc = (left?: string | null, right?: string | null): number => {
+  const leftMs = left ? Date.parse(left) : Number.NEGATIVE_INFINITY;
+  const rightMs = right ? Date.parse(right) : Number.NEGATIVE_INFINITY;
+
+  if (Number.isNaN(leftMs) && Number.isNaN(rightMs)) return 0;
+  if (Number.isNaN(leftMs)) return 1;
+  if (Number.isNaN(rightMs)) return -1;
+  return rightMs - leftMs;
+};
+
+const selectAuthoritativeQueueRow = (
+  rows: DetectionQueueStatusRow[] | null | undefined
+): DetectionQueueStatusRow | null => {
+  if (!rows?.length) return null;
+
+  return [...rows].sort((left, right) => {
+    const terminalDiff = statusPriority(right.status) - statusPriority(left.status);
+    if (terminalDiff !== 0) return terminalDiff;
+
+    const processedDiff = compareIsoDesc(left.processed_at, right.processed_at);
+    if (processedDiff !== 0) return processedDiff;
+
+    const createdDiff = compareIsoDesc(left.created_at, right.created_at);
+    if (createdDiff !== 0) return createdDiff;
+
+    const leftId = left.id || '';
+    const rightId = right.id || '';
+    return rightId.localeCompare(leftId);
+  })[0];
+};
+
 // Auth middleware - allows both JWT tokens, service role key, and userIdMiddleware
 router.use(async (req, res, next) => {
   try {
@@ -102,14 +158,15 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
     let meta: any = undefined;
     if (filteredSyncId) {
       const { supabaseAdmin } = await import('../database/supabaseClient');
-      const { data: queueRow } = await supabaseAdmin
+      const { data: queueRows } = await supabaseAdmin
         .from('detection_queue')
-        .select('sync_id, status, processed_at, error_message, is_sandbox')
+        .select('id, sync_id, status, processed_at, created_at, error_message, is_sandbox')
         .eq('seller_id', userId)
         .eq('sync_id', filteredSyncId)
         .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .limit(10);
+
+      const queueRow = selectAuthoritativeQueueRow(queueRows as DetectionQueueStatusRow[] | null | undefined);
 
       meta = {
         syncId: filteredSyncId,
@@ -140,14 +197,15 @@ router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
     }
 
     const { supabaseAdmin } = await import('../database/supabaseClient');
-    const { data: queueRow } = await supabaseAdmin
+    const { data: queueRows } = await supabaseAdmin
       .from('detection_queue')
-      .select('sync_id, status, processed_at, error_message, is_sandbox')
+      .select('id, sync_id, status, processed_at, created_at, error_message, is_sandbox')
       .eq('seller_id', userId)
       .eq('sync_id', syncId)
       .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(10);
+
+    const queueRow = selectAuthoritativeQueueRow(queueRows as DetectionQueueStatusRow[] | null | undefined);
 
     const claimsFound = await detectionService.getDetectionResultsTotal(userId, syncId, undefined, tenantId);
     const results = claimsFound > 0

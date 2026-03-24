@@ -1461,22 +1461,42 @@ export class CSVIngestionService {
             ...(options.payload || {}),
         };
 
-        const { error } = await supabaseAdmin
+        const nextValues = {
+            status,
+            priority: 1,
+            payload,
+            is_sandbox: !!options.isSandbox,
+            processed_at: status === 'completed' || status === 'failed' ? nowIso : null,
+            error_message: status === 'failed' ? options.errorMessage || 'Detection failed' : null,
+            updated_at: nowIso,
+        };
+
+        const { data: updatedRows, error: updateError } = await supabaseAdmin
+            .from('detection_queue')
+            .update(nextValues)
+            .eq('seller_id', userId)
+            .eq('sync_id', syncId)
+            .select('id');
+
+        if (updateError) {
+            throw new Error(`Failed to update detection queue status: ${updateError.message}`);
+        }
+
+        if ((updatedRows || []).length > 0) {
+            return;
+        }
+
+        const { error: insertError } = await supabaseAdmin
             .from('detection_queue')
             .insert({
                 seller_id: userId,
                 sync_id: syncId,
-                status,
-                priority: 1,
-                payload,
-                is_sandbox: !!options.isSandbox,
-                processed_at: status === 'completed' || status === 'failed' ? nowIso : null,
-                error_message: status === 'failed' ? options.errorMessage || 'Detection failed' : null,
                 created_at: nowIso,
+                ...nextValues,
             });
 
-        if (error) {
-            throw new Error(`Failed to persist detection queue status: ${error.message}`);
+        if (insertError) {
+            throw new Error(`Failed to persist detection queue status: ${insertError.message}`);
         }
     }
 
