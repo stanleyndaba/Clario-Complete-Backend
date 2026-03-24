@@ -51,9 +51,12 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
   try {
     // Support both authenticated user and userIdMiddleware
     const userId = (req as any).userId || req.user?.id as string;
-    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
+    const tenantId = (req as any).tenant?.tenantId as string | undefined;
     if (!userId) {
       return res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'User ID is required' } });
+    }
+    if (!tenantId) {
+      return res.status(400).json({ success: false, error: { code: 'TENANT_REQUIRED', message: 'Tenant context is required for detection results.' } });
     }
     const { status, syncId, limit = 100, offset = 0 } = (req as any).query;
     const filteredSyncId = typeof syncId === 'string' && syncId.trim() ? syncId.trim() : undefined;
@@ -127,10 +130,13 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
 router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
   try {
     const userId = (req as any).userId || req.user?.id as string;
-    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
+    const tenantId = (req as any).tenant?.tenantId as string | undefined;
     const { syncId } = (req as any).params;
     if (!userId) {
       return res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'User ID is required' } });
+    }
+    if (!tenantId) {
+      return res.status(400).json({ success: false, error: { code: 'TENANT_REQUIRED', message: 'Tenant context is required for detection status.' } });
     }
 
     const { supabaseAdmin } = await import('../database/supabaseClient');

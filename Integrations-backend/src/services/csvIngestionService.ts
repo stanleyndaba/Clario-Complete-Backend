@@ -286,6 +286,8 @@ export interface BatchIngestionResult {
 
 const DISABLED_TYPES = new Set<CSVType>([]);
 
+type DetectionQueueStatus = 'pending' | 'processing' | 'completed' | 'failed';
+
 // ============================================================================
 // CSV Ingestion Service
 // ============================================================================
@@ -1334,8 +1336,17 @@ export class CSVIngestionService {
      */
     private async triggerDetection(userId: string, syncId: string): Promise<string> {
         const jobId = `csv_detection_${userId}_${Date.now()}`;
+        const isSandbox =
+            process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') ||
+            process.env.NODE_ENV === 'development';
 
         try {
+            await this.recordDetectionQueueStatus(userId, syncId, 'processing', {
+                jobId,
+                isSandbox,
+                payload: { source: 'csv_upload', engine: 'enhanced' },
+            });
+
             // Try EnhancedDetectionService first (runs all 26 algorithms)
             const { EnhancedDetectionService } = await import('./enhancedDetectionService');
             const enhancedService = new EnhancedDetectionService();
@@ -1346,6 +1357,32 @@ export class CSVIngestionService {
                 'csv_upload',
                 { source: 'csv_upload', syncId }
             );
+
+            if (!result.success) {
+                await this.recordDetectionQueueStatus(userId, syncId, 'failed', {
+                    jobId: result.jobId || jobId,
+                    isSandbox,
+                    errorMessage: result.message || 'Enhanced detection pipeline returned unsuccessful state.',
+                    payload: {
+                        source: 'csv_upload',
+                        engine: 'enhanced',
+                        detectionsFound: result.detectionsFound || 0,
+                        estimatedRecovery: result.estimatedRecovery || 0,
+                    },
+                });
+                throw new Error(result.message || 'Enhanced detection pipeline returned unsuccessful state.');
+            }
+
+            await this.recordDetectionQueueStatus(userId, syncId, 'completed', {
+                jobId: result.jobId,
+                isSandbox,
+                payload: {
+                    source: 'csv_upload',
+                    engine: 'enhanced',
+                    detectionsFound: result.detectionsFound || 0,
+                    estimatedRecovery: result.estimatedRecovery || 0,
+                },
+            });
 
             logger.info('🔍 [CSV INGESTION] Enhanced detection pipeline triggered', {
                 userId,
@@ -1374,6 +1411,26 @@ export class CSVIngestionService {
 
                 return jobId;
             } catch (fallbackError: any) {
+                try {
+                    await this.recordDetectionQueueStatus(userId, syncId, 'failed', {
+                        jobId,
+                        isSandbox,
+                        errorMessage: fallbackError.message,
+                        payload: {
+                            source: 'csv_upload',
+                            engine: 'legacy_fallback',
+                            enhancedError: error.message,
+                            fallbackError: fallbackError.message,
+                        },
+                    });
+                } catch (statusError: any) {
+                    logger.error('❌ [CSV INGESTION] Failed to persist detection failure status', {
+                        userId,
+                        syncId,
+                        error: statusError.message,
+                    });
+                }
+
                 logger.error('❌ [CSV INGESTION] Both detection services failed', {
                     userId,
                     syncId,
@@ -1382,6 +1439,44 @@ export class CSVIngestionService {
                 });
                 throw fallbackError;
             }
+        }
+    }
+
+    private async recordDetectionQueueStatus(
+        userId: string,
+        syncId: string,
+        status: DetectionQueueStatus,
+        options: {
+            jobId?: string;
+            isSandbox?: boolean;
+            errorMessage?: string;
+            payload?: Record<string, any>;
+        } = {}
+    ): Promise<void> {
+        const nowIso = new Date().toISOString();
+        const payload = {
+            source: 'csv_upload',
+            syncId,
+            ...(options.jobId ? { jobId: options.jobId } : {}),
+            ...(options.payload || {}),
+        };
+
+        const { error } = await supabaseAdmin
+            .from('detection_queue')
+            .insert({
+                seller_id: userId,
+                sync_id: syncId,
+                status,
+                priority: 1,
+                payload,
+                is_sandbox: !!options.isSandbox,
+                processed_at: status === 'completed' || status === 'failed' ? nowIso : null,
+                error_message: status === 'failed' ? options.errorMessage || 'Detection failed' : null,
+                created_at: nowIso,
+            });
+
+        if (error) {
+            throw new Error(`Failed to persist detection queue status: ${error.message}`);
         }
     }
 

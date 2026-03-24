@@ -1558,7 +1558,7 @@ export class DetectionService {
       results_count: results.length,
       seller_id: results[0]?.seller_id || 'unknown'
     });
-    return;
+    throw new Error('Legacy detection persistence is disabled for this path. Results were not written.');
   }
 
   /**
