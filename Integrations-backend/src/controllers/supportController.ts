@@ -57,6 +57,7 @@ export async function createSupportRequest(req: Request, res: Response) {
                 created_at: record.created_at,
                 category: record.category,
                 subject: record.subject,
+                message: record.message,
             }
         });
     } catch (error: any) {
@@ -82,6 +83,7 @@ export async function listSupportRequests(req: Request, res: Response) {
                 status: request.status,
                 category: request.category,
                 subject: request.subject,
+                message: request.message,
                 severity: request.severity || null,
                 created_at: request.created_at,
             }))
