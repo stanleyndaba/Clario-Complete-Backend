@@ -434,6 +434,33 @@ class RefundFilingWorker {
     }
   }
 
+  private async isAutoFileEnabledForUser(userId: string): Promise<boolean> {
+    try {
+      const { data, error } = await supabaseAdmin
+        .from('user_notification_preferences')
+        .select('preferences')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (error) {
+        logger.warn(' [REFUND FILING] Failed to load auto-file preference, defaulting to enabled', {
+          userId,
+          error: error.message
+        });
+        return true;
+      }
+
+      const enabled = (data?.preferences as any)?.auto_file_cases?.enabled;
+      return typeof enabled === 'boolean' ? enabled : true;
+    } catch (error: any) {
+      logger.warn(' [REFUND FILING] Error loading auto-file preference, defaulting to enabled', {
+        userId,
+        error: error.message
+      });
+      return true;
+    }
+  }
+
   /**
   * DUPLICATE PREVENTION: Check if order already has an active claim
   * This is CRITICAL to prevent Amazon from flagging as "Abuse of Seller Support"
@@ -1226,6 +1253,8 @@ class RefundFilingWorker {
 
     logger.info(` [REFUND FILING] Found ${casesToFile.length} cases with evidence ready for filing`, { tenantId });
 
+    const autoFilePreferenceCache = new Map<string, boolean>();
+
     // Process each case
     for (const disputeCase of casesToFile) {
       try {
@@ -1618,6 +1647,40 @@ class RefundFilingWorker {
           }
 
           continue; // Skip to next case - human must approve this one
+        }
+
+        let autoFileEnabled = autoFilePreferenceCache.get(disputeCase.seller_id);
+        if (typeof autoFileEnabled !== 'boolean') {
+          autoFileEnabled = await this.isAutoFileEnabledForUser(disputeCase.seller_id);
+          autoFilePreferenceCache.set(disputeCase.seller_id, autoFileEnabled);
+        }
+
+        if (!autoFileEnabled) {
+          logger.info('[SKIP] [REFUND FILING] Auto-file is turned off for this user, routing case to manual review', {
+            disputeId: disputeCase.id,
+            sellerId: disputeCase.seller_id
+          });
+          stats.skipped++;
+
+          const manualReviewQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+          const { error: manualReviewError } = await manualReviewQuery
+            .update({
+              filing_status: 'pending_approval',
+              eligible_to_file: false,
+              block_reasons: ['manual_review_required_by_user'],
+              last_error: 'Auto-file is turned off. Review this case before filing.',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', disputeCase.id);
+
+          if (manualReviewError) {
+            logger.error('[ERROR] [REFUND FILING] Failed to route case to manual review for user auto-file preference', {
+              disputeId: disputeCase.id,
+              error: manualReviewError.message
+            });
+          }
+
+          continue;
         }
 
         // Prepare filing request
