@@ -6,7 +6,7 @@ import config from '../config/env';
 import tokenManager from '../utils/tokenManager';
 import oauthStateStore from '../utils/oauthStateStore';
 import { validateRedirectUri } from '../security/validateRedirect';
-import { convertUserIdToUuid } from '../database/supabaseClient';
+import { convertUserIdToUuid, supabase, supabaseAdmin } from '../database/supabaseClient';
 
 // Gmail OAuth base URL
 const GMAIL_AUTH_BASE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -280,6 +280,83 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
       logger.error('Failed to save Gmail tokens:', error);
       const defaultFrontendUrl = frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
       return res.redirect(`${defaultFrontendUrl}/auth/error?reason=${encodeURIComponent('token_save_failed')}`);
+    }
+
+    // Persist provider connection truth for the Integrations status API.
+    try {
+      const adminClient = supabaseAdmin || supabase;
+      const dbUserId = convertUserIdToUuid(userId);
+      const scopes = [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/gmail.modify'
+      ];
+      const sourceMetadata = {
+        access_token,
+        refresh_token: refresh_token || undefined,
+        expires_at: new Date(Date.now() + (expires_in * 1000)).toISOString(),
+        connected_at: new Date().toISOString(),
+        source: 'gmail_oauth',
+        token_source: 'gmail_callback'
+      };
+
+      let existingSourceQuery = adminClient
+        .from('evidence_sources')
+        .select('id')
+        .eq('user_id', dbUserId)
+        .eq('provider', 'gmail');
+
+      existingSourceQuery = tenantId
+        ? existingSourceQuery.eq('tenant_id', tenantId)
+        : existingSourceQuery.is('tenant_id', null);
+
+      const { data: existingSource, error: existingSourceError } = await existingSourceQuery.maybeSingle();
+
+      if (existingSourceError) {
+        throw existingSourceError;
+      }
+
+      if (existingSource?.id) {
+        const { error: updateError } = await adminClient
+          .from('evidence_sources')
+          .update({
+            status: 'connected',
+            account_email: userEmail,
+            last_sync_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            permissions: scopes,
+            metadata: sourceMetadata,
+            tenant_id: tenantId || null
+          })
+          .eq('id', existingSource.id);
+
+        if (updateError) throw updateError;
+      } else {
+        const { error: insertError } = await adminClient
+          .from('evidence_sources')
+          .insert({
+            user_id: dbUserId,
+            seller_id: dbUserId,
+            provider: 'gmail',
+            account_email: userEmail,
+            status: 'connected',
+            last_sync_at: new Date().toISOString(),
+            permissions: scopes,
+            metadata: sourceMetadata,
+            tenant_id: tenantId || null
+          });
+
+        if (insertError) throw insertError;
+      }
+
+      logger.info('Gmail evidence source upserted', { userId, tenantId, email: userEmail });
+    } catch (sourceError: any) {
+      logger.error('Failed to persist Gmail evidence source state', {
+        error: sourceError?.message || String(sourceError),
+        userId,
+        tenantId
+      });
+      const defaultFrontendUrl = frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
+      return res.redirect(`${defaultFrontendUrl}/auth/error?reason=${encodeURIComponent('gmail_source_upsert_failed')}`);
     }
 
     // Use frontend URL from state, or fallback to env var
