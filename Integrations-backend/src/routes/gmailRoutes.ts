@@ -55,6 +55,8 @@ router.get('/status', (req, res, next) => {
 // Email operations - require authentication
 router.get('/emails', authenticateToken, getGmailEmails);
 router.get('/search', authenticateToken, searchGmailEmails);
+router.delete('/disconnect', authenticateToken, disconnectGmail);
+router.post('/disconnect', authenticateToken, disconnectGmail);
 
 export default router;
 

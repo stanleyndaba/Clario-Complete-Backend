@@ -9,6 +9,7 @@ import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supaba
 import logger from '../utils/logger';
 
 type ProviderKey = 'amazon' | 'gmail' | 'outlook' | 'gdrive' | 'dropbox' | 'slack' | 'adobe_sign' | 'onedrive';
+const DOC_TOKEN_PROVIDERS: ProviderKey[] = ['gmail', 'outlook', 'gdrive', 'dropbox'];
 
 interface EvidenceFilters {
   senderPatterns: string[];
@@ -307,6 +308,19 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
     response.lastSync = null;
 
     // Check evidence sources from database for the resolved tenant only.
+    let providerDocumentStats = new Map<string, { count: number; lastDocumentAt?: string }>();
+    let evidenceSources: Array<{
+      id: string;
+      provider: string;
+      status: string;
+      last_sync_at?: string;
+      account_email?: string | null;
+      permissions?: any;
+      seller_id?: string;
+      display_name?: string;
+      metadata?: any;
+    }> = [];
+
     try {
       const { data: providerDocuments } = await adminClient
         .from('evidence_documents')
@@ -314,7 +328,6 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         .eq('tenant_id', tenant.id)
         .or(`user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`);
 
-      const providerDocumentStats = new Map<string, { count: number; lastDocumentAt?: string }>();
       for (const doc of providerDocuments || []) {
         const key = (doc.provider || '').toLowerCase();
         if (!key) continue;
@@ -326,7 +339,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         providerDocumentStats.set(key, current);
       }
 
-      const { data: evidenceSources, error: sourcesError } = await adminClient
+      const { data: evidenceSourceRows, error: sourcesError } = await adminClient
         .from('evidence_sources')
         .select('id, provider, status, last_sync_at, account_email, permissions, seller_id, display_name, metadata')
         .eq('tenant_id', tenant.id)
@@ -346,7 +359,8 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         } else {
           logger.warn('Failed to fetch evidence sources', { error: sourcesError });
         }
-      } else if (evidenceSources && evidenceSources.length > 0) {
+      } else if (evidenceSourceRows && evidenceSourceRows.length > 0) {
+        evidenceSources = evidenceSourceRows || [];
         const productEvidenceSources = evidenceSources.filter(isProductEvidenceSource);
 
         const amazonSource = productEvidenceSources.find(source => source.provider === 'amazon' && source.status === 'connected');
@@ -434,6 +448,142 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       }
     } catch (evidenceError) {
       logger.warn('Failed to check evidence sources', { error: evidenceError });
+    }
+
+    // Recover docs-provider connection truth from tenant-scoped tokens when the
+    // bookkeeping row in evidence_sources is missing or stale.
+    try {
+      const { data: tokenRows, error: tokenError } = await adminClient
+        .from('tokens')
+        .select('provider, expires_at, updated_at')
+        .eq('user_id', safeUserId)
+        .eq('tenant_id', tenant.id)
+        .in('provider', DOC_TOKEN_PROVIDERS);
+
+      if (tokenError) {
+        const isTenantColumnIssue = tokenError.code === 'PGRST204' ||
+          tokenError.message?.includes('tenant_id') ||
+          tokenError.message?.includes('does not exist');
+
+        if (isTenantColumnIssue) {
+          logger.warn('Tokens table lacks tenant_id support; refusing token fallback for docs providers', {
+            userId,
+            tenantId: tenant.id,
+            tenantSlug
+          });
+        } else {
+          logger.warn('Failed to fetch token-backed docs provider status', { error: tokenError });
+        }
+      } else {
+        for (const tokenRow of tokenRows || []) {
+          const providerKey = tokenRow.provider as ProviderKey;
+          if (!DOC_TOKEN_PROVIDERS.includes(providerKey)) continue;
+          if (response.providers[providerKey].connected) continue;
+
+          const expiry = tokenRow.expires_at ? new Date(tokenRow.expires_at) : null;
+          const authValid = !expiry || expiry > new Date();
+          if (!authValid) continue;
+
+          const existingSource = evidenceSources.find(source => source.provider === providerKey);
+          const documentStats = providerDocumentStats.get(providerKey) || { count: 0 };
+          const hasData = (documentStats.count || 0) > 0;
+          const lastIngestAt = existingSource?.last_sync_at || tokenRow.updated_at || undefined;
+          const lastSuccessAt = documentStats.lastDocumentAt || lastIngestAt;
+          const accountEmail = existingSource?.account_email && existingSource.account_email !== 'unknown'
+            ? existingSource.account_email
+            : undefined;
+
+          let sourceId = existingSource?.id;
+
+          if (!sourceId) {
+            try {
+              const { data: insertedSource, error: insertError } = await adminClient
+                .from('evidence_sources')
+                .insert({
+                  user_id: safeUserId,
+                  seller_id: safeUserId,
+                  provider: providerKey,
+                  account_email: accountEmail || 'unknown',
+                  status: 'connected',
+                  last_sync_at: lastIngestAt || new Date().toISOString(),
+                  permissions: [],
+                  metadata: {
+                    source: 'token_recovery',
+                    token_source: 'integration_status',
+                    expires_at: tokenRow.expires_at || null
+                  },
+                  tenant_id: tenant.id
+                })
+                .select('id, account_email, last_sync_at')
+                .maybeSingle();
+
+              if (insertError) {
+                logger.warn('Failed to create evidence source from token-backed connection truth', {
+                  error: insertError,
+                  userId,
+                  tenantId: tenant.id,
+                  provider: providerKey
+                });
+              } else if (insertedSource?.id) {
+                sourceId = insertedSource.id;
+                evidenceSources.push({
+                  id: insertedSource.id,
+                  provider: providerKey,
+                  status: 'connected',
+                  last_sync_at: insertedSource.last_sync_at || lastIngestAt,
+                  account_email: insertedSource.account_email || accountEmail || 'unknown',
+                  permissions: [],
+                  seller_id: safeUserId,
+                  metadata: {
+                    source: 'token_recovery',
+                    token_source: 'integration_status',
+                    expires_at: tokenRow.expires_at || null
+                  }
+                });
+              }
+            } catch (sourceRecoveryError) {
+              logger.warn('Failed to reconcile evidence source from docs-provider token', {
+                error: sourceRecoveryError,
+                userId,
+                tenantId: tenant.id,
+                provider: providerKey
+              });
+            }
+          }
+
+          const ingestionState = computeIngestionState(
+            true,
+            true,
+            hasData,
+            lastIngestAt,
+            'connected',
+            undefined
+          );
+
+          response.providers[providerKey] = {
+            provider: providerKey,
+            source_id: sourceId,
+            connected: true,
+            auth_valid: true,
+            needs_reconnect: false,
+            last_ingest_at: lastIngestAt,
+            last_success_at: lastSuccessAt,
+            ingestion_state: ingestionState,
+            has_data: hasData,
+            account_email: accountEmail,
+            scopes: response.providers[providerKey].scopes
+          };
+
+          response.providerIngest[providerKey] = {
+            connected: true,
+            lastIngest: lastIngestAt,
+            scopes: response.providers[providerKey].scopes,
+            email: accountEmail
+          };
+        }
+      }
+    } catch (tokenFallbackError) {
+      logger.warn('Failed to reconcile docs providers from tokens', { error: tokenFallbackError });
     }
 
     // Fallback: if Amazon is connected via tenant-scoped tokens but no Amazon
