@@ -55,10 +55,11 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
     if (!userId) {
       return res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'User ID is required' } });
     }
-    const { status, limit = 100, offset = 0 } = (req as any).query;
+    const { status, syncId, limit = 100, offset = 0 } = (req as any).query;
+    const filteredSyncId = typeof syncId === 'string' && syncId.trim() ? syncId.trim() : undefined;
     const results = await detectionService.getDetectionResults(
       userId,
-      undefined, // syncId - optional
+      filteredSyncId,
       status,
       parseInt(limit as string, 10),
       parseInt(offset as string, 10),
@@ -66,7 +67,7 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
     );
     const total = await detectionService.getDetectionResultsTotal(
       userId,
-      undefined,
+      filteredSyncId,
       status,
       tenantId
     );
@@ -95,7 +96,28 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
       });
     }
 
-    return res.json({ success: true, results, total });
+    let meta: any = undefined;
+    if (filteredSyncId) {
+      const { supabaseAdmin } = await import('../database/supabaseClient');
+      const { data: queueRow } = await supabaseAdmin
+        .from('detection_queue')
+        .select('sync_id, status, processed_at, error_message, is_sandbox')
+        .eq('seller_id', userId)
+        .eq('sync_id', filteredSyncId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      meta = {
+        syncId: filteredSyncId,
+        status: queueRow?.status || (total > 0 ? 'completed' : 'pending'),
+        processedAt: queueRow?.processed_at || null,
+        errorMessage: queueRow?.error_message || null,
+        isSandbox: !!queueRow?.is_sandbox,
+      };
+    }
+
+    return res.json({ success: true, results, total, meta });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
   }
@@ -104,10 +126,41 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
 // GET /api/v1/integrations/detections/status/:syncId
 router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
   try {
-    const userId = req.user?.id as string;
+    const userId = (req as any).userId || req.user?.id as string;
+    const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
     const { syncId } = (req as any).params;
-    const results = await enhancedDetectionService.getDetectionResults(userId, syncId);
-    return res.json({ success: true, results });
+    if (!userId) {
+      return res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'User ID is required' } });
+    }
+
+    const { supabaseAdmin } = await import('../database/supabaseClient');
+    const { data: queueRow } = await supabaseAdmin
+      .from('detection_queue')
+      .select('sync_id, status, processed_at, error_message, is_sandbox')
+      .eq('seller_id', userId)
+      .eq('sync_id', syncId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const claimsFound = await detectionService.getDetectionResultsTotal(userId, syncId, undefined, tenantId);
+    const results = claimsFound > 0
+      ? await detectionService.getDetectionResults(userId, syncId, undefined, 500, 0, tenantId)
+      : [];
+    const estimatedRecovery = results.reduce((sum: number, row: any) => sum + Number(row?.estimated_value || 0), 0);
+
+    return res.json({
+      success: true,
+      sync_id: syncId,
+      status: queueRow?.status || (claimsFound > 0 ? 'completed' : 'pending'),
+      processed_at: queueRow?.processed_at || null,
+      error_message: queueRow?.error_message || null,
+      is_sandbox: !!queueRow?.is_sandbox,
+      results: {
+        claimsFound,
+        estimatedRecovery,
+      }
+    });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
   }
