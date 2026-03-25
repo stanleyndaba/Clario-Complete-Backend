@@ -9,6 +9,7 @@ import logger from '../utils/logger';
 import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import { supabaseAdmin } from '../database/supabaseClient';
 import runtimeCapacityService from './runtimeCapacityService';
+import financialWorkItemService from './financialWorkItemService';
 
 export interface PayoutMatch {
   disputeId: string;
@@ -55,6 +56,17 @@ class RecoveriesService {
     candidateDisputeIds: string[] = []
   ): Promise<void> {
     runtimeCapacityService.incrementCounter('ambiguous_recoveries');
+
+    if (candidateDisputeIds.length > 0) {
+      await supabaseAdmin
+        .from('dispute_cases')
+        .update({
+          recovery_status: 'quarantined',
+          last_error: reason,
+          updated_at: new Date().toISOString()
+        })
+        .in('id', candidateDisputeIds);
+    }
 
     try {
       await supabaseAdmin
@@ -748,6 +760,60 @@ class RecoveriesService {
       // 🎯 AGENT 10 INTEGRATION: Notify when funds are deposited (reconciled)
       if (status === 'reconciled') {
         try {
+          const tenantSlug = await resolveTenantSlug(tenantId);
+          const { item: billingItem, created } = await financialWorkItemService.enqueueBillingWork({
+            tenantId: tenantId || '',
+            tenantSlug,
+            userId,
+            disputeCaseId: match.disputeId,
+            recoveryId: recovery.id,
+            sourceEventType: 'payout.detected',
+            sourceEventId: recovery.id,
+            payload: {
+              recovery_id: recovery.id,
+              dispute_case_id: match.disputeId,
+              amount_recovered: match.actualAmount,
+              expected_amount: match.expectedAmount,
+              currency: 'USD'
+            }
+          });
+
+          try {
+            const sseHub = (await import('../utils/sseHub')).default;
+            sseHub.sendEvent(userId, 'billing.work_created', {
+              tenant_id: tenantId,
+              tenant_slug: tenantSlug,
+              dispute_case_id: match.disputeId,
+              recovery_id: recovery.id,
+              billing_work_item_id: billingItem.id,
+              message: created
+                ? `Billing work created for recovery ${recovery.id}`
+                : `Billing work already exists for recovery ${recovery.id}`
+            });
+          } catch (eventError: any) {
+            logger.warn('⚠️ [RECOVERIES] Failed to emit billing.work_created event', {
+              recoveryId: recovery.id,
+              error: eventError.message
+            });
+          }
+
+          const { default: billingWorker } = await import('../workers/billingWorker');
+          billingWorker.processPendingBillingWorkForEntity(match.disputeId, recovery.id, tenantId || '', userId).catch((workError: any) => {
+            logger.warn('⚠️ [RECOVERIES] Failed to process billing work immediately', {
+              recoveryId: recovery.id,
+              disputeId: match.disputeId,
+              error: workError.message
+            });
+          });
+        } catch (billingWorkError: any) {
+          logger.warn('⚠️ [RECOVERIES] Failed to enqueue billing work', {
+            recoveryId: recovery.id,
+            disputeId: match.disputeId,
+            error: billingWorkError.message
+          });
+        }
+
+        try {
           const notificationHelper = (await import('../services/notificationHelper')).default;
           await notificationHelper.notifyFundsDeposited(userId, {
             tenantId,
@@ -830,6 +896,11 @@ class RecoveriesService {
       // Check if already reconciled
       if (disputeCase.recovery_status === 'reconciled') {
         logger.debug('ℹ️ [RECOVERIES] Case already reconciled', { disputeId });
+        return null;
+      }
+
+      if (disputeCase.recovery_status === 'quarantined') {
+        logger.warn('⚠️ [RECOVERIES] Case recovery is quarantined', { disputeId });
         return null;
       }
 

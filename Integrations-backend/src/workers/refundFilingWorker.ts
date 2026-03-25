@@ -27,6 +27,7 @@ import { evaluateAndPersistCaseEligibility } from '../services/agent7Eligibility
 import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import runtimeCapacityService from '../services/runtimeCapacityService';
 import operationalControlService from '../services/operationalControlService';
+import financialWorkItemService from '../services/financialWorkItemService';
 
 
 /**
@@ -2862,7 +2863,7 @@ class RefundFilingWorker {
 
         // Trigger recovery detection immediately if approved (non-blocking)
         if (newStatus === 'approved' && disputeCase?.seller_id) {
-          this.triggerRecoveryDetection(disputeId, disputeCase.seller_id).catch((error: any) => {
+          this.triggerRecoveryDetection(disputeId, disputeCase.seller_id, disputeCase.tenant_id).catch((error: any) => {
             logger.warn(' [REFUND FILING] Failed to trigger recovery detection (non-critical)', {
               disputeId,
               error: error.message
@@ -2899,13 +2900,45 @@ class RefundFilingWorker {
   /**
   * Trigger recovery detection for approved case (Agent 8)
   */
-  private async triggerRecoveryDetection(disputeId: string, userId: string): Promise<void> {
+  private async triggerRecoveryDetection(disputeId: string, userId: string, tenantId?: string): Promise<void> {
     try {
+      const tenantSlug = await resolveTenantSlug(tenantId);
+      const { item: recoveryItem, created } = await financialWorkItemService.enqueueRecoveryWork({
+        tenantId: tenantId || '',
+        tenantSlug,
+        userId,
+        disputeCaseId: disputeId,
+        sourceEventType: 'case.status_updated',
+        sourceEventId: disputeId,
+        payload: {
+          dispute_case_id: disputeId,
+          status: 'approved'
+        }
+      });
+
+      try {
+        const sseHub = (await import('../utils/sseHub')).default;
+        sseHub.sendEvent(userId, 'recovery.work_created', {
+          tenant_id: tenantId,
+          tenant_slug: tenantSlug,
+          dispute_case_id: disputeId,
+          recovery_work_item_id: recoveryItem.id,
+          source_event_type: 'case.status_updated',
+          message: created
+            ? `Recovery work created for approved case ${disputeId}`
+            : `Recovery work already exists for approved case ${disputeId}`
+        });
+      } catch (eventError: any) {
+        logger.warn(' [REFUND FILING] Failed to emit recovery.work_created event', {
+          disputeId,
+          error: eventError.message
+        });
+      }
+
       const { default: recoveriesWorker } = await import('./recoveriesWorker');
-      await recoveriesWorker.processRecoveryForCase(disputeId, userId);
+      await recoveriesWorker.processPendingRecoveryWorkForEntity(disputeId, userId, tenantId || '');
     } catch (error: any) {
-      // Non-critical - recovery worker will pick it up in next run
-      logger.debug(' [REFUND FILING] Recovery detection triggered (will retry in next run)', {
+      logger.debug(' [REFUND FILING] Recovery work queued (backstop worker will retry if immediate path misses)', {
         disputeId,
         error: error.message
       });

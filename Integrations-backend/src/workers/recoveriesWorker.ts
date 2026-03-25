@@ -14,6 +14,8 @@ import recoveriesService, { ReconciliationResult } from '../services/recoveriesS
 import workerContinuationService from '../services/workerContinuationService';
 import runtimeCapacityService from '../services/runtimeCapacityService';
 import operationalControlService from '../services/operationalControlService';
+import financialWorkItemService from '../services/financialWorkItemService';
+import { resolveTenantSlug } from '../utils/tenantEventRouting';
 
 // Retry logic with exponential backoff
 async function retryWithBackoff<T>(
@@ -59,6 +61,7 @@ class RecoveriesWorker {
   private isRunning: boolean = false;
   private readonly workerName = 'recoveries';
   private static readonly BATCH_SIZE = Number(process.env.RECOVERIES_BATCH_SIZE || '75');
+  private static readonly WORK_BATCH_SIZE = Number(process.env.RECOVERY_WORK_BATCH_SIZE || '25');
   private tenantRotationOffset: number = 0;
 
   private rotateTenants<T>(tenants: T[]): T[] {
@@ -143,7 +146,7 @@ class RecoveriesWorker {
         return stats;
       }
       runtimeCapacityService.setCircuitBreaker('recovery-reconciliation', 'closed', null);
-      logger.info('💰 [RECOVERIES] Starting recovery run for all tenants');
+      logger.info('💰 [RECOVERIES] Starting recovery run for all tenants (event-driven primary, cron sweep backstop)');
 
       // Get all active tenants
       const { data: tenants, error: tenantError } = await supabaseAdmin
@@ -231,6 +234,26 @@ class RecoveriesWorker {
       failed: 0,
       errors: []
     };
+
+    const workStats = await this.processPendingRecoveryWorkForTenant(tenantId);
+    stats.processed += workStats.processed;
+    stats.payoutsDetected += workStats.payoutsDetected;
+    stats.matched += workStats.matched;
+    stats.reconciled += workStats.reconciled;
+    stats.discrepancies += workStats.discrepancies;
+    stats.failed += workStats.failed;
+    stats.errors.push(...workStats.errors);
+
+    const enqueuedBySweep = await this.enqueueMissingRecoveryWorkItemsForTenant(tenantId);
+    logger.info('ℹ️ [RECOVERIES] Backstop sweep completed', {
+      tenantId,
+      processedWorkItems: workStats.processed,
+      enqueuedBySweep
+    });
+
+    return stats;
+
+    // Legacy scan path retained below only for reference; event-driven work items are now primary.
 
     const cursor = await workerContinuationService.getCursor(this.workerName, tenantId);
     const tenantQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
@@ -488,6 +511,221 @@ class RecoveriesWorker {
       });
       return null;
     }
+  }
+
+  async processPendingRecoveryWorkForEntity(disputeId: string, userId: string, tenantId: string): Promise<void> {
+    const tenantSlug = await resolveTenantSlug(tenantId);
+    const { item } = await financialWorkItemService.enqueueRecoveryWork({
+      tenantId,
+      tenantSlug,
+      userId,
+      disputeCaseId: disputeId,
+      sourceEventType: 'recovery.manual_trigger',
+      sourceEventId: disputeId,
+      payload: {
+        dispute_case_id: disputeId
+      }
+    });
+
+    if (['completed', 'quarantined', 'failed'].includes(String(item.status || '').toLowerCase())) {
+      return;
+    }
+
+    await this.processRecoveryWorkItem(item);
+  }
+
+  private async processPendingRecoveryWorkForTenant(tenantId: string): Promise<RecoveryStats> {
+    const stats: RecoveryStats = {
+      processed: 0,
+      payoutsDetected: 0,
+      matched: 0,
+      reconciled: 0,
+      discrepancies: 0,
+      failed: 0,
+      errors: []
+    };
+
+    const backlogState = await this.getRecoveryWorkBacklog(tenantId);
+    runtimeCapacityService.updateBacklog(`${this.workerName}:${tenantId}`, backlogState.backlogDepth, backlogState.oldestItemAgeMs, {
+      mode: 'event_driven_primary'
+    });
+
+    for (let i = 0; i < RecoveriesWorker.WORK_BATCH_SIZE; i++) {
+      const item = await financialWorkItemService.claimNext('recovery', `${this.workerName}:${tenantId}`, tenantId);
+      if (!item) {
+        break;
+      }
+
+      const result = await this.processRecoveryWorkItem(item);
+      stats.processed++;
+
+      if (result === 'completed') {
+        stats.payoutsDetected++;
+        stats.matched++;
+        stats.reconciled++;
+      } else if (result === 'discrepancy') {
+        stats.payoutsDetected++;
+        stats.matched++;
+        stats.discrepancies++;
+      } else if (result === 'failed' || result === 'quarantined') {
+        stats.failed++;
+      }
+    }
+
+    return stats;
+  }
+
+  private async processRecoveryWorkItem(item: any): Promise<'completed' | 'discrepancy' | 'deferred' | 'quarantined' | 'failed'> {
+    try {
+      const result = await recoveriesService.processRecoveryForCase(item.dispute_case_id, item.user_id, item.tenant_id);
+
+      if (result?.success) {
+        await financialWorkItemService.complete('recovery', item.id, {
+          ...item.payload,
+          status: result.status,
+          recovery_id: result.recoveryId || item.payload?.recovery_id || null,
+          completed_at: new Date().toISOString()
+        });
+        return result.status === 'discrepancy' ? 'discrepancy' : 'completed';
+      }
+
+      const { data: disputeCase } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('recovery_status, last_error')
+        .eq('id', item.dispute_case_id)
+        .maybeSingle();
+
+      if (String(disputeCase?.recovery_status || '').toLowerCase() === 'quarantined') {
+        const reason = String(disputeCase?.last_error || 'ambiguous_recovery');
+        await financialWorkItemService.quarantine('recovery', item.id, reason, {
+          ...item.payload,
+          quarantine_reason: reason
+        });
+
+        try {
+          const sseHub = (await import('../utils/sseHub')).default;
+          sseHub.sendEvent(item.user_id, 'recovery.quarantined', {
+            tenant_id: item.tenant_id,
+            tenant_slug: item.tenant_slug,
+            dispute_case_id: item.dispute_case_id,
+            recovery_work_item_id: item.id,
+            reason
+          });
+        } catch {}
+
+        return 'quarantined';
+      }
+
+      await financialWorkItemService.defer('recovery', item.id, 'payout_not_found_yet', 30 * 60 * 1000, {
+        ...item.payload,
+        deferred_reason: 'payout_not_found_yet'
+      });
+      return 'deferred';
+    } catch (error: any) {
+      const terminalState = await financialWorkItemService.fail('recovery', item, error.message, {
+        ...item.payload,
+        failed_reason: error.message
+      });
+
+      try {
+        const sseHub = (await import('../utils/sseHub')).default;
+        sseHub.sendEvent(item.user_id, 'recovery.failed', {
+          tenant_id: item.tenant_id,
+          tenant_slug: item.tenant_slug,
+          dispute_case_id: item.dispute_case_id,
+          recovery_work_item_id: item.id,
+          status: terminalState,
+          error: error.message
+        });
+      } catch {}
+
+      return 'failed';
+    }
+  }
+
+  private async getRecoveryWorkBacklog(tenantId: string): Promise<{ backlogDepth: number; oldestItemAgeMs: number | null }> {
+    const [pendingCount, oldestPending] = await Promise.all([
+      supabaseAdmin
+        .from('recovery_work_items')
+        .select('*', { count: 'exact', head: true })
+        .eq('tenant_id', tenantId)
+        .eq('status', 'pending'),
+      supabaseAdmin
+        .from('recovery_work_items')
+        .select('created_at')
+        .eq('tenant_id', tenantId)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle()
+    ]);
+
+    const oldestCreatedAt = oldestPending.data?.created_at as string | undefined;
+    return {
+      backlogDepth: pendingCount.count || 0,
+      oldestItemAgeMs: oldestCreatedAt ? Math.max(0, Date.now() - new Date(oldestCreatedAt).getTime()) : null
+    };
+  }
+
+  private async enqueueMissingRecoveryWorkItemsForTenant(tenantId: string): Promise<number> {
+    const cursor = await workerContinuationService.getCursor(`${this.workerName}-backstop`, tenantId);
+    let query = createTenantScopedQueryById(tenantId, 'dispute_cases')
+      .select('id, seller_id, tenant_id, recovery_status, status')
+      .eq('status', 'approved')
+      .or('recovery_status.eq.pending,recovery_status.eq.detecting,recovery_status.is.null,recovery_status.eq.failed')
+      .order('id', { ascending: true })
+      .limit(RecoveriesWorker.BATCH_SIZE);
+
+    if (cursor) {
+      query = query.gt('id', cursor);
+    }
+
+    let { data: approvedCases, error } = await query;
+    if ((!approvedCases || approvedCases.length === 0) && cursor) {
+      const wrapped = await createTenantScopedQueryById(tenantId, 'dispute_cases')
+        .select('id, seller_id, tenant_id, recovery_status, status')
+        .eq('status', 'approved')
+        .or('recovery_status.eq.pending,recovery_status.eq.detecting,recovery_status.is.null,recovery_status.eq.failed')
+        .order('id', { ascending: true })
+        .limit(RecoveriesWorker.BATCH_SIZE);
+      approvedCases = wrapped.data as any;
+      error = wrapped.error as any;
+    }
+
+    if (error || !approvedCases || approvedCases.length === 0) {
+      await workerContinuationService.clearCursor(`${this.workerName}-backstop`, tenantId);
+      return 0;
+    }
+
+    const tenantSlug = await resolveTenantSlug(tenantId);
+    let created = 0;
+
+    for (const disputeCase of approvedCases) {
+      const result = await financialWorkItemService.enqueueRecoveryWork({
+        tenantId,
+        tenantSlug,
+        userId: disputeCase.seller_id,
+        disputeCaseId: disputeCase.id,
+        sourceEventType: 'recoveries.backstop_sweep',
+        sourceEventId: `backstop:${tenantId}:${disputeCase.id}`,
+        payload: {
+          dispute_case_id: disputeCase.id,
+          sweep: true
+        }
+      });
+      if (result.created) {
+        created++;
+      }
+    }
+
+    await workerContinuationService.setCursor(
+      `${this.workerName}-backstop`,
+      tenantId,
+      approvedCases[approvedCases.length - 1]?.id || null,
+      { enqueued: created }
+    );
+
+    return created;
   }
 
   /**

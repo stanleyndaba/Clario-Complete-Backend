@@ -148,9 +148,24 @@ function deriveReconciliationStatus(record: any, approvedAmount: number | null, 
     return 'unknown';
 }
 
-function deriveOperatorState(record: any, reconciliationStatus: string, billingStatus: string): string {
+function deriveOperatorState(record: any, reconciliationStatus: string, billingStatus: string, recoveryWorkStatus?: string | null, billingWorkStatus?: string | null): string {
+    const normalizedRecoveryWork = normalize(recoveryWorkStatus);
+    const normalizedBillingWork = normalize(billingWorkStatus);
+
+    if (normalizedRecoveryWork === 'processing') {
+        return 'recovery_processing';
+    }
+
+    if (normalizedRecoveryWork === 'quarantined') {
+        return 'investigation_required';
+    }
+
     if (reconciliationStatus === 'partial_recovery') {
         return 'partial_payout_review';
+    }
+
+    if (normalizedBillingWork === 'processing') {
+        return 'billing_processing';
     }
 
     if (reconciliationStatus === 'reconciled' && BILLING_COMPLETE_STATUSES.has(billingStatus)) {
@@ -447,23 +462,61 @@ router.get('/ledger', async (req: Request, res: Response) => {
         const disputeIds = recoveryRelevantCases.map((row: any) => row.id).filter(Boolean);
 
         let latestBillingByDisputeId = new Map<string, any>();
+        let latestRecoveryWorkByDisputeId = new Map<string, any>();
+        let latestBillingWorkByDisputeId = new Map<string, any>();
         if (disputeIds.length > 0) {
-            const { data: billingTransactions, error: billingError } = await supabaseAdmin
-                .from('billing_transactions')
-                .select('id, dispute_id, billing_status, platform_fee_cents, created_at, updated_at')
-                .eq('tenant_id', tenantId)
-                .in('dispute_id', disputeIds);
+            const [billingResult, recoveryWorkResult, billingWorkResult] = await Promise.all([
+                supabaseAdmin
+                    .from('billing_transactions')
+                    .select('id, dispute_id, billing_status, platform_fee_cents, created_at, updated_at')
+                    .eq('tenant_id', tenantId)
+                    .in('dispute_id', disputeIds),
+                supabaseAdmin
+                    .from('recovery_work_items')
+                    .select('id, dispute_case_id, status, updated_at, created_at, last_error')
+                    .eq('tenant_id', tenantId)
+                    .in('dispute_case_id', disputeIds),
+                supabaseAdmin
+                    .from('billing_work_items')
+                    .select('id, dispute_case_id, recovery_id, status, updated_at, created_at, last_error')
+                    .eq('tenant_id', tenantId)
+                    .in('dispute_case_id', disputeIds)
+            ]);
 
-            if (billingError) {
-                throw billingError;
+            if (billingResult.error) {
+                throw billingResult.error;
+            }
+            if (recoveryWorkResult.error) {
+                throw recoveryWorkResult.error;
+            }
+            if (billingWorkResult.error) {
+                throw billingWorkResult.error;
             }
 
-            (billingTransactions || []).forEach((transaction: any) => {
+            (billingResult.data || []).forEach((transaction: any) => {
                 const existing = latestBillingByDisputeId.get(transaction.dispute_id);
                 const existingTime = existing ? new Date(existing.updated_at || existing.created_at || 0).getTime() : 0;
                 const candidateTime = new Date(transaction.updated_at || transaction.created_at || 0).getTime();
                 if (!existing || candidateTime >= existingTime) {
                     latestBillingByDisputeId.set(transaction.dispute_id, transaction);
+                }
+            });
+
+            (recoveryWorkResult.data || []).forEach((workItem: any) => {
+                const existing = latestRecoveryWorkByDisputeId.get(workItem.dispute_case_id);
+                const existingTime = existing ? new Date(existing.updated_at || existing.created_at || 0).getTime() : 0;
+                const candidateTime = new Date(workItem.updated_at || workItem.created_at || 0).getTime();
+                if (!existing || candidateTime >= existingTime) {
+                    latestRecoveryWorkByDisputeId.set(workItem.dispute_case_id, workItem);
+                }
+            });
+
+            (billingWorkResult.data || []).forEach((workItem: any) => {
+                const existing = latestBillingWorkByDisputeId.get(workItem.dispute_case_id);
+                const existingTime = existing ? new Date(existing.updated_at || existing.created_at || 0).getTime() : 0;
+                const candidateTime = new Date(workItem.updated_at || workItem.created_at || 0).getTime();
+                if (!existing || candidateTime >= existingTime) {
+                    latestBillingWorkByDisputeId.set(workItem.dispute_case_id, workItem);
                 }
             });
         }
@@ -472,9 +525,17 @@ router.get('/ledger', async (req: Request, res: Response) => {
             const approvedAmount = deriveApprovedAmount(record);
             const actualPayoutAmount = toOptionalAmount(record.recovered_amount ?? record.actual_payout_amount);
             const latestBilling = latestBillingByDisputeId.get(record.id);
+            const latestRecoveryWork = latestRecoveryWorkByDisputeId.get(record.id);
+            const latestBillingWork = latestBillingWorkByDisputeId.get(record.id);
             const billingStatus = normalize(latestBilling?.billing_status || record.billing_status) || null;
             const reconciliationStatus = deriveReconciliationStatus(record, approvedAmount, actualPayoutAmount);
-            const operatorState = deriveOperatorState(record, reconciliationStatus, billingStatus || '');
+            const operatorState = deriveOperatorState(
+                record,
+                reconciliationStatus,
+                billingStatus || '',
+                latestRecoveryWork?.status || null,
+                latestBillingWork?.status || null
+            );
             const expectedPayoutAmount = actualPayoutAmount === null && record.expected_payout_date ? approvedAmount : null;
             const billingRevenueAmount = latestBilling?.platform_fee_cents != null
                 ? Number((toNumber(latestBilling.platform_fee_cents) / 100).toFixed(2))
@@ -490,6 +551,8 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 status: record.status || null,
                 recovery_status: record.recovery_status || null,
                 billing_status: billingStatus,
+                recovery_work_status: latestRecoveryWork?.status || null,
+                billing_work_status: latestBillingWork?.status || null,
                 approved_amount: approvedAmount,
                 actual_payout_amount: actualPayoutAmount,
                 expected_payout_amount: expectedPayoutAmount,
@@ -503,7 +566,7 @@ router.get('/ledger', async (req: Request, res: Response) => {
                     ? (record.updated_at || record.created_at || null)
                     : null,
                 detected_at: record.created_at || null,
-                last_updated_at: latestBilling?.updated_at || record.updated_at || record.created_at || null,
+                last_updated_at: latestBilling?.updated_at || latestBillingWork?.updated_at || latestRecoveryWork?.updated_at || record.updated_at || record.created_at || null,
             };
         });
 
@@ -518,7 +581,9 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 row.merchant_reference,
                 row.status,
                 row.recovery_status,
+                row.recovery_work_status,
                 row.billing_status,
+                row.billing_work_status,
                 row.operator_state
             ]
                 .filter(Boolean)

@@ -18,6 +18,7 @@ import capacityGovernanceService from '../services/capacityGovernanceService';
 import refundFilingWorker from '../workers/refundFilingWorker';
 import { supabaseAdmin } from '../database/supabaseClient';
 import operationalControlService from '../services/operationalControlService';
+import financialWorkItemService from '../services/financialWorkItemService';
 
 const router = Router();
 
@@ -32,6 +33,7 @@ router.get('/queue-stats', async (req: Request, res: Response) => {
         const isHealthy = await isQueueHealthy();
         const runtimeSnapshot = runtimeCapacityService.getSnapshot();
         const filingQueue = await refundFilingWorker.getSubmissionQueueMetrics();
+        const financialWork = await financialWorkItemService.getSummary();
         const operationalControls = {
             autoFiling: await operationalControlService.isEnabled('auto_filing', true),
             recoveryReconciliation: await operationalControlService.isEnabled('recovery_reconciliation', true),
@@ -69,6 +71,7 @@ router.get('/queue-stats', async (req: Request, res: Response) => {
                 timestamp: new Date().toISOString(),
                 metrics: { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 },
                 filingQueue,
+                financialWork,
                 operationalControls,
                 runtime: runtimeSnapshot,
                 hotspots
@@ -91,6 +94,7 @@ router.get('/queue-stats', async (req: Request, res: Response) => {
                 },
                 filing: filingQueue
             },
+            financialWork,
             operationalControls,
             runtime: runtimeSnapshot,
             hotspots,

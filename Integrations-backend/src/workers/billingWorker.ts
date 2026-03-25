@@ -15,6 +15,8 @@ import billingCreditService from '../services/billingCreditService';
 import workerContinuationService from '../services/workerContinuationService';
 import runtimeCapacityService from '../services/runtimeCapacityService';
 import operationalControlService from '../services/operationalControlService';
+import financialWorkItemService from '../services/financialWorkItemService';
+import { resolveTenantSlug } from '../utils/tenantEventRouting';
 
 export interface BillingStats {
   processed: number;
@@ -30,6 +32,7 @@ class BillingWorker {
   private isRunning: boolean = false;
   private readonly workerName = 'billing';
   private static readonly BATCH_SIZE = Number(process.env.BILLING_BATCH_SIZE || '75');
+  private static readonly WORK_BATCH_SIZE = Number(process.env.BILLING_WORK_BATCH_SIZE || '25');
   private tenantRotationOffset: number = 0;
 
   private rotateTenants<T>(tenants: T[]): T[] {
@@ -142,7 +145,7 @@ class BillingWorker {
         return stats;
       }
       runtimeCapacityService.setCircuitBreaker('billing-charge', 'closed', null);
-      logger.info('💳 [BILLING] Starting billing run for all tenants');
+      logger.info('💳 [BILLING] Starting billing run for all tenants (event-driven primary, cron sweep backstop)');
 
       // Get all active tenants
       const { data: tenants, error: tenantError } = await supabaseAdmin
@@ -226,6 +229,24 @@ class BillingWorker {
       skipped: 0,
       errors: []
     };
+
+    const workStats = await this.processPendingBillingWorkForTenant(tenantId);
+    stats.processed += workStats.processed;
+    stats.charged += workStats.charged;
+    stats.failed += workStats.failed;
+    stats.skipped += workStats.skipped;
+    stats.errors.push(...workStats.errors);
+
+    const enqueuedBySweep = await this.enqueueMissingBillingWorkItemsForTenant(tenantId);
+    logger.info('ℹ️ [BILLING] Backstop sweep completed', {
+      tenantId,
+      processedWorkItems: workStats.processed,
+      enqueuedBySweep
+    });
+
+    return stats;
+
+    // Legacy scan path retained below only for reference; event-driven work items are now primary.
 
     const cursor = await workerContinuationService.getCursor(this.workerName, tenantId);
     const tenantQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
@@ -778,6 +799,259 @@ class BillingWorker {
         error: error.message
       };
     }
+  }
+
+  async processPendingBillingWorkForEntity(disputeId: string, recoveryId: string | null, tenantId: string, userId: string): Promise<void> {
+    const tenantSlug = await resolveTenantSlug(tenantId);
+    const { item } = await financialWorkItemService.enqueueBillingWork({
+      tenantId,
+      tenantSlug,
+      userId,
+      disputeCaseId: disputeId,
+      recoveryId,
+      sourceEventType: 'billing.manual_trigger',
+      sourceEventId: recoveryId || disputeId,
+      payload: {
+        dispute_case_id: disputeId,
+        recovery_id: recoveryId
+      }
+    });
+
+    if (['completed', 'quarantined', 'failed'].includes(String(item.status || '').toLowerCase())) {
+      return;
+    }
+
+    await this.processBillingWorkItem(item);
+  }
+
+  private async processPendingBillingWorkForTenant(tenantId: string): Promise<BillingStats> {
+    const stats: BillingStats = {
+      processed: 0,
+      charged: 0,
+      failed: 0,
+      skipped: 0,
+      errors: []
+    };
+
+    const backlogState = await this.getBillingWorkBacklog(tenantId);
+    runtimeCapacityService.updateBacklog(`${this.workerName}:${tenantId}`, backlogState.backlogDepth, backlogState.oldestItemAgeMs, {
+      mode: 'event_driven_primary'
+    });
+
+    for (let i = 0; i < BillingWorker.WORK_BATCH_SIZE; i++) {
+      const item = await financialWorkItemService.claimNext('billing', `${this.workerName}:${tenantId}`, tenantId);
+      if (!item) {
+        break;
+      }
+
+      const result = await this.processBillingWorkItem(item);
+      stats.processed++;
+
+      if (result === 'completed') {
+        stats.charged++;
+      } else if (result === 'deferred' || result === 'quarantined') {
+        stats.skipped++;
+      } else if (result === 'failed') {
+        stats.failed++;
+      }
+    }
+
+    return stats;
+  }
+
+  private async processBillingWorkItem(item: any): Promise<'completed' | 'deferred' | 'quarantined' | 'failed'> {
+    try {
+      const { data: disputeCase, error } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('seller_id, actual_payout_amount, currency, billing_retry_count, billing_status, recovery_status')
+        .eq('id', item.dispute_case_id)
+        .single();
+
+      if (error || !disputeCase) {
+        throw new Error(error?.message || `Dispute case ${item.dispute_case_id} not found`);
+      }
+
+      if (String(disputeCase.recovery_status || '').toLowerCase() !== 'reconciled') {
+        await financialWorkItemService.defer('billing', item.id, 'recovery_not_reconciled_yet', 15 * 60 * 1000, item.payload);
+        return 'deferred';
+      }
+
+      const stableIdempotencyKey = item.recovery_id
+        ? `billing-recovery-${item.recovery_id}`
+        : `billing-dispute-${item.dispute_case_id}`;
+
+      const result = await this.processBillingForRecovery(
+        item.dispute_case_id,
+        item.recovery_id || null,
+        item.payload?.recovery_cycle_id || null,
+        disputeCase.seller_id,
+        item.tenant_id,
+        Math.round(Number(disputeCase.actual_payout_amount || 0) * 100),
+        disputeCase.currency || 'usd',
+        disputeCase.billing_retry_count || 0,
+        stableIdempotencyKey
+      );
+
+      if (result.success) {
+        await financialWorkItemService.complete('billing', item.id, {
+          ...item.payload,
+          billing_status: result.status,
+          billing_transaction_id: result.billingTransactionId || null,
+          completed_at: new Date().toISOString()
+        });
+
+        try {
+          const sseHub = (await import('../utils/sseHub')).default;
+          sseHub.sendEvent(item.user_id, 'billing.processed', {
+            tenant_id: item.tenant_id,
+            tenant_slug: item.tenant_slug,
+            dispute_case_id: item.dispute_case_id,
+            recovery_id: item.recovery_id,
+            billing_work_item_id: item.id,
+            billing_transaction_id: result.billingTransactionId || null,
+            status: result.status
+          });
+        } catch {}
+
+        return 'completed';
+      }
+
+      const terminalState = await financialWorkItemService.fail('billing', item, result.error || 'Billing failed', {
+        ...item.payload,
+        failed_reason: result.error || 'Billing failed'
+      });
+
+      try {
+        const sseHub = (await import('../utils/sseHub')).default;
+        sseHub.sendEvent(item.user_id, 'billing.failed', {
+          tenant_id: item.tenant_id,
+          tenant_slug: item.tenant_slug,
+          dispute_case_id: item.dispute_case_id,
+          recovery_id: item.recovery_id,
+          billing_work_item_id: item.id,
+          status: terminalState,
+          error: result.error || 'Billing failed'
+        });
+      } catch {}
+
+      return 'failed';
+    } catch (error: any) {
+      const terminalState = await financialWorkItemService.fail('billing', item, error.message, {
+        ...item.payload,
+        failed_reason: error.message
+      });
+
+      try {
+        const sseHub = (await import('../utils/sseHub')).default;
+        sseHub.sendEvent(item.user_id, 'billing.failed', {
+          tenant_id: item.tenant_id,
+          tenant_slug: item.tenant_slug,
+          dispute_case_id: item.dispute_case_id,
+          recovery_id: item.recovery_id,
+          billing_work_item_id: item.id,
+          status: terminalState,
+          error: error.message
+        });
+      } catch {}
+
+      return 'failed';
+    }
+  }
+
+  private async getBillingWorkBacklog(tenantId: string): Promise<{ backlogDepth: number; oldestItemAgeMs: number | null }> {
+    const [pendingCount, oldestPending] = await Promise.all([
+      supabaseAdmin
+        .from('billing_work_items')
+        .select('*', { count: 'exact', head: true })
+        .eq('tenant_id', tenantId)
+        .eq('status', 'pending'),
+      supabaseAdmin
+        .from('billing_work_items')
+        .select('created_at')
+        .eq('tenant_id', tenantId)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle()
+    ]);
+
+    const oldestCreatedAt = oldestPending.data?.created_at as string | undefined;
+    return {
+      backlogDepth: pendingCount.count || 0,
+      oldestItemAgeMs: oldestCreatedAt ? Math.max(0, Date.now() - new Date(oldestCreatedAt).getTime()) : null
+    };
+  }
+
+  private async enqueueMissingBillingWorkItemsForTenant(tenantId: string): Promise<number> {
+    const cursor = await workerContinuationService.getCursor(`${this.workerName}-backstop`, tenantId);
+    let query = createTenantScopedQueryById(tenantId, 'dispute_cases')
+      .select('id, seller_id, tenant_id, recovery_status, billing_status, billing_transaction_id')
+      .eq('recovery_status', 'reconciled')
+      .or('billing_status.is.null,billing_status.eq.pending,billing_status.eq.failed')
+      .order('id', { ascending: true })
+      .limit(BillingWorker.BATCH_SIZE);
+
+    if (cursor) {
+      query = query.gt('id', cursor);
+    }
+
+    let { data: casesNeedingBilling, error } = await query;
+    if ((!casesNeedingBilling || casesNeedingBilling.length === 0) && cursor) {
+      const wrapped = await createTenantScopedQueryById(tenantId, 'dispute_cases')
+        .select('id, seller_id, tenant_id, recovery_status, billing_status, billing_transaction_id')
+        .eq('recovery_status', 'reconciled')
+        .or('billing_status.is.null,billing_status.eq.pending,billing_status.eq.failed')
+        .order('id', { ascending: true })
+        .limit(BillingWorker.BATCH_SIZE);
+      casesNeedingBilling = wrapped.data as any;
+      error = wrapped.error as any;
+    }
+
+    if (error || !casesNeedingBilling || casesNeedingBilling.length === 0) {
+      await workerContinuationService.clearCursor(`${this.workerName}-backstop`, tenantId);
+      return 0;
+    }
+
+    const tenantSlug = await resolveTenantSlug(tenantId);
+    let created = 0;
+
+    for (const disputeCase of casesNeedingBilling) {
+      const { data: recovery } = await createTenantScopedQueryById(tenantId, 'recoveries')
+        .select('id')
+        .eq('dispute_id', disputeCase.id)
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const result = await financialWorkItemService.enqueueBillingWork({
+        tenantId,
+        tenantSlug,
+        userId: disputeCase.seller_id,
+        disputeCaseId: disputeCase.id,
+        recoveryId: recovery?.id || null,
+        sourceEventType: 'billing.backstop_sweep',
+        sourceEventId: recovery?.id || disputeCase.id,
+        payload: {
+          dispute_case_id: disputeCase.id,
+          recovery_id: recovery?.id || null,
+          sweep: true
+        }
+      });
+
+      if (result.created) {
+        created++;
+      }
+    }
+
+    await workerContinuationService.setCursor(
+      `${this.workerName}-backstop`,
+      tenantId,
+      casesNeedingBilling[casesNeedingBilling.length - 1]?.id || null,
+      { enqueued: created }
+    );
+
+    return created;
   }
 }
 
