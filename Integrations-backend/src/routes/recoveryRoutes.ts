@@ -558,6 +558,12 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 billing_status: billingStatus,
                 recovery_work_status: latestRecoveryWork?.status || null,
                 billing_work_status: latestBillingWork?.status || null,
+                recovery_work_item_id: latestRecoveryWork?.id || null,
+                billing_work_item_id: latestBillingWork?.id || null,
+                recovery_execution_lane: latestRecoveryWork?.payload?.execution_lane || latestRecoveryWork?.locked_by || null,
+                billing_execution_lane: latestBillingWork?.payload?.execution_lane || latestBillingWork?.locked_by || null,
+                recovery_work_error: latestRecoveryWork?.last_error || null,
+                billing_work_error: latestBillingWork?.last_error || null,
                 approved_amount: approvedAmount,
                 actual_payout_amount: actualPayoutAmount,
                 expected_payout_amount: expectedPayoutAmount,
@@ -587,8 +593,12 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 row.status,
                 row.recovery_status,
                 row.recovery_work_status,
+                row.recovery_execution_lane,
                 row.billing_status,
                 row.billing_work_status,
+                row.billing_execution_lane,
+                row.recovery_work_error,
+                row.billing_work_error,
                 row.operator_state
             ]
                 .filter(Boolean)

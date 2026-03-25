@@ -69,6 +69,17 @@ class RecoveriesWorker {
   private static readonly WORK_BATCH_SIZE = Number(process.env.RECOVERY_WORK_BATCH_SIZE || '25');
   private tenantRotationOffset: number = 0;
 
+  private buildExecutionMetadata(item: any, extra: Record<string, any> = {}): Record<string, any> {
+    return {
+      ...(item?.payload || {}),
+      execution_lane: this.executionLaneName,
+      execution_runtime_role: process.env.RUNTIME_ROLE || 'monolith',
+      execution_owned_by: 'recoveries',
+      execution_processed_at: new Date().toISOString(),
+      ...extra
+    };
+  }
+
   private rotateTenants<T>(tenants: T[]): T[] {
     if (tenants.length <= 1) return tenants;
     const offset = this.tenantRotationOffset % tenants.length;
@@ -610,10 +621,11 @@ class RecoveriesWorker {
 
       if (result?.success) {
         await financialWorkItemService.complete('recovery', item.id, {
-          ...item.payload,
+          ...this.buildExecutionMetadata(item, {
           status: result.status,
           recovery_id: result.recoveryId || item.payload?.recovery_id || null,
           completed_at: new Date().toISOString()
+          })
         });
         return result.status === 'discrepancy' ? 'discrepancy' : 'completed';
       }
@@ -627,8 +639,9 @@ class RecoveriesWorker {
       if (String(disputeCase?.recovery_status || '').toLowerCase() === 'quarantined') {
         const reason = String(disputeCase?.last_error || 'ambiguous_recovery');
         await financialWorkItemService.quarantine('recovery', item.id, reason, {
-          ...item.payload,
+          ...this.buildExecutionMetadata(item, {
           quarantine_reason: reason
+          })
         });
 
         try {
@@ -646,14 +659,16 @@ class RecoveriesWorker {
       }
 
       await financialWorkItemService.defer('recovery', item.id, 'payout_not_found_yet', 30 * 60 * 1000, {
-        ...item.payload,
+        ...this.buildExecutionMetadata(item, {
         deferred_reason: 'payout_not_found_yet'
+        })
       });
       return 'deferred';
     } catch (error: any) {
       const terminalState = await financialWorkItemService.fail('recovery', item, error.message, {
-        ...item.payload,
+        ...this.buildExecutionMetadata(item, {
         failed_reason: error.message
+        })
       });
 
       try {

@@ -499,6 +499,47 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 const PORT = config.PORT || 3001;
+const runtimeRole = String(process.env.RUNTIME_ROLE || 'monolith').trim().toLowerCase();
+
+function shouldRunRecoveriesWorker(): boolean {
+  if (process.env.ENABLE_RECOVERIES_WORKER === 'false') {
+    return false;
+  }
+
+  if (runtimeRole === 'monolith') {
+    return true;
+  }
+
+  if (runtimeRole === 'recoveries-lane') {
+    return true;
+  }
+
+  if (runtimeRole === 'billing-lane') {
+    return false;
+  }
+
+  return process.env.RUN_RECOVERIES_LANE_IN_API_PROCESS === 'true';
+}
+
+function shouldRunBillingWorker(stripePaymentsConfigured: boolean): boolean {
+  if (process.env.ENABLE_BILLING_WORKER === 'false' || !stripePaymentsConfigured) {
+    return false;
+  }
+
+  if (runtimeRole === 'monolith') {
+    return true;
+  }
+
+  if (runtimeRole === 'billing-lane') {
+    return true;
+  }
+
+  if (runtimeRole === 'recoveries-lane') {
+    return false;
+  }
+
+  return process.env.RUN_BILLING_LANE_IN_API_PROCESS === 'true';
+}
 
 // Only start the server and background jobs if not in test mode
 if (process.env.NODE_ENV !== 'test') {
@@ -587,26 +628,35 @@ if (process.env.NODE_ENV !== 'test') {
         }
 
         // Start Recoveries Worker (if enabled)
-        if (process.env.ENABLE_RECOVERIES_WORKER !== 'false') {
+        if (shouldRunRecoveriesWorker()) {
           recoveriesWorker.start();
           logger.info('Recoveries worker initialized');
         } else {
-          logger.info('Recoveries worker disabled (ENABLE_RECOVERIES_WORKER=false)');
+          logger.info('Recoveries worker not attached to this runtime', {
+            runtimeRole,
+            enabledEnv: process.env.ENABLE_RECOVERIES_WORKER !== 'false',
+            inApiProcess: process.env.RUN_RECOVERIES_LANE_IN_API_PROCESS === 'true'
+          });
         }
 
         // Start Billing Worker (requires Stripe payments configuration)
-        const billingWorkerEnabled = process.env.ENABLE_BILLING_WORKER !== 'false';
         const stripePaymentsConfigured = Boolean(process.env.STRIPE_PAYMENTS_URL);
-        if (billingWorkerEnabled && stripePaymentsConfigured) {
+        if (shouldRunBillingWorker(stripePaymentsConfigured)) {
           billingWorker.start();
           logger.info('Billing worker initialized');
         } else {
           logger.info('Billing worker disabled', {
-            enabledEnv: billingWorkerEnabled,
+            runtimeRole,
+            enabledEnv: process.env.ENABLE_BILLING_WORKER !== 'false',
             stripePaymentsConfigured,
-            reason: billingWorkerEnabled
-              ? 'STRIPE_PAYMENTS_URL not configured'
-              : 'ENABLE_BILLING_WORKER=false'
+            inApiProcess: process.env.RUN_BILLING_LANE_IN_API_PROCESS === 'true',
+            reason: process.env.ENABLE_BILLING_WORKER === 'false'
+              ? 'ENABLE_BILLING_WORKER=false'
+              : runtimeRole === 'recoveries-lane'
+                ? 'owned_by_recovery_runtime'
+                : !stripePaymentsConfigured
+                  ? 'STRIPE_PAYMENTS_URL not configured'
+                  : 'owned_by_dedicated_billing_runtime'
           });
         }
 
@@ -723,14 +773,15 @@ if (process.env.NODE_ENV !== 'test') {
         startDetectionProcessor();
 
         logger.info('Background jobs started', {
+          runtime_role: runtimeRole,
           deadline_monitoring: 'started',
           detection_processor: 'started',
           evidence_ingestion_worker: process.env.ENABLE_EVIDENCE_INGESTION_WORKER !== 'false' ? 'started' : 'disabled',
           document_parsing_worker: process.env.ENABLE_DOCUMENT_PARSING_WORKER !== 'false' ? 'started' : 'disabled',
           evidence_matching_worker: process.env.ENABLE_EVIDENCE_MATCHING_WORKER !== 'false' ? 'started' : 'disabled',
           refund_filing_worker: process.env.ENABLE_REFUND_FILING_WORKER !== 'false' ? 'started' : 'disabled',
-          recoveries_worker: process.env.ENABLE_RECOVERIES_WORKER !== 'false' ? 'started' : 'disabled',
-          billing_worker: process.env.ENABLE_BILLING_WORKER !== 'false' ? 'started' : 'disabled',
+          recoveries_worker: shouldRunRecoveriesWorker() ? 'started' : 'not_attached',
+          billing_worker: shouldRunBillingWorker(Boolean(process.env.STRIPE_PAYMENTS_URL)) ? 'started' : 'not_attached',
           notifications_worker: process.env.ENABLE_NOTIFICATIONS_WORKER !== 'false' ? 'started' : 'disabled',
           learning_worker: process.env.ENABLE_LEARNING_WORKER !== 'false' ? 'started' : 'disabled'
         });

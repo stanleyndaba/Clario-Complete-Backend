@@ -40,6 +40,17 @@ class BillingWorker {
   private static readonly WORK_BATCH_SIZE = Number(process.env.BILLING_WORK_BATCH_SIZE || '25');
   private tenantRotationOffset: number = 0;
 
+  private buildExecutionMetadata(item: any, extra: Record<string, any> = {}): Record<string, any> {
+    return {
+      ...(item?.payload || {}),
+      execution_lane: this.executionLaneName,
+      execution_runtime_role: process.env.RUNTIME_ROLE || 'monolith',
+      execution_owned_by: 'billing',
+      execution_processed_at: new Date().toISOString(),
+      ...extra
+    };
+  }
+
   private rotateTenants<T>(tenants: T[]): T[] {
     if (tenants.length <= 1) return tenants;
     const offset = this.tenantRotationOffset % tenants.length;
@@ -928,7 +939,15 @@ class BillingWorker {
       }
 
       if (String(disputeCase.recovery_status || '').toLowerCase() !== 'reconciled') {
-        await financialWorkItemService.defer('billing', item.id, 'recovery_not_reconciled_yet', 15 * 60 * 1000, item.payload);
+        await financialWorkItemService.defer(
+          'billing',
+          item.id,
+          'recovery_not_reconciled_yet',
+          15 * 60 * 1000,
+          this.buildExecutionMetadata(item, {
+            deferred_reason: 'recovery_not_reconciled_yet'
+          })
+        );
         return 'deferred';
       }
 
@@ -950,10 +969,11 @@ class BillingWorker {
 
       if (result.success) {
         await financialWorkItemService.complete('billing', item.id, {
-          ...item.payload,
+          ...this.buildExecutionMetadata(item, {
           billing_status: result.status,
           billing_transaction_id: result.billingTransactionId || null,
           completed_at: new Date().toISOString()
+          })
         });
 
         try {
@@ -973,8 +993,9 @@ class BillingWorker {
       }
 
       const terminalState = await financialWorkItemService.fail('billing', item, result.error || 'Billing failed', {
-        ...item.payload,
+        ...this.buildExecutionMetadata(item, {
         failed_reason: result.error || 'Billing failed'
+        })
       });
 
       try {
@@ -993,8 +1014,9 @@ class BillingWorker {
       return 'failed';
     } catch (error: any) {
       const terminalState = await financialWorkItemService.fail('billing', item, error.message, {
-        ...item.payload,
+        ...this.buildExecutionMetadata(item, {
         failed_reason: error.message
+        })
       });
 
       try {

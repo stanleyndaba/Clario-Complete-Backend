@@ -5,6 +5,7 @@
   "main": "src/index.ts",
   "scripts": {
     "start": "node dist/index.js",
+    "start:api": "node dist/startApiRuntime.js",
     "dev": "nodemon --exec \"node --max-old-space-size=4096 node_modules/ts-node/dist/bin.js\" src/index.ts",
     "build": "tsc",
     "postinstall": "npx puppeteer browsers install chrome",
@@ -25,6 +26,8 @@
     "db:seed": "ts-node scripts/seed.ts",
     "worker:detection": "ts-node src/services/enhancedDetectionService.ts",
     "worker:dispute": "ts-node src/services/disputeService.ts",
+    "worker:recoveries-lane": "node dist/workers/startRecoveriesLane.js",
+    "worker:billing-lane": "node dist/workers/startBillingLane.js",
     "health:check": "curl http://localhost:3000/health",
     "health:detection": "curl http://localhost:3000/api/enhanced-detection/queue/stats",
     "health:sync": "curl http://localhost:3000/api/enhanced-sync/health",
