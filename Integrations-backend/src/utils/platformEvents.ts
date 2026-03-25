@@ -105,18 +105,16 @@ class PlatformEventEmitter {
 
         // Broadcast via SSE
         if (event.userId) {
-            sseHub.sendEvent(event.userId, event.type, {
-                type: event.type,
-                data: event.data,
+            const canonicalPayload = {
+                ...event.data,
+                event_type: event.type,
+                tenant_id: event.tenantId,
+                user_id: event.userId,
                 timestamp
-            });
+            };
 
-            // Also send as generic 'message' for backward compatibility
-            sseHub.sendEvent(event.userId, 'message', {
-                type: event.type,
-                data: event.data,
-                timestamp
-            });
+            sseHub.sendEvent(event.userId, event.type, canonicalPayload);
+            sseHub.sendEvent(event.userId, 'message', canonicalPayload);
         }
 
         // Log for observability (debug level to avoid noise)
@@ -135,8 +133,9 @@ class PlatformEventEmitter {
         event.data.timestamp = timestamp;
 
         sseHub.broadcastEvent(event.type, {
-            type: event.type,
-            data: event.data,
+            ...event.data,
+            event_type: event.type,
+            tenant_id: event.tenantId,
             timestamp
         });
     }

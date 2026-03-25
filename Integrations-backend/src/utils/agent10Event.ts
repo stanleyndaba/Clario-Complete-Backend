@@ -2,11 +2,25 @@ export type Agent10EntityType =
   | 'dispute_case'
   | 'detection_result'
   | 'evidence_document'
+  | 'filing'
   | 'recovery'
   | 'billing_transaction'
   | 'sync_job'
   | 'notification'
+  | 'metrics'
   | 'unknown';
+
+export interface CanonicalLiveEvent {
+  event_type: string;
+  entity_type: Agent10EntityType | string;
+  entity_id?: string;
+  tenant_id?: string;
+  tenant_slug?: string;
+  user_id?: string;
+  timestamp: string;
+  payload: Record<string, any>;
+  [key: string]: any;
+}
 
 type LegacyPayload = Record<string, any> | undefined;
 
@@ -108,28 +122,36 @@ export function inferAgent10PrimaryEntityId(source?: LegacyPayload): string | un
   );
 }
 
-export function normalizeAgent10EventPayload(
+export function buildCanonicalLiveEvent(
   eventName: string,
   rawData?: LegacyPayload,
   overrides?: {
+    eventType?: string;
+    userId?: string;
     tenantId?: string;
+    tenantSlug?: string;
     timestamp?: string;
     entityType?: Agent10EntityType;
     entityId?: string;
   }
-) {
+): CanonicalLiveEvent {
   const data = rawData && typeof rawData === 'object' ? rawData : {};
   const ids = extractAgent10EntityIds(data);
   const timestamp = overrides?.timestamp || pickFirstString(data.timestamp, data.created_at) || new Date().toISOString();
   const tenantId = overrides?.tenantId || pickFirstString(data.tenant_id, data.tenantId, data.tenantID);
+  const tenantSlug = overrides?.tenantSlug || pickFirstString(data.tenant_slug, data.tenantSlug, data.slug);
+  const userId = overrides?.userId || pickFirstString(data.user_id, data.userId, data.seller_id, data.sellerId);
   const entityType = overrides?.entityType || inferAgent10PrimaryEntityType(data);
   const entityId = overrides?.entityId || inferAgent10PrimaryEntityId(data);
+  const eventType = overrides?.eventType || data.event_type || eventName;
 
-  return {
+  const payload = {
     ...data,
-    event_type: data.event_type || eventName,
+    event_type: eventType,
     timestamp,
     tenant_id: tenantId,
+    tenant_slug: tenantSlug,
+    user_id: userId,
     entity_type: entityType,
     entity_id: entityId,
     dispute_case_id: ids.disputeCaseId,
@@ -143,4 +165,32 @@ export function normalizeAgent10EventPayload(
       raw_event_name: eventName
     }
   };
+
+  return {
+    ...payload,
+    event_type: eventType,
+    timestamp,
+    tenant_id: tenantId,
+    tenant_slug: tenantSlug,
+    user_id: userId,
+    entity_type: entityType,
+    entity_id: entityId,
+    payload
+  };
+}
+
+export function normalizeAgent10EventPayload(
+  eventName: string,
+  rawData?: LegacyPayload,
+  overrides?: {
+    eventType?: string;
+    userId?: string;
+    tenantId?: string;
+    tenantSlug?: string;
+    timestamp?: string;
+    entityType?: Agent10EntityType;
+    entityId?: string;
+  }
+) {
+  return buildCanonicalLiveEvent(eventName, rawData, overrides);
 }

@@ -2604,6 +2604,20 @@ export class Agent2DataSyncService {
             timestamp: new Date().toISOString()
           });
 
+          sseHub.sendEvent(userId, 'detection.created', {
+            tenant_id: tenantId,
+            sync_id: storageSyncId,
+            detection_id: storageSyncId,
+            entity_id: storageSyncId,
+            claimsDetected: detectionResults.length,
+            totalRecoverableValue,
+            count: detectionResults.length,
+            amount: totalRecoverableValue,
+            currency: 'USD',
+            status: 'created',
+            message: `Detection run created ${detectionResults.length} claim candidates`
+          });
+
           // Also send as 'message' event for backward compatibility
           sseHub.sendEvent(userId, 'message', {
             type: 'detection',

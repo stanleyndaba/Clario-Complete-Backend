@@ -463,6 +463,39 @@ class RecoveriesService {
         reconciliationStatus: status
       });
 
+      try {
+        const sseHub = (await import('../utils/sseHub')).default;
+        sseHub.sendEvent(userId, 'payout.detected', {
+          tenant_id: tenantId,
+          dispute_case_id: match.disputeId,
+          recovery_id: recovery.id,
+          amount: match.actualAmount,
+          currency: 'USD',
+          amazon_case_id: match.amazonCaseId,
+          reimbursement_id: match.amazonReimbursementId,
+          status,
+          expected_amount: match.expectedAmount,
+          actual_amount: match.actualAmount,
+          message: `Payout detected for case ${match.disputeId}`
+        });
+
+        sseHub.sendEvent(userId, 'detection.payout_received', {
+          tenant_id: tenantId,
+          dispute_case_id: match.disputeId,
+          recovery_id: recovery.id,
+          claimId: match.disputeId,
+          amount: match.actualAmount,
+          currency: 'USD',
+          status,
+          message: `Payout received: $${Number(match.actualAmount || 0).toFixed(2)}`
+        });
+      } catch (eventError: any) {
+        logger.warn('⚠️ [RECOVERIES] Failed to emit payout events', {
+          disputeId: match.disputeId,
+          error: eventError.message
+        });
+      }
+
       // 🎯 AGENT 11 INTEGRATION: Log recovery event
       try {
         const agentEventLogger = (await import('./agentEventLogger')).default;

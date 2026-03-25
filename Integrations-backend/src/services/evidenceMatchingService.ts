@@ -1382,6 +1382,29 @@ class EvidenceMatchingService {
       throw new Error(`Failed to create dispute case: ${createError?.message || 'Unknown create failure'}`);
     }
 
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(detectionResult.seller_id, 'case.created', {
+        tenant_id: tenantId,
+        dispute_case_id: createdCase.id,
+        case_number: createdCase.case_number,
+        detection_id: result.dispute_id,
+        seller_id: detectionResult.seller_id,
+        claim_amount: detectionResult.estimated_value || 0,
+        currency: detectionResult.currency || 'USD',
+        case_type: detectionResult.anomaly_type || 'amazon_fba',
+        status: 'pending',
+        filing_status: 'pending',
+        message: `Case created for detection ${result.dispute_id}`
+      });
+    } catch (eventError: any) {
+      logger.warn('⚠️ [EVIDENCE MATCHING] Failed to emit case.created event', {
+        tenantId,
+        detectionId: result.dispute_id,
+        error: eventError.message
+      });
+    }
+
     return createdCase;
   }
 
@@ -1408,6 +1431,36 @@ class EvidenceMatchingService {
 
     if (error) {
       throw new Error(`Failed to update dispute case evidence attachment: ${error.message}`);
+    }
+
+    try {
+      const { data: disputeCase } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('seller_id, detection_result_id, case_number')
+        .eq('id', disputeCaseId)
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+
+      if (disputeCase?.seller_id) {
+        const sseHub = (await import('../utils/sseHub')).default;
+        sseHub.sendEvent(disputeCase.seller_id, 'evidence.linked', {
+          tenant_id: tenantId,
+          dispute_case_id: disputeCaseId,
+          detection_id: disputeCase.detection_result_id,
+          document_id: evidenceAttachment.document_id,
+          match_confidence: evidenceAttachment.match_confidence,
+          match_type: evidenceAttachment.match_type,
+          case_number: disputeCase.case_number,
+          status: 'linked',
+          message: `Evidence linked to case ${disputeCase.case_number || disputeCaseId}`
+        });
+      }
+    } catch (eventError: any) {
+      logger.warn('⚠️ [EVIDENCE MATCHING] Failed to emit evidence.linked event', {
+        tenantId,
+        disputeCaseId,
+        error: eventError.message
+      });
     }
   }
 

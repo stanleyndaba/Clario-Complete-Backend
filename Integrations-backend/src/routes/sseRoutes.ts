@@ -109,6 +109,24 @@ router.get('/status', (req: AuthenticatedSSERequest, res) => {
   });
 });
 
+router.get('/recent', (req: AuthenticatedSSERequest, res) => {
+  const userId = req.user?.id;
+  if (!userId) {
+    return res.status(401).json({
+      error: 'Authentication is required for SSE history',
+      code: 'AUTH_REQUIRED'
+    });
+  }
+
+  const tenantSlug = String(((req as any).query.tenantSlug as string) || '').trim() || undefined;
+  const limit = Math.max(1, Math.min(Number((req as any).query.limit || 50), 100));
+
+  return res.json({
+    success: true,
+    events: sseHub.getRecentEvents(userId, tenantSlug, limit)
+  });
+});
+
 /**
  * @route GET /api/sse/sync-progress/:syncId
  * @desc Stream real-time sync progress updates

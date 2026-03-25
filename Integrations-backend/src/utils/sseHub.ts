@@ -1,9 +1,11 @@
 import { Response } from 'express';
 import logger from './logger';
-import { normalizeAgent10EventPayload } from './agent10Event';
+import { buildCanonicalLiveEvent, CanonicalLiveEvent } from './agent10Event';
 
 class SSEHub {
   private connections: Map<string, Map<string, Set<Response>>> = new Map();
+  private eventHistory: Map<string, CanonicalLiveEvent[]> = new Map();
+  private readonly maxHistorySize = 250;
 
   addConnection(userId: string, res: Response, tenantSlug: string = 'default'): void {
     if (!this.connections.has(userId)) {
@@ -93,6 +95,18 @@ class SSEHub {
    */
   sendEvent(userId: string, event: string, data: any, tenantSlug?: string): boolean {
     const userMap = this.connections.get(userId);
+    const rawData = data && typeof data === 'object' ? data : {};
+    const normalized = buildCanonicalLiveEvent(event, rawData, {
+      userId,
+      tenantSlug: tenantSlug || rawData?.tenantSlug || rawData?.tenant_slug || rawData?.slug
+    });
+
+    const history = this.eventHistory.get(userId) || [];
+    history.push(normalized);
+    if (history.length > this.maxHistorySize) {
+      history.shift();
+    }
+    this.eventHistory.set(userId, history);
 
     if (!userMap || userMap.size === 0) {
       return false;
@@ -100,8 +114,6 @@ class SSEHub {
 
     // Determine target connections
     let targetSets: Set<Response>[] = [];
-    const rawData = data && typeof data === 'object' ? data : {};
-    const normalized = normalizeAgent10EventPayload(event, rawData);
     const targetSlug = tenantSlug || rawData?.tenantSlug || rawData?.tenant_slug || rawData?.slug;
 
     if (targetSlug) {
@@ -148,6 +160,26 @@ class SSEHub {
     });
 
     return successCount > 0;
+  }
+
+  getRecentEvents(userId: string, tenantSlug?: string, limit: number = 50): CanonicalLiveEvent[] {
+    const history = this.eventHistory.get(userId) || [];
+    const normalizedSlug = String(tenantSlug || '').trim();
+
+    const filtered = normalizedSlug
+      ? history.filter((event) => {
+          const eventSlug = String(
+            event.tenant_slug ||
+            event.payload?.tenant_slug ||
+            event.payload?.tenantSlug ||
+            event.payload?.slug ||
+            ''
+          ).trim();
+          return !eventSlug || eventSlug === normalizedSlug;
+        })
+      : history;
+
+    return filtered.slice(-Math.max(1, Math.min(limit, this.maxHistorySize)));
   }
 
   /**

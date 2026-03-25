@@ -2156,6 +2156,27 @@ class RefundFilingWorker {
             error: notifError.message
           });
         }
+
+        try {
+          const sseHub = (await import('../utils/sseHub')).default;
+          sseHub.sendEvent(disputeCase.seller_id, 'filing.submitted', {
+            tenant_id: disputeCase.tenant_id,
+            dispute_case_id: disputeId,
+            detection_id: result.submission_id || disputeId,
+            submission_id: result.submission_id,
+            amazon_case_id: result.amazon_case_id,
+            amount: disputeCase.claim_amount || 0,
+            currency: disputeCase.currency || 'USD',
+            status: 'submitted',
+            filing_status: 'filed',
+            message: `Case ${disputeId} submitted to Amazon`
+          });
+        } catch (eventError: any) {
+          logger.warn(' [REFUND FILING] Failed to emit filing.submitted event', {
+            disputeId,
+            error: eventError.message
+          });
+        }
       }
 
     } catch (error: any) {
@@ -2429,6 +2450,29 @@ class RefundFilingWorker {
           disputeId,
           status: statusResult.status
         });
+
+        if (disputeCase?.seller_id) {
+          try {
+            const sseHub = (await import('../utils/sseHub')).default;
+            sseHub.sendEvent(disputeCase.seller_id, 'case.status_updated', {
+              tenant_id: disputeCase.tenant_id,
+              dispute_case_id: disputeId,
+              detection_id: disputeCase.detection_result_id,
+              previous_status: previousStatus,
+              status: newStatus,
+              amazon_status: statusResult.status,
+              amazon_case_id: statusResult.amazon_case_id,
+              amount_approved: statusResult.amount_approved || null,
+              resolution: statusResult.resolution || null,
+              message: `Case ${disputeId} status updated to ${newStatus}`
+            });
+          } catch (eventError: any) {
+            logger.warn(' [REFUND FILING] Failed to emit case.status_updated event', {
+              disputeId,
+              error: eventError.message
+            });
+          }
+        }
 
         // Trigger recovery detection immediately if approved (non-blocking)
         if (newStatus === 'approved' && disputeCase?.seller_id) {
