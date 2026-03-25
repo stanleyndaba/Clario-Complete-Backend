@@ -46,6 +46,78 @@ class RecoveriesService {
     this.reconciliationThreshold = parseFloat(process.env.RECONCILIATION_THRESHOLD || '0.01');
   }
 
+  private async findExistingRecovery(
+    match: PayoutMatch,
+    tenantId?: string
+  ): Promise<any | null> {
+    const tenantScopedId = tenantId || null;
+
+    if (match.amazonReimbursementId) {
+      let reimbursementQuery = supabaseAdmin
+        .from('recoveries')
+        .select('*')
+        .eq('amazon_reimbursement_id', match.amazonReimbursementId)
+        .is('deleted_at', null)
+        .limit(1);
+
+      if (tenantScopedId) {
+        reimbursementQuery = reimbursementQuery.eq('tenant_id', tenantScopedId);
+      }
+
+      const { data, error } = await reimbursementQuery.maybeSingle();
+      if (error) {
+        throw new Error(`Failed to lookup existing reimbursement recovery: ${error.message}`);
+      }
+      if (data) {
+        return data;
+      }
+    }
+
+    let disputeQuery = supabaseAdmin
+      .from('recoveries')
+      .select('*')
+      .eq('dispute_id', match.disputeId)
+      .is('deleted_at', null)
+      .limit(1);
+
+    if (tenantScopedId) {
+      disputeQuery = disputeQuery.eq('tenant_id', tenantScopedId);
+    }
+
+    const { data: disputeRecovery, error: disputeError } = await disputeQuery.maybeSingle();
+    if (disputeError) {
+      throw new Error(`Failed to lookup existing dispute recovery: ${disputeError.message}`);
+    }
+
+    return disputeRecovery || null;
+  }
+
+  private async compensateRecoveryPartialWrite(
+    recoveryId: string,
+    disputeId: string,
+    reason: string
+  ): Promise<void> {
+    const timestamp = new Date().toISOString();
+
+    await supabaseAdmin
+      .from('recoveries')
+      .update({
+        reconciliation_status: 'failed',
+        reconciled_at: null,
+        updated_at: timestamp
+      })
+      .eq('id', recoveryId);
+
+    await this.logLifecycleEvent(recoveryId, disputeId, 'system', {
+      eventType: 'error',
+      eventData: {
+        reason,
+        compensated: true,
+        timestamp
+      }
+    });
+  }
+
   /**
    * Detect payouts from Amazon SP-API for a user
    */
@@ -378,54 +450,110 @@ class RecoveriesService {
         status = 'discrepancy';
       }
 
-      // Store recovery record
-      const { data: recovery, error: insertError } = await supabaseAdmin
-        .from('recoveries')
-        .insert({
-          dispute_id: match.disputeId,
-          user_id: userId,
-          tenant_id: tenantId,
-          // store_id intentionally omitted - column not in DB schema yet
-          amazon_case_id: match.amazonCaseId,
-          expected_amount: match.expectedAmount,
-          actual_amount: match.actualAmount,
-          discrepancy: match.discrepancy,
-          discrepancy_type: match.discrepancyType === 'none' ? null : match.discrepancyType,
-          reconciliation_status: status,
-          payout_date: match.payoutDate,
-          amazon_reimbursement_id: match.amazonReimbursementId,
-          matched_at: new Date().toISOString(),
-          reconciled_at: status === 'reconciled' ? new Date().toISOString() : null
-        })
-        .select()
-        .single();
+      const timestamp = new Date().toISOString();
+      const recoveryPayload = {
+        dispute_id: match.disputeId,
+        user_id: userId,
+        tenant_id: tenantId,
+        amazon_case_id: match.amazonCaseId,
+        expected_amount: match.expectedAmount,
+        actual_amount: match.actualAmount,
+        discrepancy: match.discrepancy,
+        discrepancy_type: match.discrepancyType === 'none' ? null : match.discrepancyType,
+        reconciliation_status: status,
+        payout_date: match.payoutDate,
+        amazon_reimbursement_id: match.amazonReimbursementId,
+        matched_at: timestamp,
+        reconciled_at: status === 'reconciled' ? timestamp : null
+      };
 
-      if (insertError) {
-        logger.error('❌ [RECOVERIES] Failed to store recovery record', {
-          disputeId: match.disputeId,
-          error: insertError.message
+      let recovery = await this.findExistingRecovery(match, tenantId);
+      if (recovery?.id) {
+        const { data: updatedRecovery, error: updateRecoveryError } = await supabaseAdmin
+          .from('recoveries')
+          .update({
+            ...recoveryPayload,
+            updated_at: timestamp
+          })
+          .eq('id', recovery.id)
+          .select()
+          .single();
+
+        if (updateRecoveryError || !updatedRecovery) {
+          logger.error('❌ [RECOVERIES] Failed to reuse existing recovery record', {
+            disputeId: match.disputeId,
+            recoveryId: recovery.id,
+            error: updateRecoveryError?.message
+          });
+          return {
+            success: false,
+            status: 'failed',
+            expectedAmount: match.expectedAmount,
+            actualAmount: match.actualAmount,
+            discrepancy: match.discrepancy,
+            error: updateRecoveryError?.message || 'Failed to update existing recovery record'
+          };
+        }
+        recovery = updatedRecovery;
+      } else {
+        const { data: insertedRecovery, error: insertError } = await supabaseAdmin
+          .from('recoveries')
+          .insert(recoveryPayload)
+          .select()
+          .single();
+
+        if (insertError) {
+          if ((insertError as any).code === '23505') {
+            recovery = await this.findExistingRecovery(match, tenantId);
+          }
+
+          if (!recovery?.id) {
+            logger.error('❌ [RECOVERIES] Failed to store recovery record', {
+              disputeId: match.disputeId,
+              error: insertError.message
+            });
+            return {
+              success: false,
+              status: 'failed',
+              expectedAmount: match.expectedAmount,
+              actualAmount: match.actualAmount,
+              discrepancy: match.discrepancy,
+              error: insertError.message
+            };
+          }
+        } else {
+          recovery = insertedRecovery;
+        }
+      }
+
+      try {
+        await this.logLifecycleEvent(recovery.id, match.disputeId, userId, {
+          eventType: status === 'reconciled' ? 'reconciled' : 'discrepancy_detected',
+          eventData: {
+            expectedAmount: match.expectedAmount,
+            actualAmount: match.actualAmount,
+            discrepancy: match.discrepancy,
+            discrepancyType: match.discrepancyType,
+            status
+          }
         });
+      } catch (lifecycleError: any) {
+        const compensationReason = `Recovery lifecycle log failed after recovery persistence: ${lifecycleError.message}`;
+        logger.error('❌ [RECOVERIES] Recovery lifecycle logging failed after persistence', {
+          disputeId: match.disputeId,
+          recoveryId: recovery.id,
+          error: lifecycleError.message
+        });
+        await this.compensateRecoveryPartialWrite(recovery.id, match.disputeId, compensationReason);
         return {
           success: false,
           status: 'failed',
           expectedAmount: match.expectedAmount,
           actualAmount: match.actualAmount,
           discrepancy: match.discrepancy,
-          error: insertError.message
+          error: compensationReason
         };
       }
-
-      // Log lifecycle event
-      await this.logLifecycleEvent(recovery.id, match.disputeId, userId, {
-        eventType: status === 'reconciled' ? 'reconciled' : 'discrepancy_detected',
-        eventData: {
-          expectedAmount: match.expectedAmount,
-          actualAmount: match.actualAmount,
-          discrepancy: match.discrepancy,
-          discrepancyType: match.discrepancyType,
-          status
-        }
-      });
 
       // Update dispute case
       let disputeUpdateQuery = supabaseAdmin
@@ -446,7 +574,25 @@ class RecoveriesService {
         disputeUpdateQuery = disputeUpdateQuery.eq('tenant_id', tenantId);
       }
 
-      await disputeUpdateQuery;
+      const { error: disputeUpdateError } = await disputeUpdateQuery;
+
+      if (disputeUpdateError) {
+        const compensationReason = `Dispute case update failed after recovery persistence: ${disputeUpdateError.message}`;
+        logger.error('❌ [RECOVERIES] Dispute case update failed after recovery persistence', {
+          disputeId: match.disputeId,
+          recoveryId: recovery.id,
+          error: disputeUpdateError.message
+        });
+        await this.compensateRecoveryPartialWrite(recovery.id, match.disputeId, compensationReason);
+        return {
+          success: false,
+          status: 'failed',
+          expectedAmount: match.expectedAmount,
+          actualAmount: match.actualAmount,
+          discrepancy: match.discrepancy,
+          error: compensationReason
+        };
+      }
 
       logger.info('✅ [RECOVERIES] Payout reconciled', {
         recoveryId: recovery.id,

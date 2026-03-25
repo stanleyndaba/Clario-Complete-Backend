@@ -21,6 +21,40 @@ import { evaluateAndPersistCaseEligibility } from './agent7EligibilityService';
  * Manages the full lifecycle of a claim submission from validation to handoff.
  */
 export class AmazonSubmissionAutomator {
+    private async markSubmissionStateDivergence(
+        caseId: string,
+        sellerId: string,
+        tenantId: string,
+        message: string
+    ): Promise<void> {
+        const timestamp = new Date().toISOString();
+
+        await supabaseAdmin
+            .from('dispute_cases')
+            .update({
+                filing_status: 'failed',
+                eligible_to_file: false,
+                block_reasons: ['submission_state_divergence'],
+                last_error: message,
+                updated_at: timestamp
+            })
+            .eq('id', caseId)
+            .eq('tenant_id', tenantId);
+
+        await supabaseAdmin
+            .from('refund_filing_errors')
+            .insert({
+                user_id: sellerId,
+                dispute_id: caseId,
+                error_type: 'submission_state_divergence',
+                error_message: message,
+                metadata: {
+                    tenant_id: tenantId
+                },
+                created_at: timestamp
+            });
+    }
+
     /**
      * Executes the full submission protocol for a dispute case.
      */
@@ -202,6 +236,7 @@ export class AmazonSubmissionAutomator {
     private async updateClaimWithCaseInfo(caseId: string, sellerId: string, tenantId: string, result: Awaited<ReturnType<typeof refundFilingService.fileDispute>>, submissionAttempts: number) {
         const timestamp = new Date().toISOString();
         const amazonCaseId = result.amazon_case_id || null;
+        const submissionId = result.submission_id || amazonCaseId;
 
         const { error: submissionError } = await supabaseAdmin
             .from('dispute_submissions')
@@ -209,7 +244,7 @@ export class AmazonSubmissionAutomator {
                 dispute_id: caseId,
                 tenant_id: tenantId,
                 user_id: sellerId,
-                submission_id: result.submission_id || amazonCaseId,
+                submission_id: submissionId,
                 amazon_case_id: amazonCaseId,
                 status: result.status,
                 created_at: timestamp,
@@ -246,7 +281,9 @@ export class AmazonSubmissionAutomator {
             .eq('tenant_id', tenantId);
 
         if (disputeUpdateError) {
-            throw disputeUpdateError;
+            const divergenceMessage = `Amazon submission persisted as ${submissionId || 'unknown'} but dispute case update failed: ${disputeUpdateError.message}`;
+            await this.markSubmissionStateDivergence(caseId, sellerId, tenantId, divergenceMessage);
+            throw new Error(divergenceMessage);
         }
 
         // Sync with claims table (frontend)

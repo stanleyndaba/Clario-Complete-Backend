@@ -59,6 +59,36 @@ class BillingWorker {
     logger.info('✅ [BILLING] Worker started successfully');
   }
 
+  private async markBillingStateDivergence(
+    disputeId: string,
+    billingTransactionId: string | null,
+    message: string
+  ): Promise<void> {
+    const timestamp = new Date().toISOString();
+
+    if (billingTransactionId) {
+      await supabaseAdmin
+        .from('billing_transactions')
+        .update({
+          billing_status: 'failed',
+          metadata: {
+            divergence_reason: message,
+            diverged_at: timestamp
+          },
+          updated_at: timestamp
+        })
+        .eq('id', billingTransactionId);
+    }
+
+    await supabaseAdmin
+      .from('dispute_cases')
+      .update({
+        billing_status: 'failed',
+        updated_at: timestamp
+      })
+      .eq('id', disputeId);
+  }
+
   /**
    * Stop the worker
    */
@@ -280,6 +310,7 @@ class BillingWorker {
     currentRetryCount: number,
     stableIdempotencyKey: string
   ): Promise<BillingResult> {
+    let billingTransactionId: string | null = null;
     try {
       logger.info('💳 [BILLING] Processing billing for recovery', {
         disputeId,
@@ -427,6 +458,8 @@ class BillingWorker {
           throw new Error(`Failed to create billing transaction: ${insertError?.message || 'unknown error'}`);
         }
 
+        billingTransactionId = billingTransaction.id;
+
         const creditApplyResult = await billingCreditService.applyCreditToBilling(
           {
             tenantId,
@@ -439,7 +472,7 @@ class BillingWorker {
           'paypal'
         );
 
-        await supabaseAdmin
+        const { error: billingTransactionUpdateError } = await supabaseAdmin
           .from('billing_transactions')
           .update({
             credit_balance_after_cents: creditApplyResult.balanceAfterCents,
@@ -447,8 +480,14 @@ class BillingWorker {
           })
           .eq('id', billingTransaction.id);
 
+        if (billingTransactionUpdateError) {
+          const divergenceMessage = `Billing transaction ${billingTransaction.id} persisted but credit balance update failed: ${billingTransactionUpdateError.message}`;
+          await this.markBillingStateDivergence(disputeId, billingTransaction.id, divergenceMessage);
+          throw new Error(divergenceMessage);
+        }
+
         // Update dispute case
-        await supabaseAdmin
+        const { error: disputeBillingUpdateError } = await supabaseAdmin
           .from('dispute_cases')
           .update({
             billing_status: creditPreview.amountDueCents <= 0 ? 'credited' : (result.status || 'sent'),
@@ -460,6 +499,12 @@ class BillingWorker {
             updated_at: new Date().toISOString()
           })
           .eq('id', disputeId);
+
+        if (disputeBillingUpdateError) {
+          const divergenceMessage = `Billing transaction ${billingTransaction.id} persisted but dispute case update failed: ${disputeBillingUpdateError.message}`;
+          await this.markBillingStateDivergence(disputeId, billingTransaction.id, divergenceMessage);
+          throw new Error(divergenceMessage);
+        }
 
         logger.info('✅ [BILLING] Billing completed successfully', {
           disputeId,
@@ -579,6 +624,10 @@ class BillingWorker {
         userId,
         error: error.message
       });
+
+      if (billingTransactionId) {
+        await this.markBillingStateDivergence(disputeId, billingTransactionId, error.message);
+      }
 
       // Update status to failed
       await supabaseAdmin

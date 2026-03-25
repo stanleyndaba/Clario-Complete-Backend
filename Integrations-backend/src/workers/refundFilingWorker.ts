@@ -85,6 +85,13 @@ export interface FilingStats {
   errors: string[];
 }
 
+interface FilingSafetyCheckResult {
+  verified: boolean;
+  blocked: boolean;
+  reason: string;
+  detail: string;
+}
+
 type FilingDispatchResult = {
   id: string;
   mode: 'queued' | 'direct';
@@ -484,11 +491,15 @@ class RefundFilingWorker {
    * @param excludeCaseId Optional case ID to exclude (current case being processed)
    * @returns true if there's an active case, false if safe to file
    */
-  private async hasActiveClaimForOrder(orderId: string, sellerId: string, excludeCaseId?: string): Promise<boolean> {
+  private async hasActiveClaimForOrder(orderId: string, sellerId: string, excludeCaseId?: string): Promise<FilingSafetyCheckResult> {
     if (!orderId) {
-      // No order ID means we can't check for duplicates - log warning but allow
-      logger.warn(' [REFUND FILING] No order_id provided, cannot check for duplicates');
-      return false;
+      logger.warn(' [REFUND FILING] No order_id provided, cannot verify duplicate claim safety');
+      return {
+        verified: false,
+        blocked: true,
+        reason: 'missing_order_identifier',
+        detail: 'Order identifier is required to verify duplicate filing safety'
+      };
     }
 
     try {
@@ -509,15 +520,25 @@ class RefundFilingWorker {
         .not('filing_status', 'in', '(failed)');
 
       if (error) {
-        logger.warn(' [REFUND FILING] Could not check for duplicates, proceeding with caution', {
+        logger.warn(' [REFUND FILING] Could not verify duplicate claim safety', {
           orderId,
           error: error.message
         });
-        return false; // Fail open - if we can't check, proceed but log it
+        return {
+          verified: false,
+          blocked: true,
+          reason: 'duplicate_check_unavailable',
+          detail: `Duplicate claim verification failed: ${error.message}`
+        };
       }
 
       if (!activeCases || activeCases.length === 0) {
-        return false; // No active cases, safe to file
+        return {
+          verified: true,
+          blocked: false,
+          reason: 'clear',
+          detail: 'No active duplicate claim found for order'
+        };
       }
 
       // Check if any active case matches this order_id
@@ -533,18 +554,33 @@ class RefundFilingWorker {
             existingStatus: activeCase.status,
             existingFilingStatus: activeCase.filing_status
           });
-          return true; // Duplicate found!
+          return {
+            verified: true,
+            blocked: true,
+            reason: 'duplicate_active_claim_for_order',
+            detail: `Duplicate active claim exists for order ${orderId}`
+          };
         }
       }
 
-      return false; // No matching order_id in active cases
+      return {
+        verified: true,
+        blocked: false,
+        reason: 'clear',
+        detail: 'No active duplicate claim found for order'
+      };
 
     } catch (error: any) {
-      logger.warn(' [REFUND FILING] Error checking for duplicates', {
+      logger.warn(' [REFUND FILING] Error verifying duplicate claim safety', {
         orderId,
         error: error.message
       });
-      return false; // Fail open
+      return {
+        verified: false,
+        blocked: true,
+        reason: 'duplicate_check_error',
+        detail: `Duplicate claim verification error: ${error.message}`
+      };
     }
   }
 
@@ -571,11 +607,16 @@ class RefundFilingWorker {
     asin: string | undefined,
     sellerId: string,
     shipmentId?: string
-  ): Promise<boolean> {
+  ): Promise<FilingSafetyCheckResult> {
     // Need at least one identifier to check
     if (!orderId && !sku && !asin) {
-      logger.warn(' [REFUND FILING] No identifiers for reimbursement check, proceeding with caution');
-      return false;
+      logger.warn(' [REFUND FILING] No identifiers available for reimbursement safety verification');
+      return {
+        verified: false,
+        blocked: true,
+        reason: 'missing_reimbursement_identifiers',
+        detail: 'At least one order, SKU, or ASIN identifier is required to verify reimbursement safety'
+      };
     }
 
     try {
@@ -616,16 +657,26 @@ class RefundFilingWorker {
           logger.warn(' [REFUND FILING] ALREADY REIMBURSED by shipment_id - Amazon credited this shipment', {
             orderId, shipmentId
           });
-          return true;
+          return {
+            verified: true,
+            blocked: true,
+            reason: 'already_reimbursed',
+            detail: 'Amazon already reimbursed this shipment'
+          };
         }
       }
 
       if (error) {
-        logger.warn(' [REFUND FILING] Could not check reimbursement history, proceeding with caution', {
+        logger.warn(' [REFUND FILING] Could not verify reimbursement safety', {
           orderId,
           error: error.message
         });
-        return false; // Fail open
+        return {
+          verified: false,
+          blocked: true,
+          reason: 'reimbursement_check_unavailable',
+          detail: `Reimbursement verification failed: ${error.message}`
+        };
       }
 
       if (reimbursements && reimbursements.length > 0) {
@@ -637,17 +688,60 @@ class RefundFilingWorker {
           reimbursementAmount: reimbursement.amount,
           reimbursementDate: reimbursement.event_date
         });
-        return true; // Already reimbursed!
+        return {
+          verified: true,
+          blocked: true,
+          reason: 'already_reimbursed',
+          detail: 'Amazon has already reimbursed this item or shipment'
+        };
       }
 
-      return false; // No prior reimbursement found, safe to file
+      return {
+        verified: true,
+        blocked: false,
+        reason: 'clear',
+        detail: 'No prior reimbursement found'
+      };
 
     } catch (error: any) {
-      logger.warn(' [REFUND FILING] Error checking reimbursement history', {
+      logger.warn(' [REFUND FILING] Error verifying reimbursement safety', {
         orderId,
         error: error.message
       });
-      return false; // Fail open
+      return {
+        verified: false,
+        blocked: true,
+        reason: 'reimbursement_check_error',
+        detail: `Reimbursement verification error: ${error.message}`
+      };
+    }
+  }
+
+  private async blockCaseForSafety(
+    tenantId: string,
+    disputeId: string,
+    filingStatus: 'blocked' | 'duplicate_blocked' | 'already_reimbursed',
+    blockReason: string,
+    detail: string
+  ): Promise<void> {
+    const safetyQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+    const { error } = await safetyQuery
+      .update({
+        filing_status: filingStatus,
+        eligible_to_file: false,
+        block_reasons: [blockReason],
+        last_error: detail,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', disputeId);
+
+    if (error) {
+      logger.error('[ERROR] [REFUND FILING] Failed to mark case as safety blocked', {
+        disputeId,
+        filingStatus,
+        blockReason,
+        error: error.message
+      });
     }
   }
 
@@ -1498,76 +1592,58 @@ class RefundFilingWorker {
 
         // DUPLICATE PREVENTION: Check if this order already has an active case
         // This is CRITICAL - filing duplicates = Amazon support abuse flag
-        if (orderId) {
-          const hasDuplicate = await this.hasActiveClaimForOrder(orderId, disputeCase.seller_id, disputeCase.id);
-          if (hasDuplicate) {
-            logger.info('[SKIP] [REFUND FILING] Skipping case - duplicate claim exists for order', {
-              disputeId: disputeCase.id,
-              orderId
-            });
-            stats.skipped++;
+        const duplicateCheck = await this.hasActiveClaimForOrder(orderId, disputeCase.seller_id, disputeCase.id);
+        if (duplicateCheck.blocked) {
+          logger.info('[SKIP] [REFUND FILING] Blocking case because duplicate filing safety is not clear', {
+            disputeId: disputeCase.id,
+            orderId,
+            verified: duplicateCheck.verified,
+            reason: duplicateCheck.reason
+          });
+          stats.skipped++;
 
-            // Mark this case as duplicate to prevent future processing (tenant-scoped)
-            const duplicateQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-          const { error: dErr } = await duplicateQuery
-            .update({
-              filing_status: 'duplicate_blocked',
-              eligible_to_file: false,
-              block_reasons: ['duplicate_active_claim_for_order'],
-              last_error: `Duplicate active claim exists for order ${orderId}`,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', disputeCase.id);
+          await this.blockCaseForSafety(
+            tenantId,
+            disputeCase.id,
+            duplicateCheck.verified ? 'duplicate_blocked' : 'blocked',
+            duplicateCheck.reason,
+            duplicateCheck.detail
+          );
 
-            if (dErr) {
-              logger.error('[ERROR] [REFUND FILING] Failed to mark case as duplicate', { disputeId: disputeCase.id, error: dErr.message });
-            } else {
-              console.log(`DEBUG: Successfully marked duplicate case ${disputeCase.id}`);
-            }
-
-            continue; // Skip to next case
-          }
+          continue;
         }
 
         // DOUBLE-DIP PREVENTION: Check if item was already reimbursed
         // Filing for something Amazon already paid = "Theft" accusation
         // P6: Now also checks by shipment_id to catch FC sweep / General Adjustment credits
         const shipmentId = detectionEvidence.shipment_id || detectionEvidence.fba_shipment_id;
-        const alreadyReimbursed = await this.wasAlreadyReimbursed(
+        const reimbursementCheck = await this.wasAlreadyReimbursed(
           orderId,
           sku,
           asin,
           disputeCase.seller_id,
           shipmentId
         );
-        if (alreadyReimbursed) {
-          logger.info('[SKIP] [REFUND FILING] Skipping case - item already reimbursed by Amazon', {
+        if (reimbursementCheck.blocked) {
+          logger.info('[SKIP] [REFUND FILING] Blocking case because reimbursement safety is not clear', {
             disputeId: disputeCase.id,
             orderId,
             sku,
-            shipmentId
+            shipmentId,
+            verified: reimbursementCheck.verified,
+            reason: reimbursementCheck.reason
           });
           stats.skipped++;
 
-          // Mark this case to prevent future processing (tenant-scoped)
-          const reimbursedQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-          const { error: rErr } = await reimbursedQuery
-            .update({
-              filing_status: 'already_reimbursed',
-              eligible_to_file: false,
-              block_reasons: ['already_reimbursed'],
-              last_error: 'Amazon has already reimbursed this item or shipment',
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', disputeCase.id);
+          await this.blockCaseForSafety(
+            tenantId,
+            disputeCase.id,
+            reimbursementCheck.verified ? 'already_reimbursed' : 'blocked',
+            reimbursementCheck.reason,
+            reimbursementCheck.detail
+          );
 
-          if (rErr) {
-            logger.error('[ERROR] [REFUND FILING] Failed to mark case as already reimbursed', { disputeId: disputeCase.id, error: rErr.message });
-          } else {
-            console.log(`DEBUG: Successfully marked reimbursed case ${disputeCase.id}`);
-          }
-
-          continue; // Skip to next case
+          continue;
         }
 
         const confidenceScore = eligibility.confidenceScore || 0.85;
