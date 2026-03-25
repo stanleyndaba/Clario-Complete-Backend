@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import config from '../config/env';
 import logger from '../utils/logger';
+import { verifyAccessToken } from '../utils/authTokenVerifier';
 
 export interface AuthenticatedRequest extends Request {
   user?: {
@@ -39,10 +40,13 @@ export const authenticateToken = async (req: AuthenticatedRequest, res: Response
       return;
     }
 
-    // Try to verify as JWT token (standard authentication)
-    const decoded = jwt.verify(token, config.JWT_SECRET) as any;
+    // Accept either the backend JWT or a real Supabase access token
+    const decoded = await verifyAccessToken(token);
+    if (!decoded) {
+      throw new Error('Invalid or expired token');
+    }
     req.user = {
-      id: decoded.userId || decoded.id,
+      id: decoded.id,
       email: decoded.email,
       role: decoded.role
     };
@@ -91,14 +95,17 @@ export const optionalAuth = async (req: AuthenticatedRequest, res: Response, nex
       return;
     }
 
-    // Try to verify as JWT token
-    const decoded = jwt.verify(token, config.JWT_SECRET) as any;
+    // Accept either the backend JWT or a real Supabase access token
+    const decoded = await verifyAccessToken(token);
+    if (!decoded) {
+      throw new Error('Invalid or expired token');
+    }
     req.user = {
-      id: decoded.userId || decoded.id,
+      id: decoded.id,
       email: decoded.email,
       role: decoded.role
     };
-    (req as any).userId = decoded.userId || decoded.id;
+    (req as any).userId = decoded.id;
     next();
   } catch (error) {
     // Invalid token - still allow access as demo user

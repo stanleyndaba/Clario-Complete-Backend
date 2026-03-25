@@ -1401,6 +1401,8 @@ export class CSVIngestionService {
                 },
             });
 
+            await this.emitPersistedDetectionEvents(userId, tenantId, syncId, result.jobId);
+
             logger.info('🔍 [CSV INGESTION] Enhanced detection pipeline triggered', {
                 userId,
                 syncId,
@@ -1458,6 +1460,99 @@ export class CSVIngestionService {
                 throw fallbackError;
             }
         }
+    }
+
+    private async emitPersistedDetectionEvents(
+        userId: string,
+        tenantId: string,
+        syncId: string,
+        detectionJobId?: string
+    ): Promise<void> {
+        const detectionResults = await this.loadPersistedDetectionResults(userId, tenantId, syncId);
+        if (detectionResults.length === 0) {
+            logger.warn('⚠️ [CSV INGESTION] No persisted detection rows found for canonical event emission', {
+                userId,
+                tenantId,
+                syncId,
+                detectionJobId,
+            });
+            return;
+        }
+
+        const [{ default: sseHub }, { resolveTenantSlug }] = await Promise.all([
+            import('../utils/sseHub'),
+            import('../utils/tenantEventRouting'),
+        ]);
+        const tenantSlug = await resolveTenantSlug(tenantId);
+        const totalRecoverableValue = detectionResults.reduce((sum, row) => sum + (row.estimated_value || 0), 0);
+
+        sseHub.sendEvent(userId, 'detection.completed', {
+            tenant_id: tenantId,
+            tenant_slug: tenantSlug,
+            sync_id: syncId,
+            detection_id: detectionJobId || syncId,
+            claimsDetected: detectionResults.length,
+            totalRecoverableValue,
+            count: detectionResults.length,
+            amount: totalRecoverableValue,
+            currency: 'USD',
+            status: 'completed',
+            message: `Detection complete: ${detectionResults.length} persisted claims detected`
+        });
+
+        for (const detection of detectionResults) {
+            sseHub.sendEvent(userId, 'detection.created', {
+                tenant_id: tenantId,
+                tenant_slug: tenantSlug,
+                sync_id: syncId,
+                detection_id: detection.id,
+                entity_id: detection.id,
+                anomaly_type: detection.anomaly_type,
+                amount: detection.estimated_value || 0,
+                estimated_value: detection.estimated_value || 0,
+                currency: detection.currency || 'USD',
+                status: detection.status || 'detected',
+                message: `Detection created for ${detection.anomaly_type || 'claim'}`,
+                created_at: detection.created_at
+            });
+        }
+    }
+
+    private async loadPersistedDetectionResults(
+        userId: string,
+        tenantId: string,
+        syncId: string
+    ): Promise<Array<{
+        id: string;
+        anomaly_type: string | null;
+        estimated_value: number | null;
+        currency: string | null;
+        status: string | null;
+        created_at: string | null;
+    }>> {
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            const { data, error } = await supabaseAdmin
+                .from('detection_results')
+                .select('id, anomaly_type, estimated_value, currency, status, created_at')
+                .eq('seller_id', userId)
+                .eq('tenant_id', tenantId)
+                .eq('sync_id', syncId)
+                .order('created_at', { ascending: true });
+
+            if (error) {
+                throw new Error(`Failed to load persisted detection results: ${error.message}`);
+            }
+
+            if ((data || []).length > 0) {
+                return data;
+            }
+
+            if (attempt < 3) {
+                await new Promise(resolve => setTimeout(resolve, 250 * attempt));
+            }
+        }
+
+        return [];
     }
 
     private async recordDetectionQueueStatus(

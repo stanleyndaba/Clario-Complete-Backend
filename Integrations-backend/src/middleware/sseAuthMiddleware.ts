@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import config from '../config/env';
 import logger from '../utils/logger';
 import { normalizeAgent10EventPayload } from '../utils/agent10Event';
+import { verifyAccessToken } from '../utils/authTokenVerifier';
 
 export interface AuthenticatedSSERequest extends Request {
   user?: {
@@ -52,11 +53,11 @@ function applySSEHeaders(req: AuthenticatedSSERequest, res: Response): void {
  * JWT authentication middleware for Server-Sent Events
  * Validates JWT token and injects seller_id for data filtering
  */
-export const authenticateSSE = (
+export const authenticateSSE = async (
   req: AuthenticatedSSERequest,
   res: Response,
   next: NextFunction
-): void => {
+): Promise<void> => {
   try {
     // Get origin for CORS - validate against allowed origins
     const origin = (req as any).headers?.origin;
@@ -127,10 +128,13 @@ export const authenticateSSE = (
     }
 
     try {
-      const decoded = jwt.verify(token, config.JWT_SECRET) as any;
+      const decoded = await verifyAccessToken(token);
+      if (!decoded) {
+        throw new Error('Invalid or expired token');
+      }
 
       // Normalize user ID - handle different token formats (id, user_id, userId)
-      const userId = decoded.id || decoded.user_id || decoded.userId;
+      const userId = decoded.id;
       const email = decoded.email || '';
 
       if (!userId) {

@@ -1,38 +1,13 @@
-import { Router, Request, Response } from 'express';
-import jwt from 'jsonwebtoken';
-import config from '../config/env';
+import { Router } from 'express';
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
+import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifier';
 
 const router = Router();
 
-// Helper to extract JWT from cookie or Authorization header
-function extractToken(req: Request): string | null {
-  // Priority 1: Check cookie (session_token)
-  const cookieToken = req.cookies?.session_token;
-  if (cookieToken) return cookieToken;
-  
-  // Priority 2: Check Authorization header
-  const authHeader = req.headers['authorization'];
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    return authHeader.split(' ')[1];
-  }
-  
-  return null;
-}
-
-// Helper to verify and decode JWT
-function verifyToken(token: string): any {
-  try {
-    return jwt.verify(token, config.JWT_SECRET);
-  } catch (error) {
-    return null;
-  }
-}
-
 router.get('/me', async (req, res) => {
   try {
-    const token = extractToken(req);
-    
+    const token = extractRequestToken(req);
+
     if (!token) {
       res.status(401).json({
         success: false,
@@ -41,7 +16,7 @@ router.get('/me', async (req, res) => {
       return;
     }
 
-    const decoded = verifyToken(token);
+    const decoded = await verifyAccessToken(token);
     if (!decoded) {
       res.status(401).json({
         success: false,
@@ -50,9 +25,8 @@ router.get('/me', async (req, res) => {
       return;
     }
 
-    // Extract user_id from token (could be user_id or userId)
-    const user_id = decoded.user_id || decoded.userId || decoded.id;
-    
+    const user_id = decoded.id;
+
     if (!user_id) {
       res.status(401).json({
         success: false,
@@ -205,7 +179,7 @@ router.get('/me', async (req, res) => {
     }
 
     const resolvedEmail = userRecord?.email || decoded.email || null;
-    const resolvedName = userRecord?.company_name || decoded.name || decoded.company_name || null;
+    const resolvedName = userRecord?.company_name || null;
 
     res.json({
       id: userRecord?.id || safeUserId,
@@ -221,8 +195,8 @@ router.get('/me', async (req, res) => {
       paypal_email: userRecord?.paypal_email || null,
       paypal_payment_token: userRecord?.paypal_payment_token || null,
       billing_provider: 'paypal',
-      created_at: userRecord?.created_at || decoded.created_at || null,
-      last_login: userRecord?.last_login_at || decoded.last_login || null,
+      created_at: userRecord?.created_at || null,
+      last_login: userRecord?.last_login_at || null,
       tenant_id: tenant?.id || userRecord?.tenant_id || null,
       tenant_slug: tenant?.slug || null,
       tenant_name: tenant?.name || null,
@@ -238,7 +212,7 @@ router.get('/me', async (req, res) => {
 
 router.get('/user', async (req, res) => {
   try {
-    const token = extractToken(req);
+    const token = extractRequestToken(req);
 
     if (!token) {
       res.status(401).json({
@@ -248,7 +222,7 @@ router.get('/user', async (req, res) => {
       return;
     }
 
-    const decoded = verifyToken(token);
+    const decoded = await verifyAccessToken(token);
     if (!decoded) {
       res.status(401).json({
         success: false,
@@ -257,13 +231,12 @@ router.get('/user', async (req, res) => {
       return;
     }
 
-    // Mock user data for now
     res.json({
       success: true,
       user: {
-        id: decoded.user_id || decoded.userId || decoded.id || 'user-123',
+        id: decoded.id || 'user-123',
         email: decoded.email || 'user@example.com',
-        name: decoded.name || 'Test User'
+        name: 'Test User'
       }
     });
   } catch (error: any) {
@@ -276,7 +249,6 @@ router.get('/user', async (req, res) => {
 
 router.get('/profile', async (_req, res) => {
   try {
-    // Mock profile data
     res.json({
       success: true,
       profile: {
@@ -297,8 +269,7 @@ router.get('/profile', async (_req, res) => {
 router.post('/profile', async (req, res) => {
   try {
     const { name, company } = req.body;
-    
-    // Mock profile update
+
     res.json({
       success: true,
       message: 'Profile updated successfully',
@@ -319,7 +290,6 @@ router.post('/profile', async (req, res) => {
 
 router.post('/logout', async (_req, res) => {
   try {
-    // Clear both possible cookie names
     res.clearCookie('session_token', { path: '/', sameSite: 'none', secure: true, httpOnly: true });
     res.clearCookie('session', { path: '/', sameSite: 'none', secure: true });
     res.json({ ok: true, message: 'Logged out successfully' });
@@ -330,7 +300,6 @@ router.post('/logout', async (_req, res) => {
 
 router.get('/billing', async (_req, res) => {
   try {
-    // Mock billing data
     res.json({
       success: true,
       billing: {
