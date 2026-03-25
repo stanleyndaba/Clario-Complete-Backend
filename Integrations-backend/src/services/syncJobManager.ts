@@ -12,6 +12,7 @@ import {
   SyncCoverage,
   SyncCoverageReport
 } from '../utils/syncFingerprint';
+import { resolveTenantContextForUser } from '../utils/tenantEventRouting';
 
 // Standardized status values - use database values consistently
 export type SyncStatus = 'idle' | 'running' | 'detecting' | 'completed' | 'failed' | 'cancelled';
@@ -19,6 +20,8 @@ export type SyncStatus = 'idle' | 'running' | 'detecting' | 'completed' | 'faile
 export interface SyncJobStatus {
   syncId: string;
   userId: string;
+  tenantId?: string;
+  tenantSlug?: string;
   storeId?: string; // Track which store this sync belongs to
   status: SyncStatus;
   progress: number;
@@ -61,6 +64,7 @@ class SyncJobManager {
    */
   async startSync(userId: string, storeId?: string): Promise<{ syncId: string; status: string }> {
     const syncId = `sync_${userId}_${Date.now()}`;
+    const tenantContext = await resolveTenantContextForUser(userId);
 
     // Strict truth: sync is allowed only with a valid DB-backed Amazon token.
     const isConnected = await tokenManager.isTokenValid(userId, 'amazon', storeId);
@@ -231,6 +235,8 @@ class SyncJobManager {
     const syncStatus: SyncJobStatus = {
       syncId,
       userId,
+      tenantId: tenantContext.tenantId,
+      tenantSlug: tenantContext.tenantSlug,
       storeId,
       status: 'running',
       progress: 0,
@@ -270,6 +276,8 @@ class SyncJobManager {
     const sseStarted = sseHub.sendEvent(userId, 'sync.started', {
       type: 'sync',
       status: 'started',
+      tenant_id: syncStatus.tenantId,
+      tenant_slug: syncStatus.tenantSlug,
       syncId: syncId,
       message: 'Data sync started',
       timestamp: new Date().toISOString()
@@ -307,6 +315,8 @@ class SyncJobManager {
     sseHub.sendEvent(userId, 'message', {
       type: 'sync',
       status: 'started',
+      tenant_id: syncStatus.tenantId,
+      tenant_slug: syncStatus.tenantSlug,
       syncId: syncId,
       message: 'Data sync started',
       timestamp: new Date().toISOString()
@@ -838,6 +848,8 @@ class SyncJobManager {
         const sseCompleted = sseHub.sendEvent(userId, 'sync.completed', {
           type: 'sync',
           status: 'completed',
+          tenant_id: syncStatus.tenantId,
+          tenant_slug: syncStatus.tenantSlug,
           syncId: syncId,
           ordersProcessed: syncStatus.ordersProcessed || 0,
           totalOrders: syncStatus.totalOrders || 0,
@@ -895,6 +907,8 @@ class SyncJobManager {
         sseHub.sendEvent(userId, 'message', {
           type: 'sync',
           status: 'completed',
+          tenant_id: syncStatus.tenantId,
+          tenant_slug: syncStatus.tenantSlug,
           syncId: syncId,
           ordersProcessed: syncStatus.ordersProcessed || 0,
           totalOrders: syncStatus.totalOrders || 0,
@@ -950,6 +964,8 @@ class SyncJobManager {
         const sseFailed = sseHub.sendEvent(userId, 'sync.failed', {
           type: 'sync',
           status: 'failed',
+          tenant_id: syncStatus.tenantId,
+          tenant_slug: syncStatus.tenantSlug,
           syncId: syncId,
           error: error.message,
           message: `Sync failed: ${error.message}`,
@@ -988,6 +1004,8 @@ class SyncJobManager {
         sseHub.sendEvent(userId, 'message', {
           type: 'sync',
           status: 'failed',
+          tenant_id: syncStatus.tenantId,
+          tenant_slug: syncStatus.tenantSlug,
           syncId: syncId,
           error: error.message,
           message: `Sync failed: ${error.message}`,
@@ -1768,6 +1786,8 @@ class SyncJobManager {
     }
 
     const sent = sseHub.sendEvent(userId, 'sync_progress', {
+      tenant_id: syncStatus.tenantId,
+      tenant_slug: syncStatus.tenantSlug,
       syncId: syncStatus.syncId,
       status: syncStatus.status,
       progress: syncStatus.progress,

@@ -109,7 +109,7 @@ router.get('/status', (req: AuthenticatedSSERequest, res) => {
   });
 });
 
-router.get('/recent', (req: AuthenticatedSSERequest, res) => {
+router.get('/recent', async (req: AuthenticatedSSERequest, res) => {
   const userId = req.user?.id;
   if (!userId) {
     return res.status(401).json({
@@ -123,7 +123,7 @@ router.get('/recent', (req: AuthenticatedSSERequest, res) => {
 
   return res.json({
     success: true,
-    events: sseHub.getRecentEvents(userId, tenantSlug, limit)
+    events: await sseHub.getRecentEvents(userId, tenantSlug, limit)
   });
 });
 

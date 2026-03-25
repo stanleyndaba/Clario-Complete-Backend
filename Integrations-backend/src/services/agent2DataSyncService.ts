@@ -37,6 +37,7 @@ import { validateClaim } from '../utils/claimValidation';
 import { preventDuplicateClaim } from '../utils/duplicateDetection';
 import { withRetry, toSyncError } from '../utils/retryUtils';
 import { createCoverageReport, SyncCoverageReport } from '../utils/syncFingerprint';
+import { resolveTenantSlug } from '../utils/tenantEventRouting';
 
 export interface SyncResult {
   success: boolean;
@@ -2588,6 +2589,7 @@ export class Agent2DataSyncService {
         // This is critical because sync completes before detection finishes
         try {
           const sseHub = (await import('../utils/sseHub')).default;
+          const tenantSlug = await resolveTenantSlug(tenantId);
 
           // Calculate total recoverable value from detection results
           const totalRecoverableValue = detectionResults.reduce((sum, det) => {
@@ -2597,6 +2599,8 @@ export class Agent2DataSyncService {
           sseHub.sendEvent(userId, 'detection.completed', {
             type: 'detection',
             status: 'completed',
+            tenant_id: tenantId,
+            tenant_slug: tenantSlug,
             syncId: storageSyncId,
             claimsDetected: detectionResults.length,
             totalRecoverableValue, // Include actual calculated value
@@ -2606,6 +2610,7 @@ export class Agent2DataSyncService {
 
           sseHub.sendEvent(userId, 'detection.created', {
             tenant_id: tenantId,
+            tenant_slug: tenantSlug,
             sync_id: storageSyncId,
             detection_id: storageSyncId,
             entity_id: storageSyncId,
@@ -2622,6 +2627,8 @@ export class Agent2DataSyncService {
           sseHub.sendEvent(userId, 'message', {
             type: 'detection',
             status: 'completed',
+            tenant_id: tenantId,
+            tenant_slug: tenantSlug,
             syncId: storageSyncId,
             claimsDetected: detectionResults.length,
             totalRecoverableValue, // Include actual calculated value

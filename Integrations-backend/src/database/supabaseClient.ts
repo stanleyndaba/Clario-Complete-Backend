@@ -35,6 +35,7 @@ if (!isRealDatabaseConfigured) {
     support_requests: [],
     recovery_lifecycle_logs: [],
     detection_results: [],
+    recent_platform_events: [],
     user_notes: [],
     evidence_sources: []
   };

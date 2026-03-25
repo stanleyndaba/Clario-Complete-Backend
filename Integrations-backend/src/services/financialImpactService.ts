@@ -12,6 +12,7 @@ import { supabaseAdmin } from '../database/supabaseClient';
 import sseHub from '../utils/sseHub';
 import logger from '../utils/logger';
 import cacheService from './cacheService';
+import { resolveTenantSlug } from '../utils/tenantEventRouting';
 
 // Impact status lifecycle
 export enum ImpactStatus {
@@ -111,7 +112,7 @@ class FinancialImpactService {
             await cacheService.del(`impact:dashboard:${event.tenantId || 'default'}:${event.userId}`);
 
             // 3. Emit real-time SSE event
-            this.emitImpactEvent(event);
+            await this.emitImpactEvent(event);
 
             // 4. Log for observability
             logger.info('[IMPACT] Financial event recorded', {
@@ -127,14 +128,15 @@ class FinancialImpactService {
                 detectionId: event.detectionId
             });
             // Still emit SSE even if DB fails
-            this.emitImpactEvent(event);
+            await this.emitImpactEvent(event);
         }
     }
 
     /**
      * Emit real-time SSE event for financial impact
      */
-    private emitImpactEvent(event: FinancialImpactEvent): void {
+    private async emitImpactEvent(event: FinancialImpactEvent): Promise<void> {
+        const tenantSlug = await resolveTenantSlug(event.tenantId);
         const ssePayload = {
             type: 'financial_impact',
             data: {
@@ -146,6 +148,8 @@ class FinancialImpactService {
                 anomalyType: event.anomalyType,
                 message: this.getStatusMessage(event)
             },
+            tenant_id: event.tenantId,
+            tenant_slug: tenantSlug,
             timestamp: event.timestamp
         };
 
@@ -418,10 +422,13 @@ class FinancialImpactService {
      */
     async emitMetricsUpdate(userId: string, tenantId?: string): Promise<void> {
         const metrics = await this.getUserMetrics(userId, tenantId);
+        const tenantSlug = await resolveTenantSlug(tenantId);
 
         sseHub.sendEvent(userId, 'metrics', {
             type: 'financial_metrics',
             data: metrics,
+            tenant_id: tenantId,
+            tenant_slug: tenantSlug,
             timestamp: new Date().toISOString()
         });
     }

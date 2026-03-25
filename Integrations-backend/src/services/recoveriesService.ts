@@ -6,6 +6,7 @@
 
 import axios from 'axios';
 import logger from '../utils/logger';
+import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import { supabaseAdmin } from '../database/supabaseClient';
 
 export interface PayoutMatch {
@@ -465,8 +466,10 @@ class RecoveriesService {
 
       try {
         const sseHub = (await import('../utils/sseHub')).default;
+        const tenantSlug = await resolveTenantSlug(tenantId);
         sseHub.sendEvent(userId, 'payout.detected', {
           tenant_id: tenantId,
+          tenant_slug: tenantSlug,
           dispute_case_id: match.disputeId,
           recovery_id: recovery.id,
           amount: match.actualAmount,
@@ -481,6 +484,7 @@ class RecoveriesService {
 
         sseHub.sendEvent(userId, 'detection.payout_received', {
           tenant_id: tenantId,
+          tenant_slug: tenantSlug,
           dispute_case_id: match.disputeId,
           recovery_id: recovery.id,
           claimId: match.disputeId,

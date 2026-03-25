@@ -1,11 +1,14 @@
 import { Response } from 'express';
+import { supabaseAdmin } from '../database/supabaseClient';
 import logger from './logger';
 import { buildCanonicalLiveEvent, CanonicalLiveEvent } from './agent10Event';
+import { getCachedTenantSlug, resolveTenantSlug } from './tenantEventRouting';
 
 class SSEHub {
   private connections: Map<string, Map<string, Set<Response>>> = new Map();
   private eventHistory: Map<string, CanonicalLiveEvent[]> = new Map();
   private readonly maxHistorySize = 250;
+  private readonly replayRetentionHours = 72;
 
   addConnection(userId: string, res: Response, tenantSlug: string = 'default'): void {
     if (!this.connections.has(userId)) {
@@ -96,10 +99,15 @@ class SSEHub {
   sendEvent(userId: string, event: string, data: any, tenantSlug?: string): boolean {
     const userMap = this.connections.get(userId);
     const rawData = data && typeof data === 'object' ? data : {};
+    const inferredTenantId = rawData?.tenant_id || rawData?.tenantId;
+    const cachedTenantSlug = tenantSlug || rawData?.tenantSlug || rawData?.tenant_slug || rawData?.slug || getCachedTenantSlug(inferredTenantId);
     const normalized = buildCanonicalLiveEvent(event, rawData, {
       userId,
-      tenantSlug: tenantSlug || rawData?.tenantSlug || rawData?.tenant_slug || rawData?.slug
+      tenantSlug: cachedTenantSlug,
+      tenantId: inferredTenantId
     });
+
+    void this.persistRecentEvent(normalized);
 
     const history = this.eventHistory.get(userId) || [];
     history.push(normalized);
@@ -114,7 +122,7 @@ class SSEHub {
 
     // Determine target connections
     let targetSets: Set<Response>[] = [];
-    const targetSlug = tenantSlug || rawData?.tenantSlug || rawData?.tenant_slug || rawData?.slug;
+    const targetSlug = cachedTenantSlug;
 
     if (targetSlug) {
       const set = userMap.get(targetSlug);
@@ -162,7 +170,105 @@ class SSEHub {
     return successCount > 0;
   }
 
-  getRecentEvents(userId: string, tenantSlug?: string, limit: number = 50): CanonicalLiveEvent[] {
+  private async persistRecentEvent(event: CanonicalLiveEvent): Promise<void> {
+    if (!supabaseAdmin || typeof supabaseAdmin.from !== 'function') {
+      return;
+    }
+
+    try {
+      const tenantSlug = event.tenant_slug || await resolveTenantSlug(event.tenant_id);
+      const persistedEvent = tenantSlug && !event.tenant_slug
+        ? {
+            ...event,
+            tenant_slug: tenantSlug,
+            payload: {
+              ...event.payload,
+              tenant_slug: tenantSlug
+            }
+          }
+        : event;
+
+      const { error } = await supabaseAdmin
+        .from('recent_platform_events')
+        .insert({
+          user_id: persistedEvent.user_id,
+          tenant_id: persistedEvent.tenant_id || null,
+          tenant_slug: persistedEvent.tenant_slug || null,
+          event_type: persistedEvent.event_type,
+          entity_type: persistedEvent.entity_type || null,
+          entity_id: persistedEvent.entity_id || null,
+          payload: persistedEvent.payload,
+          created_at: persistedEvent.timestamp
+        });
+
+      if (error) {
+        throw error;
+      }
+
+      const retentionCutoff = new Date(Date.now() - this.replayRetentionHours * 60 * 60 * 1000).toISOString();
+      const { error: cleanupError } = await supabaseAdmin
+        .from('recent_platform_events')
+        .delete()
+        .lt('created_at', retentionCutoff);
+
+      if (cleanupError) {
+        logger.debug('Failed to trim recent platform event replay buffer', {
+          error: cleanupError.message
+        });
+      }
+    } catch (error: any) {
+      logger.warn('Failed to persist recent live event for replay', {
+        eventType: event.event_type,
+        entityId: event.entity_id,
+        error: error?.message || error
+      });
+    }
+  }
+
+  async getRecentEvents(userId: string, tenantSlug?: string, limit: number = 50): Promise<CanonicalLiveEvent[]> {
+    if (supabaseAdmin && typeof supabaseAdmin.from === 'function') {
+      try {
+        let query = supabaseAdmin
+          .from('recent_platform_events')
+          .select('user_id, tenant_id, tenant_slug, event_type, entity_type, entity_id, payload, created_at')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false })
+          .limit(Math.max(1, Math.min(limit, this.maxHistorySize)));
+
+        if (tenantSlug) {
+          query = query.eq('tenant_slug', tenantSlug);
+        }
+
+        const { data, error } = await query;
+        if (error) {
+          throw error;
+        }
+
+        if (Array.isArray(data) && data.length > 0) {
+          return data
+            .slice()
+            .reverse()
+            .map((row: any) =>
+              buildCanonicalLiveEvent(row.event_type, row.payload || {}, {
+                eventType: row.event_type,
+                userId: row.user_id,
+                tenantId: row.tenant_id || undefined,
+                tenantSlug: row.tenant_slug || undefined,
+                timestamp: row.created_at,
+                entityType: row.entity_type || undefined,
+                entityId: row.entity_id || undefined
+              })
+            );
+        }
+      } catch (error: any) {
+        logger.warn('Failed to load durable recent live events, falling back to memory', {
+          userId,
+          tenantSlug,
+          error: error?.message || error
+        });
+      }
+    }
+
     const history = this.eventHistory.get(userId) || [];
     const normalizedSlug = String(tenantSlug || '').trim();
 

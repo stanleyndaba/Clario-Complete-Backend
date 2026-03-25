@@ -24,6 +24,7 @@ import {
   recordRejectionMemory
 } from '../services/rejectionClassifier';
 import { evaluateAndPersistCaseEligibility } from '../services/agent7EligibilityService';
+import { resolveTenantSlug } from '../utils/tenantEventRouting';
 
 
 /**
@@ -2159,8 +2160,10 @@ class RefundFilingWorker {
 
         try {
           const sseHub = (await import('../utils/sseHub')).default;
+          const tenantSlug = await resolveTenantSlug(disputeCase.tenant_id);
           sseHub.sendEvent(disputeCase.seller_id, 'filing.submitted', {
             tenant_id: disputeCase.tenant_id,
+            tenant_slug: tenantSlug,
             dispute_case_id: disputeId,
             detection_id: result.submission_id || disputeId,
             submission_id: result.submission_id,
@@ -2454,8 +2457,10 @@ class RefundFilingWorker {
         if (disputeCase?.seller_id) {
           try {
             const sseHub = (await import('../utils/sseHub')).default;
+            const tenantSlug = await resolveTenantSlug(disputeCase.tenant_id);
             sseHub.sendEvent(disputeCase.seller_id, 'case.status_updated', {
               tenant_id: disputeCase.tenant_id,
+              tenant_slug: tenantSlug,
               dispute_case_id: disputeId,
               detection_id: disputeCase.detection_result_id,
               previous_status: previousStatus,

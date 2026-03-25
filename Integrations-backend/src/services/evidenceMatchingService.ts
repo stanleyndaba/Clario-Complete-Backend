@@ -5,6 +5,7 @@
 
 import axios, { AxiosError } from 'axios';
 import logger from '../utils/logger';
+import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import smartPromptService from './smartPromptService';
 import { buildPythonServiceAuthHeader } from '../utils/pythonServiceAuth';
@@ -1384,8 +1385,10 @@ class EvidenceMatchingService {
 
     try {
       const sseHub = (await import('../utils/sseHub')).default;
+      const tenantSlug = await resolveTenantSlug(tenantId);
       sseHub.sendEvent(detectionResult.seller_id, 'case.created', {
         tenant_id: tenantId,
+        tenant_slug: tenantSlug,
         dispute_case_id: createdCase.id,
         case_number: createdCase.case_number,
         detection_id: result.dispute_id,
@@ -1443,8 +1446,10 @@ class EvidenceMatchingService {
 
       if (disputeCase?.seller_id) {
         const sseHub = (await import('../utils/sseHub')).default;
+        const tenantSlug = await resolveTenantSlug(tenantId);
         sseHub.sendEvent(disputeCase.seller_id, 'evidence.linked', {
           tenant_id: tenantId,
+          tenant_slug: tenantSlug,
           dispute_case_id: disputeCaseId,
           detection_id: disputeCase.detection_result_id,
           document_id: evidenceAttachment.document_id,
