@@ -35,13 +35,32 @@ export interface AdaptiveDecisionProfile {
 }
 
 interface AdaptiveDecisionInput {
-  tenantId: string;
+  tenantId?: string | null;
   userId: string;
   anomalyType: string;
   claimAmount: number;
   confidenceScore: number;
   evidenceStrength: number;
   daysUntilExpiry?: number | null;
+}
+
+export interface AdaptiveDetectionDecision {
+  adjustedConfidence: number;
+  suppressionThreshold: number;
+  historicalApprovalRate: number | null;
+  sampleSize: number;
+  suppressed: boolean;
+  adjustments: string[];
+}
+
+export interface AdaptiveEvidenceDecision {
+  adjustedConfidence: number;
+  autoSubmitThreshold: number;
+  smartPromptThreshold: number;
+  successProbability: number;
+  dominantRejectionCategory: RejectionCategory | null;
+  route: 'auto_submit' | 'smart_prompt' | 'no_action';
+  adjustments: string[];
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -142,12 +161,12 @@ export function computeEvidenceStrengthSnapshot(params: {
 }
 
 async function loadHistoricalOutcomes(params: {
-  tenantId: string;
+  tenantId?: string | null;
   userId: string;
   anomalyType: string;
 }): Promise<any[]> {
   const since = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
-  const { data, error } = await supabaseAdmin
+  let query = supabaseAdmin
     .from('detection_outcomes')
     .select(`
       actual_outcome,
@@ -161,12 +180,17 @@ async function loadHistoricalOutcomes(params: {
       outcome_recorded_at,
       created_at
     `)
-    .eq('tenant_id', params.tenantId)
     .eq('seller_id', params.userId)
     .eq('anomaly_type', params.anomalyType)
     .gte('created_at', since)
     .order('created_at', { ascending: false })
     .limit(100);
+
+  if (params.tenantId) {
+    query = query.eq('tenant_id', params.tenantId);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     logger.warn('[CLIS] Failed to load historical outcomes', {
@@ -340,6 +364,127 @@ export async function getAdaptiveDecisionProfile(input: AdaptiveDecisionInput): 
     dominantRejectionCategory,
     priorityScore,
     filingStrategy,
+    adjustments
+  };
+}
+
+export async function getAdaptiveDetectionDecision(input: {
+  tenantId?: string | null;
+  userId: string;
+  anomalyType: string;
+  rawConfidence: number;
+  estimatedValue: number;
+}): Promise<AdaptiveDetectionDecision> {
+  const outcomes = await loadHistoricalOutcomes(input);
+  const resolvedOutcomes = outcomes.filter((row) => normalize(row.actual_outcome) !== 'pending');
+  const positiveOutcomes = resolvedOutcomes.filter((row) => ['approved', 'partial'].includes(normalize(row.actual_outcome)));
+  const sampleSize = resolvedOutcomes.length;
+  const historicalApprovalRate = sampleSize > 0 ? positiveOutcomes.length / sampleSize : null;
+
+  let suppressionThreshold = 0.45;
+  let adjustedConfidence = input.rawConfidence;
+  const adjustments: string[] = [];
+
+  if (sampleSize >= 5 && historicalApprovalRate !== null) {
+    if (historicalApprovalRate < 0.35) {
+      adjustedConfidence -= 0.12;
+      suppressionThreshold = 0.62;
+      adjustments.push('historically_low_yield');
+    } else if (historicalApprovalRate < 0.5) {
+      adjustedConfidence -= 0.06;
+      suppressionThreshold = 0.54;
+      adjustments.push('yield_penalty');
+    } else if (historicalApprovalRate >= 0.8) {
+      adjustedConfidence += 0.05;
+      suppressionThreshold = 0.38;
+      adjustments.push('yield_boost');
+    }
+  }
+
+  if (input.estimatedValue < 25) {
+    adjustedConfidence -= 0.03;
+    adjustments.push('low_value_penalty');
+  }
+
+  adjustedConfidence = clamp(adjustedConfidence, 0.05, 0.99);
+  const suppressed = sampleSize >= 8 && historicalApprovalRate !== null && historicalApprovalRate < 0.3 && adjustedConfidence < suppressionThreshold;
+
+  return {
+    adjustedConfidence,
+    suppressionThreshold,
+    historicalApprovalRate,
+    sampleSize,
+    suppressed,
+    adjustments
+  };
+}
+
+export async function getAdaptiveEvidenceDecision(input: {
+  tenantId?: string | null;
+  userId: string;
+  anomalyType: string;
+  baseConfidence: number;
+  claimAmount: number;
+  evidenceStrength: number;
+}): Promise<AdaptiveEvidenceDecision> {
+  const profile = await getAdaptiveDecisionProfile({
+    tenantId: input.tenantId,
+    userId: input.userId,
+    anomalyType: input.anomalyType,
+    claimAmount: input.claimAmount,
+    confidenceScore: input.baseConfidence,
+    evidenceStrength: input.evidenceStrength
+  });
+
+  let autoSubmitThreshold = 0.85;
+  let smartPromptThreshold = 0.5;
+  let adjustedConfidence = input.baseConfidence;
+  const adjustments = [...profile.adjustments];
+
+  if (profile.dominantRejectionCategory === 'MISSING_DOCUMENT') {
+    autoSubmitThreshold += 0.05;
+    smartPromptThreshold += 0.03;
+    adjustments.push('document_heavy_threshold');
+  }
+
+  if (profile.dominantRejectionCategory === 'INSUFFICIENT_EVIDENCE') {
+    autoSubmitThreshold += 0.04;
+    smartPromptThreshold += 0.02;
+    adjustments.push('evidence_penalty_threshold');
+  }
+
+  if ((profile.historicalApprovalRate ?? 0.6) < 0.45 && profile.sampleSize >= 5) {
+    autoSubmitThreshold += 0.04;
+    smartPromptThreshold += 0.03;
+    adjustedConfidence -= 0.04;
+    adjustments.push('low_approval_penalty');
+  }
+
+  if ((profile.historicalApprovalRate ?? 0) >= 0.8 && profile.sampleSize >= 8) {
+    adjustedConfidence += 0.04;
+    adjustments.push('high_approval_boost');
+  }
+
+  if (input.evidenceStrength < 0.6) {
+    adjustedConfidence -= 0.06;
+    adjustments.push('weak_evidence_penalty');
+  }
+
+  adjustedConfidence = clamp(adjustedConfidence, 0.05, 0.99);
+  autoSubmitThreshold = clamp(autoSubmitThreshold, 0.78, 0.97);
+  smartPromptThreshold = clamp(smartPromptThreshold, 0.45, 0.8);
+
+  let route: 'auto_submit' | 'smart_prompt' | 'no_action' = 'no_action';
+  if (adjustedConfidence >= autoSubmitThreshold) route = 'auto_submit';
+  else if (adjustedConfidence >= smartPromptThreshold) route = 'smart_prompt';
+
+  return {
+    adjustedConfidence,
+    autoSubmitThreshold,
+    smartPromptThreshold,
+    successProbability: profile.successProbability,
+    dominantRejectionCategory: profile.dominantRejectionCategory,
+    route,
     adjustments
   };
 }

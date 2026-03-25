@@ -7,6 +7,7 @@ import axios, { AxiosError } from 'axios';
 import logger from '../utils/logger';
 import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
+import { getAdaptiveEvidenceDecision } from './closedLoopIntelligenceService';
 import smartPromptService from './smartPromptService';
 import { buildPythonServiceAuthHeader } from '../utils/pythonServiceAuth';
 
@@ -20,6 +21,16 @@ export interface MatchingResult {
   matched_fields: string[];
   reasoning: string;
   action_taken: 'auto_submit' | 'smart_prompt' | 'no_action';
+  anomaly_type?: string;
+  claim_amount?: number;
+  adaptive_policy?: {
+    adjusted_confidence: number;
+    auto_submit_threshold: number;
+    smart_prompt_threshold: number;
+    success_probability: number;
+    dominant_rejection_category: string | null;
+    adjustments: string[];
+  };
 }
 
 export interface MatchingJobResponse {
@@ -675,7 +686,9 @@ class EvidenceMatchingService {
             match_type: matchType,
             matched_fields: [`${matchType}:${matchedId}`],
             reasoning: `Exact ${matchType.toUpperCase().replace('_', ' ')} match found in document ${bestDoc.filename}`,
-            action_taken: confidence >= this.autoSubmitThreshold ? 'auto_submit' : 'smart_prompt'
+            action_taken: confidence >= this.autoSubmitThreshold ? 'auto_submit' : 'smart_prompt',
+            anomaly_type: claim.claim_type,
+            claim_amount: claim.amount
           });
 
           logger.info('✅ [EVIDENCE MATCHING] Found match', {
@@ -1012,11 +1025,46 @@ class EvidenceMatchingService {
 
     for (const result of results) {
       try {
-        if (result.final_confidence >= this.autoSubmitThreshold) {
+        const adaptiveEvidenceDecision = await getAdaptiveEvidenceDecision({
+          tenantId,
+          userId,
+          anomalyType: result.anomaly_type || 'generic',
+          baseConfidence: result.final_confidence,
+          claimAmount: Number(result.claim_amount || 0),
+          evidenceStrength: Math.min(
+            0.99,
+            Math.max(0.1, (result.final_confidence * 0.65) + (Math.min((result.matched_fields || []).length, 3) * 0.1))
+          )
+        });
+
+        result.final_confidence = adaptiveEvidenceDecision.adjustedConfidence;
+        result.action_taken = adaptiveEvidenceDecision.route;
+        result.adaptive_policy = {
+          adjusted_confidence: adaptiveEvidenceDecision.adjustedConfidence,
+          auto_submit_threshold: adaptiveEvidenceDecision.autoSubmitThreshold,
+          smart_prompt_threshold: adaptiveEvidenceDecision.smartPromptThreshold,
+          success_probability: adaptiveEvidenceDecision.successProbability,
+          dominant_rejection_category: adaptiveEvidenceDecision.dominantRejectionCategory,
+          adjustments: adaptiveEvidenceDecision.adjustments
+        };
+
+        logger.info('🧠 [AGENT6] Applied adaptive evidence policy', {
+          userId,
+          tenantId,
+          detectionId: result.dispute_id,
+          anomalyType: result.anomaly_type,
+          adjustedConfidence: adaptiveEvidenceDecision.adjustedConfidence,
+          route: adaptiveEvidenceDecision.route,
+          autoSubmitThreshold: adaptiveEvidenceDecision.autoSubmitThreshold,
+          smartPromptThreshold: adaptiveEvidenceDecision.smartPromptThreshold,
+          dominantRejectionCategory: adaptiveEvidenceDecision.dominantRejectionCategory
+        });
+
+        if (result.action_taken === 'auto_submit') {
           // Auto-submit (>= 0.85)
           await this.handleAutoSubmit(userId, tenantId, result);
           stats.autoSubmitted++;
-        } else if (result.final_confidence >= this.smartPromptThreshold) {
+        } else if (result.action_taken === 'smart_prompt') {
           // Smart prompt (0.5 - 0.85)
           await this.handleSmartPrompt(userId, tenantId, result);
           stats.smartPromptsCreated++;
@@ -1076,7 +1124,8 @@ class EvidenceMatchingService {
         match_confidence: result.final_confidence,
         match_type: result.match_type,
         matched_fields: result.matched_fields || [],
-        matched_at: new Date().toISOString()
+        matched_at: new Date().toISOString(),
+        adaptive_policy: result.adaptive_policy
       });
 
       await this.updateDetectionResultStatus(tenantId, result.dispute_id, 'disputed', result.final_confidence);
@@ -1338,6 +1387,11 @@ class EvidenceMatchingService {
       eligible_to_file: false,
       block_reasons: [],
       last_error: null,
+      evidence_attachments: {
+        document_id: result.evidence_document_id,
+        match_confidence: result.final_confidence,
+        adaptive_policy: result.adaptive_policy || null
+      },
       updated_at: new Date().toISOString()
     };
 
@@ -1420,13 +1474,23 @@ class EvidenceMatchingService {
       match_type: string;
       matched_fields: string[];
       matched_at: string;
+      adaptive_policy?: MatchingResult['adaptive_policy'];
     }
   ): Promise<void> {
     const { supabaseAdmin } = await import('../database/supabaseClient');
+    const { data: existingCase } = await supabaseAdmin
+      .from('dispute_cases')
+      .select('evidence_attachments')
+      .eq('id', disputeCaseId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
     const { error } = await supabaseAdmin
       .from('dispute_cases')
       .update({
-        evidence_attachments: evidenceAttachment,
+        evidence_attachments: {
+          ...((existingCase as any)?.evidence_attachments || {}),
+          ...evidenceAttachment
+        },
         updated_at: new Date().toISOString()
       })
       .eq('id', disputeCaseId)

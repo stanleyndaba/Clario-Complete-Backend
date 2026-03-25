@@ -9,6 +9,7 @@ import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import { financialImpactService, ImpactStatus } from './financialImpactService';
 import { calculateCalibratedConfidence } from './detection/confidenceCalibrator';
+import { getAdaptiveDetectionDecision } from './closedLoopIntelligenceService';
 import { generateInsights } from './detection/patternAnalyzer';
 
 // =====================================================
@@ -72,7 +73,7 @@ export class EnhancedDetectionService {
     userId: string,
     syncId: string,
     triggerType: string,
-    _metadata: any
+    metadata: any
   ): Promise<{ success: boolean; jobId: string; message: string; detectionsFound?: number; estimatedRecovery?: number }> {
     const jobId = `detection-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
@@ -128,21 +129,49 @@ export class EnhancedDetectionService {
         ...feeRes, ...inboundRes, ...transferRes, ...sentinelRes
       ];
 
-      // ML Confidence Calibration (Simplified for Core)
+      const tenantId = metadata?.tenantId || metadata?.tenant_id || null;
+      const adaptiveResults: DetectionResult[] = [];
+
+      // ML Confidence Calibration + Upstream adaptive shaping
       for (const result of allResults) {
         try {
           const calibration = await calculateCalibratedConfidence(
             result.anomaly_type,
             result.confidence_score
           );
-          (result as any).confidence_score = calibration.calibrated_confidence;
+          const adaptiveDecision = await getAdaptiveDetectionDecision({
+            tenantId,
+            userId,
+            anomalyType: result.anomaly_type,
+            rawConfidence: calibration.calibrated_confidence,
+            estimatedValue: Number(result.estimated_value || 0)
+          });
+
+          if (adaptiveDecision.suppressed) {
+            logger.info('🧠 [AGENT3] Suppressed historically weak detection candidate', {
+              userId,
+              syncId,
+              anomalyType: result.anomaly_type,
+              confidence: result.confidence_score,
+              adjustedConfidence: adaptiveDecision.adjustedConfidence,
+              suppressionThreshold: adaptiveDecision.suppressionThreshold,
+              approvalRate: adaptiveDecision.historicalApprovalRate,
+              sampleSize: adaptiveDecision.sampleSize,
+              adjustments: adaptiveDecision.adjustments
+            });
+            continue;
+          }
+
+          (result as any).confidence_score = adaptiveDecision.adjustedConfidence;
+          (result as any).adaptive_policy = adaptiveDecision;
+          adaptiveResults.push(result);
         } catch (err) {
-          // Keep original
+          adaptiveResults.push(result);
         }
       }
 
-      const detectionsFound = allResults.length;
-      const estimatedRecovery = allResults.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
+      const detectionsFound = adaptiveResults.length;
+      const estimatedRecovery = adaptiveResults.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
 
       // Record Financial Impact
       if (detectionsFound > 0) {
