@@ -59,7 +59,12 @@ function extractTenantSlugFromPath(path: string): string | null {
 
 function getRequestedTenantSlug(req: Request): string | null {
     const fullPath = req.originalUrl?.split('?')[0] || req.path;
-    return extractTenantSlugFromPath(fullPath) || (req.query.tenantSlug as string) || null;
+    const queryTenantSlug = String(req.query.tenantSlug || req.query.tenant_slug || '').trim();
+    return extractTenantSlugFromPath(fullPath) || queryTenantSlug || null;
+}
+
+function getExplicitTenantId(req: Request): string | null {
+    return String(req.headers['x-tenant-id'] || '').trim() || null;
 }
 
 function isExplicitDemoRequest(req: Request): boolean {
@@ -210,6 +215,8 @@ export async function tenantMiddleware(req: Request, res: Response, next: NextFu
     try {
         const fullPath = req.originalUrl?.split('?')[0] || req.path;
         const explicitDemoRequest = isExplicitDemoRequest(req);
+        const explicitTenantSlug = getRequestedTenantSlug(req);
+        const explicitTenantId = getExplicitTenantId(req);
 
         // Skip tenant resolution for exempt paths
         if (isTenantExempt(fullPath)) {
@@ -248,44 +255,53 @@ export async function tenantMiddleware(req: Request, res: Response, next: NextFu
         let membership: any = null;
 
         // 1. Try URL path or query parameter
-        const pathSlug = extractTenantSlugFromPath(fullPath) || (req.query.tenantSlug as string);
-        if (pathSlug) {
-            tenant = await getTenantBySlug(pathSlug);
-            if (tenant) {
-                membership = await getUserMembership(userId, tenant.id);
-                if (!membership) {
-                    if (isDemoTenant(tenant)) {
-                        membership = await ensureDemoMembership(userId, tenant.id);
-                    }
+        if (explicitTenantSlug) {
+            tenant = await getTenantBySlug(explicitTenantSlug);
+            if (!tenant) {
+                logger.warn('Explicit tenant slug not found', { userId, tenantSlug: explicitTenantSlug, path: fullPath });
+                res.status(404).json({ error: 'Tenant not found' });
+                return;
+            }
 
-                    if (!membership) {
-                        logger.warn('User does not have access to tenant', { userId, tenantSlug: pathSlug });
-                        res.status(403).json({ error: 'You do not have access to this workspace' });
-                        return;
-                    }
+            membership = await getUserMembership(userId, tenant.id);
+            if (!membership) {
+                if (explicitDemoRequest && isDemoTenant(tenant)) {
+                    membership = await ensureDemoMembership(userId, tenant.id);
+                }
+
+                if (!membership) {
+                    logger.warn('User does not have access to tenant', { userId, tenantSlug: explicitTenantSlug });
+                    res.status(403).json({ error: 'You do not have access to this workspace' });
+                    return;
                 }
             }
         }
 
         // 2. Try X-Tenant-Id header
-        if (!tenant) {
-            const headerTenantId = req.headers['x-tenant-id'] as string;
-            if (headerTenantId) {
-                membership = await getUserMembership(userId, headerTenantId);
-                if (membership) {
-                    tenant = await getTenantById(headerTenantId);
-                } else {
-                    const headerTenant = await getTenantById(headerTenantId);
-                    if (headerTenant && isDemoTenant(headerTenant)) {
-                        membership = await ensureDemoMembership(userId, headerTenant.id);
-                        tenant = headerTenant;
-                    }
+        if (!tenant && explicitTenantId) {
+            tenant = await getTenantById(explicitTenantId);
+            if (!tenant) {
+                logger.warn('Explicit tenant header not found', { userId, tenantId: explicitTenantId, path: fullPath });
+                res.status(404).json({ error: 'Tenant not found' });
+                return;
+            }
+
+            membership = await getUserMembership(userId, explicitTenantId);
+            if (!membership) {
+                if (explicitDemoRequest && isDemoTenant(tenant)) {
+                    membership = await ensureDemoMembership(userId, tenant.id);
+                }
+
+                if (!membership) {
+                    logger.warn('User does not have access to tenant from explicit header', { userId, tenantId: explicitTenantId });
+                    res.status(403).json({ error: 'You do not have access to this workspace' });
+                    return;
                 }
             }
         }
 
         // 3. Fall back to user's default tenant
-        if (!tenant) {
+        if (!tenant && !explicitTenantSlug && !explicitTenantId) {
             const defaultResult = await getDefaultTenantForUser(userId);
             if (defaultResult) {
                 tenant = defaultResult.tenant;
@@ -294,7 +310,7 @@ export async function tenantMiddleware(req: Request, res: Response, next: NextFu
         }
 
         // 4. Explicit demo fallback only
-        if (!tenant) {
+        if (!tenant && !explicitTenantSlug && !explicitTenantId) {
             if (explicitDemoRequest) {
                 const demoTenant = await getTenantBySlug(DEMO_TENANT_SLUG) || await getTenantById(DEFAULT_TENANT_ID);
                 if (demoTenant) {

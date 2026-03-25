@@ -30,6 +30,24 @@ function getExplicitDemoSignal(req: Request): boolean {
   return queryTenantSlug === DEMO_TENANT_SLUG || pathTenantSlug === DEMO_TENANT_SLUG || demoHeader === 'true';
 }
 
+function applySSEHeaders(req: AuthenticatedSSERequest, res: Response): void {
+  const origin = (req as any).headers?.origin;
+  const headers: Record<string, string> = {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  };
+
+  if (origin) {
+    headers['Access-Control-Allow-Origin'] = origin;
+    headers['Access-Control-Allow-Credentials'] = 'true';
+    headers['Access-Control-Allow-Headers'] = 'Cache-Control, Authorization';
+  }
+
+  res.writeHead(200, headers);
+}
+
 /**
  * JWT authentication middleware for Server-Sent Events
  * Validates JWT token and injects seller_id for data filtering
@@ -42,7 +60,6 @@ export const authenticateSSE = (
   try {
     // Get origin for CORS - validate against allowed origins
     const origin = (req as any).headers?.origin;
-    let allowedOrigin = origin || '*';
 
     // Validate origin against allowed patterns (same as main CORS config)
     if (origin) {
@@ -59,23 +76,6 @@ export const authenticateSSE = (
       }
     }
 
-    // Set SSE headers with proper CORS
-    const headers: Record<string, string> = {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no' // Disable nginx buffering
-    };
-
-    // Only set CORS headers if origin is valid
-    if (origin) {
-      headers['Access-Control-Allow-Origin'] = origin;
-      headers['Access-Control-Allow-Credentials'] = 'true';
-      headers['Access-Control-Allow-Headers'] = 'Cache-Control, Authorization';
-    }
-
-    res.writeHead(200, headers);
-
     // EventSource can't send custom headers, so we need to support cookies
     // Priority 1: Check cookie (session_token) - this is how EventSource sends auth
     const cookieToken = (req as any).cookies?.session_token;
@@ -89,6 +89,7 @@ export const authenticateSSE = (
 
     if (!token) {
       if (getExplicitDemoSignal(req)) {
+        applySSEHeaders(req, res);
         logger.info('SSE connection without authentication - using isolated demo mode', {
           url: (req as any).url,
           method: (req as any).method,
@@ -118,12 +119,10 @@ export const authenticateSSE = (
         ip: (req as any).ip
       });
 
-      res.write(`event: error\ndata: ${JSON.stringify({
+      res.status(401).json({
         error: 'Authentication is required for SSE',
         code: 'AUTH_REQUIRED'
-      })}\n\n`);
-
-      res.end();
+      });
       return;
     }
 
@@ -140,12 +139,10 @@ export const authenticateSSE = (
           url: (req as any).url
         });
 
-        res.write(`event: error\ndata: ${JSON.stringify({
+        res.status(401).json({
           error: 'Invalid token format',
           code: 'INVALID_TOKEN_FORMAT'
-        })}\n\n`);
-
-        res.end();
+        });
         return;
       }
 
@@ -155,6 +152,8 @@ export const authenticateSSE = (
         email: email,
         role: decoded.role
       };
+
+      applySSEHeaders(req, res);
 
       logger.info('✅ [SSE AUTH] SSE authentication successful', {
         user_id: userId,
@@ -179,24 +178,18 @@ export const authenticateSSE = (
         ip: (req as any).ip
       });
 
-      // Send error event and close connection
-      res.write(`event: error\ndata: ${JSON.stringify({
+      res.status(401).json({
         error: 'Invalid or expired token',
         code: 'INVALID_TOKEN'
-      })}\n\n`);
-
-      res.end();
+      });
     }
   } catch (error) {
     logger.error('Error in SSE authentication middleware', { error });
 
-    // Send error event and close connection
-    res.write(`event: error\ndata: ${JSON.stringify({
+    res.status(500).json({
       error: 'Internal server error',
       code: 'INTERNAL_ERROR'
-    })}\n\n`);
-
-    res.end();
+    });
   }
 };
 

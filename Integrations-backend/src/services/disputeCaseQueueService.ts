@@ -2,6 +2,7 @@ import { supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 
 export interface DisputeCaseQueueFilters {
   tenantSlug?: string;
+  explicitTenantId?: string;
   requestTenantId?: string | null;
   requestTenantSlug?: string | null;
   userId?: string | null;
@@ -71,6 +72,7 @@ function compareValues(left: unknown, right: unknown) {
 
 async function resolveScope(filters: DisputeCaseQueueFilters): Promise<ResolvedScope> {
   const tenantSlug = String(filters.tenantSlug || '').trim() || null;
+  const explicitTenantId = String(filters.explicitTenantId || '').trim() || null;
   const requestTenantId = String(filters.requestTenantId || '').trim() || null;
   const requestTenantSlug = String(filters.requestTenantSlug || '').trim() || null;
   const userId = String(filters.userId || '').trim() || null;
@@ -80,6 +82,12 @@ async function resolveScope(filters: DisputeCaseQueueFilters): Promise<ResolvedS
   }
 
   if (!tenantSlug) {
+    if (explicitTenantId) {
+      if (!requestTenantId || requestTenantId !== explicitTenantId) {
+        throw new Error('Invalid tenant context');
+      }
+    }
+
     if (requestTenantId) {
       return {
         tenantId: requestTenantId,

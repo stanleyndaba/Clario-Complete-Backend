@@ -7,6 +7,7 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const payload = await getDisputeCaseQueue({
       tenantSlug: String(req.query.tenantSlug || req.query.tenant_slug || '').trim() || undefined,
+      explicitTenantId: String(req.headers['x-tenant-id'] || '').trim() || undefined,
       requestTenantId: (req as any).tenant?.tenantId || null,
       requestTenantSlug: (req as any).tenant?.tenantSlug || null,
       userId: (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || null,
