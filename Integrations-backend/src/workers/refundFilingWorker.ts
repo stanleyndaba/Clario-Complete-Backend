@@ -1243,7 +1243,8 @@ class RefundFilingWorker {
        query = query.eq('id', process.env.SINGLE_CASE_MODE);
     }
 
-    const { data: casesToFile, error } = await (query as any).limit(maxThisRun);
+    const candidateLimit = Math.max(maxThisRun * 5, 10);
+    const { data: casesToFile, error } = await (query as any).limit(candidateLimit);
 
     if (error) {
       if (error.message?.includes('0 rows') || error.code === 'PGRST116') {
@@ -1260,46 +1261,133 @@ class RefundFilingWorker {
       return stats;
     }
 
-    logger.info(` [REFUND FILING] Found ${casesToFile.length} cases with evidence ready for filing`, { tenantId });
+    logger.info(` [REFUND FILING] Found ${casesToFile.length} cases with evidence ready for filing`, {
+      tenantId,
+      candidateLimit,
+      maxThisRun
+    });
 
     const autoFilePreferenceCache = new Map<string, boolean>();
+    const rankedCandidates: Array<{
+      disputeCase: any;
+      evidenceIds: string[];
+      detectionEvidence: any;
+      anomalyType: string;
+      orderId: string;
+      asin?: string;
+      sku?: string;
+      claimAmount: number;
+      eligibility: Awaited<ReturnType<typeof evaluateAndPersistCaseEligibility>>;
+    }> = [];
 
-    // Process each case
-    for (const disputeCase of casesToFile) {
+    for (const rawCase of casesToFile) {
       try {
         stats.processed++;
 
-        // Evidence documents are already joined - extract from the query result
-        logger.info(` [DEBUG] Processing case ${disputeCase.id}`, {
-          keys: Object.keys(disputeCase),
-          evidenceLinkRaw: (disputeCase as any).dispute_evidence_links,
-          detectionResultRaw: (disputeCase as any).detection_results
+        logger.info(` [DEBUG] Evaluating candidate case ${rawCase.id}`, {
+          keys: Object.keys(rawCase),
+          evidenceLinkRaw: (rawCase as any).dispute_evidence_links,
+          detectionResultRaw: (rawCase as any).detection_results
         });
 
-        const evidenceLinksFromQuery = (disputeCase as any).dispute_evidence_links || [];
+        const evidenceLinksFromQuery = (rawCase as any).dispute_evidence_links || [];
         const evidenceIds = Array.isArray(evidenceLinksFromQuery)
           ? evidenceLinksFromQuery.map((link: any) => link.evidence_document_id)
           : [(evidenceLinksFromQuery as any).evidence_document_id].filter(Boolean);
 
-        logger.info(` [DEBUG] Case ${disputeCase.id} evidenceIds:`, { evidenceIds });
-
-        // Double-check we have evidence (should always be true due to !inner join)
+        logger.info(` [DEBUG] Candidate case ${rawCase.id} evidenceIds:`, { evidenceIds });
         if (evidenceIds.length === 0) {
           logger.debug('[INFO] [REFUND FILING] Skipping case without evidence', {
-            disputeId: disputeCase.id
+            disputeId: rawCase.id
           });
+          stats.skipped++;
           continue;
         }
 
-        const eligibility = await evaluateAndPersistCaseEligibility(disputeCase.id, tenantId);
+        const eligibility = await evaluateAndPersistCaseEligibility(rawCase.id, tenantId);
         if (!eligibility.eligible) {
           logger.info('[BLOCK] [REFUND FILING] Case failed central eligibility gate', {
-            disputeId: disputeCase.id,
+            disputeId: rawCase.id,
             reasons: eligibility.reasons
           });
           stats.skipped++;
           continue;
         }
+
+        const effectiveCase = {
+          ...rawCase,
+          ...(eligibility.disputeCase || {}),
+          detection_results: (rawCase as any).detection_results,
+          dispute_evidence_links: (rawCase as any).dispute_evidence_links
+        };
+        const detectionEvidence = (rawCase as any).detection_results?.evidence || {};
+        const anomalyType = (rawCase as any).detection_results?.anomaly_type || rawCase.case_type || 'unknown';
+
+        rankedCandidates.push({
+          disputeCase: effectiveCase,
+          evidenceIds,
+          detectionEvidence,
+          anomalyType,
+          orderId: detectionEvidence.order_id || '',
+          asin: detectionEvidence.asin || undefined,
+          sku: detectionEvidence.sku || undefined,
+          claimAmount: parseFloat(rawCase.claim_amount?.toString() || '0'),
+          eligibility
+        });
+      } catch (error: any) {
+        logger.error(' [REFUND FILING] Error evaluating candidate case', {
+          disputeId: rawCase.id,
+          error: error.message
+        });
+        await this.logError(rawCase.id, rawCase.seller_id, error.message);
+        stats.failed++;
+        stats.errors.push(`Candidate ${rawCase.id}: ${error.message}`);
+      }
+    }
+
+    if (rankedCandidates.length === 0) {
+      logger.info('[REFUND FILING] No filing candidates passed the adaptive eligibility gate', { tenantId });
+      return stats;
+    }
+
+    rankedCandidates.sort((left, right) =>
+      (right.eligibility.priorityScore ?? right.claimAmount) - (left.eligibility.priorityScore ?? left.claimAmount)
+    );
+
+    logger.info('[REFUND FILING] Adaptive candidate ranking computed', {
+      tenantId,
+      ranked: rankedCandidates.map((candidate) => ({
+        disputeId: candidate.disputeCase.id,
+        successProbability: candidate.eligibility.successProbability,
+        priorityScore: candidate.eligibility.priorityScore,
+        claimAmount: candidate.claimAmount
+      }))
+    });
+
+    let dispatchedThisRun = 0;
+
+    // Process cases in adaptive priority order
+    for (const candidate of rankedCandidates) {
+      const disputeCase = candidate.disputeCase;
+      const evidenceIds = candidate.evidenceIds;
+      const detectionEvidence = candidate.detectionEvidence;
+      const anomalyType = candidate.anomalyType;
+      const orderId = candidate.orderId;
+      const asin = candidate.asin;
+      const sku = candidate.sku;
+      const claimAmount = candidate.claimAmount;
+      const eligibility = candidate.eligibility;
+
+      if (dispatchedThisRun >= maxThisRun) {
+        logger.info('[REFUND FILING] Tenant throttle reached after adaptive ranking', {
+          tenantId,
+          dispatchedThisRun,
+          maxThisRun
+        });
+        break;
+      }
+
+      try {
 
         // KILL SWITCH LAYER 1: Check for dangerous filenames (credit notes, returns, refunds)
         // These MUST NEVER be submitted to Amazon - instant fraud flag
@@ -1366,12 +1454,6 @@ class RefundFilingWorker {
         }
 
         // Extract order details from detection_results.evidence JSONB
-        const detectionEvidence = (disputeCase as any).detection_results?.evidence || {};
-        const anomalyType = (disputeCase as any).detection_results?.anomaly_type || disputeCase.case_type || 'unknown';
-        const orderId = detectionEvidence.order_id || '';
-        const asin = detectionEvidence.asin || undefined;
-        const sku = detectionEvidence.sku || undefined;
-
         const rejectionPreventionDecision = await getRejectionPreventionDecision({
           userId: disputeCase.seller_id,
           anomalyType,
@@ -1488,17 +1570,7 @@ class RefundFilingWorker {
           continue; // Skip to next case
         }
 
-        // Get detection result for confidence score (tenant-scoped)
-        const detectionQuery = createTenantScopedQueryById(tenantId, 'detection_results');
-        const { data: detectionResult } = await detectionQuery
-          .select('match_confidence')
-          .eq('id', disputeCase.detection_result_id)
-          .single();
-
-        const confidenceScore = detectionResult?.match_confidence || 0.85;
-
-        // Get claim amount for validation checks
-        const claimAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
+        const confidenceScore = eligibility.confidenceScore || 0.85;
 
         // PER-SELLER DAILY LIMIT: Prevent one seller from exhausting tenant quota
         const sellerFilingsToday = await this.getFilingsInLastDayForSeller(disputeCase.seller_id, tenantId);
@@ -1658,6 +1730,39 @@ class RefundFilingWorker {
           continue; // Skip to next case - human must approve this one
         }
 
+        const adaptiveDecision = eligibility.decisionProfile;
+        if (adaptiveDecision && !adaptiveDecision.filingStrategy.autoFileRecommended) {
+          logger.info('[SKIP] [REFUND FILING] Historical decision feedback routed case to manual review', {
+            disputeId: disputeCase.id,
+            successProbability: adaptiveDecision.successProbability,
+            autoFileThreshold: adaptiveDecision.autoFileThreshold,
+            dominantRejectionCategory: adaptiveDecision.dominantRejectionCategory
+          });
+          stats.skipped++;
+
+          const historicalReviewQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+          const { error: historicalReviewError } = await historicalReviewQuery
+            .update({
+              filing_status: 'pending_approval',
+              eligible_to_file: false,
+              block_reasons: [
+                `historical_success_probability_below_threshold:${adaptiveDecision.successProbability.toFixed(3)}`
+              ],
+              last_error: `Historical approval performance suggests manual review before filing (${adaptiveDecision.successProbability.toFixed(2)} success probability).`,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', disputeCase.id);
+
+          if (historicalReviewError) {
+            logger.error('[ERROR] [REFUND FILING] Failed to route low-success case to manual review', {
+              disputeId: disputeCase.id,
+              error: historicalReviewError.message
+            });
+          }
+
+          continue;
+        }
+
         let autoFileEnabled = autoFilePreferenceCache.get(disputeCase.seller_id);
         if (typeof autoFileEnabled !== 'boolean') {
           autoFileEnabled = await this.isAutoFileEnabledForUser(disputeCase.seller_id);
@@ -1703,7 +1808,21 @@ class RefundFilingWorker {
           amount_claimed: parseFloat(disputeCase.claim_amount?.toString() || '0'),
           currency: disputeCase.currency || 'USD',
           evidence_document_ids: evidenceIds,
-          confidence_score: confidenceScore
+          confidence_score: confidenceScore,
+          metadata: {
+            quantity: detectionEvidence.quantity || detectionEvidence.units || 1,
+            success_probability: adaptiveDecision?.successProbability ?? null,
+            priority_score: adaptiveDecision?.priorityScore ?? null,
+            adaptive_confidence_threshold: adaptiveDecision?.adaptiveConfidenceThreshold ?? null,
+            strategy_hints: adaptiveDecision
+              ? [
+                  adaptiveDecision.filingStrategy.templateVariant,
+                  adaptiveDecision.filingStrategy.evidenceMode,
+                  adaptiveDecision.filingStrategy.timing
+                ]
+              : [],
+            filing_strategy: adaptiveDecision?.filingStrategy ?? null
+          }
         };
 
         // Check if this is a retry (need stronger evidence)
@@ -1727,6 +1846,7 @@ class RefundFilingWorker {
         // 🎯 AGENT 7: Distributed Submission Protocol (Fortress Queue)
         // We push to BullMQ to enable global rate limiting and tenant isolation.
         try {
+          dispatchedThisRun++;
           if (!this.queueInfrastructureAvailable || !this.submissionQueue) {
             const directResult = await this.executeDirectFallback(disputeCase.id, disputeCase.seller_id);
             logger.info('✅ [AGENT 7] Case filed via direct fallback', {
@@ -1786,7 +1906,7 @@ class RefundFilingWorker {
       // VELOCITY LIMIT: Jittered delay between submissions (180-420 seconds = 3-7 minutes)
       // This mimics human behavior and avoids Amazon's pattern detection
       // A fixed interval (e.g., exactly 5 min) looks robotic; random intervals look human
-      if (casesToFile.indexOf(disputeCase) < casesToFile.length - 1) {
+      if (rankedCandidates.indexOf(candidate) < rankedCandidates.length - 1 && dispatchedThisRun < maxThisRun) {
         await sleepWithJitter(180, 420);
       }
     }
@@ -2311,11 +2431,18 @@ class RefundFilingWorker {
 
       // AGENT 8 INTEGRATION: Mark for recovery detection when approved
       if (newStatus === 'approved' && previousStatus !== 'approved') {
+        const approvedAmount = Number(statusResult.amount_approved || 0) || (disputeCase as any)?.approved_amount || (disputeCase as any)?.claim_amount || 0;
+        const claimAmount = Number((disputeCase as any)?.claim_amount || 0) || approvedAmount;
+        const normalizedOutcome = approvedAmount > 0 && claimAmount > 0 && approvedAmount + 0.01 < claimAmount
+          ? 'partial'
+          : 'approved';
         updates.recovery_status = 'pending';
-        updates.approved_amount = Number(statusResult.amount_approved || 0) || (disputeCase as any)?.approved_amount || (disputeCase as any)?.claim_amount || null;
+        updates.approved_amount = approvedAmount || null;
         updates.last_error = null;
         logger.info(' [REFUND FILING] Case approved, marked for recovery detection by Agent 8', {
-          disputeId
+          disputeId,
+          outcome: normalizedOutcome,
+          approvedAmount
         });
 
         // Fetch case data for logging and notifications
@@ -2367,8 +2494,9 @@ class RefundFilingWorker {
           const { upsertOutcomeForDispute } = await import('../services/detection/confidenceCalibrator');
           await upsertOutcomeForDispute({
             dispute_id: disputeId,
-            actual_outcome: 'approved',
-            recovery_amount: Number(statusResult.amount_approved || 0),
+            actual_outcome: normalizedOutcome,
+            recovery_amount: approvedAmount,
+            approved_amount: approvedAmount,
             amazon_case_id: statusResult.amazon_case_id || caseData?.amazon_case_id,
             resolution_date: new Date(),
             notes: 'Case approved by Amazon status polling'
@@ -2395,7 +2523,10 @@ class RefundFilingWorker {
             dispute_id: disputeId,
             actual_outcome: 'rejected',
             recovery_amount: 0,
+            approved_amount: 0,
             amazon_case_id: statusResult.amazon_case_id,
+            rejection_reason: rejectionReason,
+            rejection_category: rejectionCategory,
             resolution_date: new Date(),
             notes: rejectionReason
           });
@@ -2425,6 +2556,26 @@ class RefundFilingWorker {
           logger.warn(' [REFUND FILING] Failed to persist rejection memory from status update', {
             disputeId,
             error: memoryError.message
+          });
+        }
+      }
+
+      if (newStatus === 'closed' && !['closed', 'approved', 'rejected'].includes(previousStatus || '')) {
+        try {
+          const { upsertOutcomeForDispute } = await import('../services/detection/confidenceCalibrator');
+          await upsertOutcomeForDispute({
+            dispute_id: disputeId,
+            actual_outcome: 'expired',
+            recovery_amount: Number((disputeCase as any)?.approved_amount || 0) || 0,
+            approved_amount: Number((disputeCase as any)?.approved_amount || 0) || 0,
+            amazon_case_id: statusResult.amazon_case_id,
+            resolution_date: new Date(),
+            notes: statusResult.resolution || 'Case closed without explicit approval'
+          });
+        } catch (calibrationError: any) {
+          logger.warn(' [REFUND FILING] Failed to sync closed outcome to calibrator', {
+            disputeId,
+            error: calibrationError.message
           });
         }
       }

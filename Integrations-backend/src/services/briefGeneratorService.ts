@@ -25,6 +25,28 @@ export interface BriefContext {
     date?: string;
     quantity?: number;
     evidenceFilenames: string[];
+    strategyHints?: string[];
+}
+
+function applyStrategyHints(brief: LegalBrief, ctx: BriefContext): LegalBrief {
+    const hints = new Set((ctx.strategyHints || []).map((hint) => String(hint || '').toLowerCase()));
+    let subject = brief.subject;
+    let body = brief.body;
+
+    if (hints.has('expedite')) {
+        subject = `Time-Sensitive ${subject}`;
+        body = `${body}\n\nTiming Note:\nThis request is being submitted promptly because the applicable reimbursement review window is approaching.`;
+    }
+
+    if (hints.has('documentation_heavy') || hints.has('enhanced')) {
+        body = `${body}\n\nEvidence Note:\nThis request includes expanded supporting documentation selected to address prior evidence-related rejection patterns for this claim type.`;
+    }
+
+    return {
+        subject,
+        body,
+        policyCited: brief.policyCited
+    };
 }
 
 function listEvidence(ctx: BriefContext): string {
@@ -487,11 +509,12 @@ class BriefGeneratorService {
         const templateKey = resolveBriefTemplateType(ctx.caseType);
         const template = BRIEF_TEMPLATES[templateKey] || BRIEF_TEMPLATES.default;
 
-        return {
+        const generated = {
             subject: template.subject(ctx),
             body: template.body(ctx),
             policyCited: template.policy
         };
+        return applyStrategyHints(generated, ctx);
     }
 }
 

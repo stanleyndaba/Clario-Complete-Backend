@@ -1,10 +1,20 @@
 import { supabaseAdmin } from '../database/supabaseClient';
+import {
+  AdaptiveDecisionProfile,
+  computeEvidenceStrengthSnapshot,
+  getAdaptiveDecisionProfile
+} from './closedLoopIntelligenceService';
 
 export interface FilingEligibilityResult {
   eligible: boolean;
   reasons: string[];
   confidenceScore: number | null;
   claimType: string;
+  successProbability?: number | null;
+  priorityScore?: number | null;
+  evidenceStrength?: number | null;
+  adaptiveConfidenceThreshold?: number | null;
+  decisionProfile?: AdaptiveDecisionProfile | null;
 }
 
 interface EligibilityContext {
@@ -273,7 +283,13 @@ function normalizeStoredReasons(value: unknown): string[] {
   return [];
 }
 
-export function evaluateCaseEligibility(context: EligibilityContext): FilingEligibilityResult {
+export function evaluateCaseEligibility(
+  context: EligibilityContext,
+  options?: {
+    confidenceThreshold?: number;
+    minEvidenceDocuments?: number;
+  }
+): FilingEligibilityResult {
   const disputeCase = context.disputeCase || {};
   const detectionResult = context.detectionResult || {};
   const filingStatus = normalize(disputeCase.filing_status);
@@ -292,8 +308,11 @@ export function evaluateCaseEligibility(context: EligibilityContext): FilingElig
     if (reason) reasons.add(reason);
   }
 
+  const minimumEvidenceDocuments = Math.max(1, Number(options?.minEvidenceDocuments || 1));
   if (!context.linkedEvidenceCount || evidenceDocuments.length === 0) {
     reasons.add('missing_evidence_links');
+  } else if (context.linkedEvidenceCount < minimumEvidenceDocuments) {
+    reasons.add(`insufficient_evidence_documents:${context.linkedEvidenceCount}/${minimumEvidenceDocuments}`);
   }
 
   if (!identifiers.productIds.length && profile.requiresProductId) {
@@ -364,8 +383,11 @@ export function evaluateCaseEligibility(context: EligibilityContext): FilingElig
 
   if (confidenceScore === null) {
     reasons.add('missing_match_confidence');
-  } else if (confidenceScore < DEFAULT_CONFIDENCE_THRESHOLD) {
-    reasons.add(`confidence_below_threshold:${confidenceScore.toFixed(3)}`);
+  } else {
+    const threshold = Number(options?.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD);
+    if (confidenceScore < threshold) {
+      reasons.add(`confidence_below_threshold:${confidenceScore.toFixed(3)}/${threshold.toFixed(3)}`);
+    }
   }
 
   const referenceDate = resolveReferenceDate(context, claimType);
@@ -433,25 +455,96 @@ export async function loadEligibilityContext(caseId: string, tenantId: string): 
 
 export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId: string) {
   const context = await loadEligibilityContext(caseId, tenantId);
-  const result = evaluateCaseEligibility(context);
   const disputeCase = context.disputeCase;
   const currentFilingStatus = normalize(disputeCase.filing_status);
+  const claimType = normalize(disputeCase.case_type || context.detectionResult?.anomaly_type || 'generic');
+  const confidenceScore = getConfidenceScore(context) ?? 0.5;
+  const evidenceSnapshot = computeEvidenceStrengthSnapshot({
+    evidenceDocuments: context.evidenceDocuments,
+    linkedEvidenceCount: context.linkedEvidenceCount,
+    matchConfidence: confidenceScore
+  });
+  const referenceDate = resolveReferenceDate(context, claimType);
+  const profile = resolveClaimProfile(claimType);
+  const ageDays = referenceDate
+    ? (Date.now() - referenceDate.getTime()) / (1000 * 60 * 60 * 24)
+    : null;
+  const daysUntilExpiry = ageDays !== null ? Math.max(0, profile.windowDays - ageDays) : null;
+  const decisionProfile = await getAdaptiveDecisionProfile({
+    tenantId,
+    userId: disputeCase.seller_id,
+    anomalyType: context.detectionResult?.anomaly_type || disputeCase.case_type || 'generic',
+    claimAmount: toNumber(disputeCase.claim_amount) ?? toNumber(disputeCase.estimated_recovery_amount) ?? 0,
+    confidenceScore,
+    evidenceStrength: evidenceSnapshot.score,
+    daysUntilExpiry
+  });
+
+  const result = evaluateCaseEligibility(context, {
+    confidenceThreshold: decisionProfile.adaptiveConfidenceThreshold,
+    minEvidenceDocuments: decisionProfile.minEvidenceDocuments
+  });
+  const reasons = new Set(result.reasons);
+
+  if (decisionProfile.successProbability < decisionProfile.autoFileThreshold) {
+    reasons.add(`historical_success_probability_below_threshold:${decisionProfile.successProbability.toFixed(3)}`);
+  }
+
+  if (
+    decisionProfile.dominantRejectionCategory === 'MISSING_DOCUMENT' &&
+    context.linkedEvidenceCount < decisionProfile.minEvidenceDocuments
+  ) {
+    reasons.add('historical_missing_document_risk');
+  }
+
+  if (
+    decisionProfile.dominantRejectionCategory === 'INSUFFICIENT_EVIDENCE' &&
+    evidenceSnapshot.score < 0.7
+  ) {
+    reasons.add('historical_insufficient_evidence_risk');
+  }
+
+  const finalReasons = Array.from(reasons);
+  const eligible = finalReasons.length === 0;
+  const evidenceAttachment = parseJsonObject(disputeCase.evidence_attachments);
 
   const updates: Record<string, any> = {
-    eligible_to_file: result.eligible,
-    block_reasons: result.reasons,
+    eligible_to_file: eligible,
+    block_reasons: finalReasons,
     estimated_recovery_amount: toNumber(disputeCase.estimated_recovery_amount) ?? toNumber(disputeCase.claim_amount) ?? 0,
+    evidence_attachments: {
+      ...evidenceAttachment,
+      decision_intelligence: {
+        success_probability: decisionProfile.successProbability,
+        priority_score: decisionProfile.priorityScore,
+        adaptive_confidence_threshold: decisionProfile.adaptiveConfidenceThreshold,
+        auto_file_threshold: decisionProfile.autoFileThreshold,
+        min_evidence_documents: decisionProfile.minEvidenceDocuments,
+        evidence_strength: evidenceSnapshot.score,
+        evidence_strength_label: evidenceSnapshot.label,
+        dominant_rejection_category: decisionProfile.dominantRejectionCategory,
+        filing_strategy: decisionProfile.filingStrategy,
+        days_until_expiry: daysUntilExpiry,
+        adjustments: decisionProfile.adjustments,
+        signals: evidenceSnapshot.signals,
+        evaluated_at: new Date().toISOString()
+      }
+    },
     updated_at: new Date().toISOString()
   };
 
-  if (!result.eligible) {
-    updates.last_error = result.reasons.join('; ');
+  const reviewRequired = finalReasons.some((reason) =>
+    reason.startsWith('historical_') || reason.startsWith('insufficient_evidence_documents:')
+  );
+
+  if (!eligible) {
+    updates.last_error = finalReasons.join('; ');
     if (['pending', 'retrying', 'blocked', 'failed', 'pending_approval', ''].includes(currentFilingStatus)) {
-      updates.filing_status = 'blocked';
+      updates.filing_status = reviewRequired ? 'pending_approval' : 'blocked';
     }
   } else {
     updates.last_error = null;
-    if (currentFilingStatus === 'blocked') {
+    if (['blocked', 'pending_approval'].includes(currentFilingStatus)) {
       updates.filing_status = 'pending';
     }
   }
@@ -469,7 +562,15 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
   }
 
   return {
-    ...result,
+    eligible,
+    reasons: finalReasons,
+    confidenceScore: result.confidenceScore,
+    claimType: result.claimType,
+    successProbability: decisionProfile.successProbability,
+    priorityScore: decisionProfile.priorityScore,
+    evidenceStrength: evidenceSnapshot.score,
+    adaptiveConfidenceThreshold: decisionProfile.adaptiveConfidenceThreshold,
+    decisionProfile,
     disputeCase: updatedCase,
     detectionResult: context.detectionResult,
     evidenceDocuments: context.evidenceDocuments

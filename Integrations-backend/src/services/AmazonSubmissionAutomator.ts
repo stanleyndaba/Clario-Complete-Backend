@@ -1,4 +1,16 @@
 import crypto from 'crypto';
+
+function parseJsonObject(value: any): Record<string, any> {
+    if (!value) return {};
+    if (typeof value === 'string') {
+        try {
+            return JSON.parse(value);
+        } catch {
+            return {};
+        }
+    }
+    return typeof value === 'object' ? value : {};
+}
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import refundFilingService from './refundFilingService';
@@ -118,6 +130,9 @@ export class AmazonSubmissionAutomator {
                 .filter(Boolean);
 
             const detectionEvidence = eligibilitySnapshot.detectionResult?.evidence || {};
+            const evidenceAttachments = parseJsonObject((eligibilitySnapshot as any)?.disputeCase?.evidence_attachments);
+            const decisionIntelligence = evidenceAttachments?.decision_intelligence || {};
+            const filingStrategy = decisionIntelligence?.filing_strategy || {};
 
             const filingResult = await refundFilingService.fileDispute({
                 dispute_id: caseId,
@@ -134,7 +149,16 @@ export class AmazonSubmissionAutomator {
                 // Pass the idempotency key to the service
                 metadata: {
                     idempotency_key: idempotencyKey,
-                    quantity: detectionEvidence.quantity || detectionEvidence.units || 1
+                    quantity: detectionEvidence.quantity || detectionEvidence.units || 1,
+                    success_probability: decisionIntelligence?.success_probability ?? null,
+                    priority_score: decisionIntelligence?.priority_score ?? null,
+                    adaptive_confidence_threshold: decisionIntelligence?.adaptive_confidence_threshold ?? null,
+                    strategy_hints: [
+                        filingStrategy?.templateVariant,
+                        filingStrategy?.evidenceMode,
+                        filingStrategy?.timing
+                    ].filter(Boolean),
+                    filing_strategy: filingStrategy
                 }
             });
 

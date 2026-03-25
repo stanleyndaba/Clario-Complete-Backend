@@ -42,14 +42,25 @@ export interface ConfidenceCalibrationResult {
 export interface OutcomeRecord {
     detection_result_id: string;
     seller_id: string;
+    tenant_id?: string;
+    dispute_case_id?: string;
     anomaly_type: string;
     predicted_confidence: number;
+    confidence_score_at_time?: number;
     estimated_value: number;
     actual_outcome: 'approved' | 'rejected' | 'partial' | 'pending' | 'expired';
+    outcome_status?: 'approved' | 'rejected' | 'partial' | 'pending' | 'expired';
     recovery_amount: number;
+    approved_amount?: number;
+    evidence_strength?: number;
+    success_probability_at_time?: number;
     amazon_case_id?: string;
+    rejection_reason?: string;
+    rejection_category?: string;
+    filing_strategy?: Record<string, any>;
     claim_filed_date?: Date;
     resolution_date?: Date;
+    outcome_recorded_at?: Date;
     notes?: string;
 }
 
@@ -57,7 +68,10 @@ export interface DisputeOutcomeSync {
     dispute_id: string;
     actual_outcome: 'approved' | 'rejected' | 'partial' | 'pending' | 'expired';
     recovery_amount?: number;
+    approved_amount?: number;
     amazon_case_id?: string;
+    rejection_reason?: string;
+    rejection_category?: string;
     resolution_date?: Date;
     notes?: string;
 }
@@ -235,14 +249,25 @@ export async function recordOutcome(outcome: OutcomeRecord): Promise<boolean> {
             .insert({
                 detection_result_id: outcome.detection_result_id,
                 seller_id: outcome.seller_id,
+                tenant_id: outcome.tenant_id,
+                dispute_case_id: outcome.dispute_case_id,
                 anomaly_type: outcome.anomaly_type,
                 predicted_confidence: outcome.predicted_confidence,
+                confidence_score_at_time: outcome.confidence_score_at_time ?? outcome.predicted_confidence,
                 estimated_value: outcome.estimated_value,
                 actual_outcome: outcome.actual_outcome,
+                outcome_status: outcome.outcome_status ?? outcome.actual_outcome,
                 recovery_amount: outcome.recovery_amount,
+                approved_amount: outcome.approved_amount ?? outcome.recovery_amount,
+                evidence_strength: outcome.evidence_strength ?? null,
+                success_probability_at_time: outcome.success_probability_at_time ?? null,
                 amazon_case_id: outcome.amazon_case_id,
+                rejection_reason: outcome.rejection_reason ?? null,
+                rejection_category: outcome.rejection_category ?? null,
+                filing_strategy: outcome.filing_strategy ?? {},
                 claim_filed_date: outcome.claim_filed_date?.toISOString(),
                 resolution_date: outcome.resolution_date?.toISOString(),
+                outcome_recorded_at: outcome.outcome_recorded_at?.toISOString() ?? new Date().toISOString(),
                 notes: outcome.notes
             });
 
@@ -277,9 +302,17 @@ export async function updateOutcome(
     try {
         const updateData: any = {};
         if (updates.actual_outcome) updateData.actual_outcome = updates.actual_outcome;
+        if (updates.outcome_status) updateData.outcome_status = updates.outcome_status;
         if (updates.recovery_amount !== undefined) updateData.recovery_amount = updates.recovery_amount;
+        if (updates.approved_amount !== undefined) updateData.approved_amount = updates.approved_amount;
         if (updates.amazon_case_id) updateData.amazon_case_id = updates.amazon_case_id;
+        if (updates.rejection_reason !== undefined) updateData.rejection_reason = updates.rejection_reason;
+        if (updates.rejection_category !== undefined) updateData.rejection_category = updates.rejection_category;
+        if (updates.evidence_strength !== undefined) updateData.evidence_strength = updates.evidence_strength;
+        if (updates.success_probability_at_time !== undefined) updateData.success_probability_at_time = updates.success_probability_at_time;
+        if (updates.filing_strategy !== undefined) updateData.filing_strategy = updates.filing_strategy;
         if (updates.resolution_date) updateData.resolution_date = updates.resolution_date.toISOString();
+        if (updates.outcome_recorded_at) updateData.outcome_recorded_at = updates.outcome_recorded_at.toISOString();
         if (updates.notes) updateData.notes = updates.notes;
 
         const { error } = await supabaseAdmin
@@ -309,7 +342,7 @@ export async function upsertOutcomeForDispute(disputeOutcome: DisputeOutcomeSync
     try {
         const { data: disputeCase, error: disputeError } = await supabaseAdmin
             .from('dispute_cases')
-            .select('id, seller_id, detection_result_id, claim_amount, provider_case_id, created_at')
+            .select('id, seller_id, tenant_id, detection_result_id, claim_amount, approved_amount, provider_case_id, created_at, case_type, evidence_attachments')
             .eq('id', disputeOutcome.dispute_id)
             .maybeSingle();
 
@@ -330,7 +363,7 @@ export async function upsertOutcomeForDispute(disputeOutcome: DisputeOutcomeSync
 
         const { data: detectionResult, error: detectionError } = await supabaseAdmin
             .from('detection_results')
-            .select('id, seller_id, anomaly_type, confidence_score, estimated_value, created_at')
+            .select('id, seller_id, tenant_id, anomaly_type, confidence_score, estimated_value, created_at, match_confidence')
             .eq('id', disputeCase.detection_result_id)
             .maybeSingle();
 
@@ -368,14 +401,46 @@ export async function upsertOutcomeForDispute(disputeOutcome: DisputeOutcomeSync
         }
 
         const sellerId = disputeCase.seller_id || detectionResult.seller_id;
+        const tenantId = disputeCase.tenant_id || detectionResult.tenant_id;
         const amazonCaseId = disputeOutcome.amazon_case_id || disputeCase.provider_case_id;
+        const evidenceAttachments = typeof disputeCase.evidence_attachments === 'string'
+            ? (() => {
+                try {
+                    return JSON.parse(disputeCase.evidence_attachments);
+                } catch {
+                    return {};
+                }
+            })()
+            : (disputeCase.evidence_attachments || {});
+        const evidenceStrength = Number(
+            evidenceAttachments?.decision_intelligence?.evidence_strength ??
+            evidenceAttachments?.match_confidence ??
+            detectionResult.match_confidence ??
+            detectionResult.confidence_score ??
+            0
+        ) || 0;
+        const successProbabilityAtTime = Number(
+            evidenceAttachments?.decision_intelligence?.success_probability ??
+            detectionResult.confidence_score ??
+            0
+        ) || 0;
+        const filingStrategy = evidenceAttachments?.decision_intelligence?.filing_strategy || {};
+        const approvedAmount = disputeOutcome.approved_amount ?? disputeOutcome.recovery_amount ?? disputeCase.approved_amount ?? 0;
 
         if (existingRows && existingRows.length > 0) {
             return await updateOutcome(disputeCase.detection_result_id, {
                 actual_outcome: disputeOutcome.actual_outcome,
+                outcome_status: disputeOutcome.actual_outcome,
                 recovery_amount: disputeOutcome.recovery_amount ?? 0,
+                approved_amount: approvedAmount,
                 amazon_case_id: amazonCaseId,
+                rejection_reason: disputeOutcome.rejection_reason,
+                rejection_category: disputeOutcome.rejection_category,
+                evidence_strength: evidenceStrength,
+                success_probability_at_time: successProbabilityAtTime,
+                filing_strategy: filingStrategy,
                 resolution_date: disputeOutcome.resolution_date || new Date(),
+                outcome_recorded_at: new Date(),
                 notes: disputeOutcome.notes
             });
         }
@@ -383,14 +448,25 @@ export async function upsertOutcomeForDispute(disputeOutcome: DisputeOutcomeSync
         return await recordOutcome({
             detection_result_id: disputeCase.detection_result_id,
             seller_id: sellerId,
+            tenant_id: tenantId,
+            dispute_case_id: disputeCase.id,
             anomaly_type: detectionResult.anomaly_type,
             predicted_confidence: Number(detectionResult.confidence_score || 0),
+            confidence_score_at_time: Number(detectionResult.match_confidence || detectionResult.confidence_score || 0),
             estimated_value: Number(detectionResult.estimated_value || disputeCase.claim_amount || 0),
             actual_outcome: disputeOutcome.actual_outcome,
+            outcome_status: disputeOutcome.actual_outcome,
             recovery_amount: disputeOutcome.recovery_amount ?? 0,
+            approved_amount: approvedAmount,
+            evidence_strength: evidenceStrength,
+            success_probability_at_time: successProbabilityAtTime,
             amazon_case_id: amazonCaseId,
+            rejection_reason: disputeOutcome.rejection_reason,
+            rejection_category: disputeOutcome.rejection_category,
+            filing_strategy: filingStrategy,
             claim_filed_date: disputeCase.created_at ? new Date(disputeCase.created_at) : detectionResult.created_at ? new Date(detectionResult.created_at) : undefined,
             resolution_date: disputeOutcome.resolution_date || new Date(),
+            outcome_recorded_at: new Date(),
             notes: disputeOutcome.notes
         });
     } catch (err: any) {

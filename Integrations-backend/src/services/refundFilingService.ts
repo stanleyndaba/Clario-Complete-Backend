@@ -443,7 +443,10 @@ class RefundFilingService {
                 asin: request.asin,
                 sku: request.sku,
                 evidenceFilenames: attachmentPack.labels,
-                quantity: (request.metadata?.quantity as number | undefined) || 1
+                quantity: (request.metadata?.quantity as number | undefined) || 1,
+                strategyHints: Array.isArray(request.metadata?.strategy_hints)
+                    ? (request.metadata?.strategy_hints as string[])
+                    : []
             };
 
             const brief = briefGeneratorService.generateBrief(context);
