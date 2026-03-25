@@ -49,6 +49,17 @@ function applySSEHeaders(req: AuthenticatedSSERequest, res: Response): void {
   res.writeHead(200, headers);
 }
 
+export function openAuthenticatedSSEStream(req: AuthenticatedSSERequest, res: Response): void {
+  applySSEHeaders(req, res);
+
+  if (req.user?.id) {
+    res.write(`event: auth_success\ndata: ${JSON.stringify({
+      user_id: req.user.id,
+      timestamp: new Date().toISOString()
+    })}\n\n`);
+  }
+}
+
 /**
  * JWT authentication middleware for Server-Sent Events
  * Validates JWT token and injects seller_id for data filtering
@@ -90,7 +101,6 @@ export const authenticateSSE = async (
 
     if (!token) {
       if (getExplicitDemoSignal(req)) {
-        applySSEHeaders(req, res);
         logger.info('SSE connection without authentication - using isolated demo mode', {
           url: (req as any).url,
           method: (req as any).method,
@@ -101,14 +111,6 @@ export const authenticateSSE = async (
           id: 'demo-user',
           email: 'demo@example.com'
         };
-
-        res.write(`event: connected\ndata: ${JSON.stringify({
-          status: 'ok',
-          mode: 'demo',
-          user_id: 'demo-user',
-          message: 'Connected in explicit demo mode',
-          timestamp: new Date().toISOString()
-        })}\n\n`);
 
         next();
         return;
@@ -157,8 +159,6 @@ export const authenticateSSE = async (
         role: decoded.role
       };
 
-      applySSEHeaders(req, res);
-
       logger.info('✅ [SSE AUTH] SSE authentication successful', {
         user_id: userId,
         email: email,
@@ -166,12 +166,6 @@ export const authenticateSSE = async (
         ip: (req as any).ip,
         note: 'Sync operations must use the same userId for SSE events to work'
       });
-
-      // Send authentication success event
-      res.write(`event: auth_success\ndata: ${JSON.stringify({
-        user_id: userId,
-        timestamp: new Date().toISOString()
-      })}\n\n`);
 
       next();
     } catch (error) {
