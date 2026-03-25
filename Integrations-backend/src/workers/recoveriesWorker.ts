@@ -10,7 +10,7 @@ import cron from 'node-cron';
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import { createTenantScopedQueryById } from '../database/tenantScopedClient';
-import recoveriesService, { ReconciliationResult } from '../services/recoveriesService';
+import recoveriesService from '../services/recoveriesService';
 import workerContinuationService from '../services/workerContinuationService';
 import runtimeCapacityService from '../services/runtimeCapacityService';
 import operationalControlService from '../services/operationalControlService';
@@ -56,10 +56,15 @@ export interface RecoveryStats {
 }
 
 class RecoveriesWorker {
-  private schedule: string = '*/10 * * * *'; // Every 10 minutes
-  private cronJob: cron.ScheduledTask | null = null;
-  private isRunning: boolean = false;
+  private executionSchedule: string = process.env.RECOVERY_EXECUTION_LANE_SCHEDULE || '*/20 * * * * *';
+  private backstopSchedule: string = process.env.RECOVERY_BACKSTOP_SCHEDULE || '*/10 * * * *';
+  private executionJob: cron.ScheduledTask | null = null;
+  private backstopJob: cron.ScheduledTask | null = null;
+  private isExecutionRunning: boolean = false;
+  private isBackstopRunning: boolean = false;
   private readonly workerName = 'recoveries';
+  private readonly executionLaneName = 'recoveries-execution';
+  private readonly backstopLaneName = 'recoveries-backstop';
   private static readonly BATCH_SIZE = Number(process.env.RECOVERIES_BATCH_SIZE || '75');
   private static readonly WORK_BATCH_SIZE = Number(process.env.RECOVERY_WORK_BATCH_SIZE || '25');
   private tenantRotationOffset: number = 0;
@@ -75,30 +80,47 @@ class RecoveriesWorker {
    * Start the worker
    */
   start(): void {
-    if (this.cronJob) {
+    if (this.executionJob || this.backstopJob) {
       logger.warn('⚠️ [RECOVERIES] Worker already started');
       return;
     }
 
     logger.info('🚀 [RECOVERIES] Starting Recoveries Worker', {
-      schedule: this.schedule
+      executionSchedule: this.executionSchedule,
+      backstopSchedule: this.backstopSchedule
     });
 
-    // Schedule recovery job (every 10 minutes)
-    this.cronJob = cron.schedule(this.schedule, async () => {
-      if (this.isRunning) {
-        runtimeCapacityService.recordWorkerSkip(this.workerName, 'previous_recovery_run_still_in_progress');
-        logger.debug('⏸️ [RECOVERIES] Previous run still in progress, skipping');
+    this.executionJob = cron.schedule(this.executionSchedule, async () => {
+      if (this.isExecutionRunning) {
+        runtimeCapacityService.recordWorkerSkip(this.executionLaneName, 'previous_recovery_execution_run_still_in_progress');
+        logger.debug('⏸️ [RECOVERIES] Previous execution lane run still in progress, skipping');
         return;
       }
 
-      this.isRunning = true;
+      this.isExecutionRunning = true;
       try {
         await this.runRecoveriesForAllTenants();
       } catch (error: any) {
-        logger.error('❌ [RECOVERIES] Error in recovery job', { error: error.message });
+        logger.error('❌ [RECOVERIES] Error in recovery execution lane', { error: error.message });
       } finally {
-        this.isRunning = false;
+        this.isExecutionRunning = false;
+      }
+    });
+
+    this.backstopJob = cron.schedule(this.backstopSchedule, async () => {
+      if (this.isBackstopRunning) {
+        runtimeCapacityService.recordWorkerSkip(this.backstopLaneName, 'previous_recovery_backstop_run_still_in_progress');
+        logger.debug('⏸️ [RECOVERIES] Previous backstop run still in progress, skipping');
+        return;
+      }
+
+      this.isBackstopRunning = true;
+      try {
+        await this.runRecoveryBackstopSweepForAllTenants();
+      } catch (error: any) {
+        logger.error('❌ [RECOVERIES] Error in recovery backstop sweep', { error: error.message });
+      } finally {
+        this.isBackstopRunning = false;
       }
     });
 
@@ -109,9 +131,13 @@ class RecoveriesWorker {
    * Stop the worker
    */
   stop(): void {
-    if (this.cronJob) {
-      this.cronJob.stop();
-      this.cronJob = null;
+    if (this.executionJob) {
+      this.executionJob.stop();
+      this.executionJob = null;
+    }
+    if (this.backstopJob) {
+      this.backstopJob.stop();
+      this.backstopJob = null;
     }
     logger.info('🛑 [RECOVERIES] Worker stopped');
   }
@@ -132,12 +158,12 @@ class RecoveriesWorker {
     };
 
     try {
-      runtimeCapacityService.recordWorkerStart(this.workerName);
+      runtimeCapacityService.recordWorkerStart(this.executionLaneName, { mode: 'execution_lane' });
       const reconciliationEnabled = await operationalControlService.isEnabled('recovery_reconciliation', true);
       if (!reconciliationEnabled) {
         runtimeCapacityService.setCircuitBreaker('recovery-reconciliation', 'open', 'operator_disabled');
         logger.warn('⏸️ [RECOVERIES] Recovery reconciliation paused by operator control');
-        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+        runtimeCapacityService.recordWorkerEnd(this.executionLaneName, {
           processed: 0,
           succeeded: 0,
           failed: 0,
@@ -146,7 +172,7 @@ class RecoveriesWorker {
         return stats;
       }
       runtimeCapacityService.setCircuitBreaker('recovery-reconciliation', 'closed', null);
-      logger.info('💰 [RECOVERIES] Starting recovery run for all tenants (event-driven primary, cron sweep backstop)');
+      logger.info('💰 [RECOVERIES] Starting recovery execution lane for all tenants');
 
       // Get all active tenants
       const { data: tenants, error: tenantError } = await supabaseAdmin
@@ -167,7 +193,7 @@ class RecoveriesWorker {
 
       if (!tenants || tenants.length === 0) {
         logger.debug('ℹ️ [RECOVERIES] No active tenants found');
-        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+        runtimeCapacityService.recordWorkerEnd(this.executionLaneName, {
           processed: 0,
           succeeded: 0,
           failed: 0
@@ -200,7 +226,7 @@ class RecoveriesWorker {
       }
 
       logger.info('✅ [RECOVERIES] Recovery run completed', stats);
-      runtimeCapacityService.recordWorkerEnd(this.workerName, {
+      runtimeCapacityService.recordWorkerEnd(this.executionLaneName, {
         processed: stats.processed,
         succeeded: stats.reconciled,
         failed: stats.failed
@@ -210,7 +236,7 @@ class RecoveriesWorker {
     } catch (error: any) {
       logger.error('❌ [RECOVERIES] Fatal error in recovery run', { error: error.message });
       stats.errors.push(`Fatal error: ${error.message}`);
-      runtimeCapacityService.recordWorkerEnd(this.workerName, {
+      runtimeCapacityService.recordWorkerEnd(this.executionLaneName, {
         processed: stats.processed,
         succeeded: stats.reconciled,
         failed: stats.failed || 1,
@@ -243,13 +269,6 @@ class RecoveriesWorker {
     stats.discrepancies += workStats.discrepancies;
     stats.failed += workStats.failed;
     stats.errors.push(...workStats.errors);
-
-    const enqueuedBySweep = await this.enqueueMissingRecoveryWorkItemsForTenant(tenantId);
-    logger.info('ℹ️ [RECOVERIES] Backstop sweep completed', {
-      tenantId,
-      processedWorkItems: workStats.processed,
-      enqueuedBySweep
-    });
 
     return stats;
 
@@ -484,54 +503,64 @@ class RecoveriesWorker {
     return stats;
   }
 
-  /**
-   * Process recovery for a specific case (called by Agent 7)
-   */
-  async processRecoveryForCase(disputeId: string, userId: string): Promise<ReconciliationResult | null> {
+  async runRecoveryBackstopSweepForAllTenants(): Promise<{ tenantsProcessed: number; enqueued: number; errors: string[] }> {
+    const result = { tenantsProcessed: 0, enqueued: 0, errors: [] as string[] };
+
     try {
-      logger.info('🔄 [RECOVERIES] Processing recovery for specific case', {
-        disputeId,
-        userId
-      });
-
-      const { data: disputeCase } = await supabaseAdmin
-        .from('dispute_cases')
-        .select('tenant_id')
-        .eq('id', disputeId)
-        .eq('seller_id', userId)
-        .single();
-
-      return await recoveriesService.processRecoveryForCase(disputeId, userId, disputeCase?.tenant_id);
-
-    } catch (error: any) {
-      logger.error('❌ [RECOVERIES] Failed to process recovery for case', {
-        disputeId,
-        userId,
-        error: error.message
-      });
-      return null;
-    }
-  }
-
-  async processPendingRecoveryWorkForEntity(disputeId: string, userId: string, tenantId: string): Promise<void> {
-    const tenantSlug = await resolveTenantSlug(tenantId);
-    const { item } = await financialWorkItemService.enqueueRecoveryWork({
-      tenantId,
-      tenantSlug,
-      userId,
-      disputeCaseId: disputeId,
-      sourceEventType: 'recovery.manual_trigger',
-      sourceEventId: disputeId,
-      payload: {
-        dispute_case_id: disputeId
+      runtimeCapacityService.recordWorkerStart(this.backstopLaneName, { mode: 'backstop_sweep' });
+      const reconciliationEnabled = await operationalControlService.isEnabled('recovery_reconciliation', true);
+      if (!reconciliationEnabled) {
+        runtimeCapacityService.recordWorkerEnd(this.backstopLaneName, {
+          processed: 0,
+          succeeded: 0,
+          failed: 0,
+          metadata: { paused: true, reason: 'operator_disabled' }
+        });
+        return result;
       }
-    });
 
-    if (['completed', 'quarantined', 'failed'].includes(String(item.status || '').toLowerCase())) {
-      return;
+      logger.info('💰 [RECOVERIES] Starting recovery backstop sweep for all tenants');
+
+      const { data: tenants, error } = await supabaseAdmin
+        .from('tenants')
+        .select('id, name')
+        .in('status', ['active', 'trialing'])
+        .is('deleted_at', null);
+
+      if (error) {
+        runtimeCapacityService.recordWorkerEnd(this.backstopLaneName, {
+          failed: 1,
+          lastError: error.message
+        });
+        throw error;
+      }
+
+      const orderedTenants = this.rotateTenants((tenants || []) as Array<{ id: string; name?: string }>);
+      for (const tenant of orderedTenants) {
+        try {
+          result.tenantsProcessed++;
+          result.enqueued += await this.enqueueMissingRecoveryWorkItemsForTenant(tenant.id);
+        } catch (tenantError: any) {
+          result.errors.push(`Tenant ${tenant.id}: ${tenantError.message}`);
+        }
+      }
+
+      runtimeCapacityService.recordWorkerEnd(this.backstopLaneName, {
+        processed: result.tenantsProcessed,
+        succeeded: result.enqueued,
+        failed: result.errors.length
+      });
+      return result;
+    } catch (error: any) {
+      runtimeCapacityService.recordWorkerEnd(this.backstopLaneName, {
+        processed: result.tenantsProcessed,
+        succeeded: result.enqueued,
+        failed: result.errors.length || 1,
+        lastError: error.message
+      });
+      result.errors.push(error.message);
+      return result;
     }
-
-    await this.processRecoveryWorkItem(item);
   }
 
   private async processPendingRecoveryWorkForTenant(tenantId: string): Promise<RecoveryStats> {
@@ -546,12 +575,12 @@ class RecoveriesWorker {
     };
 
     const backlogState = await this.getRecoveryWorkBacklog(tenantId);
-    runtimeCapacityService.updateBacklog(`${this.workerName}:${tenantId}`, backlogState.backlogDepth, backlogState.oldestItemAgeMs, {
+    runtimeCapacityService.updateBacklog(`${this.executionLaneName}:${tenantId}`, backlogState.backlogDepth, backlogState.oldestItemAgeMs, {
       mode: 'event_driven_primary'
     });
 
     for (let i = 0; i < RecoveriesWorker.WORK_BATCH_SIZE; i++) {
-      const item = await financialWorkItemService.claimNext('recovery', `${this.workerName}:${tenantId}`, tenantId);
+      const item = await financialWorkItemService.claimNext('recovery', `${this.executionLaneName}:${tenantId}`, tenantId);
       if (!item) {
         break;
       }

@@ -3,7 +3,7 @@ import { supabaseAdmin } from '../database/supabaseClient';
 import runtimeCapacityService from './runtimeCapacityService';
 
 type WorkKind = 'recovery' | 'billing';
-type WorkStatus = 'pending' | 'processing' | 'completed' | 'quarantined' | 'failed';
+type WorkStatus = 'pending' | 'processing' | 'completed' | 'quarantined' | 'failed_retry_exhausted';
 
 type BaseWorkCreate = {
   tenantId: string;
@@ -26,6 +26,10 @@ const TABLES: Record<WorkKind, string> = {
   recovery: 'recovery_work_items',
   billing: 'billing_work_items'
 };
+
+const TERMINAL_FAILURE_STATUS: 'failed_retry_exhausted' = 'failed_retry_exhausted';
+const TERMINAL_STATUSES = new Set<WorkStatus>(['completed', 'quarantined', TERMINAL_FAILURE_STATUS]);
+const LOCK_TIMEOUT_MS = Number(process.env.FINANCIAL_WORK_LOCK_TIMEOUT_MS || String(15 * 60 * 1000));
 
 function buildBackoffDelayMs(attempts: number): number {
   const baseMs = 5 * 60 * 1000;
@@ -109,6 +113,8 @@ class FinancialWorkItemService {
   }
 
   async claimNext(kind: WorkKind, workerName: string, tenantId?: string): Promise<any | null> {
+    await this.releaseStaleLocks(kind, tenantId);
+
     let query = supabaseAdmin
       .from(this.getTable(kind))
       .select('*')
@@ -147,6 +153,34 @@ class FinancialWorkItemService {
     }
 
     return claimed || null;
+  }
+
+  private async releaseStaleLocks(kind: WorkKind, tenantId?: string): Promise<void> {
+    const staleBefore = new Date(Date.now() - LOCK_TIMEOUT_MS).toISOString();
+    let query = supabaseAdmin
+      .from(this.getTable(kind))
+      .update({
+        status: 'pending',
+        locked_at: null,
+        locked_by: null,
+        last_error: 'stale_processing_lock_recovered',
+        next_attempt_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('status', 'processing')
+      .lt('locked_at', staleBefore);
+
+    if (tenantId) {
+      query = query.eq('tenant_id', tenantId);
+    }
+
+    const { error } = await query;
+    if (error) {
+      logger.warn(`[FINANCIAL WORK] Failed to release stale ${kind} locks`, {
+        tenantId,
+        error: error.message
+      });
+    }
   }
 
   async complete(kind: WorkKind, itemId: string, metadata?: Record<string, any>): Promise<void> {
@@ -207,11 +241,11 @@ class FinancialWorkItemService {
     }
   }
 
-  async fail(kind: WorkKind, item: any, reason: string, metadata?: Record<string, any>): Promise<'pending' | 'failed'> {
+  async fail(kind: WorkKind, item: any, reason: string, metadata?: Record<string, any>): Promise<'pending' | 'failed_retry_exhausted'> {
     const attempts = Number(item?.attempts || 0) + 1;
     const maxAttempts = Number(item?.max_attempts || 5);
     const terminal = attempts >= maxAttempts;
-    const status: WorkStatus = terminal ? 'failed' : 'pending';
+    const status: 'pending' | 'failed_retry_exhausted' = terminal ? TERMINAL_FAILURE_STATUS : 'pending';
     const nextAttemptAt = terminal ? item?.next_attempt_at || new Date().toISOString() : new Date(Date.now() + buildBackoffDelayMs(attempts)).toISOString();
 
     const { error } = await supabaseAdmin
@@ -230,6 +264,10 @@ class FinancialWorkItemService {
 
     if (error) {
       throw new Error(`Failed to mark ${kind} work item ${item.id} as ${status}: ${error.message}`);
+    }
+
+    if (terminal) {
+      runtimeCapacityService.incrementCounter(`${kind}_work_retry_exhausted`);
     }
 
     return status;
@@ -279,10 +317,10 @@ class FinancialWorkItemService {
     const summarize = async (table: string) => {
       const { data, error } = await supabaseAdmin
         .from(table)
-        .select('status, tenant_id, updated_at');
+        .select('id, status, tenant_id, updated_at, last_error, dispute_case_id, attempts, max_attempts');
       if (error) {
         logger.warn('[FINANCIAL WORK] Failed to summarize work items', { table, error: error.message });
-        return { counts: {}, oldestPendingAgeMs: null };
+        return { counts: {}, oldestPendingAgeMs: null, terminalFailures: [] };
       }
       const counts = (data || []).reduce((acc: Record<string, number>, row: any) => {
         const key = String(row.status || 'unknown');
@@ -294,9 +332,23 @@ class FinancialWorkItemService {
         .map((row: any) => new Date(row.updated_at || 0).getTime())
         .filter((value: number) => Number.isFinite(value))
         .sort((a: number, b: number) => a - b)[0];
+      const terminalFailures = (data || [])
+        .filter((row: any) => TERMINAL_STATUSES.has(String(row.status || '') as WorkStatus) && row.status !== 'completed')
+        .sort((left: any, right: any) => new Date(right.updated_at || 0).getTime() - new Date(left.updated_at || 0).getTime())
+        .slice(0, 10)
+        .map((row: any) => ({
+          id: row.id,
+          disputeCaseId: row.dispute_case_id,
+          status: row.status,
+          lastError: row.last_error,
+          attempts: row.attempts,
+          maxAttempts: row.max_attempts,
+          updatedAt: row.updated_at
+        }));
       return {
         counts,
-        oldestPendingAgeMs: oldestPending ? Math.max(0, Date.now() - oldestPending) : null
+        oldestPendingAgeMs: oldestPending ? Math.max(0, Date.now() - oldestPending) : null,
+        terminalFailures
       };
     };
 

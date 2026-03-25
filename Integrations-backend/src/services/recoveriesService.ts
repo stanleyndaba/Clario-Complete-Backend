@@ -797,14 +797,6 @@ class RecoveriesService {
             });
           }
 
-          const { default: billingWorker } = await import('../workers/billingWorker');
-          billingWorker.processPendingBillingWorkForEntity(match.disputeId, recovery.id, tenantId || '', userId).catch((workError: any) => {
-            logger.warn('⚠️ [RECOVERIES] Failed to process billing work immediately', {
-              recoveryId: recovery.id,
-              disputeId: match.disputeId,
-              error: workError.message
-            });
-          });
         } catch (billingWorkError: any) {
           logger.warn('⚠️ [RECOVERIES] Failed to enqueue billing work', {
             recoveryId: recovery.id,

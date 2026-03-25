@@ -226,6 +226,22 @@ class RuntimeCapacityService {
       });
     }
 
+    if ((this.counters.get('recovery_work_retry_exhausted') || 0) > 0) {
+      alerts.push({
+        code: 'recovery_work_retry_exhausted',
+        severity: 'critical',
+        message: `${this.counters.get('recovery_work_retry_exhausted')} recovery work items exhausted retries`
+      });
+    }
+
+    if ((this.counters.get('billing_work_retry_exhausted') || 0) > 0) {
+      alerts.push({
+        code: 'billing_work_retry_exhausted',
+        severity: 'critical',
+        message: `${this.counters.get('billing_work_retry_exhausted')} billing work items exhausted retries`
+      });
+    }
+
     return alerts;
   }
 

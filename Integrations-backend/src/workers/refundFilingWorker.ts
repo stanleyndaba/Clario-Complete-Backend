@@ -2935,10 +2935,8 @@ class RefundFilingWorker {
         });
       }
 
-      const { default: recoveriesWorker } = await import('./recoveriesWorker');
-      await recoveriesWorker.processPendingRecoveryWorkForEntity(disputeId, userId, tenantId || '');
     } catch (error: any) {
-      logger.debug(' [REFUND FILING] Recovery work queued (backstop worker will retry if immediate path misses)', {
+      logger.debug(' [REFUND FILING] Recovery work queued for dedicated execution lane', {
         disputeId,
         error: error.message
       });

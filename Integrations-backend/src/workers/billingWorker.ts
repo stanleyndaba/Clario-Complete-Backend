@@ -27,10 +27,15 @@ export interface BillingStats {
 }
 
 class BillingWorker {
-  private schedule: string = '*/5 * * * *'; // Every 5 minutes
-  private cronJob: cron.ScheduledTask | null = null;
-  private isRunning: boolean = false;
+  private executionSchedule: string = process.env.BILLING_EXECUTION_LANE_SCHEDULE || '*/20 * * * * *';
+  private backstopSchedule: string = process.env.BILLING_BACKSTOP_SCHEDULE || '*/5 * * * *';
+  private executionJob: cron.ScheduledTask | null = null;
+  private backstopJob: cron.ScheduledTask | null = null;
+  private isExecutionRunning: boolean = false;
+  private isBackstopRunning: boolean = false;
   private readonly workerName = 'billing';
+  private readonly executionLaneName = 'billing-execution';
+  private readonly backstopLaneName = 'billing-backstop';
   private static readonly BATCH_SIZE = Number(process.env.BILLING_BATCH_SIZE || '75');
   private static readonly WORK_BATCH_SIZE = Number(process.env.BILLING_WORK_BATCH_SIZE || '25');
   private tenantRotationOffset: number = 0;
@@ -46,30 +51,47 @@ class BillingWorker {
    * Start the worker
    */
   start(): void {
-    if (this.cronJob) {
+    if (this.executionJob || this.backstopJob) {
       logger.warn('⚠️ [BILLING] Worker already started');
       return;
     }
 
     logger.info('🚀 [BILLING] Starting Billing Worker', {
-      schedule: this.schedule
+      executionSchedule: this.executionSchedule,
+      backstopSchedule: this.backstopSchedule
     });
 
-    // Schedule billing job (every 5 minutes)
-    this.cronJob = cron.schedule(this.schedule, async () => {
-      if (this.isRunning) {
-        runtimeCapacityService.recordWorkerSkip(this.workerName, 'previous_billing_run_still_in_progress');
-        logger.debug('⏸️ [BILLING] Previous run still in progress, skipping');
+    this.executionJob = cron.schedule(this.executionSchedule, async () => {
+      if (this.isExecutionRunning) {
+        runtimeCapacityService.recordWorkerSkip(this.executionLaneName, 'previous_billing_execution_run_still_in_progress');
+        logger.debug('⏸️ [BILLING] Previous execution lane run still in progress, skipping');
         return;
       }
 
-      this.isRunning = true;
+      this.isExecutionRunning = true;
       try {
         await this.runBillingForAllTenants();
       } catch (error: any) {
-        logger.error('❌ [BILLING] Error in billing job', { error: error.message });
+        logger.error('❌ [BILLING] Error in billing execution lane', { error: error.message });
       } finally {
-        this.isRunning = false;
+        this.isExecutionRunning = false;
+      }
+    });
+
+    this.backstopJob = cron.schedule(this.backstopSchedule, async () => {
+      if (this.isBackstopRunning) {
+        runtimeCapacityService.recordWorkerSkip(this.backstopLaneName, 'previous_billing_backstop_run_still_in_progress');
+        logger.debug('⏸️ [BILLING] Previous backstop run still in progress, skipping');
+        return;
+      }
+
+      this.isBackstopRunning = true;
+      try {
+        await this.runBillingBackstopSweepForAllTenants();
+      } catch (error: any) {
+        logger.error('❌ [BILLING] Error in billing backstop sweep', { error: error.message });
+      } finally {
+        this.isBackstopRunning = false;
       }
     });
 
@@ -110,9 +132,13 @@ class BillingWorker {
    * Stop the worker
    */
   stop(): void {
-    if (this.cronJob) {
-      this.cronJob.stop();
-      this.cronJob = null;
+    if (this.executionJob) {
+      this.executionJob.stop();
+      this.executionJob = null;
+    }
+    if (this.backstopJob) {
+      this.backstopJob.stop();
+      this.backstopJob = null;
     }
     logger.info('🛑 [BILLING] Worker stopped');
   }
@@ -131,12 +157,12 @@ class BillingWorker {
     };
 
     try {
-      runtimeCapacityService.recordWorkerStart(this.workerName);
+      runtimeCapacityService.recordWorkerStart(this.executionLaneName, { mode: 'execution_lane' });
       const billingEnabled = await operationalControlService.isEnabled('billing_charge', true);
       if (!billingEnabled) {
         runtimeCapacityService.setCircuitBreaker('billing-charge', 'open', 'operator_disabled');
         logger.warn('⏸️ [BILLING] Billing worker paused by operator control');
-        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+        runtimeCapacityService.recordWorkerEnd(this.executionLaneName, {
           processed: 0,
           succeeded: 0,
           failed: 0,
@@ -145,7 +171,7 @@ class BillingWorker {
         return stats;
       }
       runtimeCapacityService.setCircuitBreaker('billing-charge', 'closed', null);
-      logger.info('💳 [BILLING] Starting billing run for all tenants (event-driven primary, cron sweep backstop)');
+      logger.info('💳 [BILLING] Starting billing execution lane for all tenants');
 
       // Get all active tenants
       const { data: tenants, error: tenantError } = await supabaseAdmin
@@ -166,7 +192,7 @@ class BillingWorker {
 
       if (!tenants || tenants.length === 0) {
         logger.debug('ℹ️ [BILLING] No active tenants found');
-        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+        runtimeCapacityService.recordWorkerEnd(this.executionLaneName, {
           processed: 0,
           succeeded: 0,
           failed: 0
@@ -197,7 +223,7 @@ class BillingWorker {
       }
 
       logger.info('✅ [BILLING] Billing run completed', stats);
-      runtimeCapacityService.recordWorkerEnd(this.workerName, {
+      runtimeCapacityService.recordWorkerEnd(this.executionLaneName, {
         processed: stats.processed,
         succeeded: stats.charged,
         failed: stats.failed
@@ -207,7 +233,7 @@ class BillingWorker {
     } catch (error: any) {
       logger.error('❌ [BILLING] Fatal error in billing run', { error: error.message });
       stats.errors.push(`Fatal error: ${error.message}`);
-      runtimeCapacityService.recordWorkerEnd(this.workerName, {
+      runtimeCapacityService.recordWorkerEnd(this.executionLaneName, {
         processed: stats.processed,
         succeeded: stats.charged,
         failed: stats.failed || 1,
@@ -236,13 +262,6 @@ class BillingWorker {
     stats.failed += workStats.failed;
     stats.skipped += workStats.skipped;
     stats.errors.push(...workStats.errors);
-
-    const enqueuedBySweep = await this.enqueueMissingBillingWorkItemsForTenant(tenantId);
-    logger.info('ℹ️ [BILLING] Backstop sweep completed', {
-      tenantId,
-      processedWorkItems: workStats.processed,
-      enqueuedBySweep
-    });
 
     return stats;
 
@@ -801,27 +820,64 @@ class BillingWorker {
     }
   }
 
-  async processPendingBillingWorkForEntity(disputeId: string, recoveryId: string | null, tenantId: string, userId: string): Promise<void> {
-    const tenantSlug = await resolveTenantSlug(tenantId);
-    const { item } = await financialWorkItemService.enqueueBillingWork({
-      tenantId,
-      tenantSlug,
-      userId,
-      disputeCaseId: disputeId,
-      recoveryId,
-      sourceEventType: 'billing.manual_trigger',
-      sourceEventId: recoveryId || disputeId,
-      payload: {
-        dispute_case_id: disputeId,
-        recovery_id: recoveryId
+  async runBillingBackstopSweepForAllTenants(): Promise<{ tenantsProcessed: number; enqueued: number; errors: string[] }> {
+    const result = { tenantsProcessed: 0, enqueued: 0, errors: [] as string[] };
+
+    try {
+      runtimeCapacityService.recordWorkerStart(this.backstopLaneName, { mode: 'backstop_sweep' });
+      const billingEnabled = await operationalControlService.isEnabled('billing_charge', true);
+      if (!billingEnabled) {
+        runtimeCapacityService.recordWorkerEnd(this.backstopLaneName, {
+          processed: 0,
+          succeeded: 0,
+          failed: 0,
+          metadata: { paused: true, reason: 'operator_disabled' }
+        });
+        return result;
       }
-    });
 
-    if (['completed', 'quarantined', 'failed'].includes(String(item.status || '').toLowerCase())) {
-      return;
+      logger.info('💳 [BILLING] Starting billing backstop sweep for all tenants');
+
+      const { data: tenants, error } = await supabaseAdmin
+        .from('tenants')
+        .select('id, name')
+        .in('status', ['active', 'trialing'])
+        .is('deleted_at', null);
+
+      if (error) {
+        runtimeCapacityService.recordWorkerEnd(this.backstopLaneName, {
+          failed: 1,
+          lastError: error.message
+        });
+        throw error;
+      }
+
+      const orderedTenants = this.rotateTenants((tenants || []) as Array<{ id: string; name?: string }>);
+      for (const tenant of orderedTenants) {
+        try {
+          result.tenantsProcessed++;
+          result.enqueued += await this.enqueueMissingBillingWorkItemsForTenant(tenant.id);
+        } catch (tenantError: any) {
+          result.errors.push(`Tenant ${tenant.id}: ${tenantError.message}`);
+        }
+      }
+
+      runtimeCapacityService.recordWorkerEnd(this.backstopLaneName, {
+        processed: result.tenantsProcessed,
+        succeeded: result.enqueued,
+        failed: result.errors.length
+      });
+      return result;
+    } catch (error: any) {
+      runtimeCapacityService.recordWorkerEnd(this.backstopLaneName, {
+        processed: result.tenantsProcessed,
+        succeeded: result.enqueued,
+        failed: result.errors.length || 1,
+        lastError: error.message
+      });
+      result.errors.push(error.message);
+      return result;
     }
-
-    await this.processBillingWorkItem(item);
   }
 
   private async processPendingBillingWorkForTenant(tenantId: string): Promise<BillingStats> {
@@ -834,12 +890,12 @@ class BillingWorker {
     };
 
     const backlogState = await this.getBillingWorkBacklog(tenantId);
-    runtimeCapacityService.updateBacklog(`${this.workerName}:${tenantId}`, backlogState.backlogDepth, backlogState.oldestItemAgeMs, {
+    runtimeCapacityService.updateBacklog(`${this.executionLaneName}:${tenantId}`, backlogState.backlogDepth, backlogState.oldestItemAgeMs, {
       mode: 'event_driven_primary'
     });
 
     for (let i = 0; i < BillingWorker.WORK_BATCH_SIZE; i++) {
-      const item = await financialWorkItemService.claimNext('billing', `${this.workerName}:${tenantId}`, tenantId);
+      const item = await financialWorkItemService.claimNext('billing', `${this.executionLaneName}:${tenantId}`, tenantId);
       if (!item) {
         break;
       }

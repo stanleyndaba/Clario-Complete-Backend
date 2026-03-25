@@ -6,8 +6,9 @@ import { timelineService } from '../services/timelineService';
 import { extractAgent10EntityIds } from '../utils/agent10Event';
 import { notificationService } from '../notifications/services/notification_service';
 import { NotificationChannel, NotificationPriority, NotificationType } from '../notifications/models/notification';
-import recoveriesWorker from '../workers/recoveriesWorker';
 import { convertUserIdToUuid } from '../database/supabaseClient';
+import financialWorkItemService from '../services/financialWorkItemService';
+import { resolveTenantSlug } from '../utils/tenantEventRouting';
 
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -156,7 +157,7 @@ function deriveOperatorState(record: any, reconciliationStatus: string, billingS
         return 'recovery_processing';
     }
 
-    if (normalizedRecoveryWork === 'quarantined') {
+    if (normalizedRecoveryWork === 'quarantined' || normalizedRecoveryWork === 'failed_retry_exhausted') {
         return 'investigation_required';
     }
 
@@ -166,6 +167,10 @@ function deriveOperatorState(record: any, reconciliationStatus: string, billingS
 
     if (normalizedBillingWork === 'processing') {
         return 'billing_processing';
+    }
+
+    if (normalizedBillingWork === 'quarantined' || normalizedBillingWork === 'failed_retry_exhausted') {
+        return 'investigation_required';
     }
 
     if (reconciliationStatus === 'reconciled' && BILLING_COMPLETE_STATUSES.has(billingStatus)) {
@@ -683,8 +688,8 @@ router.get('/ledger', async (req: Request, res: Response) => {
 
 /**
  * POST /api/recoveries/:id/process
- * Deterministically process payout detection + reconciliation for one approved case
- * Uses the same recoveries worker/service path as production approval handling.
+ * Enqueue deterministic recovery work for one approved case.
+ * Execution stays inside the dedicated recovery lane.
  */
 router.post('/:id/process', async (req: Request, res: Response) => {
     try {
@@ -705,24 +710,31 @@ router.post('/:id/process', async (req: Request, res: Response) => {
             });
         }
 
-        const result = await recoveriesWorker.processRecoveryForCase(disputeCase.id, disputeCase.seller_id);
-
-        if (!result) {
-            return res.status(200).json({
-                success: true,
-                processed: false,
-                status: disputeCase.status,
-                recovery_status: disputeCase.recovery_status,
-                message: disputeCase.status !== 'approved'
-                    ? 'Case is not approved yet, so recovery processing was skipped.'
-                    : 'No payout match was found yet for this approved case.'
-            });
-        }
+        const tenantSlug = await resolveTenantSlug(tenantId);
+        const { item, created } = await financialWorkItemService.enqueueRecoveryWork({
+            tenantId,
+            tenantSlug,
+            userId: disputeCase.seller_id,
+            disputeCaseId: disputeCase.id,
+            sourceEventType: 'recovery.manual_enqueue',
+            sourceEventId: disputeCase.id,
+            payload: {
+                dispute_case_id: disputeCase.id,
+                manual: true
+            }
+        });
 
         return res.status(200).json({
             success: true,
-            processed: true,
-            result
+            queued: true,
+            created,
+            work_item_id: item.id,
+            work_status: item.status,
+            status: disputeCase.status,
+            recovery_status: disputeCase.recovery_status,
+            message: disputeCase.status !== 'approved'
+                ? 'Case is not approved yet, so the execution lane will wait for approval before reconciling it.'
+                : 'Recovery work has been queued for the dedicated execution lane.'
         });
 
     } catch (error: any) {
