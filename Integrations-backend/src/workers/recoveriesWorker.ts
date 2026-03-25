@@ -11,6 +11,8 @@ import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import recoveriesService, { ReconciliationResult } from '../services/recoveriesService';
+import workerContinuationService from '../services/workerContinuationService';
+import runtimeCapacityService from '../services/runtimeCapacityService';
 
 // Retry logic with exponential backoff
 async function retryWithBackoff<T>(
@@ -54,6 +56,8 @@ class RecoveriesWorker {
   private schedule: string = '*/10 * * * *'; // Every 10 minutes
   private cronJob: cron.ScheduledTask | null = null;
   private isRunning: boolean = false;
+  private readonly workerName = 'recoveries';
+  private static readonly BATCH_SIZE = Number(process.env.RECOVERIES_BATCH_SIZE || '75');
 
   /**
    * Start the worker
@@ -71,6 +75,7 @@ class RecoveriesWorker {
     // Schedule recovery job (every 10 minutes)
     this.cronJob = cron.schedule(this.schedule, async () => {
       if (this.isRunning) {
+        runtimeCapacityService.recordWorkerSkip(this.workerName, 'previous_recovery_run_still_in_progress');
         logger.debug('⏸️ [RECOVERIES] Previous run still in progress, skipping');
         return;
       }
@@ -115,6 +120,7 @@ class RecoveriesWorker {
     };
 
     try {
+      runtimeCapacityService.recordWorkerStart(this.workerName);
       logger.info('💰 [RECOVERIES] Starting recovery run for all tenants');
 
       // Get all active tenants
@@ -127,11 +133,20 @@ class RecoveriesWorker {
       if (tenantError) {
         logger.error('❌ [RECOVERIES] Failed to get active tenants', { error: tenantError.message });
         stats.errors.push(`Failed to get tenants: ${tenantError.message}`);
+        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+          failed: 1,
+          lastError: tenantError.message
+        });
         return stats;
       }
 
       if (!tenants || tenants.length === 0) {
         logger.debug('ℹ️ [RECOVERIES] No active tenants found');
+        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+          processed: 0,
+          succeeded: 0,
+          failed: 0
+        });
         return stats;
       }
 
@@ -159,11 +174,22 @@ class RecoveriesWorker {
       }
 
       logger.info('✅ [RECOVERIES] Recovery run completed', stats);
+      runtimeCapacityService.recordWorkerEnd(this.workerName, {
+        processed: stats.processed,
+        succeeded: stats.reconciled,
+        failed: stats.failed
+      });
       return stats;
 
     } catch (error: any) {
       logger.error('❌ [RECOVERIES] Fatal error in recovery run', { error: error.message });
       stats.errors.push(`Fatal error: ${error.message}`);
+      runtimeCapacityService.recordWorkerEnd(this.workerName, {
+        processed: stats.processed,
+        succeeded: stats.reconciled,
+        failed: stats.failed || 1,
+        lastError: error.message
+      });
       return stats;
     }
   }
@@ -183,10 +209,13 @@ class RecoveriesWorker {
       errors: []
     };
 
+    const cursor = await workerContinuationService.getCursor(this.workerName, tenantId);
     const tenantQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+    const backlogQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+    const oldestQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
 
     // Get approved cases that need recovery detection for this tenant
-    const { data: approvedCases, error } = await tenantQuery
+    let query = tenantQuery
       .select(`
         id, 
         seller_id, 
@@ -203,7 +232,58 @@ class RecoveriesWorker {
       `)
       .eq('status', 'approved')
       .or('recovery_status.eq.pending,recovery_status.eq.detecting,recovery_status.is.null')
-      .limit(50);
+      .order('id', { ascending: true })
+      .limit(RecoveriesWorker.BATCH_SIZE);
+
+    if (cursor) {
+      query = query.gt('id', cursor);
+    }
+
+    const [backlogResult, oldestResult] = await Promise.all([
+      backlogQuery
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'approved')
+        .or('recovery_status.eq.pending,recovery_status.eq.detecting,recovery_status.is.null'),
+      oldestQuery
+        .select('updated_at')
+        .eq('status', 'approved')
+        .or('recovery_status.eq.pending,recovery_status.eq.detecting,recovery_status.is.null')
+        .order('updated_at', { ascending: true })
+        .limit(1)
+    ]);
+
+    let { data: approvedCases, error } = await query;
+
+    if ((!approvedCases || approvedCases.length === 0) && cursor) {
+      const wrapped = await createTenantScopedQueryById(tenantId, 'dispute_cases')
+        .select(`
+        id, 
+        seller_id, 
+        claim_amount, 
+        currency, 
+        status, 
+        recovery_status, 
+        provider_case_id,
+        detection_result_id,
+        tenant_id,
+        detection_results (
+          evidence
+        )
+      `)
+        .eq('status', 'approved')
+        .or('recovery_status.eq.pending,recovery_status.eq.detecting,recovery_status.is.null')
+        .order('id', { ascending: true })
+        .limit(RecoveriesWorker.BATCH_SIZE);
+      approvedCases = wrapped.data;
+      error = wrapped.error as any;
+    }
+
+    const oldestUpdatedAt = oldestResult.data?.[0]?.updated_at as string | undefined;
+    runtimeCapacityService.updateBacklog(
+      `${this.workerName}:${tenantId}`,
+      backlogResult.count || 0,
+      oldestUpdatedAt ? Math.max(0, Date.now() - new Date(oldestUpdatedAt).getTime()) : null
+    );
 
     if (error) {
       logger.error('❌ [RECOVERIES] Failed to get approved cases', { tenantId, error: error.message });
@@ -212,6 +292,14 @@ class RecoveriesWorker {
     }
 
     if (!approvedCases || approvedCases.length === 0) {
+      await workerContinuationService.clearCursor(this.workerName, tenantId);
+      runtimeCapacityService.recordWorkerEnd(`${this.workerName}:${tenantId}`, {
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        backlogDepth: backlogResult.count || 0,
+        oldestItemAgeMs: oldestUpdatedAt ? Math.max(0, Date.now() - new Date(oldestUpdatedAt).getTime()) : null
+      });
       logger.debug('ℹ️ [RECOVERIES] No approved cases needing recovery detection', { tenantId });
       return stats;
     }
@@ -330,6 +418,21 @@ class RecoveriesWorker {
       // Small delay between users
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
+
+    await workerContinuationService.setCursor(
+      this.workerName,
+      tenantId,
+      approvedCases[approvedCases.length - 1]?.id || null,
+      { processed: stats.processed, backlogDepth: backlogResult.count || 0 }
+    );
+
+    runtimeCapacityService.recordWorkerEnd(`${this.workerName}:${tenantId}`, {
+      processed: stats.processed,
+      succeeded: stats.reconciled,
+      failed: stats.failed,
+      backlogDepth: backlogResult.count || 0,
+      oldestItemAgeMs: oldestUpdatedAt ? Math.max(0, Date.now() - new Date(oldestUpdatedAt).getTime()) : null
+    });
 
     logger.info('✅ [RECOVERIES] Tenant recovery run completed', { tenantId, stats });
     return stats;

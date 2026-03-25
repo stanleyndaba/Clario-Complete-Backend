@@ -13,6 +13,7 @@ import {
   SyncCoverageReport
 } from '../utils/syncFingerprint';
 import { resolveTenantContextForUser } from '../utils/tenantEventRouting';
+import capacityGovernanceService from './capacityGovernanceService';
 
 // Standardized status values - use database values consistently
 export type SyncStatus = 'idle' | 'running' | 'detecting' | 'completed' | 'failed' | 'cancelled';
@@ -74,6 +75,20 @@ class SyncJobManager {
         syncId
       });
       throw new Error('Amazon connection not found. Please connect your Amazon account first.');
+    }
+
+    if (tenantContext.tenantId) {
+      const intakeDecision = await capacityGovernanceService.getIntakeAdmissionDecision(tenantContext.tenantId);
+      if (!intakeDecision.allowed) {
+        logger.warn('🚦 [SYNC JOB MANAGER] Sync admission blocked by downstream backlog', {
+          userId,
+          syncId,
+          tenantId: tenantContext.tenantId,
+          reason: intakeDecision.reason,
+          metrics: intakeDecision.metrics
+        });
+        throw new Error(`Sync temporarily paused due to downstream backlog (${intakeDecision.reason}).`);
+      }
     }
 
     // 🧹 AUTO-CLEANUP: Clear stale syncs stuck in 'running' for 2+ minutes

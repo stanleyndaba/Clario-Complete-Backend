@@ -13,6 +13,8 @@ import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import evidenceMatchingService, { ClaimData, MatchingResult } from '../services/evidenceMatchingService';
 import sseHub from '../utils/sseHub';
+import workerContinuationService from '../services/workerContinuationService';
+import runtimeCapacityService from '../services/runtimeCapacityService';
 
 // Retry logic with exponential backoff
 // Handles 429 (rate limit) errors with longer delays
@@ -77,7 +79,11 @@ export interface MatchingStats {
 export class EvidenceMatchingWorker {
   private jobs: Map<string, cron.ScheduledTask> = new Map();
   private isRunning: boolean = false;
+  private isProcessingRun: boolean = false;
   private schedule: string = '*/3 * * * *'; // Every 3 minutes
+  private readonly workerName = 'evidence-matching';
+  private static readonly USER_BATCH_SIZE = Number(process.env.EVIDENCE_MATCHING_USER_BATCH_SIZE || '60');
+  private static readonly USER_STAGGER_MS = Number(process.env.EVIDENCE_MATCHING_USER_STAGGER_MS || '1000');
 
   constructor() {
     // Initialize
@@ -100,7 +106,18 @@ export class EvidenceMatchingWorker {
 
     // Schedule main matching job
     const task = cron.schedule(this.schedule, async () => {
-      await this.runEvidenceMatchingForAllTenants();
+      if (this.isProcessingRun) {
+        runtimeCapacityService.recordWorkerSkip(this.workerName, 'previous_evidence_matching_run_still_in_progress');
+        logger.debug('⏸️ [EVIDENCE MATCHING WORKER] Previous run still in progress, skipping');
+        return;
+      }
+
+      this.isProcessingRun = true;
+      try {
+        await this.runEvidenceMatchingForAllTenants();
+      } finally {
+        this.isProcessingRun = false;
+      }
     }, {
       scheduled: true,
       timezone: 'UTC'
@@ -143,6 +160,7 @@ export class EvidenceMatchingWorker {
     const runStartTime = Date.now();
 
     try {
+      runtimeCapacityService.recordWorkerStart(this.workerName);
       logger.info('🔍 [EVIDENCE MATCHING WORKER] Starting scheduled evidence matching', {
         timestamp: new Date().toISOString()
       });
@@ -156,11 +174,20 @@ export class EvidenceMatchingWorker {
 
       if (tenantError) {
         logger.error('❌ [EVIDENCE MATCHING WORKER] Failed to get active tenants', { error: tenantError.message });
+        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+          failed: 1,
+          lastError: tenantError.message
+        });
         return;
       }
 
       if (!tenants || tenants.length === 0) {
         logger.info('ℹ️ [EVIDENCE MATCHING WORKER] No active tenants found');
+        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+          processed: 0,
+          succeeded: 0,
+          failed: 0
+        });
         return;
       }
 
@@ -210,11 +237,21 @@ export class EvidenceMatchingWorker {
         errors: totalStats.errors.length,
         duration: `${runDuration}ms`
       });
+      runtimeCapacityService.recordWorkerEnd(this.workerName, {
+        processed: totalStats.processed,
+        succeeded: totalStats.matched,
+        failed: totalStats.failed,
+        metadata: { tenantCount: tenants.length, durationMs: runDuration }
+      });
 
     } catch (error: any) {
       logger.error('❌ [EVIDENCE MATCHING WORKER] Error in scheduled evidence matching', {
         error: error.message,
         stack: error.stack
+      });
+      runtimeCapacityService.recordWorkerEnd(this.workerName, {
+        failed: 1,
+        lastError: error.message
       });
     }
   }
@@ -234,10 +271,24 @@ export class EvidenceMatchingWorker {
       errors: []
     };
 
-    // Get users needing matching for this tenant
-    const userIds = await this.getActiveUsersForTenant(tenantId);
+    const cursor = await workerContinuationService.getCursor(this.workerName, tenantId);
+    const activeUsersState = await this.getActiveUsersForTenant(tenantId, cursor);
+    const userIds = activeUsersState.userIds;
+    runtimeCapacityService.updateBacklog(
+      `${this.workerName}:${tenantId}`,
+      activeUsersState.backlogDepth,
+      activeUsersState.oldestItemAgeMs
+    );
 
     if (userIds.length === 0) {
+      await workerContinuationService.clearCursor(this.workerName, tenantId);
+      runtimeCapacityService.recordWorkerEnd(`${this.workerName}:${tenantId}`, {
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        backlogDepth: activeUsersState.backlogDepth,
+        oldestItemAgeMs: activeUsersState.oldestItemAgeMs
+      });
       logger.debug('ℹ️ [EVIDENCE MATCHING WORKER] No users need matching for tenant', { tenantId });
       return stats;
     }
@@ -249,7 +300,7 @@ export class EvidenceMatchingWorker {
 
       // Stagger processing to avoid rate limits
       if (i > 0) {
-        await new Promise(resolve => setTimeout(resolve, 5000)); // 5 seconds between users
+        await new Promise(resolve => setTimeout(resolve, EvidenceMatchingWorker.USER_STAGGER_MS));
       }
 
       try {
@@ -278,53 +329,137 @@ export class EvidenceMatchingWorker {
       }
     }
 
+    if (activeUsersState.nextCursor) {
+      await workerContinuationService.setCursor(this.workerName, tenantId, activeUsersState.nextCursor, {
+        processed: stats.processed,
+        backlogDepth: activeUsersState.backlogDepth
+      });
+    } else {
+      await workerContinuationService.clearCursor(this.workerName, tenantId);
+    }
+
+    runtimeCapacityService.recordWorkerEnd(`${this.workerName}:${tenantId}`, {
+      processed: stats.processed,
+      succeeded: stats.matched,
+      failed: stats.failed,
+      backlogDepth: activeUsersState.backlogDepth,
+      oldestItemAgeMs: activeUsersState.oldestItemAgeMs
+    });
+
     return stats;
   }
 
   /**
    * MULTI-TENANT: Get users needing matching for a specific tenant
    */
-  private async getActiveUsersForTenant(tenantId: string): Promise<string[]> {
+  private async getActiveUsersForTenant(
+    tenantId: string,
+    cursor: string | null
+  ): Promise<{ userIds: string[]; nextCursor: string | null; backlogDepth: number; oldestItemAgeMs: number | null }> {
     try {
       const userIds = new Set<string>();
+      const oldestTimestamps: string[] = [];
 
       // Get users with match-eligible claims for this tenant
       const claimsQuery = createTenantScopedQueryById(tenantId, 'detection_results');
-      const { data: pendingClaims, error: claimsError } = await claimsQuery
-        .select('seller_id')
+      const backlogClaimsQuery = createTenantScopedQueryById(tenantId, 'detection_results');
+      const backlogDocsQuery = createTenantScopedQueryById(tenantId, 'evidence_documents');
+
+      let claimBatchQuery = claimsQuery
+        .select('seller_id, created_at')
         .in('status', ['detected', 'pending'])
-        .limit(100);
+        .not('seller_id', 'is', null)
+        .order('seller_id', { ascending: true })
+        .limit(EvidenceMatchingWorker.USER_BATCH_SIZE);
+
+      if (cursor) {
+        claimBatchQuery = claimBatchQuery.gt('seller_id', cursor);
+      }
+
+      const [claimsResult, sellerDocsResult, userDocsResult, claimBacklog, docsBacklog] = await Promise.all([
+        claimBatchQuery,
+        createTenantScopedQueryById(tenantId, 'evidence_documents')
+          .select('seller_id, created_at')
+          .eq('parser_status', 'completed')
+          .not('parsed_metadata', 'is', null)
+          .not('seller_id', 'is', null)
+          .order('seller_id', { ascending: true })
+          .limit(EvidenceMatchingWorker.USER_BATCH_SIZE)
+          .gt('seller_id', cursor || ''),
+        createTenantScopedQueryById(tenantId, 'evidence_documents')
+          .select('user_id, created_at')
+          .eq('parser_status', 'completed')
+          .not('parsed_metadata', 'is', null)
+          .not('user_id', 'is', null)
+          .order('user_id', { ascending: true })
+          .limit(EvidenceMatchingWorker.USER_BATCH_SIZE)
+          .gt('user_id', cursor || ''),
+        backlogClaimsQuery
+          .select('*', { count: 'exact', head: true })
+          .in('status', ['detected', 'pending']),
+        backlogDocsQuery
+          .select('*', { count: 'exact', head: true })
+          .eq('parser_status', 'completed')
+          .not('parsed_metadata', 'is', null)
+      ]);
+
+      const pendingClaims = claimsResult.data;
+      const claimsError = claimsResult.error;
 
       if (!claimsError && pendingClaims) {
         pendingClaims.forEach((claim: any) => {
           if (claim.seller_id) {
             userIds.add(claim.seller_id);
+            if (claim.created_at) oldestTimestamps.push(claim.created_at);
           }
         });
       }
 
-      // Get users with newly parsed documents for this tenant
-      const docsQuery = createTenantScopedQueryById(tenantId, 'evidence_documents');
-      const { data: parsedDocs, error: docsError } = await docsQuery
-        .select('user_id, seller_id')
-        .eq('parser_status', 'completed')
-        .not('parsed_metadata', 'is', null)
-        .limit(100);
-
-      if (!docsError && parsedDocs) {
-        parsedDocs.forEach((doc: any) => {
-          if (doc.user_id) userIds.add(doc.user_id);
-          if (doc.seller_id) userIds.add(doc.seller_id);
+      if (!sellerDocsResult.error && sellerDocsResult.data) {
+        sellerDocsResult.data.forEach((doc: any) => {
+          if (doc.seller_id) {
+            userIds.add(doc.seller_id);
+            if (doc.created_at) oldestTimestamps.push(doc.created_at);
+          }
         });
       }
 
-      return Array.from(userIds);
+      if (!userDocsResult.error && userDocsResult.data) {
+        userDocsResult.data.forEach((doc: any) => {
+          if (doc.user_id) {
+            userIds.add(doc.user_id);
+            if (doc.created_at) oldestTimestamps.push(doc.created_at);
+          }
+        });
+      }
+
+      const sortedUserIds = Array.from(userIds).sort();
+      const batch = sortedUserIds.slice(0, EvidenceMatchingWorker.USER_BATCH_SIZE);
+      const backlogDepth = (claimBacklog.count || 0) + (docsBacklog.count || 0);
+      const oldestItemAgeMs = oldestTimestamps.length > 0
+        ? Math.max(
+            0,
+            Date.now() - new Date(oldestTimestamps.sort()[0]).getTime()
+          )
+        : null;
+
+      return {
+        userIds: batch,
+        nextCursor: batch.length > 0 ? batch[batch.length - 1] : null,
+        backlogDepth,
+        oldestItemAgeMs
+      };
     } catch (error: any) {
       logger.error('❌ [EVIDENCE MATCHING WORKER] Error getting active users for tenant', {
         tenantId,
         error: error.message
       });
-      return [];
+      return {
+        userIds: [],
+        nextCursor: null,
+        backlogDepth: 0,
+        oldestItemAgeMs: null
+      };
     }
   }
 

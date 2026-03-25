@@ -17,6 +17,7 @@ import logger from '../utils/logger';
 import { csvIngestionService, CSVType } from '../services/csvIngestionService';
 import { isRealDatabaseConfigured } from '../database/supabaseClient';
 import { requireActiveTenant } from '../middleware/tenantMiddleware';
+import capacityGovernanceService from '../services/capacityGovernanceService';
 
 const router = Router();
 
@@ -66,6 +67,16 @@ router.post('/ingest', requireActiveTenant, upload.array('files', 10), async (re
             return res.status(400).json({
                 success: false,
                 error: 'Tenant context is required for CSV ingestion.',
+            });
+        }
+
+        const admissionDecision = await capacityGovernanceService.getIntakeAdmissionDecision(tenantId);
+        if (!admissionDecision.allowed) {
+            return res.status(429).json({
+                success: false,
+                error: 'CSV ingestion temporarily paused due to downstream backlog.',
+                reason: admissionDecision.reason,
+                metrics: admissionDecision.metrics,
             });
         }
 
@@ -139,6 +150,16 @@ router.post('/ingest/:type', requireActiveTenant, upload.array('files', 10), asy
             return res.status(400).json({
                 success: false,
                 error: 'Tenant context is required for CSV ingestion.',
+            });
+        }
+
+        const admissionDecision = await capacityGovernanceService.getIntakeAdmissionDecision(tenantId);
+        if (!admissionDecision.allowed) {
+            return res.status(429).json({
+                success: false,
+                error: 'CSV ingestion temporarily paused due to downstream backlog.',
+                reason: admissionDecision.reason,
+                metrics: admissionDecision.metrics,
             });
         }
 

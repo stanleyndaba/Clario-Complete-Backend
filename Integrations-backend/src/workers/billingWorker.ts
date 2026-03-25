@@ -12,6 +12,8 @@ import { supabaseAdmin } from '../database/supabaseClient';
 import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import billingService, { BillingRequest, BillingResult } from '../services/billingService';
 import billingCreditService from '../services/billingCreditService';
+import workerContinuationService from '../services/workerContinuationService';
+import runtimeCapacityService from '../services/runtimeCapacityService';
 
 export interface BillingStats {
   processed: number;
@@ -25,6 +27,8 @@ class BillingWorker {
   private schedule: string = '*/5 * * * *'; // Every 5 minutes
   private cronJob: cron.ScheduledTask | null = null;
   private isRunning: boolean = false;
+  private readonly workerName = 'billing';
+  private static readonly BATCH_SIZE = Number(process.env.BILLING_BATCH_SIZE || '75');
 
   /**
    * Start the worker
@@ -42,6 +46,7 @@ class BillingWorker {
     // Schedule billing job (every 5 minutes)
     this.cronJob = cron.schedule(this.schedule, async () => {
       if (this.isRunning) {
+        runtimeCapacityService.recordWorkerSkip(this.workerName, 'previous_billing_run_still_in_progress');
         logger.debug('⏸️ [BILLING] Previous run still in progress, skipping');
         return;
       }
@@ -114,6 +119,7 @@ class BillingWorker {
     };
 
     try {
+      runtimeCapacityService.recordWorkerStart(this.workerName);
       logger.info('💳 [BILLING] Starting billing run for all tenants');
 
       // Get all active tenants
@@ -126,11 +132,20 @@ class BillingWorker {
       if (tenantError) {
         logger.error('❌ [BILLING] Failed to get active tenants', { error: tenantError.message });
         stats.errors.push(`Failed to get tenants: ${tenantError.message}`);
+        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+          failed: 1,
+          lastError: tenantError.message
+        });
         return stats;
       }
 
       if (!tenants || tenants.length === 0) {
         logger.debug('ℹ️ [BILLING] No active tenants found');
+        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+          processed: 0,
+          succeeded: 0,
+          failed: 0
+        });
         return stats;
       }
 
@@ -156,11 +171,22 @@ class BillingWorker {
       }
 
       logger.info('✅ [BILLING] Billing run completed', stats);
+      runtimeCapacityService.recordWorkerEnd(this.workerName, {
+        processed: stats.processed,
+        succeeded: stats.charged,
+        failed: stats.failed
+      });
       return stats;
 
     } catch (error: any) {
       logger.error('❌ [BILLING] Fatal error in billing run', { error: error.message });
       stats.errors.push(`Fatal error: ${error.message}`);
+      runtimeCapacityService.recordWorkerEnd(this.workerName, {
+        processed: stats.processed,
+        succeeded: stats.charged,
+        failed: stats.failed || 1,
+        lastError: error.message
+      });
       return stats;
     }
   }
@@ -178,10 +204,13 @@ class BillingWorker {
       errors: []
     };
 
+    const cursor = await workerContinuationService.getCursor(this.workerName, tenantId);
     const tenantQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+    const backlogQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+    const oldestQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
 
     // Get reconciled cases that need billing for this tenant
-    const { data: casesNeedingBilling, error } = await tenantQuery
+    let query = tenantQuery
       .select(`
         id,
         seller_id,
@@ -195,7 +224,55 @@ class BillingWorker {
       `)
       .eq('recovery_status', 'reconciled')
       .or('billing_status.is.null,billing_status.eq.pending')
-      .limit(50);
+      .order('id', { ascending: true })
+      .limit(BillingWorker.BATCH_SIZE);
+
+    if (cursor) {
+      query = query.gt('id', cursor);
+    }
+
+    const [backlogResult, oldestResult] = await Promise.all([
+      backlogQuery
+        .select('*', { count: 'exact', head: true })
+        .eq('recovery_status', 'reconciled')
+        .or('billing_status.is.null,billing_status.eq.pending'),
+      oldestQuery
+        .select('updated_at')
+        .eq('recovery_status', 'reconciled')
+        .or('billing_status.is.null,billing_status.eq.pending')
+        .order('updated_at', { ascending: true })
+        .limit(1)
+    ]);
+
+    let { data: casesNeedingBilling, error } = await query;
+
+    if ((!casesNeedingBilling || casesNeedingBilling.length === 0) && cursor) {
+      const wrapped = await createTenantScopedQueryById(tenantId, 'dispute_cases')
+        .select(`
+        id,
+        seller_id,
+        claim_amount,
+        actual_payout_amount,
+        currency,
+        recovery_status,
+        billing_status,
+        billing_retry_count,
+        tenant_id
+      `)
+        .eq('recovery_status', 'reconciled')
+        .or('billing_status.is.null,billing_status.eq.pending')
+        .order('id', { ascending: true })
+        .limit(BillingWorker.BATCH_SIZE);
+      casesNeedingBilling = wrapped.data;
+      error = wrapped.error as any;
+    }
+
+    const oldestUpdatedAt = oldestResult.data?.[0]?.updated_at as string | undefined;
+    runtimeCapacityService.updateBacklog(
+      `${this.workerName}:${tenantId}`,
+      backlogResult.count || 0,
+      oldestUpdatedAt ? Math.max(0, Date.now() - new Date(oldestUpdatedAt).getTime()) : null
+    );
 
     if (error) {
       logger.error('❌ [BILLING] Failed to get cases needing billing', { tenantId, error: error.message });
@@ -204,6 +281,14 @@ class BillingWorker {
     }
 
     if (!casesNeedingBilling || casesNeedingBilling.length === 0) {
+      await workerContinuationService.clearCursor(this.workerName, tenantId);
+      runtimeCapacityService.recordWorkerEnd(`${this.workerName}:${tenantId}`, {
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        backlogDepth: backlogResult.count || 0,
+        oldestItemAgeMs: oldestUpdatedAt ? Math.max(0, Date.now() - new Date(oldestUpdatedAt).getTime()) : null
+      });
       logger.debug('ℹ️ [BILLING] No reconciled cases needing billing', { tenantId });
       return stats;
     }
@@ -290,6 +375,21 @@ class BillingWorker {
         stats.errors.push(`Case ${disputeCase.id}: ${error.message}`);
       }
     }
+
+    await workerContinuationService.setCursor(
+      this.workerName,
+      tenantId,
+      casesNeedingBilling[casesNeedingBilling.length - 1]?.id || null,
+      { processed: stats.processed, backlogDepth: backlogResult.count || 0 }
+    );
+
+    runtimeCapacityService.recordWorkerEnd(`${this.workerName}:${tenantId}`, {
+      processed: stats.processed,
+      succeeded: stats.charged,
+      failed: stats.failed,
+      backlogDepth: backlogResult.count || 0,
+      oldestItemAgeMs: oldestUpdatedAt ? Math.max(0, Date.now() - new Date(oldestUpdatedAt).getTime()) : null
+    });
 
     logger.info('✅ [BILLING] Tenant billing run completed', { tenantId, stats });
     return stats;

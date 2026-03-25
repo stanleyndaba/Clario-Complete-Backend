@@ -25,6 +25,7 @@ import {
 } from '../services/rejectionClassifier';
 import { evaluateAndPersistCaseEligibility } from '../services/agent7EligibilityService';
 import { resolveTenantSlug } from '../utils/tenantEventRouting';
+import runtimeCapacityService from '../services/runtimeCapacityService';
 
 
 /**
@@ -97,6 +98,17 @@ type FilingDispatchResult = {
   mode: 'queued' | 'direct';
 };
 
+type SubmissionQueueMetrics = {
+  available: boolean;
+  reason: string | null;
+  waiting: number;
+  active: number;
+  completed: number;
+  failed: number;
+  delayed: number;
+  oldestWaitingAgeMs: number | null;
+};
+
 class RefundFilingWorker {
   private schedule: string = '*/5 * * * *'; // Every 5 minutes
   private statusPollingSchedule: string = '*/10 * * * *'; // Every 10 minutes
@@ -111,6 +123,12 @@ class RefundFilingWorker {
   private automator: AmazonSubmissionAutomator;
   private queueInfrastructureAvailable: boolean = false;
   private queueInfrastructureReason: string | null = null;
+  private readonly workerName = 'refund-filing';
+  private static readonly SUBMISSION_CONCURRENCY = Number(process.env.FILING_QUEUE_CONCURRENCY || '6');
+  private static readonly GLOBAL_LIMIT_MAX = Number(process.env.FILING_QUEUE_GLOBAL_MAX || '6');
+  private static readonly GLOBAL_LIMIT_DURATION_MS = Number(process.env.FILING_QUEUE_GLOBAL_DURATION_MS || '60000');
+  private static readonly MAX_QUEUE_WAITING = Number(process.env.MAX_FILING_QUEUE_WAITING || '150');
+  private static readonly MAX_QUEUE_AGE_MS = Number(process.env.MAX_FILING_QUEUE_AGE_MS || String(20 * 60 * 1000));
 
   constructor() {
     this.automator = new AmazonSubmissionAutomator();
@@ -198,10 +216,10 @@ class RefundFilingWorker {
         }
     }, {
         connection: redisConfig,
-        concurrency: 5,
+        concurrency: RefundFilingWorker.SUBMISSION_CONCURRENCY,
         limiter: {
-            max: 1,
-            duration: 120000 
+            max: RefundFilingWorker.GLOBAL_LIMIT_MAX,
+            duration: RefundFilingWorker.GLOBAL_LIMIT_DURATION_MS
         }
     });
 
@@ -240,16 +258,82 @@ class RefundFilingWorker {
     return { id: String(job.id), mode: 'queued' };
   }
 
+  async getSubmissionQueueMetrics(): Promise<SubmissionQueueMetrics> {
+    if (!this.queueInfrastructureAvailable || !this.submissionQueue) {
+      return {
+        available: false,
+        reason: this.queueInfrastructureReason,
+        waiting: 0,
+        active: 0,
+        completed: 0,
+        failed: 0,
+        delayed: 0,
+        oldestWaitingAgeMs: null
+      };
+    }
+
+    const counts = await this.submissionQueue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed');
+    const waitingJobs = await this.submissionQueue.getJobs(['waiting'], 0, 0, true);
+    const oldestWaitingAgeMs = waitingJobs.length > 0
+      ? Math.max(0, Date.now() - waitingJobs[0].timestamp)
+      : null;
+
+    return {
+      available: true,
+      reason: null,
+      waiting: counts.waiting || 0,
+      active: counts.active || 0,
+      completed: counts.completed || 0,
+      failed: counts.failed || 0,
+      delayed: counts.delayed || 0,
+      oldestWaitingAgeMs
+    };
+  }
+
+  private async shouldPauseAutoFiling(): Promise<{ paused: boolean; reason: string | null; metrics: SubmissionQueueMetrics }> {
+    const metrics = await this.getSubmissionQueueMetrics();
+
+    if (!metrics.available) {
+      return {
+        paused: true,
+        reason: metrics.reason || 'queue_unavailable',
+        metrics
+      };
+    }
+
+    if (metrics.waiting >= RefundFilingWorker.MAX_QUEUE_WAITING) {
+      return {
+        paused: true,
+        reason: `queue_waiting_limit_reached:${metrics.waiting}/${RefundFilingWorker.MAX_QUEUE_WAITING}`,
+        metrics
+      };
+    }
+
+    if (metrics.oldestWaitingAgeMs !== null && metrics.oldestWaitingAgeMs >= RefundFilingWorker.MAX_QUEUE_AGE_MS) {
+      return {
+        paused: true,
+        reason: `queue_age_limit_reached:${metrics.oldestWaitingAgeMs}/${RefundFilingWorker.MAX_QUEUE_AGE_MS}`,
+        metrics
+      };
+    }
+
+    return {
+      paused: false,
+      reason: null,
+      metrics
+    };
+  }
+
   /**
   * THROTTLE CONFIGURATION
   * Prevents flood-like behavior that triggers Amazon's bot detection
   * These values are conservative - can be increased after testing
   */
   private static readonly THROTTLE_CONFIG = {
-    MAX_PER_RUN: 3, // Only process 3 claims per 5-minute run
-    MAX_PER_HOUR: 12, // Max 12 claims per hour (soft limit)
-    MAX_PER_DAY: 100, // Daily ceiling (for reference)
-    MAX_PER_SELLER_PER_DAY: 10, // Per-seller limit to prevent one seller exhausting quota
+    MAX_PER_RUN: Number(process.env.FILING_MAX_PER_RUN || '12'),
+    MAX_PER_HOUR: Number(process.env.FILING_MAX_PER_HOUR || '60'),
+    MAX_PER_DAY: Number(process.env.FILING_MAX_PER_DAY || '300'),
+    MAX_PER_SELLER_PER_DAY: Number(process.env.FILING_MAX_PER_SELLER_PER_DAY || '20'),
   };
 
   /**
@@ -1194,7 +1278,6 @@ class RefundFilingWorker {
   }
 
   async runFilingForAllTenants(): Promise<FilingStats> {
-
     const stats: FilingStats = {
       processed: 0,
       filed: 0,
@@ -1206,6 +1289,7 @@ class RefundFilingWorker {
     };
 
     try {
+      runtimeCapacityService.recordWorkerStart(this.workerName);
       logger.info(' [REFUND FILING] Starting filing run for all tenants');
 
       // P5: GLOBAL KILL SWITCH — Check feature flag before ANY filing
@@ -1213,6 +1297,12 @@ class RefundFilingWorker {
       const filingEnabled = await featureFlagService.isEnabled('agent7_filing_enabled', 'system');
       if (!filingEnabled) {
         logger.warn('🛑 [REFUND FILING] GLOBAL KILL SWITCH ACTIVE — agent7_filing_enabled=false. All filing halted.');
+        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+          processed: 0,
+          succeeded: 0,
+          failed: 0,
+          lastError: 'agent7_filing_disabled'
+        });
         return stats;
       }
 
@@ -1226,11 +1316,20 @@ class RefundFilingWorker {
       if (tenantError) {
         logger.error(' [REFUND FILING] Failed to get active tenants', { error: tenantError.message });
         stats.errors.push(`Failed to get tenants: ${tenantError.message}`);
+        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+          failed: 1,
+          lastError: tenantError.message
+        });
         return stats;
       }
 
       if (!tenants || tenants.length === 0) {
         logger.debug('[INFO] [REFUND FILING] No active tenants found');
+        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+          processed: 0,
+          succeeded: 0,
+          failed: 0
+        });
         return stats;
       }
 
@@ -1257,11 +1356,30 @@ class RefundFilingWorker {
       }
 
       logger.info(' [REFUND FILING] Filing run completed for all tenants', stats);
+      const queueMetrics = await this.getSubmissionQueueMetrics();
+      runtimeCapacityService.updateBacklog(this.workerName, queueMetrics.waiting + queueMetrics.delayed, queueMetrics.oldestWaitingAgeMs, {
+        active: queueMetrics.active,
+        completed: queueMetrics.completed,
+        failed: queueMetrics.failed
+      });
+      runtimeCapacityService.recordWorkerEnd(this.workerName, {
+        processed: stats.processed,
+        succeeded: stats.filed,
+        failed: stats.failed,
+        backlogDepth: queueMetrics.waiting + queueMetrics.delayed,
+        oldestItemAgeMs: queueMetrics.oldestWaitingAgeMs
+      });
       return stats;
 
     } catch (error: any) {
       logger.error(' [REFUND FILING] Fatal error in filing run', { error: error.message });
       stats.errors.push(`Fatal error: ${error.message}`);
+      runtimeCapacityService.recordWorkerEnd(this.workerName, {
+        processed: stats.processed,
+        succeeded: stats.filed,
+        failed: stats.failed || 1,
+        lastError: error.message
+      });
       return stats;
     }
   }
@@ -1280,6 +1398,32 @@ class RefundFilingWorker {
       retried: 0,
       errors: []
     };
+
+    const queueGate = await this.shouldPauseAutoFiling();
+    runtimeCapacityService.updateBacklog(
+      `${this.workerName}:${tenantId}`,
+      queueGate.metrics.waiting + queueGate.metrics.delayed,
+      queueGate.metrics.oldestWaitingAgeMs,
+      {
+        queueAvailable: queueGate.metrics.available,
+        queueReason: queueGate.metrics.reason,
+        active: queueGate.metrics.active
+      }
+    );
+
+    if (queueGate.paused) {
+      const breakerReason = `auto_filing_paused:${queueGate.reason}`;
+      runtimeCapacityService.setCircuitBreaker('filing-auto-dispatch', 'open', breakerReason);
+      logger.warn('[REFUND FILING] Auto filing paused for tenant due to queue pressure or infrastructure state', {
+        tenantId,
+        reason: queueGate.reason,
+        metrics: queueGate.metrics
+      });
+      stats.errors.push(breakerReason);
+      return stats;
+    }
+
+    runtimeCapacityService.setCircuitBreaker('filing-auto-dispatch', 'closed', null);
 
     // THROTTLE CHECK: Hourly rate limit (per-tenant)
     const filingsLastHour = await this.getFilingsInLastHourForTenant(tenantId);
@@ -1924,13 +2068,15 @@ class RefundFilingWorker {
         try {
           dispatchedThisRun++;
           if (!this.queueInfrastructureAvailable || !this.submissionQueue) {
-            const directResult = await this.executeDirectFallback(disputeCase.id, disputeCase.seller_id);
-            logger.info('✅ [AGENT 7] Case filed via direct fallback', {
+            const reason = this.queueInfrastructureReason || 'queue_unavailable';
+            runtimeCapacityService.setCircuitBreaker('filing-auto-dispatch', 'open', reason);
+            logger.warn('[AGENT 7] Scheduled filing skipped because queue infrastructure is unavailable', {
               disputeId: disputeCase.id,
               sellerId: disputeCase.seller_id,
-              dispatchId: directResult.id
+              reason
             });
-            stats.filed++;
+            stats.skipped++;
+            await this.logError(disputeCase.id, disputeCase.seller_id, `Scheduled filing paused: ${reason}`);
             continue;
           }
 
@@ -1952,22 +2098,13 @@ class RefundFilingWorker {
           });
           stats.filed++;
         } catch (queueError: any) {
-          try {
-            const directResult = await this.executeDirectFallback(disputeCase.id, disputeCase.seller_id);
-            logger.warn(`⚠️ [AGENT 7] Queue enqueue failed; direct fallback succeeded for case ${disputeCase.id}`, {
-              dispatchId: directResult.id,
-              error: queueError.message
-            });
-            stats.filed++;
-          } catch (directError: any) {
-            logger.error(`❌ [AGENT 7] Failed to queue or directly file case ${disputeCase.id}`, {
-              queueError: queueError.message,
-              directError: directError.message
-            });
-            stats.failed++;
-            stats.errors.push(`Queue Failure ${disputeCase.id}: ${queueError.message}`);
-            await this.logError(disputeCase.id, disputeCase.seller_id, directError.message || queueError.message);
-          }
+          runtimeCapacityService.setCircuitBreaker('filing-auto-dispatch', 'open', `queue_enqueue_failed:${queueError.message}`);
+          logger.error(`❌ [AGENT 7] Queue enqueue failed for case ${disputeCase.id}; auto filing held`, {
+            error: queueError.message
+          });
+          stats.failed++;
+          stats.errors.push(`Queue Failure ${disputeCase.id}: ${queueError.message}`);
+          await this.logError(disputeCase.id, disputeCase.seller_id, `Queue enqueue failed: ${queueError.message}`);
         }
       } catch (error: any) {
         logger.error(' [REFUND FILING] Error processing case', {
@@ -1982,7 +2119,7 @@ class RefundFilingWorker {
       // VELOCITY LIMIT: Jittered delay between submissions (180-420 seconds = 3-7 minutes)
       // This mimics human behavior and avoids Amazon's pattern detection
       // A fixed interval (e.g., exactly 5 min) looks robotic; random intervals look human
-      if (rankedCandidates.indexOf(candidate) < rankedCandidates.length - 1 && dispatchedThisRun < maxThisRun) {
+      if (!this.queueInfrastructureAvailable && rankedCandidates.indexOf(candidate) < rankedCandidates.length - 1 && dispatchedThisRun < maxThisRun) {
         await sleepWithJitter(180, 420);
       }
     }

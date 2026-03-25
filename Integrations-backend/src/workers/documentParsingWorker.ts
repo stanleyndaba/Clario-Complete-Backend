@@ -13,6 +13,8 @@ import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import { createTenantScopedQueryById } from '../database/tenantScopedClient';
 import documentParsingService, { ParsedDocumentData } from '../services/documentParsingService';
 import sseHub from '../utils/sseHub';
+import workerContinuationService from '../services/workerContinuationService';
+import runtimeCapacityService from '../services/runtimeCapacityService';
 
 // Retry logic with exponential backoff
 async function retryWithBackoff<T>(
@@ -53,11 +55,14 @@ export interface ParsingStats {
 export class DocumentParsingWorker {
   private jobs: Map<string, cron.ScheduledTask> = new Map();
   private isRunning: boolean = false;
+  private isProcessingRun: boolean = false;
   private schedule: string = '*/2 * * * *'; // Every 2 minutes
   // Track documents that have already failed to prevent re-processing
   private failedDocIds: Set<string> = new Set();
   private readonly MAX_FAILED_CACHE = 1000;
   private readonly MAX_PROCESSING_AGE_MS = 15 * 60 * 1000;
+  private readonly workerName = 'document-parsing';
+  private static readonly BATCH_SIZE = Number(process.env.DOCUMENT_PARSING_BATCH_SIZE || '75');
 
   constructor() {
     // Initialize
@@ -80,7 +85,18 @@ export class DocumentParsingWorker {
 
     // Schedule main parsing job
     const task = cron.schedule(this.schedule, async () => {
-      await this.runDocumentParsingForAllTenants();
+      if (this.isProcessingRun) {
+        runtimeCapacityService.recordWorkerSkip(this.workerName, 'previous_document_parsing_run_still_in_progress');
+        logger.debug('⏸️ [DOCUMENT PARSING WORKER] Previous run still in progress, skipping');
+        return;
+      }
+
+      this.isProcessingRun = true;
+      try {
+        await this.runDocumentParsingForAllTenants();
+      } finally {
+        this.isProcessingRun = false;
+      }
     }, {
       scheduled: true,
       timezone: 'UTC'
@@ -123,6 +139,7 @@ export class DocumentParsingWorker {
     const runStartTime = Date.now();
 
     try {
+      runtimeCapacityService.recordWorkerStart(this.workerName);
       logger.info('🔍 [DOCUMENT PARSING WORKER] Starting scheduled document parsing', {
         timestamp: new Date().toISOString()
       });
@@ -136,11 +153,20 @@ export class DocumentParsingWorker {
 
       if (tenantError) {
         logger.error('❌ [DOCUMENT PARSING WORKER] Failed to get active tenants', { error: tenantError.message });
+        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+          failed: 1,
+          lastError: tenantError.message
+        });
         return;
       }
 
       if (!tenants || tenants.length === 0) {
         logger.info('ℹ️ [DOCUMENT PARSING WORKER] No active tenants found');
+        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+          processed: 0,
+          succeeded: 0,
+          failed: 0
+        });
         return;
       }
 
@@ -184,11 +210,21 @@ export class DocumentParsingWorker {
         errors: totalStats.errors.length,
         duration: `${runDuration}ms`
       });
+      runtimeCapacityService.recordWorkerEnd(this.workerName, {
+        processed: totalStats.processed,
+        succeeded: totalStats.succeeded,
+        failed: totalStats.failed,
+        metadata: { tenantCount: tenants.length, durationMs: runDuration }
+      });
 
     } catch (error: any) {
       logger.error('❌ [DOCUMENT PARSING WORKER] Error in scheduled document parsing', {
         error: error.message,
         stack: error.stack
+      });
+      runtimeCapacityService.recordWorkerEnd(this.workerName, {
+        lastError: error.message,
+        failed: 1
       });
     }
   }
@@ -206,10 +242,24 @@ export class DocumentParsingWorker {
       errors: []
     };
 
-    // Get documents for this tenant only
-    const documents = await this.getPendingDocumentsForTenant(tenantId);
+    const cursor = await workerContinuationService.getCursor(this.workerName, tenantId);
+    const pendingState = await this.getPendingDocumentsForTenant(tenantId, cursor);
+    const documents = pendingState.documents;
+    runtimeCapacityService.updateBacklog(
+      `${this.workerName}:${tenantId}`,
+      pendingState.backlogDepth,
+      pendingState.oldestItemAgeMs
+    );
 
     if (documents.length === 0) {
+      await workerContinuationService.clearCursor(this.workerName, tenantId);
+      runtimeCapacityService.recordWorkerEnd(`${this.workerName}:${tenantId}`, {
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        backlogDepth: pendingState.backlogDepth,
+        oldestItemAgeMs: pendingState.oldestItemAgeMs
+      });
       logger.debug('ℹ️ [DOCUMENT PARSING WORKER] No pending documents for tenant', { tenantId });
       return stats;
     }
@@ -247,27 +297,87 @@ export class DocumentParsingWorker {
       }
     }
 
+    if (pendingState.nextCursor) {
+      await workerContinuationService.setCursor(this.workerName, tenantId, pendingState.nextCursor, {
+        processed: stats.processed,
+        backlogDepth: pendingState.backlogDepth
+      });
+    } else {
+      await workerContinuationService.clearCursor(this.workerName, tenantId);
+    }
+
+    runtimeCapacityService.recordWorkerEnd(`${this.workerName}:${tenantId}`, {
+      processed: stats.processed,
+      succeeded: stats.succeeded,
+      failed: stats.failed,
+      backlogDepth: pendingState.backlogDepth,
+      oldestItemAgeMs: pendingState.oldestItemAgeMs
+    });
+
     return stats;
   }
 
   /**
    * MULTI-TENANT: Get pending documents for a specific tenant
    */
-  private async getPendingDocumentsForTenant(tenantId: string): Promise<Array<{ id: string; seller_id: string; filename: string; content_type: string }>> {
+  private async getPendingDocumentsForTenant(
+    tenantId: string,
+    cursor: string | null
+  ): Promise<{
+    documents: Array<{ id: string; seller_id: string; filename: string; content_type: string }>;
+    nextCursor: string | null;
+    backlogDepth: number;
+    oldestItemAgeMs: number | null;
+  }> {
     try {
+      const backlogQuery = createTenantScopedQueryById(tenantId, 'evidence_documents');
+      const oldestQuery = createTenantScopedQueryById(tenantId, 'evidence_documents');
       const tenantQuery = createTenantScopedQueryById(tenantId, 'evidence_documents');
-      const { data: documents, error } = await tenantQuery
+
+      const [backlogResult, oldestResult] = await Promise.all([
+        backlogQuery
+          .select('*', { count: 'exact', head: true })
+          .in('parser_status', ['pending', 'processing']),
+        oldestQuery
+          .select('created_at')
+          .in('parser_status', ['pending', 'processing'])
+          .order('created_at', { ascending: true })
+          .limit(1)
+      ]);
+
+      let query = tenantQuery
         .select('id, seller_id, filename, content_type, storage_path, parsed_metadata, parser_status, parser_started_at, parser_completed_at, parser_error')
         .in('parser_status', ['pending', 'processing'])
-        .limit(50)
-        .order('created_at', { ascending: true });
+        .order('id', { ascending: true })
+        .limit(DocumentParsingWorker.BATCH_SIZE);
+
+      if (cursor) {
+        query = query.gt('id', cursor);
+      }
+
+      let { data: documents, error } = await query;
+
+      if ((!documents || documents.length === 0) && cursor) {
+        const wrapped = await createTenantScopedQueryById(tenantId, 'evidence_documents')
+          .select('id, seller_id, filename, content_type, storage_path, parsed_metadata, parser_status, parser_started_at, parser_completed_at, parser_error')
+          .in('parser_status', ['pending', 'processing'])
+          .order('id', { ascending: true })
+          .limit(DocumentParsingWorker.BATCH_SIZE);
+        documents = wrapped.data;
+        error = wrapped.error as any;
+      }
 
       if (error) {
         logger.warn('❌ [DOCUMENT PARSING WORKER] Error fetching pending documents for tenant', {
           tenantId,
           error: error.message
         });
-        return [];
+        return {
+          documents: [],
+          nextCursor: null,
+          backlogDepth: 0,
+          oldestItemAgeMs: null
+        };
       }
 
       const parsableDocs: Array<{ id: string; seller_id: string; filename: string; content_type: string }> = [];
@@ -284,7 +394,7 @@ export class DocumentParsingWorker {
         }
       }
 
-      return parsableDocs
+      const filteredDocs = parsableDocs
         .filter((doc: any) => !this.failedDocIds.has(doc.id)) // Skip known failures
         .map((doc: any) => ({
           id: doc.id,
@@ -292,12 +402,25 @@ export class DocumentParsingWorker {
           filename: doc.filename,
           content_type: doc.content_type
         }));
+      const oldestCreatedAt = oldestResult.data?.[0]?.created_at as string | undefined;
+
+      return {
+        documents: filteredDocs,
+        nextCursor: filteredDocs.length > 0 ? filteredDocs[filteredDocs.length - 1].id : null,
+        backlogDepth: backlogResult.count || 0,
+        oldestItemAgeMs: oldestCreatedAt ? Math.max(0, Date.now() - new Date(oldestCreatedAt).getTime()) : null
+      };
     } catch (error: any) {
       logger.error('❌ [DOCUMENT PARSING WORKER] Error getting pending documents for tenant', {
         tenantId,
         error: error.message
       });
-      return [];
+      return {
+        documents: [],
+        nextCursor: null,
+        backlogDepth: 0,
+        oldestItemAgeMs: null
+      };
     }
   }
 
