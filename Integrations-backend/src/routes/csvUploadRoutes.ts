@@ -18,6 +18,8 @@ import { csvIngestionService, CSVType } from '../services/csvIngestionService';
 import { isRealDatabaseConfigured } from '../database/supabaseClient';
 import { requireActiveTenant } from '../middleware/tenantMiddleware';
 import capacityGovernanceService from '../services/capacityGovernanceService';
+import operationalControlService from '../services/operationalControlService';
+import runtimeCapacityService from '../services/runtimeCapacityService';
 
 const router = Router();
 
@@ -62,6 +64,15 @@ router.post('/ingest', requireActiveTenant, upload.array('files', 10), async (re
             });
         }
 
+        if (!(await operationalControlService.isEnabled('new_ingestion', true))) {
+            runtimeCapacityService.setCircuitBreaker('new-ingestion', 'open', 'operator_disabled');
+            return res.status(503).json({
+                success: false,
+                error: 'New ingestion is temporarily paused by operator control.',
+            });
+        }
+        runtimeCapacityService.setCircuitBreaker('new-ingestion', 'closed', null);
+
         const tenantId = (req as any).tenant?.tenantId as string | undefined;
         if (!tenantId) {
             return res.status(400).json({
@@ -72,6 +83,7 @@ router.post('/ingest', requireActiveTenant, upload.array('files', 10), async (re
 
         const admissionDecision = await capacityGovernanceService.getIntakeAdmissionDecision(tenantId);
         if (!admissionDecision.allowed) {
+            runtimeCapacityService.setCircuitBreaker('new-ingestion', 'open', admissionDecision.reason || 'capacity_blocked');
             return res.status(429).json({
                 success: false,
                 error: 'CSV ingestion temporarily paused due to downstream backlog.',
@@ -79,6 +91,7 @@ router.post('/ingest', requireActiveTenant, upload.array('files', 10), async (re
                 metrics: admissionDecision.metrics,
             });
         }
+        runtimeCapacityService.setCircuitBreaker('new-ingestion', 'closed', null);
 
         const files = (req.files || []) as { buffer: Buffer; originalname: string; size: number; mimetype: string }[];
         if (!files || files.length === 0) {
@@ -145,6 +158,15 @@ router.post('/ingest/:type', requireActiveTenant, upload.array('files', 10), asy
             });
         }
 
+        if (!(await operationalControlService.isEnabled('new_ingestion', true))) {
+            runtimeCapacityService.setCircuitBreaker('new-ingestion', 'open', 'operator_disabled');
+            return res.status(503).json({
+                success: false,
+                error: 'New ingestion is temporarily paused by operator control.',
+            });
+        }
+        runtimeCapacityService.setCircuitBreaker('new-ingestion', 'closed', null);
+
         const tenantId = (req as any).tenant?.tenantId as string | undefined;
         if (!tenantId) {
             return res.status(400).json({
@@ -155,6 +177,7 @@ router.post('/ingest/:type', requireActiveTenant, upload.array('files', 10), asy
 
         const admissionDecision = await capacityGovernanceService.getIntakeAdmissionDecision(tenantId);
         if (!admissionDecision.allowed) {
+            runtimeCapacityService.setCircuitBreaker('new-ingestion', 'open', admissionDecision.reason || 'capacity_blocked');
             return res.status(429).json({
                 success: false,
                 error: 'CSV ingestion temporarily paused due to downstream backlog.',
@@ -162,6 +185,7 @@ router.post('/ingest/:type', requireActiveTenant, upload.array('files', 10), asy
                 metrics: admissionDecision.metrics,
             });
         }
+        runtimeCapacityService.setCircuitBreaker('new-ingestion', 'closed', null);
 
         const csvType = req.params.type as CSVType;
         if (!VALID_TYPES.includes(csvType)) {

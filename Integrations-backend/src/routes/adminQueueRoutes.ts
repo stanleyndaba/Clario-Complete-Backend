@@ -17,6 +17,7 @@ import runtimeCapacityService from '../services/runtimeCapacityService';
 import capacityGovernanceService from '../services/capacityGovernanceService';
 import refundFilingWorker from '../workers/refundFilingWorker';
 import { supabaseAdmin } from '../database/supabaseClient';
+import operationalControlService from '../services/operationalControlService';
 
 const router = Router();
 
@@ -31,6 +32,12 @@ router.get('/queue-stats', async (req: Request, res: Response) => {
         const isHealthy = await isQueueHealthy();
         const runtimeSnapshot = runtimeCapacityService.getSnapshot();
         const filingQueue = await refundFilingWorker.getSubmissionQueueMetrics();
+        const operationalControls = {
+            autoFiling: await operationalControlService.isEnabled('auto_filing', true),
+            recoveryReconciliation: await operationalControlService.isEnabled('recovery_reconciliation', true),
+            billingCharge: await operationalControlService.isEnabled('billing_charge', true),
+            newIngestion: await operationalControlService.isEnabled('new_ingestion', true)
+        };
         const { data: tenants } = await supabaseAdmin
             .from('tenants')
             .select('id, name')
@@ -58,10 +65,11 @@ router.get('/queue-stats', async (req: Request, res: Response) => {
             logger.warn('[ADMIN] Queue health check failed');
             return res.status(200).json({
                 status: 'unavailable',
-                message: 'Redis not connected or queue not initialized. Inline sync fallback is active.',
+                message: 'Redis not connected or queue not initialized. Governed workers may pause and new intake may be blocked.',
                 timestamp: new Date().toISOString(),
                 metrics: { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 },
                 filingQueue,
+                operationalControls,
                 runtime: runtimeSnapshot,
                 hotspots
             });
@@ -83,6 +91,7 @@ router.get('/queue-stats', async (req: Request, res: Response) => {
                 },
                 filing: filingQueue
             },
+            operationalControls,
             runtime: runtimeSnapshot,
             hotspots,
             alerts: {
@@ -90,7 +99,9 @@ router.get('/queue-stats', async (req: Request, res: Response) => {
                 backlogBuilding: metrics.waiting > 50,
                 workersOverloaded: metrics.active >= 5,
                 filingBacklogBuilding: filingQueue.waiting > 50,
-                filingQueueAging: (filingQueue.oldestWaitingAgeMs || 0) > 10 * 60 * 1000
+                filingQueueAging: (filingQueue.oldestWaitingAgeMs || 0) > 10 * 60 * 1000,
+                runtimeAlerts: runtimeSnapshot.alerts,
+                actionRequired: runtimeSnapshot.alerts.some((alert: any) => alert.severity === 'critical')
             }
         });
     } catch (error: any) {

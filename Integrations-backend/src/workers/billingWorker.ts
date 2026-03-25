@@ -14,6 +14,7 @@ import billingService, { BillingRequest, BillingResult } from '../services/billi
 import billingCreditService from '../services/billingCreditService';
 import workerContinuationService from '../services/workerContinuationService';
 import runtimeCapacityService from '../services/runtimeCapacityService';
+import operationalControlService from '../services/operationalControlService';
 
 export interface BillingStats {
   processed: number;
@@ -29,6 +30,14 @@ class BillingWorker {
   private isRunning: boolean = false;
   private readonly workerName = 'billing';
   private static readonly BATCH_SIZE = Number(process.env.BILLING_BATCH_SIZE || '75');
+  private tenantRotationOffset: number = 0;
+
+  private rotateTenants<T>(tenants: T[]): T[] {
+    if (tenants.length <= 1) return tenants;
+    const offset = this.tenantRotationOffset % tenants.length;
+    this.tenantRotationOffset = (this.tenantRotationOffset + 1) % tenants.length;
+    return [...tenants.slice(offset), ...tenants.slice(0, offset)];
+  }
 
   /**
    * Start the worker
@@ -120,6 +129,19 @@ class BillingWorker {
 
     try {
       runtimeCapacityService.recordWorkerStart(this.workerName);
+      const billingEnabled = await operationalControlService.isEnabled('billing_charge', true);
+      if (!billingEnabled) {
+        runtimeCapacityService.setCircuitBreaker('billing-charge', 'open', 'operator_disabled');
+        logger.warn('⏸️ [BILLING] Billing worker paused by operator control');
+        runtimeCapacityService.recordWorkerEnd(this.workerName, {
+          processed: 0,
+          succeeded: 0,
+          failed: 0,
+          metadata: { paused: true, reason: 'operator_disabled' }
+        });
+        return stats;
+      }
+      runtimeCapacityService.setCircuitBreaker('billing-charge', 'closed', null);
       logger.info('💳 [BILLING] Starting billing run for all tenants');
 
       // Get all active tenants
@@ -152,7 +174,8 @@ class BillingWorker {
       logger.info(`📋 [BILLING] Processing ${tenants.length} active tenants`);
 
       // Process each tenant in isolation
-      for (const tenant of tenants) {
+      const orderedTenants = this.rotateTenants((tenants || []) as Array<{ id: string; name?: string }>);
+      for (const tenant of orderedTenants) {
         try {
           const tenantStats = await this.runBillingForTenant(tenant.id);
           stats.processed += tenantStats.processed;

@@ -21,9 +21,23 @@ type CircuitBreakerSnapshot = {
   updatedAt: string;
 };
 
+type RuntimeAlert = {
+  code: string;
+  severity: 'info' | 'warn' | 'critical';
+  message: string;
+};
+
 class RuntimeCapacityService {
   private readonly workerSnapshots = new Map<string, WorkerRuntimeSnapshot>();
   private readonly circuitBreakers = new Map<string, CircuitBreakerSnapshot>();
+  private readonly counters = new Map<string, number>();
+  private readonly queueDepthThresholds = {
+    filing: Number(process.env.ALERT_FILING_BACKLOG_DEPTH || '120'),
+    parsing: Number(process.env.ALERT_PARSING_BACKLOG_DEPTH || '400'),
+    matching: Number(process.env.ALERT_MATCHING_BACKLOG_DEPTH || '400'),
+    recoveries: Number(process.env.ALERT_RECOVERY_BACKLOG_DEPTH || '120'),
+    billing: Number(process.env.ALERT_BILLING_BACKLOG_DEPTH || '120')
+  };
   private redisHealth: { available: boolean; reason: string | null; updatedAt: string } = {
     available: false,
     reason: 'unknown',
@@ -124,11 +138,104 @@ class RuntimeCapacityService {
     };
   }
 
+  incrementCounter(counterName: string, amount: number = 1): void {
+    this.counters.set(counterName, (this.counters.get(counterName) || 0) + amount);
+  }
+
+  getWorkerSnapshot(workerName: string): WorkerRuntimeSnapshot | null {
+    return this.workerSnapshots.get(workerName) || null;
+  }
+
+  getCounter(counterName: string): number {
+    return this.counters.get(counterName) || 0;
+  }
+
+  getAlerts(): RuntimeAlert[] {
+    const alerts: RuntimeAlert[] = [];
+
+    if (!this.redisHealth.available) {
+      alerts.push({
+        code: 'redis_unavailable',
+        severity: 'critical',
+        message: this.redisHealth.reason || 'Redis is unavailable'
+      });
+    }
+
+    for (const worker of this.workerSnapshots.values()) {
+      if ((worker.oldestItemAgeMs || 0) > 15 * 60 * 1000) {
+        alerts.push({
+          code: `${worker.workerName}_age_slo_exceeded`,
+          severity: 'warn',
+          message: `${worker.workerName} oldest item age exceeded 15 minutes`
+        });
+      }
+
+      const backlogDepth = worker.backlogDepth || 0;
+      const threshold = worker.workerName.startsWith('document-parsing')
+        ? this.queueDepthThresholds.parsing
+        : worker.workerName.startsWith('evidence-matching')
+          ? this.queueDepthThresholds.matching
+          : worker.workerName.startsWith('recoveries')
+            ? this.queueDepthThresholds.recoveries
+            : worker.workerName.startsWith('billing')
+              ? this.queueDepthThresholds.billing
+              : worker.workerName.startsWith('refund-filing')
+                ? this.queueDepthThresholds.filing
+                : null;
+
+      if (threshold !== null && backlogDepth >= threshold) {
+        alerts.push({
+          code: `${worker.workerName}_backlog_depth_exceeded`,
+          severity: 'warn',
+          message: `${worker.workerName} backlog depth exceeded ${threshold}`
+        });
+      }
+
+      if (worker.skippedRuns >= 3) {
+        alerts.push({
+          code: `${worker.workerName}_skipped_runs`,
+          severity: 'warn',
+          message: `${worker.workerName} skipped ${worker.skippedRuns} runs`
+        });
+      }
+    }
+
+    for (const breaker of this.circuitBreakers.values()) {
+      if (breaker.state === 'open') {
+        alerts.push({
+          code: `${breaker.breakerName}_open`,
+          severity: 'critical',
+          message: breaker.reason || `${breaker.breakerName} circuit breaker is open`
+        });
+      }
+    }
+
+    if ((this.counters.get('ambiguous_recoveries') || 0) > 0) {
+      alerts.push({
+        code: 'ambiguous_recoveries_present',
+        severity: 'warn',
+        message: `${this.counters.get('ambiguous_recoveries')} ambiguous recoveries are quarantined`
+      });
+    }
+
+    if ((this.counters.get('duplicate_recovery_conflicts') || 0) > 0) {
+      alerts.push({
+        code: 'duplicate_recovery_conflicts',
+        severity: 'critical',
+        message: `${this.counters.get('duplicate_recovery_conflicts')} duplicate recovery conflicts were observed`
+      });
+    }
+
+    return alerts;
+  }
+
   getSnapshot() {
     return {
       workers: Array.from(this.workerSnapshots.values()),
       circuitBreakers: Array.from(this.circuitBreakers.values()),
-      redis: this.redisHealth
+      redis: this.redisHealth,
+      counters: Object.fromEntries(this.counters.entries()),
+      alerts: this.getAlerts()
     };
   }
 }

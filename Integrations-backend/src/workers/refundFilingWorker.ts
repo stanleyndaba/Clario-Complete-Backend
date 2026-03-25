@@ -26,6 +26,7 @@ import {
 import { evaluateAndPersistCaseEligibility } from '../services/agent7EligibilityService';
 import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import runtimeCapacityService from '../services/runtimeCapacityService';
+import operationalControlService from '../services/operationalControlService';
 
 
 /**
@@ -95,7 +96,7 @@ interface FilingSafetyCheckResult {
 
 type FilingDispatchResult = {
   id: string;
-  mode: 'queued' | 'direct';
+  mode: 'queued' | 'blocked';
 };
 
 type SubmissionQueueMetrics = {
@@ -124,6 +125,7 @@ class RefundFilingWorker {
   private queueInfrastructureAvailable: boolean = false;
   private queueInfrastructureReason: string | null = null;
   private readonly workerName = 'refund-filing';
+  private tenantRotationOffset: number = 0;
   private static readonly SUBMISSION_CONCURRENCY = Number(process.env.FILING_QUEUE_CONCURRENCY || '6');
   private static readonly GLOBAL_LIMIT_MAX = Number(process.env.FILING_QUEUE_GLOBAL_MAX || '6');
   private static readonly GLOBAL_LIMIT_DURATION_MS = Number(process.env.FILING_QUEUE_GLOBAL_DURATION_MS || '60000');
@@ -236,12 +238,13 @@ class RefundFilingWorker {
     logger.info(`📥 [AGENT 7] Manual trigger: Enqueueing case ${caseId} for seller ${sellerId}`);
 
     if (!this.queueInfrastructureAvailable || !this.submissionQueue) {
-      logger.warn('[AGENT 7] Queue unavailable for manual filing trigger - using direct fallback', {
+      logger.warn('[AGENT 7] Queue unavailable for manual filing trigger - blocking instead of bypassing governance', {
         caseId,
         sellerId,
         reason: this.queueInfrastructureReason
       });
-      return await this.executeDirectFallback(caseId, sellerId);
+      await this.markCasePendingSafetyVerification(caseId, `queue_unavailable:${this.queueInfrastructureReason || 'unknown'}`);
+      return { id: caseId, mode: 'blocked' };
     }
 
     const job = await this.submissionQueue.add(
@@ -256,6 +259,26 @@ class RefundFilingWorker {
       }
     );
     return { id: String(job.id), mode: 'queued' };
+  }
+
+  private rotateTenants<T>(tenants: T[]): T[] {
+    if (tenants.length <= 1) return tenants;
+    const offset = this.tenantRotationOffset % tenants.length;
+    this.tenantRotationOffset = (this.tenantRotationOffset + 1) % tenants.length;
+    return [...tenants.slice(offset), ...tenants.slice(0, offset)];
+  }
+
+  private async markCasePendingSafetyVerification(caseId: string, reason: string): Promise<void> {
+    await supabaseAdmin
+      .from('dispute_cases')
+      .update({
+        filing_status: 'pending_safety_verification',
+        eligible_to_file: false,
+        block_reasons: [reason],
+        last_error: reason,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', caseId);
   }
 
   async getSubmissionQueueMetrics(): Promise<SubmissionQueueMetrics> {
@@ -439,7 +462,7 @@ class RefundFilingWorker {
     }
 
     if (!this.queueInfrastructureAvailable) {
-      logger.warn(' [REFUND FILING] Starting worker in direct fallback mode because queue infrastructure is unavailable', {
+      logger.warn(' [REFUND FILING] Starting worker with queue governance unavailable - auto filing will self-pause', {
         reason: this.queueInfrastructureReason
       });
     }
@@ -521,16 +544,16 @@ class RefundFilingWorker {
         .gte('created_at', oneHourAgo);
 
       if (error) {
-        logger.warn(' [REFUND FILING] Could not check hourly filings, proceeding with caution', {
+        logger.warn(' [REFUND FILING] Could not check hourly filings, failing closed', {
           error: error.message
         });
-        return 0; // Assume 0 if we can't check (fail open, but log it)
+        return RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR;
       }
 
       return count || 0;
     } catch (error: any) {
       logger.warn(' [REFUND FILING] Error checking hourly filings', { error: error.message });
-      return 0;
+      return RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR;
     }
   }
 
@@ -543,21 +566,21 @@ class RefundFilingWorker {
         .maybeSingle();
 
       if (error) {
-        logger.warn(' [REFUND FILING] Failed to load auto-file preference, defaulting to enabled', {
+        logger.warn(' [REFUND FILING] Failed to load auto-file preference, defaulting to disabled', {
           userId,
           error: error.message
         });
-        return true;
+        return false;
       }
 
       const enabled = (data?.preferences as any)?.auto_file_cases?.enabled;
       return typeof enabled === 'boolean' ? enabled : true;
     } catch (error: any) {
-      logger.warn(' [REFUND FILING] Error loading auto-file preference, defaulting to enabled', {
+      logger.warn(' [REFUND FILING] Error loading auto-file preference, defaulting to disabled', {
         userId,
         error: error.message
       });
-      return true;
+      return false;
     }
   }
 
@@ -854,10 +877,10 @@ class RefundFilingWorker {
         .eq('seller_id', sellerId);
 
       if (error) {
-        logger.warn('[WARN] [REFUND FILING] Could not check document filenames, proceeding with caution', {
+        logger.warn('[WARN] [REFUND FILING] Could not verify document filenames, failing closed', {
           error: error.message
         });
-        return { hasDangerous: false, dangerousFilenames: [] }; // Fail open but log
+        return { hasDangerous: true, dangerousFilenames: ['document_filename_verification_unavailable'] };
       }
 
       if (!documents || documents.length === 0) {
@@ -889,7 +912,7 @@ class RefundFilingWorker {
       logger.warn('[WARN] [REFUND FILING] Error checking document filenames', {
         error: error.message
       });
-      return { hasDangerous: false, dangerousFilenames: [] }; // Fail open
+      return { hasDangerous: true, dangerousFilenames: ['document_filename_verification_error'] };
     }
   }
 
@@ -930,7 +953,10 @@ class RefundFilingWorker {
         logger.warn('[WARN] [REFUND FILING] Could not fetch documents for content check', {
           error: error.message
         });
-        return { hasDangerous: false, dangerousFindings: [] }; // Fail open but log
+        return {
+          hasDangerous: true,
+          dangerousFindings: [{ filename: 'unknown', pattern: 'content_verification_unavailable' }]
+        };
       }
 
       if (!documents || documents.length === 0) {
@@ -999,7 +1025,10 @@ class RefundFilingWorker {
       logger.warn('[WARN] [REFUND FILING] Error checking document content', {
         error: error.message
       });
-      return { hasDangerous: false, dangerousFindings: [] }; // Fail open
+      return {
+        hasDangerous: true,
+        dangerousFindings: [{ filename: 'unknown', pattern: 'content_verification_error' }]
+      };
     }
   }
 
@@ -1028,7 +1057,7 @@ class RefundFilingWorker {
           sellerId,
           error: error.message
         });
-        return 0; // Fail open
+        return RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_SELLER_PER_DAY;
       }
 
       return count || 0;
@@ -1037,7 +1066,7 @@ class RefundFilingWorker {
         sellerId,
         error: error.message
       });
-      return 0; // Fail open
+      return RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_SELLER_PER_DAY;
     }
   }
 
@@ -1072,7 +1101,7 @@ class RefundFilingWorker {
         .eq('seller_id', sellerId);
 
       if (error || !documents || documents.length === 0) {
-        return { isValid: true, reason: 'Could not retrieve documents for validation' };
+        return { isValid: false, reason: 'Could not retrieve documents for claim amount validation' };
       }
 
       // Look for total_amount in parsed content
@@ -1088,9 +1117,9 @@ class RefundFilingWorker {
         }
       }
 
-      // If no invoice amount found, we can't validate - allow to proceed
+      // If no invoice amount is available, fail closed and route for review.
       if (foundInvoiceAmount === undefined) {
-        return { isValid: true, reason: 'No invoice total found in parsed documents' };
+        return { isValid: false, reason: 'No invoice total found in parsed documents for claim amount verification' };
       }
 
       // Calculate variance
@@ -1124,7 +1153,7 @@ class RefundFilingWorker {
       logger.warn('[WARN] [REFUND FILING] Error validating claim amount', {
         error: error.message
       });
-      return { isValid: true, reason: 'Validation error - allowing to proceed' }; // Fail open
+      return { isValid: false, reason: `Claim amount validation error: ${error.message}` };
     }
   }
 
@@ -1160,7 +1189,7 @@ class RefundFilingWorker {
         .single();
 
       if (!shipment?.created_at) {
-        return { isValid: true, reason: 'Shipment date not found, skipping date validation' };
+        return { isValid: false, reason: 'Shipment date not found for invoice date verification' };
       }
 
       const shipmentCreatedAt = new Date(shipment.created_at);
@@ -1173,7 +1202,7 @@ class RefundFilingWorker {
         .eq('seller_id', sellerId);
 
       if (!docs || docs.length === 0) {
-        return { isValid: true, reason: 'No parsed evidence documents found' };
+        return { isValid: false, reason: 'No parsed evidence documents found for invoice date verification' };
       }
 
       for (const doc of docs) {
@@ -1204,8 +1233,8 @@ class RefundFilingWorker {
       return { isValid: true, reason: 'Invoice dates validated' };
 
     } catch (error: any) {
-      logger.warn('[REFUND FILING] Error validating invoice date, allowing to proceed', { error: error.message });
-      return { isValid: true, reason: 'Date validation error — proceeding with caution' };
+      logger.warn('[REFUND FILING] Error validating invoice date, failing closed', { error: error.message });
+      return { isValid: false, reason: `Date validation error: ${error.message}` };
     }
   }
 
@@ -1272,6 +1301,7 @@ class RefundFilingWorker {
       }
     } catch (error: any) {
       logger.warn('[REFUND FILING] Error validating POD evidence', { error: error.message });
+      weakPods.push('pod_verification_error');
     }
 
     return { hasValidPod: weakPods.length === 0, weakPods };
@@ -1292,9 +1322,7 @@ class RefundFilingWorker {
       runtimeCapacityService.recordWorkerStart(this.workerName);
       logger.info(' [REFUND FILING] Starting filing run for all tenants');
 
-      // P5: GLOBAL KILL SWITCH — Check feature flag before ANY filing
-      // Toggle 'agent7_filing_enabled' to false in feature_flags table to halt all filing instantly.
-      const filingEnabled = await featureFlagService.isEnabled('agent7_filing_enabled', 'system');
+      const filingEnabled = await operationalControlService.isEnabled('auto_filing', true);
       if (!filingEnabled) {
         logger.warn('🛑 [REFUND FILING] GLOBAL KILL SWITCH ACTIVE — agent7_filing_enabled=false. All filing halted.');
         runtimeCapacityService.recordWorkerEnd(this.workerName, {
@@ -1333,10 +1361,13 @@ class RefundFilingWorker {
         return stats;
       }
 
-      logger.info(` [REFUND FILING] Processing ${tenants.length} active tenants`);
+      const rotatedTenants = this.rotateTenants((tenants || []) as Array<{ id: string; name?: string }>);
+      logger.info(` [REFUND FILING] Processing ${rotatedTenants.length} active tenants`, {
+        rotationOffset: this.tenantRotationOffset
+      });
 
       // MULTI-TENANT: Process each tenant in isolation
-      for (const tenant of tenants) {
+      for (const tenant of rotatedTenants) {
         try {
           const tenantStats = await this.runFilingForTenant(tenant.id);
           stats.processed += tenantStats.processed;
@@ -2145,13 +2176,13 @@ class RefundFilingWorker {
           tenantId,
           error: error.message
         });
-        return 0;
+        return RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR;
       }
 
       return count || 0;
     } catch (error: any) {
       logger.warn(' [REFUND FILING] Error checking hourly filings for tenant', { tenantId, error: error.message });
-      return 0;
+      return RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR;
     }
   }
 
@@ -2524,27 +2555,13 @@ class RefundFilingWorker {
   }
 
   private async executeDirectFallback(caseId: string, sellerId: string): Promise<FilingDispatchResult> {
-    logger.warn('[AGENT 7] Executing direct filing fallback', { caseId, sellerId });
-
-    await this.automator.executeFullSubmission(caseId, sellerId);
-
-    const { data: disputeCase, error } = await supabaseAdmin
-      .from('dispute_cases')
-      .select('filing_status, amazon_case_id')
-      .eq('id', caseId)
-      .single();
-
-    if (error) {
-      throw error;
-    }
-
-    if (!disputeCase || String(disputeCase.filing_status || '').toLowerCase() !== 'filed') {
-      throw new Error(`Direct filing fallback did not reach a filed state for case ${caseId}`);
-    }
+    const reason = 'queue_governance_required_direct_fallback_disabled';
+    logger.warn('[AGENT 7] Direct filing fallback requested but disabled for safety', { caseId, sellerId, reason });
+    await this.markCasePendingSafetyVerification(caseId, reason);
 
     return {
-      id: String(disputeCase.amazon_case_id || `direct_${caseId}_${Date.now()}`),
-      mode: 'direct'
+      id: caseId,
+      mode: 'blocked'
     };
   }
 

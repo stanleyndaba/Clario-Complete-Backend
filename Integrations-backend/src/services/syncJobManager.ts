@@ -14,6 +14,8 @@ import {
 } from '../utils/syncFingerprint';
 import { resolveTenantContextForUser } from '../utils/tenantEventRouting';
 import capacityGovernanceService from './capacityGovernanceService';
+import operationalControlService from './operationalControlService';
+import runtimeCapacityService from './runtimeCapacityService';
 
 // Standardized status values - use database values consistently
 export type SyncStatus = 'idle' | 'running' | 'detecting' | 'completed' | 'failed' | 'cancelled';
@@ -67,6 +69,12 @@ class SyncJobManager {
     const syncId = `sync_${userId}_${Date.now()}`;
     const tenantContext = await resolveTenantContextForUser(userId);
 
+    if (!(await operationalControlService.isEnabled('new_ingestion', true))) {
+      runtimeCapacityService.setCircuitBreaker('new-ingestion', 'open', 'operator_disabled');
+      throw new Error('New ingestion is temporarily paused by operator control.');
+    }
+    runtimeCapacityService.setCircuitBreaker('new-ingestion', 'closed', null);
+
     // Strict truth: sync is allowed only with a valid DB-backed Amazon token.
     const isConnected = await tokenManager.isTokenValid(userId, 'amazon', storeId);
     if (!isConnected) {
@@ -80,6 +88,7 @@ class SyncJobManager {
     if (tenantContext.tenantId) {
       const intakeDecision = await capacityGovernanceService.getIntakeAdmissionDecision(tenantContext.tenantId);
       if (!intakeDecision.allowed) {
+        runtimeCapacityService.setCircuitBreaker('new-ingestion', 'open', intakeDecision.reason || 'capacity_blocked');
         logger.warn('🚦 [SYNC JOB MANAGER] Sync admission blocked by downstream backlog', {
           userId,
           syncId,
@@ -89,6 +98,7 @@ class SyncJobManager {
         });
         throw new Error(`Sync temporarily paused due to downstream backlog (${intakeDecision.reason}).`);
       }
+      runtimeCapacityService.setCircuitBreaker('new-ingestion', 'closed', null);
     }
 
     // 🧹 AUTO-CLEANUP: Clear stale syncs stuck in 'running' for 2+ minutes

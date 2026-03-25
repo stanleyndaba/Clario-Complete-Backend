@@ -84,9 +84,18 @@ export class EvidenceMatchingWorker {
   private readonly workerName = 'evidence-matching';
   private static readonly USER_BATCH_SIZE = Number(process.env.EVIDENCE_MATCHING_USER_BATCH_SIZE || '60');
   private static readonly USER_STAGGER_MS = Number(process.env.EVIDENCE_MATCHING_USER_STAGGER_MS || '1000');
+  private static readonly CLAIM_BATCH_SIZE = Number(process.env.EVIDENCE_MATCHING_CLAIM_BATCH_SIZE || '10');
+  private tenantRotationOffset: number = 0;
 
   constructor() {
     // Initialize
+  }
+
+  private rotateTenants<T>(tenants: T[]): T[] {
+    if (tenants.length <= 1) return tenants;
+    const offset = this.tenantRotationOffset % tenants.length;
+    this.tenantRotationOffset = (this.tenantRotationOffset + 1) % tenants.length;
+    return [...tenants.slice(offset), ...tenants.slice(0, offset)];
   }
 
   /**
@@ -204,7 +213,8 @@ export class EvidenceMatchingWorker {
       };
 
       // MULTI-TENANT: Process each tenant in isolation
-      for (const tenant of tenants) {
+      const orderedTenants = this.rotateTenants((tenants || []) as Array<{ id: string; name?: string }>);
+      for (const tenant of orderedTenants) {
         try {
           const tenantStats = await this.runMatchingForTenant(tenant.id);
           totalStats.processed += tenantStats.processed;
@@ -742,7 +752,8 @@ export class EvidenceMatchingWorker {
         .eq('tenant_id', tenantId)
         .eq('seller_id', userId)
         .in('status', ['detected', 'pending'])
-        .limit(50);
+        .limit(EvidenceMatchingWorker.CLAIM_BATCH_SIZE)
+        .order('created_at', { ascending: true });
 
       if (error) {
         logger.warn('⚠️ [EVIDENCE MATCHING WORKER] Error fetching claims', {

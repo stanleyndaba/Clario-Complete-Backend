@@ -63,9 +63,17 @@ export class DocumentParsingWorker {
   private readonly MAX_PROCESSING_AGE_MS = 15 * 60 * 1000;
   private readonly workerName = 'document-parsing';
   private static readonly BATCH_SIZE = Number(process.env.DOCUMENT_PARSING_BATCH_SIZE || '75');
+  private tenantRotationOffset: number = 0;
 
   constructor() {
     // Initialize
+  }
+
+  private rotateTenants<T>(tenants: T[]): T[] {
+    if (tenants.length <= 1) return tenants;
+    const offset = this.tenantRotationOffset % tenants.length;
+    this.tenantRotationOffset = (this.tenantRotationOffset + 1) % tenants.length;
+    return [...tenants.slice(offset), ...tenants.slice(0, offset)];
   }
 
   /**
@@ -181,7 +189,8 @@ export class DocumentParsingWorker {
       };
 
       // MULTI-TENANT: Process each tenant in isolation
-      for (const tenant of tenants) {
+      const orderedTenants = this.rotateTenants((tenants || []) as Array<{ id: string; name?: string }>);
+      for (const tenant of orderedTenants) {
         try {
           const tenantStats = await this.runParsingForTenant(tenant.id);
           totalStats.processed += tenantStats.processed;

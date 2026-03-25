@@ -773,13 +773,18 @@ router.post('/file-now', async (req, res) => {
       .eq('tenant_id', tenantId);
 
     const job = await refundFilingWorker.addJob(dispute_id, sellerId);
+    const queued = job.mode === 'queued';
+    const blocked = job.mode === 'blocked';
 
     res.json({
       success: true,
-      message: job.mode === 'direct' ? 'Case filed through direct fallback.' : 'Case queued for filing.',
+      message: blocked
+        ? 'Case held for safety verification; queue governance was unavailable.'
+        : 'Case queued for filing.',
       jobId: job.id,
-      filing_status: 'pending',
-      queued: job.mode === 'queued',
+      filing_status: blocked ? 'pending_safety_verification' : 'pending',
+      queued,
+      blocked,
       mode: job.mode
     });
 
@@ -848,15 +853,20 @@ router.post('/retry-filing', async (req, res) => {
       .eq('tenant_id', tenantId);
 
     const job = await refundFilingWorker.addJob(dispute_id, sellerId);
+    const queued = job.mode === 'queued';
+    const blocked = job.mode === 'blocked';
 
     res.json({
       success: true,
-      message: job.mode === 'direct' ? 'Retry filed through direct fallback' : 'Retry queued for filing',
+      message: blocked
+        ? 'Retry held for safety verification; queue governance was unavailable.'
+        : 'Retry queued for filing',
       jobId: job.id,
       dispute_id,
-      filing_status: 'retrying',
+      filing_status: blocked ? 'pending_safety_verification' : 'retrying',
       retry_count: newRetryCount,
-      queued: job.mode === 'queued',
+      queued,
+      blocked,
       mode: job.mode
     });
 
@@ -937,15 +947,20 @@ router.post('/approve-filing', async (req, res) => {
     console.log(`[approve-filing] User ${userId} approved claim ${dispute_id}`);
 
     const job = await refundFilingWorker.addJob(dispute_id, sellerId);
+    const queued = job.mode === 'queued';
+    const blocked = job.mode === 'blocked';
 
     res.json({
       success: true,
-      message: job.mode === 'direct' ? 'Claim approved and filed through direct fallback' : 'Claim approved and queued for filing',
+      message: blocked
+        ? 'Claim approval recorded, but filing is held for safety verification.'
+        : 'Claim approved and queued for filing',
       dispute_id,
-      filing_status: 'pending',
+      filing_status: blocked ? 'pending_safety_verification' : 'pending',
       approved_by: userId,
       jobId: job.id,
-      queued: job.mode === 'queued',
+      queued,
+      blocked,
       mode: job.mode
     });
 

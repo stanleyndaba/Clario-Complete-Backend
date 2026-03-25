@@ -8,6 +8,7 @@ import axios from 'axios';
 import logger from '../utils/logger';
 import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import { supabaseAdmin } from '../database/supabaseClient';
+import runtimeCapacityService from './runtimeCapacityService';
 
 export interface PayoutMatch {
   disputeId: string;
@@ -44,6 +45,44 @@ class RecoveriesService {
   constructor() {
     this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
     this.reconciliationThreshold = parseFloat(process.env.RECONCILIATION_THRESHOLD || '0.01');
+  }
+
+  private async quarantineAmbiguousRecovery(
+    payout: any,
+    userId: string,
+    tenantId: string | undefined,
+    reason: string,
+    candidateDisputeIds: string[] = []
+  ): Promise<void> {
+    runtimeCapacityService.incrementCounter('ambiguous_recoveries');
+
+    try {
+      await supabaseAdmin
+        .from('recovery_lifecycle_logs')
+        .insert({
+          recovery_id: null,
+          dispute_id: null,
+          user_id: userId,
+          event_type: 'error',
+          event_data: {
+            quarantine_state: 'ambiguous_recovery',
+            reason,
+            tenant_id: tenantId || null,
+            payout_id: payout.id || null,
+            amazon_reimbursement_id: payout.amazonReimbursementId || null,
+            amazon_case_id: payout.amazonCaseId || payout.metadata?.amazon_case_id || payout.metadata?.case_id || null,
+            order_id: payout.orderId || null,
+            amount: payout.amount || null,
+            candidate_dispute_ids: candidateDisputeIds
+          }
+        });
+    } catch (error: any) {
+      logger.error('❌ [RECOVERIES] Failed to log ambiguous recovery quarantine', {
+        payoutId: payout.id,
+        reason,
+        error: error.message
+      });
+    }
   }
 
   private async findExistingRecovery(
@@ -291,7 +330,7 @@ class RecoveriesService {
       const approvedCases = disputeCases || [];
 
       if (payout.amazonReimbursementId && approvedCases.length > 0) {
-        for (const disputeCase of approvedCases) {
+        const reimbursementMatches = approvedCases.filter((disputeCase: any) => {
           const evidence = disputeCase.detection_results?.evidence || {};
           const reimbursementId =
             evidence.amazon_reimbursement_id ||
@@ -299,59 +338,79 @@ class RecoveriesService {
             evidence.amazon_event_id ||
             null;
 
-          if (reimbursementId && reimbursementId === payout.amazonReimbursementId) {
-            return this.createMatch(disputeCase, payout);
-          }
+          return reimbursementId && reimbursementId === payout.amazonReimbursementId;
+        });
+
+        if (reimbursementMatches.length === 1) {
+          return this.createMatch(reimbursementMatches[0], payout);
+        }
+
+        if (reimbursementMatches.length > 1) {
+          await this.quarantineAmbiguousRecovery(
+            payout,
+            userId,
+            tenantId,
+            'multiple_cases_share_reimbursement_identifier',
+            reimbursementMatches.map((candidate: any) => candidate.id)
+          );
+          return null;
         }
       }
 
       if (approvedCases.length > 0 && payout.orderId) {
-        // Filter by order_id from detection_results.evidence
         const matchingCases = approvedCases.filter((dc: any) => {
           const evidence = dc.detection_results?.evidence || {};
           return evidence.order_id === payout.orderId;
         });
 
-        // Find best match by amount (within threshold)
-        for (const disputeCase of matchingCases) {
+        const closeMatches = matchingCases.filter((disputeCase: any) => {
           const expectedAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
           const actualAmount = payout.amount;
           const difference = Math.abs(expectedAmount - actualAmount);
+          return difference <= Math.max(expectedAmount * 0.05, 1.00);
+        });
 
-          // Match if amount is within 5% or $1.00
-          if (difference <= Math.max(expectedAmount * 0.05, 1.00)) {
-            return this.createMatch(disputeCase, payout);
-          }
+        if (closeMatches.length === 1) {
+          return this.createMatch(closeMatches[0], payout);
+        }
+
+        if (closeMatches.length > 1) {
+          await this.quarantineAmbiguousRecovery(
+            payout,
+            userId,
+            tenantId,
+            'multiple_cases_share_order_and_amount_match',
+            closeMatches.map((candidate: any) => candidate.id)
+          );
+          return null;
         }
       }
 
-      // Try to match by SKU + date range (last resort)
       if ((payout.sku || payout.asin) && approvedCases.length > 0) {
-        // Filter by SKU from detection_results.evidence
         const matchingCases = approvedCases.filter((dc: any) => {
           const evidence = dc.detection_results?.evidence || {};
           return evidence.sku === payout.sku || evidence.asin === payout.asin;
         });
 
-        // Find best match by amount
-        for (const disputeCase of matchingCases) {
+        const closeMatches = matchingCases.filter((disputeCase: any) => {
           const expectedAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
           const actualAmount = payout.amount;
           const difference = Math.abs(expectedAmount - actualAmount);
+          return difference <= Math.max(expectedAmount * 0.10, 2.00);
+        });
 
-          if (difference <= Math.max(expectedAmount * 0.10, 2.00)) {
-            logger.warn('⚠️ [RECOVERIES] Fuzzy match found (by SKU + amount)', {
-              disputeId: disputeCase.id,
-              expectedAmount,
-              actualAmount,
-              difference
-            });
-            return this.createMatch(disputeCase, payout);
-          }
+        if (closeMatches.length > 0) {
+          await this.quarantineAmbiguousRecovery(
+            payout,
+            userId,
+            tenantId,
+            'sku_or_asin_fuzzy_match_requires_manual_resolution',
+            closeMatches.map((candidate: any) => candidate.id)
+          );
+          return null;
         }
       }
 
-      // Strict amount fallback: only if there is exactly one unambiguous close candidate for this seller.
       if (approvedCases.length > 0) {
         const candidates = approvedCases
           .map((disputeCase: any) => {
@@ -368,15 +427,15 @@ class RecoveriesService {
           .filter((candidate: any) => candidate.expectedAmount > 0 && candidate.difference <= candidate.threshold)
           .sort((a: any, b: any) => a.difference - b.difference);
 
-        if (candidates.length === 1) {
-          logger.warn('[Agent8] Strict amount fallback match', {
-            disputeId: candidates[0].disputeCase.id,
-            payoutId: payout.id,
-            expectedAmount: candidates[0].expectedAmount,
-            actualAmount: payout.amount,
-            difference: candidates[0].difference
-          });
-          return this.createMatch(candidates[0].disputeCase, payout);
+        if (candidates.length > 0) {
+          await this.quarantineAmbiguousRecovery(
+            payout,
+            userId,
+            tenantId,
+            'strict_amount_fallback_requires_manual_resolution',
+            candidates.map((candidate: any) => candidate.disputeCase.id)
+          );
+          return null;
         }
       }
 
@@ -504,6 +563,7 @@ class RecoveriesService {
 
         if (insertError) {
           if ((insertError as any).code === '23505') {
+            runtimeCapacityService.incrementCounter('duplicate_recovery_conflicts');
             recovery = await this.findExistingRecovery(match, tenantId);
           }
 
