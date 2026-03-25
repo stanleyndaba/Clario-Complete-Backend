@@ -776,10 +776,11 @@ router.post('/file-now', async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Case queued for filing.',
+      message: job.mode === 'direct' ? 'Case filed through direct fallback.' : 'Case queued for filing.',
       jobId: job.id,
       filing_status: 'pending',
-      queued: true
+      queued: job.mode === 'queued',
+      mode: job.mode
     });
 
   } catch (error: any) {
@@ -850,12 +851,13 @@ router.post('/retry-filing', async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Retry queued for filing',
+      message: job.mode === 'direct' ? 'Retry filed through direct fallback' : 'Retry queued for filing',
       jobId: job.id,
       dispute_id,
       filing_status: 'retrying',
       retry_count: newRetryCount,
-      queued: true
+      queued: job.mode === 'queued',
+      mode: job.mode
     });
 
   } catch (error: any) {
@@ -938,12 +940,13 @@ router.post('/approve-filing', async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Claim approved and queued for filing',
+      message: job.mode === 'direct' ? 'Claim approved and filed through direct fallback' : 'Claim approved and queued for filing',
       dispute_id,
       filing_status: 'pending',
       approved_by: userId,
       jobId: job.id,
-      queued: true
+      queued: job.mode === 'queued',
+      mode: job.mode
     });
 
   } catch (error: any) {

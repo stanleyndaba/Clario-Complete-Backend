@@ -753,7 +753,8 @@ export class Agent2DataSyncService {
             result.normalized,
             detectionSyncId,
             useMockGenerator,
-            storeId
+            storeId,
+            resolvedTenantId
           );
 
           // Add detection results to the sync result
@@ -1862,7 +1863,8 @@ export class Agent2DataSyncService {
     },
     parentSyncId?: string,
     useMockGenerator = false,
-    storeId?: string
+    storeId?: string,
+    tenantId?: string
   ): Promise<{ totalDetected: number }> {
     const storageSyncId = parentSyncId || syncId;
 
@@ -2021,7 +2023,7 @@ export class Agent2DataSyncService {
         }
       });
 
-      await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, true);
+      await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, true, tenantId);
       return { totalDetected: 0 };
     }
 
@@ -2302,7 +2304,7 @@ export class Agent2DataSyncService {
               category: 'detection',
               message: `[ERROR] Detection failed on first batch: ${lastBatchError?.message}`
             });
-            await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, false);
+            await this.signalDetectionCompletion(userId, storageSyncId, detectionId, { totalDetected: 0 }, false, tenantId);
             throw new Error(`Discovery Agent API failed on first batch: ${lastBatchError?.message}`);
           } else {
             this.sendSyncLog(userId, syncId, {
@@ -2372,7 +2374,8 @@ export class Agent2DataSyncService {
         storageSyncId,
         detectionId,
         { totalDetected: allPredictions.length },
-        false
+        false,
+        tenantId
       );
 
       throw new Error(`Batch processing failed: ${batchProcessingError.message}`);
@@ -2548,7 +2551,8 @@ export class Agent2DataSyncService {
       storageSyncId,
       detectionId,
       { totalDetected: detectionResults.length },
-      true
+      true,
+      tenantId
     );
 
     // Step 8: Update sync_progress metadata with claimsDetected count
@@ -3525,7 +3529,8 @@ export class Agent2DataSyncService {
     syncId: string,
     detectionId: string,
     summary: { totalDetected: number },
-    isSuccess: boolean
+    isSuccess: boolean,
+    tenantId?: string
   ): Promise<void> {
     // Handle demo mode (no real database)
     if (!supabaseAdmin || typeof supabaseAdmin.from !== 'function') {
@@ -3537,15 +3542,18 @@ export class Agent2DataSyncService {
     }
 
     try {
+      const resolvedTenantId = await this.resolveTenantId(userId, tenantId);
+
       const { data: existingQueue } = await supabaseAdmin
         .from('detection_queue')
         .select('id')
         .eq('seller_id', userId)
+        .eq('tenant_id', resolvedTenantId)
         .eq('sync_id', syncId)
         .maybeSingle();
 
       if (existingQueue) {
-        await supabaseAdmin
+        const { error: updateError } = await supabaseAdmin
           .from('detection_queue')
           .update({
             status: isSuccess ? 'completed' : 'failed',
@@ -3554,23 +3562,33 @@ export class Agent2DataSyncService {
             updated_at: new Date().toISOString()
           })
           .eq('id', existingQueue.id);
+
+        if (updateError) {
+          throw updateError;
+        }
       } else {
-        await supabaseAdmin
+        const { error: insertError } = await supabaseAdmin
           .from('detection_queue')
           .insert({
             seller_id: userId,
+            tenant_id: resolvedTenantId,
             sync_id: syncId,
             status: isSuccess ? 'completed' : 'failed',
             processed_at: new Date().toISOString(),
             payload: { detectionId, summary }
           });
+
+        if (insertError) {
+          throw insertError;
+        }
       }
     } catch (error: any) {
-      logger.warn('⚠️ [AGENT 2] Failed to signal completion (non-critical)', {
+      logger.error('❌ [AGENT 2] Failed to signal completion', {
         error: error.message,
         userId,
         syncId
       });
+      throw error;
     }
   }
 

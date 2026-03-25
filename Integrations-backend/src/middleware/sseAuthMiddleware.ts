@@ -12,6 +12,24 @@ export interface AuthenticatedSSERequest extends Request {
   };
 }
 
+const DEMO_TENANT_SLUG = 'demo-workspace';
+const ALLOW_EXPLICIT_DEMO_SSE = process.env.ALLOW_DEMO_USER === 'true';
+
+function getExplicitDemoSignal(req: Request): boolean {
+  if (!ALLOW_EXPLICIT_DEMO_SSE) {
+    return false;
+  }
+
+  const requestLike = req as any;
+  const queryTenantSlug = String(requestLike.query?.tenantSlug || '').trim();
+  const url = String(requestLike.originalUrl || requestLike.url || '');
+  const pathMatch = url.match(/\/app\/([^\/?]+)/);
+  const pathTenantSlug = pathMatch?.[1] || '';
+  const demoHeader = String(requestLike.headers?.['x-demo-mode'] || '').trim().toLowerCase();
+
+  return queryTenantSlug === DEMO_TENANT_SLUG || pathTenantSlug === DEMO_TENANT_SLUG || demoHeader === 'true';
+}
+
 /**
  * JWT authentication middleware for Server-Sent Events
  * Validates JWT token and injects seller_id for data filtering
@@ -70,38 +88,42 @@ export const authenticateSSE = (
     const token = cookieToken || headerToken;
 
     if (!token) {
-      // Allow unauthenticated connections for demo/sandbox mode
-      // This prevents SSE errors when user is not logged in
-      logger.info('SSE connection without authentication - using demo mode', {
+      if (getExplicitDemoSignal(req)) {
+        logger.info('SSE connection without authentication - using isolated demo mode', {
+          url: (req as any).url,
+          method: (req as any).method,
+          ip: (req as any).ip
+        });
+
+        req.user = {
+          id: 'demo-user',
+          email: 'demo@example.com'
+        };
+
+        res.write(`event: connected\ndata: ${JSON.stringify({
+          status: 'ok',
+          mode: 'demo',
+          user_id: 'demo-user',
+          message: 'Connected in explicit demo mode',
+          timestamp: new Date().toISOString()
+        })}\n\n`);
+
+        next();
+        return;
+      }
+
+      logger.warn('SSE connection rejected without authentication', {
         url: (req as any).url,
         method: (req as any).method,
         ip: (req as any).ip
       });
 
-      // Set demo user for unauthenticated connections
-      // IMPORTANT: This userId must match the userId used in sync operations
-      req.user = {
-        id: 'demo-user',
-        email: 'demo@example.com'
-      };
-
-      logger.info('🔍 [SSE AUTH] Using demo-user for unauthenticated connection', {
-        url: (req as any).url,
-        note: 'Sync operations must also use "demo-user" for SSE events to work'
-      });
-
-      // Send demo mode event
-      res.write(`event: connected\ndata: ${JSON.stringify({
-        status: 'ok',
-        mode: 'demo',
-        user_id: 'demo-user',
-        message: 'Connected in demo mode (no authentication)',
-        timestamp: new Date().toISOString(),
-        warning: 'Sync operations must use userId="demo-user" for SSE events to be received'
+      res.write(`event: error\ndata: ${JSON.stringify({
+        error: 'Authentication is required for SSE',
+        code: 'AUTH_REQUIRED'
       })}\n\n`);
 
-      // Continue to next middleware (don't close connection)
-      next();
+      res.end();
       return;
     }
 

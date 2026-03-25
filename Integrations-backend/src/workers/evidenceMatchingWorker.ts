@@ -844,19 +844,12 @@ export class EvidenceMatchingWorker {
    */
   async triggerMatchingForParsedDocument(userId: string, tenantId: string): Promise<void> {
     try {
-      logger.info(`🔄 [EVIDENCE MATCHING WORKER] Triggering matching after document parsing for user: ${userId}`, { tenantId });
+      logger.info(`🔄 [EVIDENCE MATCHING WORKER] Parsed document persisted; matching is durably discoverable for user: ${userId}`, { tenantId });
 
-      // Queue matching for this user (non-blocking)
-      setImmediate(async () => {
-        try {
-          await this.matchEvidenceForUser(userId, tenantId);
-        } catch (error: any) {
-          logger.warn('⚠️ [EVIDENCE MATCHING WORKER] Failed to match after parsing', {
-            userId,
-            error: error.message
-          });
-        }
-      });
+      // The completed parser_status row is the durable handoff.
+      // Run an immediate best-effort pass now, while the scheduled worker
+      // remains the authoritative recovery path if this process dies.
+      await this.matchEvidenceForUser(userId, tenantId);
     } catch (error: any) {
       logger.warn('⚠️ [EVIDENCE MATCHING WORKER] Error triggering matching after parsing', {
         userId,

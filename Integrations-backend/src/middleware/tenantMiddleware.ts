@@ -19,6 +19,7 @@ export interface TenantContext {
  */
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 const DEMO_TENANT_SLUG = 'demo-workspace';
+const ALLOW_EXPLICIT_DEMO_RUNTIME = process.env.ALLOW_DEMO_USER === 'true';
 
 /**
  * Paths that skip tenant resolution
@@ -54,6 +55,19 @@ function isTenantExempt(path: string): boolean {
 function extractTenantSlugFromPath(path: string): string | null {
     const match = path.match(/^\/app\/([^\/]+)/);
     return match ? match[1] : null;
+}
+
+function getRequestedTenantSlug(req: Request): string | null {
+    const fullPath = req.originalUrl?.split('?')[0] || req.path;
+    return extractTenantSlugFromPath(fullPath) || (req.query.tenantSlug as string) || null;
+}
+
+function isExplicitDemoRequest(req: Request): boolean {
+    if (!ALLOW_EXPLICIT_DEMO_RUNTIME) {
+        return false;
+    }
+
+    return getRequestedTenantSlug(req) === DEMO_TENANT_SLUG;
 }
 
 /**
@@ -190,11 +204,12 @@ async function updateLastActiveTenant(userId: string, tenantId: string): Promise
  * 2. X-Tenant-Id header
  * 3. User's last active tenant
  * 4. User's first active membership
- * 5. Default tenant (demo mode)
+ * 5. Fail closed unless an explicit demo workspace request is allowed
  */
 export async function tenantMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
         const fullPath = req.originalUrl?.split('?')[0] || req.path;
+        const explicitDemoRequest = isExplicitDemoRequest(req);
 
         // Skip tenant resolution for exempt paths
         if (isTenantExempt(fullPath)) {
@@ -203,18 +218,29 @@ export async function tenantMiddleware(req: Request, res: Response, next: NextFu
 
         const userId = (req as any).userId;
 
-        // Demo mode: use default tenant
         if (!userId || userId === 'demo-user') {
+            if (!explicitDemoRequest) {
+                logger.warn('Rejecting request without authenticated user context', { path: fullPath });
+                res.status(401).json({ error: 'Authenticated user context is required for this workspace route' });
+                return;
+            }
+
+            const demoTenant = await getTenantBySlug(DEMO_TENANT_SLUG) || await getTenantById(DEFAULT_TENANT_ID);
+            if (!demoTenant) {
+                res.status(503).json({ error: 'Demo workspace is unavailable' });
+                return;
+            }
+
             (req as any).tenant = {
-                tenantId: DEFAULT_TENANT_ID,
-                tenantName: 'Demo Tenant',
-                tenantSlug: 'default',
-                tenantPlan: 'enterprise',
-                tenantStatus: 'active',
-                userRole: 'owner'
+                tenantId: demoTenant.id,
+                tenantName: demoTenant.name,
+                tenantSlug: demoTenant.slug,
+                tenantPlan: demoTenant.plan,
+                tenantStatus: demoTenant.status,
+                userRole: 'viewer'
             } as TenantContext;
 
-            logger.debug('Using default tenant for demo mode', { path: fullPath });
+            logger.info('Using isolated explicit demo tenant context', { path: fullPath, tenantSlug: demoTenant.slug });
             return next();
         }
 
@@ -267,29 +293,21 @@ export async function tenantMiddleware(req: Request, res: Response, next: NextFu
             }
         }
 
-        // 4. Last resort: create membership in default tenant
+        // 4. Explicit demo fallback only
         if (!tenant) {
-            logger.warn('No tenant found for user, using default', { userId });
-
-            // Create membership in default tenant
-            const { error: membershipError } = await supabaseAdmin
-                .from('tenant_memberships')
-                .upsert({
-                    tenant_id: DEFAULT_TENANT_ID,
-                    user_id: userId,
-                    role: 'member',
-                    is_active: true,
-                    accepted_at: new Date().toISOString()
-                }, {
-                    onConflict: 'tenant_id,user_id'
-                });
-
-            if (membershipError) {
-                logger.error('Failed to create default membership', { error: membershipError, userId });
+            if (explicitDemoRequest) {
+                const demoTenant = await getTenantBySlug(DEMO_TENANT_SLUG) || await getTenantById(DEFAULT_TENANT_ID);
+                if (demoTenant) {
+                    membership = await ensureDemoMembership(userId, demoTenant.id);
+                    tenant = demoTenant;
+                }
             }
+        }
 
-            tenant = await getTenantById(DEFAULT_TENANT_ID);
-            membership = { role: 'member' };
+        if (!tenant || !membership) {
+            logger.warn('No tenant membership found for user; failing closed', { userId, path: fullPath });
+            res.status(403).json({ error: 'No active workspace membership found for this request' });
+            return;
         }
 
         // Validate tenant status

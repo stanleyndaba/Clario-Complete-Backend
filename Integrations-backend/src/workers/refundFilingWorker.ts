@@ -84,6 +84,11 @@ export interface FilingStats {
   errors: string[];
 }
 
+type FilingDispatchResult = {
+  id: string;
+  mode: 'queued' | 'direct';
+};
+
 class RefundFilingWorker {
   private schedule: string = '*/5 * * * *'; // Every 5 minutes
   private statusPollingSchedule: string = '*/10 * * * *'; // Every 10 minutes
@@ -201,16 +206,19 @@ class RefundFilingWorker {
    * Distributed Filing Bridge: Add a specific case to the submission queue.
    * This is used by Agent 7 manual triggers (e.g., from the frontend).
    */
-  async addJob(caseId: string, sellerId: string): Promise<Job> {
+  async addJob(caseId: string, sellerId: string): Promise<FilingDispatchResult> {
     logger.info(`📥 [AGENT 7] Manual trigger: Enqueueing case ${caseId} for seller ${sellerId}`);
 
     if (!this.queueInfrastructureAvailable || !this.submissionQueue) {
-      throw new Error(
-        `Refund filing queue unavailable: ${this.queueInfrastructureReason || 'Redis infrastructure not configured'}`
-      );
+      logger.warn('[AGENT 7] Queue unavailable for manual filing trigger - using direct fallback', {
+        caseId,
+        sellerId,
+        reason: this.queueInfrastructureReason
+      });
+      return await this.executeDirectFallback(caseId, sellerId);
     }
-    
-    return await this.submissionQueue.add(
+
+    const job = await this.submissionQueue.add(
       `filing_${caseId}`,
       { 
         caseId, 
@@ -221,6 +229,7 @@ class RefundFilingWorker {
         backoff: { type: 'exponential', delay: 300000 }
       }
     );
+    return { id: String(job.id), mode: 'queued' };
   }
 
   /**
@@ -332,16 +341,15 @@ class RefundFilingWorker {
   * Start the worker
   */
   start(): void {
-    if (!this.queueInfrastructureAvailable) {
-      logger.warn(' [REFUND FILING] Worker not started because queue infrastructure is unavailable', {
-        reason: this.queueInfrastructureReason
-      });
-      return;
-    }
-
     if (this.cronJob) {
       logger.warn(' [REFUND FILING] Worker already started');
       return;
+    }
+
+    if (!this.queueInfrastructureAvailable) {
+      logger.warn(' [REFUND FILING] Starting worker in direct fallback mode because queue infrastructure is unavailable', {
+        reason: this.queueInfrastructureReason
+      });
     }
 
     logger.info(' [REFUND FILING] Starting Refund Filing Worker', {
@@ -1719,12 +1727,13 @@ class RefundFilingWorker {
         // We push to BullMQ to enable global rate limiting and tenant isolation.
         try {
           if (!this.queueInfrastructureAvailable || !this.submissionQueue) {
-            logger.warn(' [AGENT 7] Skipping queue enqueue because refund filing infrastructure is unavailable', {
+            const directResult = await this.executeDirectFallback(disputeCase.id, disputeCase.seller_id);
+            logger.info('✅ [AGENT 7] Case filed via direct fallback', {
               disputeId: disputeCase.id,
               sellerId: disputeCase.seller_id,
-              reason: this.queueInfrastructureReason
+              dispatchId: directResult.id
             });
-            stats.failed++;
+            stats.filed++;
             continue;
           }
 
@@ -1746,9 +1755,22 @@ class RefundFilingWorker {
           });
           stats.filed++;
         } catch (queueError: any) {
-          logger.error(`❌ [AGENT 7] Failed to queue case ${disputeCase.id}`, { error: queueError.message });
-          stats.failed++;
-          stats.errors.push(`Queue Failure ${disputeCase.id}: ${queueError.message}`);
+          try {
+            const directResult = await this.executeDirectFallback(disputeCase.id, disputeCase.seller_id);
+            logger.warn(`⚠️ [AGENT 7] Queue enqueue failed; direct fallback succeeded for case ${disputeCase.id}`, {
+              dispatchId: directResult.id,
+              error: queueError.message
+            });
+            stats.filed++;
+          } catch (directError: any) {
+            logger.error(`❌ [AGENT 7] Failed to queue or directly file case ${disputeCase.id}`, {
+              queueError: queueError.message,
+              directError: directError.message
+            });
+            stats.failed++;
+            stats.errors.push(`Queue Failure ${disputeCase.id}: ${queueError.message}`);
+            await this.logError(disputeCase.id, disputeCase.seller_id, directError.message || queueError.message);
+          }
         }
       } catch (error: any) {
         logger.error(' [REFUND FILING] Error processing case', {
@@ -2142,6 +2164,31 @@ class RefundFilingWorker {
         error: error.message
       });
     }
+  }
+
+  private async executeDirectFallback(caseId: string, sellerId: string): Promise<FilingDispatchResult> {
+    logger.warn('[AGENT 7] Executing direct filing fallback', { caseId, sellerId });
+
+    await this.automator.executeFullSubmission(caseId, sellerId);
+
+    const { data: disputeCase, error } = await supabaseAdmin
+      .from('dispute_cases')
+      .select('filing_status, amazon_case_id')
+      .eq('id', caseId)
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    if (!disputeCase || String(disputeCase.filing_status || '').toLowerCase() !== 'filed') {
+      throw new Error(`Direct filing fallback did not reach a filed state for case ${caseId}`);
+    }
+
+    return {
+      id: String(disputeCase.amazon_case_id || `direct_${caseId}_${Date.now()}`),
+      mode: 'direct'
+    };
   }
 
   /**
