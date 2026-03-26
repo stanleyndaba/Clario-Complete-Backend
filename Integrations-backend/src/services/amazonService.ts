@@ -384,42 +384,17 @@ export class AmazonService {
  */
   async startOAuth(marketplaceId?: string, context?: any) {
     try {
-      // Check if we already have a refresh token
-      const existingRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
-      if (existingRefreshToken && existingRefreshToken.trim() !== '') {
-        logger.info('Refresh token already exists - OAuth may not be needed');
-      }
-
       // Get Application ID and Client ID
       const applicationId = process.env.AMAZON_APP_ID || process.env.AMAZON_APPLICATION_ID;
       const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
+      const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET;
 
-      if (!applicationId || applicationId.trim() === '') {
-        if (!clientId || clientId.trim() === '') {
-          logger.warn('Neither AMAZON_APP_ID nor AMAZON_CLIENT_ID configured');
-          return {
-            authUrl: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?code=mock_auth_code&state=mock_state`,
-            state: 'mock_state',
-            sandboxMode: true, // Mock URL is always sandbox-like
-            message: 'Mock OAuth URL (credentials not configured)'
-          };
-        }
-        logger.warn('AMAZON_APP_ID not configured - using legacy LWA flow');
+      if (!clientId || !clientSecret) {
+        throw new Error('Amazon OAuth client credentials are not configured.');
       }
 
       // Generate base state
-      let state = crypto.randomBytes(16).toString('hex');
-
-      // ✅ SMART STATE: Encode context directly into state to survive multi-instance swaps
-      // Format: random_hex:base64_json
-      if (context) {
-        try {
-          const contextStr = Buffer.from(JSON.stringify(context)).toString('base64');
-          state = `${state}:${contextStr}`;
-        } catch (err) {
-          logger.warn('Failed to encode context into OAuth state', { err });
-        }
-      }
+      const state = crypto.randomBytes(16).toString('hex');
 
       // Get redirect URI
       const redirectUri = process.env.AMAZON_REDIRECT_URI ||
@@ -485,12 +460,7 @@ export class AmazonService {
 
     try {
       if (!clientId || !clientSecret) {
-        logger.warn('Amazon credentials not configured, returning sandbox mock response');
-        return {
-          success: true,
-          message: "Sandbox authentication successful (mock mode)",
-          mockData: true
-        };
+        throw new Error('Amazon OAuth client credentials are not configured.');
       }
 
       logger.info('Exchanging authorization code for tokens', {
@@ -525,12 +495,8 @@ export class AmazonService {
         expiresIn: expires_in
       });
 
-      // Store refresh token for future use
-      // In production, you would store this in a database associated with the user
-      // For now, we'll use environment variable (this is for sandbox testing)
       if (refresh_token) {
         logger.info('Refresh token obtained - store this securely for future API calls');
-        // TODO: Store refresh_token in database with user_id
       }
 
       return {

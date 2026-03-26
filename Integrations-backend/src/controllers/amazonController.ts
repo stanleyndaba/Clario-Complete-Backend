@@ -6,19 +6,76 @@ import { diagnoseSandboxConnection } from '../utils/sandboxDiagnostics';
 import oauthStateStore from '../utils/oauthStateStore';
 import { syncJobManager } from '../services/syncJobManager';
 
+const UUID_IN_TEXT_REGEX = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+function extractTrustedAppUserId(req: Request): string | null {
+  const candidates = [
+    (req as any).user?.id,
+    (req as any).user?.user_id,
+    req.headers['x-user-id'],
+    req.headers['x-forwarded-user-id']
+  ];
+
+  const decodeToken = (token?: string) => {
+    if (!token) return;
+    try {
+      const jwt = require('jsonwebtoken');
+      const decoded = jwt.decode(token);
+      if (decoded && typeof decoded === 'object') {
+        candidates.push((decoded as any).sub, (decoded as any).id, (decoded as any).user_id);
+      }
+    } catch {
+      // Ignore malformed tokens; fail closed below if no UUID can be extracted.
+    }
+  };
+
+  decodeToken(req.cookies?.session_token);
+  if (req.headers.authorization?.startsWith('Bearer ')) {
+    decodeToken(req.headers.authorization.split(' ')[1]);
+  }
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || candidate.trim().length === 0) continue;
+    const extracted = candidate.match(UUID_IN_TEXT_REGEX)?.[0];
+    if (extracted) {
+      return extracted;
+    }
+  }
+
+  return null;
+}
+
+function resolveTenantSlug(req: Request): string | null {
+  const query = (req as any).query || {};
+  const tenantSlug = query.tenantSlug || query.tenant_slug || query.tenant;
+  return typeof tenantSlug === 'string' && tenantSlug.trim().length > 0 ? tenantSlug.trim() : null;
+}
+
 export const startAmazonOAuth = async (req: Request, res: Response) => {
   try {
-    // Get user ID from authenticated request (if available)
-    const userId = (req as any).user?.id || (req as any).user?.user_id || null;
+    const userId = extractTrustedAppUserId(req);
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        ok: false,
+        error: 'Authenticated app user is required to start Amazon OAuth.'
+      });
+    }
 
-    // Get marketplace ID and frontend URL from request (query param, header, or referer)
     const marketplaceId = (req as any).query?.marketplaceId as string;
-    const tenantSlug = (req as any).query?.tenant_slug as string || (req as any).query?.tenant as string;
+    const tenantSlug = resolveTenantSlug(req);
+    if (!tenantSlug) {
+      return res.status(400).json({
+        success: false,
+        ok: false,
+        error: 'tenantSlug is required to start Amazon OAuth.'
+      });
+    }
+
     const frontendUrlFromQuery = (req as any).query?.frontend_url as string;
     const frontendUrlFromHeader = (req as any).headers?.['x-frontend-url'] as string;
     const referer = (req as any).headers?.referer as string;
 
-    // Determine frontend URL: query param > header > referer > env var > default
     let frontendUrl = frontendUrlFromQuery ||
       frontendUrlFromHeader ||
       (req.headers.origin as string) ||
@@ -26,245 +83,154 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
       process.env.FRONTEND_URL ||
       'http://localhost:3000';
 
-    // Normalize frontend URL (remove trailing slash, handle paths)
     try {
       const url = new URL(frontendUrl);
       frontendUrl = `${url.protocol}//${url.host}`;
     } catch {
-      // If invalid URL, use default
       frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     }
 
-    // SECURITY: Disable OAuth bypass in production
     const isProduction = process.env.NODE_ENV === 'production';
-    const isSandboxMode = amazonService.isSandbox();
-
-    // Check if we already have a refresh token - if so, we can skip OAuth
-    // SECURITY: Only allow bypass in non-production environments
-    // In sandbox mode with mock generator, we can bypass even without refresh token
     const existingRefreshToken = process.env.AMAZON_SPAPI_REFRESH_TOKEN;
-    const canBypass = (existingRefreshToken && existingRefreshToken.trim() !== '') ||
-      (isSandboxMode && process.env.USE_MOCK_DATA_GENERATOR !== 'false');
+    const canBypass = !!(existingRefreshToken && existingRefreshToken.trim() !== '') && !isProduction;
 
-    if (canBypass && !isProduction) {
+    const { supabaseAdmin } = await import('../database/supabaseClient');
+    const { data: startTenant, error: startTenantError } = await supabaseAdmin
+      .from('tenants')
+      .select('id')
+      .eq('slug', tenantSlug)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (startTenantError || !startTenant?.id) {
+      return res.status(404).json({
+        success: false,
+        ok: false,
+        error: `Tenant "${tenantSlug}" was not found for Amazon OAuth.`
+      });
+    }
+
+    const { data: startMembership, error: startMembershipError } = await supabaseAdmin
+      .from('tenant_memberships')
+      .select('id')
+      .eq('tenant_id', startTenant.id)
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (startMembershipError || !startMembership?.id) {
+      return res.status(403).json({
+        success: false,
+        ok: false,
+        error: 'Authenticated app user is not an active member of the requested tenant.'
+      });
+    }
+
+    if (canBypass) {
       logger.info('Bypass flow available - checking if user wants to skip OAuth', {
-        isSandboxMode,
-        hasRefreshToken: !!(existingRefreshToken && existingRefreshToken.trim() !== ''),
-        useMockGenerator: process.env.USE_MOCK_DATA_GENERATOR !== 'false',
-        isProduction: false,
-        note: 'Bypass flow only available in non-production environments'
+        hasRefreshToken: true,
+        isProduction: false
       });
 
-      // Check if user wants to skip OAuth (bypass parameter)
-      // SECURITY: Only allow bypass in development/sandbox mode
-      // In sandbox mode with mock generator, bypass is always allowed (no refresh token needed)
-      const bypassOAuth = (req.query.bypass === 'true' ||
-        req.query.skip_oauth === 'true' ||
-        (isSandboxMode && process.env.USE_MOCK_DATA_GENERATOR !== 'false' && req.query.force_oauth !== 'true')) && !isProduction;
+      const bypassOAuth = (req.query.bypass === 'true' || req.query.skip_oauth === 'true') && !isProduction;
 
       if (bypassOAuth) {
         logger.info('Bypassing OAuth flow - validating existing refresh token', {
-          isSandboxMode,
-          reason: isSandboxMode ? 'Sandbox mode - validating token (recommended)' : 'User requested bypass'
+          reason: 'User requested bypass'
         });
 
-        // Get userId for token validation (check userIdMiddleware first)
-        const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || req.query.userId as string || 'demo-user';
-
-        // CRITICAL: Actually validate the connection by trying to refresh the access token
-        // In sandbox mode without refresh token, skip validation and proceed with mock generator
         let connectionValidated = false;
         let validationError: string | null = null;
 
-        // If no refresh token exists and we're in sandbox mode, skip validation
-        if (!existingRefreshToken && isSandboxMode && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
-          logger.info('No refresh token in sandbox mode - skipping validation, will use mock generator', { userId });
-          connectionValidated = true; // Proceed with bypass
-        } else {
-          // Try to validate if we have a refresh token
-          try {
-            // Try to get an access token - this will validate the refresh token
-            logger.info('Validating refresh token by attempting to get access token', { userId });
-            const accessToken = await amazonService.getAccessTokenForService(userId);
+        try {
+          logger.info('Validating refresh token by attempting to get access token', { userId });
+          const accessToken = await amazonService.getAccessTokenForService(userId);
 
-            if (accessToken) {
-              logger.info('✅ Token validation successful - refresh token is valid', { userId });
-              connectionValidated = true;
-
-              // Optionally test SP-API connection with a simple API call
-              // This ensures the connection actually works, not just that the token exists
-              try {
-                logger.info('Testing SP-API connection with a simple API call', { userId });
-                // Try to fetch inventory to verify connection works
-                const testResult = await amazonService.fetchInventory(userId);
-                logger.info('✅ SP-API connection test successful', {
-                  userId,
-                  hasData: !!testResult,
-                  dataType: typeof testResult,
-                  note: 'Connection to SP-API verified successfully'
-                });
-              } catch (apiError: any) {
-                // API call failed, but token is valid - log warning but continue
-                logger.warn('⚠️ SP-API connection test failed (token is valid but API call failed)', {
-                  error: apiError.message,
-                  userId,
-                  note: 'This may be normal if sandbox has no data or API is temporarily unavailable'
-                });
-                // Don't fail the bypass - token is valid even if API call fails
-              }
-            } else {
-              throw new Error('Failed to get access token - refresh token may be invalid');
-            }
-          } catch (tokenError: any) {
-            logger.error('❌ Token validation failed during bypass', {
-              error: tokenError.message,
-              userId,
-              stack: tokenError.stack
-            });
-            validationError = tokenError.message;
-            connectionValidated = false;
+          if (!accessToken) {
+            throw new Error('Failed to get access token - refresh token may be invalid');
           }
-        }
 
-        // If validation failed, handle based on environment
-        if (!connectionValidated) {
-          // In sandbox mode, proceed anyway (mock generator will handle missing credentials)
-          // This allows end-to-end testing without OAuth setup
-          if (isSandboxMode && process.env.USE_MOCK_DATA_GENERATOR !== 'false') {
-            logger.info('✅ Validation failed in sandbox mode - proceeding with mock data generator', {
-              userId,
-              error: validationError,
-              note: 'Mock generator will activate when sync triggers'
-            });
-
-            // Proceed with bypass anyway - sync will trigger and mock generator will activate
-            // This is the desired behavior for sandbox testing without credentials
-            connectionValidated = true; // Override to proceed
-
-            logger.info('Proceeding with bypass flow in sandbox mode (mock generator will handle data)', {
-              userId,
-              isSandboxMode,
-              useMockGenerator: true
-            });
-          } else {
-            // In production or without mock generator, fall back to OAuth
-            logger.warn('Refresh token validation failed - falling back to OAuth flow', {
-              userId,
-              error: validationError,
-              isSandboxMode,
-              useMockGenerator: process.env.USE_MOCK_DATA_GENERATOR !== 'false'
-            });
-
-            // Set CORS headers
-            const origin = req.headers.origin;
-            if (origin) {
-              res.header('Access-Control-Allow-Origin', origin);
-              res.header('Access-Control-Allow-Credentials', 'true');
-            }
-
-            // Generate OAuth URL as fallback
-            const oauthResult = await amazonService.startOAuth();
-
-            return res.json({
-              success: false,
-              ok: false,
-              bypassed: false,
-              error: 'Refresh token is invalid or expired',
-              message: 'Please complete OAuth flow to reconnect your Amazon account',
-              authUrl: oauthResult.authUrl,
-              redirectTo: oauthResult.authUrl,
-              validationError: validationError
-            });
-          }
-        }
-
-        // Validation succeeded (or overridden in sandbox mode) - proceed with bypass
-        if (connectionValidated) {
-          logger.info('✅ Proceeding with bypass flow', {
+          logger.info('✅ Token validation successful - refresh token is valid', { userId });
+          connectionValidated = true;
+        } catch (tokenError: any) {
+          logger.error('❌ Token validation failed during bypass', {
+            error: tokenError.message,
             userId,
-            sandboxMode: isSandboxMode,
-            useMockGenerator: process.env.USE_MOCK_DATA_GENERATOR !== 'false',
-            note: isSandboxMode
-              ? 'Sandbox mode: Mock generator will activate when sync triggers'
-              : 'Connection validated - proceeding with sync'
+            stack: tokenError.stack
+          });
+          validationError = tokenError.message;
+        }
+
+        if (!connectionValidated) {
+          logger.warn('Refresh token validation failed - falling back to OAuth flow', {
+            userId,
+            error: validationError
           });
 
-          // Try to trigger sync if we have a valid userId
-          // In sandbox mode with mock generator, this will activate mock data even without credentials
-          if (userId && userId !== 'default-user' && userId !== 'demo-user') {
-            // Trigger sync in background - don't block the response
-            // In sandbox mode, this will activate mock generator when API calls fail
-            syncJobManager.startSync(userId).catch((syncError: any) => {
-              logger.warn('Failed to trigger automatic sync after bypass', {
-                userId,
-                error: syncError.message,
-                // Don't fail the bypass if sync fails - it's a background operation
-              });
-            });
-
-            logger.info('✅ Triggered automatic sync after bypass', {
-              userId,
-              sandboxMode: isSandboxMode,
-              useMockGenerator: process.env.USE_MOCK_DATA_GENERATOR !== 'false',
-              note: isSandboxMode
-                ? 'Sync will activate mock generator when credentials are missing'
-                : 'Sync started in background'
-            });
-          } else {
-            logger.info('No valid userId for sync trigger in bypass flow - sync will trigger when recoveries endpoint is called', {
-              userId: userId || 'not provided'
-            });
+          const origin = req.headers.origin;
+          if (origin) {
+            res.header('Access-Control-Allow-Origin', origin);
+            res.header('Access-Control-Allow-Credentials', 'true');
           }
+
+          const oauthResult = await amazonService.startOAuth(marketplaceId, {
+            userId,
+            frontendUrl,
+            tenantSlug,
+            marketplaceId
+          });
+
+          return res.json({
+            success: false,
+            ok: false,
+            bypassed: false,
+            error: 'Refresh token is invalid or expired',
+            message: 'Please complete OAuth flow to reconnect your Amazon account',
+            authUrl: oauthResult.authUrl,
+            redirectTo: oauthResult.authUrl,
+            validationError
+          });
         }
 
-        // Determine redirect URL based on frontend URL
-        // Frontend expects /sync-status after bypass (per AmazonConnect component)
+        logger.info('✅ Proceeding with bypass flow', {
+          userId,
+          note: 'Connection validated successfully'
+        });
+
+        syncJobManager.startSync(userId).catch((syncError: any) => {
+          logger.warn('Failed to trigger automatic sync after bypass', {
+            userId,
+            error: syncError.message,
+          });
+        });
+
         let redirectUrl: string;
         try {
           const frontendUrlObj = new URL(frontendUrl);
-          // Use /sync-status as the redirect path (frontend expects this)
           redirectUrl = `${frontendUrlObj.protocol}//${frontendUrlObj.host}/sync-status?amazon_connected=true&message=${encodeURIComponent('Amazon connection verified and ready')}`;
         } catch {
-          // If URL parsing fails, construct simple redirect
           redirectUrl = `${frontendUrl}/sync-status?amazon_connected=true&message=${encodeURIComponent('Amazon connection verified and ready')}`;
         }
 
-        // Set CORS headers explicitly for JSON response
         const origin = req.headers.origin;
         if (origin) {
           res.header('Access-Control-Allow-Origin', origin);
           res.header('Access-Control-Allow-Credentials', 'true');
         }
 
-        // Return JSON response with redirect URL (frontend will handle navigation)
-        // This works for both fetch requests and direct browser navigation
         return res.json({
           success: true,
           ok: true,
           bypassed: true,
-          connectionVerified: connectionValidated,
-          message: isSandboxMode && !connectionValidated
-            ? 'Amazon connection ready for testing (mock data will be used)'
-            : 'Amazon connection verified and ready',
-          redirectUrl: redirectUrl,
-          sandboxMode: isSandboxMode,
-          useMockGenerator: process.env.USE_MOCK_DATA_GENERATOR !== 'false',
-          note: isSandboxMode
-            ? (connectionValidated
-              ? 'Sandbox mode: Connection validated successfully'
-              : 'Sandbox mode: Proceeding without validation - mock generator will activate')
-            : 'Connection validated successfully'
+          connectionVerified: true,
+          message: 'Amazon connection verified and ready',
+          redirectUrl,
+          sandboxMode: false,
+          useMockGenerator: false,
+          note: 'Connection validated successfully'
         });
       }
-    }
-
-    // If we reach here, user wants OAuth flow (or no refresh token exists)
-    // In sandbox mode, warn that bypass is recommended
-    if (isSandboxMode && existingRefreshToken) {
-      logger.warn('OAuth flow requested in sandbox mode, but refresh token exists', {
-        suggestion: 'Consider using bypass flow (?bypass=true) for sandbox testing',
-        note: 'OAuth flow in sandbox requires proper Security Profile configuration in Amazon Developer Console'
-      });
     }
 
     logger.info('Starting OAuth flow', {
@@ -291,11 +257,11 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
 
     // Store frontend URL and user ID with OAuth state for later redirect
     if (result.state) {
-      await oauthStateStore.setState(result.state, userId || 'anonymous', frontendUrl, tenantSlug, marketplaceId);
+      await oauthStateStore.setState(result.state, userId, frontendUrl, tenantSlug, marketplaceId);
       logger.info('Stored context with OAuth state', {
         state: result.state,
         frontendUrl,
-        userId: userId || 'anonymous',
+        userId,
         tenantSlug,
         marketplaceId
       });
@@ -312,7 +278,7 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
       ok: true,
       authUrl: result.authUrl,
       redirectTo: result.authUrl, // Alias for frontend convenience
-      message: result.message || 'OAuth flow initiated',
+      message: 'OAuth flow initiated',
       state: result.state // Include state for reference
     });
   } catch (error: any) {
@@ -355,13 +321,6 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       const body = req.body || {};
       code = body.spapi_oauth_code || body.code || req.query.spapi_oauth_code || req.query.code;
       state = body.state || body.amazon_state || req.query.state || req.query.amazon_state;
-    }
-
-    // Check if we should allow mock/sandbox auth if code is missing
-    const isSandboxPath = req.path.includes('sandbox') || req.path.includes('test');
-    if (!code && isSandboxPath) {
-      logger.info('Sandbox callback reached without code, using mock_auth_code');
-      code = 'mock_auth_code';
     }
 
     if (!code) {
@@ -442,30 +401,25 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     let syncStartMessage = '';
     let syncIdForResponse: string | null = null;
 
-    // Retrieve stored context from OAuth state EARLY to provide context for fallbacks
-    if (state) {
-      try {
-        const storedState = await oauthStateStore.get(state);
-        if (storedState) {
-          frontendUrl = storedState.frontendUrl || frontendUrl;
-          marketplaceIdFromState = storedState.marketplaceId;
-          tenantSlug = storedState.tenantSlug || '';
-          userId = storedState.userId;
-
-          logger.info('Retrieved context from OAuth state early', {
-            tenantSlug,
-            userId,
-            marketplaceId: marketplaceIdFromState
-          });
-        }
-      } catch (err) {
-        logger.error('Error retrieving OAuth state context early', { error: err });
-      }
+    if (!state) {
+      throw new Error('Missing OAuth state. Connection could not be bound to a trusted user and tenant context.');
     }
 
-    // MOCK MODE: For testing without real Amazon credentials
-    // If code is "mock_auth_code" or "test_code", use mock responses
-    const isMockMode = code === 'mock_auth_code' || code === 'test_code' || process.env.ENABLE_MOCK_OAUTH === 'true';
+    const storedState = await oauthStateStore.get(state);
+    if (!storedState?.userId || !storedState.tenantSlug) {
+      throw new Error('OAuth state is invalid or expired. Please restart the Amazon connection flow.');
+    }
+
+    frontendUrl = storedState.frontendUrl || frontendUrl;
+    marketplaceIdFromState = storedState.marketplaceId;
+    tenantSlug = storedState.tenantSlug;
+    userId = storedState.userId;
+
+    logger.info('Retrieved trusted context from OAuth state', {
+      tenantSlug,
+      userId,
+      marketplaceId: marketplaceIdFromState
+    });
 
     try {
       // Step 1: Validate OAuth response
@@ -473,163 +427,116 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         throw new Error('Missing OAuth authorization code');
       }
 
-      // Step 2: Exchange code for tokens (or use mock in test mode)
-      if (isMockMode) {
-        logger.info('🧪 MOCK MODE: Using mock OAuth responses for testing');
-        result = {
-          success: true,
-          message: 'Mock OAuth authentication successful',
-          data: {
-            access_token: 'mock_access_token_' + Date.now(),
-            refresh_token: 'mock_refresh_token_' + Date.now(),
-            token_type: 'Bearer',
-            expires_in: 3600
-          }
-        };
-      } else {
-        result = await amazonService.handleCallback(code, state);
-      }
+      // Step 2: Exchange code for real tokens
+      result = await amazonService.handleCallback(code, state);
       if (!result.data?.access_token) {
         throw new Error('Token exchange failed - no access token received');
       }
 
       const { access_token, refresh_token, expires_in } = result.data;
 
-      // Step 3: Get seller_id / profile from Amazon SP-API (or use mock in test mode)
+      // Step 3: Get real seller identity from Amazon SP-API
+      profile = await amazonService.getSellerProfile(access_token);
 
-      if (isMockMode) {
-        logger.info('🧪 MOCK MODE: Using mock seller profile');
-        profile = {
-          sellerId: `TEST_SELLER_${Date.now()}`,
-          marketplaces: ['ATVPDKIKX0DER'], // US marketplace
-          companyName: 'Test Company LLC',
-          sellerName: 'Test Seller'
-        };
-      } else {
-        try {
-          profile = await amazonService.getSellerProfile(access_token);
-        } catch (profileError: any) {
-          logger.warn('⚠️ Non-fatal: Failed to fetch seller profile from SP-API. Using fallback.', {
-            error: profileError.message,
-            status: profileError.response?.status
-          });
-
-          // Use fallback profile based on state or placeholder
-          // We must have a sellerId to proceed with database entries
-          // We'll use a sanitized version of the userId or a generic prefix
-          // In Draft mode, the user might not have granted permission to the Sellers API 
-          // but we still want to store the tokens.
-          profile = {
-            sellerId: `UNRESOLVED_${userId || Date.now()}`,
-            marketplaces: [marketplaceIdFromState || process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER'],
-            companyName: 'Amazon Seller',
-            sellerName: 'Amazon Seller'
-          };
-        }
-      }
-
-      // Critical: Ensure profile is available before proceeding to Step 4
-      if (!profile) {
+      if (!profile?.sellerId) {
         throw new Error('Seller profile initialization failed');
       }
 
       // Sync top-level sellerId for logging and response
       sellerId = profile.sellerId;
 
-      // Step 4: Upsert user/tenant in Supabase (use supabaseAdmin to bypass RLS)
-      const { supabaseAdmin } = await import('../database/supabaseClient');
+      // Step 4: Bind the connection to the authenticated app user + tenant only
+      const { supabaseAdmin, convertUserIdToUuid } = await import('../database/supabaseClient');
+      const authenticatedUserId = convertUserIdToUuid(userId);
+      userId = authenticatedUserId;
       let userEmail: string | null = null;
-
       const placeholderEmail = `${profile.sellerId}@amazon.seller`.toLowerCase();
 
-      // Sanitize userId if it's not a valid UUID (e.g. from state or session)
-      const { convertUserIdToUuid } = await import('../database/supabaseClient');
-      const sanitizedUserId = userId ? convertUserIdToUuid(userId) : null;
-
-      // Try to find existing user by seller_id OR by email OR by sanitized userId
-      let { data: existingUser } = await supabaseAdmin
-        .from('users')
-        .select('id, seller_id, amazon_seller_id, company_name, email, tenant_id')
-        .or(`seller_id.eq.${profile.sellerId},amazon_seller_id.eq.${profile.sellerId},email.eq.${placeholderEmail}${sanitizedUserId ? `,id.eq.${sanitizedUserId}` : ''}`)
+      const { data: tenantRecord, error: tenantError } = await supabaseAdmin
+        .from('tenants')
+        .select('id, slug')
+        .eq('slug', tenantSlug)
+        .is('deleted_at', null)
         .maybeSingle();
 
-      // Second-chance lookup by email only if broader lookup failed (case sensitivity or PostgREST 'or' edge cases)
-      if (!existingUser) {
-        const { data: emailMatch } = await supabaseAdmin
-          .from('users')
-          .select('id, seller_id, amazon_seller_id, company_name, email, tenant_id')
-          .eq('email', placeholderEmail)
-          .maybeSingle();
-        if (emailMatch) existingUser = emailMatch;
+      if (tenantError || !tenantRecord?.id) {
+        throw new Error(`Unable to resolve tenant for OAuth callback slug "${tenantSlug}".`);
       }
 
-      let tenantIdToUse = existingUser?.tenant_id || null;
+      const tenantIdToUse = tenantRecord.id;
+
+      const { data: membership, error: membershipError } = await supabaseAdmin
+        .from('tenant_memberships')
+        .select('id')
+        .eq('tenant_id', tenantIdToUse)
+        .eq('user_id', authenticatedUserId)
+        .eq('is_active', true)
+        .is('deleted_at', null)
+        .maybeSingle();
+
+      if (membershipError || !membership?.id) {
+        throw new Error('Authenticated user is not an active member of the tenant requested for Amazon OAuth.');
+      }
+
+      const { data: conflictingUser, error: conflictingUserError } = await supabaseAdmin
+        .from('users')
+        .select('id')
+        .or(`seller_id.eq.${profile.sellerId},amazon_seller_id.eq.${profile.sellerId}`)
+        .neq('id', authenticatedUserId)
+        .maybeSingle();
+
+      if (conflictingUserError) {
+        throw new Error(`Failed to validate seller ownership: ${conflictingUserError.message}`);
+      }
+
+      if (conflictingUser?.id) {
+        throw new Error('This Amazon seller account is already linked to a different authenticated app user.');
+      }
+
+      const { data: existingUser, error: existingUserError } = await supabaseAdmin
+        .from('users')
+        .select('id, company_name, email, tenant_id')
+        .eq('id', authenticatedUserId)
+        .maybeSingle();
+
+      if (existingUserError) {
+        throw new Error(`Failed to load authenticated app user for Amazon OAuth: ${existingUserError.message}`);
+      }
 
       if (existingUser?.id) {
-        userId = existingUser.id;
-        userEmail = existingUser.email || `${profile.sellerId}@amazon.seller`;
-        // Update existing user with latest info
-        await supabaseAdmin
+        userEmail = existingUser.email || placeholderEmail;
+
+        const { error: updateUserError } = await supabaseAdmin
           .from('users')
           .update({
-            company_name: profile.companyName || existingUser.company_name || null,
-            updated_at: new Date().toISOString(),
-            // Update seller_id if column exists and is different
-            ...(existingUser.seller_id !== profile.sellerId && { seller_id: profile.sellerId }),
-            ...(existingUser.amazon_seller_id !== profile.sellerId && { amazon_seller_id: profile.sellerId })
+            company_name: profile.companyName || profile.sellerName || existingUser.company_name || null,
+            seller_id: profile.sellerId,
+            amazon_seller_id: profile.sellerId,
+            tenant_id: tenantIdToUse,
+            last_active_tenant_id: tenantIdToUse,
+            updated_at: new Date().toISOString()
           })
-          .eq('id', userId);
+          .eq('id', authenticatedUserId);
 
-        logger.info('Updated existing user', { userId, sellerId: profile.sellerId });
+        if (updateUserError) {
+          throw new Error(`Failed to bind Amazon seller to authenticated user: ${updateUserError.message}`);
+        }
+
+        logger.info('Bound Amazon seller to authenticated app user', {
+          userId: authenticatedUserId,
+          tenantId: tenantIdToUse,
+          sellerId: profile.sellerId
+        });
       } else {
-        // Step 4a: Resolve or Create Tenant
-        if (!tenantIdToUse) tenantIdToUse = '00000000-0000-0000-0000-000000000001'; // Default fallback
-
-        // 1. Try to find tenant by slug from state
-        if (tenantSlug) {
-          const { data: t } = await supabaseAdmin
-            .from('tenants')
-            .select('id')
-            .eq('slug', tenantSlug)
-            .maybeSingle();
-          if (t) tenantIdToUse = t.id;
-        }
-
-        // 2. If no tenant found by slug, try to find or create one for this seller
-        if (tenantIdToUse === '00000000-0000-0000-0000-000000000001') {
-          const sellerSlug = `seller-${profile.sellerId.toLowerCase()}`.substring(0, 50);
-          const { data: st } = await supabaseAdmin
-            .from('tenants')
-            .select('id')
-            .eq('slug', sellerSlug)
-            .maybeSingle();
-
-          if (st) {
-            tenantIdToUse = st.id;
-          } else {
-            // Create new tenant
-            const { data: nt } = await supabaseAdmin
-              .from('tenants')
-              .insert({
-                name: profile.companyName || profile.sellerName || 'Amazon Seller',
-                slug: sellerSlug,
-                plan: 'free',
-                status: 'active'
-              })
-              .select('id')
-              .single();
-            if (nt) tenantIdToUse = nt.id;
-          }
-        }
-
-        // Create new user record
         const { data: newUser, error: createErr } = await supabaseAdmin
           .from('users')
           .insert({
+            id: authenticatedUserId,
             email: placeholderEmail,
             amazon_seller_id: profile.sellerId,
             seller_id: profile.sellerId,
             tenant_id: tenantIdToUse,
+            last_active_tenant_id: tenantIdToUse,
             company_name: profile.companyName || profile.sellerName || null,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
@@ -637,42 +544,16 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           .select('id, email')
           .single();
 
-        if (createErr) {
-          // Final fallback: If insert still fails with duplicate, try one last fetch
-          if (createErr.code === '23505') {
-            const { data: lastChanceUser } = await supabaseAdmin
-              .from('users')
-              .select('id, email')
-              .eq('email', placeholderEmail)
-              .single();
-            if (lastChanceUser) {
-              userId = lastChanceUser.id;
-              userEmail = lastChanceUser.email;
-            } else {
-              throw new Error(`Failed to create user (collision): ${createErr.message}`);
-            }
-          } else {
-            throw new Error(`Failed to create user: ${createErr.message}`);
-          }
-        } else if (newUser?.id) {
-          userId = newUser.id;
-          userEmail = newUser.email || placeholderEmail;
+        if (createErr || !newUser?.id) {
+          throw new Error(`Failed to create authenticated app user binding for Amazon OAuth: ${createErr?.message || 'Unknown user create error'}`);
         }
 
-        // Step 4b: Ensure membership exists for the new user
-        await supabaseAdmin
-          .from('tenant_memberships')
-          .upsert({
-            tenant_id: tenantIdToUse,
-            user_id: userId,
-            role: 'owner',
-            is_active: true,
-            accepted_at: new Date().toISOString()
-          }, {
-            onConflict: 'tenant_id,user_id'
-          });
-
-        logger.info('Created new user and linked to tenant', { userId, tenantId: tenantIdToUse, sellerId: profile.sellerId });
+        userEmail = newUser.email || placeholderEmail;
+        logger.info('Created authenticated app user binding for Amazon seller', {
+          userId: authenticatedUserId,
+          tenantId: tenantIdToUse,
+          sellerId: profile.sellerId
+        });
       }
 
       // Step 4c: Resolve or Create Store (Multi-Store Control Plane)
@@ -712,8 +593,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
             .single();
 
           if (storeErr) {
-            logger.error('Failed to create store during OAuth', { error: storeErr, sellerId: profile.sellerId });
-            // Don't fail the whole flow, but we won't have a storeId
+            throw new Error(`Failed to create store during OAuth: ${storeErr.message || 'Unknown store create error'}`);
           } else if (newStore) {
             storeId = newStore.id;
             logger.info('Created new store for seller', { storeId, sellerId: profile.sellerId });
@@ -721,6 +601,11 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         }
       } catch (storeResolverError: any) {
         logger.error('Error resolving store during OAuth', { error: storeResolverError.message });
+        throw storeResolverError;
+      }
+
+      if (!storeId) {
+        throw new Error('Store binding is required before Amazon tokens can be persisted.');
       }
 
       // Step 5: Encrypt tokens and save using tokenManager
@@ -740,64 +625,52 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
 
       // Step 6: Create evidence source for the user (Agent 4)
       try {
-        const { convertUserIdToUuid } = await import('../database/supabaseClient');
         const safeUserId = convertUserIdToUuid(userId);
-
-        const { error: evidenceError } = await supabaseAdmin
+        const { data: existingSource, error: existingSourceError } = await supabaseAdmin
           .from('evidence_sources')
-          .upsert({
-            seller_id: profile.sellerId, // evidence_sources uses seller_id (TEXT)
-            user_id: safeUserId,         // PG UUID safe injection
-            provider: 'amazon',
-            status: 'connected',
-            display_name: profile.companyName || `Amazon Store (${storeId || 'Primary'})`,
-            tenant_id: tenantIdToUse,
-            store_id: storeId, // Link to the specific store
-            metadata: {
-              marketplaces: profile.marketplaces,
-              seller_name: profile.sellerName,
-              company_name: profile.companyName
-            },
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          }, {
-            onConflict: 'seller_id,provider,store_id'
+          .select('id')
+          .eq('tenant_id', tenantIdToUse)
+          .eq('user_id', safeUserId)
+          .eq('provider', 'amazon')
+          .eq('store_id', storeId)
+          .maybeSingle();
+
+        if (existingSourceError) {
+          throw new Error(existingSourceError.message);
+        }
+
+        const sourcePayload = {
+          seller_id: profile.sellerId,
+          user_id: safeUserId,
+          provider: 'amazon',
+          status: 'connected',
+          display_name: profile.companyName || `Amazon Store (${storeId})`,
+          tenant_id: tenantIdToUse,
+          store_id: storeId,
+          metadata: {
+            marketplaces: profile.marketplaces,
+            seller_name: profile.sellerName,
+            company_name: profile.companyName
+          },
+          updated_at: new Date().toISOString()
+        };
+
+        const sourceQuery = existingSource?.id
+          ? supabaseAdmin.from('evidence_sources').update(sourcePayload).eq('id', existingSource.id)
+          : supabaseAdmin.from('evidence_sources').insert({
+            ...sourcePayload,
+            created_at: new Date().toISOString()
           });
 
+        const { error: evidenceError } = await sourceQuery;
         if (evidenceError) {
-          // If error is column mismatch (store_id doesn't exist yet), retry without store_id
-          if (evidenceError.code === 'PGRST204' || evidenceError.message?.includes('store_id')) {
-            logger.warn('⚠️ [OAUTH] Column mismatch in evidence_sources, retrying legacy upsert', { userId });
-            await supabaseAdmin
-              .from('evidence_sources')
-              .upsert({
-                seller_id: profile.sellerId,
-                user_id: safeUserId,
-                provider: 'amazon',
-                display_name: profile.companyName || `Amazon Store`,
-                status: 'connected',
-                tenant_id: tenantIdToUse,
-                metadata: {
-                  marketplaces: profile.marketplaces,
-                  seller_name: profile.sellerName,
-                  company_name: profile.companyName
-                },
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
-              }, {
-                onConflict: 'seller_id,provider'
-              });
-          } else {
-            logger.warn('Failed to create evidence source (non-critical)', {
-              error: evidenceError.message,
-              sellerId: profile.sellerId
-            });
-          }
-        } else {
-          logger.info('Created evidence source for user', { userId, sellerId: profile.sellerId });
+          throw new Error(evidenceError.message);
         }
+
+        logger.info('Created evidence source for user', { userId, sellerId: profile.sellerId, storeId });
       } catch (sourceEx: any) {
         logger.error('Error in evidence source linking step', { error: sourceEx.message, userId });
+        throw sourceEx;
       }
 
       // Step 7: Start Agent 2 sync. Prefer durable BullMQ enqueue, but fall back to

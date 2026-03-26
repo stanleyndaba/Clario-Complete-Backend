@@ -2,7 +2,11 @@
  * OAuth State Store
  * 
  * Stores OAuth state with associated frontend URL for dynamic redirect handling.
- * Supports both in-memory (development) and Redis (production) storage.
+ * Supports both in-memory and Redis persistence.
+ *
+ * Truth rule:
+ * OAuth callback context must come from stored state only.
+ * Unsigned URL-decoded fallback state is intentionally not supported.
  */
 
 import logger from './logger';
@@ -107,7 +111,7 @@ class InMemoryOAuthStateStore {
   }
 
   /**
-   * Get OAuth state data
+   * Get OAuth state data from trusted storage only.
    */
   async get(state: string): Promise<OAuthStateData | null> {
     // 1. Try Memory first
@@ -132,44 +136,15 @@ class InMemoryOAuthStateStore {
       }
     }
 
-    // 3. Fallback: Try decoding as "Smart State" (formatted as random_hex:base64_json)
-    if (!data && state && typeof state === 'string' && state.includes(':')) {
-      try {
-        const parts = state.split(':');
-        if (parts.length >= 2) {
-          const contextBase64 = parts[1];
-          const decoded = JSON.parse(Buffer.from(contextBase64, 'base64').toString());
-          if (decoded && (decoded.frontendUrl || decoded.userId)) {
-            logger.info('OAuth state recovered from Smart State encoding', {
-              hasFrontendUrl: !!decoded.frontendUrl,
-              userId: decoded.userId
-            });
-            data = {
-              ...decoded,
-              timestamp: Date.now() // Assume fresh if just decoded from the URL
-            };
-            // Optionally cache it for faster subsequent lookups during this session
-            this.states.set(state, data);
-          }
-        }
-      } catch (err) {
-        // Not a valid smart state or malformed encoding, ignore
-      }
-    }
-
     if (!data) {
       return null;
     }
 
-    // Check if expired (except for Smart States which carry their own context)
-    // For Smart States, we trust the encoded data as long as the handshake is valid
-    if (!state.includes(':')) {
-      const age = Date.now() - data.timestamp;
-      if (age > this.TTL_MS) {
-        await this.delete(state);
-        logger.warn('OAuth state expired', { state, age });
-        return null;
-      }
+    const age = Date.now() - data.timestamp;
+    if (age > this.TTL_MS) {
+      await this.delete(state);
+      logger.warn('OAuth state expired', { state, age });
+      return null;
     }
 
     return data;

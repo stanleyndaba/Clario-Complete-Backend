@@ -38,6 +38,12 @@ interface ProviderStatus {
   has_data: boolean;
   account_email?: string;
   scopes?: string[];
+  token_present?: boolean;
+  token_not_expired?: boolean;
+  tenant_bound?: boolean;
+  seller_resolved?: boolean;
+  store_bound?: boolean;
+  connection_truth_basis?: 'stored_token_and_binding';
 }
 
 const DEFAULT_FILTERS: EvidenceFilters = {
@@ -267,11 +273,19 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       }
     };
 
+    let amazonTokenPresent = false;
+    let amazonTokenNotExpired = false;
+    let amazonTenantBound = false;
+    let amazonSellerResolved = false;
+    let amazonStoreBound = false;
+    let amazonStoreId: string | null = null;
+    let amazonConnectionErrorMessage: string | undefined;
+
     // Check Amazon connection for the resolved tenant only.
     try {
       const { data: amazonToken, error: tokenError } = await adminClient
         .from('tokens')
-        .select('id, expires_at, updated_at')
+        .select('id, tenant_id, store_id, expires_at, updated_at')
         .eq('user_id', safeUserId)
         .eq('provider', 'amazon')
         .eq('tenant_id', tenant.id)
@@ -293,11 +307,14 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         } else {
           throw tokenError;
         }
-      } else if (amazonToken && (!amazonToken.expires_at || new Date(amazonToken.expires_at) > new Date())) {
-        response.amazon_connected = true;
-        response.providers.amazon.connected = true;
-        response.providers.amazon.auth_valid = true;
-        response.providers.amazon.ingestion_state = 'unverified';
+      } else if (amazonToken) {
+        amazonTokenPresent = true;
+        amazonTokenNotExpired = !amazonToken.expires_at || new Date(amazonToken.expires_at) > new Date();
+        amazonTenantBound = amazonToken.tenant_id === tenant.id;
+        amazonStoreId = amazonToken.store_id || null;
+        response.providers.amazon.token_present = true;
+        response.providers.amazon.token_not_expired = amazonTokenNotExpired;
+        response.providers.amazon.tenant_bound = amazonTenantBound;
       }
     } catch (amazonError) {
       logger.debug('Error checking Amazon connection', { error: amazonError });
@@ -326,7 +343,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         .from('evidence_documents')
         .select('provider, created_at')
         .eq('tenant_id', tenant.id)
-        .or(`user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`);
+        .eq('user_id', safeUserId);
 
       for (const doc of providerDocuments || []) {
         const key = (doc.provider || '').toLowerCase();
@@ -343,7 +360,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         .from('evidence_sources')
         .select('id, provider, status, last_sync_at, account_email, permissions, seller_id, display_name, metadata')
         .eq('tenant_id', tenant.id)
-        .or(`user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`);
+        .eq('user_id', safeUserId);
 
       if (sourcesError) {
         const isTenantColumnIssue = sourcesError.code === 'PGRST204' ||
@@ -365,7 +382,6 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
 
         const amazonSource = productEvidenceSources.find(source => source.provider === 'amazon' && source.status === 'connected');
         if (amazonSource) {
-          response.amazon_connected = true;
           response.amazon_account = {
             seller_id: amazonSource.seller_id || undefined,
             display_name: amazonSource.display_name || undefined,
@@ -586,30 +602,64 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       logger.warn('Failed to reconcile docs providers from tokens', { error: tokenFallbackError });
     }
 
-    // Fallback: if Amazon is connected via tenant-scoped tokens but no Amazon
-    // evidence_source exists, derive account identity from the tenant-bound user row.
-    if (response.amazon_connected && !response.amazon_account) {
-      try {
-        const { data: tenantUser, error: tenantUserError } = await adminClient
-          .from('users')
-          .select('amazon_seller_id, seller_id, company_name, email')
-          .eq('id', safeUserId)
-          .eq('tenant_id', tenant.id)
-          .maybeSingle();
+    try {
+      const { data: tenantUser, error: tenantUserError } = await adminClient
+        .from('users')
+        .select('amazon_seller_id, seller_id, company_name, email')
+        .eq('id', safeUserId)
+        .eq('tenant_id', tenant.id)
+        .maybeSingle();
 
-        if (!tenantUserError && tenantUser) {
+      if (!tenantUserError && tenantUser) {
+        amazonSellerResolved = !!(tenantUser.amazon_seller_id || tenantUser.seller_id);
+        response.providers.amazon.seller_resolved = amazonSellerResolved;
+
+        if (!response.amazon_account) {
           response.amazon_account = {
             seller_id: tenantUser.amazon_seller_id || tenantUser.seller_id || undefined,
             display_name: tenantUser.company_name || undefined,
             email: tenantUser.email || undefined
           };
         }
-      } catch (tenantUserLookupError) {
-        logger.warn('Failed to derive Amazon account identity from tenant-bound user row', {
-          error: tenantUserLookupError,
+      }
+    } catch (tenantUserLookupError) {
+      logger.warn('Failed to derive Amazon account identity from tenant-bound user row', {
+        error: tenantUserLookupError,
+        userId,
+        tenantId: tenant.id,
+        tenantSlug
+      });
+    }
+
+    if (amazonStoreId) {
+      try {
+        const { data: storeRow, error: storeError } = await adminClient
+          .from('stores')
+          .select('id, seller_id, marketplace')
+          .eq('id', amazonStoreId)
+          .eq('tenant_id', tenant.id)
+          .is('deleted_at', null)
+          .maybeSingle();
+
+        if (!storeError && storeRow?.id) {
+          amazonStoreBound = true;
+          response.providers.amazon.store_bound = true;
+
+          if (!response.amazon_account?.seller_id && storeRow.seller_id) {
+            response.amazon_account = {
+              seller_id: storeRow.seller_id,
+              display_name: response.amazon_account?.display_name,
+              email: response.amazon_account?.email
+            };
+          }
+        }
+      } catch (storeLookupError) {
+        logger.warn('Failed to validate Amazon store binding for integration status', {
+          error: storeLookupError,
           userId,
           tenantId: tenant.id,
-          tenantSlug
+          tenantSlug,
+          storeId: amazonStoreId
         });
       }
     }
@@ -618,15 +668,49 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       .filter(([provider]) => provider !== 'amazon' && response.providers[provider].connected);
     response.docs_connected = connectedNonAmazonProviders.length > 0;
 
-    response.providers.amazon.auth_valid = response.amazon_connected;
-    response.providers.amazon.needs_reconnect = response.providers.amazon.connected && !response.providers.amazon.auth_valid;
-    response.providers.amazon.ingestion_state = response.providers.amazon.connected
-      ? (response.providers.amazon.auth_valid ? 'unverified' : 'failed')
-      : 'disconnected';
+    const amazonConnectionReady =
+      amazonTokenPresent &&
+      amazonTokenNotExpired &&
+      amazonTenantBound &&
+      amazonSellerResolved &&
+      amazonStoreBound;
 
-    // Product connection truth for evidence providers comes from evidence_sources only.
+    if (!amazonTokenPresent) {
+      amazonConnectionErrorMessage = undefined;
+    } else if (!amazonTokenNotExpired) {
+      amazonConnectionErrorMessage = 'Amazon token is expired and must be refreshed through reconnect.';
+    } else if (!amazonTenantBound) {
+      amazonConnectionErrorMessage = 'Amazon token is not bound to the active tenant.';
+    } else if (!amazonSellerResolved) {
+      amazonConnectionErrorMessage = 'Amazon seller identity is not resolved on the authenticated app user.';
+    } else if (!amazonStoreBound) {
+      amazonConnectionErrorMessage = 'Amazon token is not bound to a valid store.';
+    }
 
-    response.agent2_ready = response.amazon_connected;
+    response.amazon_connected = amazonConnectionReady;
+    response.providers.amazon.connected = amazonConnectionReady;
+    response.providers.amazon.auth_valid = amazonConnectionReady;
+    response.providers.amazon.needs_reconnect = amazonTokenPresent && !amazonTokenNotExpired;
+    response.providers.amazon.token_present = amazonTokenPresent;
+    response.providers.amazon.token_not_expired = amazonTokenNotExpired;
+    response.providers.amazon.tenant_bound = amazonTenantBound;
+    response.providers.amazon.seller_resolved = amazonSellerResolved;
+    response.providers.amazon.store_bound = amazonStoreBound;
+    response.providers.amazon.connection_truth_basis = 'stored_token_and_binding';
+    response.providers.amazon.error_message = amazonConnectionErrorMessage || response.providers.amazon.error_message;
+    response.providers.amazon.error_state = !amazonConnectionReady && amazonConnectionErrorMessage
+      ? (amazonTokenPresent && !amazonTokenNotExpired ? 'auth_invalid' : 'provider_error')
+      : response.providers.amazon.error_state;
+    response.providers.amazon.ingestion_state = computeIngestionState(
+      response.providers.amazon.connected,
+      response.providers.amazon.auth_valid,
+      response.providers.amazon.has_data,
+      response.providers.amazon.last_ingest_at,
+      response.providers.amazon.error_state === 'provider_error' ? 'error' : undefined,
+      response.providers.amazon.error_message
+    );
+
+    response.agent2_ready = amazonConnectionReady;
 
     logger.info('Integration status retrieved', {
       userId,

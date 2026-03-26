@@ -340,6 +340,10 @@ export function convertUserIdToUuid(userId: string): string {
 }
 
 // Database operations
+function isAgent1AmazonToken(provider: string): boolean {
+  return provider === 'amazon';
+}
+
 export const tokenManager = {
   async saveToken(
     userId: string,
@@ -366,9 +370,58 @@ export const tokenManager = {
         logger.info('Converted non-UUID userId to deterministic UUID', { originalUserId: userId, dbUserId, provider });
       }
 
-      let { error } = await adminClient
-        .from('tokens')
-        .upsert({
+      if (isAgent1AmazonToken(provider)) {
+        if (!tenantId || !storeId) {
+          throw new Error('Amazon token persistence requires tenantId and storeId.');
+        }
+
+        const { data: existingAmazonToken, error: existingAmazonTokenError } = await adminClient
+          .from('tokens')
+          .select('id')
+          .eq('user_id', dbUserId)
+          .eq('provider', provider)
+          .eq('tenant_id', tenantId)
+          .eq('store_id', storeId)
+          .maybeSingle();
+
+        if (existingAmazonTokenError) {
+          throw existingAmazonTokenError;
+        }
+
+        const payload = {
+          user_id: dbUserId,
+          provider,
+          tenant_id: tenantId,
+          store_id: storeId,
+          access_token_iv: accessTokenEnc.iv,
+          access_token_data: accessTokenEnc.data,
+          refresh_token_iv: refreshTokenEnc?.iv || null,
+          refresh_token_data: refreshTokenEnc?.data || null,
+          expires_at: expiresAt ? expiresAt.toISOString() : null,
+          updated_at: new Date().toISOString()
+        };
+
+        const writeResult = existingAmazonToken?.id
+          ? await adminClient.from('tokens').update(payload).eq('id', existingAmazonToken.id)
+          : await adminClient.from('tokens').insert(payload);
+
+        if (writeResult.error) {
+          logger.error('Error saving Amazon token', { error: writeResult.error, userId, dbUserId, provider, tenantId, storeId });
+          throw new Error('Failed to save Amazon token');
+        }
+      } else {
+        let { data: existingToken, error: existingTokenError } = await adminClient
+          .from('tokens')
+          .select('id')
+          .eq('user_id', dbUserId)
+          .eq('provider', provider)
+          .maybeSingle();
+
+        if (existingTokenError && existingTokenError.code !== 'PGRST116') {
+          throw existingTokenError;
+        }
+
+        const payload = {
           user_id: dbUserId,
           provider,
           tenant_id: tenantId || DEFAULT_TENANT_ID,
@@ -379,39 +432,16 @@ export const tokenManager = {
           refresh_token_data: refreshTokenEnc?.data || null,
           expires_at: expiresAt ? expiresAt.toISOString() : null,
           updated_at: new Date().toISOString()
-        }, {
-          onConflict: 'user_id,provider'
-        });
+        };
 
-      // Handle column mismatch (e.g., store_id or tenant_id missing in DB)
-      if (error && (error.code === 'PGRST204' || error.message?.includes('column') || error.message?.includes('does not exist'))) {
-        logger.warn('Column mismatch in tokens table, retrying with legacy payload', {
-          error: error.message,
-          userId,
-          provider
-        });
+        const writeResult = existingToken?.id
+          ? await adminClient.from('tokens').update(payload).eq('id', existingToken.id)
+          : await adminClient.from('tokens').insert(payload);
 
-        const legacyResult = await adminClient
-          .from('tokens')
-          .upsert({
-            user_id: dbUserId,
-            provider,
-            access_token_iv: accessTokenEnc.iv,
-            access_token_data: accessTokenEnc.data,
-            refresh_token_iv: refreshTokenEnc?.iv || null,
-            refresh_token_data: refreshTokenEnc?.data || null,
-            expires_at: expiresAt ? expiresAt.toISOString() : null,
-            updated_at: new Date().toISOString()
-          }, {
-            onConflict: 'user_id,provider'
-          });
-
-        error = legacyResult.error;
-      }
-
-      if (error) {
-        logger.error('Error saving token', { error, userId, dbUserId, provider });
-        throw new Error('Failed to save token');
+        if (writeResult.error) {
+          logger.error('Error saving token', { error: writeResult.error, userId, dbUserId, provider });
+          throw new Error('Failed to save token');
+        }
       }
 
       logger.info('Token saved successfully', { userId, dbUserId, provider });
@@ -447,7 +477,7 @@ export const tokenManager = {
       if (storeId) {
         query.eq('store_id', storeId);
       } else {
-        query.is('store_id', null);
+        query.order('updated_at', { ascending: false }).limit(1);
       }
 
       const { data, error } = await query.maybeSingle();
@@ -501,7 +531,11 @@ export const tokenManager = {
       // Convert non-UUID user IDs to deterministic UUID
       const dbUserId = convertUserIdToUuid(userId);
 
-      let { error } = await adminClient
+      if (isAgent1AmazonToken(provider) && (!tenantId || !storeId)) {
+        throw new Error('Amazon token updates require tenantId and storeId.');
+      }
+
+      const query = adminClient
         .from('tokens')
         .update({
           access_token_iv: accessTokenEnc.iv,
@@ -510,38 +544,24 @@ export const tokenManager = {
           refresh_token_data: refreshTokenEnc?.data || null,
           expires_at: expiresAt ? expiresAt.toISOString() : null,
           tenant_id: tenantId || DEFAULT_TENANT_ID,
-          store_id: storeId || undefined,
+          store_id: storeId || null,
           updated_at: new Date().toISOString()
         })
         .eq('user_id', dbUserId)
         .eq('provider', provider);
 
-      // Handle column mismatch
-      if (error && (error.code === 'PGRST204' || error.message?.includes('column') || error.message?.includes('does not exist'))) {
-        logger.warn('Column mismatch in tokens table (update), retrying with legacy payload', {
-          error: error.message,
-          userId,
-          provider
-        });
-
-        const legacyResult = await adminClient
-          .from('tokens')
-          .update({
-            access_token_iv: accessTokenEnc.iv,
-            access_token_data: accessTokenEnc.data,
-            refresh_token_iv: refreshTokenEnc?.iv || null,
-            refresh_token_data: refreshTokenEnc?.data || null,
-            expires_at: expiresAt ? expiresAt.toISOString() : null,
-            updated_at: new Date().toISOString()
-          })
-          .eq('user_id', dbUserId)
-          .eq('provider', provider);
-
-        error = legacyResult.error;
+      if (isAgent1AmazonToken(provider)) {
+        query.eq('tenant_id', tenantId!).eq('store_id', storeId!);
+      } else if (storeId) {
+        query.eq('store_id', storeId);
+      } else {
+        query.is('store_id', null);
       }
 
+      const { error } = await query;
+
       if (error) {
-        logger.error('Error updating token', { error, userId, provider });
+        logger.error('Error updating token', { error, userId, provider, tenantId, storeId });
         throw new Error('Failed to update token');
       }
 
