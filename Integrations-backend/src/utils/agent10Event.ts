@@ -141,8 +141,8 @@ export function buildCanonicalLiveEvent(
   const tenantId = overrides?.tenantId || pickFirstString(data.tenant_id, data.tenantId, data.tenantID);
   const tenantSlug = overrides?.tenantSlug || pickFirstString(data.tenant_slug, data.tenantSlug, data.slug);
   const userId = overrides?.userId || pickFirstString(data.user_id, data.userId, data.seller_id, data.sellerId);
-  const entityType = overrides?.entityType || inferAgent10PrimaryEntityType(data);
-  const entityId = overrides?.entityId || inferAgent10PrimaryEntityId(data);
+  const entityType = overrides?.entityType || pickFirstString(data.entity_type, data.entityType) || inferAgent10PrimaryEntityType(data);
+  const entityId = overrides?.entityId || pickFirstString(data.entity_id, data.entityId) || inferAgent10PrimaryEntityId(data);
   const eventType = overrides?.eventType || data.event_type || eventName;
 
   const payload = {

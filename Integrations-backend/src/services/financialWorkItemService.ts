@@ -41,6 +41,13 @@ class FinancialWorkItemService {
     return TABLES[kind];
   }
 
+  private mergePayload(existingPayload: any, nextPayload?: Record<string, any>): Record<string, any> {
+    return {
+      ...(existingPayload && typeof existingPayload === 'object' ? existingPayload : {}),
+      ...(nextPayload || {})
+    };
+  }
+
   private buildIdempotencyKey(kind: WorkKind, params: RecoveryWorkCreate | BillingWorkCreate): string {
     if (kind === 'billing') {
       const billing = params as BillingWorkCreate;
@@ -135,13 +142,24 @@ class FinancialWorkItemService {
     const item = items?.[0];
     if (!item) return null;
 
+    const claimTimestamp = new Date().toISOString();
+    const claimedPayload = this.mergePayload(item.payload, {
+      last_claimed_at: claimTimestamp,
+      last_processed_at: claimTimestamp,
+      last_execution_lane: workerName,
+      last_runtime_role: process.env.RUNTIME_ROLE || 'monolith',
+      lifecycle_state: 'claimed',
+      claim_count: Number(item?.payload?.claim_count || 0) + 1
+    });
+
     const { data: claimed, error: claimError } = await supabaseAdmin
       .from(this.getTable(kind))
       .update({
         status: 'processing',
-        locked_at: new Date().toISOString(),
+        locked_at: claimTimestamp,
         locked_by: workerName,
-        updated_at: new Date().toISOString()
+        updated_at: claimTimestamp,
+        payload: claimedPayload
       })
       .eq('id', item.id)
       .eq('status', 'pending')
@@ -184,15 +202,16 @@ class FinancialWorkItemService {
   }
 
   async complete(kind: WorkKind, itemId: string, metadata?: Record<string, any>): Promise<void> {
+    const timestamp = new Date().toISOString();
     const { error } = await supabaseAdmin
       .from(this.getTable(kind))
       .update({
         status: 'completed',
-        completed_at: new Date().toISOString(),
+        completed_at: timestamp,
         locked_at: null,
         locked_by: null,
         last_error: null,
-        updated_at: new Date().toISOString(),
+        updated_at: timestamp,
         payload: metadata ? metadata : undefined
       })
       .eq('id', itemId);
@@ -204,6 +223,7 @@ class FinancialWorkItemService {
 
   async defer(kind: WorkKind, itemId: string, reason: string, delayMs: number, metadata?: Record<string, any>): Promise<void> {
     const nextAttemptAt = new Date(Date.now() + Math.max(delayMs, 60 * 1000)).toISOString();
+    const timestamp = new Date().toISOString();
     const { error } = await supabaseAdmin
       .from(this.getTable(kind))
       .update({
@@ -212,7 +232,7 @@ class FinancialWorkItemService {
         locked_by: null,
         last_error: reason,
         next_attempt_at: nextAttemptAt,
-        updated_at: new Date().toISOString(),
+        updated_at: timestamp,
         payload: metadata ? metadata : undefined
       })
       .eq('id', itemId);
@@ -223,15 +243,16 @@ class FinancialWorkItemService {
   }
 
   async quarantine(kind: WorkKind, itemId: string, reason: string, metadata?: Record<string, any>): Promise<void> {
+    const timestamp = new Date().toISOString();
     const { error } = await supabaseAdmin
       .from(this.getTable(kind))
       .update({
         status: 'quarantined',
-        quarantined_at: new Date().toISOString(),
+        quarantined_at: timestamp,
         locked_at: null,
         locked_by: null,
         last_error: reason,
-        updated_at: new Date().toISOString(),
+        updated_at: timestamp,
         payload: metadata ? metadata : undefined
       })
       .eq('id', itemId);
@@ -247,6 +268,7 @@ class FinancialWorkItemService {
     const terminal = attempts >= maxAttempts;
     const status: 'pending' | 'failed_retry_exhausted' = terminal ? TERMINAL_FAILURE_STATUS : 'pending';
     const nextAttemptAt = terminal ? item?.next_attempt_at || new Date().toISOString() : new Date(Date.now() + buildBackoffDelayMs(attempts)).toISOString();
+    const timestamp = new Date().toISOString();
 
     const { error } = await supabaseAdmin
       .from(this.getTable(kind))
@@ -257,7 +279,7 @@ class FinancialWorkItemService {
         locked_by: null,
         last_error: reason,
         next_attempt_at: nextAttemptAt,
-        updated_at: new Date().toISOString(),
+        updated_at: timestamp,
         payload: metadata ? metadata : undefined
       })
       .eq('id', item.id);

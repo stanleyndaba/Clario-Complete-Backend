@@ -70,14 +70,42 @@ class RecoveriesWorker {
   private tenantRotationOffset: number = 0;
 
   private buildExecutionMetadata(item: any, extra: Record<string, any> = {}): Record<string, any> {
+    const timestamp = new Date().toISOString();
     return {
       ...(item?.payload || {}),
       execution_lane: this.executionLaneName,
       execution_runtime_role: process.env.RUNTIME_ROLE || 'monolith',
       execution_owned_by: 'recoveries',
-      execution_processed_at: new Date().toISOString(),
+      execution_processed_at: timestamp,
+      last_processed_at: timestamp,
+      last_execution_lane: this.executionLaneName,
+      last_runtime_role: process.env.RUNTIME_ROLE || 'monolith',
       ...extra
     };
+  }
+
+  private async emitRecoveryEvent(
+    eventType: string,
+    item: any,
+    extra: Record<string, any> = {}
+  ): Promise<void> {
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(item.user_id, eventType, {
+        event_type: eventType,
+        entity_type: 'recovery',
+        entity_id: item.dispute_case_id,
+        tenant_id: item.tenant_id,
+        tenant_slug: item.tenant_slug,
+        user_id: item.user_id,
+        dispute_case_id: item.dispute_case_id,
+        recovery_work_item_id: item.id,
+        execution_lane: this.executionLaneName,
+        runtime_role: process.env.RUNTIME_ROLE || 'monolith',
+        timestamp: new Date().toISOString(),
+        ...extra
+      });
+    } catch {}
   }
 
   private rotateTenants<T>(tenants: T[]): T[] {
@@ -649,6 +677,11 @@ class RecoveriesWorker {
         break;
       }
 
+      await this.emitRecoveryEvent('recovery.work_claimed', item, {
+        status: item.status,
+        last_claimed_at: item.payload?.last_claimed_at || item.updated_at || new Date().toISOString()
+      });
+
       const result = await this.processRecoveryWorkItem(item);
       stats.processed++;
 
@@ -675,10 +708,15 @@ class RecoveriesWorker {
       if (result?.success) {
         await financialWorkItemService.complete('recovery', item.id, {
           ...this.buildExecutionMetadata(item, {
+          lifecycle_state: 'completed',
           status: result.status,
           recovery_id: result.recoveryId || item.payload?.recovery_id || null,
           completed_at: new Date().toISOString()
           })
+        });
+        await this.emitRecoveryEvent('recovery.completed', item, {
+          status: result.status,
+          recovery_id: result.recoveryId || item.payload?.recovery_id || null
         });
         return result.status === 'discrepancy' ? 'discrepancy' : 'completed';
       }
@@ -693,48 +731,54 @@ class RecoveriesWorker {
         const reason = String(disputeCase?.last_error || 'ambiguous_recovery');
         await financialWorkItemService.quarantine('recovery', item.id, reason, {
           ...this.buildExecutionMetadata(item, {
+          lifecycle_state: 'quarantined',
           quarantine_reason: reason
           })
         });
-
-        try {
-          const sseHub = (await import('../utils/sseHub')).default;
-          sseHub.sendEvent(item.user_id, 'recovery.quarantined', {
-            tenant_id: item.tenant_id,
-            tenant_slug: item.tenant_slug,
-            dispute_case_id: item.dispute_case_id,
-            recovery_work_item_id: item.id,
-            reason
-          });
-        } catch {}
+        await this.emitRecoveryEvent('recovery.quarantined', item, {
+          reason,
+          status: 'quarantined'
+        });
 
         return 'quarantined';
       }
 
+      const nextAttemptAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
       await financialWorkItemService.defer('recovery', item.id, 'payout_not_found_yet', 30 * 60 * 1000, {
         ...this.buildExecutionMetadata(item, {
-        deferred_reason: 'payout_not_found_yet'
+        lifecycle_state: 'deferred',
+        defer_count: Number(item?.payload?.defer_count || 0) + 1,
+        deferred_reason: 'payout_not_found_yet',
+        last_deferred_reason: 'payout_not_found_yet',
+        next_attempt_at: nextAttemptAt
         })
+      });
+      await this.emitRecoveryEvent('recovery.work_deferred', item, {
+        status: 'pending',
+        reason: 'payout_not_found_yet',
+        defer_count: Number(item?.payload?.defer_count || 0) + 1,
+        next_attempt_at: nextAttemptAt
       });
       return 'deferred';
     } catch (error: any) {
+      const attempts = Number(item?.attempts || 0) + 1;
+      const maxAttempts = Number(item?.max_attempts || 5);
+      const predictedTerminalState = attempts >= maxAttempts ? 'failed_retry_exhausted' : 'pending';
       const terminalState = await financialWorkItemService.fail('recovery', item, error.message, {
         ...this.buildExecutionMetadata(item, {
+        lifecycle_state: predictedTerminalState === 'failed_retry_exhausted' ? 'failed_retry_exhausted' : 'failed',
         failed_reason: error.message
         })
       });
-
-      try {
-        const sseHub = (await import('../utils/sseHub')).default;
-        sseHub.sendEvent(item.user_id, 'recovery.failed', {
-          tenant_id: item.tenant_id,
-          tenant_slug: item.tenant_slug,
-          dispute_case_id: item.dispute_case_id,
-          recovery_work_item_id: item.id,
+      await this.emitRecoveryEvent(
+        terminalState === 'failed_retry_exhausted' ? 'recovery.failed_retry_exhausted' : 'recovery.failed',
+        item,
+        {
           status: terminalState,
+          reason: error.message,
           error: error.message
-        });
-      } catch {}
+        }
+      );
 
       return 'failed';
     }

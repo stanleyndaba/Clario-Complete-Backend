@@ -41,14 +41,43 @@ class BillingWorker {
   private tenantRotationOffset: number = 0;
 
   private buildExecutionMetadata(item: any, extra: Record<string, any> = {}): Record<string, any> {
+    const timestamp = new Date().toISOString();
     return {
       ...(item?.payload || {}),
       execution_lane: this.executionLaneName,
       execution_runtime_role: process.env.RUNTIME_ROLE || 'monolith',
       execution_owned_by: 'billing',
-      execution_processed_at: new Date().toISOString(),
+      execution_processed_at: timestamp,
+      last_processed_at: timestamp,
+      last_execution_lane: this.executionLaneName,
+      last_runtime_role: process.env.RUNTIME_ROLE || 'monolith',
       ...extra
     };
+  }
+
+  private async emitBillingEvent(
+    eventType: string,
+    item: any,
+    extra: Record<string, any> = {}
+  ): Promise<void> {
+    try {
+      const sseHub = (await import('../utils/sseHub')).default;
+      sseHub.sendEvent(item.user_id, eventType, {
+        event_type: eventType,
+        entity_type: 'billing_transaction',
+        entity_id: item.recovery_id || item.dispute_case_id,
+        tenant_id: item.tenant_id,
+        tenant_slug: item.tenant_slug,
+        user_id: item.user_id,
+        dispute_case_id: item.dispute_case_id,
+        recovery_id: item.recovery_id || null,
+        billing_work_item_id: item.id,
+        execution_lane: this.executionLaneName,
+        runtime_role: process.env.RUNTIME_ROLE || 'monolith',
+        timestamp: new Date().toISOString(),
+        ...extra
+      });
+    } catch {}
   }
 
   private rotateTenants<T>(tenants: T[]): T[] {
@@ -911,6 +940,11 @@ class BillingWorker {
         break;
       }
 
+      await this.emitBillingEvent('billing.work_claimed', item, {
+        status: item.status,
+        last_claimed_at: item.payload?.last_claimed_at || item.updated_at || new Date().toISOString()
+      });
+
       const result = await this.processBillingWorkItem(item);
       stats.processed++;
 
@@ -939,15 +973,26 @@ class BillingWorker {
       }
 
       if (String(disputeCase.recovery_status || '').toLowerCase() !== 'reconciled') {
+        const nextAttemptAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
         await financialWorkItemService.defer(
           'billing',
           item.id,
           'recovery_not_reconciled_yet',
           15 * 60 * 1000,
           this.buildExecutionMetadata(item, {
-            deferred_reason: 'recovery_not_reconciled_yet'
+            lifecycle_state: 'deferred',
+            defer_count: Number(item?.payload?.defer_count || 0) + 1,
+            deferred_reason: 'recovery_not_reconciled_yet',
+            last_deferred_reason: 'recovery_not_reconciled_yet',
+            next_attempt_at: nextAttemptAt
           })
         );
+        await this.emitBillingEvent('billing.work_deferred', item, {
+          status: 'pending',
+          reason: 'recovery_not_reconciled_yet',
+          defer_count: Number(item?.payload?.defer_count || 0) + 1,
+          next_attempt_at: nextAttemptAt
+        });
         return 'deferred';
       }
 
@@ -970,67 +1015,63 @@ class BillingWorker {
       if (result.success) {
         await financialWorkItemService.complete('billing', item.id, {
           ...this.buildExecutionMetadata(item, {
+          lifecycle_state: 'completed',
           billing_status: result.status,
           billing_transaction_id: result.billingTransactionId || null,
           completed_at: new Date().toISOString()
           })
         });
-
-        try {
-          const sseHub = (await import('../utils/sseHub')).default;
-          sseHub.sendEvent(item.user_id, 'billing.processed', {
-            tenant_id: item.tenant_id,
-            tenant_slug: item.tenant_slug,
-            dispute_case_id: item.dispute_case_id,
-            recovery_id: item.recovery_id,
-            billing_work_item_id: item.id,
-            billing_transaction_id: result.billingTransactionId || null,
-            status: result.status
-          });
-        } catch {}
+        await this.emitBillingEvent('billing.completed', item, {
+          status: result.status,
+          billing_transaction_id: result.billingTransactionId || null
+        });
+        await this.emitBillingEvent('billing.processed', item, {
+          status: result.status,
+          billing_transaction_id: result.billingTransactionId || null
+        });
 
         return 'completed';
       }
 
+      const attempts = Number(item?.attempts || 0) + 1;
+      const maxAttempts = Number(item?.max_attempts || 5);
+      const predictedTerminalState = attempts >= maxAttempts ? 'failed_retry_exhausted' : 'pending';
       const terminalState = await financialWorkItemService.fail('billing', item, result.error || 'Billing failed', {
         ...this.buildExecutionMetadata(item, {
+        lifecycle_state: predictedTerminalState === 'failed_retry_exhausted' ? 'failed_retry_exhausted' : 'failed',
         failed_reason: result.error || 'Billing failed'
         })
       });
-
-      try {
-        const sseHub = (await import('../utils/sseHub')).default;
-        sseHub.sendEvent(item.user_id, 'billing.failed', {
-          tenant_id: item.tenant_id,
-          tenant_slug: item.tenant_slug,
-          dispute_case_id: item.dispute_case_id,
-          recovery_id: item.recovery_id,
-          billing_work_item_id: item.id,
+      await this.emitBillingEvent(
+        terminalState === 'failed_retry_exhausted' ? 'billing.failed_retry_exhausted' : 'billing.failed',
+        item,
+        {
           status: terminalState,
+          reason: result.error || 'Billing failed',
           error: result.error || 'Billing failed'
-        });
-      } catch {}
+        }
+      );
 
       return 'failed';
     } catch (error: any) {
+      const attempts = Number(item?.attempts || 0) + 1;
+      const maxAttempts = Number(item?.max_attempts || 5);
+      const predictedTerminalState = attempts >= maxAttempts ? 'failed_retry_exhausted' : 'pending';
       const terminalState = await financialWorkItemService.fail('billing', item, error.message, {
         ...this.buildExecutionMetadata(item, {
+        lifecycle_state: predictedTerminalState === 'failed_retry_exhausted' ? 'failed_retry_exhausted' : 'failed',
         failed_reason: error.message
         })
       });
-
-      try {
-        const sseHub = (await import('../utils/sseHub')).default;
-        sseHub.sendEvent(item.user_id, 'billing.failed', {
-          tenant_id: item.tenant_id,
-          tenant_slug: item.tenant_slug,
-          dispute_case_id: item.dispute_case_id,
-          recovery_id: item.recovery_id,
-          billing_work_item_id: item.id,
+      await this.emitBillingEvent(
+        terminalState === 'failed_retry_exhausted' ? 'billing.failed_retry_exhausted' : 'billing.failed',
+        item,
+        {
           status: terminalState,
+          reason: error.message,
           error: error.message
-        });
-      } catch {}
+        }
+      );
 
       return 'failed';
     }
