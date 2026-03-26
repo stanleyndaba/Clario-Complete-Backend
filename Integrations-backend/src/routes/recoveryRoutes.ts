@@ -476,17 +476,17 @@ router.get('/ledger', async (req: Request, res: Response) => {
                     .select('id, dispute_id, billing_status, platform_fee_cents, created_at, updated_at')
                     .eq('tenant_id', tenantId)
                     .in('dispute_id', disputeIds),
-                supabaseAdmin
-                    .from('recovery_work_items')
-                    .select('id, dispute_case_id, status, updated_at, created_at, last_error')
+                 supabaseAdmin
+                     .from('recovery_work_items')
+                    .select('id, dispute_case_id, status, attempts, next_attempt_at, locked_by, payload, updated_at, created_at, last_error')
                     .eq('tenant_id', tenantId)
                     .in('dispute_case_id', disputeIds),
-                supabaseAdmin
-                    .from('billing_work_items')
-                    .select('id, dispute_case_id, recovery_id, status, updated_at, created_at, last_error')
+                 supabaseAdmin
+                     .from('billing_work_items')
+                    .select('id, dispute_case_id, recovery_id, status, attempts, next_attempt_at, locked_by, payload, updated_at, created_at, last_error')
                     .eq('tenant_id', tenantId)
                     .in('dispute_case_id', disputeIds)
-            ]);
+             ]);
 
             if (billingResult.error) {
                 throw billingResult.error;
