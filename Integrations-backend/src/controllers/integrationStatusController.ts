@@ -123,7 +123,19 @@ function isProductEvidenceSource(source: {
   return source.metadata?.test !== true && source.account_email !== 'unknown@placeholder.invalid';
 }
 
+function hasTrustedInternalApiKey(req: Request): boolean {
+  const configuredKey = process.env.INTERNAL_API_KEY;
+  if (!configuredKey || configuredKey.trim().length === 0) return false;
+
+  const providedKey = req.headers['x-internal-api-key'] || req.headers['x-api-key'];
+  return typeof providedKey === 'string' && providedKey === configuredKey;
+}
+
 function extractForwardedUserId(req: Request): string | null {
+  if (!hasTrustedInternalApiKey(req)) {
+    return null;
+  }
+
   const candidates = [
     req.headers['x-user-id'],
     req.headers['x-forwarded-user-id']

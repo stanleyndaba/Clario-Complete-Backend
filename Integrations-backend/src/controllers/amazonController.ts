@@ -14,6 +14,14 @@ function extractUuid(candidate: unknown): string | null {
   return candidate.match(UUID_IN_TEXT_REGEX)?.[0] || null;
 }
 
+function hasTrustedInternalApiKey(req: Request): boolean {
+  const configuredKey = process.env.INTERNAL_API_KEY;
+  if (!configuredKey || configuredKey.trim().length === 0) return false;
+
+  const providedKey = req.headers['x-internal-api-key'] || req.headers['x-api-key'];
+  return typeof providedKey === 'string' && providedKey === configuredKey;
+}
+
 async function extractVerifiedAppUserId(req: Request): Promise<string | null> {
   const token = extractRequestToken(req);
   if (token) {
@@ -23,6 +31,10 @@ async function extractVerifiedAppUserId(req: Request): Promise<string | null> {
     }
 
     return extractUuid(verified.id);
+  }
+
+  if (!hasTrustedInternalApiKey(req)) {
+    return null;
   }
 
   const forwardedCandidates = [
