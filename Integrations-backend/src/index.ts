@@ -521,8 +521,19 @@ function shouldRunRecoveriesWorker(): boolean {
   return process.env.RUN_RECOVERIES_LANE_IN_API_PROCESS === 'true';
 }
 
-function shouldRunBillingWorker(stripePaymentsConfigured: boolean): boolean {
-  if (process.env.ENABLE_BILLING_WORKER === 'false' || !stripePaymentsConfigured) {
+function isBillingProviderConfigured(): boolean {
+  const hasPaypalCredentials =
+    Boolean(process.env.PAYPAL_CLIENT_ID) &&
+    Boolean(process.env.PAYPAL_CLIENT_SECRET);
+
+  const hasLegacyStripePaymentsUrl = Boolean(process.env.STRIPE_PAYMENTS_URL);
+  const hasGenericPaymentsApi = Boolean(process.env.PAYMENTS_API_URL);
+
+  return hasPaypalCredentials || hasLegacyStripePaymentsUrl || hasGenericPaymentsApi;
+}
+
+function shouldRunBillingWorker(billingProviderConfigured: boolean): boolean {
+  if (process.env.ENABLE_BILLING_WORKER === 'false' || !billingProviderConfigured) {
     return false;
   }
 
@@ -639,23 +650,23 @@ if (process.env.NODE_ENV !== 'test') {
           });
         }
 
-        // Start Billing Worker (requires Stripe payments configuration)
-        const stripePaymentsConfigured = Boolean(process.env.STRIPE_PAYMENTS_URL);
-        if (shouldRunBillingWorker(stripePaymentsConfigured)) {
+        // Start Billing Worker (provider-neutral; PayPal-first with legacy compatibility)
+        const billingProviderConfigured = isBillingProviderConfigured();
+        if (shouldRunBillingWorker(billingProviderConfigured)) {
           billingWorker.start();
           logger.info('Billing worker initialized');
         } else {
           logger.info('Billing worker disabled', {
             runtimeRole,
             enabledEnv: process.env.ENABLE_BILLING_WORKER !== 'false',
-            stripePaymentsConfigured,
+            billingProviderConfigured,
             inApiProcess: process.env.RUN_BILLING_LANE_IN_API_PROCESS === 'true',
             reason: process.env.ENABLE_BILLING_WORKER === 'false'
               ? 'ENABLE_BILLING_WORKER=false'
               : runtimeRole === 'recoveries-lane'
                 ? 'owned_by_recovery_runtime'
-                : !stripePaymentsConfigured
-                  ? 'STRIPE_PAYMENTS_URL not configured'
+                : !billingProviderConfigured
+                  ? 'no_billing_provider_configured'
                   : 'owned_by_dedicated_billing_runtime'
           });
         }
@@ -781,7 +792,7 @@ if (process.env.NODE_ENV !== 'test') {
           evidence_matching_worker: process.env.ENABLE_EVIDENCE_MATCHING_WORKER !== 'false' ? 'started' : 'disabled',
           refund_filing_worker: process.env.ENABLE_REFUND_FILING_WORKER !== 'false' ? 'started' : 'disabled',
           recoveries_worker: shouldRunRecoveriesWorker() ? 'started' : 'not_attached',
-          billing_worker: shouldRunBillingWorker(Boolean(process.env.STRIPE_PAYMENTS_URL)) ? 'started' : 'not_attached',
+          billing_worker: shouldRunBillingWorker(isBillingProviderConfigured()) ? 'started' : 'not_attached',
           notifications_worker: process.env.ENABLE_NOTIFICATIONS_WORKER !== 'false' ? 'started' : 'disabled',
           learning_worker: process.env.ENABLE_LEARNING_WORKER !== 'false' ? 'started' : 'disabled'
         });
