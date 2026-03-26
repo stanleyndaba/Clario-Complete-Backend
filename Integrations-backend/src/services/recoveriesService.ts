@@ -685,9 +685,10 @@ class RecoveriesService {
       try {
         const sseHub = (await import('../utils/sseHub')).default;
         const tenantSlug = await resolveTenantSlug(tenantId);
-        sseHub.sendEvent(userId, 'payout.detected', {
+        await sseHub.sendTenantEvent('payout.detected', {
           tenant_id: tenantId,
           tenant_slug: tenantSlug,
+          seller_id: userId,
           dispute_case_id: match.disputeId,
           recovery_id: recovery.id,
           amount: match.actualAmount,
@@ -698,11 +699,12 @@ class RecoveriesService {
           expected_amount: match.expectedAmount,
           actual_amount: match.actualAmount,
           message: `Payout detected for case ${match.disputeId}`
-        });
+        }, tenantSlug, tenantId);
 
-        sseHub.sendEvent(userId, 'detection.payout_received', {
+        await sseHub.sendTenantEvent('detection.payout_received', {
           tenant_id: tenantId,
           tenant_slug: tenantSlug,
+          seller_id: userId,
           dispute_case_id: match.disputeId,
           recovery_id: recovery.id,
           claimId: match.disputeId,
@@ -710,7 +712,7 @@ class RecoveriesService {
           currency: 'USD',
           status,
           message: `Payout received: $${Number(match.actualAmount || 0).toFixed(2)}`
-        });
+        }, tenantSlug, tenantId);
       } catch (eventError: any) {
         logger.warn('⚠️ [RECOVERIES] Failed to emit payout events', {
           disputeId: match.disputeId,
@@ -780,16 +782,17 @@ class RecoveriesService {
 
           try {
             const sseHub = (await import('../utils/sseHub')).default;
-            sseHub.sendEvent(userId, 'billing.work_created', {
+            await sseHub.sendTenantEvent('billing.work_created', {
               tenant_id: tenantId,
               tenant_slug: tenantSlug,
+              seller_id: userId,
               dispute_case_id: match.disputeId,
               recovery_id: recovery.id,
               billing_work_item_id: billingItem.id,
               message: created
                 ? `Billing work created for recovery ${recovery.id}`
                 : `Billing work already exists for recovery ${recovery.id}`
-            });
+            }, tenantSlug, tenantId);
           } catch (eventError: any) {
             logger.warn('⚠️ [RECOVERIES] Failed to emit billing.work_created event', {
               recoveryId: recovery.id,

@@ -2918,16 +2918,17 @@ class RefundFilingWorker {
 
       try {
         const sseHub = (await import('../utils/sseHub')).default;
-        sseHub.sendEvent(userId, 'recovery.work_created', {
+        await sseHub.sendTenantEvent('recovery.work_created', {
           tenant_id: tenantId,
           tenant_slug: tenantSlug,
+          seller_id: userId,
           dispute_case_id: disputeId,
           recovery_work_item_id: recoveryItem.id,
           source_event_type: 'case.status_updated',
           message: created
             ? `Recovery work created for approved case ${disputeId}`
             : `Recovery work already exists for approved case ${disputeId}`
-        });
+        }, tenantSlug, tenantId);
       } catch (eventError: any) {
         logger.warn(' [REFUND FILING] Failed to emit recovery.work_created event', {
           disputeId,

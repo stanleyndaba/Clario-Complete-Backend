@@ -91,20 +91,20 @@ class RecoveriesWorker {
   ): Promise<void> {
     try {
       const sseHub = (await import('../utils/sseHub')).default;
-      sseHub.sendEvent(item.user_id, eventType, {
+      await sseHub.sendTenantEvent(eventType, {
         event_type: eventType,
         entity_type: 'recovery',
         entity_id: item.dispute_case_id,
         tenant_id: item.tenant_id,
         tenant_slug: item.tenant_slug,
-        user_id: item.user_id,
+        seller_id: item.user_id,
         dispute_case_id: item.dispute_case_id,
         recovery_work_item_id: item.id,
         execution_lane: this.executionLaneName,
         runtime_role: process.env.RUNTIME_ROLE || 'monolith',
         timestamp: new Date().toISOString(),
         ...extra
-      });
+      }, item.tenant_slug, item.tenant_id);
     } catch {}
   }
 

@@ -93,11 +93,116 @@ class SSEHub {
     return Array.from(this.connections.keys());
   }
 
+  private appendRecentEvent(userId: string, event: CanonicalLiveEvent): void {
+    const history = this.eventHistory.get(userId) || [];
+    history.push(event);
+    if (history.length > this.maxHistorySize) {
+      history.shift();
+    }
+    this.eventHistory.set(userId, history);
+  }
+
+  private deliverNormalizedEvent(
+    userId: string,
+    eventName: string,
+    normalized: CanonicalLiveEvent,
+    tenantSlug?: string
+  ): boolean {
+    const userMap = this.connections.get(userId);
+    if (!userMap || userMap.size === 0) {
+      return false;
+    }
+
+    const targetSlug = tenantSlug;
+    let targetSets: Set<Response>[] = [];
+
+    if (targetSlug) {
+      const set = userMap.get(targetSlug);
+      if (set) targetSets.push(set);
+    } else {
+      targetSets = Array.from(userMap.values());
+    }
+
+    if (targetSets.length === 0) {
+      return false;
+    }
+
+    const payload = `event: ${eventName}\ndata: ${JSON.stringify(normalized)}\n\n`;
+    let successCount = 0;
+    const deadConnections: { res: Response; slug: string }[] = [];
+
+    for (const [slug, set] of userMap.entries()) {
+      if (targetSlug && slug !== targetSlug) continue;
+
+      for (const res of set) {
+        try {
+          if (res.writable && !res.destroyed) {
+            res.write(payload);
+            successCount++;
+          } else {
+            deadConnections.push({ res, slug });
+          }
+        } catch (error: any) {
+          logger.error('❌ [SSE HUB] Error sending event', { userId, event: eventName, error: error.message });
+          deadConnections.push({ res, slug });
+        }
+      }
+    }
+
+    deadConnections.forEach(({ res, slug }) => {
+      this.removeConnection(userId, res, slug);
+    });
+
+    return successCount > 0;
+  }
+
+  private async resolveTenantAudienceUserIds(tenantId?: string, tenantSlug?: string): Promise<string[]> {
+    if (!supabaseAdmin || typeof supabaseAdmin.from !== 'function') {
+      return [];
+    }
+
+    let resolvedTenantId = tenantId;
+    if (!resolvedTenantId && tenantSlug) {
+      const { data: tenant, error: tenantError } = await supabaseAdmin
+        .from('tenants')
+        .select('id')
+        .eq('slug', tenantSlug)
+        .is('deleted_at', null)
+        .maybeSingle();
+
+      if (tenantError) {
+        throw tenantError;
+      }
+
+      resolvedTenantId = String(tenant?.id || '').trim() || undefined;
+    }
+
+    if (!resolvedTenantId) {
+      return [];
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('tenant_memberships')
+      .select('user_id')
+      .eq('tenant_id', resolvedTenantId)
+      .eq('is_active', true)
+      .is('deleted_at', null);
+
+    if (error) {
+      throw error;
+    }
+
+    const audienceUserIds = (data || [])
+      .map((row: any) => String(row?.user_id || '').trim())
+      .filter((userId: string) => Boolean(userId));
+
+    return Array.from(new Set<string>(audienceUserIds));
+  }
+
   /**
    * Send SSE event to user with connection verification and error handling
    */
   sendEvent(userId: string, event: string, data: any, tenantSlug?: string): boolean {
-    const userMap = this.connections.get(userId);
     const rawData = data && typeof data === 'object' ? data : {};
     const inferredTenantId = rawData?.tenant_id || rawData?.tenantId;
     const cachedTenantSlug = tenantSlug || rawData?.tenantSlug || rawData?.tenant_slug || rawData?.slug || getCachedTenantSlug(inferredTenantId);
@@ -108,66 +213,38 @@ class SSEHub {
     });
 
     void this.persistRecentEvent(normalized);
+    this.appendRecentEvent(userId, normalized);
+    return this.deliverNormalizedEvent(userId, event, normalized, cachedTenantSlug);
+  }
 
-    const history = this.eventHistory.get(userId) || [];
-    history.push(normalized);
-    if (history.length > this.maxHistorySize) {
-      history.shift();
-    }
-    this.eventHistory.set(userId, history);
+  async sendTenantEvent(event: string, data: any, tenantSlug?: string, tenantId?: string): Promise<boolean> {
+    const rawData = data && typeof data === 'object' ? data : {};
+    const inferredTenantId = tenantId || rawData?.tenant_id || rawData?.tenantId;
+    const cachedTenantSlug = tenantSlug || rawData?.tenantSlug || rawData?.tenant_slug || rawData?.slug || getCachedTenantSlug(inferredTenantId);
+    const audienceUserIds = await this.resolveTenantAudienceUserIds(inferredTenantId, cachedTenantSlug);
 
-    if (!userMap || userMap.size === 0) {
+    if (audienceUserIds.length === 0) {
+      logger.warn('⚠️ [SSE HUB] No tenant audience resolved for event', {
+        event,
+        tenantId: inferredTenantId,
+        tenantSlug: cachedTenantSlug
+      });
       return false;
     }
 
-    // Determine target connections
-    let targetSets: Set<Response>[] = [];
-    const targetSlug = cachedTenantSlug;
-
-    if (targetSlug) {
-      const set = userMap.get(targetSlug);
-      if (set) targetSets.push(set);
-    } else {
-      // If no slug, send to all of user's connections (broadcast to user)
-      targetSets = Array.from(userMap.values());
+    let delivered = false;
+    for (const audienceUserId of audienceUserIds) {
+      const normalized = buildCanonicalLiveEvent(event, rawData, {
+        userId: audienceUserId,
+        tenantId: inferredTenantId,
+        tenantSlug: cachedTenantSlug
+      });
+      void this.persistRecentEvent(normalized);
+      this.appendRecentEvent(audienceUserId, normalized);
+      delivered = this.deliverNormalizedEvent(audienceUserId, event, normalized, cachedTenantSlug) || delivered;
     }
 
-    if (targetSets.length === 0) {
-      return false;
-    }
-
-    const payload = `event: ${event}\ndata: ${JSON.stringify(normalized)}\n\n`;
-    let successCount = 0;
-    let errorCount = 0;
-    const deadConnections: { res: Response, slug: string }[] = [];
-
-    for (const [slug, set] of userMap.entries()) {
-      // Skip if we are targeting a specific set and this isn't it
-      if (targetSlug && slug !== targetSlug) continue;
-
-      for (const res of set) {
-        try {
-          if (res.writable && !res.destroyed) {
-            res.write(payload);
-            successCount++;
-          } else {
-            deadConnections.push({ res, slug });
-            errorCount++;
-          }
-        } catch (error: any) {
-          logger.error('❌ [SSE HUB] Error sending event', { userId, event, error: error.message });
-          deadConnections.push({ res, slug });
-          errorCount++;
-        }
-      }
-    }
-
-    // Remove dead connections
-    deadConnections.forEach(({ res, slug }) => {
-      this.removeConnection(userId, res, slug);
-    });
-
-    return successCount > 0;
+    return delivered;
   }
 
   private async persistRecentEvent(event: CanonicalLiveEvent): Promise<void> {

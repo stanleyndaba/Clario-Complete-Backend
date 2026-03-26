@@ -127,7 +127,7 @@ export function buildCanonicalLiveEvent(
   rawData?: LegacyPayload,
   overrides?: {
     eventType?: string;
-    userId?: string;
+    userId?: string | null;
     tenantId?: string;
     tenantSlug?: string;
     timestamp?: string;
@@ -140,7 +140,10 @@ export function buildCanonicalLiveEvent(
   const timestamp = overrides?.timestamp || pickFirstString(data.timestamp, data.created_at) || new Date().toISOString();
   const tenantId = overrides?.tenantId || pickFirstString(data.tenant_id, data.tenantId, data.tenantID);
   const tenantSlug = overrides?.tenantSlug || pickFirstString(data.tenant_slug, data.tenantSlug, data.slug);
-  const userId = overrides?.userId || pickFirstString(data.user_id, data.userId, data.seller_id, data.sellerId);
+  const hasExplicitUserId = Boolean(overrides) && Object.prototype.hasOwnProperty.call(overrides as Record<string, any>, 'userId');
+  const userId = hasExplicitUserId
+    ? (overrides?.userId || undefined)
+    : pickFirstString(data.user_id, data.userId, data.seller_id, data.sellerId);
   const entityType = overrides?.entityType || pickFirstString(data.entity_type, data.entityType) || inferAgent10PrimaryEntityType(data);
   const entityId = overrides?.entityId || pickFirstString(data.entity_id, data.entityId) || inferAgent10PrimaryEntityId(data);
   const eventType = overrides?.eventType || data.event_type || eventName;
