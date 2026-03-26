@@ -218,18 +218,24 @@ export class ReturnsService {
   /**
    * Save normalized returns to database
    */
-  async saveReturnsToDatabase(userId: string, returns: NormalizedReturn[], storeId?: string, tenantId?: string): Promise<void> {
+  async saveReturnsToDatabase(
+    userId: string,
+    returns: NormalizedReturn[],
+    storeId?: string,
+    tenantId?: string,
+    syncId?: string
+  ): Promise<{ persistedCount: number }> {
     try {
       logger.info('Saving returns to database', { userId, count: returns.length });
 
       if (returns.length === 0) {
         logger.info('No returns to save', { userId });
-        return;
+        return { persistedCount: 0 };
       }
 
       if (typeof supabase.from !== 'function') {
         logger.warn('Demo mode: Returns save skipped', { userId });
-        return;
+        return { persistedCount: returns.length };
       }
 
       if (!tenantId) {
@@ -249,6 +255,9 @@ export class ReturnsService {
         items: returnData.items,
         is_partial: returnData.is_partial,
         metadata: returnData.metadata || {},
+        store_id: storeId || null,
+        sync_id: syncId || null,
+        source: 'sp_api',
         source_report: 'SP-API_FBA_Returns',
         sync_timestamp: new Date().toISOString(),
         is_sandbox: this.isSandbox(),
@@ -289,9 +298,21 @@ export class ReturnsService {
             const { error: updateError } = await supabase
               .from('returns')
               .update({
+                order_id: returnData.order_id,
+                reason: returnData.reason,
+                returned_date: returnData.returned_date,
                 status: returnData.status,
                 refund_amount: returnData.refund_amount,
+                currency: returnData.currency,
+                items: returnData.items,
+                is_partial: returnData.is_partial,
+                metadata: returnData.metadata,
+                store_id: returnData.store_id,
+                sync_id: returnData.sync_id,
+                source: returnData.source,
+                source_report: returnData.source_report,
                 sync_timestamp: returnData.sync_timestamp,
+                is_sandbox: returnData.is_sandbox,
                 updated_at: returnData.updated_at
               })
               .eq('user_id', userId)
@@ -302,7 +323,7 @@ export class ReturnsService {
               logger.warn('Error updating return', { error: updateError, userId, returnId: returnData.return_id });
             }
           }
-          return;
+          return { persistedCount: returnsToInsert.length };
         }
       }
 
@@ -324,6 +345,7 @@ export class ReturnsService {
         metadata: { count: returnsToInsert.length, isSandbox: this.isSandbox() },
         severity: 'low'
       });
+      return { persistedCount: returnsToInsert.length };
     } catch (error: any) {
       logger.error('Error saving returns to database', { error: error.message, userId });
       throw error;

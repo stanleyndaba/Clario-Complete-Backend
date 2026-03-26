@@ -16,7 +16,10 @@ import { logAuditEvent } from '../security/auditLogger';
 
 export interface InventoryLedgerEvent {
     seller_id: string;
+    user_id?: string;
     tenant_id?: string;
+    store_id?: string;
+    sync_id?: string;
     event_date: string;
     fnsku: string;
     asin: string;
@@ -29,6 +32,7 @@ export interface InventoryLedgerEvent {
     disposition?: string;        // SELLABLE, DEFECTIVE, CUSTOMER_DAMAGED, etc.
     reason_code?: string;        // Damage reason, adjustment reason
     country?: string;
+    raw_payload?: Record<string, any>;
 }
 
 class InventoryLedgerSyncService {
@@ -42,7 +46,8 @@ class InventoryLedgerSyncService {
         startDate?: Date,
         endDate?: Date,
         storeId?: string,
-        tenantId?: string
+        tenantId?: string,
+        syncId?: string
     ): Promise<{ success: boolean; count: number; message: string }> {
         try {
             logger.info('📋 [INVENTORY LEDGER] Starting sync', { userId, storeId });
@@ -50,7 +55,7 @@ class InventoryLedgerSyncService {
             // Check if using mock SP-API
             if (process.env.USE_MOCK_SPAPI === 'true') {
                 logger.info('📋 [INVENTORY LEDGER] Using mock data', { userId });
-                return this.syncMockLedger(userId, tenantId);
+                return this.syncMockLedger(userId, tenantId, storeId, syncId);
             }
 
             const { spApiReportService } = await import('./spApiReportService');
@@ -72,10 +77,10 @@ class InventoryLedgerSyncService {
             }
 
             // Convert report records
-            const ledgerEvents = this.convertReportRecords(records, userId, tenantId);
+            const ledgerEvents = this.convertReportRecords(records, userId, tenantId, storeId, syncId);
 
             // Save to database
-            await this.saveLedgerToDatabase(userId, ledgerEvents, tenantId);
+            await this.saveLedgerToDatabase(userId, ledgerEvents, tenantId, storeId, syncId);
 
             logger.info(`📋 [INVENTORY LEDGER] Synced ${ledgerEvents.length} ledger events`, { userId });
 
@@ -109,12 +114,21 @@ class InventoryLedgerSyncService {
      * Date, FNSKU, ASIN, MSKU, Title, Event Type, Reference ID,
      * Quantity, Fulfillment Center, Disposition, Reason, Country
      */
-    private convertReportRecords(records: Record<string, string>[], userId: string, tenantId?: string): InventoryLedgerEvent[] {
+    private convertReportRecords(
+        records: Record<string, string>[],
+        userId: string,
+        tenantId?: string,
+        storeId?: string,
+        syncId?: string
+    ): InventoryLedgerEvent[] {
         return records
             .filter(r => (r['FNSKU'] || r['fnsku']) && (r['Event Type'] || r['event_type'] || r['event-type']))
             .map(record => ({
                 seller_id: userId,
+                user_id: userId,
                 tenant_id: tenantId,
+                store_id: storeId,
+                sync_id: syncId,
                 event_date: record['Date'] || record['date'] || new Date().toISOString(),
                 fnsku: record['FNSKU'] || record['fnsku'] || '',
                 asin: record['ASIN'] || record['asin'] || '',
@@ -126,34 +140,57 @@ class InventoryLedgerSyncService {
                 fulfillment_center: record['Fulfillment Center'] || record['fulfillment_center'] || record['fulfillment-center'] || undefined,
                 disposition: record['Disposition'] || record['disposition'] || undefined,
                 reason_code: record['Reason'] || record['reason'] || record['reason_code'] || undefined,
-                country: record['Country'] || record['country'] || undefined
+                country: record['Country'] || record['country'] || undefined,
+                raw_payload: record
             }));
     }
 
     /**
      * Generate mock ledger data for demo mode
      */
-    private async syncMockLedger(userId: string, tenantId?: string): Promise<{ success: boolean; count: number; message: string }> {
+    private async syncMockLedger(
+        userId: string,
+        tenantId?: string,
+        storeId?: string,
+        syncId?: string
+    ): Promise<{ success: boolean; count: number; message: string }> {
         const now = Date.now();
         const day = 24 * 60 * 60 * 1000;
 
         const mockEvents: InventoryLedgerEvent[] = [
-            { seller_id: userId, event_date: new Date(now - 30 * day).toISOString(), fnsku: 'FN-DEMO-001', asin: 'B0DEMO001', sku: 'DEMO-SKU-001', event_type: 'Receipts', quantity: 100, fulfillment_center: 'PHX7', disposition: 'SELLABLE', reference_id: 'FBA-SHIP-001' },
-            { seller_id: userId, event_date: new Date(now - 25 * day).toISOString(), fnsku: 'FN-DEMO-001', asin: 'B0DEMO001', sku: 'DEMO-SKU-001', event_type: 'Shipments', quantity: -15, fulfillment_center: 'PHX7', disposition: 'SELLABLE', reference_id: 'ORD-001' },
-            { seller_id: userId, event_date: new Date(now - 20 * day).toISOString(), fnsku: 'FN-DEMO-001', asin: 'B0DEMO001', sku: 'DEMO-SKU-001', event_type: 'Adjustments', quantity: -3, fulfillment_center: 'PHX7', disposition: 'DEFECTIVE', reason_code: 'Damaged by Amazon', reference_id: 'ADJ-001' },
-            { seller_id: userId, event_date: new Date(now - 15 * day).toISOString(), fnsku: 'FN-DEMO-002', asin: 'B0DEMO002', sku: 'DEMO-SKU-002', event_type: 'Receipts', quantity: 50, fulfillment_center: 'BFI4', disposition: 'SELLABLE', reference_id: 'FBA-SHIP-002' },
-            { seller_id: userId, event_date: new Date(now - 10 * day).toISOString(), fnsku: 'FN-DEMO-002', asin: 'B0DEMO002', sku: 'DEMO-SKU-002', event_type: 'CustomerReturns', quantity: 2, fulfillment_center: 'BFI4', disposition: 'CUSTOMER_DAMAGED', reason_code: 'Item defective', reference_id: 'RET-001' },
-            { seller_id: userId, event_date: new Date(now - 5 * day).toISOString(), fnsku: 'FN-DEMO-003', asin: 'B0DEMO003', sku: 'DEMO-SKU-003', event_type: 'Adjustments', quantity: -1, fulfillment_center: 'PHX7', disposition: 'SELLABLE', reason_code: 'Lost in warehouse', reference_id: 'ADJ-002' },
+            { seller_id: userId, user_id: userId, tenant_id: tenantId, store_id: storeId, sync_id: syncId, event_date: new Date(now - 30 * day).toISOString(), fnsku: 'FN-DEMO-001', asin: 'B0DEMO001', sku: 'DEMO-SKU-001', event_type: 'Receipts', quantity: 100, fulfillment_center: 'PHX7', disposition: 'SELLABLE', reference_id: 'FBA-SHIP-001' },
+            { seller_id: userId, user_id: userId, tenant_id: tenantId, store_id: storeId, sync_id: syncId, event_date: new Date(now - 25 * day).toISOString(), fnsku: 'FN-DEMO-001', asin: 'B0DEMO001', sku: 'DEMO-SKU-001', event_type: 'Shipments', quantity: -15, fulfillment_center: 'PHX7', disposition: 'SELLABLE', reference_id: 'ORD-001' },
+            { seller_id: userId, user_id: userId, tenant_id: tenantId, store_id: storeId, sync_id: syncId, event_date: new Date(now - 20 * day).toISOString(), fnsku: 'FN-DEMO-001', asin: 'B0DEMO001', sku: 'DEMO-SKU-001', event_type: 'Adjustments', quantity: -3, fulfillment_center: 'PHX7', disposition: 'DEFECTIVE', reason_code: 'Damaged by Amazon', reference_id: 'ADJ-001' },
+            { seller_id: userId, user_id: userId, tenant_id: tenantId, store_id: storeId, sync_id: syncId, event_date: new Date(now - 15 * day).toISOString(), fnsku: 'FN-DEMO-002', asin: 'B0DEMO002', sku: 'DEMO-SKU-002', event_type: 'Receipts', quantity: 50, fulfillment_center: 'BFI4', disposition: 'SELLABLE', reference_id: 'FBA-SHIP-002' },
+            { seller_id: userId, user_id: userId, tenant_id: tenantId, store_id: storeId, sync_id: syncId, event_date: new Date(now - 10 * day).toISOString(), fnsku: 'FN-DEMO-002', asin: 'B0DEMO002', sku: 'DEMO-SKU-002', event_type: 'CustomerReturns', quantity: 2, fulfillment_center: 'BFI4', disposition: 'CUSTOMER_DAMAGED', reason_code: 'Item defective', reference_id: 'RET-001' },
+            { seller_id: userId, user_id: userId, tenant_id: tenantId, store_id: storeId, sync_id: syncId, event_date: new Date(now - 5 * day).toISOString(), fnsku: 'FN-DEMO-003', asin: 'B0DEMO003', sku: 'DEMO-SKU-003', event_type: 'Adjustments', quantity: -1, fulfillment_center: 'PHX7', disposition: 'SELLABLE', reason_code: 'Lost in warehouse', reference_id: 'ADJ-002' },
         ];
 
-        await this.saveLedgerToDatabase(userId, mockEvents, tenantId);
+        await this.saveLedgerToDatabase(userId, mockEvents, tenantId, storeId, syncId);
         return { success: true, count: mockEvents.length, message: `Synced ${mockEvents.length} mock inventory ledger events` };
     }
 
     /**
      * Save ledger events to database with upsert
      */
-    private async saveLedgerToDatabase(userId: string, events: InventoryLedgerEvent[], tenantId?: string): Promise<void> {
+    private mapCanonicalEventType(rawType: string): { eventType: string; direction: 'in' | 'out' } {
+        const normalized = String(rawType || '').toLowerCase();
+        if (normalized.includes('receipt')) return { eventType: 'Receipt', direction: 'in' };
+        if (normalized.includes('shipment')) return { eventType: 'Shipment', direction: 'out' };
+        if (normalized.includes('return')) return { eventType: 'Return', direction: 'in' };
+        if (normalized.includes('removal')) return { eventType: 'Removal', direction: 'out' };
+        if (normalized.includes('disposal') || normalized.includes('disposed')) return { eventType: 'Disposal', direction: 'out' };
+        if (normalized.includes('transfer')) return { eventType: 'Transfer', direction: 'out' };
+        return { eventType: 'Adjustment', direction: 'out' };
+    }
+
+    private async saveLedgerToDatabase(
+        userId: string,
+        events: InventoryLedgerEvent[],
+        tenantId?: string,
+        storeId?: string,
+        syncId?: string
+    ): Promise<void> {
         if (events.length === 0) return;
 
         if (typeof supabase.from !== 'function') {
@@ -184,6 +221,81 @@ class InventoryLedgerSyncService {
             updated_at: new Date().toISOString()
         }));
 
+        const ledgerEventRows = events.map((event) => {
+            const mapped = this.mapCanonicalEventType(event.event_type);
+            const direction = mapped.eventType === 'Transfer'
+                ? (event.quantity >= 0 ? 'in' : 'out')
+                : (event.quantity >= 0 ? 'in' : mapped.direction);
+
+            return {
+                user_id: event.user_id || userId,
+                tenant_id: tenantId,
+                store_id: storeId || event.store_id || null,
+                sync_id: syncId || event.sync_id || null,
+                fnsku: event.fnsku,
+                asin: event.asin || null,
+                sku: event.sku || null,
+                product_name: event.title || null,
+                event_type: mapped.eventType,
+                quantity: Math.abs(Number(event.quantity || 0)),
+                quantity_direction: direction,
+                warehouse_balance: null,
+                event_date: event.event_date,
+                fulfillment_center: event.fulfillment_center || null,
+                disposition: event.disposition || null,
+                reason: event.reason_code || null,
+                reference_id: event.reference_id || null,
+                unit_cost: null,
+                average_sales_price: null,
+                country: event.country || 'US',
+                raw_payload: event.raw_payload || null,
+                source: 'sp_api',
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            };
+        });
+
+        const balanceByFnsku: Record<string, number> = {};
+        for (const row of ledgerEventRows) {
+            if (!balanceByFnsku[row.fnsku]) balanceByFnsku[row.fnsku] = 0;
+            if (row.quantity_direction === 'in') {
+                balanceByFnsku[row.fnsku] += row.quantity;
+            } else {
+                balanceByFnsku[row.fnsku] -= row.quantity;
+            }
+        }
+
+        const snapshotDate = new Date().toISOString();
+        for (const [fnsku, balance] of Object.entries(balanceByFnsku)) {
+            const lastEvent = [...ledgerEventRows].reverse().find((row) => row.fnsku === fnsku);
+            ledgerEventRows.push({
+                user_id: lastEvent?.user_id || userId,
+                tenant_id: tenantId,
+                store_id: lastEvent?.store_id || storeId || null,
+                sync_id: lastEvent?.sync_id || syncId || null,
+                fnsku,
+                asin: lastEvent?.asin || null,
+                sku: lastEvent?.sku || null,
+                product_name: lastEvent?.product_name || null,
+                event_type: 'Snapshot',
+                quantity: Math.max(0, balance),
+                quantity_direction: 'in',
+                warehouse_balance: Math.max(0, balance),
+                event_date: snapshotDate,
+                fulfillment_center: lastEvent?.fulfillment_center || null,
+                disposition: 'SELLABLE',
+                reason: 'SP-API ledger snapshot',
+                reference_id: syncId || lastEvent?.reference_id || null,
+                unit_cost: null,
+                average_sales_price: null,
+                country: lastEvent?.country || 'US',
+                raw_payload: { type: 'calculated_snapshot', balance, fnsku },
+                source: 'sp_api',
+                created_at: snapshotDate,
+                updated_at: snapshotDate
+            });
+        }
+
         // Upsert on composite key to avoid duplicates
         const { error } = await supabase
             .from('inventory_ledger')
@@ -204,6 +316,17 @@ class InventoryLedgerSyncService {
             if (insertError && !insertError.message.includes('duplicate')) {
                 throw new Error(`Inventory ledger save failed: ${insertError.message}`);
             }
+        }
+
+        const { error: eventError } = await supabase
+            .from('inventory_ledger_events')
+            .upsert(ledgerEventRows, {
+                onConflict: 'tenant_id,user_id,fnsku,event_type,event_date,reference_id',
+                ignoreDuplicates: false
+            });
+
+        if (eventError) {
+            throw new Error(`Inventory ledger events save failed: ${eventError.message}`);
         }
 
         logger.info('📋 [INVENTORY LEDGER] Saved to database', { userId, count: toInsert.length });

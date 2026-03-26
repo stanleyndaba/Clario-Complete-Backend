@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import logger from '../utils/logger';
 import { convertUserIdToUuid } from '../database/supabaseClient';
+import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifier';
 
 const UUID_REGEX =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -33,20 +34,29 @@ const PUBLIC_PATH_PREFIXES = [
   '/api/v1/integrations/dropbox/auth', // Dropbox OAuth
 ];
 
+function extractUuid(candidate?: string | null): string | null {
+  if (typeof candidate !== 'string' || candidate.trim().length === 0) {
+    return null;
+  }
+
+  const embedded = candidate.match(UUID_REGEX);
+  return embedded?.[0] || null;
+}
+
+function hasTrustedInternalApiKey(req: Request): boolean {
+  const configuredKey = process.env.INTERNAL_API_KEY;
+  if (!configuredKey || configuredKey.trim().length === 0) {
+    return false;
+  }
+
+  const providedKey = req.headers['x-internal-api-key'] || req.headers['x-api-key'];
+  return typeof providedKey === 'string' && providedKey === configuredKey;
+}
+
 /**
- * Middleware to extract user ID from headers or cookies
- * 
- * Priority order:
- * 1. X-User-Id header (set by Python API when forwarding requests)
- * 2. X-Forwarded-User-Id header (alternative header name)
- * 3. req.user.id (if auth middleware sets it)
- * 4. req.user.user_id (alternative user ID field)
- * 5. Cookie session_token (decode JWT if needed)
- * 6. Query parameter userId (fallback for testing)
- * 
- * Sets req.userId for use in route handlers
+ * Middleware to extract a trusted user ID from verified auth or an explicitly trusted internal forward.
  */
-export function userIdMiddleware(req: Request, res: Response, next: NextFunction): void {
+export async function userIdMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     // Use originalUrl for path matching (req.path strips mount path in subrouters)
     const fullPath = req.originalUrl?.split('?')[0] || req.path;
@@ -64,54 +74,50 @@ export function userIdMiddleware(req: Request, res: Response, next: NextFunction
     if (isPublicPath || isPublicPrefix) {
       return next();
     }
-    // Priority 1: X-User-Id header (set by Python API)
-    let userId: string | undefined = req.headers['x-user-id'] as string;
 
-    // Priority 2: X-Forwarded-User-Id header (alternative)
-    if (!userId) {
-      userId = req.headers['x-forwarded-user-id'] as string;
-    }
+    let userId: string | undefined;
+    let identitySource = 'none';
 
-    // Priority 3: req.user.id (if auth middleware sets it)
-    if (!userId && (req as any).user?.id) {
-      userId = (req as any).user.id;
-    }
-
-    // Priority 4: req.user.user_id (alternative user ID field)
-    if (!userId && (req as any).user?.user_id) {
-      userId = (req as any).user.user_id;
-    }
-
-    // Priority 5: Cookie session_token (decode JWT if needed)
-    if (!userId && req.cookies?.session_token) {
-      try {
-        const jwt = require('jsonwebtoken');
-        const decoded = jwt.decode(req.cookies.session_token);
-        if (decoded && (decoded.sub || decoded.id || decoded.user_id)) {
-          userId = decoded.sub || decoded.id || decoded.user_id;
-        }
-      } catch (e) {
-        // Ignore decode errors
+    const requestToken = extractRequestToken(req);
+    if (requestToken) {
+      const verified = await verifyAccessToken(requestToken);
+      const verifiedId = extractUuid(verified?.id);
+      if (verifiedId) {
+        userId = verifiedId;
+        identitySource = verified?.source === 'supabase' ? 'verified-supabase-token' : 'verified-backend-jwt';
       }
     }
 
-    // Priority 6: Authorization header (Bearer token)
-    if (!userId && req.headers.authorization?.startsWith('Bearer ')) {
-      try {
-        const token = req.headers.authorization.split(' ')[1];
-        const jwt = require('jsonwebtoken');
-        const decoded = jwt.decode(token);
-        if (decoded && (decoded.sub || decoded.id || decoded.user_id)) {
-          userId = decoded.sub || decoded.id || decoded.user_id;
-        }
-      } catch (e) {
-        // Ignore decode errors
+    if (!userId && (req as any).user?.id && hasTrustedInternalApiKey(req)) {
+      const trustedUserId = extractUuid((req as any).user.id);
+      if (trustedUserId) {
+        userId = trustedUserId;
+        identitySource = 'trusted-req-user-id';
       }
     }
 
-    // Priority 7: Query parameter (fallback for testing)
-    if (!userId && req.query?.userId) {
-      userId = req.query.userId as string;
+    if (!userId && (req as any).user?.user_id && hasTrustedInternalApiKey(req)) {
+      const trustedUserId = extractUuid((req as any).user.user_id);
+      if (trustedUserId) {
+        userId = trustedUserId;
+        identitySource = 'trusted-req-user-user_id';
+      }
+    }
+
+    if (!userId && hasTrustedInternalApiKey(req)) {
+      const forwardedUserId = extractUuid(req.headers['x-user-id'] as string);
+      if (forwardedUserId) {
+        userId = forwardedUserId;
+        identitySource = 'trusted-x-user-id';
+      }
+    }
+
+    if (!userId && hasTrustedInternalApiKey(req)) {
+      const forwardedUserId = extractUuid(req.headers['x-forwarded-user-id'] as string);
+      if (forwardedUserId) {
+        userId = forwardedUserId;
+        identitySource = 'trusted-x-forwarded-user-id';
+      }
     }
 
     // POISON CHECK: The Null Identity Poison Trap
@@ -141,6 +147,7 @@ export function userIdMiddleware(req: Request, res: Response, next: NextFunction
     if (!userId) {
       if (allowDemoUser) {
         userId = convertUserIdToUuid('demo-user');
+        identitySource = 'default-demo-user';
         logger.debug('Demo mode enabled - falling back to demo-user', {
           path: req.path,
           method: req.method
@@ -191,13 +198,7 @@ export function userIdMiddleware(req: Request, res: Response, next: NextFunction
       userId,
       path: req.path,
       method: req.method,
-      source: req.headers['x-user-id'] ? 'x-user-id-header' :
-        req.headers['x-forwarded-user-id'] ? 'x-forwarded-user-id-header' :
-          (req as any).user?.id ? 'req.user.id' :
-            req.headers.authorization ? 'auth-header' :
-              req.cookies?.session_token ? 'session-cookie' :
-                req.query?.userId ? 'query-param' :
-                  allowDemoUser ? 'default-demo-user' : 'n/a'
+      source: identitySource
     });
 
     next();

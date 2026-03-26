@@ -21,8 +21,13 @@ export const startSync = async (req: Request, res: Response) => {
 
     logger.info(`Starting sync for user: ${userId}`);
 
+    const storeId =
+      (req.body?.storeId as string | undefined) ||
+      (req.query.storeId as string | undefined) ||
+      (req.headers['x-store-id'] as string | undefined);
+
     // Start sync job (async, returns immediately)
-    const result = await syncJobManager.startSync(userId);
+    const result = await syncJobManager.startSync(userId, storeId);
 
     res.json({
       syncId: result.syncId,
@@ -97,7 +102,10 @@ export const getActiveSyncStatus = async (req: Request, res: Response) => {
     logger.info(`✅ [SYNC STATUS] Getting active sync status for userId: ${userId}`);
 
     const tenantId = (req as any).tenant?.tenantId;
-    const activeSyncStatus = await syncJobManager.getActiveSyncStatus(userId, tenantId);
+    const storeId =
+      (req.query.storeId as string | undefined) ||
+      (req.headers['x-store-id'] as string | undefined);
+    const activeSyncStatus = await syncJobManager.getActiveSyncStatus(userId, tenantId, storeId);
 
     logger.info(`✅ [SYNC STATUS] Successfully retrieved sync status`, {
       userId,
@@ -146,7 +154,11 @@ export const getSyncStatus = async (req: Request, res: Response) => {
 
     logger.info(`Getting sync status for syncId: ${syncId}, userId: ${userId}`);
 
-    const syncStatus = await syncJobManager.getSyncStatus(syncId, userId);
+    const tenantId = (req as any).tenant?.tenantId;
+    const storeId =
+      (req.query.storeId as string | undefined) ||
+      (req.headers['x-store-id'] as string | undefined);
+    const syncStatus = await syncJobManager.getSyncStatus(syncId, userId, tenantId, storeId);
 
     if (!syncStatus) {
       return res.status(404).json({
@@ -205,7 +217,10 @@ export const getSyncHistory = async (req: Request, res: Response) => {
     logger.info(`Getting sync history for userId: ${userId}, limit: ${limit}, offset: ${offset}`);
 
     const tenantId = (req as any).tenant?.tenantId;
-    const history = await syncJobManager.getSyncHistory(userId, limit, offset, tenantId);
+    const storeId =
+      (req.query.storeId as string | undefined) ||
+      (req.headers['x-store-id'] as string | undefined);
+    const history = await syncJobManager.getSyncHistory(userId, limit, offset, tenantId, storeId);
 
     res.json({
       syncs: history.syncs.map(sync => ({

@@ -30,6 +30,11 @@ export interface NormalizedSettlement {
   metadata?: any;
 }
 
+export interface FinancialEventsPersistenceResult {
+  persistedCount: number;
+  feeEventsCount: number;
+}
+
 export class SettlementsService {
   private baseUrl: string;
   private isSandboxMode: boolean;
@@ -283,18 +288,24 @@ export class SettlementsService {
   /**
    * Save normalized settlements to database
    */
-  async saveSettlementsToDatabase(userId: string, settlements: NormalizedSettlement[], storeId?: string, tenantId?: string): Promise<void> {
+  async saveSettlementsToDatabase(
+    userId: string,
+    settlements: NormalizedSettlement[],
+    storeId?: string,
+    tenantId?: string,
+    syncId?: string
+  ): Promise<{ persistedCount: number }> {
     try {
       logger.info('Saving settlements to database', { userId, count: settlements.length });
 
       if (settlements.length === 0) {
         logger.info('No settlements to save', { userId });
-        return;
+        return { persistedCount: 0 };
       }
 
       if (typeof supabase.from !== 'function') {
         logger.warn('Demo mode: Settlements save skipped', { userId });
-        return;
+        return { persistedCount: settlements.length };
       }
 
       if (!tenantId) {
@@ -313,6 +324,9 @@ export class SettlementsService {
         settlement_date: settlement.settlement_date,
         fee_breakdown: settlement.fee_breakdown,
         metadata: settlement.metadata || {},
+        store_id: storeId || null,
+        sync_id: syncId || null,
+        source: 'sp_api',
         source_report: 'SP-API_FinancialEvents',
         sync_timestamp: new Date().toISOString(),
         is_sandbox: this.isSandbox(),
@@ -344,10 +358,92 @@ export class SettlementsService {
         metadata: { count: settlementsToInsert.length, isSandbox: this.isSandbox() },
         severity: 'low'
       });
+      return { persistedCount: settlementsToInsert.length };
     } catch (error: any) {
       logger.error('Error saving settlements to database', { error: error.message, userId });
       throw error;
     }
+  }
+
+  private mapSettlementToFinancialEventType(transactionType: string): string {
+    const normalized = String(transactionType || '').toLowerCase();
+    if (normalized.includes('reimbursement')) return 'reimbursement';
+    if (normalized.includes('fee')) return 'fee';
+    if (normalized.includes('return') || normalized.includes('refund')) return 'return';
+    if (normalized.includes('shipment')) return 'shipment';
+    if (normalized.includes('adjust')) return 'adjustment';
+    return normalized || 'adjustment';
+  }
+
+  async saveFinancialEventsToDatabase(
+    userId: string,
+    settlements: NormalizedSettlement[],
+    storeId?: string,
+    tenantId?: string,
+    syncId?: string
+  ): Promise<FinancialEventsPersistenceResult> {
+    if (settlements.length === 0) {
+      return { persistedCount: 0, feeEventsCount: 0 };
+    }
+
+    if (typeof supabase.from !== 'function') {
+      logger.warn('Demo mode: Financial events save skipped', { userId });
+      return {
+        persistedCount: settlements.length,
+        feeEventsCount: settlements.filter((settlement) => this.mapSettlementToFinancialEventType(settlement.transaction_type) === 'fee').length
+      };
+    }
+
+    if (!tenantId) {
+      throw new Error('tenantId is required to persist financial events');
+    }
+
+    const now = new Date().toISOString();
+    const financialRows = settlements.map((settlement) => {
+      const metadata = settlement.metadata || {};
+      return {
+        seller_id: userId,
+        tenant_id: tenantId,
+        store_id: storeId || null,
+        sync_id: syncId || null,
+        source: 'sp_api',
+        event_type: this.mapSettlementToFinancialEventType(settlement.transaction_type),
+        amount: settlement.amount,
+        currency: settlement.currency || 'USD',
+        raw_payload: {
+          settlement_id: settlement.settlement_id,
+          transaction_type: settlement.transaction_type,
+          fee_breakdown: settlement.fee_breakdown || {},
+          metadata
+        },
+        amazon_event_id: settlement.settlement_id,
+        amazon_order_id: settlement.order_id || null,
+        amazon_sku: metadata.sku || null,
+        sku: metadata.sku || null,
+        asin: metadata.asin || null,
+        description: metadata.adjustmentType || metadata.feeType || settlement.transaction_type,
+        event_date: settlement.settlement_date,
+        created_at: now,
+        updated_at: now
+      };
+    });
+
+    const { error } = await supabase
+      .from('financial_events')
+      .upsert(financialRows, {
+        onConflict: 'tenant_id,seller_id,event_type,event_date,amazon_order_id,amazon_sku,amount',
+        ignoreDuplicates: false
+      });
+
+    if (error) {
+      logger.error('Error upserting financial events', { error, userId });
+      throw new Error(`Failed to save financial events: ${error.message}`);
+    }
+
+    return {
+      persistedCount: financialRows.length,
+      feeEventsCount: financialRows.filter((row) => row.event_type === 'fee').length
+    };
   }
 
   /**

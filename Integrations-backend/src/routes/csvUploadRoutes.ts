@@ -60,7 +60,7 @@ router.post('/ingest', requireActiveTenant, upload.array('files', 10), async (re
         if (!userId) {
             return res.status(401).json({
                 success: false,
-                error: 'User ID is required. Include X-User-Id header or authenticate via session.',
+                error: 'Authenticated app user is required for CSV ingestion.',
             });
         }
 
@@ -154,7 +154,7 @@ router.post('/ingest/:type', requireActiveTenant, upload.array('files', 10), asy
         if (!userId) {
             return res.status(401).json({
                 success: false,
-                error: 'User ID is required. Include X-User-Id header or authenticate via session.',
+                error: 'Authenticated app user is required for CSV ingestion.',
             });
         }
 
@@ -251,13 +251,13 @@ router.get('/supported-types', (_req: Request, res: Response) => {
                 method: 'POST',
                 endpoint: '/api/csv-upload/ingest',
                 description: 'Upload CSV files and let the system auto-detect the type from column headers',
-                example: 'curl -X POST /api/csv-upload/ingest -F "files=@orders.csv" -H "X-User-Id: your-user-id"',
+                example: 'curl -X POST /api/csv-upload/ingest -F "files=@orders.csv" -H "Authorization: Bearer <access-token>"',
             },
             explicitType: {
                 method: 'POST',
                 endpoint: '/api/csv-upload/ingest/:type',
                 description: 'Upload CSV files with an explicit type',
-                example: 'curl -X POST /api/csv-upload/ingest/orders -F "files=@orders.csv" -H "X-User-Id: your-user-id"',
+                example: 'curl -X POST /api/csv-upload/ingest/orders -F "files=@orders.csv" -H "Authorization: Bearer <access-token>"',
             },
             options: {
                 detect: 'Set query param ?detect=false to skip triggering detection after upload',

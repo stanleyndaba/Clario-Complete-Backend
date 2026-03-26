@@ -55,11 +55,113 @@ export interface SyncJobStatus {
   lastSuccessfulSyncAt?: string;
 }
 
+interface PersistedSyncResults {
+  ordersProcessed: number;
+  totalOrders: number;
+  inventoryCount: number;
+  shipmentsCount: number;
+  returnsCount: number;
+  settlementsCount: number;
+  feesCount: number;
+  claimsDetected: number;
+  totalItemsSynced: number;
+}
+
 class SyncJobManager {
   private runningJobs: Map<string, { status: SyncJobStatus; cancel: () => void }> = new Map();
 
   constructor() {
     // Agent 2 Data Sync Service is imported and used directly
+  }
+
+  private matchesScope(syncStatus: SyncJobStatus, tenantId?: string, storeId?: string): boolean {
+    if (tenantId && syncStatus.tenantId !== tenantId) {
+      return false;
+    }
+
+    if (storeId && syncStatus.storeId !== storeId) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private applySyncProgressScope(query: any, tenantId?: string, storeId?: string): any {
+    let scopedQuery = query;
+
+    if (tenantId) {
+      scopedQuery = scopedQuery.eq('tenant_id', tenantId);
+    }
+
+    if (storeId) {
+      scopedQuery = scopedQuery.eq('store_id', storeId);
+    }
+
+    return scopedQuery;
+  }
+
+  private toPersistedSyncResults(metadata: any): PersistedSyncResults {
+    const ordersProcessed = metadata.ordersProcessed || 0;
+    const inventoryCount = metadata.inventoryCount || 0;
+    const shipmentsCount = metadata.shipmentsCount || 0;
+    const returnsCount = metadata.returnsCount || 0;
+    const settlementsCount = metadata.settlementsCount || 0;
+    const feesCount = metadata.feesCount || 0;
+    const claimsDetected = metadata.claimsDetected || 0;
+
+    return {
+      ordersProcessed,
+      totalOrders: metadata.totalOrders || ordersProcessed,
+      inventoryCount,
+      shipmentsCount,
+      returnsCount,
+      settlementsCount,
+      feesCount,
+      claimsDetected,
+      totalItemsSynced: ordersProcessed + inventoryCount + shipmentsCount + returnsCount + settlementsCount + feesCount
+    };
+  }
+
+  private buildSyncJobStatusFromRow(row: any, countsOverride?: Partial<PersistedSyncResults>): SyncJobStatus {
+    const metadata = (row.metadata as any) || {};
+    const counts = {
+      ...this.toPersistedSyncResults(metadata),
+      ...countsOverride
+    };
+
+    let normalizedStatus: SyncStatus = 'idle';
+    if (row.status === 'running' || row.status === 'in_progress') {
+      normalizedStatus = 'running';
+    } else if (row.status === 'detecting') {
+      normalizedStatus = 'detecting';
+    } else if (row.status === 'completed' || row.status === 'complete') {
+      normalizedStatus = 'completed';
+    } else if (row.status === 'failed') {
+      normalizedStatus = 'failed';
+    } else if (row.status === 'cancelled') {
+      normalizedStatus = 'cancelled';
+    }
+
+    return {
+      syncId: row.sync_id,
+      userId: row.user_id,
+      tenantId: row.tenant_id || undefined,
+      storeId: row.store_id || undefined,
+      status: normalizedStatus,
+      progress: row.progress || 0,
+      message: row.current_step || 'Unknown',
+      startedAt: row.created_at,
+      completedAt: row.updated_at,
+      ordersProcessed: counts.ordersProcessed,
+      totalOrders: counts.totalOrders,
+      inventoryCount: counts.inventoryCount,
+      shipmentsCount: counts.shipmentsCount,
+      returnsCount: counts.returnsCount,
+      settlementsCount: counts.settlementsCount,
+      feesCount: counts.feesCount,
+      claimsDetected: counts.claimsDetected,
+      error: metadata.error
+    };
   }
 
   /**
@@ -105,18 +207,22 @@ class SyncJobManager {
     // This prevents orphaned syncs from blocking new sync requests
     const STALE_SYNC_THRESHOLD_MINUTES = 2;
     try {
-      const { data: staleSyncs, error: staleError } = await supabase
-        .from('sync_progress')
-        .update({
-          status: 'failed',
-          current_step: 'Auto-cleared: Sync timed out after 10 minutes of inactivity',
-          error_code: 'TIMEOUT',
-          updated_at: new Date().toISOString()
-        })
-        .eq('user_id', userId)
-        .eq('status', 'running')
-        .lt('updated_at', new Date(Date.now() - STALE_SYNC_THRESHOLD_MINUTES * 60 * 1000).toISOString())
-        .select('sync_id');
+      const staleSyncQuery = this.applySyncProgressScope(
+        supabase
+          .from('sync_progress')
+          .update({
+            status: 'failed',
+            current_step: 'Auto-cleared: Sync timed out after 10 minutes of inactivity',
+            error_code: 'TIMEOUT',
+            updated_at: new Date().toISOString()
+          })
+          .eq('user_id', userId)
+          .eq('status', 'running')
+          .lt('updated_at', new Date(Date.now() - STALE_SYNC_THRESHOLD_MINUTES * 60 * 1000).toISOString()),
+        tenantContext.tenantId,
+        storeId
+      );
+      const { data: staleSyncs, error: staleError } = await staleSyncQuery.select('sync_id');
 
       if (staleSyncs && staleSyncs.length > 0) {
         logger.info('🧹 [SYNC JOB MANAGER] Auto-cleared stale syncs', {
@@ -134,20 +240,24 @@ class SyncJobManager {
     }
 
     // Check if there's already a running sync (both in-memory and database)
-    const existingSync = await this.getActiveSync(userId);
+    const existingSync = await this.getActiveSync(userId, tenantContext.tenantId, storeId);
     if (existingSync && existingSync.status === 'running') {
       throw new Error(`Sync already in progress (${existingSync.syncId}). Please wait for it to complete or cancel it first.`);
     }
 
     // Also check database for any active syncs
-    const { data: dbActiveSync } = await supabase
-      .from('sync_progress')
-      .select('sync_id, status, updated_at')
-      .eq('user_id', userId)
-      .eq('status', 'running')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const dbActiveSyncQuery = this.applySyncProgressScope(
+      supabase
+        .from('sync_progress')
+        .select('sync_id, status, updated_at')
+        .eq('user_id', userId)
+        .eq('status', 'running')
+        .order('created_at', { ascending: false })
+        .limit(1),
+      tenantContext.tenantId,
+      storeId
+    );
+    const { data: dbActiveSync } = await dbActiveSyncQuery.maybeSingle();
 
     if (dbActiveSync && dbActiveSync.status === 'running') {
       // Double-check it's not stale (should have been cleaned above, but check again)
@@ -156,15 +266,19 @@ class SyncJobManager {
 
       if (isStale) {
         // Force clear this stale sync
-        await supabase
-          .from('sync_progress')
-          .update({
-            status: 'failed',
-            current_step: 'Auto-cleared: Sync was stale',
-            error_code: 'TIMEOUT',
-            updated_at: new Date().toISOString()
-          })
-          .eq('sync_id', dbActiveSync.sync_id);
+        await this.applySyncProgressScope(
+          supabase
+            .from('sync_progress')
+            .update({
+              status: 'failed',
+              current_step: 'Auto-cleared: Sync was stale',
+              error_code: 'TIMEOUT',
+              updated_at: new Date().toISOString()
+            })
+            .eq('sync_id', dbActiveSync.sync_id),
+          tenantContext.tenantId,
+          storeId
+        );
 
         logger.info('🧹 [SYNC JOB MANAGER] Force-cleared stale sync', {
           userId,
@@ -275,6 +389,7 @@ class SyncJobManager {
       status: 'started',
       tenant_id: syncStatus.tenantId,
       tenant_slug: syncStatus.tenantSlug,
+      store_id: syncStatus.storeId,
       syncId: syncId,
       message: 'Data sync started',
       timestamp: new Date().toISOString()
@@ -314,6 +429,7 @@ class SyncJobManager {
       status: 'started',
       tenant_id: syncStatus.tenantId,
       tenant_slug: syncStatus.tenantSlug,
+      store_id: syncStatus.storeId,
       syncId: syncId,
       message: 'Data sync started',
       timestamp: new Date().toISOString()
@@ -450,15 +566,44 @@ class SyncJobManager {
           duration: `${agent2Duration}ms (${(agent2Duration / 1000).toFixed(2)}s)`
         });
 
+        syncStatus.storeId = syncResult?.storeId || syncStatus.storeId;
+        syncStatus.ordersProcessed = syncResult?.summary?.ordersCount || 0;
+        syncStatus.totalOrders = syncResult?.summary?.ordersCount || 0;
+        syncStatus.inventoryCount = syncResult?.summary?.inventoryCount || 0;
+        syncStatus.shipmentsCount = syncResult?.summary?.shipmentsCount || 0;
+        syncStatus.returnsCount = syncResult?.summary?.returnsCount || 0;
+        syncStatus.settlementsCount = syncResult?.summary?.settlementsCount || 0;
+        syncStatus.feesCount = syncResult?.summary?.feesCount || 0;
+
         // Check if Agent 2 sync failed
         if (!syncResult.success) {
+          const partialItemsPersisted =
+            (syncStatus.ordersProcessed || 0) +
+            (syncStatus.inventoryCount || 0) +
+            (syncStatus.shipmentsCount || 0) +
+            (syncStatus.returnsCount || 0) +
+            (syncStatus.settlementsCount || 0) +
+            (syncStatus.feesCount || 0);
+
           logger.error('❌ [SYNC JOB MANAGER] Agent 2 sync failed', {
             userId,
             syncId,
             errors: syncResult.errors,
-            summary: syncResult.summary
+            summary: syncResult.summary,
+            partialItemsPersisted
           });
-          throw new Error(`Agent 2 sync failed: ${syncResult.errors.join(', ') || 'Unknown error'}`);
+
+          syncStatus.progress = Math.max(syncStatus.progress, 70);
+          syncStatus.message = partialItemsPersisted > 0
+            ? `Sync partially ingested ${partialItemsPersisted} persisted records before failure.`
+            : 'Sync failed before any Agent 2 data was persisted.';
+          syncStatus.error = syncResult.errors.join(', ') || 'Unknown Agent 2 sync error';
+
+          throw new Error(
+            partialItemsPersisted > 0
+              ? `Agent 2 sync partially failed after persisting ${partialItemsPersisted} records: ${syncStatus.error}`
+              : `Agent 2 sync failed: ${syncStatus.error}`
+          );
         }
 
         // Log Agent 2 summary in detail to debug wrong counts
@@ -488,13 +633,6 @@ class SyncJobManager {
         syncStatus.progress = 70;
         syncStatus.message = 'Data normalization complete. Processing results...';
         // Store all data type counts from Agent 2 at this point
-        syncStatus.ordersProcessed = syncResult.summary.ordersCount || 0;
-        syncStatus.totalOrders = syncResult.summary.ordersCount || 0;
-        syncStatus.inventoryCount = syncResult.summary.inventoryCount || 0;
-        syncStatus.shipmentsCount = syncResult.summary.shipmentsCount || 0;
-        syncStatus.returnsCount = syncResult.summary.returnsCount || 0;
-        syncStatus.settlementsCount = syncResult.summary.settlementsCount || 0;
-        syncStatus.feesCount = syncResult.summary.feesCount || 0;
         this.updateSyncStatus(syncStatus);
         this.sendProgressUpdate(userId, syncStatus);
 
@@ -713,7 +851,7 @@ class SyncJobManager {
         this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Generating recovery report...' });
 
         // Get sync results from database (now includes detection results if completed)
-        const syncResults = await this.getSyncResults(userId, syncId);
+        const syncResults = await this.getSyncResults(userId, syncId, syncStatus.tenantId, syncStatus.storeId);
 
         // Use Agent 2 sync result data if available, otherwise use database results
         // NOTE: Claims are NOT included - they're detected FROM the data, not synced data
@@ -847,6 +985,7 @@ class SyncJobManager {
           status: 'completed',
           tenant_id: syncStatus.tenantId,
           tenant_slug: syncStatus.tenantSlug,
+          store_id: syncStatus.storeId,
           syncId: syncId,
           ordersProcessed: syncStatus.ordersProcessed || 0,
           totalOrders: syncStatus.totalOrders || 0,
@@ -906,6 +1045,7 @@ class SyncJobManager {
           status: 'completed',
           tenant_id: syncStatus.tenantId,
           tenant_slug: syncStatus.tenantSlug,
+          store_id: syncStatus.storeId,
           syncId: syncId,
           ordersProcessed: syncStatus.ordersProcessed || 0,
           totalOrders: syncStatus.totalOrders || 0,
@@ -934,7 +1074,16 @@ class SyncJobManager {
         syncStatus.error = error.message;
         syncStatus.errorCode = structuredError.code;
         syncStatus.errorDetails = structuredError;
-        syncStatus.message = `Sync failed: ${structuredError.message}`;
+        const partialItemsPersisted =
+          (syncStatus.ordersProcessed || 0) +
+          (syncStatus.inventoryCount || 0) +
+          (syncStatus.shipmentsCount || 0) +
+          (syncStatus.returnsCount || 0) +
+          (syncStatus.settlementsCount || 0) +
+          (syncStatus.feesCount || 0);
+        syncStatus.message = partialItemsPersisted > 0
+          ? `Sync partially failed after persisting ${partialItemsPersisted} records: ${structuredError.message}`
+          : `Sync failed: ${structuredError.message}`;
         syncStatus.completedAt = new Date().toISOString();
 
         // Log structured error with next action
@@ -963,9 +1112,16 @@ class SyncJobManager {
           status: 'failed',
           tenant_id: syncStatus.tenantId,
           tenant_slug: syncStatus.tenantSlug,
+          store_id: syncStatus.storeId,
           syncId: syncId,
+          ordersProcessed: syncStatus.ordersProcessed || 0,
+          inventoryCount: syncStatus.inventoryCount || 0,
+          shipmentsCount: syncStatus.shipmentsCount || 0,
+          returnsCount: syncStatus.returnsCount || 0,
+          settlementsCount: syncStatus.settlementsCount || 0,
+          feesCount: syncStatus.feesCount || 0,
           error: error.message,
-          message: `Sync failed: ${error.message}`,
+          message: syncStatus.message,
           timestamp: new Date().toISOString()
         });
 
@@ -1053,12 +1209,12 @@ class SyncJobManager {
   /**
    * Get sync status by syncId
    */
-  async getSyncStatus(syncId: string, userId: string): Promise<SyncJobStatus | null> {
+  async getSyncStatus(syncId: string, userId: string, tenantId?: string, storeId?: string): Promise<SyncJobStatus | null> {
     // Check running jobs first
     const job = this.runningJobs.get(syncId);
     if (job) {
       // Verify it belongs to the user
-      if (job.status.userId === userId) {
+      if (job.status.userId === userId && this.matchesScope(job.status, tenantId, storeId)) {
         return job.status;
       }
       return null;
@@ -1066,180 +1222,34 @@ class SyncJobManager {
 
     // Check database
     try {
-      const { data, error } = await supabase
-        .from('sync_progress')
-        .select('*')
-        .eq('sync_id', syncId)
-        .eq('user_id', userId)
-        .single();
+      const scopedQuery = this.applySyncProgressScope(
+        supabase
+          .from('sync_progress')
+          .select('*')
+          .eq('sync_id', syncId)
+          .eq('user_id', userId),
+        tenantId,
+        storeId
+      );
+      const { data, error } = await scopedQuery.single();
 
       if (error || !data) {
         return null;
       }
 
-      // Normalize status from database to our standard format
-      let normalizedStatus: SyncStatus = 'idle';
-      if (data.status === 'running' || data.status === 'in_progress') {
-        normalizedStatus = 'running';
-      } else if (data.status === 'detecting') {
-        normalizedStatus = 'detecting';
-      } else if (data.status === 'completed' || data.status === 'complete') {
-        normalizedStatus = 'completed';
-      } else if (data.status === 'failed') {
-        normalizedStatus = 'failed';
-      } else if (data.status === 'cancelled') {
-        normalizedStatus = 'cancelled';
+      const shouldRefreshFromDatabase =
+        data.status === 'completed' ||
+        data.status === 'complete' ||
+        data.status === 'failed' ||
+        data.status === 'cancelled' ||
+        (data.progress && data.progress >= 80);
+
+      if (shouldRefreshFromDatabase) {
+        const syncResults = await this.getSyncResults(data.user_id, data.sync_id, tenantId, storeId);
+        return this.buildSyncJobStatusFromRow(data, syncResults);
       }
 
-      const metadata = (data.metadata as any) || {};
-
-      // If metadata is missing the new fields (old sync), try to recalculate from database
-      // This handles syncs created before we added all the data type counts
-      const hasNewFields = metadata.inventoryCount !== undefined ||
-        metadata.shipmentsCount !== undefined ||
-        metadata.returnsCount !== undefined;
-
-      // If old sync format and completed, try to recalculate counts from actual database records
-      if (!hasNewFields && normalizedStatus === 'completed') {
-        logger.warn(`Sync ${data.sync_id} has old metadata format (missing data type counts). Attempting to recalculate from database...`, {
-          userId: data.user_id,
-          syncId: data.sync_id
-        });
-
-        try {
-          // Recalculate counts from actual database records
-          const syncStartDate = metadata.startedAt || data.created_at;
-          const [ordersCount, inventoryCount, shipmentsCount, returnsCount, settlementsCount, feesCount, claimsCount] = await Promise.all([
-            supabase.from('orders').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).gte('created_at', syncStartDate),
-            supabase.from('inventory_items').select('id', { count: 'exact', head: true }).eq('user_id', data.user_id).gte('created_at', syncStartDate),
-            supabase.from('shipments').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).gte('created_at', syncStartDate),
-            supabase.from('returns').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).gte('created_at', syncStartDate),
-            supabase.from('settlements').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).gte('created_at', syncStartDate),
-            supabase.from('fees').select('id', { count: 'exact', head: true }).eq('user_id', data.user_id).gte('created_at', syncStartDate),
-            // Discovery Agent stores claims in detection_results table, not claims table
-            supabase.from('detection_results').select('id', { count: 'exact', head: true }).eq('seller_id', data.user_id).eq('sync_id', data.sync_id)
-          ]);
-
-          // Update metadata with recalculated counts
-          const recalculatedMetadata = {
-            ...metadata,
-            ordersProcessed: ordersCount.count || metadata.ordersProcessed || 0,
-            totalOrders: ordersCount.count || metadata.totalOrders || 0,
-            inventoryCount: inventoryCount.count || 0,
-            shipmentsCount: shipmentsCount.count || 0,
-            returnsCount: returnsCount.count || 0,
-            settlementsCount: settlementsCount.count || 0,
-            feesCount: feesCount.count || 0,
-            claimsDetected: claimsCount.count || metadata.claimsDetected || 0
-          };
-
-          // Save recalculated metadata back to database (async, don't wait)
-          supabase.from('sync_progress')
-            .update({ metadata: recalculatedMetadata })
-            .eq('sync_id', data.sync_id)
-            .eq('user_id', data.user_id)
-            .then(() => {
-              logger.info(`✅ Recalculated and updated metadata for sync ${data.sync_id}`, {
-                userId: data.user_id,
-                syncId: data.sync_id,
-                recalculatedCounts: recalculatedMetadata
-              });
-            })
-            .catch((err) => {
-              logger.error(`Failed to update recalculated metadata for sync ${data.sync_id}:`, err);
-            });
-
-          // Use recalculated metadata for this response
-          Object.assign(metadata, recalculatedMetadata);
-        } catch (recalcError: any) {
-          logger.error(`Failed to recalculate counts for sync ${data.sync_id}:`, recalcError);
-          // Continue with old metadata if recalculation fails
-        }
-      }
-
-      // ALWAYS query database directly for completed/failed syncs (most reliable)
-      // For running syncs, use metadata for speed, but verify with database if metadata shows 0
-      let claimsDetected = metadata.claimsDetected || 0;
-
-      // For completed/failed syncs, ALWAYS use database query (source of truth)
-      // For running syncs with progress >= 80%, check database if metadata shows 0
-      if (normalizedStatus === 'completed' || normalizedStatus === 'failed') {
-        // Always query database for completed syncs - don't trust metadata
-        logger.info('🔍 [SYNC JOB MANAGER] Querying database for claimsDetected (completed sync)', {
-          userId: data.user_id,
-          syncId: data.sync_id,
-          status: normalizedStatus,
-          metadataClaimsDetected: metadata.claimsDetected
-        });
-
-        const syncResults = await this.getSyncResults(data.user_id, data.sync_id);
-        claimsDetected = syncResults.claimsDetected;
-
-        logger.info('✅ [SYNC JOB MANAGER] Got claimsDetected from database', {
-          userId: data.user_id,
-          syncId: data.sync_id,
-          databaseCount: syncResults.claimsDetected,
-          previousMetadataCount: metadata.claimsDetected
-        });
-
-        // Update metadata for future requests if it was wrong (async, don't wait)
-        if (metadata.claimsDetected !== claimsDetected) {
-          supabase.from('sync_progress')
-            .update({
-              metadata: { ...metadata, claimsDetected },
-              updated_at: new Date().toISOString()
-            })
-            .eq('sync_id', data.sync_id)
-            .eq('user_id', data.user_id)
-            .then(() => {
-              logger.info('✅ Updated stale metadata.claimsDetected from database', {
-                userId: data.user_id,
-                syncId: data.sync_id,
-                claimsDetected
-              });
-            })
-            .catch((err) => {
-              logger.warn('Failed to update stale metadata', { error: err });
-            });
-        }
-      } else if (claimsDetected === 0 && (data.progress && data.progress >= 80)) {
-        // For running syncs in detection phase, check database if metadata shows 0
-        logger.info('🔍 [SYNC JOB MANAGER] Metadata shows 0 claims during detection phase, checking database', {
-          userId: data.user_id,
-          syncId: data.sync_id,
-          progress: data.progress,
-          metadataClaimsDetected: metadata.claimsDetected
-        });
-
-        const syncResults = await this.getSyncResults(data.user_id, data.sync_id);
-        if (syncResults.claimsDetected > 0) {
-          claimsDetected = syncResults.claimsDetected;
-          logger.info('✅ [SYNC JOB MANAGER] Found claims in database during detection phase', {
-            userId: data.user_id,
-            syncId: data.sync_id,
-            databaseCount: syncResults.claimsDetected
-          });
-        }
-      }
-
-      return {
-        syncId: data.sync_id,
-        userId: data.user_id,
-        status: normalizedStatus,
-        progress: data.progress || 0,
-        message: data.current_step || 'Unknown',
-        startedAt: data.created_at,
-        completedAt: data.updated_at,
-        ordersProcessed: metadata.ordersProcessed || 0,
-        totalOrders: metadata.totalOrders || 0,
-        inventoryCount: metadata.inventoryCount || 0,
-        shipmentsCount: metadata.shipmentsCount || 0,
-        returnsCount: metadata.returnsCount || 0,
-        settlementsCount: metadata.settlementsCount || 0,
-        feesCount: metadata.feesCount || 0,
-        claimsDetected, // Use metadata (fast), fallback to database if stale
-        error: metadata.error
-      };
+      return this.buildSyncJobStatusFromRow(data);
     } catch (error) {
       logger.error(`Error getting sync status for ${syncId}:`, error);
       return null;
@@ -1349,20 +1359,21 @@ class SyncJobManager {
   /**
    * Get sync history for a user
    */
-  async getSyncHistory(userId: string, limit: number = 20, offset: number = 0, tenantId?: string): Promise<{
+  async getSyncHistory(userId: string, limit: number = 20, offset: number = 0, tenantId?: string, storeId?: string): Promise<{
     syncs: SyncJobStatus[];
     total: number;
   }> {
     try {
-      let query = supabase
-        .from('sync_progress')
-        .select('*', { count: 'exact' })
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .range(offset, offset + limit - 1);
-
-      // Note: sync_progress table does not have tenant_id column
-      // Tenant isolation is handled via user_id scoping
+      const query = this.applySyncProgressScope(
+        supabase
+          .from('sync_progress')
+          .select('*', { count: 'exact' })
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false })
+          .range(offset, offset + limit - 1),
+        tenantId,
+        storeId
+      );
 
       const { data, error, count } = await query;
 
@@ -1371,27 +1382,7 @@ class SyncJobManager {
         return { syncs: [], total: 0 };
       }
 
-      const syncs = (data || []).map((row: any) => {
-        const metadata = (row.metadata as any) || {};
-        return {
-          syncId: row.sync_id,
-          userId: row.user_id,
-          status: row.status as any,
-          progress: row.progress || 0,
-          message: row.current_step || 'Unknown',
-          startedAt: row.created_at,
-          completedAt: row.updated_at,
-          ordersProcessed: metadata.ordersProcessed || 0,
-          totalOrders: metadata.totalOrders || 0,
-          inventoryCount: metadata.inventoryCount || 0,
-          shipmentsCount: metadata.shipmentsCount || 0,
-          returnsCount: metadata.returnsCount || 0,
-          settlementsCount: metadata.settlementsCount || 0,
-          feesCount: metadata.feesCount || 0,
-          claimsDetected: metadata.claimsDetected || 0,
-          error: metadata.error
-        };
-      });
+      const syncs = (data || []).map((row: any) => this.buildSyncJobStatusFromRow(row));
 
       return {
         syncs,
@@ -1407,7 +1398,7 @@ class SyncJobManager {
    * Get active sync status for a user (for frontend monitoring)
    * Returns format: { hasActiveSync: boolean, lastSync: { syncId, status, ... } | null }
    */
-  async getActiveSyncStatus(userId: string, tenantId?: string): Promise<{
+  async getActiveSyncStatus(userId: string, tenantId?: string, storeId?: string): Promise<{
     hasActiveSync: boolean;
     lastSync: {
       syncId: string;
@@ -1428,7 +1419,7 @@ class SyncJobManager {
   }> {
     // Check running jobs first
     for (const job of this.runningJobs.values()) {
-      if (job.status.userId === userId && job.status.status === 'running') {
+      if (job.status.userId === userId && job.status.status === 'running' && this.matchesScope(job.status, tenantId, storeId)) {
         return {
           hasActiveSync: true,
           lastSync: {
@@ -1453,138 +1444,83 @@ class SyncJobManager {
 
     // Check database for active syncs
     try {
-      let activeQuery = supabase
-        .from('sync_progress')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('status', 'running')
-        .order('created_at', { ascending: false })
-        .limit(1);
-
-      // Note: sync_progress table does not have tenant_id column
-
+      const activeQuery = this.applySyncProgressScope(
+        supabase
+          .from('sync_progress')
+          .select('*')
+          .eq('user_id', userId)
+          .eq('status', 'running')
+          .order('created_at', { ascending: false })
+          .limit(1),
+        tenantId,
+        storeId
+      );
       const { data, error } = await activeQuery.maybeSingle();
 
       if (!error && data) {
-        const metadata = (data.metadata as any) || {};
-        const normalizedStatus = data.status === 'in_progress' ? 'running' : data.status;
-        let claimsDetected = metadata.claimsDetected || 0;
-
-        if (claimsDetected === 0 && (data.progress || 0) >= 80) {
-          try {
-            const syncResults = await this.getSyncResults(userId, data.sync_id);
-            if (syncResults.claimsDetected > 0) {
-              claimsDetected = syncResults.claimsDetected;
-            }
-          } catch (refreshError: any) {
-            logger.warn('⚠️ [SYNC STATUS] Unable to refresh claimsDetected for active sync', {
-              userId,
-              syncId: data.sync_id,
-              error: refreshError?.message || refreshError
-            });
-          }
-        }
+        const syncResults =
+          (data.progress || 0) >= 80
+            ? await this.getSyncResults(userId, data.sync_id, tenantId, storeId)
+            : undefined;
+        const hydrated = this.buildSyncJobStatusFromRow(data, syncResults);
 
         return {
           hasActiveSync: true,
           lastSync: {
-            syncId: data.sync_id,
-            status: normalizedStatus,
-            progress: data.progress || 0,
-            message: data.current_step || 'Unknown',
-            startedAt: data.created_at,
-            completedAt: data.updated_at,
-            ordersProcessed: metadata.ordersProcessed || 0,
-            totalOrders: metadata.totalOrders || 0,
-            inventoryCount: metadata.inventoryCount || 0,
-            shipmentsCount: metadata.shipmentsCount || 0,
-            returnsCount: metadata.returnsCount || 0,
-            settlementsCount: metadata.settlementsCount || 0,
-            feesCount: metadata.feesCount || 0,
-            claimsDetected
+            syncId: hydrated.syncId,
+            status: hydrated.status,
+            progress: hydrated.progress,
+            message: hydrated.message,
+            startedAt: hydrated.startedAt,
+            completedAt: hydrated.completedAt,
+            ordersProcessed: hydrated.ordersProcessed,
+            totalOrders: hydrated.totalOrders,
+            inventoryCount: hydrated.inventoryCount,
+            shipmentsCount: hydrated.shipmentsCount,
+            returnsCount: hydrated.returnsCount,
+            settlementsCount: hydrated.settlementsCount,
+            feesCount: hydrated.feesCount,
+            claimsDetected: hydrated.claimsDetected
           }
         };
       }
 
       // No active sync, get last sync (completed or failed)
-      let lastSyncQuery = supabase
-        .from('sync_progress')
-        .select('*')
-        .eq('user_id', userId)
-        .in('status', ['completed', 'failed', 'cancelled', 'complete'])
-        .order('created_at', { ascending: false })
-        .limit(1);
-
-      // Note: sync_progress table does not have tenant_id column
-
+      const lastSyncQuery = this.applySyncProgressScope(
+        supabase
+          .from('sync_progress')
+          .select('*')
+          .eq('user_id', userId)
+          .in('status', ['completed', 'failed', 'cancelled', 'complete'])
+          .order('created_at', { ascending: false })
+          .limit(1),
+        tenantId,
+        storeId
+      );
       const { data: lastSyncData } = await lastSyncQuery.maybeSingle();
 
       if (lastSyncData) {
-        const metadata = (lastSyncData.metadata as any) || {};
-        const normalizedStatus = lastSyncData.status === 'complete' ? 'completed' : lastSyncData.status;
-        const baseProgress = lastSyncData.progress || 0;
-        const progress = normalizedStatus === 'completed' && baseProgress < 100 ? 100 : baseProgress;
-        let claimsDetected = metadata.claimsDetected || 0;
-
-        if (
-          normalizedStatus === 'completed' ||
-          normalizedStatus === 'failed' ||
-          normalizedStatus === 'cancelled' ||
-          (progress >= 80 && claimsDetected === 0)
-        ) {
-          try {
-            const syncResults = await this.getSyncResults(userId, lastSyncData.sync_id);
-            claimsDetected = syncResults.claimsDetected;
-
-            if (metadata.claimsDetected !== claimsDetected) {
-              supabase.from('sync_progress')
-                .update({
-                  metadata: { ...metadata, claimsDetected },
-                  updated_at: new Date().toISOString()
-                })
-                .eq('sync_id', lastSyncData.sync_id)
-                .eq('user_id', userId)
-                .then(() => {
-                  logger.info('✅ [SYNC STATUS] Backfilled claimsDetected in metadata', {
-                    userId,
-                    syncId: lastSyncData.sync_id,
-                    claimsDetected
-                  });
-                })
-                .catch((updateError) => {
-                  logger.warn('⚠️ [SYNC STATUS] Failed to backfill claimsDetected metadata', {
-                    error: updateError?.message || updateError,
-                    userId,
-                    syncId: lastSyncData.sync_id
-                  });
-                });
-            }
-          } catch (refreshError: any) {
-            logger.warn('⚠️ [SYNC STATUS] Unable to refresh claimsDetected for completed sync', {
-              userId,
-              syncId: lastSyncData.sync_id,
-              error: refreshError?.message || refreshError
-            });
-          }
-        }
+        const syncResults = await this.getSyncResults(userId, lastSyncData.sync_id, tenantId, storeId);
+        const hydrated = this.buildSyncJobStatusFromRow(lastSyncData, syncResults);
+        const progress = hydrated.status === 'completed' && hydrated.progress < 100 ? 100 : hydrated.progress;
 
         return {
           hasActiveSync: false,
           lastSync: {
-            syncId: lastSyncData.sync_id,
-            status: normalizedStatus,
+            syncId: hydrated.syncId,
+            status: hydrated.status,
             progress,
-            message: lastSyncData.current_step || 'Unknown',
-            startedAt: lastSyncData.created_at,
-            completedAt: lastSyncData.updated_at,
-            ordersProcessed: metadata.ordersProcessed || 0,
-            totalOrders: metadata.totalOrders || 0,
-            inventoryCount: metadata.inventoryCount || 0,
-            shipmentsCount: metadata.shipmentsCount || 0,
-            returnsCount: metadata.returnsCount || 0,
-            settlementsCount: metadata.settlementsCount || 0,
-            feesCount: metadata.feesCount || 0,
-            claimsDetected
+            message: hydrated.message,
+            startedAt: hydrated.startedAt,
+            completedAt: hydrated.completedAt,
+            ordersProcessed: hydrated.ordersProcessed,
+            totalOrders: hydrated.totalOrders,
+            inventoryCount: hydrated.inventoryCount,
+            shipmentsCount: hydrated.shipmentsCount,
+            returnsCount: hydrated.returnsCount,
+            settlementsCount: hydrated.settlementsCount,
+            feesCount: hydrated.feesCount,
+            claimsDetected: hydrated.claimsDetected
           }
         };
       }
@@ -1605,46 +1541,34 @@ class SyncJobManager {
   /**
    * Get active sync for a user (private helper)
    */
-  private async getActiveSync(userId: string): Promise<SyncJobStatus | null> {
+  private async getActiveSync(userId: string, tenantId?: string, storeId?: string): Promise<SyncJobStatus | null> {
     // Check running jobs first
     for (const job of this.runningJobs.values()) {
-      if (job.status.userId === userId && job.status.status === 'running') {
+      if (job.status.userId === userId && job.status.status === 'running' && this.matchesScope(job.status, tenantId, storeId)) {
         return job.status;
       }
     }
 
     // Check database
     try {
-      const { data, error } = await supabase
-        .from('sync_progress')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('status', 'running')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      const scopedQuery = this.applySyncProgressScope(
+        supabase
+          .from('sync_progress')
+          .select('*')
+          .eq('user_id', userId)
+          .eq('status', 'running')
+          .order('created_at', { ascending: false })
+          .limit(1),
+        tenantId,
+        storeId
+      );
+      const { data, error } = await scopedQuery.maybeSingle();
 
       if (error || !data) {
         return null;
       }
 
-      const metadata = (data.metadata as any) || {};
-      return {
-        syncId: data.sync_id,
-        userId: data.user_id,
-        status: 'running', // Normalize to 'running'
-        progress: data.progress || 0,
-        message: data.current_step || 'Unknown',
-        startedAt: data.created_at,
-        ordersProcessed: metadata.ordersProcessed || 0,
-        totalOrders: metadata.totalOrders || 0,
-        inventoryCount: metadata.inventoryCount || 0,
-        shipmentsCount: metadata.shipmentsCount || 0,
-        returnsCount: metadata.returnsCount || 0,
-        settlementsCount: metadata.settlementsCount || 0,
-        feesCount: metadata.feesCount || 0,
-        claimsDetected: metadata.claimsDetected || 0
-      };
+      return this.buildSyncJobStatusFromRow(data);
     } catch (error) {
       return null;
     }
@@ -1667,6 +1591,13 @@ class SyncJobManager {
         settlementsCount: syncStatus.settlementsCount || 0,
         feesCount: syncStatus.feesCount || 0,
         claimsDetected: syncStatus.claimsDetected || 0,
+        totalItemsSynced:
+          (syncStatus.ordersProcessed || 0) +
+          (syncStatus.inventoryCount || 0) +
+          (syncStatus.shipmentsCount || 0) +
+          (syncStatus.returnsCount || 0) +
+          (syncStatus.settlementsCount || 0) +
+          (syncStatus.feesCount || 0),
         error: syncStatus.error,
         startedAt: syncStatus.startedAt,
         completedAt: syncStatus.completedAt,
@@ -1681,6 +1612,8 @@ class SyncJobManager {
 
       logger.info('💾 [SYNC JOB MANAGER] Saving sync to database', {
         userId: syncStatus.userId,
+        tenantId: syncStatus.tenantId,
+        storeId: syncStatus.storeId,
         syncId: syncStatus.syncId,
         status: dbStatus,
         progress: syncStatus.progress,
@@ -1697,6 +1630,8 @@ class SyncJobManager {
 
       // Fields to save for Pillar 1 & 3 enhancements
       const enhancedFields: Record<string, any> = {
+        tenant_id: syncStatus.tenantId || null,
+        store_id: syncStatus.storeId || null,
         step: Math.round(syncStatus.progress / 20),
         total_steps: 5,
         current_step: syncStatus.message,
@@ -1733,6 +1668,8 @@ class SyncJobManager {
           .from('sync_progress')
           .insert({
             user_id: syncStatus.userId,
+            tenant_id: syncStatus.tenantId || null,
+            store_id: syncStatus.storeId || null,
             sync_id: syncStatus.syncId,
             ...enhancedFields
           });
@@ -1785,6 +1722,7 @@ class SyncJobManager {
     const sent = sseHub.sendEvent(userId, 'sync_progress', {
       tenant_id: syncStatus.tenantId,
       tenant_slug: syncStatus.tenantSlug,
+      store_id: syncStatus.storeId,
       syncId: syncStatus.syncId,
       status: syncStatus.status,
       progress: syncStatus.progress,
@@ -1813,11 +1751,7 @@ class SyncJobManager {
   /**
    * Get sync results from database (real implementation)
    */
-  private async getSyncResults(userId: string, syncId: string): Promise<{
-    ordersProcessed: number;
-    totalOrders: number;
-    claimsDetected: number;
-  }> {
+  private async getSyncResults(userId: string, syncId: string, tenantId?: string, storeId?: string): Promise<PersistedSyncResults> {
     try {
       // Get sync metadata from database
       const { data: syncData, error } = await supabase
@@ -1829,48 +1763,107 @@ class SyncJobManager {
 
       if (error || !syncData) {
         logger.warn(`Sync results not found for ${syncId}, using defaults`);
-        return {
-          ordersProcessed: 0,
-          totalOrders: 0,
-          claimsDetected: 0
-        };
+        return this.toPersistedSyncResults({});
       }
 
       const metadata = (syncData.metadata as any) || {};
+      const scopedAdminCount = (table: string, userColumn: string = 'user_id') => {
+        let query = supabaseAdmin
+          .from(table)
+          .select('id', { count: 'exact', head: true })
+          .eq(userColumn, userId)
+          .eq('sync_id', syncId);
 
-      // Also query actual counts from database for accuracy
-      const [ordersCount, claimsCount] = await Promise.all([
-        // Count orders processed in this sync (if we track this)
-        supabase
-          .from('orders')
-          .select('id', { count: 'exact', head: true })
-          .eq('seller_id', userId)
-          .gte('created_at', metadata.startedAt || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
-        // Count claims detected in this sync (Discovery Agent stores in detection_results table)
-        // Use supabaseAdmin to bypass RLS policies (needed to get accurate count)
-        supabaseAdmin
-          .from('detection_results')
-          .select('id', { count: 'exact', head: true })
-          .eq('seller_id', userId)
-          .eq('sync_id', syncId)
+        if (tenantId) {
+          query = query.eq('tenant_id', tenantId);
+        }
+
+        if (storeId) {
+          query = query.eq('store_id', storeId);
+        }
+
+        return query;
+      };
+
+      const [
+        ordersCount,
+        inventoryCount,
+        shipmentsCount,
+        returnsCount,
+        settlementsCount,
+        feesCount,
+        claimsCount
+      ] = await Promise.all([
+        scopedAdminCount('orders'),
+        scopedAdminCount('inventory_items'),
+        scopedAdminCount('shipments'),
+        scopedAdminCount('returns'),
+        scopedAdminCount('settlements'),
+        (() => {
+          let query = supabaseAdmin
+            .from('financial_events')
+            .select('id', { count: 'exact', head: true })
+            .eq('seller_id', userId)
+            .eq('sync_id', syncId)
+            .eq('event_type', 'fee');
+
+          if (tenantId) {
+            query = query.eq('tenant_id', tenantId);
+          }
+
+          if (storeId) {
+            query = query.eq('store_id', storeId);
+          }
+
+          return query;
+        })(),
+        (() => {
+          let query = supabaseAdmin
+            .from('detection_results')
+            .select('id', { count: 'exact', head: true })
+            .eq('seller_id', userId)
+            .eq('sync_id', syncId);
+
+          if (tenantId) {
+            query = query.eq('tenant_id', tenantId);
+          }
+
+          if (storeId) {
+            query = query.eq('store_id', storeId);
+          }
+
+          return query;
+        })()
       ]);
 
-      // Always use actual database count for claimsDetected (metadata may be stale)
-      const actualClaimsDetected = (claimsCount.count ?? 0) as number;
+      const exactCounts: PersistedSyncResults = {
+        ordersProcessed: (ordersCount.count ?? metadata.ordersProcessed ?? 0) as number,
+        totalOrders: (ordersCount.count ?? metadata.totalOrders ?? 0) as number,
+        inventoryCount: (inventoryCount.count ?? metadata.inventoryCount ?? 0) as number,
+        shipmentsCount: (shipmentsCount.count ?? metadata.shipmentsCount ?? 0) as number,
+        returnsCount: (returnsCount.count ?? metadata.returnsCount ?? 0) as number,
+        settlementsCount: (settlementsCount.count ?? metadata.settlementsCount ?? 0) as number,
+        feesCount: (feesCount.count ?? metadata.feesCount ?? 0) as number,
+        claimsDetected: (claimsCount.count ?? metadata.claimsDetected ?? 0) as number,
+        totalItemsSynced: 0
+      };
+      exactCounts.totalItemsSynced =
+        exactCounts.ordersProcessed +
+        exactCounts.inventoryCount +
+        exactCounts.shipmentsCount +
+        exactCounts.returnsCount +
+        exactCounts.settlementsCount +
+        exactCounts.feesCount;
 
       logger.info('🔍 [SYNC JOB MANAGER] getSyncResults query results', {
         userId,
         syncId,
-        metadataClaimsDetected: metadata.claimsDetected,
-        databaseClaimsCount: actualClaimsDetected,
-        usingDatabaseCount: actualClaimsDetected > 0
+        tenantId: tenantId || null,
+        storeId: storeId || null,
+        exactCounts
       });
 
-      return {
-        ordersProcessed: metadata.ordersProcessed || ordersCount.count || 0,
-        totalOrders: metadata.totalOrders || ordersCount.count || 0,
-        claimsDetected: actualClaimsDetected
-      };
+      return exactCounts;
     } catch (error) {
       logger.error(`Error getting sync results for ${syncId}:`, error);
       // Return metadata values if available, otherwise defaults
@@ -1883,22 +1876,13 @@ class SyncJobManager {
           .single();
 
         if (syncData && syncData.metadata) {
-          const metadata = syncData.metadata as any;
-          return {
-            ordersProcessed: metadata.ordersProcessed || 0,
-            totalOrders: metadata.totalOrders || 0,
-            claimsDetected: metadata.claimsDetected || 0
-          };
+          return this.toPersistedSyncResults(syncData.metadata as any);
         }
       } catch (fallbackError) {
         logger.error(`Fallback sync results query failed:`, fallbackError);
       }
 
-      return {
-        ordersProcessed: 0,
-        totalOrders: 0,
-        claimsDetected: 0
-      };
+      return this.toPersistedSyncResults({});
     }
   }
 

@@ -246,18 +246,24 @@ export class OrdersService {
   /**
    * Save normalized orders to database
    */
-  async saveOrdersToDatabase(userId: string, orders: NormalizedOrder[], storeId?: string, tenantId?: string): Promise<void> {
+  async saveOrdersToDatabase(
+    userId: string,
+    orders: NormalizedOrder[],
+    storeId?: string,
+    tenantId?: string,
+    syncId?: string
+  ): Promise<{ persistedCount: number }> {
     try {
       logger.info('Saving orders to database', { userId, count: orders.length });
 
       if (orders.length === 0) {
         logger.info('No orders to save', { userId });
-        return;
+        return { persistedCount: 0 };
       }
 
       if (typeof supabase.from !== 'function') {
         logger.warn('Demo mode: Orders save skipped', { userId });
-        return;
+        return { persistedCount: orders.length };
       }
 
       if (!tenantId) {
@@ -280,12 +286,14 @@ export class OrdersService {
         total_amount: order.total_amount || null,
         currency: order.currency,
         metadata: order.metadata || {},
+        store_id: storeId || null,
+        sync_id: syncId || null,
+        source: 'sp_api',
         source_report: 'SP-API_Orders',
         sync_timestamp: new Date().toISOString(),
         is_sandbox: this.isSandbox(),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
-        // store_id intentionally omitted - column not in DB schema yet
       }));
 
       // Check for existing orders to avoid duplicates
@@ -330,12 +338,23 @@ export class OrdersService {
               const { error: updateError } = await supabase
                 .from('orders')
                 .update({
+                  seller_id: order.seller_id,
+                  marketplace_id: order.marketplace_id,
+                  order_date: order.order_date,
+                  shipment_date: order.shipment_date,
+                  fulfillment_channel: order.fulfillment_channel,
                   order_status: order.order_status,
                   items: order.items,
                   quantities: order.quantities,
                   total_amount: order.total_amount,
+                  currency: order.currency,
                   metadata: order.metadata,
+                  store_id: order.store_id,
+                  sync_id: order.sync_id,
+                  source: order.source,
+                  source_report: order.source_report,
                   sync_timestamp: order.sync_timestamp,
+                  is_sandbox: order.is_sandbox,
                   updated_at: order.updated_at
                 })
                 .eq('user_id', userId)
@@ -349,7 +368,7 @@ export class OrdersService {
             logger.info('Updated existing orders', { userId, count: ordersToUpdate.length });
           }
 
-          return;
+          return { persistedCount: ordersToInsert.length };
         }
       }
 
@@ -375,6 +394,7 @@ export class OrdersService {
         },
         severity: 'low'
       });
+      return { persistedCount: ordersToInsert.length };
     } catch (error: any) {
       logger.error('Error saving orders to database', { error: error.message, userId });
       throw error;

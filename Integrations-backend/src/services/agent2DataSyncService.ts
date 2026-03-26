@@ -43,6 +43,7 @@ export interface SyncResult {
   success: boolean;
   syncId: string;
   userId: string;
+  storeId?: string;
   summary: {
     ordersCount: number;
     shipmentsCount: number;
@@ -181,6 +182,94 @@ export class Agent2DataSyncService {
     }
   }
 
+  private async resolveCanonicalStoreId(userId: string, tenantId: string, requestedStoreId?: string): Promise<string> {
+    if (requestedStoreId) {
+      return requestedStoreId;
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('tokens')
+      .select('store_id')
+      .eq('user_id', userId)
+      .eq('tenant_id', tenantId)
+      .eq('provider', 'amazon')
+      .not('store_id', 'is', null)
+      .gt('expires_at', new Date().toISOString())
+      .order('expires_at', { ascending: false })
+      .limit(10);
+
+    if (error) {
+      throw new Error(`Failed to resolve Amazon store binding: ${error.message}`);
+    }
+
+    const uniqueStoreIds = [...new Set((data || []).map((row: any) => row.store_id).filter((value): value is string => typeof value === 'string' && value.length > 0))];
+    if (uniqueStoreIds.length === 1) {
+      return uniqueStoreIds[0] as string;
+    }
+
+    if (uniqueStoreIds.length === 0) {
+      throw new Error('Agent 2 requires a store-bound Amazon connection before SP-API sync can run.');
+    }
+
+    throw new Error('Multiple Amazon store bindings found. A specific storeId is required to run a truthful sync.');
+  }
+
+  private async persistInventoryItems(
+    userId: string,
+    tenantId: string,
+    storeId: string,
+    syncId: string,
+    inventory: any[]
+  ): Promise<number> {
+    if (!inventory.length) {
+      return 0;
+    }
+
+    const now = new Date().toISOString();
+    const rows = inventory
+      .map((item: any) => ({
+        user_id: userId,
+        tenant_id: tenantId,
+        store_id: storeId,
+        sku: item.sku || item.sellerSku || null,
+        asin: item.asin || null,
+        fnsku: item.fnSku || item.fnsku || null,
+        product_name: item.product_name || item.productName || item.title || null,
+        condition_type: item.condition || item.condition_type || 'New',
+        quantity_available: Number(item.quantity ?? item.availableQuantity ?? 0) || 0,
+        quantity_reserved: Number(item.reserved ?? item.reservedQuantity ?? 0) || 0,
+        quantity_inbound: Number(item.inbound ?? item.inboundQuantity ?? 0) || 0,
+        price: Number(item.price ?? 0) || 0,
+        dimensions: {
+          damaged: Number(item.damaged ?? item.damagedQuantity ?? 0) || 0,
+          unfulfillable: Number(item.unfulfillable ?? item.unfulfillableQuantity ?? 0) || 0
+        },
+        sync_id: syncId,
+        sync_timestamp: now,
+        source: 'sp_api',
+        created_at: now,
+        updated_at: now
+      }))
+      .filter((row: any) => row.sku || row.asin || row.fnsku);
+
+    if (!rows.length) {
+      return 0;
+    }
+
+    const { error } = await supabaseAdmin
+      .from('inventory_items')
+      .upsert(rows, {
+        onConflict: 'tenant_id,user_id,sku,asin,fnsku',
+        ignoreDuplicates: false
+      });
+
+    if (error) {
+      throw new Error(`Failed to persist inventory items: ${error.message}`);
+    }
+
+    return rows.length;
+  }
+
   /**
    * Main sync method - orchestrates all data fetching and normalization
    */
@@ -201,6 +290,7 @@ export class Agent2DataSyncService {
     console.log(`[AGENT 2] Build: ${this.buildVersion} - Starting sync for ${userId}`);
 
     const resolvedTenantId = await this.resolveTenantId(userId, tenantId);
+    const resolvedStoreId = await this.resolveCanonicalStoreId(userId, resolvedTenantId, storeId);
 
     logger.info('🔄 [AGENT 2] Starting data sync', {
       userId,
@@ -212,8 +302,8 @@ export class Agent2DataSyncService {
     });
 
     // Agent 2 runtime sync is strict: no env fallback, no mock fallback.
-    await this.assertValidAmazonTenantToken(userId, resolvedTenantId, storeId);
-    const isConnected = await tokenManager.isTokenValid(userId, 'amazon', storeId);
+    await this.assertValidAmazonTenantToken(userId, resolvedTenantId, resolvedStoreId);
+    const isConnected = await tokenManager.isTokenValid(userId, 'amazon', resolvedStoreId);
     if (!isConnected) {
       throw new Error('Amazon token is missing or expired for this tenant.');
     }
@@ -229,6 +319,7 @@ export class Agent2DataSyncService {
       success: true,
       syncId,
       userId,
+      storeId: resolvedStoreId,
       summary: {
         ordersCount: 0,
         shipmentsCount: 0,
@@ -269,10 +360,16 @@ export class Agent2DataSyncService {
         });
         logger.info('📦 [AGENT 2] Fetching orders...', { userId, syncId });
 
-        const ordersResult = await this.syncOrders(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, storeId);
+        const ordersResult = await this.syncOrders(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, resolvedStoreId);
         result.normalized.orders = ordersResult.data || [];
-        result.summary.ordersCount = result.normalized.orders.length;
-        await this.ordersService.saveOrdersToDatabase(userId, result.normalized.orders, storeId, resolvedTenantId);
+        const orderPersistence = await this.ordersService.saveOrdersToDatabase(
+          userId,
+          result.normalized.orders,
+          resolvedStoreId,
+          resolvedTenantId,
+          syncId
+        );
+        result.summary.ordersCount = orderPersistence.persistedCount;
 
         if (result.summary.ordersCount > 0) {
           const rawVolume = result.normalized.orders.reduce((sum: number, o: any) => sum + (Number(o.total_amount) || 0), 0);
@@ -345,10 +442,16 @@ export class Agent2DataSyncService {
         });
         logger.info('🚚 [AGENT 2] Fetching shipments...', { userId, syncId });
 
-        const shipmentsResult = await this.syncShipments(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, storeId);
+        const shipmentsResult = await this.syncShipments(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, resolvedStoreId);
         result.normalized.shipments = shipmentsResult.data || [];
-        result.summary.shipmentsCount = result.normalized.shipments.length;
-        await this.shipmentsService.saveShipmentsToDatabase(userId, result.normalized.shipments, storeId, resolvedTenantId);
+        const shipmentPersistence = await this.shipmentsService.saveShipmentsToDatabase(
+          userId,
+          result.normalized.shipments,
+          resolvedStoreId,
+          resolvedTenantId,
+          syncId
+        );
+        result.summary.shipmentsCount = shipmentPersistence.persistedCount;
 
         if (result.summary.shipmentsCount > 0) {
           this.sendSyncLog(userId, syncId, {
@@ -401,10 +504,16 @@ export class Agent2DataSyncService {
         });
         logger.info('↩️ [AGENT 2] Fetching returns...', { userId, syncId });
 
-        const returnsResult = await this.syncReturns(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, storeId);
+        const returnsResult = await this.syncReturns(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, resolvedStoreId);
         result.normalized.returns = returnsResult.data || [];
-        result.summary.returnsCount = result.normalized.returns.length;
-        await this.returnsService.saveReturnsToDatabase(userId, result.normalized.returns, storeId, resolvedTenantId);
+        const returnsPersistence = await this.returnsService.saveReturnsToDatabase(
+          userId,
+          result.normalized.returns,
+          resolvedStoreId,
+          resolvedTenantId,
+          syncId
+        );
+        result.summary.returnsCount = returnsPersistence.persistedCount;
 
         if (result.summary.returnsCount > 0) {
           this.sendSyncLog(userId, syncId, {
@@ -451,10 +560,24 @@ export class Agent2DataSyncService {
         });
         logger.info('💰 [AGENT 2] Fetching settlements...', { userId, syncId });
 
-        const settlementsResult = await this.syncSettlements(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, storeId);
+        const settlementsResult = await this.syncSettlements(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, resolvedStoreId);
         result.normalized.settlements = settlementsResult.data || [];
-        result.summary.settlementsCount = result.normalized.settlements.length;
-        await this.settlementsService.saveSettlementsToDatabase(userId, result.normalized.settlements, storeId, resolvedTenantId);
+        const settlementsPersistence = await this.settlementsService.saveSettlementsToDatabase(
+          userId,
+          result.normalized.settlements,
+          resolvedStoreId,
+          resolvedTenantId,
+          syncId
+        );
+        const financialEventsPersistence = await this.settlementsService.saveFinancialEventsToDatabase(
+          userId,
+          result.normalized.settlements,
+          resolvedStoreId,
+          resolvedTenantId,
+          syncId
+        );
+        result.summary.settlementsCount = settlementsPersistence.persistedCount;
+        result.summary.feesCount = financialEventsPersistence.feeEventsCount;
 
         if (result.summary.settlementsCount > 0) {
           this.sendSyncLog(userId, syncId, {
@@ -527,9 +650,15 @@ export class Agent2DataSyncService {
         });
         logger.info('📊 [AGENT 2] Fetching inventory...', { userId, syncId });
 
-        const inventoryResult = await this.syncInventory(userId, useMockGenerator, mockScenario, syncId, storeId);
+        const inventoryResult = await this.syncInventory(userId, useMockGenerator, mockScenario, syncId, resolvedStoreId);
         result.normalized.inventory = inventoryResult.data || [];
-        result.summary.inventoryCount = result.normalized.inventory.length;
+        result.summary.inventoryCount = await this.persistInventoryItems(
+          userId,
+          resolvedTenantId,
+          resolvedStoreId,
+          syncId,
+          result.normalized.inventory
+        );
 
         if (result.summary.inventoryCount > 0) {
           // Calculate inventory value - default price $25, default quantity 1 per SKU for mock data
@@ -602,7 +731,7 @@ export class Agent2DataSyncService {
         logger.info('📦 [AGENT 2] Syncing product catalog...', { userId, syncId });
 
         const { catalogSyncService } = await import('./catalogSyncService');
-        const catalogResult = await catalogSyncService.syncCatalog(userId, storeId);
+        const catalogResult = await catalogSyncService.syncCatalog(userId, resolvedStoreId);
 
         if (catalogResult.success && catalogResult.count > 0) {
           this.sendSyncLog(userId, syncId, {
@@ -635,7 +764,14 @@ export class Agent2DataSyncService {
         logger.info('📋 [AGENT 2] Syncing inventory ledger...', { userId, syncId });
 
         const { inventoryLedgerSyncService } = await import('./inventoryLedgerSyncService');
-        const ledgerResult = await inventoryLedgerSyncService.syncInventoryLedger(userId, syncStartDate, syncEndDate, storeId, resolvedTenantId);
+        const ledgerResult = await inventoryLedgerSyncService.syncInventoryLedger(
+          userId,
+          syncStartDate,
+          syncEndDate,
+          resolvedStoreId,
+          resolvedTenantId,
+          syncId
+        );
 
         if (ledgerResult.success && ledgerResult.count > 0) {
           this.sendSyncLog(userId, syncId, {
@@ -667,7 +803,7 @@ export class Agent2DataSyncService {
         });
         logger.info('🎯 [AGENT 2] Fetching claims...', { userId, syncId });
 
-        const claimsResult = await this.syncClaims(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, storeId);
+        const claimsResult = await this.syncClaims(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, resolvedStoreId);
         result.normalized.claims = claimsResult.data || [];
         result.summary.claimsCount = result.normalized.claims.length;
 
@@ -754,7 +890,7 @@ export class Agent2DataSyncService {
             result.normalized,
             detectionSyncId,
             useMockGenerator,
-            storeId,
+            resolvedStoreId,
             resolvedTenantId
           );
 
@@ -3143,9 +3279,11 @@ export class Agent2DataSyncService {
       throw new Error('No database client available for storing detection results');
     }
 
-    // SANDBOX MODE: Skip strict validation in development to ensure mock data is stored
-    // const isSandboxMode = process.env.NODE_ENV === 'development' || process.env.MOCK_DETECTION_API === 'true';
-    const isSandboxMode = true; // FORCE TRUE for debug
+    // SANDBOX MODE: Skip strict validation only when the runtime is explicitly mocked.
+    const isSandboxMode =
+      process.env.NODE_ENV !== 'production' ||
+      process.env.MOCK_DETECTION_API === 'true' ||
+      process.env.DEMO_MODE === 'true';
 
     // Fetch tenant_id (CRITICAL for multi-tenancy)
     let tenantId: string | null = null;
@@ -3216,7 +3354,7 @@ export class Agent2DataSyncService {
           validatedRecords.push({
             tenant_id: tenantId,
             seller_id: userId,
-            // store_id intentionally omitted - column not in DB schema yet
+            store_id: storeId || null,
             // claim_id: claimId, // Column does not exist
             sync_id: syncId,
             anomaly_type: detection.anomaly_type || 'fee_error',
@@ -3284,7 +3422,7 @@ export class Agent2DataSyncService {
         validatedRecords.push({
           tenant_id: tenantId,
           seller_id: userId,
-          // store_id intentionally omitted - column not in DB schema yet
+          store_id: storeId || null,
           claim_id: validation.normalized.claim_id!,
           sync_id: syncId,
           anomaly_type: detection.anomaly_type,

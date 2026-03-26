@@ -230,18 +230,24 @@ export class ShipmentsService {
   /**
    * Save normalized shipments to database
    */
-  async saveShipmentsToDatabase(userId: string, shipments: NormalizedShipment[], storeId?: string, tenantId?: string): Promise<void> {
+  async saveShipmentsToDatabase(
+    userId: string,
+    shipments: NormalizedShipment[],
+    storeId?: string,
+    tenantId?: string,
+    syncId?: string
+  ): Promise<{ persistedCount: number }> {
     try {
       logger.info('Saving shipments to database', { userId, count: shipments.length });
 
       if (shipments.length === 0) {
         logger.info('No shipments to save', { userId });
-        return;
+        return { persistedCount: 0 };
       }
 
       if (typeof supabase.from !== 'function') {
         logger.warn('Demo mode: Shipments save skipped', { userId });
-        return;
+        return { persistedCount: shipments.length };
       }
 
       if (!tenantId) {
@@ -264,12 +270,14 @@ export class ShipmentsService {
         received_quantity: shipment.received_quantity || null,
         missing_quantity: shipment.missing_quantity || 0,
         metadata: shipment.metadata || {},
+        store_id: storeId || null,
+        sync_id: syncId || null,
+        source: 'sp_api',
         source_report: 'SP-API_FBA_Shipments',
         sync_timestamp: new Date().toISOString(),
         is_sandbox: this.isSandbox(),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
-        // store_id intentionally omitted - column not in DB schema yet
       }));
 
       // Check for existing shipments
@@ -305,11 +313,24 @@ export class ShipmentsService {
             const { error: updateError } = await supabase
               .from('shipments')
               .update({
+                order_id: shipment.order_id,
+                tracking_number: shipment.tracking_number,
+                shipped_date: shipment.shipped_date,
                 status: shipment.status,
+                carrier: shipment.carrier,
+                warehouse_location: shipment.warehouse_location,
+                items: shipment.items,
+                expected_quantity: shipment.expected_quantity,
                 received_date: shipment.received_date,
                 received_quantity: shipment.received_quantity,
                 missing_quantity: shipment.missing_quantity,
+                metadata: shipment.metadata,
+                store_id: shipment.store_id,
+                sync_id: shipment.sync_id,
+                source: shipment.source,
+                source_report: shipment.source_report,
                 sync_timestamp: shipment.sync_timestamp,
+                is_sandbox: shipment.is_sandbox,
                 updated_at: shipment.updated_at
               })
               .eq('user_id', userId)
@@ -320,7 +341,7 @@ export class ShipmentsService {
               logger.warn('Error updating shipment', { error: updateError, userId, shipmentId: shipment.shipment_id });
             }
           }
-          return;
+          return { persistedCount: shipmentsToInsert.length };
         }
       }
 
@@ -342,6 +363,7 @@ export class ShipmentsService {
         metadata: { count: shipmentsToInsert.length, isSandbox: this.isSandbox() },
         severity: 'low'
       });
+      return { persistedCount: shipmentsToInsert.length };
     } catch (error: any) {
       logger.error('Error saving shipments to database', { error: error.message, userId });
       throw error;

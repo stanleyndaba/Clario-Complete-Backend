@@ -1640,7 +1640,7 @@ export class CSVIngestionService {
             },
             {
                 type: 'shipments',
-                description: 'FBA inbound shipment data (Seller Central > Inventory > Shipments)',
+                description: 'Shipment records, including inbound shipment CSVs that land in canonical shipments rows',
                 targetTable: 'shipments',
                 exampleHeaders: ['ShipmentId', 'ShipmentDate', 'DestinationFulfillmentCenterId', 'ShipmentStatus', 'QuantityShipped', 'QuantityReceived'],
                 enabled: !DISABLED_TYPES.has('shipments'),
@@ -1682,7 +1682,7 @@ export class CSVIngestionService {
             },
             {
                 type: 'transfers',
-                description: 'Inventory transfer data between fulfillment centers',
+                description: 'Inventory transfer records between fulfillment centers; use this for transfer-style inbound movement files',
                 targetTable: 'inventory_transfers',
                 exampleHeaders: ['transfer_id', 'sku', 'from_fc', 'to_fc', 'quantity_sent', 'quantity_received', 'transfer_date'],
                 enabled: !DISABLED_TYPES.has('transfers'),
