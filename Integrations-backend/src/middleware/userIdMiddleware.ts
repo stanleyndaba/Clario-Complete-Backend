@@ -34,6 +34,13 @@ const PUBLIC_PATH_PREFIXES = [
   '/api/v1/integrations/dropbox/auth', // Dropbox OAuth
 ];
 
+// Agent 2 ingestion and sync routes must always require a real authenticated identity.
+const FAIL_CLOSED_AUTH_PREFIXES = [
+  '/api/sync',
+  '/api/v1/integrations/sync',
+  '/api/csv-upload/ingest'
+];
+
 function extractUuid(candidate?: string | null): string | null {
   if (typeof candidate !== 'string' || candidate.trim().length === 0) {
     return null;
@@ -145,6 +152,20 @@ export async function userIdMiddleware(req: Request, res: Response, next: NextFu
     }
 
     if (!userId) {
+      const mustFailClosed = FAIL_CLOSED_AUTH_PREFIXES.some(prefix =>
+        fullPath === prefix || fullPath.startsWith(prefix + '/')
+      );
+
+      if (mustFailClosed) {
+        logger.warn('Protected Agent 2 route called without authenticated identity', {
+          path: fullPath,
+          method: req.method,
+          ip: req.ip
+        });
+        res.status(401).json({ error: 'User authentication required' });
+        return;
+      }
+
       if (allowDemoUser) {
         userId = convertUserIdToUuid('demo-user');
         identitySource = 'default-demo-user';
