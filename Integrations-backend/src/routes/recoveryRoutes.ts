@@ -478,12 +478,12 @@ router.get('/ledger', async (req: Request, res: Response) => {
                     .in('dispute_id', disputeIds),
                  supabaseAdmin
                      .from('recovery_work_items')
-                    .select('id, dispute_case_id, status, attempts, next_attempt_at, locked_by, payload, updated_at, created_at, last_error')
+                    .select('id, dispute_case_id, status, attempts, max_attempts, next_attempt_at, locked_by, payload, updated_at, created_at, last_error')
                     .eq('tenant_id', tenantId)
                     .in('dispute_case_id', disputeIds),
                  supabaseAdmin
                      .from('billing_work_items')
-                    .select('id, dispute_case_id, recovery_id, status, attempts, next_attempt_at, locked_by, payload, updated_at, created_at, last_error')
+                    .select('id, dispute_case_id, recovery_id, status, attempts, max_attempts, next_attempt_at, locked_by, payload, updated_at, created_at, last_error')
                     .eq('tenant_id', tenantId)
                     .in('dispute_case_id', disputeIds)
              ]);
@@ -560,22 +560,32 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 billing_work_status: latestBillingWork?.status || null,
                 recovery_work_item_id: latestRecoveryWork?.id || null,
                 billing_work_item_id: latestBillingWork?.id || null,
-                recovery_execution_lane: latestRecoveryWork?.payload?.execution_lane || latestRecoveryWork?.locked_by || null,
-                billing_execution_lane: latestBillingWork?.payload?.execution_lane || latestBillingWork?.locked_by || null,
+                recovery_execution_lane: latestRecoveryWork?.payload?.execution_lane || latestRecoveryWork?.payload?.last_execution_lane || latestRecoveryWork?.locked_by || null,
+                billing_execution_lane: latestBillingWork?.payload?.execution_lane || latestBillingWork?.payload?.last_execution_lane || latestBillingWork?.locked_by || null,
                 recovery_work_error: latestRecoveryWork?.last_error || null,
                 billing_work_error: latestBillingWork?.last_error || null,
                 recovery_work_attempts: latestRecoveryWork?.attempts ?? 0,
                 billing_work_attempts: latestBillingWork?.attempts ?? 0,
+                recovery_work_max_attempts: latestRecoveryWork?.max_attempts ?? 0,
+                billing_work_max_attempts: latestBillingWork?.max_attempts ?? 0,
+                recovery_locked_by: latestRecoveryWork?.locked_by || null,
+                billing_locked_by: latestBillingWork?.locked_by || null,
+                recovery_work_payload: latestRecoveryWork?.payload || null,
+                billing_work_payload: latestBillingWork?.payload || null,
+                recovery_lifecycle_state: latestRecoveryWork?.payload?.lifecycle_state || null,
+                billing_lifecycle_state: latestBillingWork?.payload?.lifecycle_state || null,
                 recovery_defer_count: Number(latestRecoveryWork?.payload?.defer_count || 0),
                 billing_defer_count: Number(latestBillingWork?.payload?.defer_count || 0),
-                recovery_last_deferred_reason: latestRecoveryWork?.payload?.last_deferred_reason || null,
-                billing_last_deferred_reason: latestBillingWork?.payload?.last_deferred_reason || null,
-                recovery_last_processed_at: latestRecoveryWork?.payload?.last_processed_at || latestRecoveryWork?.updated_at || null,
-                billing_last_processed_at: latestBillingWork?.payload?.last_processed_at || latestBillingWork?.updated_at || null,
+                recovery_last_deferred_reason: latestRecoveryWork?.payload?.last_deferred_reason || (latestRecoveryWork?.status === 'pending' ? latestRecoveryWork?.last_error || null : null),
+                billing_last_deferred_reason: latestBillingWork?.payload?.last_deferred_reason || (latestBillingWork?.status === 'pending' ? latestBillingWork?.last_error || null : null),
+                recovery_last_processed_at: latestRecoveryWork?.payload?.last_processed_at || latestRecoveryWork?.payload?.execution_processed_at || latestRecoveryWork?.updated_at || null,
+                billing_last_processed_at: latestBillingWork?.payload?.last_processed_at || latestBillingWork?.payload?.execution_processed_at || latestBillingWork?.updated_at || null,
                 recovery_last_claimed_at: latestRecoveryWork?.payload?.last_claimed_at || null,
                 billing_last_claimed_at: latestBillingWork?.payload?.last_claimed_at || null,
-                recovery_last_runtime_role: latestRecoveryWork?.payload?.last_runtime_role || null,
-                billing_last_runtime_role: latestBillingWork?.payload?.last_runtime_role || null,
+                recovery_last_runtime_role: latestRecoveryWork?.payload?.last_runtime_role || latestRecoveryWork?.payload?.execution_runtime_role || null,
+                billing_last_runtime_role: latestBillingWork?.payload?.last_runtime_role || latestBillingWork?.payload?.execution_runtime_role || null,
+                recovery_execution_processed_at: latestRecoveryWork?.payload?.execution_processed_at || null,
+                billing_execution_processed_at: latestBillingWork?.payload?.execution_processed_at || null,
                 recovery_next_attempt_at: latestRecoveryWork?.next_attempt_at || null,
                 billing_next_attempt_at: latestBillingWork?.next_attempt_at || null,
                 approved_amount: approvedAmount,
