@@ -87,6 +87,68 @@ class RecoveriesWorker {
     return [...tenants.slice(offset), ...tenants.slice(0, offset)];
   }
 
+  private async getRecoveryEligibleTenants(): Promise<Array<{ id: string; name?: string; status?: string }>> {
+    const [activeTenantsResult, pendingWorkResult, approvedCasesResult] = await Promise.all([
+      supabaseAdmin
+        .from('tenants')
+        .select('id, name, status')
+        .in('status', ['active', 'trialing'])
+        .is('deleted_at', null),
+      supabaseAdmin
+        .from('recovery_work_items')
+        .select('tenant_id')
+        .in('status', ['pending', 'processing'])
+        .not('tenant_id', 'is', null),
+      supabaseAdmin
+        .from('dispute_cases')
+        .select('tenant_id')
+        .eq('status', 'approved')
+        .or('recovery_status.eq.pending,recovery_status.eq.detecting,recovery_status.is.null,recovery_status.eq.failed')
+        .not('tenant_id', 'is', null)
+    ]);
+
+    if (activeTenantsResult.error) {
+      throw new Error(`Failed to get active tenants: ${activeTenantsResult.error.message}`);
+    }
+    if (pendingWorkResult.error) {
+      throw new Error(`Failed to get pending recovery-work tenants: ${pendingWorkResult.error.message}`);
+    }
+    if (approvedCasesResult.error) {
+      throw new Error(`Failed to get approved recovery-case tenants: ${approvedCasesResult.error.message}`);
+    }
+
+    const eligibleTenants = new Map<string, { id: string; name?: string; status?: string }>();
+    for (const tenant of (activeTenantsResult.data || []) as Array<{ id: string; name?: string; status?: string }>) {
+      eligibleTenants.set(tenant.id, tenant);
+    }
+
+    const discoveredTenantIds = new Set<string>();
+    for (const row of [...(pendingWorkResult.data || []), ...(approvedCasesResult.data || [])] as Array<{ tenant_id?: string | null }>) {
+      if (row?.tenant_id) {
+        discoveredTenantIds.add(row.tenant_id);
+      }
+    }
+
+    const unresolvedTenantIds = [...discoveredTenantIds].filter((tenantId) => !eligibleTenants.has(tenantId));
+    if (unresolvedTenantIds.length > 0) {
+      const { data: extraTenants, error: extraError } = await supabaseAdmin
+        .from('tenants')
+        .select('id, name, status')
+        .in('id', unresolvedTenantIds)
+        .is('deleted_at', null);
+
+      if (extraError) {
+        throw new Error(`Failed to resolve recovery-eligible tenant metadata: ${extraError.message}`);
+      }
+
+      for (const tenant of (extraTenants || []) as Array<{ id: string; name?: string; status?: string }>) {
+        eligibleTenants.set(tenant.id, tenant);
+      }
+    }
+
+    return [...eligibleTenants.values()];
+  }
+
   /**
    * Start the worker
    */
@@ -185,25 +247,20 @@ class RecoveriesWorker {
       runtimeCapacityService.setCircuitBreaker('recovery-reconciliation', 'closed', null);
       logger.info('💰 [RECOVERIES] Starting recovery execution lane for all tenants');
 
-      // Get all active tenants
-      const { data: tenants, error: tenantError } = await supabaseAdmin
-        .from('tenants')
-        .select('id, name, status')
-        .in('status', ['active', 'trialing'])
-        .is('deleted_at', null);
+      const tenants = await this.getRecoveryEligibleTenants();
 
-      if (tenantError) {
-        logger.error('❌ [RECOVERIES] Failed to get active tenants', { error: tenantError.message });
-        stats.errors.push(`Failed to get tenants: ${tenantError.message}`);
+      if (!tenants) {
+        logger.error('❌ [RECOVERIES] Failed to resolve recovery-eligible tenants');
+        stats.errors.push('Failed to resolve recovery-eligible tenants');
         runtimeCapacityService.recordWorkerEnd(this.workerName, {
           failed: 1,
-          lastError: tenantError.message
+          lastError: 'Failed to resolve recovery-eligible tenants'
         });
         return stats;
       }
 
-      if (!tenants || tenants.length === 0) {
-        logger.debug('ℹ️ [RECOVERIES] No active tenants found');
+      if (tenants.length === 0) {
+        logger.debug('ℹ️ [RECOVERIES] No recovery-eligible tenants found');
         runtimeCapacityService.recordWorkerEnd(this.executionLaneName, {
           processed: 0,
           succeeded: 0,
@@ -212,10 +269,10 @@ class RecoveriesWorker {
         return stats;
       }
 
-      logger.info(`📋 [RECOVERIES] Processing ${tenants.length} active tenants`);
+      logger.info(`📋 [RECOVERIES] Processing ${tenants.length} recovery-eligible tenants`);
 
       // Process each tenant in isolation
-      const orderedTenants = this.rotateTenants((tenants || []) as Array<{ id: string; name?: string }>);
+      const orderedTenants = this.rotateTenants(tenants as Array<{ id: string; name?: string }>);
       for (const tenant of orderedTenants) {
         try {
           const tenantStats = await this.runRecoveriesForTenant(tenant.id);
@@ -532,21 +589,17 @@ class RecoveriesWorker {
 
       logger.info('💰 [RECOVERIES] Starting recovery backstop sweep for all tenants');
 
-      const { data: tenants, error } = await supabaseAdmin
-        .from('tenants')
-        .select('id, name')
-        .in('status', ['active', 'trialing'])
-        .is('deleted_at', null);
+      const tenants = await this.getRecoveryEligibleTenants();
 
-      if (error) {
+      if (!tenants) {
         runtimeCapacityService.recordWorkerEnd(this.backstopLaneName, {
           failed: 1,
-          lastError: error.message
+          lastError: 'Failed to resolve recovery-eligible tenants'
         });
-        throw error;
+        throw new Error('Failed to resolve recovery-eligible tenants');
       }
 
-      const orderedTenants = this.rotateTenants((tenants || []) as Array<{ id: string; name?: string }>);
+      const orderedTenants = this.rotateTenants(tenants as Array<{ id: string; name?: string }>);
       for (const tenant of orderedTenants) {
         try {
           result.tenantsProcessed++;
