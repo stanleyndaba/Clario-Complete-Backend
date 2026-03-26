@@ -7,6 +7,7 @@
 import { Request, Response } from 'express';
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
+import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifier';
 
 type ProviderKey = 'amazon' | 'gmail' | 'outlook' | 'gdrive' | 'dropbox' | 'slack' | 'adobe_sign' | 'onedrive';
 const DOC_TOKEN_PROVIDERS: ProviderKey[] = ['gmail', 'outlook', 'gdrive', 'dropbox'];
@@ -122,14 +123,33 @@ function isProductEvidenceSource(source: {
   return source.metadata?.test !== true && source.account_email !== 'unknown@placeholder.invalid';
 }
 
+function extractForwardedUserId(req: Request): string | null {
+  const candidates = [
+    req.headers['x-user-id'],
+    req.headers['x-forwarded-user-id']
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || candidate.trim().length === 0) continue;
+    const match = candidate.match(/[0-9a-fA-F-]{36}/);
+    if (match?.[0]) {
+      return match[0];
+    }
+  }
+
+  return null;
+}
+
 /**
  * Get integration status with evidence providers
  * GET /api/v1/integrations/status
  */
 export const getIntegrationStatus = async (req: Request, res: Response) => {
   try {
-    // Support both userIdMiddleware and auth middleware
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const requestToken = extractRequestToken(req);
+    const verifiedUser = requestToken ? await verifyAccessToken(requestToken) : null;
+    const forwardedUserId = extractForwardedUserId(req);
+    const userId = verifiedUser?.id || forwardedUserId || null;
     const tenantSlug = ((req.query.tenantSlug as string) || (req.query.tenant_slug as string) || '').trim();
     const adminClient = supabaseAdmin || supabase;
     
@@ -137,6 +157,13 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       return res.status(401).json({
         ok: false,
         error: 'Authentication required'
+      });
+    }
+
+    if (requestToken && !verifiedUser) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Invalid or expired authentication token'
       });
     }
 

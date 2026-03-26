@@ -5,8 +5,40 @@ import tokenManager from '../utils/tokenManager';
 import { diagnoseSandboxConnection } from '../utils/sandboxDiagnostics';
 import oauthStateStore from '../utils/oauthStateStore';
 import { syncJobManager } from '../services/syncJobManager';
+import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifier';
 
 const UUID_IN_TEXT_REGEX = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+function extractUuid(candidate: unknown): string | null {
+  if (typeof candidate !== 'string' || candidate.trim().length === 0) return null;
+  return candidate.match(UUID_IN_TEXT_REGEX)?.[0] || null;
+}
+
+async function extractVerifiedAppUserId(req: Request): Promise<string | null> {
+  const token = extractRequestToken(req);
+  if (token) {
+    const verified = await verifyAccessToken(token);
+    if (!verified?.id) {
+      return null;
+    }
+
+    return extractUuid(verified.id);
+  }
+
+  const forwardedCandidates = [
+    req.headers['x-user-id'],
+    req.headers['x-forwarded-user-id']
+  ];
+
+  for (const candidate of forwardedCandidates) {
+    const extracted = extractUuid(candidate);
+    if (extracted) {
+      return extracted;
+    }
+  }
+
+  return null;
+}
 
 function extractTrustedAppUserId(req: Request): string | null {
   const candidates = [
@@ -36,10 +68,10 @@ function extractTrustedAppUserId(req: Request): string | null {
 
   for (const candidate of candidates) {
     if (typeof candidate !== 'string' || candidate.trim().length === 0) continue;
-    const extracted = candidate.match(UUID_IN_TEXT_REGEX)?.[0];
-    if (extracted) {
-      return extracted;
-    }
+      const extracted = candidate.match(UUID_IN_TEXT_REGEX)?.[0];
+      if (extracted) {
+        return extracted;
+      }
   }
 
   return null;
@@ -53,7 +85,7 @@ function resolveTenantSlug(req: Request): string | null {
 
 export const startAmazonOAuth = async (req: Request, res: Response) => {
   try {
-    const userId = extractTrustedAppUserId(req);
+    const userId = await extractVerifiedAppUserId(req);
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -397,6 +429,8 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     let marketplaceIdFromState: string | undefined = undefined;
     let tenantSlug = '';
+    let tenantIdForResponse: string | null = null;
+    let storeIdForResponse: string | null = null;
     let syncStartMode: 'queued' | 'direct' | 'duplicate' | 'none' = 'none';
     let syncStartMessage = '';
     let syncIdForResponse: string | null = null;
@@ -464,6 +498,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       }
 
       const tenantIdToUse = tenantRecord.id;
+      tenantIdForResponse = tenantIdToUse;
 
       const { data: membership, error: membershipError } = await supabaseAdmin
         .from('tenant_memberships')
@@ -561,11 +596,16 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       try {
         const marketplace = profile.marketplaces[0] || marketplaceIdFromState || 'amazon_us';
         const storeName = profile.companyName || profile.sellerName || `Amazon - ${profile.sellerId}`;
+        const storeMetadata = {
+          amazon_profile: profile,
+          last_connected_at: new Date().toISOString(),
+          connection_truth_version: 'agent1_truth_v2'
+        };
 
         // Try to find existing store for this tenant and seller_id
         const { data: existingStore } = await supabaseAdmin
           .from('stores')
-          .select('id')
+          .select('id, metadata')
           .eq('tenant_id', tenantIdToUse)
           .eq('seller_id', profile.sellerId)
           .eq('marketplace', marketplace)
@@ -574,6 +614,26 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
 
         if (existingStore) {
           storeId = existingStore.id;
+          const { error: refreshStoreError } = await supabaseAdmin
+            .from('stores')
+            .update({
+              name: storeName,
+              seller_id: profile.sellerId,
+              marketplace,
+              is_active: true,
+              automation_enabled: true,
+              metadata: {
+                ...(existingStore.metadata || {}),
+                ...storeMetadata
+              },
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', existingStore.id);
+
+          if (refreshStoreError) {
+            throw new Error(`Failed to refresh store during OAuth: ${refreshStoreError.message}`);
+          }
+
           logger.info('Found existing store for seller', { storeId, sellerId: profile.sellerId });
         } else {
           // Create new store
@@ -585,9 +645,8 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
               marketplace: marketplace,
               seller_id: profile.sellerId,
               is_active: true,
-              metadata: {
-                amazon_profile: profile
-              }
+              automation_enabled: true,
+              metadata: storeMetadata
             })
             .select('id')
             .single();
@@ -606,6 +665,19 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
 
       if (!storeId) {
         throw new Error('Store binding is required before Amazon tokens can be persisted.');
+      }
+      storeIdForResponse = storeId;
+
+      const { error: legacyTokenCleanupError } = await supabaseAdmin
+        .from('tokens')
+        .delete()
+        .eq('user_id', userId)
+        .eq('provider', 'amazon')
+        .eq('tenant_id', tenantIdToUse)
+        .is('store_id', null);
+
+      if (legacyTokenCleanupError) {
+        throw new Error(`Failed to clear legacy unscoped Amazon tokens: ${legacyTokenCleanupError.message}`);
       }
 
       // Step 5: Encrypt tokens and save using tokenManager
@@ -644,13 +716,16 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           user_id: safeUserId,
           provider: 'amazon',
           status: 'connected',
+          account_email: userEmail,
           display_name: profile.companyName || `Amazon Store (${storeId})`,
           tenant_id: tenantIdToUse,
           store_id: storeId,
           metadata: {
             marketplaces: profile.marketplaces,
             seller_name: profile.sellerName,
-            company_name: profile.companyName
+            company_name: profile.companyName,
+            oauth_completed_at: new Date().toISOString(),
+            connection_truth_version: 'agent1_truth_v2'
           },
           updated_at: new Date().toISOString()
         };
@@ -840,6 +915,8 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           message: syncStartMessage || result?.message || 'Amazon connection successful',
           data: result?.data,
           userId,
+          tenantId: tenantIdForResponse,
+          storeId: storeIdForResponse,
           sellerId,
           syncStartMode,
           syncId: syncIdForResponse
@@ -866,6 +943,9 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       url.searchParams.append('provider', 'amazon');
       url.searchParams.append('auth_bridge', 'true'); // Signal for frontend to bypass immediate auth-guard
       if (tenantSlug) url.searchParams.append('tenant_slug', tenantSlug);
+      if (tenantIdForResponse) url.searchParams.append('tenant_id', tenantIdForResponse);
+      if (storeIdForResponse) url.searchParams.append('store_id', storeIdForResponse);
+      if (sellerId) url.searchParams.append('seller_id', sellerId);
       if (marketplaceIdForRedirect) url.searchParams.append('marketplaceId', marketplaceIdForRedirect);
       url.searchParams.append('sync_start_mode', syncStartMode);
       if (syncIdForResponse) url.searchParams.append('sync_id', syncIdForResponse);
@@ -1068,11 +1148,149 @@ export const getAmazonInventory = async (req: Request, res: Response) => {
   }
 };
 
-export const disconnectAmazon = async (_req: Request, res: Response) => {
-  res.json({
-    success: true,
-    message: 'Amazon account disconnected successfully'
-  });
+export const disconnectAmazon = async (req: Request, res: Response) => {
+  try {
+    const userId = await extractVerifiedAppUserId(req);
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authenticated app user is required to disconnect Amazon.'
+      });
+    }
+
+    const tenantId = (req as any).tenant?.tenantId as string | undefined;
+    if (!tenantId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Tenant context is required to disconnect Amazon.'
+      });
+    }
+
+    const requestedStoreId = String(req.query.storeId || req.body?.storeId || '').trim() || null;
+    const { supabaseAdmin } = await import('../database/supabaseClient');
+
+    let tokenScopeQuery = supabaseAdmin
+      .from('tokens')
+      .select('id, store_id')
+      .eq('user_id', userId)
+      .eq('provider', 'amazon')
+      .eq('tenant_id', tenantId);
+
+    if (requestedStoreId) {
+      tokenScopeQuery = tokenScopeQuery.eq('store_id', requestedStoreId);
+    }
+
+    const { data: tokenRows, error: tokenScopeError } = await tokenScopeQuery;
+    if (tokenScopeError) {
+      throw new Error(`Failed to load Amazon token scope: ${tokenScopeError.message}`);
+    }
+
+    if (!tokenRows || tokenRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'No Amazon connection found for the requested tenant scope.'
+      });
+    }
+
+    const distinctScopedStoreIds = [...new Set(tokenRows.map((row: any) => row.store_id).filter(Boolean))];
+    const legacyNullScopedRowCount = tokenRows.filter((row: any) => !row.store_id).length;
+
+    if (!requestedStoreId && distinctScopedStoreIds.length > 1) {
+      return res.status(400).json({
+        success: false,
+        error: 'Multiple Amazon stores are connected for this tenant. Specify storeId to disconnect one truthfully.'
+      });
+    }
+
+    const effectiveStoreId = requestedStoreId || distinctScopedStoreIds[0] || null;
+
+    let deletedScopedTokenCount = 0;
+    if (effectiveStoreId) {
+      const { data: deletedScopedRows, error: deleteScopedError } = await supabaseAdmin
+        .from('tokens')
+        .delete()
+        .eq('user_id', userId)
+        .eq('provider', 'amazon')
+        .eq('tenant_id', tenantId)
+        .eq('store_id', effectiveStoreId)
+        .select('id');
+
+      if (deleteScopedError) {
+        throw new Error(`Failed to delete scoped Amazon tokens: ${deleteScopedError.message}`);
+      }
+
+      deletedScopedTokenCount = deletedScopedRows?.length || 0;
+    }
+
+    const { data: deletedLegacyRows, error: deleteLegacyError } = await supabaseAdmin
+      .from('tokens')
+      .delete()
+      .eq('user_id', userId)
+      .eq('provider', 'amazon')
+      .eq('tenant_id', tenantId)
+      .is('store_id', null)
+      .select('id');
+
+    if (deleteLegacyError) {
+      throw new Error(`Failed to delete legacy Amazon tokens: ${deleteLegacyError.message}`);
+    }
+
+    let evidenceSourceCount = 0;
+    if (effectiveStoreId) {
+      const { data: disconnectedSources, error: sourceError } = await supabaseAdmin
+        .from('evidence_sources')
+        .update({
+          status: 'disconnected',
+          updated_at: new Date().toISOString()
+        })
+        .eq('tenant_id', tenantId)
+        .eq('user_id', userId)
+        .eq('provider', 'amazon')
+        .eq('store_id', effectiveStoreId)
+        .select('id');
+
+      if (sourceError) {
+        throw new Error(`Failed to disconnect Amazon evidence source: ${sourceError.message}`);
+      }
+
+      evidenceSourceCount = disconnectedSources?.length || 0;
+
+      const { error: storeUpdateError } = await supabaseAdmin
+        .from('stores')
+        .update({
+          automation_enabled: false,
+          updated_at: new Date().toISOString()
+        })
+        .eq('tenant_id', tenantId)
+        .eq('id', effectiveStoreId);
+
+      if (storeUpdateError) {
+        throw new Error(`Failed to update store disconnect state: ${storeUpdateError.message}`);
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: 'Amazon connection disconnected successfully.',
+      tenantId,
+      storeId: effectiveStoreId,
+      revocation_supported: false,
+      token_rows_removed: deletedScopedTokenCount,
+      legacy_token_rows_removed: deletedLegacyRows?.length || 0,
+      evidence_sources_disconnected: evidenceSourceCount,
+      legacy_null_scoped_rows_found: legacyNullScopedRowCount
+    });
+  } catch (error: any) {
+    logger.error('Amazon disconnect failed', {
+      error: error?.message || String(error),
+      stack: error?.stack
+    });
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Failed to disconnect Amazon.'
+    });
+  }
 };
 
 export const diagnoseAmazonConnection = async (_req: Request, res: Response) => {
