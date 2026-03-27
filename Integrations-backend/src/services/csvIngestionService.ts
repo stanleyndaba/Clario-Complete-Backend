@@ -12,6 +12,11 @@ import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
+import {
+    buildCanonicalFinancialEventRow,
+    classifyFinancialEventType,
+    parseCurrencyAmount
+} from '../utils/financialEventCanonical';
 
 // ============================================================================
 // CSV Parser (adapted from mockSPAPIService.ts)
@@ -823,6 +828,7 @@ export class CSVIngestionService {
     private async ingestSettlements(userId: string, tenantId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
         const errors: string[] = [];
         const rows: any[] = [];
+        const financialRows: any[] = [];
         let skipped = 0;
 
         for (let i = 0; i < records.length; i++) {
@@ -859,13 +865,57 @@ export class CSVIngestionService {
                     created_at: new Date().toISOString(),
                     updated_at: new Date().toISOString(),
                 });
+
+                const classification = classifyFinancialEventType(transactionType, transactionType);
+                financialRows.push(
+                    buildCanonicalFinancialEventRow({
+                        sellerId: userId,
+                        tenantId,
+                        storeId: storeId || null,
+                        syncId,
+                        source: 'csv_upload',
+                        eventType: classification.eventType,
+                        eventSubtype: classification.eventSubtype || transactionType,
+                        amount: parseAmount(getField(r, 'Amount', 'amount', 'TotalAmount', 'total_amount')),
+                        currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
+                        eventDate: settlementDate,
+                        referenceId: settlementId,
+                        referenceType: classification.referenceType || 'settlement',
+                        settlementId,
+                        payoutBatchId: settlementId,
+                        amazonEventId: `csv_settlement:${settlementId}:${classification.eventType}:${transactionType}`,
+                        amazonOrderId: getField(r, 'AmazonOrderId', 'order_id', 'orderId') || null,
+                        amazonSku: getField(r, 'SellerSKU', 'seller_sku', 'sku', 'SKU') || null,
+                        sku: getField(r, 'SellerSKU', 'seller_sku', 'sku', 'SKU') || null,
+                        asin: getField(r, 'ASIN', 'asin') || null,
+                        description: transactionType,
+                        rawPayload: r,
+                        metadata: {
+                            csvType: 'settlements',
+                            fees: parseAmount(getField(r, 'Fees', 'fees', 'TotalFees', 'total_fees'))
+                        },
+                        isPayoutEvent: classification.isPayoutEvent && parseAmount(getField(r, 'Amount', 'amount', 'TotalAmount', 'total_amount')) > 0
+                    })
+                );
             } catch (error: any) {
                 errors.push(`Row ${i + 1}: ${error.message}`);
                 skipped++;
             }
         }
 
-        return this.batchUpsert('settlements', rows, 'settlements', errors, skipped);
+        const settlementResult = await this.batchUpsert('settlements', rows, 'settlements', errors, skipped);
+        const financialResult = await this.batchUpsert('financial_events', financialRows, 'settlement_financial_events', errors, 0);
+
+        return {
+            success: settlementResult.success && financialResult.success,
+            csvType: 'settlements',
+            rowsProcessed: settlementResult.rowsProcessed,
+            rowsInserted: settlementResult.rowsInserted,
+            rowsSkipped: settlementResult.rowsSkipped,
+            rowsFailed: settlementResult.rowsFailed + financialResult.rowsFailed,
+            errors,
+            detectionTriggered: false,
+        };
     }
 
     private async ingestInventory(userId: string, tenantId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
@@ -1109,22 +1159,47 @@ export class CSVIngestionService {
                     continue;
                 }
                 const feeType = getField(r, 'fee_type', 'FeeType', 'feeType');
-                rows.push({
-                    seller_id: userId,
-                    tenant_id: tenantId,
-                    store_id: storeId || null,
-                    sync_id: syncId,
-                    source: 'csv_upload',
-                    event_type: feeType ? 'fee' : normalizeEventType(rawEventType),
+                const classification = classifyFinancialEventType(feeType || rawEventType, getField(r, 'Description', 'description', 'AdjustmentType'));
+                const amountInfo = parseCurrencyAmount({
                     amount: parseAmount(rawAmount),
-                    currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
-                    event_date: eventDate,
-                    amazon_order_id: getField(r, 'AmazonOrderId', 'amazon_order_id', 'orderId', 'order_id', 'OrderId') || null,
-                    amazon_sku: getField(r, 'SellerSKU', 'sku', 'SKU', 'seller_sku') || null,
-                    sku: getField(r, 'SellerSKU', 'sku', 'SKU', 'seller_sku') || null,
-                    description: getField(r, 'Description', 'description', 'AdjustmentType', 'fee_type', 'FeeType') || null,
-                    raw_payload: r,
-                    created_at: new Date().toISOString(),
+                    currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD'
+                });
+                const referenceId =
+                    getField(r, 'Reference ID', 'reference_id', 'ReferenceId', 'AdjustmentEventId', 'adjustment_event_id', 'EventId', 'event_id') ||
+                    getField(r, 'SettlementId', 'settlement_id', 'Settlement ID') ||
+                    getField(r, 'AmazonOrderId', 'amazon_order_id', 'orderId', 'order_id', 'OrderId') ||
+                    null;
+                const orderId = getField(r, 'AmazonOrderId', 'amazon_order_id', 'orderId', 'order_id', 'OrderId') || null;
+                const sku = getField(r, 'SellerSKU', 'sku', 'SKU', 'seller_sku') || null;
+                const asin = getField(r, 'ASIN', 'asin') || null;
+                rows.push({
+                    ...buildCanonicalFinancialEventRow({
+                        sellerId: userId,
+                        tenantId,
+                        storeId: storeId || null,
+                        syncId,
+                        source: 'csv_upload',
+                        eventType: classification.eventType,
+                        eventSubtype: classification.eventSubtype || String(feeType || rawEventType),
+                        amount: amountInfo.amount,
+                        currency: amountInfo.currency,
+                        eventDate,
+                        referenceId,
+                        referenceType: classification.referenceType,
+                        settlementId: getField(r, 'SettlementId', 'settlement_id', 'Settlement ID') || null,
+                        payoutBatchId: getField(r, 'PayoutBatchId', 'payout_batch_id', 'DisbursementId', 'disbursement_id') || null,
+                        amazonEventId: getField(r, 'amazon_event_id', 'AmazonEventId', 'EventId', 'event_id', 'AdjustmentEventId', 'adjustment_event_id') || undefined,
+                        amazonOrderId: orderId,
+                        amazonSku: sku,
+                        sku,
+                        asin,
+                        description: getField(r, 'Description', 'description', 'AdjustmentType', 'fee_type', 'FeeType') || null,
+                        rawPayload: r,
+                        metadata: {
+                            csvType: 'financial_events'
+                        },
+                        isPayoutEvent: classification.isPayoutEvent && amountInfo.amount > 0
+                    })
                 });
             } catch (error: any) {
                 errors.push(`Row ${i + 1}: ${error.message}`);
@@ -1151,23 +1226,33 @@ export class CSVIngestionService {
                     errors.push(`Row ${i + 1}: Missing required fields (fee_amount/event_date)`);
                     continue;
                 }
+                const sku = getField(r, 'SellerSKU', 'sku', 'SKU', 'seller_sku') || null;
                 rows.push({
-                    id: uuidv4(),
-                    seller_id: userId,
-                    tenant_id: tenantId,
-                    store_id: storeId || null,
-                    event_type: 'fee',
-                    amount: Number(feeAmount) || 0,
-                    currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
-                    event_date: eventDate,
-                    amazon_order_id: getField(r, 'AmazonOrderId', 'amazon_order_id', 'orderId', 'order_id') || null,
-                    sku: getField(r, 'SellerSKU', 'sku', 'SKU', 'seller_sku') || null,
-                    asin: getField(r, 'ASIN', 'asin') || null,
-                    description: getField(r, 'FeeType', 'fee_type', 'feeType', 'Description') || 'SERVICE_FEE',
-                    raw_payload: r,
-                    sync_id: syncId,
-                    source: 'csv_upload',
-                    created_at: new Date().toISOString(),
+                    ...buildCanonicalFinancialEventRow({
+                        sellerId: userId,
+                        tenantId,
+                        storeId: storeId || null,
+                        syncId,
+                        source: 'csv_upload',
+                        eventType: 'fee',
+                        eventSubtype: getField(r, 'FeeType', 'fee_type', 'feeType', 'Description') || 'service_fee',
+                        amount: parseAmount(feeAmount),
+                        currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
+                        eventDate,
+                        referenceId: getField(r, 'Reference ID', 'reference_id', 'ReferenceId') || getField(r, 'AmazonOrderId', 'amazon_order_id', 'orderId', 'order_id') || sku,
+                        referenceType: 'fee',
+                        amazonEventId: getField(r, 'amazon_event_id', 'AmazonEventId', 'EventId', 'event_id') || undefined,
+                        amazonOrderId: getField(r, 'AmazonOrderId', 'amazon_order_id', 'orderId', 'order_id') || null,
+                        amazonSku: sku,
+                        sku,
+                        asin: getField(r, 'ASIN', 'asin') || null,
+                        description: getField(r, 'FeeType', 'fee_type', 'feeType', 'Description') || 'SERVICE_FEE',
+                        rawPayload: r,
+                        metadata: {
+                            csvType: 'fees'
+                        },
+                        isPayoutEvent: false
+                    })
                 });
             } catch (error: any) {
                 errors.push(`Row ${i + 1}: ${error.message}`);
@@ -1240,7 +1325,7 @@ export class CSVIngestionService {
         settlements: 'tenant_id,user_id,settlement_id,transaction_type',
         inventory_items: 'tenant_id,user_id,sku,asin,fnsku',
         inventory_ledger_events: 'tenant_id,user_id,fnsku,event_type,event_date,reference_id',
-        financial_events: 'tenant_id,seller_id,event_type,event_date,amazon_order_id,amazon_sku,amount',
+        financial_events: 'tenant_id,seller_id,source,amazon_event_id',
         inventory_transfers: 'tenant_id,seller_id,transfer_id',
         // Other tables (orders, shipments, returns, settlements, inventory_items, financial_events)
         // do NOT have unique constraints yet — they fall back to .insert() automatically.

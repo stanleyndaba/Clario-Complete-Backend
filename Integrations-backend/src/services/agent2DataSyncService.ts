@@ -49,6 +49,10 @@ export interface SyncResult {
     shipmentsCount: number;
     returnsCount: number;
     settlementsCount: number;
+    financialEventsCount?: number;
+    reimbursementsCount?: number;
+    refundsCount?: number;
+    payoutEventsCount?: number;
     inventoryCount: number;
     claimsCount: number;
     feesCount: number;
@@ -60,6 +64,7 @@ export interface SyncResult {
     shipments: any[];
     returns: any[];
     settlements: any[];
+    financialEvents?: any[];
     inventory: any[];
     claims: any[];
   };
@@ -325,6 +330,10 @@ export class Agent2DataSyncService {
         shipmentsCount: 0,
         returnsCount: 0,
         settlementsCount: 0,
+        financialEventsCount: 0,
+        reimbursementsCount: 0,
+        refundsCount: 0,
+        payoutEventsCount: 0,
         inventoryCount: 0,
         claimsCount: 0,
         feesCount: 0
@@ -334,6 +343,7 @@ export class Agent2DataSyncService {
         shipments: [],
         returns: [],
         settlements: [],
+        financialEvents: [],
         inventory: [],
         claims: []
       },
@@ -562,6 +572,7 @@ export class Agent2DataSyncService {
 
         const settlementsResult = await this.syncSettlements(userId, syncStartDate, syncEndDate, useMockGenerator, mockScenario, syncId, resolvedStoreId);
         result.normalized.settlements = settlementsResult.data || [];
+        result.normalized.financialEvents = settlementsResult.financialEvents || [];
         const settlementsPersistence = await this.settlementsService.saveSettlementsToDatabase(
           userId,
           result.normalized.settlements,
@@ -572,12 +583,21 @@ export class Agent2DataSyncService {
         const financialEventsPersistence = await this.settlementsService.saveFinancialEventsToDatabase(
           userId,
           result.normalized.settlements,
+          result.normalized.financialEvents,
           resolvedStoreId,
           resolvedTenantId,
           syncId
         );
         result.summary.settlementsCount = settlementsPersistence.persistedCount;
+        result.summary.financialEventsCount = financialEventsPersistence.persistedCount;
         result.summary.feesCount = financialEventsPersistence.feeEventsCount;
+        result.summary.reimbursementsCount = financialEventsPersistence.reimbursementEventsCount;
+        result.summary.refundsCount = financialEventsPersistence.refundEventsCount;
+        result.summary.payoutEventsCount = financialEventsPersistence.payoutEventsCount;
+
+        if (result.normalized.settlements.length > 0 && financialEventsPersistence.persistedCount === 0) {
+          throw new Error('Settlement periods were found, but no canonical financial_events rows were persisted.');
+        }
 
         if (result.summary.settlementsCount > 0) {
           this.sendSyncLog(userId, syncId, {
@@ -1116,7 +1136,7 @@ export class Agent2DataSyncService {
     mockScenario: MockScenario,
     syncId?: string,
     storeId?: string
-  ): Promise<{ success: boolean; data: any[]; message: string }> {
+  ): Promise<{ success: boolean; data: any[]; financialEvents: any[]; message: string }> {
     // SIMPLE LOGIC: Mock mode = generate, Real mode = SP-API
     if (useMockGenerator) {
       logger.info('💰 [AGENT 2] Using MOCK DATA GENERATOR for settlements', { userId, syncId });
@@ -1144,7 +1164,7 @@ export class Agent2DataSyncService {
     }
 
     const syncError = toSyncError(result.error);
-    return { success: false, data: [], message: `Settlements sync failed: ${syncError.message}` };
+    return { success: false, data: [], financialEvents: [], message: `Settlements sync failed: ${syncError.message}` };
   }
 
   /**
@@ -1555,7 +1575,7 @@ export class Agent2DataSyncService {
     endDate: Date,
     scenario: MockScenario,
     syncId?: string
-  ): Promise<{ success: boolean; data: any[]; message: string }> {
+  ): Promise<{ success: boolean; data: any[]; financialEvents: any[]; message: string }> {
     // Use 75 as base default to match orders
     const recordCount = Math.floor((process.env.MOCK_RECORD_COUNT ? parseInt(process.env.MOCK_RECORD_COUNT, 10) : 75) * 0.6);
     const allSettlements: any[] = [];
@@ -1657,6 +1677,25 @@ export class Agent2DataSyncService {
     return {
       success: true,
       data: normalized,
+      financialEvents: normalized.map((settlement: any) => ({
+        amazon_event_id: `mock_settlement:${settlement.settlement_id}:${settlement.transaction_type}`,
+        reference_id: settlement.settlement_id,
+        reference_type: 'settlement',
+        settlement_id: settlement.settlement_id,
+        payout_batch_id: settlement.settlement_id,
+        order_id: settlement.order_id || null,
+        event_type: settlement.transaction_type === 'reimbursement' ? 'reimbursement' : 'settlement',
+        event_subtype: settlement.transaction_type,
+        amount: settlement.amount,
+        currency: settlement.currency || 'USD',
+        event_date: settlement.settlement_date,
+        sku: settlement.metadata?.sku || null,
+        asin: settlement.metadata?.asin || null,
+        description: settlement.transaction_type,
+        raw_payload: settlement,
+        metadata: settlement.metadata || {},
+        is_payout_event: settlement.amount > 0
+      })),
       message: `Generated ${normalized.length} mock settlements (scenario: ${scenario})`
     };
   }

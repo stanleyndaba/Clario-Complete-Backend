@@ -172,7 +172,7 @@ class RecoveriesService {
   /**
    * Detect payouts from Amazon SP-API for a user
    */
-  async detectPayouts(userId: string, startDate?: Date, endDate?: Date, tenantId?: string): Promise<any[]> {
+  async detectPayouts(userId: string, startDate?: Date, endDate?: Date, tenantId?: string, storeId?: string): Promise<any[]> {
     try {
       logger.info('🔍 [RECOVERIES] Detecting payouts from Amazon', {
         userId,
@@ -191,12 +191,9 @@ class RecoveriesService {
         query.eq('tenant_id', tenantId);
       }
 
-      // store_id intentionally omitted - column not in DB schema yet
-      /*
       if (storeId) {
         query.eq('store_id', storeId);
       }
-      */
 
       const { data: financialEvents, error } = await query
         .in('event_type', ['reimbursement', 'Reimbursement'])
@@ -217,11 +214,14 @@ class RecoveriesService {
       const payouts = (financialEvents || []).map((event: any) => ({
         id: event.id,
         amazonReimbursementId: event.amazon_event_id,
+        referenceId: event.reference_id,
         orderId: event.amazon_order_id,
         amount: this.extractPayoutAmount(event),
         currency: event.currency || 'USD',
         status: 'paid',
         payoutDate: event.event_date,
+        settlementId: event.settlement_id || null,
+        payoutBatchId: event.payout_batch_id || null,
         sku: event.amazon_sku || event.raw_payload?.SellerSKU || event.raw_payload?.seller_sku,
         asin: event.raw_payload?.ASIN || event.raw_payload?.asin,
         metadata: event.raw_payload || {}
@@ -976,6 +976,8 @@ class RecoveriesService {
 
     const payloadAmount = Number(
       event.raw_payload?.AdjustmentAmount?.CurrencyAmount ??
+      event.raw_payload?.LiquidationProceedsAmount?.CurrencyAmount ??
+      event.raw_payload?._canonical?.amount ??
       event.raw_payload?.amount ??
       0
     );

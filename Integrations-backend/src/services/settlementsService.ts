@@ -7,6 +7,13 @@ import axios from 'axios';
 import logger from '../utils/logger';
 import { supabase } from '../database/supabaseClient';
 import { logAuditEvent } from '../security/auditLogger';
+import {
+  buildCanonicalFinancialEventRow,
+  CanonicalFinancialClassification,
+  classifyFinancialEventType,
+  parseCurrencyAmount,
+  toIsoEventDate
+} from '../utils/financialEventCanonical';
 
 export interface FeeBreakdown {
   fba_fee?: number;
@@ -30,9 +37,33 @@ export interface NormalizedSettlement {
   metadata?: any;
 }
 
+export interface NormalizedFinancialEvent {
+  amazon_event_id: string;
+  reference_id?: string | null;
+  reference_type?: string | null;
+  settlement_id?: string | null;
+  payout_batch_id?: string | null;
+  order_id?: string | null;
+  event_type: string;
+  event_subtype?: string | null;
+  amount: number;
+  currency: string;
+  event_date: string;
+  sku?: string | null;
+  asin?: string | null;
+  description?: string | null;
+  raw_payload: any;
+  metadata?: any;
+  is_payout_event?: boolean;
+}
+
 export interface FinancialEventsPersistenceResult {
   persistedCount: number;
   feeEventsCount: number;
+  reimbursementEventsCount: number;
+  refundEventsCount: number;
+  settlementEventsCount: number;
+  payoutEventsCount: number;
 }
 
 export class SettlementsService {
@@ -57,7 +88,7 @@ export class SettlementsService {
     startDate?: Date,
     endDate?: Date,
     storeId?: string
-  ): Promise<{ success: boolean; data: NormalizedSettlement[]; message: string }> {
+  ): Promise<{ success: boolean; data: NormalizedSettlement[]; financialEvents: NormalizedFinancialEvent[]; message: string }> {
     const environment = this.isSandbox() ? 'SANDBOX' : 'PRODUCTION';
     const dataType = this.isSandbox() ? 'SANDBOX_TEST_DATA' : 'LIVE_PRODUCTION_DATA';
 
@@ -83,10 +114,12 @@ export class SettlementsService {
 
         // Extract settlement data from financial events
         const settlements = this.extractSettlementsFromFinancialEvents(financialEvents, userId);
+        const normalizedFinancialEvents = this.extractCanonicalFinancialEvents(financialEvents);
 
         return {
           success: true,
           data: settlements,
+          financialEvents: normalizedFinancialEvents,
           message: `Fetched ${settlements.length} settlements from Mock SP-API`
         };
       }
@@ -105,6 +138,7 @@ export class SettlementsService {
         MarketplaceIds: marketplaceId
       };
       const settlements: NormalizedSettlement[] = [];
+      const normalizedFinancialEvents: NormalizedFinancialEvent[] = [];
       let nextToken: string | null = null;
       let page = 0;
       const maxPages = 200;
@@ -126,6 +160,7 @@ export class SettlementsService {
         const payload = response.data?.payload || response.data;
         const financialEvents = payload?.FinancialEvents || {};
         settlements.push(...this.extractSettlementsFromFinancialEvents(financialEvents, userId));
+        normalizedFinancialEvents.push(...this.extractCanonicalFinancialEvents(financialEvents));
         nextToken = payload?.NextToken || null;
       } while (nextToken && page < maxPages);
 
@@ -143,6 +178,7 @@ export class SettlementsService {
       return {
         success: true,
         data: settlements,
+        financialEvents: normalizedFinancialEvents,
         message: `Fetched ${settlements.length} settlements from SP-API ${environment} (${dataType})`
       };
     } catch (error: any) {
@@ -170,6 +206,7 @@ export class SettlementsService {
         return {
           success: true,
           data: [],
+          financialEvents: [],
           message: 'Sandbox returned no settlements data (normal for testing)'
         };
       }
@@ -268,6 +305,196 @@ export class SettlementsService {
     return settlements;
   }
 
+  private extractCanonicalFinancialEvents(financialEvents: any): NormalizedFinancialEvent[] {
+    const events: NormalizedFinancialEvent[] = [];
+
+    const pushRow = (row: Partial<NormalizedFinancialEvent>) => {
+      const amount = Number(row.amount || 0);
+      if (!row.amazon_event_id || !Number.isFinite(amount) || amount === 0) {
+        return;
+      }
+
+      events.push({
+        amazon_event_id: row.amazon_event_id,
+        reference_id: row.reference_id || null,
+        reference_type: row.reference_type || 'financial_event',
+        settlement_id: row.settlement_id || null,
+        payout_batch_id: row.payout_batch_id || null,
+        order_id: row.order_id || null,
+        event_type: row.event_type || 'adjustment',
+        event_subtype: row.event_subtype || row.event_type || 'adjustment',
+        amount,
+        currency: row.currency || 'USD',
+        event_date: row.event_date || new Date().toISOString(),
+        sku: row.sku || null,
+        asin: row.asin || null,
+        description: row.description || null,
+        raw_payload: row.raw_payload || {},
+        metadata: row.metadata || {},
+        is_payout_event: Boolean(row.is_payout_event)
+      });
+    };
+
+    const pushFeeList = (entries: any[], event: any, prefix: string) => {
+      entries.forEach((fee: any, index: number) => {
+        const money = parseCurrencyAmount(fee.FeeAmount || fee.ChargeAmount || fee.Amount || fee.amount);
+        if (!money.amount) {
+          return;
+        }
+
+        const classification = classifyFinancialEventType(fee.FeeType || fee.ChargeType || prefix, event.FeeDescription || event.Description);
+        pushRow({
+          amazon_event_id: `${prefix}:${event.AmazonOrderId || event.OrderId || event.SellerSKU || 'na'}:${classification.eventSubtype}:${index}:${toIsoEventDate(event.PostedDate || event.posted_date)}`,
+          reference_id: event.AmazonOrderId || event.OrderId || event.ShipmentId || null,
+          reference_type: classification.referenceType,
+          order_id: event.AmazonOrderId || event.OrderId || null,
+          event_type: classification.eventType,
+          event_subtype: classification.eventSubtype,
+          amount: Math.abs(money.amount),
+          currency: money.currency,
+          event_date: event.PostedDate || event.posted_date,
+          sku: event.SellerSKU || event.SKU || null,
+          asin: event.ASIN || null,
+          description: fee.FeeType || fee.ChargeType || event.FeeDescription || event.Description || prefix,
+          raw_payload: { event, fee },
+          metadata: {
+            feeType: fee.FeeType || fee.ChargeType || null,
+            shipmentId: event.ShipmentId || null
+          },
+          is_payout_event: false
+        });
+      });
+    };
+
+    (financialEvents.ServiceFeeEventList || []).forEach((event: any) => {
+      pushFeeList(event.FeeList || [], event, 'service_fee');
+    });
+
+    (financialEvents.ShipmentEventList || []).forEach((event: any) => {
+      pushFeeList(event.ShipmentFeeList || [], event, 'shipment_fee');
+      pushFeeList(event.ShipmentFeeAdjustmentList || [], event, 'shipment_fee_adjustment');
+    });
+
+    (financialEvents.AdjustmentEventList || []).forEach((event: any, index: number) => {
+      const money = parseCurrencyAmount(event.AdjustmentAmount || event.TotalAmount || event.amount);
+      const classification = this.classifyAdjustmentEvent(event.AdjustmentType || event.Description, money.amount, event.Description);
+      pushRow({
+        amazon_event_id: event.AdjustmentEventId || `adjustment:${classification.eventSubtype}:${index}:${toIsoEventDate(event.PostedDate || event.posted_date)}`,
+        reference_id: event.AdjustmentEventId || event.AmazonOrderId || event.OrderId || null,
+        reference_type: classification.referenceType,
+        order_id: event.AmazonOrderId || event.OrderId || null,
+        event_type: classification.eventType,
+        event_subtype: classification.eventSubtype,
+        amount: money.amount,
+        currency: money.currency,
+        event_date: event.PostedDate || event.posted_date,
+        sku: event.SellerSKU || event.SKU || null,
+        asin: event.ASIN || null,
+        description: event.Description || event.AdjustmentType || 'Amazon adjustment',
+        raw_payload: event,
+        metadata: {
+          adjustmentType: event.AdjustmentType || null,
+          quantity: event.Quantity || null,
+          fulfillmentCenterId: event.FulfillmentCenterId || null
+        },
+        is_payout_event: classification.isPayoutEvent && money.amount > 0
+      });
+    });
+
+    (financialEvents.FBALiquidationEventList || []).forEach((event: any, index: number) => {
+      const money = parseCurrencyAmount(event.LiquidationProceedsAmount || event.amount);
+      pushRow({
+        amazon_event_id: event.LiquidationEventId || `liquidation:${event.OriginalRemovalOrderId || 'na'}:${index}:${toIsoEventDate(event.PostedDate)}`,
+        reference_id: event.OriginalRemovalOrderId || null,
+        reference_type: 'reimbursement',
+        settlement_id: event.OriginalRemovalOrderId || null,
+        payout_batch_id: event.OriginalRemovalOrderId || null,
+        event_type: 'reimbursement',
+        event_subtype: 'fba_liquidation',
+        amount: money.amount,
+        currency: money.currency,
+        event_date: event.PostedDate,
+        sku: event.SellerSKU || null,
+        asin: event.ASIN || null,
+        description: 'FBA liquidation proceeds',
+        raw_payload: event,
+        metadata: {
+          removalQuantity: event.RemovalQuantity || null
+        },
+        is_payout_event: money.amount > 0
+      });
+    });
+
+    (financialEvents.RefundEventList || []).forEach((event: any, eventIndex: number) => {
+      const refundLists = [
+        ['OrderChargeAdjustmentList', 'order_charge_adjustment'],
+        ['ShipmentItemAdjustmentList', 'shipment_item_adjustment'],
+        ['PostageAdjustmentList', 'postage_adjustment'],
+        ['FeeAdjustmentList', 'fee_adjustment']
+      ] as const;
+
+      refundLists.forEach(([listKey, subtype]) => {
+        (event[listKey] || []).forEach((entry: any, index: number) => {
+          const money = parseCurrencyAmount(entry.ChargeAmount || entry.FeeAmount || entry.amount);
+          if (!money.amount) {
+            return;
+          }
+
+          const classification = classifyFinancialEventType(subtype, event.Description);
+          pushRow({
+            amazon_event_id: `refund:${listKey}:${event.AmazonOrderId || 'na'}:${eventIndex}:${index}:${toIsoEventDate(event.PostedDate)}`,
+            reference_id: event.AmazonOrderId || event.SellerOrderId || null,
+            reference_type: classification.referenceType,
+            order_id: event.AmazonOrderId || null,
+            event_type: classification.eventType,
+            event_subtype: classification.eventSubtype,
+            amount: Math.abs(money.amount),
+            currency: money.currency,
+            event_date: event.PostedDate,
+            sku: entry.SellerSKU || event.SellerSKU || null,
+            asin: entry.ASIN || event.ASIN || null,
+            description: entry.ChargeType || entry.FeeType || event.Description || subtype,
+            raw_payload: { event, entry },
+            metadata: {
+              listKey
+            },
+            is_payout_event: false
+          });
+        });
+      });
+    });
+
+    const deduped = new Map<string, NormalizedFinancialEvent>();
+    for (const event of events) {
+      deduped.set(event.amazon_event_id, event);
+    }
+
+    return Array.from(deduped.values());
+  }
+
+  private classifyAdjustmentEvent(rawType: any, amount: number, description?: any): CanonicalFinancialClassification {
+    const base = classifyFinancialEventType(rawType, description);
+    if (base.eventType !== 'adjustment') {
+      return base;
+    }
+
+    if (amount > 0) {
+      return {
+        eventType: 'reimbursement',
+        eventSubtype: base.eventSubtype,
+        referenceType: 'reimbursement',
+        isPayoutEvent: true
+      };
+    }
+
+    return {
+      eventType: 'fee',
+      eventSubtype: base.eventSubtype,
+      referenceType: 'adjustment',
+      isPayoutEvent: false
+    };
+  }
+
   /**
    * Normalize settlements to Clario schema
    */
@@ -312,6 +539,10 @@ export class SettlementsService {
         throw new Error('tenantId is required to persist settlements');
       }
 
+      if (!storeId) {
+        throw new Error('storeId is required to persist SP-API settlements canonically');
+      }
+
       const settlementsToInsert = settlements.map(settlement => ({
         user_id: userId,
         tenant_id: tenantId,
@@ -324,7 +555,7 @@ export class SettlementsService {
         settlement_date: settlement.settlement_date,
         fee_breakdown: settlement.fee_breakdown,
         metadata: settlement.metadata || {},
-        store_id: storeId || null,
+        store_id: storeId,
         sync_id: syncId || null,
         source: 'sp_api',
         source_report: 'SP-API_FinancialEvents',
@@ -378,19 +609,31 @@ export class SettlementsService {
   async saveFinancialEventsToDatabase(
     userId: string,
     settlements: NormalizedSettlement[],
+    financialEvents: NormalizedFinancialEvent[],
     storeId?: string,
     tenantId?: string,
     syncId?: string
   ): Promise<FinancialEventsPersistenceResult> {
-    if (settlements.length === 0) {
-      return { persistedCount: 0, feeEventsCount: 0 };
+    if (settlements.length === 0 && financialEvents.length === 0) {
+      return {
+        persistedCount: 0,
+        feeEventsCount: 0,
+        reimbursementEventsCount: 0,
+        refundEventsCount: 0,
+        settlementEventsCount: 0,
+        payoutEventsCount: 0
+      };
     }
 
     if (typeof supabase.from !== 'function') {
       logger.warn('Demo mode: Financial events save skipped', { userId });
       return {
-        persistedCount: settlements.length,
-        feeEventsCount: settlements.filter((settlement) => this.mapSettlementToFinancialEventType(settlement.transaction_type) === 'fee').length
+        persistedCount: settlements.length + financialEvents.length,
+        feeEventsCount: financialEvents.filter((event) => event.event_type === 'fee').length,
+        reimbursementEventsCount: financialEvents.filter((event) => event.event_type === 'reimbursement').length,
+        refundEventsCount: financialEvents.filter((event) => event.event_type === 'refund').length,
+        settlementEventsCount: settlements.length,
+        payoutEventsCount: financialEvents.filter((event) => event.is_payout_event).length + settlements.filter((settlement) => settlement.amount > 0).length
       };
     }
 
@@ -398,40 +641,80 @@ export class SettlementsService {
       throw new Error('tenantId is required to persist financial events');
     }
 
-    const now = new Date().toISOString();
-    const financialRows = settlements.map((settlement) => {
-      const metadata = settlement.metadata || {};
-      return {
-        seller_id: userId,
-        tenant_id: tenantId,
-        store_id: storeId || null,
-        sync_id: syncId || null,
+    if (!storeId) {
+      throw new Error('storeId is required to persist SP-API financial events canonically');
+    }
+
+    const settlementRows = settlements.map((settlement) =>
+      buildCanonicalFinancialEventRow({
+        sellerId: userId,
+        tenantId,
+        storeId,
+        syncId,
         source: 'sp_api',
-        event_type: this.mapSettlementToFinancialEventType(settlement.transaction_type),
+        eventType: 'settlement',
+        eventSubtype: settlement.transaction_type,
         amount: settlement.amount,
         currency: settlement.currency || 'USD',
-        raw_payload: {
+        eventDate: settlement.settlement_date,
+        referenceId: settlement.settlement_id,
+        referenceType: 'settlement',
+        settlementId: settlement.settlement_id,
+        payoutBatchId: settlement.settlement_id,
+        amazonEventId: `settlement:${settlement.settlement_id}:${settlement.transaction_type}`,
+        amazonOrderId: settlement.order_id || null,
+        sku: settlement.metadata?.sku || null,
+        asin: settlement.metadata?.asin || null,
+        description: `Settlement ${settlement.transaction_type}`,
+        rawPayload: {
           settlement_id: settlement.settlement_id,
           transaction_type: settlement.transaction_type,
           fee_breakdown: settlement.fee_breakdown || {},
-          metadata
+          metadata: settlement.metadata || {}
         },
-        amazon_event_id: settlement.settlement_id,
-        amazon_order_id: settlement.order_id || null,
-        amazon_sku: metadata.sku || null,
-        sku: metadata.sku || null,
-        asin: metadata.asin || null,
-        description: metadata.adjustmentType || metadata.feeType || settlement.transaction_type,
-        event_date: settlement.settlement_date,
-        created_at: now,
-        updated_at: now
-      };
+        metadata: settlement.metadata || {},
+        isPayoutEvent: settlement.amount > 0
+      })
+    );
+
+    const detailRows = financialEvents.map((event) =>
+      buildCanonicalFinancialEventRow({
+        sellerId: userId,
+        tenantId,
+        storeId,
+        syncId,
+        source: 'sp_api',
+        eventType: event.event_type,
+        eventSubtype: event.event_subtype,
+        amount: event.amount,
+        currency: event.currency,
+        eventDate: event.event_date,
+        referenceId: event.reference_id,
+        referenceType: event.reference_type,
+        settlementId: event.settlement_id,
+        payoutBatchId: event.payout_batch_id,
+        amazonEventId: event.amazon_event_id,
+        amazonOrderId: event.order_id,
+        amazonSku: event.sku || null,
+        sku: event.sku || null,
+        asin: event.asin || null,
+        description: event.description,
+        rawPayload: event.raw_payload,
+        metadata: event.metadata,
+        isPayoutEvent: event.is_payout_event
+      })
+    );
+
+    const dedupedRows = new Map<string, any>();
+    [...detailRows, ...settlementRows].forEach((row) => {
+      dedupedRows.set(row.amazon_event_id, row);
     });
+    const financialRows = Array.from(dedupedRows.values());
 
     const { error } = await supabase
       .from('financial_events')
       .upsert(financialRows, {
-        onConflict: 'tenant_id,seller_id,event_type,event_date,amazon_order_id,amazon_sku,amount',
+        onConflict: 'tenant_id,seller_id,source,amazon_event_id',
         ignoreDuplicates: false
       });
 
@@ -442,7 +725,11 @@ export class SettlementsService {
 
     return {
       persistedCount: financialRows.length,
-      feeEventsCount: financialRows.filter((row) => row.event_type === 'fee').length
+      feeEventsCount: financialRows.filter((row) => row.event_type === 'fee').length,
+      reimbursementEventsCount: financialRows.filter((row) => row.event_type === 'reimbursement').length,
+      refundEventsCount: financialRows.filter((row) => row.event_type === 'refund').length,
+      settlementEventsCount: financialRows.filter((row) => row.event_type === 'settlement').length,
+      payoutEventsCount: financialRows.filter((row) => row.is_payout_event).length
     };
   }
 
