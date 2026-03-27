@@ -1119,8 +1119,8 @@ export class DisputeService {
         </head>
         <body>
           <div class="header">
-            <div class="title">Case Inspection Summary</div>
-            <div class="subhead">System-generated factual summary for ${escapeHtml(storeName)} · Generated ${escapeHtml(formatDateTime(new Date().toISOString()))}</div>
+            <div class="title">Brief Overview</div>
+            <div class="subhead">Brief Overview for ${escapeHtml(storeName)} · Generated ${escapeHtml(formatDateTime(new Date().toISOString()))}</div>
           </div>
 
           <div class="section">
