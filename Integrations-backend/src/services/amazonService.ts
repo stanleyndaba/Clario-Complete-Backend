@@ -8,6 +8,13 @@ import { getMockDataGenerator, type MockScenario } from './mockDataGenerator';
 import { withErrorHandling } from '../utils/errorHandlingUtils';
 import { SPAPIRateLimiter } from '../utils/rateLimitHandler';
 
+const AGENT1_SUCCESS_TRAP = 'AGENT1_SUCCESS_TRAP';
+
+function trapState(state?: string | null): string | null {
+  if (!state) return null;
+  return state.length <= 12 ? state : `${state.slice(0, 8)}...${state.slice(-4)}`;
+}
+
 export interface AmazonClaim {
   id: string;
   orderId: string;
@@ -463,6 +470,12 @@ export class AmazonService {
         throw new Error('Amazon OAuth client credentials are not configured.');
       }
 
+      logger.info(`${AGENT1_SUCCESS_TRAP} token_exchange_http_started`, {
+        state: trapState(state),
+        redirectUri,
+        hasClientId: !!clientId,
+        hasClientSecret: !!clientSecret
+      });
       logger.info('Exchanging authorization code for tokens', {
         hasClientId: !!clientId,
         hasClientSecret: !!clientSecret,
@@ -491,6 +504,12 @@ export class AmazonService {
 
       logger.info('Successfully exchanged code for tokens', {
         hasAccessToken: !!access_token,
+        hasRefreshToken: !!refresh_token,
+        expiresIn: expires_in
+      });
+      logger.info(`${AGENT1_SUCCESS_TRAP} token_exchange_http_succeeded`, {
+        state: trapState(state),
+        redirectUri,
         hasRefreshToken: !!refresh_token,
         expiresIn: expires_in
       });
@@ -525,6 +544,13 @@ export class AmazonService {
         hasClientId: !!clientId,
         hasClientSecret: !!clientSecret,
         hasCode: !!code
+      });
+      logger.error(`${AGENT1_SUCCESS_TRAP} token_exchange_http_failed`, {
+        state: trapState(state),
+        redirectUri,
+        error: errorDescription,
+        errorCode,
+        status: statusCode
       });
 
       // Provide specific error messages based on error code
@@ -1302,6 +1328,11 @@ export class AmazonService {
     try {
       const sellersUrl = `${this.baseUrl}/sellers/v1/marketplaceParticipations`;
 
+      logger.info(`${AGENT1_SUCCESS_TRAP} seller_profile_http_started`, {
+        sellersUrl,
+        baseUrl: this.baseUrl,
+        isSandbox: this.isSandbox()
+      });
       logger.info('Fetching seller profile from SP-API', {
         baseUrl: this.baseUrl,
         isSandbox: this.isSandbox()
@@ -1354,6 +1385,11 @@ export class AmazonService {
           throw new Error('Unable to retrieve sellerId from Amazon');
         }
 
+        logger.info(`${AGENT1_SUCCESS_TRAP} seller_profile_http_succeeded`, {
+          sellerId,
+          marketplaces
+        });
+
         return {
           sellerId,
           marketplaces: marketplaces.length > 0 ? marketplaces : [process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER'],
@@ -1368,6 +1404,10 @@ export class AmazonService {
         error: error.message,
         status: error.response?.status,
         data: error.response?.data
+      });
+      logger.error(`${AGENT1_SUCCESS_TRAP} seller_profile_http_failed`, {
+        error: error.message,
+        status: error.response?.status
       });
       throw new Error(`Failed to get seller profile: ${error.response?.data?.errors?.[0]?.message || error.message}`);
     }

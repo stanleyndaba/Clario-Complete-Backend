@@ -8,6 +8,24 @@ import { syncJobManager } from '../services/syncJobManager';
 import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifier';
 
 const UUID_IN_TEXT_REGEX = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const AGENT1_SUCCESS_TRAP = 'AGENT1_SUCCESS_TRAP';
+
+function trapState(state?: string | null): string | null {
+  if (!state) return null;
+  return state.length <= 12 ? state : `${state.slice(0, 8)}...${state.slice(-4)}`;
+}
+
+function trapInfo(event: string, context: Record<string, unknown> = {}): void {
+  logger.info(`${AGENT1_SUCCESS_TRAP} ${event}`, context);
+}
+
+function trapWarn(event: string, context: Record<string, unknown> = {}): void {
+  logger.warn(`${AGENT1_SUCCESS_TRAP} ${event}`, context);
+}
+
+function trapError(event: string, context: Record<string, unknown> = {}): void {
+  logger.error(`${AGENT1_SUCCESS_TRAP} ${event}`, context);
+}
 
 function extractUuid(candidate: unknown): string | null {
   if (typeof candidate !== 'string' || candidate.trim().length === 0) return null;
@@ -367,6 +385,16 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       state = body.state || body.amazon_state || req.query.state || req.query.amazon_state;
     }
 
+    trapInfo('callback_entered', {
+      method: req.method,
+      path: req.path,
+      hasCode: !!code,
+      codeLength: typeof code === 'string' ? code.length : 0,
+      hasState: !!state,
+      state: trapState(state),
+      isSandbox: req.path.includes('sandbox')
+    });
+
     if (!code) {
       // Log incoming request details for debugging
       logger.info('Amazon OAuth callback reached without code', {
@@ -381,6 +409,11 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       const errorParam = req.query.error as string;
       const errorDescription = req.query.error_description as string;
       const stateFromQuery = (req.query.state as string) || state;
+      trapWarn('callback_missing_code', {
+        method: req.method,
+        state: trapState(stateFromQuery),
+        errorParam: errorParam || null
+      });
       let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
 
       // Try to recover frontendUrl from state
@@ -448,11 +481,23 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     let syncIdForResponse: string | null = null;
 
     if (!state) {
+      trapError('state_validation_failed', {
+        reason: 'missing_state'
+      });
       throw new Error('Missing OAuth state. Connection could not be bound to a trusted user and tenant context.');
     }
 
+    trapInfo('state_validation_started', {
+      state: trapState(state)
+    });
     const storedState = await oauthStateStore.get(state);
     if (!storedState?.userId || !storedState.tenantSlug) {
+      trapError('state_validation_failed', {
+        state: trapState(state),
+        hasStoredState: !!storedState,
+        hasUserId: !!storedState?.userId,
+        hasTenantSlug: !!storedState?.tenantSlug
+      });
       throw new Error('OAuth state is invalid or expired. Please restart the Amazon connection flow.');
     }
 
@@ -466,6 +511,13 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       userId,
       marketplaceId: marketplaceIdFromState
     });
+    trapInfo('state_validation_succeeded', {
+      state: trapState(state),
+      tenantSlug,
+      userId,
+      marketplaceId: marketplaceIdFromState || null,
+      frontendUrl
+    });
 
     try {
       // Step 1: Validate OAuth response
@@ -474,22 +526,54 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       }
 
       // Step 2: Exchange code for real tokens
+      trapInfo('token_exchange_started', {
+        tenantSlug,
+        userId,
+        state: trapState(state),
+        codeLength: code.length
+      });
       result = await amazonService.handleCallback(code, state);
       if (!result.data?.access_token) {
+        trapError('token_exchange_failed', {
+          tenantSlug,
+          userId,
+          reason: 'missing_access_token_in_response'
+        });
         throw new Error('Token exchange failed - no access token received');
       }
+      trapInfo('token_exchange_succeeded', {
+        tenantSlug,
+        userId,
+        hasRefreshToken: !!result.data?.refresh_token,
+        expiresIn: result.data?.expires_in ?? null
+      });
 
       const { access_token, refresh_token, expires_in } = result.data;
 
       // Step 3: Get real seller identity from Amazon SP-API
+      trapInfo('seller_profile_started', {
+        tenantSlug,
+        userId
+      });
       profile = await amazonService.getSellerProfile(access_token);
 
       if (!profile?.sellerId) {
+        trapError('seller_profile_failed', {
+          tenantSlug,
+          userId,
+          reason: 'missing_seller_id'
+        });
         throw new Error('Seller profile initialization failed');
       }
 
       // Sync top-level sellerId for logging and response
       sellerId = profile.sellerId;
+      trapInfo('seller_profile_succeeded', {
+        tenantSlug,
+        userId,
+        sellerId,
+        marketplaces: profile.marketplaces
+      });
 
       // Step 4: Bind the connection to the authenticated app user + tenant only
       const { supabaseAdmin, convertUserIdToUuid } = await import('../database/supabaseClient');
@@ -574,6 +658,12 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           tenantId: tenantIdToUse,
           sellerId: profile.sellerId
         });
+        trapInfo('user_binding_succeeded', {
+          action: 'updated_existing_user',
+          userId: authenticatedUserId,
+          tenantId: tenantIdToUse,
+          sellerId: profile.sellerId
+        });
       } else {
         const { data: newUser, error: createErr } = await supabaseAdmin
           .from('users')
@@ -601,11 +691,23 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           tenantId: tenantIdToUse,
           sellerId: profile.sellerId
         });
+        trapInfo('user_binding_succeeded', {
+          action: 'created_user_binding',
+          userId: authenticatedUserId,
+          tenantId: tenantIdToUse,
+          sellerId: profile.sellerId
+        });
       }
 
       // Step 4c: Resolve or Create Store (Multi-Store Control Plane)
       let storeId: string | null = null;
       try {
+        trapInfo('store_binding_started', {
+          userId,
+          tenantId: tenantIdToUse,
+          sellerId: profile.sellerId,
+          marketplace: profile.marketplaces[0] || marketplaceIdFromState || 'amazon_us'
+        });
         const marketplace = profile.marketplaces[0] || marketplaceIdFromState || 'amazon_us';
         const storeName = profile.companyName || profile.sellerName || `Amazon - ${profile.sellerId}`;
         const storeMetadata = {
@@ -647,6 +749,13 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           }
 
           logger.info('Found existing store for seller', { storeId, sellerId: profile.sellerId });
+          trapInfo('store_binding_succeeded', {
+            action: 'refreshed_existing_store',
+            userId,
+            tenantId: tenantIdToUse,
+            sellerId: profile.sellerId,
+            storeId
+          });
         } else {
           // Create new store
           const { data: newStore, error: storeErr } = await supabaseAdmin
@@ -668,18 +777,41 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           } else if (newStore) {
             storeId = newStore.id;
             logger.info('Created new store for seller', { storeId, sellerId: profile.sellerId });
+            trapInfo('store_binding_succeeded', {
+              action: 'created_store',
+              userId,
+              tenantId: tenantIdToUse,
+              sellerId: profile.sellerId,
+              storeId
+            });
           }
         }
       } catch (storeResolverError: any) {
         logger.error('Error resolving store during OAuth', { error: storeResolverError.message });
+        trapError('store_binding_failed', {
+          userId,
+          tenantId: tenantIdToUse,
+          sellerId: profile?.sellerId,
+          error: storeResolverError.message
+        });
         throw storeResolverError;
       }
 
       if (!storeId) {
+        trapError('store_binding_failed', {
+          userId,
+          tenantId: tenantIdToUse,
+          sellerId: profile?.sellerId,
+          reason: 'store_id_missing_after_resolution'
+        });
         throw new Error('Store binding is required before Amazon tokens can be persisted.');
       }
       storeIdForResponse = storeId;
 
+      trapInfo('legacy_token_cleanup_started', {
+        userId,
+        tenantId: tenantIdToUse
+      });
       const { error: legacyTokenCleanupError } = await supabaseAdmin
         .from('tokens')
         .delete()
@@ -689,11 +821,27 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         .is('store_id', null);
 
       if (legacyTokenCleanupError) {
+        trapError('legacy_token_cleanup_failed', {
+          userId,
+          tenantId: tenantIdToUse,
+          error: legacyTokenCleanupError.message
+        });
         throw new Error(`Failed to clear legacy unscoped Amazon tokens: ${legacyTokenCleanupError.message}`);
       }
+      trapInfo('legacy_token_cleanup_succeeded', {
+        userId,
+        tenantId: tenantIdToUse
+      });
 
       // Step 5: Encrypt tokens and save using tokenManager
       const expiresAt = new Date(Date.now() + (expires_in || 3600) * 1000);
+      trapInfo('token_save_started', {
+        userId,
+        tenantId: tenantIdToUse,
+        storeId,
+        sellerId: profile.sellerId,
+        expiresAt: expiresAt.toISOString()
+      });
       await tokenManager.saveToken(userId, 'amazon', {
         accessToken: access_token,
         refreshToken: refresh_token || '',
@@ -706,9 +854,22 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         sellerId: profile.sellerId,
         hasRefreshToken: !!refresh_token
       });
+      trapInfo('token_save_succeeded', {
+        userId,
+        tenantId: tenantIdToUse,
+        storeId,
+        sellerId: profile.sellerId,
+        hasRefreshToken: !!refresh_token
+      });
 
       // Step 6: Create evidence source for the user (Agent 4)
       try {
+        trapInfo('evidence_upsert_started', {
+          userId,
+          tenantId: tenantIdToUse,
+          storeId,
+          sellerId: profile.sellerId
+        });
         const safeUserId = convertUserIdToUuid(userId);
         const { data: existingSource, error: existingSourceError } = await supabaseAdmin
           .from('evidence_sources')
@@ -755,14 +916,33 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         }
 
         logger.info('Created evidence source for user', { userId, sellerId: profile.sellerId, storeId });
+        trapInfo('evidence_upsert_succeeded', {
+          userId: safeUserId,
+          tenantId: tenantIdToUse,
+          storeId,
+          sellerId: profile.sellerId
+        });
       } catch (sourceEx: any) {
         logger.error('Error in evidence source linking step', { error: sourceEx.message, userId });
+        trapError('evidence_upsert_failed', {
+          userId,
+          tenantId: tenantIdToUse,
+          storeId,
+          sellerId: profile?.sellerId,
+          error: sourceEx.message
+        });
         throw sourceEx;
       }
 
       // Step 7: Start Agent 2 sync. Prefer durable BullMQ enqueue, but fall back to
       // direct sync execution if Redis infrastructure is unavailable.
       try {
+        trapInfo('agent2_kickoff_started', {
+          userId,
+          tenantId: tenantIdToUse,
+          storeId,
+          sellerId: profile.sellerId
+        });
         const { isQueueHealthy, addSyncJob } = await import('../queues/ingestionQueue');
 
         const queueAvailable = await isQueueHealthy();
@@ -785,12 +965,27 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
               tenantId: tenantIdToUse,
               sellerId: profile.sellerId
             });
+            trapInfo('agent2_kickoff_succeeded', {
+              mode: 'queued',
+              userId,
+              tenantId: tenantIdToUse,
+              storeId,
+              sellerId: profile.sellerId,
+              syncId: jobId
+            });
           } else {
             syncStartMode = 'duplicate';
             syncStartMessage = 'Existing Agent 2 sync already queued for this user.';
             logger.info('🔄 [AGENT 1] Duplicate sync rejected (already pending)', {
               userId,
               tenantId: tenantIdToUse,
+              sellerId: profile.sellerId
+            });
+            trapInfo('agent2_kickoff_succeeded', {
+              mode: 'duplicate',
+              userId,
+              tenantId: tenantIdToUse,
+              storeId,
               sellerId: profile.sellerId
             });
           }
@@ -814,6 +1009,14 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
               syncId: directSync.syncId,
               status: directSync.status
             });
+            trapInfo('agent2_kickoff_succeeded', {
+              mode: 'direct',
+              userId,
+              tenantId: tenantIdToUse,
+              storeId,
+              sellerId: profile.sellerId,
+              syncId: directSync.syncId
+            });
           } catch (directSyncError: any) {
             const directMessage = String(directSyncError?.message || '');
 
@@ -826,12 +1029,28 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
                 storeId,
                 message: directMessage
               });
+              trapInfo('agent2_kickoff_succeeded', {
+                mode: 'duplicate',
+                userId,
+                tenantId: tenantIdToUse,
+                storeId,
+                sellerId: profile.sellerId,
+                message: directMessage
+              });
             } else {
               logger.error('❌ [AGENT 1] Direct Agent 2 fallback also failed', {
                 error: directMessage,
                 userId,
                 tenantId: tenantIdToUse,
                 storeId
+              });
+              trapError('agent2_kickoff_failed', {
+                mode: 'direct',
+                userId,
+                tenantId: tenantIdToUse,
+                storeId,
+                sellerId: profile?.sellerId,
+                error: directMessage
               });
               throw new Error(`Amazon connection saved, but Agent 2 could not be started: ${directMessage || 'Unknown sync startup failure'}`);
             }
@@ -844,6 +1063,13 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           tenantId: tenantIdToUse,
           storeId
         });
+        trapError('agent2_kickoff_failed', {
+          userId,
+          tenantId: tenantIdToUse,
+          storeId,
+          sellerId: profile?.sellerId,
+          error: queueError.message
+        });
         throw new Error(queueError.message || 'Failed to start Agent 2 sync job.');
       }
 
@@ -853,6 +1079,12 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         userId,
         sellerId,
         hasTokens: true
+      });
+      trapInfo('callback_success_ready', {
+        userId,
+        tenantId: tenantIdToUse,
+        storeId,
+        sellerId
       });
 
       // 🎯 AGENT 1: Send SSE event for OAuth completion
@@ -879,6 +1111,14 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         stack: callbackError.stack,
         step: 'atomic_callback_flow'
       });
+      trapError('callback_failed', {
+        userId,
+        tenantSlug,
+        tenantId: tenantIdForResponse,
+        storeId: storeIdForResponse,
+        sellerId,
+        error: callbackError.message
+      });
 
       // For POST requests, return JSON error
       if (req.method === 'POST') {
@@ -904,6 +1144,11 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         }
       }
       const errorUrl = `${frontendUrl}/auth/success?status=error&error=${encodeURIComponent(callbackError.message || 'oauth_failed')}&amazon_error=true&auth_bridge=true`;
+      trapInfo('callback_error_redirect_emitted', {
+        userId,
+        tenantSlug,
+        redirectUrl: errorUrl
+      });
       return res.redirect(302, errorUrl);
     }
 
@@ -920,6 +1165,14 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       res.header('Access-Control-Allow-Credentials', 'true');
       res.header('Content-Type', 'application/json');
 
+        trapInfo('callback_json_response_emitted', {
+          userId,
+          tenantId: tenantIdForResponse,
+          storeId: storeIdForResponse,
+          sellerId,
+          syncStartMode,
+          syncId: syncIdForResponse
+        });
         return res.status(200).json({
           ok: true,
           connected: true,
@@ -973,12 +1226,25 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       userId,
       redirectUrl: finalRedirectUrl
     });
+    trapInfo('callback_redirect_emitted', {
+      userId,
+      tenantId: tenantIdForResponse,
+      storeId: storeIdForResponse,
+      sellerId,
+      syncStartMode,
+      syncId: syncIdForResponse,
+      redirectUrl: finalRedirectUrl
+    });
 
     return res.redirect(302, finalRedirectUrl);
   } catch (error: any) {
     logger.error('❌ OAuth callback error catch-all', {
       error: error.message,
       userId: (req as any).userId || (req as any).user?.id || 'unknown'
+    });
+    trapError('callback_catch_all_failed', {
+      error: error.message,
+      state: trapState((req.query.state as string) || (req.query.amazon_state as string))
     });
 
     // For POST requests, return JSON error
@@ -1015,9 +1281,15 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
 
       const finalUrl = url.toString();
       logger.error('Catch-all redirect to error page', { finalUrl });
+      trapInfo('callback_catch_all_redirect_emitted', {
+        redirectUrl: finalUrl
+      });
       return res.redirect(302, finalUrl);
     } catch (urlErr) {
       const errorUrl = `${cleanBase}${successPath}?status=error&error=${encodeURIComponent(error.message || 'oauth_failed')}&amazon_error=true&auth_bridge=true`;
+      trapInfo('callback_catch_all_redirect_emitted', {
+        redirectUrl: errorUrl
+      });
       return res.redirect(302, errorUrl);
     }
   }
