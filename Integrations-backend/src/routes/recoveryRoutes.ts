@@ -9,6 +9,7 @@ import { NotificationChannel, NotificationPriority, NotificationType } from '../
 import { convertUserIdToUuid } from '../database/supabaseClient';
 import financialWorkItemService from '../services/financialWorkItemService';
 import { resolveTenantSlug } from '../utils/tenantEventRouting';
+import recoveryFinancialTruthService from '../services/recoveryFinancialTruthService';
 
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -436,6 +437,58 @@ function buildCaseResponse(record: any, documents: any[], events: any[], objectT
         ...generateCaseStrategy(record)
     };
 }
+
+/**
+ * GET /api/recoveries/financial-events
+ * Canonical tenant-scoped financial truth for one or more recovery/dispute cases.
+ */
+router.get('/financial-events', async (req: Request, res: Response) => {
+    try {
+        const { tenantId } = await resolveRecoveriesScope(req);
+        const caseId = String(req.query.caseId || '').trim();
+        const caseIds = String(req.query.caseIds || '')
+            .split(',')
+            .map((value) => value.trim())
+            .filter(Boolean);
+        const requestedIds = Array.from(new Set([caseId, ...caseIds].filter(Boolean)));
+        const storeId = String(req.query.storeId || '').trim() || null;
+
+        if (!requestedIds.length) {
+            return res.status(400).json({
+                success: false,
+                error: 'caseId or caseIds is required'
+            });
+        }
+
+        const truth = await recoveryFinancialTruthService.getFinancialTruth({
+            tenantId,
+            caseIds: requestedIds,
+            storeId
+        });
+
+        return res.json({
+            success: true,
+            summaries: truth.summaries,
+            events: caseId && truth.eventsByInputId[caseId] ? truth.eventsByInputId[caseId] : [],
+            events_by_input_id: truth.eventsByInputId
+        });
+    } catch (error: any) {
+        const message = error?.message || 'Failed to fetch financial events';
+        const status = message === 'Tenant not found'
+            ? 404
+            : (message.includes('access') ? 403 : (message.includes('Tenant context required') || message.includes('authenticated user') ? 400 : 500));
+
+        logger.error('Error fetching recovery financial truth', {
+            error: message,
+            stack: error?.stack
+        });
+
+        return res.status(status).json({
+            success: false,
+            error: message
+        });
+    }
+});
 
 /**
  * GET /api/recoveries/ledger
