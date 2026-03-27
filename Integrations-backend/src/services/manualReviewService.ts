@@ -137,6 +137,83 @@ class ManualReviewService {
         }
     }
 
+    async archiveFilingExceptions(
+        disputeId: string,
+        options?: {
+            reasonCodes?: string[];
+            note?: string;
+        }
+    ): Promise<number> {
+        try {
+            const client = supabaseAdmin || supabase;
+            const { data, error } = await client
+                .from('manual_review_queue')
+                .select('id, status, analyst_notes, context')
+                .eq('dispute_id', disputeId)
+                .in('status', ['pending', 'assigned', 'in_review']);
+
+            if (error || !data?.length) {
+                if (error) {
+                    logger.warn('Failed to load filing exceptions for archival', {
+                        disputeId,
+                        error: error.message
+                    });
+                }
+                return 0;
+            }
+
+            const reasonCodes = (options?.reasonCodes || []).map((reason) => String(reason || '').trim()).filter(Boolean);
+            const matchingItems = data.filter((item: any) => {
+                if (!reasonCodes.length) return true;
+                const reviewReason = String(item?.context?.review_reason || '').trim();
+                return reasonCodes.includes(reviewReason);
+            });
+
+            if (!matchingItems.length) {
+                return 0;
+            }
+
+            const ids = matchingItems.map((item: any) => item.id);
+            const archivedAt = new Date().toISOString();
+            const note = options?.note?.trim() || 'Automatically archived after the filing blocker cleared.';
+            const analystNotes = matchingItems[0]?.analyst_notes
+                ? `${matchingItems[0].analyst_notes}\n[Auto-archive] ${note}`
+                : `[Auto-archive] ${note}`;
+
+            const { error: updateError } = await client
+                .from('manual_review_queue')
+                .update({
+                    status: 'archived',
+                    analyst_notes: analystNotes,
+                    updated_at: archivedAt,
+                    completed_at: archivedAt
+                })
+                .in('id', ids);
+
+            if (updateError) {
+                logger.warn('Failed to archive filing exceptions', {
+                    disputeId,
+                    error: updateError.message
+                });
+                return 0;
+            }
+
+            logger.info('👨‍💼 [MANUAL REVIEW] Filing exceptions archived automatically', {
+                disputeId,
+                count: ids.length,
+                reasonCodes: reasonCodes.length ? reasonCodes : ['all_open_filing_exceptions']
+            });
+
+            return ids.length;
+        } catch (error: any) {
+            logger.error('Error archiving filing exceptions', {
+                disputeId,
+                error: error.message
+            });
+            return 0;
+        }
+    }
+
     /**
      * Flag case for review due to repeated rejections
      */

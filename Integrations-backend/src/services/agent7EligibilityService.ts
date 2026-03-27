@@ -392,6 +392,20 @@ function normalizeStoredReasons(value: unknown): string[] {
   return [];
 }
 
+function isAutoClearableStoredReason(reason: string): boolean {
+  const normalized = normalize(reason);
+  return (
+    normalized === 'missing_evidence_links' ||
+    normalized === 'missing_product_identifier' ||
+    normalized === 'missing_order_identifier' ||
+    normalized === 'missing_shipment_identifier' ||
+    normalized === 'missing_required_document_family' ||
+    normalized.startsWith('insufficient_evidence_documents:') ||
+    normalized.startsWith('historical_') ||
+    normalized.startsWith('case_not_ready_for_filing_status:')
+  );
+}
+
 export function evaluateCaseEligibility(
   context: EligibilityContext,
   options?: {
@@ -576,6 +590,7 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
   const context = await loadEligibilityContext(caseId, tenantId);
   const disputeCase = context.disputeCase;
   const currentFilingStatus = normalize(disputeCase.filing_status);
+  const storedReasons = normalizeStoredReasons(disputeCase.block_reasons);
   const claimType = normalize(disputeCase.case_type || context.detectionResult?.anomaly_type || 'generic');
   const confidenceScore = getConfidenceScore(context) ?? 0.5;
   const evidenceSnapshot = computeEvidenceStrengthSnapshot({
@@ -672,7 +687,10 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
     }
   } else {
     updates.last_error = null;
-    if (['blocked', 'pending_approval'].includes(currentFilingStatus)) {
+    if (
+      ['blocked', 'pending_approval'].includes(currentFilingStatus) &&
+      storedReasons.every(isAutoClearableStoredReason)
+    ) {
       updates.filing_status = 'pending';
     }
   }

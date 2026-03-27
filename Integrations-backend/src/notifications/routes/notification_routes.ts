@@ -522,6 +522,22 @@ router.put('/preferences/filing', async (req: any, res) => {
             return res.status(500).json({ success: false, error: 'Failed to save filing preferences' });
         }
 
+        if (enabled) {
+            try {
+                const { default: agent7ResumeService } = await import('../../services/agent7ResumeService');
+                const resumeStats = await agent7ResumeService.reevaluateClearableCasesForUser(userId, 25);
+                console.info('[NOTIFICATIONS] Auto-file enabled, triggered Agent 7 resume sweep', {
+                    userId,
+                    ...resumeStats
+                });
+            } catch (resumeError: any) {
+                console.warn('[NOTIFICATIONS] Failed to trigger Agent 7 resume sweep', {
+                    userId,
+                    error: resumeError.message
+                });
+            }
+        }
+
         res.json({
             success: true,
             message: 'Filing preferences saved successfully',

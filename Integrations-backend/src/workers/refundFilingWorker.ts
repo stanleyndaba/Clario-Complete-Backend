@@ -1552,6 +1552,25 @@ class RefundFilingWorker {
       maxThisRun
     });
 
+    try {
+      const { default: agent7ResumeService } = await import('../services/agent7ResumeService');
+      const resumeStats = await agent7ResumeService.reevaluateClearableCasesForTenant(
+        tenantId,
+        Math.max(maxThisRun * 2, 10)
+      );
+      if (resumeStats.resumed > 0 || resumeStats.archived > 0) {
+        logger.info('[REFUND FILING] Auto-resume sweep completed before filing selection', {
+          tenantId,
+          ...resumeStats
+        });
+      }
+    } catch (resumeError: any) {
+      logger.warn('[REFUND FILING] Auto-resume sweep failed (non-fatal)', {
+        tenantId,
+        error: resumeError.message
+      });
+    }
+
     // MULTI-TENANT: Get cases for this tenant only using tenant-scoped query
     let query = createTenantScopedQueryById(tenantId, 'dispute_cases')
       .select(`

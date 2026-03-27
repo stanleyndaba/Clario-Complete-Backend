@@ -1,137 +1,125 @@
-# ✅ Service Consolidation Summary
+perfect! we now fix Agent 1; we have a problem with Agent 1; 
 
-## 🎯 Goal Achieved
+1. **CALLBACK FLOW**
+Exact live callback order in [amazonController.ts](/c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/controllers/amazonController.ts):
+1. Amazon callback received
+2. OAuth `state` is read from `oauthStateStore`
+3. auth code is exchanged for LWA tokens
+4. seller profile is requested from SP-API
+5. if seller profile fails, fallback seller identity is created:
+   - `sellerId = UNRESOLVED_{userId || anonymous}`
+6. user is found or created in `users`
+7. tenant is found or created
+8. tenant membership is upserted
+9. store is looked up / created
+10. encrypted Amazon tokens are saved with `tokenManager.saveToken(...)`
+11. Amazon `evidence_sources` row is attempted
+12. Agent 2 enqueue is attempted through BullMQ:
+   - `isQueueHealthy()`
+   - `addSyncJob(...)`
+13. enqueue fails
+14. controller redirects to `/auth/success?status=error...`
+So the failure happened after token persistence, not before it.
+2. **TOKEN PERSISTENCE TRUTH**
+`TOKEN SAVE = YES`
+Live DB proof:
+- latest Amazon token row exists in `tokens`
+- `user_id = 003ac512-8d15-4b5a-98a0-42fcb2647a0a`
+- `tenant_id = 31a6d9a6-eb7c-422f-bd1b-a25697616de6`
+- `provider = amazon`
+- `updated_at = 2026-03-20T18:28:49.891994+00:00`
+- `expires_at = 2026-03-20T19:28:49.816+00:00`
+- encrypted fields present:
+- `access_token_iv`: yes
+  - `access_token_data`: yes
+  - `refresh_token_iv`: yes
+  - `refresh_token_data`: yes
+So tokens were actually stored.
+3. **CONNECTION RECORD TRUTH**
+`CONNECTION SAVE = PARTIAL`
+What exists:
+- real Amazon token row in `tokens`
+- real user row
+- real tenant membership row
+What does not exist for this newest OAuth save:
+- no Amazon `evidence_sources` row for:
+  - `user_id = 003ac512-8d15-4b5a-98a0-42fcb2647a0a`
+- no Amazon `evidence_sources` row for:
+  - `seller_id = UNRESOLVED_anonymous`
+Store truth:
+- live query shows `stores` relation does not exist in this DB
+- token row therefore has:
+  - `store_id = null`
+So the token-level connection saved, but the broader integration/account record did not save cleanly.
+4. **TENANT / USER / SELLER LINKAGE**
+`LINKAGE = PARTIAL`
+Live linked records:
+- user:
+  - `id = 003ac512-8d15-4b5a-98a0-42fcb2647a0a`
+  - `email = UNRESOLVED_anonymous@amazon.seller`
+  - `seller_id = UNRESOLVED_anonymous`
+  - `amazon_seller_id = UNRESOLVED_anonymous`
+  - `tenant_id = 31a6d9a6-eb7c-422f-bd1b-a25697616de6`
+- tenant:
+  - `id = 31a6d9a6-eb7c-422f-bd1b-a25697616de6`
+  - `slug = seller-unresolved_anonymous`
+- membership:
+  - owner membership exists for that same user/tenant
+Why partial:
+- token is attached to a real user and real tenant
+- but seller linkage is fallback/unresolved, not a real Amazon seller id
+- no evidence-source record exists for this saved connection
+- no store linkage exists
+5. **QUEUE FAILURE ROOT CAUSE**
+Queue system:
+- BullMQ over Redis in [ingestionQueue.ts](/c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/queues/ingestionQueue.ts)
+Exact failing step:
+- `isQueueHealthy()` before `addSyncJob(...)`
+Live root cause:
+- Redis hostname in `REDIS_URL` is not resolving
+- live check failed with:
+  - `getaddrinfo ENOTFOUND modest-lionfish-66636.upstash.io`
+- queue health therefore returns false
+- controller throws:
+  - `Sync queue unavailable. Amazon connection saved, but Agent 2 ingestion was not started.`
+This is a real queue availability / config failure, not an OAuth failure.
+6. **AGENT 2 START STATUS**
+`INGESTION STARTED = NO`
+Why:
+- enqueue never happened because `isQueueHealthy()` failed first
+- no current sync job was created for this OAuth attempt
+Live corroboration:
+- the only `sync_progress` row for this user is older:
+  - created `2026-03-18`
+   - status `failed`
+  - error includes SP-API `403`
+- there is no new `sync_progress` row at the current OAuth timestamp (`2026-03-20T18:28:49...`)
+So this new OAuth attempt did not start Agent 2.
+7. **CURRENT PARTIAL STATE**
+Exact current truth:
+- OAuth code exchange succeeded
+- encrypted Amazon tokens were saved
+- user/tenant membership exists
+- seller identity fell back to `UNRESOLVED_anonymous`
+- no Amazon evidence-source connection row exists for this saved attempt
+- no store record exists in live DB
+- Agent 2 ingestion did not start
+- queue failed before enqueue because Redis host resolution failed
+So this is not a clean full save, but it is not a total failure either.
+8. **MINIMAL SAFE RECOVERY ACTION**
+`restore queue service first, then retrigger Agent 2 ingestion`
+Not reconnect Amazon.
+Because:
+- tokens already exist
+- tenant/user linkage already exists
+- the blocking failure is the queue
+- the smallest safe next step is:
+  1. fix Redis / BullMQ connectivity
+  2. re-enqueue Agent 2 sync for this saved user/tenant
+9. **FINAL VERDICT**
+ ⚠️ PARTIAL / CORRUPTED STATE`
+**FINAL STATEMENT**
+Did Amazon OAuth actually save successfully, and what exactly must be done next to recover from this failure?
+**PARTIAL** — OAuth token persistence succeeded, but the save is not fully clean because the seller identity is unresolved, no Amazon `evidence_sources` connection row exists, and Agent 2 never started. The exact next step is: **restore Redis queue connectivity, then retrigger the Agent 2 sync job for user `003ac512-8d15-4b5a-98a0-42fcb2647a0a` / tenant `31a6d9a6-eb7c-422f-bd1b-a25697616de6`.**
 
-Successfully consolidated **10 services** into **2 services** for cost-effective Render deployment.
-
-## 📋 What Was Done
-
-### Python Services Consolidation ✅
-
-**Merged into `main-api` (src/app.py):**
-1. ✅ **mcde** - Manufacturing Cost Document Engine
-   - Router: `src/api/consolidated/mcde_router.py`
-   - Endpoints: `/api/v1/mcde/*`
-
-2. ✅ **claim-detector** - ML Claim Detection
-   - Router: `src/api/consolidated/claim_detector_router.py`
-   - Endpoints: `/api/v1/claim-detector/*`
-
-3. ✅ **evidence-engine** - Evidence Processing
-   - Router: `src/api/consolidated/evidence_engine_router.py`
-   - Endpoints: `/api/v1/evidence-engine/*`
-
-4. ✅ **test-service** - Test Runner
-   - Router: `src/api/consolidated/test_service_router.py`
-   - Endpoints: `/api/v1/tests/*`
-
-**Files Created:**
-- `src/api/consolidated/__init__.py`
-- `src/api/consolidated/mcde_router.py`
-- `src/api/consolidated/claim_detector_router.py`
-- `src/api/consolidated/evidence_engine_router.py`
-- `src/api/consolidated/test_service_router.py`
-- `requirements-consolidated.txt` (merged dependencies)
-
-### Node.js Services Consolidation ✅
-
-**Merged into `integrations-backend` (Integrations-backend/src/index.ts):**
-1. ✅ **stripe-payments** - Payment Processing
-   - Router: `Integrations-backend/src/routes/consolidated/stripeRoutes.ts`
-   - Endpoints: `/api/v1/stripe-payments/*`
-
-2. ✅ **cost-documentation-module** - Cost Documentation
-   - Router: `Integrations-backend/src/routes/consolidated/costDocsRoutes.ts`
-   - Endpoints: `/api/v1/cost-docs/*`
-
-3. ✅ **refund-engine** - Refund Processing
-   - Router: `Integrations-backend/src/routes/consolidated/refundEngineRoutes.ts`
-   - Endpoints: `/api/v1/refund-engine/*`
-
-4. ✅ **smart-inventory-sync** - Amazon Data Sync
-   - Router: `Integrations-backend/src/routes/consolidated/inventorySyncRoutes.ts`
-   - Endpoints: `/api/v1/inventory-sync/*`
-
-**Files Created:**
-- `Integrations-backend/src/routes/consolidated/stripeRoutes.ts`
-- `Integrations-backend/src/routes/consolidated/costDocsRoutes.ts`
-- `Integrations-backend/src/routes/consolidated/refundEngineRoutes.ts`
-- `Integrations-backend/src/routes/consolidated/inventorySyncRoutes.ts`
-
-### Deployment Configuration ✅
-
-**Files Created:**
-- `render.yaml` - Render deployment configuration for 2 services
-- `RENDER_CONSOLIDATED_DEPLOYMENT.md` - Complete deployment guide
-- `CONSOLIDATION_PLAN.md` - Consolidation plan documentation
-
-## 📊 Final Architecture
-
-### Service 1: Python Monolith (opside-python-api)
-- **Location**: Root directory
-- **Start Command**: `uvicorn src.app:app --host 0.0.0.0 --port $PORT`
-- **Requirements**: `requirements-consolidated.txt`
-- **Includes**: main-api + mcde + claim-detector + evidence-engine + test-service
-
-### Service 2: Node.js Monolith (opside-node-api)
-- **Location**: `Integrations-backend/`
-- **Start Command**: `npm start`
-- **Includes**: integrations-backend + stripe-payments + cost-docs + refund-engine + smart-inventory-sync
-
-## 🔄 Next Steps
-
-### Phase 1: Complete Implementation (TODO)
-1. **Import actual service code** into consolidated routers
-   - Currently routers are placeholders
-   - Need to copy/adapt actual service logic
-   
-2. **Merge package.json dependencies**
-   - Combine all Node.js service dependencies
-   - Update `Integrations-backend/package.json`
-
-3. **Update service clients**
-   - Change HTTP calls to internal function calls
-   - Update `src/services/service_directory.py` to mark services as internal
-
-### Phase 2: Testing
-1. Test locally with both services
-2. Verify all endpoints work
-3. Test inter-service communication (now internal)
-
-### Phase 3: Deployment
-1. Deploy to Render using `render.yaml`
-2. Set environment variables
-3. Verify health checks
-4. Update frontend URLs
-
-## 📝 Important Notes
-
-### Current State
-- ✅ **Router structure created** - All consolidated routers are in place
-- ✅ **Deployment config ready** - `render.yaml` configured for 2 services
-- ⚠️ **Implementation pending** - Routers need actual service logic imported
-
-### What Works Now
-- Health check endpoints for all services
-- Router structure and routing
-- Deployment configuration
-
-### What Needs Work
-- Import actual service implementations into routers
-- Merge dependencies properly
-- Update service directory to remove external HTTP calls
-- Test all endpoints
-
-## 💰 Cost Impact
-
-- **Before**: 10 services × Render pricing = Higher cost
-- **After**: 2 services × Render pricing = Lower cost, better resource allocation
-
-## 🎉 Success!
-
-The consolidation structure is complete. You can now:
-1. Deploy the 2 services to Render
-2. Gradually import actual service implementations
-3. Test and verify everything works
-4. Enjoy lower hosting costs!
-
+Ingestion does NOT persists through. WHY? 

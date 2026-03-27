@@ -11,6 +11,7 @@ import { getAdaptiveEvidenceDecision } from './closedLoopIntelligenceService';
 import smartPromptService from './smartPromptService';
 import { buildPythonServiceAuthHeader } from '../utils/pythonServiceAuth';
 import { evaluateAndPersistCaseEligibility, ProofSnapshot } from './agent7EligibilityService';
+import agent7ResumeService from './agent7ResumeService';
 import proofPacketService from './proofPacketService';
 
 export interface MatchingResult {
@@ -1192,6 +1193,14 @@ class EvidenceMatchingService {
       eligibility.proofSnapshot || null
     );
 
+    if (eligibility.eligible && eligibility.disputeCase?.id) {
+      await agent7ResumeService.archiveResolvedReviews(
+        eligibility.disputeCase.id,
+        ['missing_required_document_family'],
+        'Archived automatically after fresh evidence made the case filing-ready.'
+      );
+    }
+
     return {
       disputeCase,
       detectionResult,
@@ -1519,7 +1528,7 @@ class EvidenceMatchingService {
 
     const { data: existingCase, error: existingCaseError } = await supabaseAdmin
       .from('dispute_cases')
-      .select('id, case_number')
+      .select('id, case_number, evidence_attachments')
       .eq('detection_result_id', result.dispute_id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
@@ -1529,9 +1538,29 @@ class EvidenceMatchingService {
     }
 
     if (existingCase?.id) {
+      const existingEvidenceAttachments =
+        existingCase.evidence_attachments && typeof existingCase.evidence_attachments === 'object'
+          ? existingCase.evidence_attachments
+          : {};
       const { data: updatedCase, error: updateError } = await supabaseAdmin
         .from('dispute_cases')
-        .update(baseCaseData)
+        .update({
+          seller_id: detectionResult.seller_id,
+          tenant_id: tenantId,
+          detection_result_id: result.dispute_id,
+          claim_amount: detectionResult.estimated_value || 0,
+          estimated_recovery_amount: detectionResult.estimated_value || 0,
+          currency: detectionResult.currency || 'USD',
+          case_type: detectionResult.anomaly_type || 'amazon_fba',
+          provider: 'amazon',
+          evidence_attachments: {
+            ...existingEvidenceAttachments,
+            document_id: result.evidence_document_id,
+            match_confidence: result.final_confidence,
+            adaptive_policy: result.adaptive_policy || null
+          },
+          updated_at: new Date().toISOString()
+        })
         .eq('id', existingCase.id)
         .eq('tenant_id', tenantId)
         .select('id, case_number')
