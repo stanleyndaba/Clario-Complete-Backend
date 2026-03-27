@@ -299,6 +299,8 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
   const enrichedRows = rows.map((record: any) => {
     const detection = record.detection_result_id ? detectionById.get(record.detection_result_id) : null;
     const latestBilling = latestBillingByDisputeId.get(record.id);
+    const decisionIntelligence = record?.evidence_attachments?.decision_intelligence || {};
+    const proofSnapshot = decisionIntelligence?.proof_snapshot || null;
     const matchedDocumentCount = getMatchedDocumentCount(record, evidenceCountByCase.get(record.id) || 0);
     const requestedAmount = toMoney(record.claim_amount);
     const approvedAmount = deriveApprovedAmount(record);
@@ -330,6 +332,21 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       billed_amount: billedAmount,
       currency: record.currency || 'USD',
       evidence_state: evidenceState,
+      proof_status: proofSnapshot?.filingRecommendation || null,
+      missing_requirements: Array.isArray(proofSnapshot?.missingRequirements) ? proofSnapshot.missingRequirements : [],
+      manual_review_reason: Array.isArray(record.block_reasons) && record.block_reasons.length > 0
+        ? record.block_reasons[0]
+        : (proofSnapshot?.riskFlags?.[0] || null),
+      payout_proof_status: actualPayoutAmount != null
+        ? 'verified'
+        : normalize(record.recovery_status) === 'quarantined'
+          ? 'quarantined'
+          : APPROVED_STATUSES.has(normalize(record.status))
+            ? 'awaiting_payout'
+            : 'not_applicable',
+      quarantine_reason: normalize(record.recovery_status) === 'quarantined'
+        ? (record.last_error || null)
+        : null,
       matched_document_count: matchedDocumentCount,
       rejection_category: rejectionCategory,
       rejection_reason: rejectionReason,

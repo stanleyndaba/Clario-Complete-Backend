@@ -16,6 +16,14 @@ import sseHub from '../utils/sseHub';
 import workerContinuationService from '../services/workerContinuationService';
 import runtimeCapacityService from '../services/runtimeCapacityService';
 
+function isUuid(value: string | null | undefined): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
+}
+
+function normalizeText(value: unknown): string {
+  return String(value || '').trim().toLowerCase();
+}
+
 // Retry logic with exponential backoff
 async function retryWithBackoff<T>(
   fn: () => Promise<T>,
@@ -339,45 +347,43 @@ export class DocumentParsingWorker {
     oldestItemAgeMs: number | null;
   }> {
     try {
-      const backlogQuery = createTenantScopedQueryById(tenantId, 'evidence_documents');
-      const oldestQuery = createTenantScopedQueryById(tenantId, 'evidence_documents');
-      const tenantQuery = createTenantScopedQueryById(tenantId, 'evidence_documents');
+      await this.ensureParserJobsForPendingDocuments(tenantId);
 
       const [backlogResult, oldestResult] = await Promise.all([
-        backlogQuery
+        createTenantScopedQueryById(tenantId, 'parser_jobs')
           .select('*', { count: 'exact', head: true })
-          .in('parser_status', ['pending', 'processing']),
-        oldestQuery
+          .in('status', ['pending', 'processing', 'retrying']),
+        createTenantScopedQueryById(tenantId, 'parser_jobs')
           .select('created_at')
-          .in('parser_status', ['pending', 'processing'])
+          .in('status', ['pending', 'processing', 'retrying'])
           .order('created_at', { ascending: true })
           .limit(1)
       ]);
 
-      let query = tenantQuery
-        .select('id, seller_id, filename, content_type, storage_path, parsed_metadata, parser_status, parser_started_at, parser_completed_at, parser_error')
-        .in('parser_status', ['pending', 'processing'])
-        .order('id', { ascending: true })
+      let query = createTenantScopedQueryById(tenantId, 'parser_jobs')
+        .select('id, document_id, status, started_at, completed_at, error, created_at')
+        .in('status', ['pending', 'processing', 'retrying'])
+        .order('document_id', { ascending: true })
         .limit(DocumentParsingWorker.BATCH_SIZE);
 
       if (cursor) {
-        query = query.gt('id', cursor);
+        query = query.gt('document_id', cursor);
       }
 
-      let { data: documents, error } = await query;
+      let { data: parserJobs, error } = await query;
 
-      if ((!documents || documents.length === 0) && cursor) {
-        const wrapped = await createTenantScopedQueryById(tenantId, 'evidence_documents')
-          .select('id, seller_id, filename, content_type, storage_path, parsed_metadata, parser_status, parser_started_at, parser_completed_at, parser_error')
-          .in('parser_status', ['pending', 'processing'])
-          .order('id', { ascending: true })
+      if ((!parserJobs || parserJobs.length === 0) && cursor) {
+        const wrapped = await createTenantScopedQueryById(tenantId, 'parser_jobs')
+          .select('id, document_id, status, started_at, completed_at, error, created_at')
+          .in('status', ['pending', 'processing', 'retrying'])
+          .order('document_id', { ascending: true })
           .limit(DocumentParsingWorker.BATCH_SIZE);
-        documents = wrapped.data;
+        parserJobs = wrapped.data;
         error = wrapped.error as any;
       }
 
       if (error) {
-        logger.warn('❌ [DOCUMENT PARSING WORKER] Error fetching pending documents for tenant', {
+        logger.warn('❌ [DOCUMENT PARSING WORKER] Error fetching parser jobs for tenant', {
           tenantId,
           error: error.message
         });
@@ -389,10 +395,53 @@ export class DocumentParsingWorker {
         };
       }
 
+      const documentIds = Array.from(new Set((parserJobs || []).map((job: any) => job.document_id).filter(Boolean)));
+      const { data: documents, error: documentsError } = documentIds.length
+        ? await createTenantScopedQueryById(tenantId, 'evidence_documents')
+            .select('id, seller_id, filename, content_type, storage_path, parsed_metadata, parser_status, parser_started_at, parser_completed_at, parser_error, parser_job_id, created_at')
+            .in('id', documentIds)
+        : { data: [] as any[], error: null as any };
+
+      if (documentsError) {
+        logger.warn('❌ [DOCUMENT PARSING WORKER] Error fetching documents for parser jobs', {
+          tenantId,
+          error: documentsError.message
+        });
+        return {
+          documents: [],
+          nextCursor: null,
+          backlogDepth: backlogResult.count || 0,
+          oldestItemAgeMs: oldestResult.data?.[0]?.created_at
+            ? Math.max(0, Date.now() - new Date(oldestResult.data[0].created_at).getTime())
+            : null
+        };
+      }
+
+      const documentById = new Map<string, any>();
+      for (const document of documents || []) {
+        documentById.set(document.id, document);
+      }
+
       const parsableDocs: Array<{ id: string; seller_id: string; filename: string; content_type: string }> = [];
 
-      for (const doc of documents || []) {
-        const normalizedStatus = await this.normalizeDocumentState(doc);
+      const dedupedJobs = new Map<string, any>();
+      for (const job of parserJobs || []) {
+        if (!dedupedJobs.has(job.document_id)) {
+          dedupedJobs.set(job.document_id, job);
+        }
+      }
+
+      for (const job of dedupedJobs.values()) {
+        const doc = documentById.get(job.document_id);
+        if (!doc) continue;
+
+        const normalizedStatus = await this.normalizeDocumentState({
+          ...doc,
+          job_status: job.status,
+          job_started_at: job.started_at,
+          job_completed_at: job.completed_at,
+          job_error: job.error
+        });
         if (normalizedStatus === 'pending') {
           parsableDocs.push({
             id: doc.id,
@@ -430,6 +479,29 @@ export class DocumentParsingWorker {
         backlogDepth: 0,
         oldestItemAgeMs: null
       };
+    }
+  }
+
+  private async ensureParserJobsForPendingDocuments(tenantId: string): Promise<void> {
+    try {
+      const { data: documents, error } = await createTenantScopedQueryById(tenantId, 'evidence_documents')
+        .select('id, seller_id, parser_job_id, parser_status')
+        .in('parser_status', ['pending', 'processing', 'retrying'])
+        .limit(DocumentParsingWorker.BATCH_SIZE * 2);
+
+      if (error || !documents?.length) {
+        return;
+      }
+
+      for (const document of documents) {
+        if (document.parser_job_id) continue;
+        await this.syncParserJobState(document.id, normalizeText(document.parser_status) === 'processing' ? 'processing' : 'pending');
+      }
+    } catch (error: any) {
+      logger.warn('⚠️ [DOCUMENT PARSING WORKER] Failed to ensure parser jobs for pending documents', {
+        tenantId,
+        error: error.message
+      });
     }
   }
 
@@ -707,9 +779,10 @@ export class DocumentParsingWorker {
 
   private async normalizeDocumentState(doc: any): Promise<'pending' | 'processing' | 'completed' | 'failed'> {
     const parsedMetadata = doc.parsed_metadata || null;
-    const parserStatus = doc.parser_status || 'pending';
+    const parserStatus = doc.job_status || doc.parser_status || 'pending';
     const contentType = doc.content_type?.toLowerCase() || '';
     const filename = doc.filename?.toLowerCase() || '';
+    const parserStartedAt = doc.job_started_at || doc.parser_started_at;
     const isParsable =
       contentType.includes('pdf') ||
       filename.endsWith('.pdf') ||
@@ -740,11 +813,16 @@ export class DocumentParsingWorker {
       return 'failed';
     }
 
-    if (parserStatus === 'processing' && doc.parser_started_at) {
-      const startedAtMs = Date.parse(doc.parser_started_at);
+    if (parserStatus === 'processing' && parserStartedAt) {
+      const startedAtMs = Date.parse(parserStartedAt);
       if (!Number.isNaN(startedAtMs) && (Date.now() - startedAtMs) < this.MAX_PROCESSING_AGE_MS) {
         return 'processing';
       }
+    }
+
+    if (parserStatus === 'retrying') {
+      await this.updateDocumentStatus(doc.id, 'pending');
+      return 'pending';
     }
 
     if (parserStatus !== 'pending') {
@@ -768,6 +846,7 @@ export class DocumentParsingWorker {
         parser_status: 'failed',
         parser_error: errorMessage,
         parser_completed_at: now,
+        parsed_at: null,
         updated_at: now,
         parsed_metadata: {
           _parse_failed: true,
@@ -779,6 +858,10 @@ export class DocumentParsingWorker {
         }
       })
       .eq('id', documentId);
+
+    await this.syncParserJobState(documentId, 'failed', {
+      error: errorMessage.substring(0, 500)
+    });
   }
 
   /**
@@ -803,6 +886,7 @@ export class DocumentParsingWorker {
       // Also update parsed_metadata timestamp fields
       if (status === 'processing') {
         updateData.parser_started_at = now;
+        updateData.parser_completed_at = null;
       } else if (status === 'completed' || status === 'failed') {
         updateData.parser_completed_at = now;
       }
@@ -830,6 +914,10 @@ export class DocumentParsingWorker {
           error: updateError.message
         });
       }
+
+      await this.syncParserJobState(documentId, status, {
+        error: error ? error.substring(0, 500) : null
+      });
     } catch (error: any) {
       logger.warn('⚠️ [DOCUMENT PARSING WORKER] Error updating document status', {
         documentId,
@@ -880,6 +968,7 @@ export class DocumentParsingWorker {
       // Update document with parsed metadata
       const updateData: any = {
         parsed_metadata: structuredData,
+        parsed_at: structuredData.parsed_at,
         updated_at: new Date().toISOString()
       };
 
@@ -942,6 +1031,10 @@ export class DocumentParsingWorker {
 
       // Also store in parser_job_results if table exists
       await this.storeParserJobResult(documentId, sellerId, structuredData, parsedData);
+      await this.syncParserJobState(documentId, 'completed', {
+        result: structuredData,
+        error: null
+      });
 
     } catch (error: any) {
       logger.warn('⚠️ [DOCUMENT PARSING WORKER] Error storing parsed data', {
@@ -995,6 +1088,134 @@ export class DocumentParsingWorker {
       // Non-critical - table may not exist
       logger.debug('⚠️ [DOCUMENT PARSING WORKER] Could not store parser job result', {
         documentId,
+        error: error.message
+      });
+    }
+  }
+
+  private async syncParserJobState(
+    documentId: string,
+    status: 'pending' | 'processing' | 'completed' | 'failed' | 'retrying',
+    options?: {
+      error?: string | null;
+      result?: Record<string, any> | null;
+    }
+  ): Promise<void> {
+    try {
+      const client = supabaseAdmin || supabase;
+      const now = new Date().toISOString();
+      const { data: document } = await client
+        .from('evidence_documents')
+        .select('id, tenant_id, seller_id, parser_job_id')
+        .eq('id', documentId)
+        .maybeSingle();
+
+      if (!document) {
+        return;
+      }
+
+      const safeUserId = isUuid(document.seller_id) ? document.seller_id : null;
+      const payload: Record<string, any> = {
+        status,
+        updated_at: now
+      };
+
+      if (document.tenant_id) payload.tenant_id = document.tenant_id;
+      if (safeUserId) payload.user_id = safeUserId;
+
+      if (status === 'processing') {
+        payload.started_at = now;
+        payload.completed_at = null;
+      } else if (status === 'completed' || status === 'failed') {
+        payload.completed_at = now;
+      }
+
+      if (options?.error !== undefined) {
+        payload.error = options.error;
+      }
+
+      if (options?.result !== undefined) {
+        payload.result = options.result;
+      }
+
+      let parserJobId = document.parser_job_id || null;
+
+      if (parserJobId) {
+        const { error: updateError } = await client
+          .from('parser_jobs')
+          .update(payload)
+          .eq('id', parserJobId);
+
+        if (!updateError) {
+          return;
+        }
+
+        logger.debug('⚠️ [DOCUMENT PARSING WORKER] Failed to update parser job by parser_job_id, falling back to document lookup', {
+          documentId,
+          parserJobId,
+          error: updateError.message
+        });
+      }
+
+      const { data: existingJob } = await client
+        .from('parser_jobs')
+        .select('id')
+        .eq('document_id', documentId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (existingJob?.id) {
+        parserJobId = existingJob.id;
+        const { error: updateError } = await client
+          .from('parser_jobs')
+          .update(payload)
+          .eq('id', parserJobId);
+
+        if (updateError) {
+          logger.warn('⚠️ [DOCUMENT PARSING WORKER] Failed to update parser job state', {
+            documentId,
+            parserJobId,
+            error: updateError.message
+          });
+          return;
+        }
+      } else {
+        const { data: createdJob, error: createError } = await client
+          .from('parser_jobs')
+          .insert({
+            document_id: documentId,
+            parser_type: 'pdf',
+            created_at: now,
+            ...payload
+          })
+          .select('id')
+          .single();
+
+        if (createError || !createdJob?.id) {
+          logger.warn('⚠️ [DOCUMENT PARSING WORKER] Failed to create parser job state', {
+            documentId,
+            error: createError?.message || 'missing parser job id'
+          });
+          return;
+        }
+
+        parserJobId = createdJob.id;
+      }
+
+      if (parserJobId && parserJobId !== document.parser_job_id) {
+        await client
+          .from('evidence_documents')
+          .update({
+            parser_job_id: parserJobId,
+            updated_at: now
+          })
+          .eq('id', documentId);
+      }
+    } catch (error: any) {
+      logger.warn('⚠️ [DOCUMENT PARSING WORKER] Failed to sync parser job state', {
+        documentId,
+        status,
         error: error.message
       });
     }

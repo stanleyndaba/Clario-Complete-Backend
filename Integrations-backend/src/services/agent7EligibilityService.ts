@@ -10,11 +10,29 @@ export interface FilingEligibilityResult {
   reasons: string[];
   confidenceScore: number | null;
   claimType: string;
+  proofSnapshot?: ProofSnapshot;
   successProbability?: number | null;
   priorityScore?: number | null;
   evidenceStrength?: number | null;
   adaptiveConfidenceThreshold?: number | null;
   decisionProfile?: AdaptiveDecisionProfile | null;
+}
+
+export interface ProofSnapshot {
+  claimFamily: string;
+  requiredRequirements: string[];
+  missingRequirements: string[];
+  matchedIdentifiers: {
+    productIds: string[];
+    orderIds: string[];
+    shipmentIds: string[];
+  };
+  unitCostProofStatus: 'present' | 'missing' | 'not_required';
+  deadlineStatus: 'within_window' | 'outside_window' | 'missing_reference_date';
+  riskFlags: string[];
+  filingRecommendation: 'filing_ready' | 'manual_review' | 'ineligible';
+  evidenceDocumentCount: number;
+  linkedEvidenceCount: number;
 }
 
 interface EligibilityContext {
@@ -216,6 +234,97 @@ function resolveReferenceDate(context: EligibilityContext, claimType: string): D
   return null;
 }
 
+function classifyMissingRequirement(reason: string): string | null {
+  if (!reason) return null;
+  if (reason === 'missing_evidence_links') return 'evidence_links';
+  if (reason.startsWith('insufficient_evidence_documents:')) return 'minimum_evidence_documents';
+  if (reason === 'missing_product_identifier') return 'product_identifier';
+  if (reason === 'missing_order_identifier') return 'order_identifier';
+  if (reason === 'missing_shipment_identifier') return 'shipment_identifier';
+  if (reason.startsWith('missing_required_document_type:')) return `document_type:${reason.split(':')[1]}`;
+  if (reason.startsWith('missing_required_document_family:')) return `document_family:${reason.split(':')[1]}`;
+  if (reason === 'missing_unit_cost_proof') return 'unit_cost_proof';
+  if (reason === 'evidence_not_fully_parsed') return 'parsed_evidence';
+  if (reason === 'evidence_identity_mismatch') return 'identity_match';
+  if (reason.startsWith('confidence_below_threshold:')) return 'confidence_threshold';
+  if (reason === 'missing_policy_window_reference_date') return 'policy_window_reference_date';
+  return null;
+}
+
+function classifyFilingRecommendation(reasons: string[]): ProofSnapshot['filingRecommendation'] {
+  if (reasons.length === 0) {
+    return 'filing_ready';
+  }
+
+  const hardStops = reasons.some((reason) =>
+    reason === 'dangerous_or_prohibited_document_detected' ||
+    reason === 'already_recovered_or_reconciled' ||
+    reason.startsWith('billing_conflict:') ||
+    reason.startsWith('filing_conflict:') ||
+    reason.startsWith('case_status_not_fileable:') ||
+    reason.startsWith('case_not_ready_for_filing_status:') ||
+    reason.startsWith('outside_policy_window:')
+  );
+
+  return hardStops ? 'ineligible' : 'manual_review';
+}
+
+function buildProofSnapshot(params: {
+  profile: ReturnType<typeof resolveClaimProfile>;
+  identifiers: ReturnType<typeof collectIdentifiers>;
+  reasons: string[];
+  evidenceDocuments: any[];
+  linkedEvidenceCount: number;
+}): ProofSnapshot {
+  const { profile, identifiers, reasons, evidenceDocuments, linkedEvidenceCount } = params;
+  const requiredRequirements = [
+    ...(profile.requiresProductId ? ['product_identifier'] : []),
+    ...(profile.requiresOrderId ? ['order_identifier'] : []),
+    ...(profile.requiresShipmentId ? ['shipment_identifier'] : []),
+    ...(profile.requiresUnitCost ? ['unit_cost_proof'] : []),
+    ...profile.requiredDocTypes.map((docType) => `document_type:${docType}`),
+    ...(profile.requiredOneOfDocTypes.length > 0
+      ? [`document_family:${profile.requiredOneOfDocTypes.join('|')}`]
+      : [])
+  ];
+
+  const missingRequirements = Array.from(
+    new Set(
+      reasons
+        .map(classifyMissingRequirement)
+        .filter((value): value is string => Boolean(value))
+    )
+  );
+
+  let deadlineStatus: ProofSnapshot['deadlineStatus'] = 'within_window';
+  if (reasons.includes('missing_policy_window_reference_date')) {
+    deadlineStatus = 'missing_reference_date';
+  } else if (reasons.some((reason) => reason.startsWith('outside_policy_window:'))) {
+    deadlineStatus = 'outside_window';
+  }
+
+  const riskFlags = reasons.filter((reason) => !classifyMissingRequirement(reason));
+
+  return {
+    claimFamily: profile.key,
+    requiredRequirements,
+    missingRequirements,
+    matchedIdentifiers: {
+      productIds: identifiers.productIds,
+      orderIds: identifiers.orderIds,
+      shipmentIds: identifiers.shipmentIds
+    },
+    unitCostProofStatus: profile.requiresUnitCost
+      ? (reasons.includes('missing_unit_cost_proof') ? 'missing' : 'present')
+      : 'not_required',
+    deadlineStatus,
+    riskFlags,
+    filingRecommendation: classifyFilingRecommendation(reasons),
+    evidenceDocumentCount: evidenceDocuments.length,
+    linkedEvidenceCount
+  };
+}
+
 function matchesCaseIdentity(document: any, identifiers: ReturnType<typeof collectIdentifiers>) {
   const extract = getEvidenceExtract(document);
   const items = getEvidenceItems(document);
@@ -400,11 +509,21 @@ export function evaluateCaseEligibility(
     }
   }
 
+  const finalReasons = Array.from(reasons);
+  const proofSnapshot = buildProofSnapshot({
+    profile,
+    identifiers,
+    reasons: finalReasons,
+    evidenceDocuments,
+    linkedEvidenceCount: context.linkedEvidenceCount
+  });
+
   return {
     eligible: reasons.size === 0,
-    reasons: Array.from(reasons),
+    reasons: finalReasons,
     confidenceScore,
-    claimType: profile.key
+    claimType: profile.key,
+    proofSnapshot
   };
 }
 
@@ -506,6 +625,13 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
 
   const finalReasons = Array.from(reasons);
   const eligible = finalReasons.length === 0;
+  const finalProofSnapshot = buildProofSnapshot({
+    profile,
+    identifiers: collectIdentifiers(context),
+    reasons: finalReasons,
+    evidenceDocuments: context.evidenceDocuments,
+    linkedEvidenceCount: context.linkedEvidenceCount
+  });
   const evidenceAttachment = parseJsonObject(disputeCase.evidence_attachments);
 
   const updates: Record<string, any> = {
@@ -527,6 +653,8 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
         days_until_expiry: daysUntilExpiry,
         adjustments: decisionProfile.adjustments,
         signals: evidenceSnapshot.signals,
+        proof_snapshot: finalProofSnapshot,
+        filing_recommendation: finalProofSnapshot.filingRecommendation,
         evaluated_at: new Date().toISOString()
       }
     },
@@ -566,6 +694,7 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
     reasons: finalReasons,
     confidenceScore: result.confidenceScore,
     claimType: result.claimType,
+    proofSnapshot: finalProofSnapshot,
     successProbability: decisionProfile.successProbability,
     priorityScore: decisionProfile.priorityScore,
     evidenceStrength: evidenceSnapshot.score,

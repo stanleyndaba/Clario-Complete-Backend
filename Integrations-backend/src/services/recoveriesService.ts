@@ -11,6 +11,18 @@ import { supabaseAdmin } from '../database/supabaseClient';
 import runtimeCapacityService from './runtimeCapacityService';
 import financialWorkItemService from './financialWorkItemService';
 
+function parseJsonObject(value: any): Record<string, any> {
+  if (!value) return {};
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return {};
+    }
+  }
+  return typeof value === 'object' ? value : {};
+}
+
 export interface PayoutMatch {
   disputeId: string;
   amazonCaseId?: string;
@@ -56,6 +68,21 @@ class RecoveriesService {
     candidateDisputeIds: string[] = []
   ): Promise<void> {
     runtimeCapacityService.incrementCounter('ambiguous_recoveries');
+    const timestamp = new Date().toISOString();
+    const quarantinePayload = {
+      quarantine_state: 'ambiguous_recovery',
+      quarantine_reason: reason,
+      tenant_id: tenantId || null,
+      payout_id: payout.id || null,
+      amazon_reimbursement_id: payout.amazonReimbursementId || null,
+      amazon_case_id: payout.amazonCaseId || payout.metadata?.amazon_case_id || payout.metadata?.case_id || null,
+      reference_id: payout.referenceId || null,
+      settlement_id: payout.settlementId || null,
+      payout_batch_id: payout.payoutBatchId || null,
+      order_id: payout.orderId || null,
+      amount: payout.amount || null,
+      candidate_dispute_ids: candidateDisputeIds
+    };
 
     if (candidateDisputeIds.length > 0) {
       await supabaseAdmin
@@ -66,6 +93,26 @@ class RecoveriesService {
           updated_at: new Date().toISOString()
         })
         .in('id', candidateDisputeIds);
+
+      if (tenantId) {
+        const tenantSlug = await resolveTenantSlug(tenantId);
+        for (const disputeId of candidateDisputeIds) {
+          const { item } = await financialWorkItemService.enqueueRecoveryWork({
+            tenantId,
+            tenantSlug,
+            userId,
+            disputeCaseId: disputeId,
+            sourceEventType: 'recovery.quarantined',
+            sourceEventId: String(payout.id || disputeId),
+            payload: quarantinePayload
+          });
+
+          await financialWorkItemService.quarantine('recovery', item.id, reason, {
+            ...(item.payload || {}),
+            ...quarantinePayload
+          });
+        }
+      }
     }
 
     try {
@@ -77,15 +124,9 @@ class RecoveriesService {
           user_id: userId,
           event_type: 'error',
           event_data: {
-            quarantine_state: 'ambiguous_recovery',
+            ...quarantinePayload,
             reason,
-            tenant_id: tenantId || null,
-            payout_id: payout.id || null,
-            amazon_reimbursement_id: payout.amazonReimbursementId || null,
-            amazon_case_id: payout.amazonCaseId || payout.metadata?.amazon_case_id || payout.metadata?.case_id || null,
-            order_id: payout.orderId || null,
-            amount: payout.amount || null,
-            candidate_dispute_ids: candidateDisputeIds
+            quarantined_at: timestamp
           }
         });
     } catch (error: any) {
@@ -301,7 +342,7 @@ class RecoveriesService {
         let caseQuery = supabaseAdmin
           .from('dispute_cases')
           .select(`
-            id, seller_id, claim_amount, currency, status, provider_case_id,
+            id, seller_id, claim_amount, currency, status, provider_case_id, evidence_attachments,
             detection_result_id,
             detection_results (evidence)
           `)
@@ -325,7 +366,7 @@ class RecoveriesService {
       let disputeCasesQuery = supabaseAdmin
         .from('dispute_cases')
         .select(`
-          id, seller_id, claim_amount, currency, status, provider_case_id,
+          id, seller_id, claim_amount, currency, status, provider_case_id, evidence_attachments,
           detection_result_id,
           detection_results (evidence)
         `)
@@ -343,7 +384,7 @@ class RecoveriesService {
 
       if (payout.amazonReimbursementId && approvedCases.length > 0) {
         const reimbursementMatches = approvedCases.filter((disputeCase: any) => {
-          const evidence = disputeCase.detection_results?.evidence || {};
+          const evidence = parseJsonObject(disputeCase.detection_results?.evidence);
           const reimbursementId =
             evidence.amazon_reimbursement_id ||
             evidence.reimbursement_id ||
@@ -369,9 +410,92 @@ class RecoveriesService {
         }
       }
 
+      if (payout.referenceId && approvedCases.length > 0) {
+        const referenceMatches = approvedCases.filter((disputeCase: any) => {
+          const evidence = parseJsonObject(disputeCase.detection_results?.evidence);
+          const caseEvidence = parseJsonObject(disputeCase.evidence_attachments);
+          const referenceIds = [
+            evidence.reference_id,
+            evidence.amazon_reference_id,
+            evidence.reimbursement_reference_id,
+            caseEvidence.reference_id,
+            caseEvidence.amazon_reference_id,
+            caseEvidence.reimbursement_reference_id
+          ].filter(Boolean);
+          return referenceIds.includes(payout.referenceId);
+        });
+
+        if (referenceMatches.length === 1) {
+          return this.createMatch(referenceMatches[0], payout);
+        }
+
+        if (referenceMatches.length > 1) {
+          await this.quarantineAmbiguousRecovery(
+            payout,
+            userId,
+            tenantId,
+            'multiple_cases_share_reference_identifier',
+            referenceMatches.map((candidate: any) => candidate.id)
+          );
+          return null;
+        }
+      }
+
+      if ((payout.settlementId || payout.payoutBatchId) && approvedCases.length > 0) {
+        const settlementMatches = approvedCases.filter((disputeCase: any) => {
+          const evidence = parseJsonObject(disputeCase.detection_results?.evidence);
+          const caseEvidence = parseJsonObject(disputeCase.evidence_attachments);
+          const settlementIds = [
+            evidence.settlement_id,
+            evidence.payout_batch_id,
+            caseEvidence.settlement_id,
+            caseEvidence.payout_batch_id
+          ].filter(Boolean);
+          return settlementIds.includes(payout.settlementId) || settlementIds.includes(payout.payoutBatchId);
+        });
+
+        if (settlementMatches.length === 1) {
+          return this.createMatch(settlementMatches[0], payout);
+        }
+
+        if (settlementMatches.length > 1) {
+          await this.quarantineAmbiguousRecovery(
+            payout,
+            userId,
+            tenantId,
+            'multiple_cases_share_settlement_or_batch_identifier',
+            settlementMatches.map((candidate: any) => candidate.id)
+          );
+          return null;
+        }
+      }
+
+      if (approvedCases.length > 0 && (payout.metadata?.dispute_case_id || payout.metadata?.amazon_case_id || payout.metadata?.case_id)) {
+        const explicitMatches = approvedCases.filter((disputeCase: any) =>
+          payout.metadata?.dispute_case_id === disputeCase.id ||
+          payout.metadata?.amazon_case_id === disputeCase.provider_case_id ||
+          payout.metadata?.case_id === disputeCase.provider_case_id
+        );
+
+        if (explicitMatches.length === 1) {
+          return this.createMatch(explicitMatches[0], payout);
+        }
+
+        if (explicitMatches.length > 1) {
+          await this.quarantineAmbiguousRecovery(
+            payout,
+            userId,
+            tenantId,
+            'multiple_cases_share_explicit_case_link_metadata',
+            explicitMatches.map((candidate: any) => candidate.id)
+          );
+          return null;
+        }
+      }
+
       if (approvedCases.length > 0 && payout.orderId) {
         const matchingCases = approvedCases.filter((dc: any) => {
-          const evidence = dc.detection_results?.evidence || {};
+          const evidence = parseJsonObject(dc.detection_results?.evidence);
           return evidence.order_id === payout.orderId;
         });
 
@@ -400,7 +524,7 @@ class RecoveriesService {
 
       if ((payout.sku || payout.asin) && approvedCases.length > 0) {
         const matchingCases = approvedCases.filter((dc: any) => {
-          const evidence = dc.detection_results?.evidence || {};
+          const evidence = parseJsonObject(dc.detection_results?.evidence);
           return evidence.sku === payout.sku || evidence.asin === payout.asin;
         });
 
@@ -411,7 +535,11 @@ class RecoveriesService {
           return difference <= Math.max(expectedAmount * 0.10, 2.00);
         });
 
-        if (closeMatches.length > 0) {
+        if (closeMatches.length === 1) {
+          return this.createMatch(closeMatches[0], payout);
+        }
+
+        if (closeMatches.length > 1) {
           await this.quarantineAmbiguousRecovery(
             payout,
             userId,
@@ -439,7 +567,11 @@ class RecoveriesService {
           .filter((candidate: any) => candidate.expectedAmount > 0 && candidate.difference <= candidate.threshold)
           .sort((a: any, b: any) => a.difference - b.difference);
 
-        if (candidates.length > 0) {
+        if (candidates.length === 1) {
+          return this.createMatch(candidates[0].disputeCase, payout);
+        }
+
+        if (candidates.length > 1) {
           await this.quarantineAmbiguousRecovery(
             payout,
             userId,
@@ -485,7 +617,7 @@ class RecoveriesService {
     }
 
     // Extract order_id from detection_results.evidence JSONB
-    const evidence = disputeCase.detection_results?.evidence || {};
+    const evidence = parseJsonObject(disputeCase.detection_results?.evidence);
     const orderId = evidence.order_id || '';
 
     return {

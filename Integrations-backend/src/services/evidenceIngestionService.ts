@@ -1,4 +1,4 @@
-import { supabase } from '../database/supabaseClient';
+import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import logger from '../utils/logger';
 
 export interface EvidenceSource {
@@ -29,23 +29,109 @@ export interface ParsedDocument {
   items?: ParsedLineItem[];
 }
 
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
 export const evidenceIngestionService = {
-  async triggerDocumentParsing(documentId: string, sellerId: string): Promise<void> {
+  async triggerDocumentParsing(documentId: string, sellerId: string, tenantId?: string | null): Promise<void> {
     try {
-      logger.info('Triggering Step 5 document parsing', { documentId, sellerId });
-      
-      // Call Python FastAPI parsing endpoint
-      const response = await fetch(`http://localhost:8000/api/evidence/parse/${documentId}`, {
-        method: 'POST',
-        headers: { 'Authorization': 'Bearer system-token' }
-      });
-      
-      if (response.ok) {
-        const job = (await response.json()) as { job_id?: string };
-        logger.info('Step 5 parsing job started', { documentId, jobId: (job as any).job_id, sellerId });
+      logger.info('Queueing durable Step 5 document parsing job', { documentId, sellerId, tenantId });
+
+      const client = supabaseAdmin || supabase;
+      const timestamp = new Date().toISOString();
+      const safeUserId = isUuid(sellerId) ? sellerId : null;
+
+      const { data: existingJob, error: existingJobError } = await client
+        .from('parser_jobs')
+        .select('id, status')
+        .eq('document_id', documentId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (existingJobError) {
+        throw new Error(`Failed to lookup parser job: ${existingJobError.message}`);
       }
-    } catch (error) {
-      logger.error('Failed to trigger Step 5 parsing', { documentId, sellerId, error });
+
+      let parserJobId = existingJob?.id as string | undefined;
+      const parserStatus = existingJob?.status === 'processing' ? 'retrying' : 'pending';
+
+      if (parserJobId) {
+        const updatePayload: Record<string, any> = {
+          status: parserStatus,
+          error: null,
+          result: null,
+          started_at: null,
+          completed_at: null,
+          updated_at: timestamp
+        };
+        if (tenantId) updatePayload.tenant_id = tenantId;
+        if (safeUserId) updatePayload.user_id = safeUserId;
+
+        const { error: updateJobError } = await client
+          .from('parser_jobs')
+          .update(updatePayload)
+          .eq('id', parserJobId);
+
+        if (updateJobError) {
+          throw new Error(`Failed to refresh parser job: ${updateJobError.message}`);
+        }
+      } else {
+        const insertPayload: Record<string, any> = {
+          document_id: documentId,
+          parser_type: 'pdf',
+          status: 'pending',
+          created_at: timestamp,
+          updated_at: timestamp
+        };
+        if (tenantId) insertPayload.tenant_id = tenantId;
+        if (safeUserId) insertPayload.user_id = safeUserId;
+
+        const { data: createdJob, error: createJobError } = await client
+          .from('parser_jobs')
+          .insert(insertPayload)
+          .select('id')
+          .single();
+
+        if (createJobError || !createdJob?.id) {
+          throw new Error(`Failed to create parser job: ${createJobError?.message || 'missing job id'}`);
+        }
+
+        parserJobId = createdJob.id as string;
+      }
+
+      const { error: updateDocumentError } = await client
+        .from('evidence_documents')
+        .update({
+          parser_job_id: parserJobId,
+          parser_status: parserStatus,
+          parser_error: null,
+          parser_started_at: null,
+          parser_completed_at: null,
+          parsed_at: null,
+          updated_at: timestamp
+        })
+        .eq('id', documentId);
+
+      if (updateDocumentError) {
+        throw new Error(`Failed to mirror parser job state to evidence document: ${updateDocumentError.message}`);
+      }
+
+      logger.info('Durable Step 5 parsing job ready', {
+        documentId,
+        jobId: parserJobId,
+        sellerId,
+        tenantId,
+        parserStatus
+      });
+    } catch (error: any) {
+      logger.error('Failed to queue durable Step 5 parsing job', {
+        documentId,
+        sellerId,
+        tenantId,
+        error: error?.message || error
+      });
     }
   },
   async registerSource(sellerId: string, provider: EvidenceSource['provider'], displayName?: string, metadata?: Record<string, any>): Promise<string> {
@@ -73,15 +159,17 @@ export const evidenceIngestionService = {
         total_amount: doc.total_amount,
         file_url: doc.file_url,
         raw_text: doc.raw_text,
-        extracted: { items: doc.items || [] }
+        extracted: { items: doc.items || [] },
+        parser_status: 'pending'
       })
-      .select('id')
+      .select('id, tenant_id')
       .single();
     if (error) throw new Error(`Failed to ingest document: ${error.message}`);
     const documentId = data.id as string;
+    const tenantId = (data as any).tenant_id || null;
 
-    // 🎯 TRIGGER STEP 5 DOCUMENT PARSING
-    this.triggerDocumentParsing(documentId, sellerId);
+    // Durable Step 5 handoff
+    void this.triggerDocumentParsing(documentId, sellerId, tenantId);
 
     // Also persist normalized line items for performant queries
     try {

@@ -10,6 +10,8 @@ import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import { getAdaptiveEvidenceDecision } from './closedLoopIntelligenceService';
 import smartPromptService from './smartPromptService';
 import { buildPythonServiceAuthHeader } from '../utils/pythonServiceAuth';
+import { evaluateAndPersistCaseEligibility, ProofSnapshot } from './agent7EligibilityService';
+import proofPacketService from './proofPacketService';
 
 export interface MatchingResult {
   dispute_id: string;
@@ -20,7 +22,7 @@ export interface MatchingResult {
   match_type: string;
   matched_fields: string[];
   reasoning: string;
-  action_taken: 'auto_submit' | 'smart_prompt' | 'no_action';
+  action_taken: 'auto_submit' | 'smart_prompt' | 'manual_review' | 'no_action';
   anomaly_type?: string;
   claim_amount?: number;
   adaptive_policy?: {
@@ -38,6 +40,12 @@ export interface MatchingJobResponse {
   auto_submits: number;
   smart_prompts: number;
   results?: MatchingResult[];
+}
+
+interface ProofPreparation {
+  disputeCase: any;
+  detectionResult: any;
+  eligibility: Awaited<ReturnType<typeof evaluateAndPersistCaseEligibility>>;
 }
 
 export interface ClaimData {
@@ -930,6 +938,7 @@ class EvidenceMatchingService {
         const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId);
 
         const matchResultRecords = allResults.map(result => {
+          const persistedAction = result.action_taken === 'no_action' ? 'manual_review' : result.action_taken;
           const record: any = {
             seller_id: userId,
             tenant_id: tenantId,
@@ -939,12 +948,13 @@ class EvidenceMatchingService {
             matched_fields: result.matched_fields || [],
             confidence_score: result.final_confidence,
             rule_score: result.rule_score,
-            action_taken: result.action_taken,
+            action_taken: persistedAction,
             reasoning: result.reasoning,
-            status: result.action_taken === 'auto_submit' ? 'approved' : 'pending',
+            status: persistedAction === 'auto_submit' ? 'approved' : 'pending',
             metadata: {
               matched_at: new Date().toISOString(),
-              total_matches_in_batch: allResults.length
+              total_matches_in_batch: allResults.length,
+              adaptive_policy: result.adaptive_policy || null
             }
           };
 
@@ -964,10 +974,7 @@ class EvidenceMatchingService {
           });
 
         if (insertError) {
-          logger.warn('⚠️ [EVIDENCE MATCHING] Failed to save match results (table may not exist yet)', {
-            error: insertError.message,
-            resultsCount: allResults.length
-          });
+          throw new Error(`Failed to save match results: ${insertError.message}`);
         } else {
           logger.info('💾 [EVIDENCE MATCHING] Saved match results to database', {
             savedCount: allResults.length,
@@ -991,9 +998,11 @@ class EvidenceMatchingService {
           }
         }
       } catch (saveError: any) {
-        logger.warn('⚠️ [EVIDENCE MATCHING] Error saving match results', {
-          error: saveError.message
+        logger.error('❌ [EVIDENCE MATCHING] Error saving match results', {
+          error: saveError.message,
+          resultsCount: allResults.length
         });
+        throw saveError;
       }
     }
 
@@ -1038,7 +1047,9 @@ class EvidenceMatchingService {
         });
 
         result.final_confidence = adaptiveEvidenceDecision.adjustedConfidence;
-        result.action_taken = adaptiveEvidenceDecision.route;
+        result.action_taken = adaptiveEvidenceDecision.route === 'no_action'
+          ? 'manual_review'
+          : adaptiveEvidenceDecision.route;
         result.adaptive_policy = {
           adjusted_confidence: adaptiveEvidenceDecision.adjustedConfidence,
           auto_submit_threshold: adaptiveEvidenceDecision.autoSubmitThreshold,
@@ -1061,15 +1072,24 @@ class EvidenceMatchingService {
         });
 
         if (result.action_taken === 'auto_submit') {
-          // Auto-submit (>= 0.85)
-          await this.handleAutoSubmit(userId, tenantId, result);
-          stats.autoSubmitted++;
+          const finalRoute = await this.handleAutoSubmit(userId, tenantId, result);
+          if (finalRoute === 'auto_submit') {
+            stats.autoSubmitted++;
+          } else if (finalRoute === 'smart_prompt') {
+            stats.smartPromptsCreated++;
+          } else {
+            stats.held++;
+          }
         } else if (result.action_taken === 'smart_prompt') {
-          // Smart prompt (0.5 - 0.85)
-          await this.handleSmartPrompt(userId, tenantId, result);
-          stats.smartPromptsCreated++;
+          const finalRoute = await this.handleSmartPrompt(userId, tenantId, result);
+          if (finalRoute === 'smart_prompt') {
+            stats.smartPromptsCreated++;
+          } else if (finalRoute === 'auto_submit') {
+            stats.autoSubmitted++;
+          } else {
+            stats.held++;
+          }
         } else {
-          // Hold (< 0.5)
           await this.handleHold(userId, tenantId, result);
           stats.held++;
         }
@@ -1085,11 +1105,109 @@ class EvidenceMatchingService {
     return stats;
   }
 
+  private deriveProofDrivenRoute(proofSnapshot?: ProofSnapshot | null): 'auto_submit' | 'smart_prompt' | 'manual_review' {
+    if (!proofSnapshot) {
+      return 'manual_review';
+    }
+
+    if (proofSnapshot.filingRecommendation === 'filing_ready') {
+      return 'auto_submit';
+    }
+
+    if (proofSnapshot.filingRecommendation === 'manual_review') {
+      return 'smart_prompt';
+    }
+
+    return 'manual_review';
+  }
+
+  private async createProofPacketForCase(
+    tenantId: string,
+    userId: string,
+    disputeCaseId: string,
+    detectionResult: any,
+    result: MatchingResult,
+    proofSnapshot?: ProofSnapshot | null
+  ): Promise<void> {
+    const evidence = detectionResult?.evidence || {};
+    const packetKind = proofSnapshot?.filingRecommendation === 'filing_ready' ? 'filing_ready' : 'manual_review';
+    await proofPacketService.createPacket({
+      tenantId,
+      sellerId: userId,
+      disputeId: disputeCaseId,
+      packetUrl: `opside://proof-packets/${disputeCaseId}/${packetKind}`,
+      summary: {
+        packetKind,
+        filingRecommendation: proofSnapshot?.filingRecommendation || 'manual_review',
+        missingRequirements: proofSnapshot?.missingRequirements || [],
+        riskFlags: proofSnapshot?.riskFlags || [],
+        sku: evidence?.sku || undefined,
+        asin: evidence?.asin || undefined,
+        expectedAmount: Number(detectionResult?.estimated_value || 0),
+        confidence: result.final_confidence,
+        evidenceDocumentId: result.evidence_document_id
+      }
+    });
+  }
+
+  private async prepareProofDrivenCase(
+    userId: string,
+    tenantId: string,
+    result: MatchingResult
+  ): Promise<ProofPreparation> {
+    const { data: detectionResult, error: fetchError } = await supabaseAdmin
+      .from('detection_results')
+      .select('id, seller_id, anomaly_type, estimated_value, currency, evidence, claim_number')
+      .eq('id', result.dispute_id)
+      .single();
+
+    if (fetchError || !detectionResult) {
+      throw new Error(`Failed to fetch detection result for filing: ${fetchError?.message || 'Not found'}`);
+    }
+
+    const disputeCase = await this.ensureDisputeCaseForMatch(tenantId, detectionResult, result);
+
+    if (!disputeCase?.id) {
+      throw new Error('Dispute case must exist before attaching evidence');
+    }
+
+    await this.storeEvidenceLink(tenantId, disputeCase.id, result, 'auto_match');
+
+    await this.updateDisputeCaseEvidenceAttachment(tenantId, disputeCase.id, {
+      document_id: result.evidence_document_id,
+      match_confidence: result.final_confidence,
+      match_type: result.match_type,
+      matched_fields: result.matched_fields || [],
+      matched_at: new Date().toISOString(),
+      adaptive_policy: result.adaptive_policy
+    });
+
+    const eligibility = await evaluateAndPersistCaseEligibility(disputeCase.id, tenantId);
+    await this.createProofPacketForCase(
+      tenantId,
+      userId,
+      disputeCase.id,
+      detectionResult,
+      result,
+      eligibility.proofSnapshot || null
+    );
+
+    return {
+      disputeCase,
+      detectionResult,
+      eligibility
+    };
+  }
+
   /**
    * Handle auto-submit (confidence >= 0.85)
    * Creates dispute case from matched evidence and marks for filing by Agent 7
    */
-  private async handleAutoSubmit(userId: string, tenantId: string, result: MatchingResult): Promise<void> {
+  private async handleAutoSubmit(
+    userId: string,
+    tenantId: string,
+    result: MatchingResult
+  ): Promise<'auto_submit' | 'smart_prompt' | 'manual_review'> {
     try {
       logger.info('✅ [EVIDENCE MATCHING] Auto-submitting high-confidence match', {
         userId,
@@ -1099,34 +1217,25 @@ class EvidenceMatchingService {
         confidence: result.final_confidence
       });
 
-      const { supabaseAdmin } = await import('../database/supabaseClient');
+      const prepared = await this.prepareProofDrivenCase(userId, tenantId, result);
+      const finalRoute = this.deriveProofDrivenRoute(prepared.eligibility.proofSnapshot || null);
 
-      const { data: detectionResult, error: fetchError } = await supabaseAdmin
-        .from('detection_results')
-        .select('id, seller_id, anomaly_type, estimated_value, currency, evidence, claim_number')
-        .eq('id', result.dispute_id)
-        .single();
+      if (finalRoute !== 'auto_submit') {
+        if (finalRoute === 'smart_prompt') {
+          return this.handleSmartPrompt(userId, tenantId, result, prepared);
+        }
 
-      if (fetchError || !detectionResult) {
-        throw new Error(`Failed to fetch detection result for filing: ${fetchError?.message || 'Not found'}`);
+        await this.updateDetectionResultStatus(tenantId, result.dispute_id, 'pending', result.final_confidence);
+        logger.info('⏸️ [EVIDENCE MATCHING] Proof snapshot held case for manual review', {
+          disputeId: result.dispute_id,
+          caseId: prepared.disputeCase.id,
+          missingRequirements: prepared.eligibility.proofSnapshot?.missingRequirements || [],
+          riskFlags: prepared.eligibility.proofSnapshot?.riskFlags || []
+        });
+        return 'manual_review';
       }
 
-      const disputeCase = await this.ensureDisputeCaseForMatch(tenantId, detectionResult, result);
-
-      if (!disputeCase?.id) {
-        throw new Error('Dispute case must exist before attaching evidence');
-      }
-
-      await this.storeEvidenceLink(tenantId, disputeCase.id, result, 'auto_match');
-
-      await this.updateDisputeCaseEvidenceAttachment(tenantId, disputeCase.id, {
-        document_id: result.evidence_document_id,
-        match_confidence: result.final_confidence,
-        match_type: result.match_type,
-        matched_fields: result.matched_fields || [],
-        matched_at: new Date().toISOString(),
-        adaptive_policy: result.adaptive_policy
-      });
+      const disputeCase = prepared.disputeCase;
 
       await this.updateDetectionResultStatus(tenantId, result.dispute_id, 'disputed', result.final_confidence);
 
@@ -1179,6 +1288,8 @@ class EvidenceMatchingService {
         });
       }
 
+      return 'auto_submit';
+
     } catch (error: any) {
       logger.error('❌ [EVIDENCE MATCHING] Failed to handle auto-submit', {
         userId,
@@ -1192,7 +1303,12 @@ class EvidenceMatchingService {
   /**
    * Handle smart prompt (confidence 0.5 - 0.85)
    */
-  private async handleSmartPrompt(userId: string, tenantId: string, result: MatchingResult): Promise<void> {
+  private async handleSmartPrompt(
+    userId: string,
+    tenantId: string,
+    result: MatchingResult,
+    prepared?: ProofPreparation
+  ): Promise<'auto_submit' | 'smart_prompt' | 'manual_review'> {
     try {
       logger.info('❓ [EVIDENCE MATCHING] Creating smart prompt for ambiguous match', {
         userId,
@@ -1202,14 +1318,19 @@ class EvidenceMatchingService {
         confidence: result.final_confidence
       });
 
-      logger.info('ℹ️ [EVIDENCE MATCHING] Deferring dispute_evidence_links write until a dispute case exists', {
-        detectionId: result.dispute_id,
-        evidenceId: result.evidence_document_id,
-        linkType: 'ml_suggested'
-      });
+      const proofPreparation = prepared || await this.prepareProofDrivenCase(userId, tenantId, result);
+      const finalRoute = this.deriveProofDrivenRoute(proofPreparation.eligibility.proofSnapshot || null);
+
+      if (finalRoute === 'auto_submit') {
+        await this.updateDetectionResultStatus(tenantId, result.dispute_id, 'disputed', result.final_confidence);
+        return 'auto_submit';
+      }
 
       // Generate smart prompt question
-      const question = this.generateSmartPromptQuestion(result);
+      const missingRequirements = proofPreparation.eligibility.proofSnapshot?.missingRequirements || [];
+      const question = missingRequirements.length > 0
+        ? `${this.generateSmartPromptQuestion(result)} Missing before filing: ${missingRequirements.join(', ')}.`
+        : this.generateSmartPromptQuestion(result);
       const options = [
         {
           id: 'yes',
@@ -1231,13 +1352,14 @@ class EvidenceMatchingService {
       // Create smart prompt
       await smartPromptService.createEvidenceSelectionPrompt(
         userId,
-        result.dispute_id,
+        proofPreparation.disputeCase.id,
         question,
         options
       );
 
       // Update detection result status
       await this.updateDetectionResultStatus(tenantId, result.dispute_id, 'reviewed', result.final_confidence);
+      return 'smart_prompt';
 
     } catch (error: any) {
       logger.error('❌ [EVIDENCE MATCHING] Failed to handle smart prompt', {

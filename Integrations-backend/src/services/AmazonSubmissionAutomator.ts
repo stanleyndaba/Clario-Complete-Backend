@@ -133,7 +133,7 @@ export class AmazonSubmissionAutomator {
                 throw keyUpdateError;
             }
 
-            // 3. Harvesting Evidence (Agent 4/5 integration simulation)
+            // 3. Harvesting Evidence (durable Agent 4/5 handoff)
             logger.info(`📂 [AGENT 7] Harvesting evidence for Case: ${caseId}`);
             const { data: evidence, error: evidenceError } = await supabaseAdmin
                 .from('dispute_evidence_links')
@@ -166,7 +166,38 @@ export class AmazonSubmissionAutomator {
             const detectionEvidence = eligibilitySnapshot.detectionResult?.evidence || {};
             const evidenceAttachments = parseJsonObject((eligibilitySnapshot as any)?.disputeCase?.evidence_attachments);
             const decisionIntelligence = evidenceAttachments?.decision_intelligence || {};
+            const proofSnapshot = decisionIntelligence?.proof_snapshot || null;
             const filingStrategy = decisionIntelligence?.filing_strategy || {};
+
+            if (!proofSnapshot) {
+                await supabaseAdmin
+                    .from('dispute_cases')
+                    .update({
+                        filing_status: 'blocked',
+                        eligible_to_file: false,
+                        block_reasons: ['missing_proof_snapshot'],
+                        last_error: 'Proof snapshot missing at submission time',
+                        updated_at: new Date().toISOString()
+                    })
+                    .eq('id', caseId)
+                    .eq('tenant_id', caseInfo.tenant_id);
+                throw new Error(`[AGENT 7 BLOCKED] Missing proof snapshot for case ${caseId}`);
+            }
+
+            if (proofSnapshot.filingRecommendation !== 'filing_ready') {
+                await supabaseAdmin
+                    .from('dispute_cases')
+                    .update({
+                        filing_status: 'pending_approval',
+                        eligible_to_file: false,
+                        block_reasons: ['proof_snapshot_not_filing_ready'],
+                        last_error: `Proof snapshot recommends ${proofSnapshot.filingRecommendation}`,
+                        updated_at: new Date().toISOString()
+                    })
+                    .eq('id', caseId)
+                    .eq('tenant_id', caseInfo.tenant_id);
+                throw new Error(`[AGENT 7 BLOCKED] Proof snapshot is not filing ready for case ${caseId}`);
+            }
 
             const filingResult = await refundFilingService.fileDispute({
                 dispute_id: caseId,
@@ -187,6 +218,7 @@ export class AmazonSubmissionAutomator {
                     success_probability: decisionIntelligence?.success_probability ?? null,
                     priority_score: decisionIntelligence?.priority_score ?? null,
                     adaptive_confidence_threshold: decisionIntelligence?.adaptive_confidence_threshold ?? null,
+                    proof_snapshot: proofSnapshot,
                     strategy_hints: [
                         filingStrategy?.templateVariant,
                         filingStrategy?.evidenceMode,

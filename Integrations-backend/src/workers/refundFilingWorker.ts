@@ -28,6 +28,7 @@ import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import runtimeCapacityService from '../services/runtimeCapacityService';
 import operationalControlService from '../services/operationalControlService';
 import financialWorkItemService from '../services/financialWorkItemService';
+import manualReviewService from '../services/manualReviewService';
 
 
 /**
@@ -239,13 +240,12 @@ class RefundFilingWorker {
     logger.info(`📥 [AGENT 7] Manual trigger: Enqueueing case ${caseId} for seller ${sellerId}`);
 
     if (!this.queueInfrastructureAvailable || !this.submissionQueue) {
-      logger.warn('[AGENT 7] Queue unavailable for manual filing trigger - blocking instead of bypassing governance', {
+      logger.warn('[AGENT 7] Queue unavailable for manual filing trigger - using governed DB fallback', {
         caseId,
         sellerId,
         reason: this.queueInfrastructureReason
       });
-      await this.markCasePendingSafetyVerification(caseId, `queue_unavailable:${this.queueInfrastructureReason || 'unknown'}`);
-      return { id: caseId, mode: 'blocked' };
+      return this.executeDirectFallback(caseId, sellerId);
     }
 
     const job = await this.submissionQueue.add(
@@ -280,6 +280,75 @@ class RefundFilingWorker {
         updated_at: new Date().toISOString()
       })
       .eq('id', caseId);
+  }
+
+  private async routeCaseToManualReview(params: {
+    tenantId: string;
+    disputeCase: any;
+    reasonCode: string;
+    message: string;
+    blockingRequirement: string;
+    expectedNextAction: string;
+    evidenceIds?: string[];
+    priority?: 'low' | 'normal' | 'high' | 'urgent';
+    nextStatus?: string;
+    context?: Record<string, any>;
+  }): Promise<void> {
+    const {
+      tenantId,
+      disputeCase,
+      reasonCode,
+      message,
+      blockingRequirement,
+      expectedNextAction,
+      evidenceIds = [],
+      priority = 'normal',
+      nextStatus,
+      context = {}
+    } = params;
+
+    const timestamp = new Date().toISOString();
+    const evidenceAttachments = disputeCase?.evidence_attachments && typeof disputeCase.evidence_attachments === 'object'
+      ? disputeCase.evidence_attachments
+      : {};
+    const proofSnapshot = (evidenceAttachments as any)?.decision_intelligence?.proof_snapshot || null;
+
+    const updatePayload: Record<string, any> = {
+      filing_status: 'pending_approval',
+      eligible_to_file: false,
+      block_reasons: [reasonCode],
+      last_error: message,
+      updated_at: timestamp
+    };
+
+    if (nextStatus) {
+      updatePayload.status = nextStatus;
+    }
+
+    const reviewQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+    const { error: updateError } = await reviewQuery
+      .update(updatePayload)
+      .eq('id', disputeCase.id);
+
+    if (updateError) {
+      throw new Error(`Failed to route case to manual review: ${updateError.message}`);
+    }
+
+    await manualReviewService.queueFilingException(disputeCase.seller_id, reasonCode, {
+      tenant_id: tenantId,
+      dispute_case_id: disputeCase.id,
+      claim_amount: Number(disputeCase.claim_amount || 0),
+      currency: disputeCase.currency || 'USD',
+      blocking_requirement: blockingRequirement,
+      expected_next_action: expectedNextAction,
+      evidence_document_ids: evidenceIds,
+      proof_snapshot: proofSnapshot,
+      ...context
+    }, {
+      disputeId: disputeCase.id,
+      amazonCaseId: disputeCase.amazon_case_id || undefined,
+      priority
+    });
   }
 
   async getSubmissionQueueMetrics(): Promise<SubmissionQueueMetrics> {
@@ -1580,6 +1649,25 @@ class RefundFilingWorker {
             disputeId: rawCase.id,
             reasons: eligibility.reasons
           });
+          if (eligibility.proofSnapshot?.filingRecommendation === 'manual_review') {
+            await this.routeCaseToManualReview({
+              tenantId,
+              disputeCase: {
+                ...rawCase,
+                ...(eligibility.disputeCase || {})
+              },
+              reasonCode: 'missing_required_document_family',
+              message: `Eligibility gate requires more proof before filing: ${eligibility.reasons.join('; ')}`,
+              blockingRequirement: (eligibility.proofSnapshot.missingRequirements || []).join(', ') || 'additional proof coverage',
+              expectedNextAction: 'Collect the missing proof requirements and review before filing.',
+              evidenceIds,
+              priority: 'normal',
+              context: {
+                eligibility_reasons: eligibility.reasons,
+                proof_snapshot: eligibility.proofSnapshot
+              }
+            });
+          }
           stats.skipped++;
           continue;
         }
@@ -1866,14 +1954,17 @@ class RefundFilingWorker {
             caseType: disputeCase.case_type
           });
           stats.skipped++;
-          await supabaseAdmin.from('dispute_cases').update({
-            filing_status: 'pending_approval',
-            status: 'needs_dimension_proof',
-            eligible_to_file: false,
-            block_reasons: ['dimension_proof_required'],
-            last_error: 'Physical dimension proof is required before filing this claim type',
-            updated_at: new Date().toISOString()
-          }).eq('id', disputeCase.id);
+          await this.routeCaseToManualReview({
+            tenantId,
+            disputeCase,
+            reasonCode: 'dimension_proof_required',
+            message: 'Physical dimension proof is required before filing this claim type',
+            blockingRequirement: 'Dimension or weight proof from a trusted source',
+            expectedNextAction: 'Attach the spec sheet, GS1, or other physical-dimension proof before filing.',
+            evidenceIds,
+            priority: 'high',
+            nextStatus: 'needs_dimension_proof'
+          });
           continue;
         }
 
@@ -1905,13 +1996,19 @@ class RefundFilingWorker {
             weakPods: podValidation.weakPods
           });
           stats.skipped++;
-          await supabaseAdmin.from('dispute_cases').update({
-            filing_status: 'pending_approval',
-            eligible_to_file: false,
-            block_reasons: ['weak_pod_evidence'],
-            last_error: `Weak proof of delivery evidence: ${podValidation.weakPods.join(', ')}`,
-            updated_at: new Date().toISOString()
-          }).eq('id', disputeCase.id);
+          await this.routeCaseToManualReview({
+            tenantId,
+            disputeCase,
+            reasonCode: 'weak_pod_evidence',
+            message: `Weak proof of delivery evidence: ${podValidation.weakPods.join(', ')}`,
+            blockingRequirement: 'A POD with clear delivery-confirmation language',
+            expectedNextAction: 'Replace weak POD files with a stronger delivery confirmation before filing.',
+            evidenceIds,
+            priority: 'normal',
+            context: {
+              weak_pods: podValidation.weakPods
+            }
+          });
           continue;
         }
 
@@ -1927,25 +2024,20 @@ class RefundFilingWorker {
             reason: amountValidation.reason
           });
           stats.skipped++;
-
-          // Flag for manual review due to amount mismatch
-          const mismatchQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-          const { error: mErr } = await mismatchQuery
-            .update({
-              filing_status: 'pending_approval',
-              eligible_to_file: false,
-              block_reasons: ['amount_mismatch'],
-              last_error: amountValidation.reason,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', disputeCase.id);
-
-          if (mErr) {
-            logger.error('[ERROR] [REFUND FILING] Failed to mark case for approval due to amount mismatch', { disputeId: disputeCase.id, error: mErr.message });
-          } else {
-            console.log(`DEBUG: Successfully marked amount mismatch case ${disputeCase.id} for approval`);
-          }
-
+          await this.routeCaseToManualReview({
+            tenantId,
+            disputeCase,
+            reasonCode: 'amount_mismatch',
+            message: amountValidation.reason,
+            blockingRequirement: 'Claim amount must reconcile to parsed invoice totals',
+            expectedNextAction: 'Review the amount calculation and correct the variance before filing.',
+            evidenceIds,
+            priority: 'high',
+            context: {
+              invoice_amount: amountValidation.invoiceAmount,
+              variance: amountValidation.variance
+            }
+          });
           continue; // Skip to next case - needs human review
         }
 
@@ -1960,25 +2052,16 @@ class RefundFilingWorker {
             currency: disputeCase.currency || 'USD'
           });
           stats.skipped++;
-
-          // Mark for manual approval instead of auto-filing (tenant-scoped)
-          const approvalQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-          const { error: aErr } = await approvalQuery
-            .update({
-              filing_status: 'pending_approval',
-              eligible_to_file: false,
-              block_reasons: ['manual_approval_required_high_value'],
-              last_error: `Manual approval required for claim amount ${claimAmount}`,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', disputeCase.id);
-
-          if (aErr) {
-            logger.error('[ERROR] [REFUND FILING] Failed to mark case for approval', { disputeId: disputeCase.id, error: aErr.message });
-          } else {
-            console.log(`DEBUG: Successfully marked high-value case ${disputeCase.id} for approval`);
-          }
-
+          await this.routeCaseToManualReview({
+            tenantId,
+            disputeCase,
+            reasonCode: 'manual_approval_required_high_value',
+            message: `Manual approval required for claim amount ${claimAmount}`,
+            blockingRequirement: `Claim exceeds the auto-file threshold of ${RefundFilingWorker.HIGH_VALUE_THRESHOLD}`,
+            expectedNextAction: 'Ops should approve the filing strategy before Amazon submission.',
+            evidenceIds,
+            priority: 'urgent'
+          });
           continue; // Skip to next case - human must approve this one
         }
 
@@ -1991,27 +2074,21 @@ class RefundFilingWorker {
             dominantRejectionCategory: adaptiveDecision.dominantRejectionCategory
           });
           stats.skipped++;
-
-          const historicalReviewQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-          const { error: historicalReviewError } = await historicalReviewQuery
-            .update({
-              filing_status: 'pending_approval',
-              eligible_to_file: false,
-              block_reasons: [
-                `historical_success_probability_below_threshold:${adaptiveDecision.successProbability.toFixed(3)}`
-              ],
-              last_error: `Historical approval performance suggests manual review before filing (${adaptiveDecision.successProbability.toFixed(2)} success probability).`,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', disputeCase.id);
-
-          if (historicalReviewError) {
-            logger.error('[ERROR] [REFUND FILING] Failed to route low-success case to manual review', {
-              disputeId: disputeCase.id,
-              error: historicalReviewError.message
-            });
-          }
-
+          await this.routeCaseToManualReview({
+            tenantId,
+            disputeCase,
+            reasonCode: 'low_historical_success_probability',
+            message: `Historical approval performance suggests manual review before filing (${adaptiveDecision.successProbability.toFixed(2)} success probability).`,
+            blockingRequirement: 'Historical success probability is below the auto-file threshold',
+            expectedNextAction: 'Review the strategy and evidence before retrying or filing.',
+            evidenceIds,
+            priority: 'normal',
+            context: {
+              success_probability: adaptiveDecision.successProbability,
+              auto_file_threshold: adaptiveDecision.autoFileThreshold,
+              dominant_rejection_category: adaptiveDecision.dominantRejectionCategory
+            }
+          });
           continue;
         }
 
@@ -2027,25 +2104,16 @@ class RefundFilingWorker {
             sellerId: disputeCase.seller_id
           });
           stats.skipped++;
-
-          const manualReviewQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-          const { error: manualReviewError } = await manualReviewQuery
-            .update({
-              filing_status: 'pending_approval',
-              eligible_to_file: false,
-              block_reasons: ['manual_review_required_by_user'],
-              last_error: 'Auto-file is turned off. Review this case before filing.',
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', disputeCase.id);
-
-          if (manualReviewError) {
-            logger.error('[ERROR] [REFUND FILING] Failed to route case to manual review for user auto-file preference', {
-              disputeId: disputeCase.id,
-              error: manualReviewError.message
-            });
-          }
-
+          await this.routeCaseToManualReview({
+            tenantId,
+            disputeCase,
+            reasonCode: 'user_auto_file_disabled',
+            message: 'Auto-file is turned off. Review this case before filing.',
+            blockingRequirement: 'Seller preference currently disables auto-file',
+            expectedNextAction: 'Seller or Ops must review and manually authorize the filing.',
+            evidenceIds,
+            priority: 'normal'
+          });
           continue;
         }
 
@@ -2101,14 +2169,19 @@ class RefundFilingWorker {
           dispatchedThisRun++;
           if (!this.queueInfrastructureAvailable || !this.submissionQueue) {
             const reason = this.queueInfrastructureReason || 'queue_unavailable';
-            runtimeCapacityService.setCircuitBreaker('filing-auto-dispatch', 'open', reason);
-            logger.warn('[AGENT 7] Scheduled filing skipped because queue infrastructure is unavailable', {
+            logger.warn('[AGENT 7] Scheduled filing is using governed DB fallback because queue infrastructure is unavailable', {
               disputeId: disputeCase.id,
               sellerId: disputeCase.seller_id,
               reason
             });
-            stats.skipped++;
-            await this.logError(disputeCase.id, disputeCase.seller_id, `Scheduled filing paused: ${reason}`);
+            const dispatchResult = await this.executeDirectFallback(disputeCase.id, disputeCase.seller_id);
+            if (dispatchResult.mode === 'queued') {
+              stats.filed++;
+            } else {
+              runtimeCapacityService.setCircuitBreaker('filing-auto-dispatch', 'open', reason);
+              stats.skipped++;
+              await this.logError(disputeCase.id, disputeCase.seller_id, `Scheduled filing fallback blocked: ${reason}`);
+            }
             continue;
           }
 
@@ -2375,13 +2448,19 @@ class RefundFilingWorker {
               } else if (rejectionCategory === 'INVALID_CLAIM' || rejectionCategory === 'OUT_OF_WINDOW') {
                 // Claim type mismatch — needs human to re-categorise, don't auto-retry
                 logger.warn(' [REFUND FILING] Rejection: wrong claim type — routing to manual review', { disputeId: disputeCase.id });
-                await supabaseAdmin.from('dispute_cases').update({
-                  filing_status: 'pending_approval',
-                  eligible_to_file: false,
-                  block_reasons: ['wrong_claim_type'],
-                  last_error: rejectionReason,
-                  updated_at: new Date().toISOString()
-                }).eq('id', disputeCase.id);
+                await this.routeCaseToManualReview({
+                  tenantId: (disputeCase as any).tenant_id,
+                  disputeCase,
+                  reasonCode: 'wrong_claim_type',
+                  message: rejectionReason,
+                  blockingRequirement: 'Claim type or policy lane must be corrected before resubmission',
+                  expectedNextAction: 'Ops should recategorize the claim and confirm the right filing lane.',
+                  priority: 'high',
+                  context: {
+                    rejection_category: rejectionCategory,
+                    amazon_case_id: statusResult.amazon_case_id || null
+                  }
+                });
 
               } else {
                 // evidence_needed or unknown — retry with stronger evidence (original behaviour)
@@ -2556,14 +2635,31 @@ class RefundFilingWorker {
   }
 
   private async executeDirectFallback(caseId: string, sellerId: string): Promise<FilingDispatchResult> {
-    const reason = 'queue_governance_required_direct_fallback_disabled';
-    logger.warn('[AGENT 7] Direct filing fallback requested but disabled for safety', { caseId, sellerId, reason });
-    await this.markCasePendingSafetyVerification(caseId, reason);
+    try {
+      logger.warn('[AGENT 7] Executing governed DB filing fallback', {
+        caseId,
+        sellerId,
+        reason: this.queueInfrastructureReason || 'queue_unavailable'
+      });
 
-    return {
-      id: caseId,
-      mode: 'blocked'
-    };
+      await this.automator.executeFullSubmission(caseId, sellerId);
+
+      return {
+        id: caseId,
+        mode: 'queued'
+      };
+    } catch (error: any) {
+      logger.error('[AGENT 7] Direct filing fallback failed', {
+        caseId,
+        sellerId,
+        error: error.message
+      });
+      await this.logError(caseId, sellerId, `DB filing fallback failed: ${error.message}`);
+      return {
+        id: caseId,
+        mode: 'blocked'
+      };
+    }
   }
 
   /**

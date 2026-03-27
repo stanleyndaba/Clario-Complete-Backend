@@ -37,6 +37,31 @@ export interface AnalystCorrection {
 }
 
 class ManualReviewService {
+    async queueFilingException(
+        userId: string,
+        reasonCode: string,
+        context: Record<string, any>,
+        options?: {
+            disputeId?: string;
+            amazonCaseId?: string;
+            priority?: ManualReviewItem['priority'];
+        }
+    ): Promise<string | null> {
+        const reviewType: ManualReviewItem['review_type'] =
+            reasonCode === 'manual_approval_required_high_value' || reasonCode === 'user_auto_file_disabled'
+                ? 'escalation'
+                : reasonCode === 'weak_pod_evidence' || reasonCode === 'missing_required_document_family'
+                    ? 'low_confidence'
+                    : 'edge_case';
+
+        return this.addToReviewQueue(userId, reviewType, {
+            review_reason: reasonCode,
+            blocking_requirement: context.blocking_requirement || null,
+            expected_next_action: context.expected_next_action || null,
+            ...context
+        }, options);
+    }
+
     /**
      * Add a case to the manual review queue
      */
