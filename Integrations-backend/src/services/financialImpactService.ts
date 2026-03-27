@@ -13,6 +13,7 @@ import sseHub from '../utils/sseHub';
 import logger from '../utils/logger';
 import cacheService from './cacheService';
 import { resolveTenantSlug } from '../utils/tenantEventRouting';
+import financialSummaryService from './financialSummaryService';
 
 // Impact status lifecycle
 export enum ImpactStatus {
@@ -204,15 +205,12 @@ class FinancialImpactService {
         if (cached) return cached;
 
         try {
-            // Get all resolved dispute cases for this user
-            // We use resolution_date to determine when the recovery actually happened
-            let dashQuery = supabaseAdmin
-                .from('dispute_cases')
-                .select('claim_amount, resolution_amount, resolution_date, status')
-                .eq('seller_id', userId)
-                .in('status', ['approved', 'paid', 'reconciled']);
-            if (tenantId) dashQuery = dashQuery.eq('tenant_id', tenantId);
-            const { data: disputes } = await dashQuery;
+            let payoutsQuery = supabaseAdmin
+                .from('financial_events')
+                .select('amount, event_date, currency, event_type')
+                .eq('seller_id', userId);
+            if (tenantId) payoutsQuery = payoutsQuery.eq('tenant_id', tenantId);
+            const { data: payouts } = await payoutsQuery;
 
             const now = new Date();
             const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -239,12 +237,13 @@ class FinancialImpactService {
             let lastWeekAmount = 0;
             let lastMonthAmount = 0;
 
-            if (disputes && disputes.length > 0) {
-                for (const d of disputes) {
-                    const resDate = d.resolution_date ? new Date(d.resolution_date) : null;
+            if (payouts && payouts.length > 0) {
+                for (const payout of payouts) {
+                    if (!String(payout.event_type || '').toLowerCase().includes('reimbursement')) continue;
+                    const resDate = payout.event_date ? new Date(payout.event_date) : null;
                     if (!resDate) continue;
 
-                    const amount = parseFloat(String(d.resolution_amount || d.claim_amount || 0));
+                    const amount = parseFloat(String(payout.amount || 0));
 
                     // Today
                     if (resDate >= startOfToday) {
@@ -331,18 +330,21 @@ class FinancialImpactService {
                 .eq('seller_id', userId);
             if (tenantId) disputesQuery = disputesQuery.eq('tenant_id', tenantId);
             const { data: disputes } = await disputesQuery;
+            const financialSummary = tenantId
+                ? await financialSummaryService.getSummary({ tenantId, sellerId: userId })
+                : null;
 
             const metrics: UserFinancialMetrics = {
                 userId,
                 totalFound: 0,
                 totalPending: 0,
                 totalApproved: 0,
-                totalCollected: 0,
+                totalCollected: financialSummary?.total_recovered || 0,
                 totalFailed: 0,
                 claimsDetected: 0,
                 claimsFiled: 0,
                 claimsApproved: 0,
-                claimsPaid: 0,
+                claimsPaid: financialSummary?.payout_count || 0,
                 claimsFailed: 0,
                 avgConfidence: 0,
                 roiMultiple: 0,
@@ -370,8 +372,10 @@ class FinancialImpactService {
                         metrics.claimsApproved++;
                         metrics.totalApproved += amount;
                     } else if (status === 'paid' || status === 'reconciled') {
-                        metrics.claimsPaid++;
-                        metrics.totalCollected += payout || amount;
+                        if (!financialSummary) {
+                            metrics.claimsPaid++;
+                            metrics.totalCollected += payout || amount;
+                        }
                     } else if (status === 'rejected' || status === 'denied' || status === 'failed') {
                         metrics.claimsFailed++;
                         metrics.totalFailed += amount;

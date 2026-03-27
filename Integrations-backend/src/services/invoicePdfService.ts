@@ -4,8 +4,9 @@
  */
 
 import PDFDocument from 'pdfkit';
-import { supabase } from '../database/supabaseClient';
+import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import logger from '../utils/logger';
+import recoveryFinancialTruthService from './recoveryFinancialTruthService';
 
 interface InvoiceData {
     id: string;
@@ -19,17 +20,20 @@ interface InvoiceData {
     creditBalanceRemaining?: number;
     amountCharged: number;
     recoveryClaimIds?: string[];
+    disputeCaseIds?: string[];
     tenantId?: string;
     companyName?: string;
     taxId?: string;
 }
 
 interface RecoveryItem {
-    claimId: string;
-    orderId: string;
+    eventId: string;
+    referenceId: string;
+    settlementId: string;
+    payoutBatchId: string;
     amount: number;
-    detectionType: string;
-    recoveredAt: string;
+    eventType: string;
+    eventDate: string;
 }
 
 class InvoicePdfService {
@@ -48,7 +52,7 @@ class InvoicePdfService {
         }
 
         // Fetch recovery line items
-        const items = await this.getRecoveryItems(invoice.recoveryClaimIds || []);
+        const items = await this.getRecoveryItems(invoice, tenantId);
 
         // Generate PDF
         return this.createPdf(invoice, items);
@@ -116,6 +120,7 @@ class InvoicePdfService {
             creditBalanceRemaining: (data.credit_balance_after_cents || 0) / 100,
             amountCharged: (data.amount_due_cents || 0) / 100,
             recoveryClaimIds: data.recovery_id ? [data.recovery_id] : [],
+            disputeCaseIds: data.dispute_id ? [data.dispute_id] : [],
             tenantId: data.tenant_id,
             companyName: data.company_name,
             taxId: data.tax_id,
@@ -135,6 +140,7 @@ class InvoicePdfService {
             creditBalanceRemaining: data.available_credit_balance || 0,
             amountCharged: data.platform_fee || 0,
             recoveryClaimIds: data.recovery_ids || [],
+            disputeCaseIds: data.dispute_ids || [],
             tenantId: data.tenant_id,
             companyName: data.company_name,
             taxId: data.tax_id,
@@ -144,24 +150,42 @@ class InvoicePdfService {
     /**
      * Fetch recovery line items for the invoice
      */
-    private async getRecoveryItems(claimIds: string[]): Promise<RecoveryItem[]> {
-        if (!claimIds.length) return [];
+    private async getRecoveryItems(invoice: InvoiceData, tenantId: string): Promise<RecoveryItem[]> {
+        const disputeIds = new Set<string>((invoice.disputeCaseIds || []).filter(Boolean));
+        const recoveryIds = Array.from(new Set((invoice.recoveryClaimIds || []).filter(Boolean)));
+
+        if (recoveryIds.length > 0) {
+            const { data } = await supabaseAdmin
+                .from('recoveries')
+                .select('id, dispute_id')
+                .eq('tenant_id', tenantId)
+                .in('id', recoveryIds);
+
+            (data || []).forEach((row: any) => {
+                if (row?.dispute_id) disputeIds.add(String(row.dispute_id));
+            });
+        }
+
+        if (disputeIds.size === 0) return [];
 
         try {
-            const { data, error } = await supabase
-                .from('recoveries')
-                .select('id, order_id, amount, detection_type, recovered_at')
-                .in('id', claimIds);
+            const truth = await recoveryFinancialTruthService.getFinancialTruth({
+                tenantId,
+                caseIds: Array.from(disputeIds),
+            });
 
-            if (error || !data) return [];
-
-            return data.map((r: any) => ({
-                claimId: r.id,
-                orderId: r.order_id || 'N/A',
-                amount: r.amount || 0,
-                detectionType: r.detection_type || 'Reimbursement',
-                recoveredAt: r.recovered_at || r.created_at,
-            }));
+            return Array.from(disputeIds).flatMap((disputeId) => {
+                const events = truth.eventsByInputId[disputeId] || [];
+                return events.map((event) => ({
+                    eventId: event.event_id,
+                    referenceId: event.reference_id || 'N/A',
+                    settlementId: event.settlement_id || 'N/A',
+                    payoutBatchId: event.payout_batch_id || 'N/A',
+                    amount: event.amount || 0,
+                    eventType: event.event_type || 'financial_event',
+                    eventDate: event.event_date || '',
+                }));
+            });
         } catch {
             return [];
         }
@@ -252,9 +276,9 @@ class InvoicePdfService {
         // Table Header
         doc.rect(50, startY, tableWidth, 25).fill('#F3F4F6');
         doc.fontSize(9).font('Helvetica-Bold').fillColor('#374151');
-        doc.text('Recovery', 60, startY + 8);
-        doc.text('Order ID', 180, startY + 8);
-        doc.text('Type', 300, startY + 8);
+        doc.text('Event', 60, startY + 8);
+        doc.text('Reference', 180, startY + 8);
+        doc.text('Settlement', 300, startY + 8);
         doc.text('Amount', 450, startY + 8, { align: 'right', width: 85 });
 
         // Table Rows
@@ -266,16 +290,16 @@ class InvoicePdfService {
                     doc.rect(50, rowY - 5, tableWidth, 22).fill('#FAFAFA');
                 }
                 doc.fontSize(9).font('Helvetica').fillColor('#374151');
-                doc.text(item.claimId.slice(0, 12) + '...', 60, rowY);
-                doc.text(item.orderId.slice(0, 15), 180, rowY);
-                doc.text(this.formatDetectionType(item.detectionType), 300, rowY);
+                doc.text(`${this.formatDetectionType(item.eventType)} • ${this.formatDate(item.eventDate)}`, 60, rowY, { width: 110 });
+                doc.text(item.referenceId.slice(0, 15), 180, rowY);
+                doc.text(item.settlementId.slice(0, 18), 300, rowY);
                 doc.text(this.formatCurrency(item.amount), 450, rowY, { align: 'right', width: 85 });
                 rowY += 22;
             });
         } else {
             // Summary row when no line items
             doc.fontSize(9).font('Helvetica').fillColor('#6B7280');
-            doc.text('Platform recovery services', 60, rowY);
+            doc.text('Canonical financial proof unavailable', 60, rowY);
             doc.text(this.formatCurrency(invoice.totalRecovered), 450, rowY, { align: 'right', width: 85 });
             rowY += 22;
         }

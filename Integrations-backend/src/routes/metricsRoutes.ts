@@ -7,6 +7,7 @@
 import { Router, Request, Response } from 'express';
 import { metricsService } from '../services/metricsService';
 import { financialImpactService } from '../services/financialImpactService';
+import financialSummaryService from '../services/financialSummaryService';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import logger from '../utils/logger';
 
@@ -164,7 +165,8 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
             disputeResult,
             billingResult,
             documentResult,
-            sourceResult
+            sourceResult,
+            financialSummary
         ] = await Promise.all([
             dbClient
                 .from('detection_results')
@@ -186,6 +188,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
                 .from('evidence_sources')
                 .select('id, status, last_sync_at, updated_at, created_at')
                 .eq('tenant_id', tenantId),
+            financialSummaryService.getSummary({ tenantId })
         ]);
 
         if (detectionResult.error) throw detectionResult.error;
@@ -231,7 +234,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
         const estimatedValueTotal = detections.reduce((sum, row: any) => sum + toNumber(row.estimated_value), 0);
         const filedValueTotal = filedCases.reduce((sum, row: any) => sum + toNumber(row.claim_amount), 0);
         const approvedValueTotal = approvedCases.reduce((sum, row: any) => sum + toNumber(row.claim_amount), 0);
-        const recoveredCashTotal = recoveredCases.reduce((sum, row: any) => sum + toNumber(row.actual_payout_amount), 0);
+        const recoveredCashTotal = financialSummary.total_recovered;
         const billedRevenueTotal = billedTransactions.reduce((sum, row: any) => sum + (toNumber(row.platform_fee_cents) / 100), 0);
 
         const connectedSources = sources.filter((source: any) => normalize(source.status) === 'connected');
@@ -281,7 +284,8 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
             ...disputes.map((row: any) => row.updated_at || row.created_at),
             ...billingTransactions.map((row: any) => row.updated_at || row.created_at),
             ...documents.map((row: any) => row.updated_at || row.created_at),
-            ...sources.map((row: any) => row.updated_at || row.created_at || row.last_sync_at)
+            ...sources.map((row: any) => row.updated_at || row.created_at || row.last_sync_at),
+            financialSummary.last_payout_date
         ) || new Date().toISOString();
 
         res.json({
@@ -298,6 +302,9 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
                 approved_value_total: Number(approvedValueTotal.toFixed(2)),
                 recovered_cash_total: Number(recoveredCashTotal.toFixed(2)),
                 billed_revenue_total: Number(billedRevenueTotal.toFixed(2)),
+                outstanding_amount: Number(financialSummary.outstanding_amount.toFixed(2)),
+                last_payout_date: financialSummary.last_payout_date,
+                payout_count: financialSummary.payout_count,
                 last_updated_at: lastUpdatedAt,
                 integrations_summary: {
                     connected_count: connectedSources.length,

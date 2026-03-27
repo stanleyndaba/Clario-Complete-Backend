@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { supabaseAdmin } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import { invoicePdfService } from '../services/invoicePdfService';
+import recoveryFinancialTruthService from '../services/recoveryFinancialTruthService';
+import financialSummaryService from '../services/financialSummaryService';
 
 const router = Router();
 
@@ -42,6 +44,95 @@ async function resolveBillingScope(req: any) {
     return { userId, tenantId };
 }
 
+type BillingProof = {
+    settlement_id: string | null;
+    payout_batch_id: string | null;
+    reference_ids: string[];
+    event_ids: string[];
+};
+
+async function buildBillingProofMap(rows: Array<{ id: string; dispute_id?: string | null; recovery_id?: string | null }>, tenantId: string): Promise<Map<string, BillingProof>> {
+    const proofByRowId = new Map<string, BillingProof>();
+    const directDisputeIds = new Set<string>();
+    const recoveryIds: string[] = [];
+    const disputeIdByRowId = new Map<string, string>();
+
+    rows.forEach((row) => {
+        const disputeId = String(row.dispute_id || '').trim();
+        const recoveryId = String(row.recovery_id || '').trim();
+        if (disputeId) {
+            directDisputeIds.add(disputeId);
+            disputeIdByRowId.set(row.id, disputeId);
+        } else if (recoveryId) {
+            recoveryIds.push(recoveryId);
+        }
+    });
+
+    let recoveryRows: Array<{ id: string; dispute_id: string | null }> = [];
+    if (recoveryIds.length > 0) {
+        const { data } = await supabaseAdmin
+            .from('recoveries')
+            .select('id, dispute_id')
+            .eq('tenant_id', tenantId)
+            .in('id', Array.from(new Set(recoveryIds)));
+        recoveryRows = data || [];
+    }
+
+    const recoveryDisputeById = new Map<string, string>();
+    recoveryRows.forEach((row) => {
+        const disputeId = String(row.dispute_id || '').trim();
+        if (disputeId) {
+            recoveryDisputeById.set(row.id, disputeId);
+            directDisputeIds.add(disputeId);
+        }
+    });
+
+    rows.forEach((row) => {
+        if (disputeIdByRowId.has(row.id)) return;
+        const recoveryId = String(row.recovery_id || '').trim();
+        const disputeId = recoveryDisputeById.get(recoveryId);
+        if (disputeId) {
+            disputeIdByRowId.set(row.id, disputeId);
+        }
+    });
+
+    const disputeIds = Array.from(directDisputeIds);
+    if (disputeIds.length === 0) {
+        return proofByRowId;
+    }
+
+    const truth = await recoveryFinancialTruthService.getFinancialTruth({ tenantId, caseIds: disputeIds });
+    const proofByDisputeId = new Map<string, BillingProof>();
+
+    disputeIds.forEach((disputeId) => {
+        const events = truth.eventsByInputId[disputeId] || [];
+        const settlementIds = Array.from(new Set(events.map((event) => String(event.settlement_id || '').trim()).filter(Boolean)));
+        const payoutBatchIds = Array.from(new Set(events.map((event) => String(event.payout_batch_id || '').trim()).filter(Boolean)));
+        const referenceIds = Array.from(new Set(events.map((event) => String(event.reference_id || '').trim()).filter(Boolean)));
+        const eventIds = Array.from(new Set(events.map((event) => String(event.event_id || '').trim()).filter(Boolean)));
+
+        proofByDisputeId.set(disputeId, {
+            settlement_id: settlementIds[0] || null,
+            payout_batch_id: payoutBatchIds[0] || null,
+            reference_ids: referenceIds,
+            event_ids: eventIds,
+        });
+    });
+
+    rows.forEach((row) => {
+        const disputeId = disputeIdByRowId.get(row.id);
+        if (!disputeId) return;
+        proofByRowId.set(row.id, proofByDisputeId.get(disputeId) || {
+            settlement_id: null,
+            payout_batch_id: null,
+            reference_ids: [],
+            event_ids: [],
+        });
+    });
+
+    return proofByRowId;
+}
+
 // Get raw billing transactions
 router.get('/transactions', async (req, res) => {
     try {
@@ -59,6 +150,8 @@ router.get('/transactions', async (req, res) => {
 
         if (error) throw error;
 
+        const proofMap = await buildBillingProofMap(data, tenantId);
+
         const transactions = data.map(tx => ({
             id: tx.id,
             recovery_id: tx.recovery_id,
@@ -71,7 +164,11 @@ router.get('/transactions', async (req, res) => {
             seller_payout: (tx.seller_payout_cents || 0) / 100,
             status: tx.billing_status,
             paypal_invoice_id: tx.paypal_invoice_id || tx.metadata?.paypal_invoice_id || null,
-            created_at: tx.created_at
+            created_at: tx.created_at,
+            settlement_id: proofMap.get(tx.id)?.settlement_id || null,
+            payout_batch_id: proofMap.get(tx.id)?.payout_batch_id || null,
+            reference_ids: proofMap.get(tx.id)?.reference_ids || [],
+            event_ids: proofMap.get(tx.id)?.event_ids || []
         }));
 
         res.json({
@@ -102,6 +199,8 @@ router.get('/invoices', async (req, res) => {
 
         if (error) throw error;
 
+        const proofMap = await buildBillingProofMap(data, tenantId);
+
         // Map transactions to "invoices" format expected by frontend
         const invoices = data.map(tx => ({
             id: tx.id,
@@ -119,7 +218,11 @@ router.get('/invoices', async (req, res) => {
             status: tx.billing_status,
             created_at: tx.created_at,
             recovery_claim_ids: [tx.recovery_id],
-            paypal_invoice_id: tx.paypal_invoice_id || tx.metadata?.paypal_invoice_id || null
+            paypal_invoice_id: tx.paypal_invoice_id || tx.metadata?.paypal_invoice_id || null,
+            settlement_id: proofMap.get(tx.id)?.settlement_id || null,
+            payout_batch_id: proofMap.get(tx.id)?.payout_batch_id || null,
+            reference_ids: proofMap.get(tx.id)?.reference_ids || [],
+            event_ids: proofMap.get(tx.id)?.event_ids || []
         }));
 
         res.json({
@@ -147,7 +250,8 @@ router.get('/status', async (req, res) => {
 
         if (error) throw error;
 
-        const totalRecovered = data.reduce((sum, tx) => sum + (tx.amount_recovered_cents || 0), 0) / 100;
+        const financialSummary = await financialSummaryService.getSummary({ tenantId, sellerId: userId });
+        const totalRecovered = financialSummary.total_recovered;
         const totalFees = data.reduce((sum, tx) => sum + (tx.platform_fee_cents || 0), 0) / 100;
         const totalCreditApplied = data.reduce((sum, tx) => sum + (tx.credit_applied_cents || 0), 0) / 100;
         const outstandingStatuses = ['pending', 'sent', 'due', 'overdue'];
@@ -194,6 +298,8 @@ router.get('/status', async (req, res) => {
                 pending_billing: pendingBilling,
                 available_credit_balance: availableCreditBalance,
                 last_billing_date: lastBillingDate,
+                last_payout_date: financialSummary.last_payout_date,
+                payout_count: financialSummary.payout_count,
                 current_recovery_cycle_id: currentCycle?.id || null,
                 current_recovery_cycle_type: currentCycle?.cycle_type || null,
                 current_recovery_cycle_started_at: currentCycle?.created_at || null
