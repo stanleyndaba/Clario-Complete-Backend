@@ -88,6 +88,14 @@ if (!isRealDatabaseConfigured) {
         filters.push(row => values.includes(row[field]));
         return builder;
       },
+      is: (field: string, value: any) => {
+        if (value === null) {
+          filters.push(row => row[field] === null || typeof row[field] === 'undefined');
+        } else {
+          filters.push(row => row[field] === value);
+        }
+        return builder;
+      },
 
       // Modifiers
       order: (field: string, options?: any) => {
@@ -140,7 +148,8 @@ if (!isRealDatabaseConfigured) {
             ...r
           }));
           memoryStore[table].push(...rowsWithMeta);
-          return Promise.resolve({ data: rowsWithMeta, error: null }).then(resolve, reject);
+          const insertedData = singleResult || maybeSingleResult ? rowsWithMeta[0] || null : rowsWithMeta;
+          return Promise.resolve({ data: insertedData, error: null }).then(resolve, reject);
         }
 
         // 2. Apply Filters to get target rows
@@ -164,7 +173,8 @@ if (!isRealDatabaseConfigured) {
 
           // Return the updated data (simulated)
           const updatedRows = memoryStore[table].filter(row => idsToUpdate.has(row.id));
-          return Promise.resolve({ data: updatedRows, error: null, count: updateCount }).then(resolve, reject);
+          const updatedData = singleResult || maybeSingleResult ? updatedRows[0] || null : updatedRows;
+          return Promise.resolve({ data: updatedData, error: null, count: updateCount }).then(resolve, reject);
         }
 
         // 4. Handle Delete

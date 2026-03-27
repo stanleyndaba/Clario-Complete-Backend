@@ -30,6 +30,7 @@ const TENANT_EXEMPT_PATHS = [
     '/',
     '/api/status',
     '/api/metrics/track',
+    '/api/webhooks/amazon/notifications',
     '/api/auth',
     '/api/amazon/callback',
     '/api/v1/integrations/amazon/auth',

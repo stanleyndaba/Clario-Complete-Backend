@@ -36,6 +36,7 @@ import stripeRoutes from './routes/stripeRoutes';
 import syncRoutes from './routes/syncRoutes';
 import integrationRoutes from './routes/integrationRoutes';
 import sseRoutes from './routes/sseRoutes';
+import { amazonNotificationAuditRouter, amazonNotificationWebhookRouter } from './routes/amazonNotificationRoutes';
 // import enhancedDetectionRoutes from './routes/enhancedDetectionRoutes'; // Temporarily disabled
 import enhancedSyncRoutes from './routes/enhancedSyncRoutes';
 import authRoutes from './routes/authRoutes';
@@ -249,6 +250,8 @@ app.use(tenantMiddleware);
 
 // Mount health routes (before other routes for fast health checks)
 app.use('/', healthRoutes);
+app.use('/api/webhooks/amazon/notifications', amazonNotificationWebhookRouter);
+logger.info('Amazon notification webhook routes registered at /api/webhooks/amazon/notifications');
 
 // Root health check (for Render)
 app.get('/', (_, res) => {
@@ -464,6 +467,8 @@ logger.info('Admin revenue routes registered at /api/admin/revenue');
 import adminRoutes from './routes/adminRoutes';
 app.use('/api/admin', adminRoutes);
 logger.info('Admin routes registered at /api/admin');
+app.use('/api/admin/amazon-notifications', amazonNotificationAuditRouter);
+logger.info('Amazon notification audit routes registered at /api/admin/amazon-notifications');
 
 import adminQueueRoutes from './routes/adminQueueRoutes';
 app.use('/api/admin', adminQueueRoutes);
