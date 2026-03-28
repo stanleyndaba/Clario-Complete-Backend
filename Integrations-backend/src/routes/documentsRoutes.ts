@@ -478,6 +478,10 @@ router.get('/inventory', async (req: Request, res: Response) => {
 
         const allRows = productDocuments.map(doc => {
             const normalized = getNormalizedParsedMetadata(doc);
+            const parsingStrategy = normalized.parsedMetadata?.parsing_strategy || null;
+            const parsingExplanation = normalized.parsedMetadata?.parsing_explanation || null;
+            const ingestionStrategy = normalized.metadata?.ingestion_strategy || null;
+            const ingestionExplanation = normalized.metadata?.ingestion_explanation || null;
             const documentLinks = linksByDocument.get(doc.id) || [];
             const strongestMatchConfidence = documentLinks.length > 0
                 ? Math.max(...documentLinks.map((link: any) => Number(link.relevance_score || 0)))
@@ -516,6 +520,10 @@ router.get('/inventory', async (req: Request, res: Response) => {
                 parser_status: getAuthoritativeParserStatus(doc),
                 parser_confidence: normalized.confidence,
                 parser_error: doc.parser_error || null,
+                parsing_strategy: parsingStrategy,
+                parsing_explanation: parsingExplanation,
+                ingestion_strategy: ingestionStrategy,
+                ingestion_explanation: ingestionExplanation,
                 extraction_signal_count: extractionSignalCount,
                 source: doc.source || null,
                 provider: doc.provider || null,
@@ -651,7 +659,7 @@ router.get('/inventory', async (req: Request, res: Response) => {
             metrics: {
                 totalDocuments,
                 filteredResults,
-                parsed: filteredRows.filter(row => row.parser_status === 'completed').length,
+                parsed: filteredRows.filter(row => ['completed', 'partial'].includes(String(row.parser_status || '').toLowerCase())).length,
                 matched: filteredRows.filter(row => row.linked_case_count > 0).length,
                 failed: filteredRows.filter(row => row.parser_status === 'failed').length,
                 needsReview: filteredRows.filter(row => row.needs_review).length
@@ -750,7 +758,9 @@ router.get('/:id', async (req: Request, res: Response) => {
             original_filename: doc.original_filename,
             uploadDate: doc.created_at,
             created_at: doc.created_at,
+            updated_at: doc.updated_at,
             status: doc.status || 'uploaded',
+            processing_status: doc.processing_status || doc.status || 'uploaded',
             size: doc.size_bytes,
             file_size: doc.size_bytes,
             type: doc.content_type,
@@ -765,6 +775,11 @@ router.get('/:id', async (req: Request, res: Response) => {
             // Parser status
             parser_status: getAuthoritativeParserStatus(doc),
             parser_confidence: parsedMetadata.confidence_score || doc.parser_confidence || nestedParsedData.confidence_score || null,
+            parser_error: doc.parser_error || null,
+            parsing_strategy: parsedMetadata.parsing_strategy || nestedParsedData.parsing_strategy || null,
+            parsing_explanation: parsedMetadata.parsing_explanation || nestedParsedData.parsing_explanation || null,
+            ingestion_strategy: metadata.ingestion_strategy || null,
+            ingestion_explanation: metadata.ingestion_explanation || null,
             parsedVia: parsedMetadata.extraction_method || nestedParsedData.extraction_method || metadata.parser_type || null,
             // Extracted entities
             extracted: extracted,

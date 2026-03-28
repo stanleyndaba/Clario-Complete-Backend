@@ -301,6 +301,10 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     const latestBilling = latestBillingByDisputeId.get(record.id);
     const decisionIntelligence = record?.evidence_attachments?.decision_intelligence || {};
     const proofSnapshot = decisionIntelligence?.proof_snapshot || null;
+    const filingStrategy = typeof decisionIntelligence?.filing_strategy === 'string'
+      ? decisionIntelligence.filing_strategy
+      : null;
+    const explanationPayload = decisionIntelligence?.explanation_payload || proofSnapshot?.explanationPayload || null;
     const matchedDocumentCount = getMatchedDocumentCount(record, evidenceCountByCase.get(record.id) || 0);
     const requestedAmount = toMoney(record.claim_amount);
     const approvedAmount = deriveApprovedAmount(record);
@@ -332,6 +336,8 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       billed_amount: billedAmount,
       currency: record.currency || 'USD',
       evidence_state: evidenceState,
+      filing_strategy: filingStrategy,
+      explanation_payload: explanationPayload,
       proof_status: proofSnapshot?.filingRecommendation || null,
       missing_requirements: Array.isArray(proofSnapshot?.missingRequirements) ? proofSnapshot.missingRequirements : [],
       manual_review_reason: Array.isArray(record.block_reasons) && record.block_reasons.length > 0

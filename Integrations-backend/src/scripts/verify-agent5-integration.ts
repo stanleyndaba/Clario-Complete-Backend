@@ -45,8 +45,9 @@ async function verifyAgent5() {
         );
 
         if (result) {
-            console.log(`✅ Parsing ${result.status}!`);
-            console.log('Confidence:', result.confidence_score);
+            console.log(`✅ Parsing outcome: ${result.outcome}`);
+            console.log('Job status:', result.status || 'Not available');
+            console.log('Confidence:', result.status?.confidence_score ?? 'Not available');
 
             // 4. Fetch parsed data
             const parsedData = await documentParsingService.getParsedData(doc.id, doc.seller_id);

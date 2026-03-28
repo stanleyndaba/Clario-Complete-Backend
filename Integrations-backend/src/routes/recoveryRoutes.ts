@@ -585,6 +585,7 @@ router.get('/ledger', async (req: Request, res: Response) => {
             const latestBilling = latestBillingByDisputeId.get(record.id);
             const latestRecoveryWork = latestRecoveryWorkByDisputeId.get(record.id);
             const latestBillingWork = latestBillingWorkByDisputeId.get(record.id);
+            const recoveryWorkPayload = latestRecoveryWork?.payload || null;
             const billingStatus = normalize(latestBilling?.billing_status || record.billing_status) || null;
             const reconciliationStatus = deriveReconciliationStatus(record, approvedAmount, actualPayoutAmount);
             const operatorState = deriveOperatorState(
@@ -646,6 +647,8 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 expected_payout_amount: expectedPayoutAmount,
                 billed_revenue_amount: billingRevenueAmount,
                 reconciliation_status: reconciliationStatus,
+                reconciliation_strategy: recoveryWorkPayload?.reconciliation_strategy || null,
+                match_explanation: recoveryWorkPayload?.match_explanation || null,
                 operator_state: operatorState,
                 investigation_required: operatorState === 'investigation_required' || reconciliationStatus === 'partial_recovery',
                 currency: record.currency || 'USD',
