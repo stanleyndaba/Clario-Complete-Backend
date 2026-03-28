@@ -2,7 +2,7 @@
  * Evidence Matching Worker
  * Automated background worker for continuous evidence matching
  * Runs every 3 minutes, matches claims (detection_results) to parsed documents
- * Routes based on confidence thresholds: >=0.85 auto-submit, 0.5-0.85 smart prompt, <0.5 hold
+ * Final routing is proof-driven by Agent 7 eligibility, not raw confidence alone.
  * 
  * MULTI-TENANT: Uses tenant-scoped queries for data isolation
  */
@@ -64,6 +64,26 @@ async function retryWithBackoff<T>(
   }
 
   throw lastError;
+}
+
+function normalizeMatchingActionForDisplay(
+  action?: MatchingResult['action_taken']
+): 'auto_submit' | 'smart_prompt' | 'no_action' {
+  if (action === 'auto_submit' || action === 'smart_prompt') {
+    return action;
+  }
+
+  return 'no_action';
+}
+
+function normalizeMatchingActionForEvent(
+  action?: MatchingResult['action_taken']
+): 'auto_submit' | 'smart_prompt' | 'hold' {
+  if (action === 'auto_submit' || action === 'smart_prompt') {
+    return action;
+  }
+
+  return 'hold';
 }
 
 export interface MatchingStats {
@@ -642,9 +662,8 @@ export class EvidenceMatchingWorker {
           entity_id: ctx.documentId || ctx.disputeCaseId || ctx.detectionId,
           confidence_score: ctx.result.final_confidence,
           match_type: ctx.result.match_type,
-          action_taken: (ctx.result.final_confidence || 0) >= 0.85 ? 'auto_submit'
-            : (ctx.result.final_confidence || 0) >= 0.5 ? 'smart_prompt'
-              : 'no_action'
+          action_taken: normalizeMatchingActionForDisplay(ctx.result.action_taken),
+          proof_route: ctx.result.action_taken === 'no_action' ? 'manual_review' : (ctx.result.action_taken || 'manual_review')
         })),
         message: `Evidence matching completed: ${matchingResult.matches || 0} matches found`,
         timestamp: new Date().toISOString()
@@ -702,9 +721,7 @@ export class EvidenceMatchingWorker {
             documentId: ctx.documentId || result.evidence_document_id,
             success: true,
             confidence: result.final_confidence || 0,
-            action: (result.final_confidence || 0) >= 0.85 ? 'auto_submit'
-              : (result.final_confidence || 0) >= 0.5 ? 'smart_prompt'
-                : 'hold',
+            action: normalizeMatchingActionForEvent(result.action_taken),
             duration: Date.now() - matchingStartTime
           });
         }

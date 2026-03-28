@@ -64,6 +64,8 @@ export interface ClaimData {
   order_id?: string;
 }
 
+type FinalMatchingRoute = 'auto_submit' | 'smart_prompt' | 'manual_review';
+
 class EvidenceMatchingService {
   private pythonApiUrl: string;
   private maxRetries: number = 3;
@@ -955,7 +957,8 @@ class EvidenceMatchingService {
             metadata: {
               matched_at: new Date().toISOString(),
               total_matches_in_batch: allResults.length,
-              adaptive_policy: result.adaptive_policy || null
+              adaptive_policy: result.adaptive_policy || null,
+              final_route: persistedAction
             }
           };
 
@@ -1073,7 +1076,10 @@ class EvidenceMatchingService {
         });
 
         if (result.action_taken === 'auto_submit') {
-          const finalRoute = await this.handleAutoSubmit(userId, tenantId, result);
+          const finalRoute = this.recordFinalRoute(
+            result,
+            await this.handleAutoSubmit(userId, tenantId, result)
+          );
           if (finalRoute === 'auto_submit') {
             stats.autoSubmitted++;
           } else if (finalRoute === 'smart_prompt') {
@@ -1082,7 +1088,10 @@ class EvidenceMatchingService {
             stats.held++;
           }
         } else if (result.action_taken === 'smart_prompt') {
-          const finalRoute = await this.handleSmartPrompt(userId, tenantId, result);
+          const finalRoute = this.recordFinalRoute(
+            result,
+            await this.handleSmartPrompt(userId, tenantId, result)
+          );
           if (finalRoute === 'smart_prompt') {
             stats.smartPromptsCreated++;
           } else if (finalRoute === 'auto_submit') {
@@ -1091,6 +1100,7 @@ class EvidenceMatchingService {
             stats.held++;
           }
         } else {
+          this.recordFinalRoute(result, 'manual_review');
           await this.handleHold(userId, tenantId, result);
           stats.held++;
         }
@@ -1120,6 +1130,11 @@ class EvidenceMatchingService {
     }
 
     return 'manual_review';
+  }
+
+  private recordFinalRoute(result: MatchingResult, finalRoute: FinalMatchingRoute): FinalMatchingRoute {
+    result.action_taken = finalRoute;
+    return finalRoute;
   }
 
   private async createProofPacketForCase(

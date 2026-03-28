@@ -109,6 +109,7 @@ export const TENANT_SCOPED_TABLES = [
     'proof_packets',
     'smart_prompts',
     'evidence_match_results',
+    'parser_job_results',
 
     // Recoveries
     'recoveries',

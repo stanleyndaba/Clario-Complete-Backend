@@ -73,6 +73,31 @@ function getAuthoritativeParserStatus(doc: any): string {
   return doc?.parser_status || metadata?.parser_status || 'pending';
 }
 
+function deriveEvidenceMatchDisplayAction(
+  evidenceAttachments: any,
+  confidenceScore: number
+): 'auto_submit' | 'smart_prompt' | 'no_action' {
+  const proofRecommendation = evidenceAttachments?.decision_intelligence?.proof_snapshot?.filingRecommendation;
+
+  if (proofRecommendation === 'filing_ready') {
+    return 'auto_submit';
+  }
+
+  if (proofRecommendation === 'manual_review') {
+    return 'smart_prompt';
+  }
+
+  if (confidenceScore >= 0.85) {
+    return 'auto_submit';
+  }
+
+  if (confidenceScore >= 0.5) {
+    return 'smart_prompt';
+  }
+
+  return 'no_action';
+}
+
 const DEFAULT_EVIDENCE_INGESTION_SETTINGS = {
   autoCollect: true,
   schedule: 'daily_0200',
@@ -2292,9 +2317,7 @@ router.get('/matching/results', async (req: Request, res: Response) => {
         document_id: docId,
         confidence_score: confidence,
         match_type: c.evidence_attachments?.match_type || 'unknown',
-        action_taken: confidence >= 0.85 ? 'auto_submit'
-          : confidence >= 0.5 ? 'smart_prompt'
-            : 'no_action',
+        action_taken: deriveEvidenceMatchDisplayAction(c.evidence_attachments, confidence),
         matched_fields: c.evidence_attachments?.matched_fields || [],
         reasoning: '',
         created_at: c.evidence_attachments?.matched_at || c.created_at,
@@ -2701,9 +2724,7 @@ router.get('/matching/documents/:documentId', async (req: Request, res: Response
         document_id: documentId,
         confidence_score: confidence,
         match_type: ea.match_type || 'unknown',
-        action_taken: confidence >= 0.85 ? 'auto_submit'
-          : confidence >= 0.5 ? 'smart_prompt'
-            : 'no_action',
+        action_taken: deriveEvidenceMatchDisplayAction(ea, confidence),
         matched_fields: ea.matched_fields || [],
         reasoning: '',
         created_at: ea.matched_at || c.created_at,
@@ -2805,9 +2826,7 @@ router.get('/matching/results/by-document/:documentId', async (req: Request, res
         document_id: documentId,
         confidence_score: confidence,
         match_type: ea.match_type || 'unknown',
-        action_taken: confidence >= 0.85 ? 'auto_submit'
-          : confidence >= 0.5 ? 'smart_prompt'
-            : 'no_action',
+        action_taken: deriveEvidenceMatchDisplayAction(ea, confidence),
         matched_fields: ea.matched_fields || [],
         reasoning: '',
         created_at: ea.matched_at || c.created_at,

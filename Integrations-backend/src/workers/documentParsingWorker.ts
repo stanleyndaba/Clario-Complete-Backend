@@ -1029,8 +1029,20 @@ export class DocumentParsingWorker {
         });
       }
 
-      // Also store in parser_job_results if table exists
-      await this.storeParserJobResult(documentId, sellerId, structuredData, parsedData);
+      try {
+        await this.storeParserJobResult(documentId, sellerId, structuredData, parsedData);
+      } catch (resultError: any) {
+        const persistenceError = new Error(`Parser result persistence failed: ${resultError.message}`);
+        persistenceError.name = 'ParserResultPersistenceError';
+
+        logger.error('❌ [DOCUMENT PARSING WORKER] Failed to persist parser result rail', {
+          documentId,
+          error: resultError.message
+        });
+
+        await this.logError(documentId, sellerId, persistenceError);
+      }
+
       await this.syncParserJobState(documentId, 'completed', {
         result: structuredData,
         error: null
@@ -1045,7 +1057,7 @@ export class DocumentParsingWorker {
   }
 
   /**
-   * Store parsing result in parser_job_results table (if exists)
+   * Store parsing result in the durable parser_job_results rail
    */
   private async storeParserJobResult(
     documentId: string,
@@ -1053,44 +1065,63 @@ export class DocumentParsingWorker {
     structuredData: any,
     parsedData: ParsedDocumentData
   ): Promise<void> {
-    try {
-      const client = supabaseAdmin || supabase;
+    const client = supabaseAdmin || supabase;
+    const { data: document, error: documentError } = await client
+      .from('evidence_documents')
+      .select('tenant_id, parser_job_id')
+      .eq('id', documentId)
+      .maybeSingle();
 
-      // Check if parser_job_results table exists by trying to insert
-      const { error: insertError } = await client
-        .from('parser_job_results')
-        .insert({
-          document_id: documentId,
-          supplier_name: parsedData.supplier_name,
-          invoice_number: parsedData.invoice_number,
-          invoice_date: parsedData.invoice_date || parsedData.document_date,
-          total_amount: parsedData.total_amount,
-          currency: parsedData.currency || 'USD',
-          tax_amount: parsedData.tax_amount,
-          shipping_amount: parsedData.shipping_amount,
-          payment_terms: parsedData.payment_terms,
-          po_number: parsedData.purchase_order_number,
-          raw_text: parsedData.raw_text,
-          line_items: parsedData.line_items || [],
-          extraction_method: parsedData.extraction_method || 'regex',
-          confidence_score: parsedData.confidence_score || 0.0,
-          processing_time_ms: 0 // Will be updated if available
-        });
-
-      if (insertError) {
-        // Table might not exist - that's OK
-        logger.debug('⚠️ [DOCUMENT PARSING WORKER] parser_job_results table may not exist', {
-          documentId,
-          error: insertError.message
-        });
-      }
-    } catch (error: any) {
-      // Non-critical - table may not exist
-      logger.debug('⚠️ [DOCUMENT PARSING WORKER] Could not store parser job result', {
-        documentId,
-        error: error.message
-      });
+    if (documentError) {
+      throw new Error(`Failed to load parser result context: ${documentError.message}`);
     }
+
+    if (!document?.tenant_id) {
+      throw new Error('Parser result persistence requires tenant_id on evidence document');
+    }
+
+    const safeUserId = isUuid(sellerId) ? sellerId : null;
+
+    const { error: upsertError } = await client
+      .from('parser_job_results')
+      .upsert({
+        tenant_id: document.tenant_id,
+        document_id: documentId,
+        parser_job_id: document.parser_job_id || null,
+        seller_id: sellerId,
+        user_id: safeUserId,
+        status: 'completed',
+        supplier_name: parsedData.supplier_name,
+        invoice_number: parsedData.invoice_number,
+        invoice_date: parsedData.invoice_date || parsedData.document_date,
+        total_amount: parsedData.total_amount,
+        currency: parsedData.currency || 'USD',
+        tax_amount: parsedData.tax_amount,
+        shipping_amount: parsedData.shipping_amount,
+        payment_terms: parsedData.payment_terms,
+        po_number: parsedData.purchase_order_number,
+        raw_text: parsedData.raw_text,
+        line_items: parsedData.line_items || [],
+        structured_result: structuredData,
+        extraction_method: parsedData.extraction_method || 'regex',
+        confidence_score: parsedData.confidence_score || 0.0,
+        processing_time_ms: 0,
+        error_message: null,
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: 'document_id',
+        ignoreDuplicates: false
+      });
+
+    if (upsertError) {
+      throw new Error(`Failed to upsert parser result: ${upsertError.message}`);
+    }
+
+    logger.info('🧾 [DOCUMENT PARSING WORKER] Stored parser result rail', {
+      documentId,
+      parserJobId: document.parser_job_id || null,
+      tenantId: document.tenant_id
+    });
   }
 
   private async syncParserJobState(
@@ -1233,7 +1264,6 @@ export class DocumentParsingWorker {
     try {
       const client = supabaseAdmin || supabase;
 
-      // Try to insert into document_parsing_errors table
       const { error: insertError } = await client
         .from('document_parsing_errors')
         .insert({
@@ -1252,8 +1282,7 @@ export class DocumentParsingWorker {
         });
 
       if (insertError) {
-        // Table might not exist - log warning
-        logger.warn('⚠️ [DOCUMENT PARSING WORKER] Failed to log error (table may not exist)', {
+        logger.error('❌ [DOCUMENT PARSING WORKER] Failed to log parsing error', {
           documentId,
           error: insertError.message
         });
@@ -1266,7 +1295,7 @@ export class DocumentParsingWorker {
         });
       }
     } catch (logError: any) {
-      logger.warn('⚠️ [DOCUMENT PARSING WORKER] Error logging error (non-critical)', {
+      logger.error('❌ [DOCUMENT PARSING WORKER] Error logging parsing error', {
         documentId,
         error: logError.message
       });
