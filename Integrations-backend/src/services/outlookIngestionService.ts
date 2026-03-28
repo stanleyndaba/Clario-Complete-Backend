@@ -5,8 +5,15 @@
  */
 
 import logger from '../utils/logger';
-import { supabase } from '../database/supabaseClient';
+import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
 import axios from 'axios';
+import {
+  buildIngestionMetadata,
+  buildParsedMetadataForIngestion,
+  createIngestionExplanation,
+  extractEvidenceLinkHints,
+  IngestionStrategy
+} from './evidenceIngestionDecisionUtils';
 
 export interface OutlookIngestionResult {
   success: boolean;
@@ -37,11 +44,12 @@ export class OutlookIngestionService {
    */
   private async getAccessToken(userId: string): Promise<string | null> {
     try {
+      const dbUserId = convertUserIdToUuid(userId);
       // Get evidence source for Outlook
       const { data: source, error } = await supabase
         .from('evidence_sources')
         .select('metadata, permissions')
-        .eq('user_id', userId)
+        .eq('user_id', dbUserId)
         .eq('provider', 'outlook')
         .eq('status', 'connected')
         .maybeSingle();
@@ -113,7 +121,7 @@ export class OutlookIngestionService {
 
       // Default query: search for invoices, receipts, FBA reports
       const defaultQuery = options.query ||
-        'from:amazon.com OR from:amazon.co.uk OR subject:(invoice OR receipt OR "FBA" OR "reimbursement" OR "refund") hasAttachments:true';
+        'from:amazon.com OR from:amazon.co.uk OR subject:(invoice OR receipt OR "FBA" OR "reimbursement" OR "refund")';
 
       // Fetch emails from Microsoft Graph API
       const emails = await this.fetchEmails(accessToken, defaultQuery, options.maxResults || 50);
@@ -129,10 +137,21 @@ export class OutlookIngestionService {
       for (const email of emails) {
         try {
           if (!email.hasAttachments) {
-            logger.debug('⏭️ [OUTLOOK INGESTION] Email has no attachments, skipping', {
+            logger.debug('📝 [OUTLOOK INGESTION] Email has no attachments, preserving degraded metadata candidate', {
               emailId: email.id,
               subject: email.subject
             });
+
+            const documentId = await this.storeEmailMetadataCandidate(
+              userId,
+              email,
+              'email_has_no_attachments',
+              ['attachment_content', 'attachment_id', 'filename']
+            );
+
+            if (documentId) {
+              documentsIngested++;
+            }
             continue;
           }
 
@@ -140,10 +159,21 @@ export class OutlookIngestionService {
           const attachments = await this.extractAttachmentsFromEmail(accessToken, email.id);
 
           if (attachments.length === 0) {
-            logger.debug('⏭️ [OUTLOOK INGESTION] No attachments found in email', {
+            logger.debug('📝 [OUTLOOK INGESTION] No attachment records found, preserving degraded email metadata candidate', {
               emailId: email.id,
               subject: email.subject
             });
+
+            const documentId = await this.storeEmailMetadataCandidate(
+              userId,
+              email,
+              'attachment_metadata_unavailable',
+              ['attachment_content', 'attachment_id', 'filename']
+            );
+
+            if (documentId) {
+              documentsIngested++;
+            }
             continue;
           }
 
@@ -302,7 +332,6 @@ export class OutlookIngestionService {
         const response = await axios.get(`${this.baseUrl}/messages`, {
           headers: { Authorization: `Bearer ${accessToken}` },
           params: {
-            $filter: "hasAttachments eq true",
             $top: maxResults,
             $orderby: 'receivedDateTime desc',
             $select: 'id,subject,from,receivedDateTime,hasAttachments'
@@ -354,6 +383,18 @@ export class OutlookIngestionService {
 
       // Process each attachment
       for (const attachment of message.attachments) {
+        const contentType = attachment.contentType || 'application/octet-stream';
+        const document: OutlookDocument = {
+          id: attachment.id,
+          emailId: emailId,
+          subject: message.subject || 'No Subject',
+          from: message.from?.emailAddress?.address || 'Unknown',
+          date: message.receivedDateTime,
+          filename: attachment.name || 'unnamed',
+          contentType,
+          size: attachment.size || 0
+        };
+
         try {
           // Download attachment content
           const attachmentResponse = await axios.get(
@@ -365,20 +406,9 @@ export class OutlookIngestionService {
           );
 
           const content = Buffer.from(attachmentResponse.data);
-          const contentType = attachment.contentType || 'application/octet-stream';
-
-          attachments.push({
-            id: attachment.id,
-            emailId: emailId,
-            subject: message.subject || 'No Subject',
-            from: message.from?.emailAddress?.address || 'Unknown',
-            date: message.receivedDateTime,
-            filename: attachment.name || 'unnamed',
-            contentType: contentType,
-            size: attachment.size || content.length,
-            content: content,
-            downloadUrl: `data:${contentType};base64,${content.toString('base64')}`
-          });
+          document.size = attachment.size || content.length;
+          document.content = content;
+          document.downloadUrl = `data:${contentType};base64,${content.toString('base64')}`;
         } catch (error: any) {
           logger.warn('⚠️ [OUTLOOK INGESTION] Failed to download attachment', {
             error: error?.message,
@@ -386,6 +416,8 @@ export class OutlookIngestionService {
             emailId
           });
         }
+
+        attachments.push(document);
       }
 
       return attachments;
@@ -404,14 +436,23 @@ export class OutlookIngestionService {
   private async storeEvidenceDocument(
     userId: string,
     email: any,
-    attachment: OutlookDocument
+    attachment: OutlookDocument,
+    overrides?: {
+      strategy?: IngestionStrategy;
+      reason?: string;
+      preservedFields?: string[];
+      missingFields?: string[];
+      metadata?: Record<string, any>;
+    }
   ): Promise<string | null> {
     try {
+      const dbUserId = convertUserIdToUuid(userId);
+
       // Check if document already exists
       const { data: existingDoc } = await supabase
         .from('evidence_documents')
         .select('id')
-        .eq('user_id', userId)
+        .eq('user_id', dbUserId)
         .eq('external_id', `${email.id}_${attachment.id}`)
         .eq('filename', attachment.filename)
         .maybeSingle();
@@ -424,12 +465,19 @@ export class OutlookIngestionService {
         return existingDoc.id;
       }
 
+      const { data: existingByFilename } = await supabase
+        .from('evidence_documents')
+        .select('id')
+        .eq('seller_id', dbUserId)
+        .eq('filename', attachment.filename)
+        .maybeSingle();
+
       // Get or create evidence source (Outlook)
       let sourceId: string;
       const { data: existingSource } = await supabase
         .from('evidence_sources')
         .select('id')
-        .eq('user_id', userId)
+        .eq('user_id', dbUserId)
         .eq('provider', 'outlook')
         .maybeSingle();
 
@@ -440,7 +488,8 @@ export class OutlookIngestionService {
         const { data: newSource, error: sourceError } = await supabase
           .from('evidence_sources')
           .insert({
-            user_id: userId,
+            user_id: dbUserId,
+            seller_id: dbUserId,
             provider: 'outlook',
             account_email: email.from,
             status: 'connected',
@@ -463,10 +512,40 @@ export class OutlookIngestionService {
         sourceId = newSource.id;
       }
 
+      const ingestionStrategy: IngestionStrategy = overrides?.strategy || (attachment.content ? 'FULL' : 'DEGRADED');
+      const ingestionExplanation = createIngestionExplanation(
+        overrides?.reason || (attachment.content
+          ? 'attachment_preserved_with_content'
+          : 'attachment_content_unavailable_metadata_preserved'),
+        overrides?.preservedFields || [
+          'filename',
+          'content_type',
+          'size_bytes',
+          'email_id',
+          'email_date',
+          'email_from',
+          'email_subject',
+          'attachment_id'
+        ],
+        overrides?.missingFields || (attachment.content ? [] : ['attachment_content', 'storage_path'])
+      );
+      const extractedHints = extractEvidenceLinkHints(
+        [
+          attachment.filename,
+          attachment.contentType,
+          email.subject,
+          email.from
+        ],
+        {
+          supplier_names: [email.from]
+        }
+      );
+
       // Store document metadata (metadata-first ingestion)
       const documentData = {
         source_id: sourceId,
-        user_id: userId,
+        user_id: dbUserId,
+        seller_id: dbUserId,
         provider: 'outlook',
         external_id: `${email.id}_${attachment.id}`,
         filename: attachment.filename,
@@ -477,7 +556,7 @@ export class OutlookIngestionService {
         sender: email.from,
         subject: email.subject,
         message_id: email.id,
-        metadata: {
+        metadata: buildIngestionMetadata({
           email_id: email.id,
           email_date: email.date,
           email_from: email.from,
@@ -485,7 +564,16 @@ export class OutlookIngestionService {
           attachment_id: attachment.id,
           ingestion_method: 'microsoft_graph_api',
           ingestion_timestamp: new Date().toISOString()
-        },
+        }, ingestionStrategy, ingestionExplanation, {
+          has_content: !!attachment.content,
+          duplicate_filename_hint: !!existingByFilename,
+          duplicate_filename_document_id: existingByFilename?.id || null,
+          ...(overrides?.metadata || {})
+        }),
+        raw_text: `${email.subject || ''}\n${email.from || ''}`.trim() || null,
+        extracted: extractedHints,
+        parsed_metadata: buildParsedMetadataForIngestion(extractedHints, ingestionStrategy, ingestionExplanation),
+        parser_status: attachment.content ? 'pending' : 'completed',
         processing_status: 'pending',
         ingested_at: new Date().toISOString()
       };
@@ -509,7 +597,7 @@ export class OutlookIngestionService {
       if (attachment.content) {
         try {
           const bucketName = 'evidence-documents';
-          const filePath = `${userId}/${document.id}/${attachment.filename}`;
+          const filePath = `${dbUserId}/${document.id}/${attachment.filename}`;
 
           const { data: uploadData, error: uploadError } = await supabase.storage
             .from(bucketName)
@@ -570,6 +658,131 @@ export class OutlookIngestionService {
         error: error?.message || String(error),
         userId,
         filename: attachment.filename
+      });
+      return null;
+    }
+  }
+
+  private async storeEmailMetadataCandidate(
+    userId: string,
+    email: any,
+    reason: string,
+    missingFields: string[]
+  ): Promise<string | null> {
+    try {
+      const dbUserId = convertUserIdToUuid(userId);
+      const externalId = `${email.id}__message_metadata`;
+      const { data: existingDoc } = await supabase
+        .from('evidence_documents')
+        .select('id')
+        .eq('user_id', dbUserId)
+        .eq('external_id', externalId)
+        .maybeSingle();
+
+      if (existingDoc) {
+        return existingDoc.id;
+      }
+
+      let sourceId: string;
+      const { data: existingSource } = await supabase
+        .from('evidence_sources')
+        .select('id')
+        .eq('user_id', dbUserId)
+        .eq('provider', 'outlook')
+        .maybeSingle();
+
+      if (existingSource) {
+        sourceId = existingSource.id;
+      } else {
+        const { data: newSource, error: sourceError } = await supabase
+          .from('evidence_sources')
+          .insert({
+            user_id: dbUserId,
+            seller_id: dbUserId,
+            provider: 'outlook',
+            account_email: email.from,
+            status: 'connected',
+            metadata: {
+              connected_at: new Date().toISOString(),
+              source: 'microsoft_graph_api'
+            }
+          })
+          .select('id')
+          .single();
+
+        if (sourceError || !newSource) {
+          logger.error('❌ [OUTLOOK INGESTION] Failed to create evidence source for metadata candidate', {
+            error: sourceError,
+            userId
+          });
+          return null;
+        }
+
+        sourceId = newSource.id;
+      }
+
+      const explanation = createIngestionExplanation(
+        reason,
+        ['email_id', 'email_date', 'email_from', 'email_subject'],
+        missingFields
+      );
+      const extractedHints = extractEvidenceLinkHints(
+        [email.subject, email.from],
+        { supplier_names: [email.from] }
+      );
+
+      const { data: document, error: docError } = await supabase
+        .from('evidence_documents')
+        .insert({
+          source_id: sourceId,
+          user_id: dbUserId,
+          seller_id: dbUserId,
+          provider: 'outlook',
+          doc_type: 'other',
+          external_id: externalId,
+          filename: `outlook-email-${email.id}.metadata.txt`,
+          size_bytes: 0,
+          content_type: 'text/plain',
+          created_at: email.date,
+          modified_at: email.date,
+          sender: email.from,
+          subject: email.subject,
+          message_id: email.id,
+          metadata: buildIngestionMetadata({
+            email_id: email.id,
+            email_date: email.date,
+            email_from: email.from,
+            email_subject: email.subject,
+            ingestion_method: 'microsoft_graph_api',
+            ingestion_timestamp: new Date().toISOString(),
+            has_content: false,
+            metadata_only_candidate: true
+          }, 'DEGRADED', explanation),
+          raw_text: `${email.subject || ''}\n${email.from || ''}`.trim() || null,
+          extracted: extractedHints,
+          parsed_metadata: buildParsedMetadataForIngestion(extractedHints, 'DEGRADED', explanation),
+          parser_status: 'completed',
+          processing_status: 'pending',
+          ingested_at: new Date().toISOString()
+        })
+        .select('id')
+        .single();
+
+      if (docError || !document) {
+        logger.error('❌ [OUTLOOK INGESTION] Failed to store email metadata candidate', {
+          error: docError,
+          emailId: email.id,
+          userId
+        });
+        return null;
+      }
+
+      return document.id;
+    } catch (error: any) {
+      logger.error('❌ [OUTLOOK INGESTION] Error storing email metadata candidate', {
+        error: error?.message || String(error),
+        emailId: email?.id,
+        userId
       });
       return null;
     }

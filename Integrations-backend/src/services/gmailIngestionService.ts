@@ -9,6 +9,13 @@ import { GmailService } from './gmailService';
 import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
 import axios from 'axios';
 import { extractTextFromPdf, extractKeyFieldsFromText, isPdfBuffer } from '../utils/pdfExtractor';
+import {
+  buildIngestionMetadata,
+  buildParsedMetadataForIngestion,
+  createIngestionExplanation,
+  extractEvidenceLinkHints,
+  IngestionStrategy
+} from './evidenceIngestionDecisionUtils';
 
 export interface GmailIngestionResult {
   success: boolean;
@@ -114,8 +121,7 @@ export class GmailIngestionService {
       }
     }
 
-    // Always require attachments
-    queryParts.push('has:attachment');
+    // Do not force attachments. Message-level metadata can still contain useful claim-link hints.
 
     // Store allowed file types for filtering during attachment processing
     const fileTypes = filters.fileTypes;
@@ -221,7 +227,7 @@ export class GmailIngestionService {
 
       // Default query if no filters configured
       const finalQuery = dynamicQuery ||
-        'from:amazon.com OR from:amazon.co.uk OR subject:(invoice OR receipt OR "FBA" OR "reimbursement" OR "refund") has:attachment';
+        'from:amazon.com OR from:amazon.co.uk OR subject:(invoice OR receipt OR "FBA" OR "reimbursement" OR "refund")';
 
       logger.info('🔍 [GMAIL INGESTION] Using query', { userId, query: finalQuery.substring(0, 200) });
 
@@ -243,10 +249,21 @@ export class GmailIngestionService {
       for (const email of emails) {
         try {
           if (!email.hasAttachments) {
-            logger.debug('⏭️ [GMAIL INGESTION] Email has no attachments, skipping', {
+            logger.debug('📝 [GMAIL INGESTION] Email has no attachments, preserving degraded metadata candidate', {
               emailId: email.id,
               subject: email.subject
             });
+
+            const documentId = await this.storeEmailMetadataCandidate(
+              userId,
+              email,
+              'email_has_no_attachments',
+              ['attachment_content', 'attachment_id', 'filename']
+            );
+
+            if (documentId) {
+              documentsIngested++;
+            }
             continue;
           }
 
@@ -254,10 +271,21 @@ export class GmailIngestionService {
           const attachments = await this.extractAttachmentsFromEmail(userId, email.id);
 
           if (attachments.length === 0) {
-            logger.debug('⏭️ [GMAIL INGESTION] No attachments found in email', {
+            logger.debug('📝 [GMAIL INGESTION] No attachment records found, preserving degraded email metadata candidate', {
               emailId: email.id,
               subject: email.subject
             });
+
+            const documentId = await this.storeEmailMetadataCandidate(
+              userId,
+              email,
+              'attachment_metadata_unavailable',
+              ['attachment_content', 'attachment_id', 'filename']
+            );
+
+            if (documentId) {
+              documentsIngested++;
+            }
             continue;
           }
 
@@ -275,10 +303,37 @@ export class GmailIngestionService {
                 const filenameLower = attachment.filename.toLowerCase();
                 const matchesPattern = this.fileNamePatterns.some(pattern => filenameLower.includes(pattern));
                 if (!matchesPattern) {
-                  logger.debug('[GMAIL INGESTION] Attachment filename does not match any pattern, skipping', {
+                  logger.debug('[GMAIL INGESTION] Attachment filename does not match configured patterns, storing degraded candidate', {
                     filename: attachment.filename,
                     patterns: this.fileNamePatterns
                   });
+
+                  const degradedDocumentId = await this.storeEvidenceDocument(userId, email, attachment, {
+                    strategy: 'DEGRADED',
+                    reason: 'attachment_filename_filter_mismatch',
+                    missingFields: ['matched_filename_pattern'],
+                    preservedFields: [
+                      'filename',
+                      'content_type',
+                      'size_bytes',
+                      'email_id',
+                      'email_date',
+                      'email_from',
+                      'email_subject',
+                      'attachment_id'
+                    ],
+                    metadata: {
+                      filename_filter_patterns: this.fileNamePatterns,
+                      filename_filter_matched: false
+                    }
+                  });
+
+                  if (degradedDocumentId) {
+                    documentsIngested++;
+                    if (options.autoParse && attachment.content) {
+                      await this.triggerParsingPipeline(degradedDocumentId, userId);
+                    }
+                  }
                   continue;
                 }
               }
@@ -440,7 +495,14 @@ export class GmailIngestionService {
   private async storeEvidenceDocument(
     userId: string,
     email: any,
-    attachment: GmailDocument
+    attachment: GmailDocument,
+    overrides?: {
+      strategy?: IngestionStrategy;
+      reason?: string;
+      preservedFields?: string[];
+      missingFields?: string[];
+      metadata?: Record<string, any>;
+    }
   ): Promise<string | null> {
     try {
       const dbUserId = convertUserIdToUuid(userId);
@@ -450,7 +512,7 @@ export class GmailIngestionService {
         .from('evidence_documents')
         .select('id')
         .eq('user_id', dbUserId)
-        .eq('external_id', attachment.emailId)
+        .eq('external_id', `${email.id}_${attachment.id}`)
         .eq('filename', attachment.filename)
         .maybeSingle();
 
@@ -462,22 +524,13 @@ export class GmailIngestionService {
         return existingDoc.id;
       }
 
-      // Additional de-duplication check: by seller_id + filename only
-      // This catches duplicates even if external_id differs (same file, different ingestion)
+      // Track duplicate filename risk, but do not suppress the new document on filename alone.
       const { data: existingByFilename } = await supabase
         .from('evidence_documents')
         .select('id')
         .eq('seller_id', dbUserId)
         .eq('filename', attachment.filename)
         .maybeSingle();
-
-      if (existingByFilename) {
-        logger.debug('⏭️ [GMAIL INGESTION] Document with same filename exists, skipping', {
-          documentId: existingByFilename.id,
-          filename: attachment.filename
-        });
-        return existingByFilename.id;
-      }
 
       // Get or create evidence source (Gmail)
       let sourceId: string;
@@ -521,6 +574,38 @@ export class GmailIngestionService {
         sourceId = newSource.id;
       }
 
+      const ingestionStrategy: IngestionStrategy = overrides?.strategy || (attachment.content ? 'FULL' : 'DEGRADED');
+      const ingestionExplanation = createIngestionExplanation(
+        overrides?.reason || (attachment.content
+          ? 'attachment_preserved_with_content'
+          : 'attachment_content_unavailable_metadata_preserved'),
+        overrides?.preservedFields || [
+          'filename',
+          'content_type',
+          'size_bytes',
+          'email_id',
+          'email_date',
+          'email_from',
+          'email_subject',
+          'attachment_id'
+        ],
+        overrides?.missingFields || (attachment.content ? [] : ['attachment_content', 'storage_path'])
+      );
+      const extractedHints = extractEvidenceLinkHints(
+        [
+          attachment.filename,
+          attachment.contentType,
+          email.subject,
+          email.from,
+          email.snippet,
+          email.body
+        ],
+        {
+          supplier_names: [email.from]
+        }
+      );
+      const parsedMetadata = buildParsedMetadataForIngestion(extractedHints, ingestionStrategy, ingestionExplanation);
+
       // Store document metadata (metadata-first ingestion)
       const documentData = {
         source_id: sourceId,
@@ -537,7 +622,7 @@ export class GmailIngestionService {
         sender: email.from,
         subject: email.subject,
         message_id: email.id,
-        metadata: {
+        metadata: buildIngestionMetadata({
           email_id: email.id,
           email_date: email.date,
           email_from: email.from,
@@ -545,7 +630,16 @@ export class GmailIngestionService {
           attachment_id: attachment.id,
           ingestion_method: 'gmail_api',
           ingestion_timestamp: new Date().toISOString()
-        },
+        }, ingestionStrategy, ingestionExplanation, {
+          has_content: !!attachment.content,
+          duplicate_filename_hint: !!existingByFilename,
+          duplicate_filename_document_id: existingByFilename?.id || null,
+          ...(overrides?.metadata || {})
+        }),
+        raw_text: email.snippet || email.body || null,
+        extracted: extractedHints,
+        parsed_metadata: parsedMetadata,
+        parser_status: attachment.content ? 'pending' : 'completed',
         processing_status: 'pending',
         ingested_at: new Date().toISOString()
       };
@@ -696,6 +790,133 @@ export class GmailIngestionService {
       logger.error('❌ [GMAIL INGESTION] Error storing evidence document', {
         error: error?.message || String(error),
         filename: attachment.filename,
+        userId
+      });
+      return null;
+    }
+  }
+
+  private async storeEmailMetadataCandidate(
+    userId: string,
+    email: any,
+    reason: string,
+    missingFields: string[]
+  ): Promise<string | null> {
+    try {
+      const dbUserId = convertUserIdToUuid(userId);
+      const externalId = `${email.id}__message_metadata`;
+      const { data: existingDoc } = await supabase
+        .from('evidence_documents')
+        .select('id')
+        .eq('user_id', dbUserId)
+        .eq('external_id', externalId)
+        .maybeSingle();
+
+      if (existingDoc) {
+        return existingDoc.id;
+      }
+
+      let sourceId: string;
+      const { data: existingSource } = await supabase
+        .from('evidence_sources')
+        .select('id')
+        .eq('user_id', dbUserId)
+        .eq('provider', 'gmail')
+        .maybeSingle();
+
+      if (existingSource) {
+        sourceId = existingSource.id;
+      } else {
+        const { data: newSource, error: sourceError } = await supabase
+          .from('evidence_sources')
+          .insert({
+            user_id: dbUserId,
+            seller_id: dbUserId,
+            provider: 'gmail',
+            account_email: email.from,
+            status: 'connected',
+            encrypted_access_token: 'mock-encrypted-access-token',
+            encrypted_refresh_token: 'mock-encrypted-refresh-token',
+            metadata: {
+              connected_at: new Date().toISOString(),
+              source: 'gmail_api'
+            }
+          })
+          .select('id')
+          .single();
+
+        if (sourceError || !newSource) {
+          logger.error('❌ [GMAIL INGESTION] Failed to create evidence source for metadata candidate', {
+            error: sourceError,
+            userId
+          });
+          return null;
+        }
+
+        sourceId = newSource.id;
+      }
+
+      const explanation = createIngestionExplanation(
+        reason,
+        ['email_id', 'email_date', 'email_from', 'email_subject', 'snippet'],
+        missingFields
+      );
+      const extractedHints = extractEvidenceLinkHints(
+        [email.subject, email.from, email.snippet, email.body],
+        { supplier_names: [email.from] }
+      );
+
+      const { data: document, error: docError } = await supabase
+        .from('evidence_documents')
+        .insert({
+          source_id: sourceId,
+          user_id: dbUserId,
+          seller_id: dbUserId,
+          provider: 'gmail',
+          doc_type: 'other',
+          external_id: externalId,
+          filename: `gmail-email-${email.id}.metadata.txt`,
+          size_bytes: email.snippet?.length || 0,
+          content_type: 'text/plain',
+          created_at: email.date,
+          modified_at: email.date,
+          sender: email.from,
+          subject: email.subject,
+          message_id: email.id,
+          metadata: buildIngestionMetadata({
+            email_id: email.id,
+            email_date: email.date,
+            email_from: email.from,
+            email_subject: email.subject,
+            ingestion_method: 'gmail_api',
+            ingestion_timestamp: new Date().toISOString(),
+            has_content: false,
+            metadata_only_candidate: true
+          }, 'DEGRADED', explanation),
+          raw_text: email.snippet || email.body || null,
+          extracted: extractedHints,
+          parsed_metadata: buildParsedMetadataForIngestion(extractedHints, 'DEGRADED', explanation),
+          parser_status: 'completed',
+          processing_status: 'pending',
+          ingested_at: new Date().toISOString()
+        })
+        .select('id')
+        .single();
+
+      if (docError || !document) {
+        logger.error('❌ [GMAIL INGESTION] Failed to store email metadata candidate', {
+          error: docError,
+          emailId: email.id,
+          userId
+        });
+        return null;
+      }
+
+      return document.id;
+    } catch (error: any) {
+      logger.error('❌ [GMAIL INGESTION] Error storing email metadata candidate', {
+        error: error?.message || String(error),
+        emailId: email?.id,
         userId
       });
       return null;

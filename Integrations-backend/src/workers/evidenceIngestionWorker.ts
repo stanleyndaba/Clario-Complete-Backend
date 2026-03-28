@@ -15,7 +15,11 @@ import { gmailIngestionService } from '../services/gmailIngestionService';
 import { outlookIngestionService } from '../services/outlookIngestionService';
 import { googleDriveIngestionService } from '../services/googleDriveIngestionService';
 import { dropboxIngestionService } from '../services/dropboxIngestionService';
+import { oneDriveIngestionService } from '../services/oneDriveIngestionService';
 import tokenManager from '../utils/tokenManager';
+
+const SUPPORTED_INGESTION_PROVIDERS = ['gmail', 'outlook', 'gdrive', 'dropbox', 'onedrive'] as const;
+type SupportedIngestionProvider = typeof SUPPORTED_INGESTION_PROVIDERS[number];
 
 // Rate limiter: Max 10 requests/second per provider
 class RateLimiter {
@@ -414,7 +418,7 @@ export class EvidenceIngestionWorker {
         .from('evidence_sources')
         .select('user_id, seller_id')
         .eq('status', 'connected')
-        .in('provider', ['gmail', 'outlook', 'gdrive', 'dropbox']);
+        .in('provider', [...SUPPORTED_INGESTION_PROVIDERS]);
 
       // If user_id column doesn't exist, try seller_id
       if (error && error.message?.includes('column') && error.message?.includes('user_id')) {
@@ -422,7 +426,7 @@ export class EvidenceIngestionWorker {
           .from('evidence_sources')
           .select('seller_id')
           .eq('status', 'connected')
-          .in('provider', ['gmail', 'outlook', 'gdrive', 'dropbox']);
+          .in('provider', [...SUPPORTED_INGESTION_PROVIDERS]);
         sources = retry.data;
         error = retry.error;
       }
@@ -457,13 +461,13 @@ export class EvidenceIngestionWorker {
       let { data: sources, error } = await tenantQuery
         .select('user_id, seller_id')
         .eq('status', 'connected')
-        .in('provider', ['gmail', 'outlook', 'gdrive', 'dropbox']);
+        .in('provider', [...SUPPORTED_INGESTION_PROVIDERS]);
 
       if (error && error.message?.includes('seller_id')) {
         const retry = await tenantQuery
           .select('user_id')
           .eq('status', 'connected')
-          .in('provider', ['gmail', 'outlook', 'gdrive', 'dropbox']);
+          .in('provider', [...SUPPORTED_INGESTION_PROVIDERS]);
         sources = retry.data;
         error = retry.error;
       }
@@ -472,7 +476,7 @@ export class EvidenceIngestionWorker {
         const retry = await tenantQuery
           .select('seller_id')
           .eq('status', 'connected')
-          .in('provider', ['gmail', 'outlook', 'gdrive', 'dropbox']);
+          .in('provider', [...SUPPORTED_INGESTION_PROVIDERS]);
         sources = retry.data;
         error = retry.error;
       }
@@ -524,7 +528,7 @@ export class EvidenceIngestionWorker {
         .select('id, provider, last_synced_at, metadata')
         .eq('seller_id', dbUserId)
         .eq('status', 'connected')
-        .in('provider', ['gmail', 'outlook', 'gdrive', 'dropbox']);
+        .in('provider', [...SUPPORTED_INGESTION_PROVIDERS]);
 
       // If seller_id column doesn't exist or no results, try user_id
       if ((error && error.message?.includes('column') && error.message?.includes('seller_id')) || (!error && (!sources || sources.length === 0))) {
@@ -533,7 +537,7 @@ export class EvidenceIngestionWorker {
           .select('id, provider, last_synced_at, metadata')
           .eq('user_id', dbUserId)
           .eq('status', 'connected')
-          .in('provider', ['gmail', 'outlook', 'gdrive', 'dropbox']);
+          .in('provider', [...SUPPORTED_INGESTION_PROVIDERS]);
         if (retry.data && retry.data.length > 0) {
           sources = retry.data;
           error = retry.error;
@@ -714,16 +718,57 @@ export class EvidenceIngestionWorker {
           });
           break;
 
+        case 'onedrive':
+          result = await oneDriveIngestionService.ingestEvidenceFromOneDrive(userId, {
+            query,
+            maxResults: 50,
+            autoParse: true,
+            folderId: source.metadata?.folderId
+          });
+          break;
+
         default:
-          throw new Error(`Unknown provider: ${source.provider}`);
+          await this.recordSourceIngestionDecision(source.id, {
+            strategy: 'REJECTED',
+            reason: 'unsupported_provider_in_worker',
+            preserved_fields: ['provider', 'source_id', 'metadata'],
+            missing_fields: ['provider_handler']
+          });
+          stats.failed = 1;
+          stats.errors = [`Unsupported provider in evidence worker: ${source.provider}`];
+          return stats;
       }
 
       // Only process result if it was actually returned (handles skip case)
       if (result) {
+        const processedCount = result.itemsProcessed || result.filesProcessed || result.emailsProcessed || 0;
         stats.ingested = result.documentsIngested || 0;
-        stats.skipped = (result.itemsProcessed || 0) - stats.ingested;
+        stats.skipped = Math.max(0, processedCount - stats.ingested);
         stats.failed = result.errors?.length || 0;
         stats.errors = result.errors || [];
+
+        if (stats.failed > 0 && stats.ingested === 0) {
+          await this.recordSourceIngestionDecision(source.id, {
+            strategy: 'REJECTED',
+            reason: stats.errors[0] || 'provider_ingestion_failed_without_preserved_documents',
+            preserved_fields: ['provider', 'source_id', 'metadata'],
+            missing_fields: ['accessible_input_content']
+          });
+        } else if (stats.failed > 0 || stats.skipped > 0) {
+          await this.recordSourceIngestionDecision(source.id, {
+            strategy: 'DEGRADED',
+            reason: stats.errors[0] || 'provider_ingestion_preserved_partial_inputs',
+            preserved_fields: ['provider', 'source_id', 'metadata'],
+            missing_fields: stats.failed > 0 ? ['full_input_coverage'] : []
+          });
+        } else {
+          await this.recordSourceIngestionDecision(source.id, {
+            strategy: 'FULL',
+            reason: 'provider_ingestion_completed',
+            preserved_fields: ['provider', 'source_id', 'metadata'],
+            missing_fields: []
+          });
+        }
       }
 
       // 🎯 AGENT 11 INTEGRATION: Log ingestion event
@@ -759,17 +804,20 @@ export class EvidenceIngestionWorker {
           const client = supabaseAdmin || supabase;
           const { data: recentDocs } = await client
             .from('evidence_documents')
-            .select('id, filename, source')
+            .select('id, filename, provider')
             .eq('seller_id', dbUserIdForDocs)
-            .eq('source', source.provider)
+            .eq('provider', source.provider)
             .order('created_at', { ascending: false })
             .limit(stats.ingested);
 
           if (recentDocs && recentDocs.length > 0) {
             for (const doc of recentDocs) {
+              const notificationSource = source.provider === 'gdrive' || source.provider === 'onedrive'
+                ? 'drive'
+                : source.provider;
               await notificationHelper.notifyEvidenceFound(userId, {
                 documentId: doc.id,
-                source: source.provider as 'gmail' | 'outlook' | 'drive' | 'dropbox',
+                source: notificationSource as 'gmail' | 'outlook' | 'drive' | 'dropbox',
                 fileName: doc.filename || 'Unknown',
                 parsed: false
               });
@@ -892,7 +940,7 @@ export class EvidenceIngestionWorker {
         }
       }
 
-      // For other providers (outlook, gdrive, dropbox), tokens are in evidence_sources.metadata
+      // For other providers (outlook, gdrive, dropbox, onedrive), tokens are in evidence_sources.metadata
       // The ingestion services handle token refresh internally via their getAccessToken methods
       // No action needed here - ingestion services will refresh as needed
 
@@ -1035,6 +1083,48 @@ export class EvidenceIngestionWorker {
     } catch (logError: any) {
       logger.warn('⚠️ [EVIDENCE WORKER] Error logging error (non-critical)', {
         error: logError.message
+      });
+    }
+  }
+
+  private async recordSourceIngestionDecision(
+    sourceId: string,
+    decision: {
+      strategy: 'FULL' | 'DEGRADED' | 'REJECTED';
+      reason: string;
+      preserved_fields: string[];
+      missing_fields: string[];
+    }
+  ): Promise<void> {
+    try {
+      const client = supabaseAdmin || supabase;
+      const timestamp = new Date().toISOString();
+      const { data: source } = await client
+        .from('evidence_sources')
+        .select('metadata')
+        .eq('id', sourceId)
+        .maybeSingle();
+
+      await client
+        .from('evidence_sources')
+        .update({
+          metadata: {
+            ...(source?.metadata || {}),
+            last_ingestion_strategy: decision.strategy,
+            last_ingestion_explanation: {
+              reason: decision.reason,
+              preserved_fields: decision.preserved_fields,
+              missing_fields: decision.missing_fields,
+              recorded_at: timestamp
+            }
+          },
+          updated_at: timestamp
+        })
+        .eq('id', sourceId);
+    } catch (error: any) {
+      logger.warn('⚠️ [EVIDENCE WORKER] Failed to record source ingestion decision', {
+        sourceId,
+        error: error?.message || String(error)
       });
     }
   }

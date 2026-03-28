@@ -5,8 +5,15 @@
  */
 
 import logger from '../utils/logger';
-import { supabase } from '../database/supabaseClient';
+import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
 import axios from 'axios';
+import {
+  buildIngestionMetadata,
+  buildParsedMetadataForIngestion,
+  createIngestionExplanation,
+  extractEvidenceLinkHints,
+  IngestionStrategy
+} from './evidenceIngestionDecisionUtils';
 
 export interface DropboxIngestionResult {
   success: boolean;
@@ -34,11 +41,12 @@ export class DropboxIngestionService {
    */
   private async getAccessToken(userId: string): Promise<string | null> {
     try {
+      const dbUserId = convertUserIdToUuid(userId);
       // Get evidence source for Dropbox
       const { data: source, error } = await supabase
         .from('evidence_sources')
         .select('metadata, permissions')
-        .eq('user_id', userId)
+        .eq('user_id', dbUserId)
         .eq('provider', 'dropbox')
         .eq('status', 'connected')
         .maybeSingle();
@@ -125,11 +133,22 @@ export class DropboxIngestionService {
         try {
           // Metadata-first: Check if file is relevant before downloading
           if (!this.isRelevantDocument(file)) {
-            logger.debug('⏭️ [DROPBOX INGESTION] File not relevant, skipping', {
+            logger.debug('📝 [DROPBOX INGESTION] File did not meet relevance threshold, preserving degraded metadata candidate', {
               fileId: file.id,
               name: file.name,
               path: file.path
             });
+
+            const degradedDocumentId = await this.storeEvidenceDocument(userId, file, undefined, {
+              strategy: 'DEGRADED',
+              reason: 'metadata_relevance_threshold_not_met',
+              missingFields: ['relevance_match'],
+              preservedFields: ['file_id', 'file_name', 'file_path', 'mime_type', 'timestamps']
+            });
+
+            if (degradedDocumentId) {
+              documentsIngested++;
+            }
             continue;
           }
 
@@ -351,14 +370,22 @@ export class DropboxIngestionService {
   private async storeEvidenceDocument(
     userId: string,
     file: DropboxFile,
-    content?: Buffer
+    content?: Buffer,
+    overrides?: {
+      strategy?: IngestionStrategy;
+      reason?: string;
+      preservedFields?: string[];
+      missingFields?: string[];
+      metadata?: Record<string, any>;
+    }
   ): Promise<string | null> {
     try {
+      const dbUserId = convertUserIdToUuid(userId);
       // Check if document already exists
       const { data: existingDoc } = await supabase
         .from('evidence_documents')
         .select('id')
-        .eq('user_id', userId)
+        .eq('user_id', dbUserId)
         .eq('external_id', file.id)
         .eq('filename', file.name)
         .maybeSingle();
@@ -376,7 +403,7 @@ export class DropboxIngestionService {
       const { data: existingSource } = await supabase
         .from('evidence_sources')
         .select('id')
-        .eq('user_id', userId)
+        .eq('user_id', dbUserId)
         .eq('provider', 'dropbox')
         .maybeSingle();
 
@@ -387,9 +414,10 @@ export class DropboxIngestionService {
         const { data: newSource, error: sourceError } = await supabase
           .from('evidence_sources')
           .insert({
-            user_id: userId,
+            user_id: dbUserId,
+            seller_id: dbUserId,
             provider: 'dropbox',
-            account_email: userId, // Will be updated when we have email
+            account_email: dbUserId, // Will be updated when we have email
             status: 'connected',
             metadata: {
               connected_at: new Date().toISOString(),
@@ -410,10 +438,24 @@ export class DropboxIngestionService {
         sourceId = newSource.id;
       }
 
+      const ingestionStrategy: IngestionStrategy = overrides?.strategy || (content ? 'FULL' : 'DEGRADED');
+      const ingestionExplanation = createIngestionExplanation(
+        overrides?.reason || (content
+          ? 'file_preserved_with_content'
+          : 'file_content_unavailable_metadata_preserved'),
+        overrides?.preservedFields || ['file_id', 'file_name', 'file_path', 'mime_type', 'timestamps'],
+        overrides?.missingFields || (content ? [] : ['file_content', 'storage_path'])
+      );
+      const extractedHints = extractEvidenceLinkHints(
+        [file.name, file.path, file.mimeType],
+        {}
+      );
+
       // Store document metadata (metadata-first ingestion)
       const documentData = {
         source_id: sourceId,
-        user_id: userId,
+        user_id: dbUserId,
+        seller_id: dbUserId,
         provider: 'dropbox',
         external_id: file.id,
         filename: file.name,
@@ -421,7 +463,7 @@ export class DropboxIngestionService {
         content_type: file.mimeType || 'application/octet-stream',
         created_at: file.modifiedTime,
         modified_at: file.modifiedTime,
-        metadata: {
+        metadata: buildIngestionMetadata({
           file_id: file.id,
           file_name: file.name,
           file_path: file.path,
@@ -429,7 +471,11 @@ export class DropboxIngestionService {
           ingestion_method: 'dropbox_api',
           ingestion_timestamp: new Date().toISOString(),
           has_content: !!content
-        },
+        }, ingestionStrategy, ingestionExplanation, overrides?.metadata || {}),
+        raw_text: [file.name, file.path].filter(Boolean).join('\n') || null,
+        extracted: extractedHints,
+        parsed_metadata: buildParsedMetadataForIngestion(extractedHints, ingestionStrategy, ingestionExplanation),
+        parser_status: content ? 'pending' : 'completed',
         processing_status: 'pending',
         ingested_at: new Date().toISOString()
       };
@@ -453,7 +499,7 @@ export class DropboxIngestionService {
       if (content) {
         try {
           const bucketName = 'evidence-documents';
-          const filePath = `${userId}/${document.id}/${file.name}`;
+          const filePath = `${dbUserId}/${document.id}/${file.name}`;
 
           const { data: uploadData, error: uploadError } = await supabase.storage
             .from(bucketName)

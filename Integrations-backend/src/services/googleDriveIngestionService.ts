@@ -5,8 +5,15 @@
  */
 
 import logger from '../utils/logger';
-import { supabase } from '../database/supabaseClient';
+import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
 import axios from 'axios';
+import {
+  buildIngestionMetadata,
+  buildParsedMetadataForIngestion,
+  createIngestionExplanation,
+  extractEvidenceLinkHints,
+  IngestionStrategy
+} from './evidenceIngestionDecisionUtils';
 
 export interface GoogleDriveIngestionResult {
   success: boolean;
@@ -36,11 +43,12 @@ export class GoogleDriveIngestionService {
    */
   private async getAccessToken(userId: string): Promise<string | null> {
     try {
+      const dbUserId = convertUserIdToUuid(userId);
       // Get evidence source for Google Drive
       const { data: source, error } = await supabase
         .from('evidence_sources')
         .select('metadata, permissions')
-        .eq('user_id', userId)
+        .eq('user_id', dbUserId)
         .eq('provider', 'gdrive')
         .eq('status', 'connected')
         .maybeSingle();
@@ -147,11 +155,22 @@ export class GoogleDriveIngestionService {
         try {
           // Metadata-first: Check if file is relevant before downloading
           if (!this.isRelevantDocument(file)) {
-            logger.debug('⏭️ [GDRIVE INGESTION] File not relevant, skipping', {
+            logger.debug('📝 [GDRIVE INGESTION] File did not meet relevance threshold, preserving degraded metadata candidate', {
               fileId: file.id,
               name: file.name,
               mimeType: file.mimeType
             });
+
+            const degradedDocumentId = await this.storeEvidenceDocument(userId, file, undefined, {
+              strategy: 'DEGRADED',
+              reason: 'metadata_relevance_threshold_not_met',
+              missingFields: ['relevance_match'],
+              preservedFields: ['file_id', 'file_name', 'mime_type', 'web_view_link', 'timestamps']
+            });
+
+            if (degradedDocumentId) {
+              documentsIngested++;
+            }
             continue;
           }
 
@@ -354,14 +373,22 @@ export class GoogleDriveIngestionService {
   private async storeEvidenceDocument(
     userId: string,
     file: GoogleDriveFile,
-    content?: Buffer
+    content?: Buffer,
+    overrides?: {
+      strategy?: IngestionStrategy;
+      reason?: string;
+      preservedFields?: string[];
+      missingFields?: string[];
+      metadata?: Record<string, any>;
+    }
   ): Promise<string | null> {
     try {
+      const dbUserId = convertUserIdToUuid(userId);
       // Check if document already exists
       const { data: existingDoc } = await supabase
         .from('evidence_documents')
         .select('id')
-        .eq('user_id', userId)
+        .eq('user_id', dbUserId)
         .eq('external_id', file.id)
         .eq('filename', file.name)
         .maybeSingle();
@@ -379,7 +406,7 @@ export class GoogleDriveIngestionService {
       const { data: existingSource } = await supabase
         .from('evidence_sources')
         .select('id')
-        .eq('user_id', userId)
+        .eq('user_id', dbUserId)
         .eq('provider', 'gdrive')
         .maybeSingle();
 
@@ -390,9 +417,10 @@ export class GoogleDriveIngestionService {
         const { data: newSource, error: sourceError } = await supabase
           .from('evidence_sources')
           .insert({
-            user_id: userId,
+            user_id: dbUserId,
+            seller_id: dbUserId,
             provider: 'gdrive',
-            account_email: userId, // Will be updated when we have email
+            account_email: dbUserId, // Will be updated when we have email
             status: 'connected',
             metadata: {
               connected_at: new Date().toISOString(),
@@ -413,10 +441,24 @@ export class GoogleDriveIngestionService {
         sourceId = newSource.id;
       }
 
+      const ingestionStrategy: IngestionStrategy = overrides?.strategy || (content ? 'FULL' : 'DEGRADED');
+      const ingestionExplanation = createIngestionExplanation(
+        overrides?.reason || (content
+          ? 'file_preserved_with_content'
+          : 'file_content_unavailable_metadata_preserved'),
+        overrides?.preservedFields || ['file_id', 'file_name', 'mime_type', 'web_view_link', 'timestamps'],
+        overrides?.missingFields || (content ? [] : ['file_content', 'storage_path'])
+      );
+      const extractedHints = extractEvidenceLinkHints(
+        [file.name, file.mimeType, file.webViewLink],
+        {}
+      );
+
       // Store document metadata (metadata-first ingestion)
       const documentData = {
         source_id: sourceId,
-        user_id: userId,
+        user_id: dbUserId,
+        seller_id: dbUserId,
         provider: 'gdrive',
         external_id: file.id,
         filename: file.name,
@@ -424,7 +466,7 @@ export class GoogleDriveIngestionService {
         content_type: file.mimeType,
         created_at: file.createdTime,
         modified_at: file.modifiedTime,
-        metadata: {
+        metadata: buildIngestionMetadata({
           file_id: file.id,
           file_name: file.name,
           mime_type: file.mimeType,
@@ -432,7 +474,11 @@ export class GoogleDriveIngestionService {
           ingestion_method: 'google_drive_api',
           ingestion_timestamp: new Date().toISOString(),
           has_content: !!content
-        },
+        }, ingestionStrategy, ingestionExplanation, overrides?.metadata || {}),
+        raw_text: [file.name, file.webViewLink].filter(Boolean).join('\n') || null,
+        extracted: extractedHints,
+        parsed_metadata: buildParsedMetadataForIngestion(extractedHints, ingestionStrategy, ingestionExplanation),
+        parser_status: content ? 'pending' : 'completed',
         processing_status: 'pending',
         ingested_at: new Date().toISOString()
       };
@@ -456,7 +502,7 @@ export class GoogleDriveIngestionService {
       if (content) {
         try {
           const bucketName = 'evidence-documents';
-          const filePath = `${userId}/${document.id}/${file.name}`;
+          const filePath = `${dbUserId}/${document.id}/${file.name}`;
 
           const { data: uploadData, error: uploadError } = await supabase.storage
             .from(bucketName)
