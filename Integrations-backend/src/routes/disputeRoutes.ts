@@ -75,16 +75,38 @@ async function resolveDisputeScope(req: any) {
 async function resolvePaidSellerIdentity(userId: string) {
   const { data: user, error } = await supabaseAdmin
     .from('users')
-    .select('is_paid_beta, amazon_seller_id')
+    .select('id, is_paid_beta, amazon_seller_id, billing_status, billing_unlocked_at, billing_source')
     .eq('id', userId)
     .single();
 
-  if (error || !user?.is_paid_beta) {
+  if (error || !user) {
+    throw new Error('User identity could not be resolved');
+  }
+
+  if (!user?.is_paid_beta) {
     throw new Error('Upgrade required to file disputes ($99 Beta Activation)');
   }
 
   return {
-    sellerId: user.amazon_seller_id || userId
+    sellerId: user.amazon_seller_id || userId,
+    user
+  };
+}
+
+async function resolveSellerIdentity(userId: string) {
+  const { data: user, error } = await supabaseAdmin
+    .from('users')
+    .select('id, is_paid_beta, amazon_seller_id, billing_status, billing_unlocked_at, billing_source')
+    .eq('id', userId)
+    .single();
+
+  if (error || !user) {
+    throw new Error('User identity could not be resolved');
+  }
+
+  return {
+    sellerId: user.amazon_seller_id || userId,
+    user
   };
 }
 
@@ -160,6 +182,114 @@ router.get('/', async (req, res) => {
     res.status(getDisputeRouteStatusCode(error)).json({
       success: false,
       message: message || 'Internal server error'
+    });
+  }
+});
+
+// POST /api/disputes/unlock-and-file
+// Manual payment confirmation bridge for Yoco checkout.
+router.post('/unlock-and-file', async (req, res) => {
+  try {
+    const { tenantId, userId } = await resolveDisputeScope(req as any);
+    const now = new Date().toISOString();
+    const safeUserId = convertUserIdToUuid(userId);
+    const { sellerId, user } = await resolveSellerIdentity(userId);
+
+    const alreadyUnlocked = Boolean(user?.is_paid_beta) || String(user?.billing_status || '').toLowerCase() === 'unlocked';
+
+    if (!alreadyUnlocked) {
+      const { error: unlockError } = await supabaseAdmin
+        .from('users')
+        .update({
+          is_paid_beta: true,
+          billing_status: 'unlocked',
+          billing_unlocked_at: now,
+          billing_source: 'yoco_manual',
+          billing_unlock_confirmed_by: safeUserId,
+          updated_at: now
+        })
+        .eq('id', userId);
+
+      if (unlockError) {
+        throw unlockError;
+      }
+    }
+
+    const { data: candidateCases, error: candidateError } = await supabaseAdmin
+      .from('dispute_cases')
+      .select('id, seller_id, filing_status, claim_amount, tenant_id')
+      .eq('tenant_id', tenantId)
+      .eq('seller_id', sellerId)
+      .in('filing_status', ['pending', 'retrying', 'pending_approval'])
+      .gt('claim_amount', 0)
+      .order('updated_at', { ascending: false });
+
+    if (candidateError) {
+      throw candidateError;
+    }
+
+    let queuedCount = 0;
+    let blockedCount = 0;
+    let scannedCount = 0;
+    const queuedCaseIds: string[] = [];
+    const blockedCaseIds: string[] = [];
+
+    for (const candidate of candidateCases || []) {
+      scannedCount += 1;
+
+      const { eligible, disputeCase } = await evaluateAndPersistCaseEligibility(candidate.id, tenantId);
+      const nextFilingStatus = String(disputeCase?.filing_status || candidate.filing_status || '').toLowerCase();
+
+      if (!eligible || ['submitting', 'filed', 'recovering', 'payment_required'].includes(nextFilingStatus)) {
+        blockedCount += 1;
+        blockedCaseIds.push(candidate.id);
+        continue;
+      }
+
+      await supabaseAdmin
+        .from('dispute_cases')
+        .update({
+          filing_status: 'pending',
+          eligible_to_file: true,
+          block_reasons: [],
+          last_error: null,
+          updated_at: now
+        })
+        .eq('id', candidate.id)
+        .eq('tenant_id', tenantId);
+
+      const job = await refundFilingWorker.addJob(candidate.id, candidate.seller_id || sellerId);
+      if (job.mode === 'queued') {
+        queuedCount += 1;
+        queuedCaseIds.push(candidate.id);
+      } else {
+        blockedCount += 1;
+        blockedCaseIds.push(candidate.id);
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: queuedCount > 0
+        ? `Payment confirmed. ${queuedCount} claim${queuedCount === 1 ? '' : 's'} queued for filing.`
+        : 'Payment confirmed. No supportable claims were queueable right now.',
+      already_unlocked: alreadyUnlocked,
+      billing_status: 'unlocked',
+      billing_unlocked_at: user?.billing_unlocked_at || now,
+      billing_source: alreadyUnlocked ? (user?.billing_source || 'yoco_manual') : 'yoco_manual',
+      queued_count: queuedCount,
+      blocked_count: blockedCount,
+      scanned_count: scannedCount,
+      queued_case_ids: queuedCaseIds,
+      blocked_case_ids: blockedCaseIds
+    });
+  } catch (error: any) {
+    const message = String(error?.message || '');
+    const statusCode = getDisputeRouteStatusCode(error);
+    logger.error('[unlock-and-file] Error', { error: message });
+    return res.status(statusCode).json({
+      success: false,
+      message: message || 'Failed to confirm payment unlock'
     });
   }
 });

@@ -108,6 +108,10 @@ export const handlePaypalWebhook = async (req: Request, res: Response) => {
       .from('users')
       .update({ 
         is_paid_beta: true,
+        billing_status: 'unlocked',
+        billing_unlocked_at: new Date().toISOString(),
+        billing_source: 'paypal_webhook',
+        billing_unlock_confirmed_by: userRecord.id,
         updated_at: new Date().toISOString()
       })
       .eq('id', customId);
