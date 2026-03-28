@@ -507,39 +507,51 @@ class RecoveriesWorker {
 
         logger.info(`🔍 [RECOVERIES] Detected ${payouts.length} payouts for user ${userId}`);
 
+        const payoutDecisions = await Promise.all(
+          payouts.map(async (payout) => ({
+            payout,
+            decision: await recoveriesService.matchPayoutToClaim(payout, userId, tenantId)
+          }))
+        );
+        const bestMatchByDisputeId = new Map<string, any>();
+
+        for (const { payout, decision } of payoutDecisions) {
+          if (decision.reconciliation_strategy === 'QUARANTINED' || !decision.match) {
+            continue;
+          }
+
+          const existing = bestMatchByDisputeId.get(decision.match.disputeId);
+          if (!existing || Number(decision.match.match_explanation?.confidence || 0) > Number(existing.match.match_explanation?.confidence || 0)) {
+            bestMatchByDisputeId.set(decision.match.disputeId, {
+              payout,
+              match: decision.match
+            });
+          }
+        }
+
         // Process each case for this user
         for (const disputeCase of userCases) {
           try {
             stats.processed++;
 
-            // Try to match payout to this case
-            let matched = false;
-            for (const payout of payouts) {
-              const match = await recoveriesService.matchPayoutToClaim(payout, userId, tenantId);
+            const matchedDecision = bestMatchByDisputeId.get(disputeCase.id);
+            if (matchedDecision?.match) {
+              stats.matched++;
 
-              if (match && match.disputeId === disputeCase.id) {
-                matched = true;
-                stats.matched++;
+              // Reconcile the payout
+              const result = await recoveriesService.reconcilePayout(matchedDecision.match, userId, tenantId);
 
-                // Reconcile the payout
-                const result = await recoveriesService.reconcilePayout(match, userId, tenantId);
-
-                if (result.success) {
-                  if (result.status === 'reconciled') {
-                    stats.reconciled++;
-                  } else if (result.status === 'discrepancy') {
-                    stats.discrepancies++;
-                  }
-                } else {
-                  stats.failed++;
-                  stats.errors.push(`Case ${disputeCase.id}: ${result.error}`);
+              if (result.success) {
+                if (result.status === 'reconciled') {
+                  stats.reconciled++;
+                } else if (result.status === 'discrepancy') {
+                  stats.discrepancies++;
                 }
-
-                break; // Found match, move to next case
+              } else {
+                stats.failed++;
+                stats.errors.push(`Case ${disputeCase.id}: ${result.error}`);
               }
-            }
-
-            if (!matched) {
+            } else {
               // No payout found yet - log lifecycle event
               await this.logLifecycleEvent(disputeCase.id, userId, {
                 eventType: 'payout_detected',

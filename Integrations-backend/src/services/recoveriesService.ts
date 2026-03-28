@@ -33,6 +33,13 @@ export interface PayoutMatch {
   discrepancyType: 'none' | 'underpaid' | 'overpaid';
   amazonReimbursementId?: string;
   payoutDate?: string;
+  reconciliation_strategy: 'AUTO_MATCH' | 'SMART_MATCH';
+  match_explanation: {
+    competing_candidates: number;
+    selected_basis: string;
+    confidence: number;
+  };
+  evidenceAttachments?: Record<string, any>;
 }
 
 export interface ReconciliationResult {
@@ -44,6 +51,33 @@ export interface ReconciliationResult {
   discrepancy: number;
   discrepancyType?: 'underpaid' | 'overpaid';
   error?: string;
+  reconciliation_strategy?: 'AUTO_MATCH' | 'SMART_MATCH';
+  match_explanation?: {
+    competing_candidates: number;
+    selected_basis: string;
+    confidence: number;
+  };
+}
+
+export interface RecoveryMatchDecision {
+  reconciliation_strategy: 'AUTO_MATCH' | 'SMART_MATCH' | 'QUARANTINED';
+  match: PayoutMatch | null;
+  match_explanation: {
+    competing_candidates: number;
+    selected_basis: string;
+    confidence: number;
+  };
+  reason?: string;
+  candidate_dispute_ids?: string[];
+}
+
+interface RecoveryCandidateScore {
+  disputeCase: any;
+  confidence: number;
+  rankingScore: number;
+  amountDifference: number;
+  timeDistanceDays: number;
+  selectedBasis: string;
 }
 
 export interface RecoveryLifecycleEvent {
@@ -65,11 +99,22 @@ class RecoveriesService {
     userId: string,
     tenantId: string | undefined,
     reason: string,
-    candidateDisputeIds: string[] = []
+    candidateDisputeIds: string[] = [],
+    matchExplanation?: {
+      competing_candidates: number;
+      selected_basis: string;
+      confidence: number;
+    }
   ): Promise<void> {
     runtimeCapacityService.incrementCounter('ambiguous_recoveries');
     const timestamp = new Date().toISOString();
     const quarantinePayload = {
+      reconciliation_strategy: 'QUARANTINED',
+      match_explanation: matchExplanation || {
+        competing_candidates: candidateDisputeIds.length,
+        selected_basis: 'quarantine',
+        confidence: 0
+      },
       quarantine_state: 'ambiguous_recovery',
       quarantine_reason: reason,
       tenant_id: tenantId || null,
@@ -136,6 +181,309 @@ class RecoveriesService {
         error: error.message
       });
     }
+  }
+
+  private toAmount(value: any): number {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : 0;
+  }
+
+  private normalizeToken(value: any): string | null {
+    if (value === null || value === undefined) return null;
+    const normalized = String(value).trim().toLowerCase();
+    return normalized || null;
+  }
+
+  private parseDate(value: any): Date | null {
+    if (!value) return null;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  private getExpectedAmount(disputeCase: any): number {
+    return this.toAmount(disputeCase?.approved_amount) || this.toAmount(disputeCase?.claim_amount);
+  }
+
+  private buildMatchExplanation(
+    competingCandidates: number,
+    selectedBasis: string,
+    confidence: number
+  ): {
+    competing_candidates: number;
+    selected_basis: string;
+    confidence: number;
+  } {
+    return {
+      competing_candidates: competingCandidates,
+      selected_basis: selectedBasis,
+      confidence: Number(confidence.toFixed(2))
+    };
+  }
+
+  private getCaseDates(disputeCase: any): Date[] {
+    const evidence = parseJsonObject(disputeCase?.detection_results?.evidence);
+    const attachments = parseJsonObject(disputeCase?.evidence_attachments);
+
+    const candidates = [
+      disputeCase?.resolution_date,
+      disputeCase?.updated_at,
+      disputeCase?.created_at,
+      evidence?.approved_at,
+      evidence?.reimbursement_date,
+      evidence?.shipment_date,
+      evidence?.order_date,
+      evidence?.delivery_date,
+      attachments?.approved_at,
+      attachments?.reimbursement_date,
+      attachments?.shipment_date,
+      attachments?.order_date
+    ]
+      .map((value) => this.parseDate(value))
+      .filter((value): value is Date => Boolean(value));
+
+    return candidates;
+  }
+
+  private computeTimeProximity(disputeCase: any, payout: any): { score: number; days: number } {
+    const payoutDate = this.parseDate(
+      payout?.payoutDate ||
+      payout?.postedAt ||
+      payout?.posted_at ||
+      payout?.eventDate ||
+      payout?.created_at
+    );
+
+    if (!payoutDate) {
+      return { score: 0, days: Number.MAX_SAFE_INTEGER };
+    }
+
+    const dayDistances = this.getCaseDates(disputeCase)
+      .map((caseDate) => Math.abs(payoutDate.getTime() - caseDate.getTime()) / (1000 * 60 * 60 * 24));
+
+    if (dayDistances.length === 0) {
+      return { score: 0, days: Number.MAX_SAFE_INTEGER };
+    }
+
+    const closestDays = Math.min(...dayDistances);
+    if (closestDays <= 7) return { score: 0.5, days: closestDays };
+    if (closestDays <= 14) return { score: 0.4, days: closestDays };
+    if (closestDays <= 30) return { score: 0.3, days: closestDays };
+    if (closestDays <= 60) return { score: 0.15, days: closestDays };
+    return { score: 0, days: closestDays };
+  }
+
+  private computeAmountCloseness(expectedAmount: number, actualAmount: number, tolerance: number): number {
+    if (expectedAmount <= 0 || actualAmount <= 0 || tolerance <= 0) {
+      return 0;
+    }
+
+    const difference = Math.abs(expectedAmount - actualAmount);
+    if (difference > tolerance) {
+      return 0;
+    }
+
+    return Math.max(0, 1 - (difference / tolerance));
+  }
+
+  private scoreCandidate(
+    disputeCase: any,
+    payout: any,
+    basis: 'order_amount' | 'sku_asin_amount' | 'amount_time_fallback'
+  ): RecoveryCandidateScore {
+    const evidence = parseJsonObject(disputeCase?.detection_results?.evidence);
+    const expectedAmount = this.getExpectedAmount(disputeCase);
+    const actualAmount = this.toAmount(payout?.amount);
+    const amountDifference = Math.abs(expectedAmount - actualAmount);
+    const { score: timeScore, days } = this.computeTimeProximity(disputeCase, payout);
+
+    let rankingScore = 0;
+    let maxScore = 1;
+    let selectedBasis: string = basis;
+
+    if (basis === 'order_amount') {
+      const tolerance = Math.max(expectedAmount * 0.05, 1.0);
+      const amountCloseness = this.computeAmountCloseness(expectedAmount, actualAmount, tolerance);
+      rankingScore = 0.8 + (amountCloseness * 0.1) + timeScore;
+      maxScore = 1.4;
+      selectedBasis = 'order_id_amount_time_ranked';
+    } else if (basis === 'sku_asin_amount') {
+      const tolerance = Math.max(expectedAmount * 0.1, 2.0);
+      const amountCloseness = this.computeAmountCloseness(expectedAmount, actualAmount, tolerance);
+      const skuMatches = this.normalizeToken(evidence?.sku) && this.normalizeToken(evidence?.sku) === this.normalizeToken(payout?.sku);
+      const asinMatches = this.normalizeToken(evidence?.asin) && this.normalizeToken(evidence?.asin) === this.normalizeToken(payout?.asin);
+      const identifierScore = skuMatches && asinMatches ? 0.75 : 0.6;
+      rankingScore = identifierScore + (amountCloseness * 0.15) + timeScore;
+      maxScore = 1.4;
+      selectedBasis = skuMatches && asinMatches ? 'sku_and_asin_amount_time_ranked' : 'sku_or_asin_amount_time_ranked';
+    } else {
+      const tolerance = Math.max(expectedAmount * 0.05, 1.0);
+      const amountCloseness = this.computeAmountCloseness(expectedAmount, actualAmount, tolerance);
+      rankingScore = 0.55 + (amountCloseness * 0.2) + timeScore;
+      maxScore = 1.25;
+      selectedBasis = 'strict_amount_time_ranked';
+    }
+
+    return {
+      disputeCase,
+      confidence: Number(Math.min(1, rankingScore / maxScore).toFixed(2)),
+      rankingScore,
+      amountDifference,
+      timeDistanceDays: Number.isFinite(days) ? days : Number.MAX_SAFE_INTEGER,
+      selectedBasis
+    };
+  }
+
+  private buildDecision(
+    reconciliationStrategy: 'AUTO_MATCH' | 'SMART_MATCH' | 'QUARANTINED',
+    explanation: {
+      competing_candidates: number;
+      selected_basis: string;
+      confidence: number;
+    },
+    match: PayoutMatch | null,
+    reason?: string,
+    candidateDisputeIds: string[] = []
+  ): RecoveryMatchDecision {
+    return {
+      reconciliation_strategy: reconciliationStrategy,
+      match,
+      match_explanation: explanation,
+      reason,
+      candidate_dispute_ids: candidateDisputeIds
+    };
+  }
+
+  private async hasConflictingFinancialSignal(
+    payout: any,
+    selectedDisputeId: string,
+    tenantId?: string
+  ): Promise<boolean> {
+    const reimbursementId = payout?.amazonReimbursementId || payout?.id;
+    if (reimbursementId) {
+      let reimbursementQuery = supabaseAdmin
+        .from('recoveries')
+        .select('id, dispute_id')
+        .eq('amazon_reimbursement_id', reimbursementId)
+        .neq('dispute_id', selectedDisputeId)
+        .limit(1);
+
+      if (tenantId) {
+        reimbursementQuery = reimbursementQuery.eq('tenant_id', tenantId);
+      }
+
+      const { data: reimbursementConflict, error } = await reimbursementQuery.maybeSingle();
+      if (!error && reimbursementConflict) {
+        return true;
+      }
+    }
+
+    const amazonCaseId = payout?.amazonCaseId || payout?.metadata?.amazon_case_id || payout?.metadata?.case_id;
+    if (amazonCaseId) {
+      let caseQuery = supabaseAdmin
+        .from('recoveries')
+        .select('id, dispute_id')
+        .eq('amazon_case_id', amazonCaseId)
+        .neq('dispute_id', selectedDisputeId)
+        .limit(1);
+
+      if (tenantId) {
+        caseQuery = caseQuery.eq('tenant_id', tenantId);
+      }
+
+      const { data: caseConflict, error } = await caseQuery.maybeSingle();
+      if (!error && caseConflict) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private async resolveUniqueMatch(
+    disputeCase: any,
+    payout: any,
+    userId: string,
+    tenantId: string | undefined,
+    selectedBasis: string
+  ): Promise<RecoveryMatchDecision> {
+    const conflict = await this.hasConflictingFinancialSignal(payout, disputeCase.id, tenantId);
+    const explanation = this.buildMatchExplanation(1, selectedBasis, 1.0);
+
+    if (conflict) {
+      await this.quarantineAmbiguousRecovery(
+        payout,
+        userId,
+        tenantId,
+        'payout_conflicts_with_existing_recovery_signal',
+        [disputeCase.id],
+        explanation
+      );
+      return this.buildDecision('QUARANTINED', explanation, null, 'payout_conflicts_with_existing_recovery_signal', [disputeCase.id]);
+    }
+
+    return this.buildDecision(
+      'AUTO_MATCH',
+      explanation,
+      this.createMatch(disputeCase, payout, 'AUTO_MATCH', explanation)
+    );
+  }
+
+  private async resolveRankedCandidateSet(params: {
+    payout: any;
+    userId: string;
+    tenantId?: string;
+    candidates: any[];
+    basis: 'order_amount' | 'sku_asin_amount' | 'amount_time_fallback';
+    quarantineReason: string;
+  }): Promise<RecoveryMatchDecision> {
+    const { payout, userId, tenantId, candidates, basis, quarantineReason } = params;
+    const scored = candidates
+      .map((candidate) => this.scoreCandidate(candidate, payout, basis))
+      .sort((left, right) => {
+        if (right.confidence !== left.confidence) return right.confidence - left.confidence;
+        if (right.rankingScore !== left.rankingScore) return right.rankingScore - left.rankingScore;
+        if (left.amountDifference !== right.amountDifference) return left.amountDifference - right.amountDifference;
+        return left.timeDistanceDays - right.timeDistanceDays;
+      });
+
+    const best = scored[0];
+    const explanation = this.buildMatchExplanation(
+      scored.length,
+      best?.selectedBasis || `${basis}_ranked`,
+      best?.confidence || 0
+    );
+    const candidateIds = scored.map((candidate) => candidate.disputeCase.id);
+
+    if (!best || best.confidence < 0.75) {
+      await this.quarantineAmbiguousRecovery(
+        payout,
+        userId,
+        tenantId,
+        quarantineReason,
+        candidateIds,
+        explanation
+      );
+      return this.buildDecision('QUARANTINED', explanation, null, quarantineReason, candidateIds);
+    }
+
+    const conflict = await this.hasConflictingFinancialSignal(payout, best.disputeCase.id, tenantId);
+    if (conflict) {
+      await this.quarantineAmbiguousRecovery(
+        payout,
+        userId,
+        tenantId,
+        'payout_conflicts_with_existing_recovery_signal',
+        candidateIds,
+        explanation
+      );
+      return this.buildDecision('QUARANTINED', explanation, null, 'payout_conflicts_with_existing_recovery_signal', candidateIds);
+    }
+
+    return this.buildDecision(
+      'SMART_MATCH',
+      explanation,
+      this.createMatch(best.disputeCase, payout, 'SMART_MATCH', explanation)
+    );
   }
 
   private async findExistingRecovery(
@@ -324,7 +672,7 @@ class RecoveriesService {
   /**
    * Match payout to a claim/dispute case
    */
-  async matchPayoutToClaim(payout: any, userId: string, tenantId?: string): Promise<PayoutMatch | null> {
+  async matchPayoutToClaim(payout: any, userId: string, tenantId?: string): Promise<RecoveryMatchDecision> {
     try {
       logger.info('🔗 [RECOVERIES] Matching payout to claim', {
         userId,
@@ -342,7 +690,8 @@ class RecoveriesService {
         let caseQuery = supabaseAdmin
           .from('dispute_cases')
           .select(`
-            id, seller_id, claim_amount, currency, status, provider_case_id, evidence_attachments,
+            id, seller_id, claim_amount, approved_amount, currency, status, provider_case_id, evidence_attachments,
+            created_at, updated_at, resolution_date,
             detection_result_id,
             detection_results (evidence)
           `)
@@ -357,7 +706,7 @@ class RecoveriesService {
         const { data: disputeCase } = await caseQuery.single();
 
         if (disputeCase) {
-          return this.createMatch(disputeCase, payout);
+          return await this.resolveUniqueMatch(disputeCase, payout, userId, tenantId, 'amazon_case_id_exact');
         }
       }
 
@@ -366,7 +715,8 @@ class RecoveriesService {
       let disputeCasesQuery = supabaseAdmin
         .from('dispute_cases')
         .select(`
-          id, seller_id, claim_amount, currency, status, provider_case_id, evidence_attachments,
+          id, seller_id, claim_amount, approved_amount, currency, status, provider_case_id, evidence_attachments,
+          created_at, updated_at, resolution_date,
           detection_result_id,
           detection_results (evidence)
         `)
@@ -395,18 +745,30 @@ class RecoveriesService {
         });
 
         if (reimbursementMatches.length === 1) {
-          return this.createMatch(reimbursementMatches[0], payout);
+          return await this.resolveUniqueMatch(reimbursementMatches[0], payout, userId, tenantId, 'reimbursement_id_exact');
         }
 
         if (reimbursementMatches.length > 1) {
+          const explanation = this.buildMatchExplanation(
+            reimbursementMatches.length,
+            'reimbursement_id_exact_conflict',
+            1.0
+          );
           await this.quarantineAmbiguousRecovery(
             payout,
             userId,
             tenantId,
             'multiple_cases_share_reimbursement_identifier',
+            reimbursementMatches.map((candidate: any) => candidate.id),
+            explanation
+          );
+          return this.buildDecision(
+            'QUARANTINED',
+            explanation,
+            null,
+            'multiple_cases_share_reimbursement_identifier',
             reimbursementMatches.map((candidate: any) => candidate.id)
           );
-          return null;
         }
       }
 
@@ -426,18 +788,30 @@ class RecoveriesService {
         });
 
         if (referenceMatches.length === 1) {
-          return this.createMatch(referenceMatches[0], payout);
+          return await this.resolveUniqueMatch(referenceMatches[0], payout, userId, tenantId, 'reference_id_exact');
         }
 
         if (referenceMatches.length > 1) {
+          const explanation = this.buildMatchExplanation(
+            referenceMatches.length,
+            'reference_id_exact_conflict',
+            0.9
+          );
           await this.quarantineAmbiguousRecovery(
             payout,
             userId,
             tenantId,
             'multiple_cases_share_reference_identifier',
+            referenceMatches.map((candidate: any) => candidate.id),
+            explanation
+          );
+          return this.buildDecision(
+            'QUARANTINED',
+            explanation,
+            null,
+            'multiple_cases_share_reference_identifier',
             referenceMatches.map((candidate: any) => candidate.id)
           );
-          return null;
         }
       }
 
@@ -455,18 +829,30 @@ class RecoveriesService {
         });
 
         if (settlementMatches.length === 1) {
-          return this.createMatch(settlementMatches[0], payout);
+          return await this.resolveUniqueMatch(settlementMatches[0], payout, userId, tenantId, 'settlement_or_batch_id_exact');
         }
 
         if (settlementMatches.length > 1) {
+          const explanation = this.buildMatchExplanation(
+            settlementMatches.length,
+            'settlement_or_batch_id_exact_conflict',
+            0.9
+          );
           await this.quarantineAmbiguousRecovery(
             payout,
             userId,
             tenantId,
             'multiple_cases_share_settlement_or_batch_identifier',
+            settlementMatches.map((candidate: any) => candidate.id),
+            explanation
+          );
+          return this.buildDecision(
+            'QUARANTINED',
+            explanation,
+            null,
+            'multiple_cases_share_settlement_or_batch_identifier',
             settlementMatches.map((candidate: any) => candidate.id)
           );
-          return null;
         }
       }
 
@@ -478,18 +864,30 @@ class RecoveriesService {
         );
 
         if (explicitMatches.length === 1) {
-          return this.createMatch(explicitMatches[0], payout);
+          return await this.resolveUniqueMatch(explicitMatches[0], payout, userId, tenantId, 'explicit_case_link_exact');
         }
 
         if (explicitMatches.length > 1) {
+          const explanation = this.buildMatchExplanation(
+            explicitMatches.length,
+            'explicit_case_link_exact_conflict',
+            0.95
+          );
           await this.quarantineAmbiguousRecovery(
             payout,
             userId,
             tenantId,
             'multiple_cases_share_explicit_case_link_metadata',
+            explicitMatches.map((candidate: any) => candidate.id),
+            explanation
+          );
+          return this.buildDecision(
+            'QUARANTINED',
+            explanation,
+            null,
+            'multiple_cases_share_explicit_case_link_metadata',
             explicitMatches.map((candidate: any) => candidate.id)
           );
-          return null;
         }
       }
 
@@ -500,25 +898,34 @@ class RecoveriesService {
         });
 
         const closeMatches = matchingCases.filter((disputeCase: any) => {
-          const expectedAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
-          const actualAmount = payout.amount;
+          const expectedAmount = this.getExpectedAmount(disputeCase);
+          const actualAmount = this.toAmount(payout.amount);
           const difference = Math.abs(expectedAmount - actualAmount);
           return difference <= Math.max(expectedAmount * 0.05, 1.00);
         });
 
         if (closeMatches.length === 1) {
-          return this.createMatch(closeMatches[0], payout);
+          return this.buildDecision(
+            'SMART_MATCH',
+            this.buildMatchExplanation(1, 'order_id_amount_time_ranked', 0.88),
+            this.createMatch(
+              closeMatches[0],
+              payout,
+              'SMART_MATCH',
+              this.buildMatchExplanation(1, 'order_id_amount_time_ranked', 0.88)
+            )
+          );
         }
 
         if (closeMatches.length > 1) {
-          await this.quarantineAmbiguousRecovery(
+          return await this.resolveRankedCandidateSet({
             payout,
             userId,
             tenantId,
-            'multiple_cases_share_order_and_amount_match',
-            closeMatches.map((candidate: any) => candidate.id)
-          );
-          return null;
+            candidates: closeMatches,
+            basis: 'order_amount',
+            quarantineReason: 'multiple_cases_share_order_and_amount_match'
+          });
         }
       }
 
@@ -529,33 +936,40 @@ class RecoveriesService {
         });
 
         const closeMatches = matchingCases.filter((disputeCase: any) => {
-          const expectedAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
-          const actualAmount = payout.amount;
+          const expectedAmount = this.getExpectedAmount(disputeCase);
+          const actualAmount = this.toAmount(payout.amount);
           const difference = Math.abs(expectedAmount - actualAmount);
           return difference <= Math.max(expectedAmount * 0.10, 2.00);
         });
 
         if (closeMatches.length === 1) {
-          return this.createMatch(closeMatches[0], payout);
-        }
-
-        if (closeMatches.length > 1) {
-          await this.quarantineAmbiguousRecovery(
+          return await this.resolveRankedCandidateSet({
             payout,
             userId,
             tenantId,
-            'sku_or_asin_fuzzy_match_requires_manual_resolution',
-            closeMatches.map((candidate: any) => candidate.id)
-          );
-          return null;
+            candidates: closeMatches,
+            basis: 'sku_asin_amount',
+            quarantineReason: 'sku_or_asin_fuzzy_match_requires_manual_resolution'
+          });
+        }
+
+        if (closeMatches.length > 1) {
+          return await this.resolveRankedCandidateSet({
+            payout,
+            userId,
+            tenantId,
+            candidates: closeMatches,
+            basis: 'sku_asin_amount',
+            quarantineReason: 'sku_or_asin_fuzzy_match_requires_manual_resolution'
+          });
         }
       }
 
       if (approvedCases.length > 0) {
         const candidates = approvedCases
           .map((disputeCase: any) => {
-            const expectedAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
-            const difference = Math.abs(expectedAmount - payout.amount);
+            const expectedAmount = this.getExpectedAmount(disputeCase);
+            const difference = Math.abs(expectedAmount - this.toAmount(payout.amount));
             const threshold = Math.max(expectedAmount * 0.05, 1.00);
             return {
               disputeCase,
@@ -568,18 +982,25 @@ class RecoveriesService {
           .sort((a: any, b: any) => a.difference - b.difference);
 
         if (candidates.length === 1) {
-          return this.createMatch(candidates[0].disputeCase, payout);
-        }
-
-        if (candidates.length > 1) {
-          await this.quarantineAmbiguousRecovery(
+          return await this.resolveRankedCandidateSet({
             payout,
             userId,
             tenantId,
-            'strict_amount_fallback_requires_manual_resolution',
-            candidates.map((candidate: any) => candidate.disputeCase.id)
-          );
-          return null;
+            candidates: [candidates[0].disputeCase],
+            basis: 'amount_time_fallback',
+            quarantineReason: 'strict_amount_fallback_requires_manual_resolution'
+          });
+        }
+
+        if (candidates.length > 1) {
+          return await this.resolveRankedCandidateSet({
+            payout,
+            userId,
+            tenantId,
+            candidates: candidates.map((candidate: any) => candidate.disputeCase),
+            basis: 'amount_time_fallback',
+            quarantineReason: 'strict_amount_fallback_requires_manual_resolution'
+          });
         }
       }
 
@@ -591,7 +1012,16 @@ class RecoveriesService {
         amount: payout.amount
       });
 
-      return null;
+      const explanation = this.buildMatchExplanation(0, 'no_candidate_match', 0);
+      await this.quarantineAmbiguousRecovery(
+        payout,
+        userId,
+        tenantId,
+        'no_case_match_found_for_payout',
+        [],
+        explanation
+      );
+      return this.buildDecision('QUARANTINED', explanation, null, 'no_case_match_found_for_payout');
 
     } catch (error: any) {
       logger.error('❌ [RECOVERIES] Failed to match payout to claim', {
@@ -599,16 +1029,34 @@ class RecoveriesService {
         payoutId: payout.id,
         error: error.message
       });
-      return null;
+      const explanation = this.buildMatchExplanation(0, 'match_error', 0);
+      await this.quarantineAmbiguousRecovery(
+        payout,
+        userId,
+        tenantId,
+        'recovery_match_engine_error',
+        [],
+        explanation
+      );
+      return this.buildDecision('QUARANTINED', explanation, null, 'recovery_match_engine_error');
     }
   }
 
   /**
    * Create a payout match from dispute case and payout
    */
-  private createMatch(disputeCase: any, payout: any): PayoutMatch {
-    const expectedAmount = parseFloat(disputeCase.claim_amount?.toString() || '0');
-    const actualAmount = payout.amount;
+  private createMatch(
+    disputeCase: any,
+    payout: any,
+    reconciliationStrategy: 'AUTO_MATCH' | 'SMART_MATCH',
+    matchExplanation: {
+      competing_candidates: number;
+      selected_basis: string;
+      confidence: number;
+    }
+  ): PayoutMatch {
+    const expectedAmount = this.getExpectedAmount(disputeCase);
+    const actualAmount = this.toAmount(payout.amount);
     const discrepancy = Math.abs(expectedAmount - actualAmount);
 
     let discrepancyType: 'none' | 'underpaid' | 'overpaid' = 'none';
@@ -629,7 +1077,10 @@ class RecoveriesService {
       discrepancy,
       discrepancyType,
       amazonReimbursementId: payout.amazonReimbursementId || payout.id,
-      payoutDate: payout.payoutDate || new Date().toISOString()
+      payoutDate: payout.payoutDate || new Date().toISOString(),
+      reconciliation_strategy: reconciliationStrategy,
+      match_explanation: matchExplanation,
+      evidenceAttachments: parseJsonObject(disputeCase.evidence_attachments)
     };
   }
 
@@ -644,7 +1095,8 @@ class RecoveriesService {
         disputeId: match.disputeId,
         expectedAmount: match.expectedAmount,
         actualAmount: match.actualAmount,
-        discrepancy: match.discrepancy
+        discrepancy: match.discrepancy,
+        reconciliationStrategy: match.reconciliation_strategy
       });
 
       // Determine reconciliation status
@@ -732,13 +1184,25 @@ class RecoveriesService {
 
       try {
         await this.logLifecycleEvent(recovery.id, match.disputeId, userId, {
+          eventType: 'matched',
+          eventData: {
+            reconciliation_strategy: match.reconciliation_strategy,
+            match_explanation: match.match_explanation,
+            amazon_reimbursement_id: match.amazonReimbursementId || null,
+            amazon_case_id: match.amazonCaseId || null
+          }
+        });
+
+        await this.logLifecycleEvent(recovery.id, match.disputeId, userId, {
           eventType: status === 'reconciled' ? 'reconciled' : 'discrepancy_detected',
           eventData: {
             expectedAmount: match.expectedAmount,
             actualAmount: match.actualAmount,
             discrepancy: match.discrepancy,
             discrepancyType: match.discrepancyType,
-            status
+            status,
+            reconciliation_strategy: match.reconciliation_strategy,
+            match_explanation: match.match_explanation
           }
         });
       } catch (lifecycleError: any) {
@@ -759,6 +1223,9 @@ class RecoveriesService {
         };
       }
 
+      const evidenceAttachments = parseJsonObject(match.evidenceAttachments);
+      const decisionIntelligence = parseJsonObject(evidenceAttachments?.decision_intelligence);
+
       // Update dispute case
       let disputeUpdateQuery = supabaseAdmin
         .from('dispute_cases')
@@ -770,6 +1237,19 @@ class RecoveriesService {
           recovered_amount: match.actualAmount,
           // 🎯 AGENT 9 INTEGRATION: Set billing_status = 'pending' when reconciled
           billing_status: status === 'reconciled' ? 'pending' : null,
+          evidence_attachments: {
+            ...evidenceAttachments,
+            decision_intelligence: {
+              ...decisionIntelligence,
+              recovery_match: {
+                reconciliation_strategy: match.reconciliation_strategy,
+                match_explanation: match.match_explanation,
+                amazon_reimbursement_id: match.amazonReimbursementId || null,
+                amazon_case_id: match.amazonCaseId || null,
+                matched_at: timestamp
+              }
+            }
+          },
           updated_at: new Date().toISOString()
         })
         .eq('id', match.disputeId);
@@ -808,10 +1288,12 @@ class RecoveriesService {
         userId,
         disputeId: match.disputeId,
         recoveryId: recovery.id,
-        reimbursementId: match.amazonReimbursementId,
-        expectedAmount: match.expectedAmount,
-        actualAmount: match.actualAmount,
-        reconciliationStatus: status
+          reimbursementId: match.amazonReimbursementId,
+          expectedAmount: match.expectedAmount,
+          actualAmount: match.actualAmount,
+          reconciliationStatus: status,
+          reconciliationStrategy: match.reconciliation_strategy,
+          matchExplanation: match.match_explanation
       });
 
       try {
@@ -830,6 +1312,8 @@ class RecoveriesService {
           status,
           expected_amount: match.expectedAmount,
           actual_amount: match.actualAmount,
+          reconciliation_strategy: match.reconciliation_strategy,
+          match_explanation: match.match_explanation,
           message: `Payout detected for case ${match.disputeId}`
         }, tenantSlug, tenantId);
 
@@ -843,6 +1327,8 @@ class RecoveriesService {
           amount: match.actualAmount,
           currency: 'USD',
           status,
+          reconciliation_strategy: match.reconciliation_strategy,
+          match_explanation: match.match_explanation,
           message: `Payout received: $${Number(match.actualAmount || 0).toFixed(2)}`
         }, tenantSlug, tenantId);
       } catch (eventError: any) {
@@ -964,7 +1450,9 @@ class RecoveriesService {
         expectedAmount: match.expectedAmount,
         actualAmount: match.actualAmount,
         discrepancy: match.discrepancy,
-        discrepancyType: match.discrepancyType !== 'none' ? match.discrepancyType : undefined
+        discrepancyType: match.discrepancyType !== 'none' ? match.discrepancyType : undefined,
+        reconciliation_strategy: match.reconciliation_strategy,
+        match_explanation: match.match_explanation
       };
 
     } catch (error: any) {
@@ -978,7 +1466,9 @@ class RecoveriesService {
         expectedAmount: match.expectedAmount,
         actualAmount: match.actualAmount,
         discrepancy: match.discrepancy,
-        error: error.message
+        error: error.message,
+        reconciliation_strategy: match.reconciliation_strategy,
+        match_explanation: match.match_explanation
       };
     }
   }
@@ -1027,8 +1517,7 @@ class RecoveriesService {
       }
 
       if (disputeCase.recovery_status === 'quarantined') {
-        logger.warn('⚠️ [RECOVERIES] Case recovery is quarantined', { disputeId });
-        return null;
+        logger.warn('⚠️ [RECOVERIES] Case recovery is quarantined, but re-evaluation is allowed for new payout truth', { disputeId });
       }
 
       // Detect payouts for this user (last 30 days)
@@ -1041,11 +1530,11 @@ class RecoveriesService {
 
       // Try to match payout to this case
       for (const payout of payouts) {
-        const match = await this.matchPayoutToClaim(payout, userId, tenantId);
+        const decision = await this.matchPayoutToClaim(payout, userId, tenantId);
 
-        if (match && match.disputeId === disputeId) {
+        if (decision.reconciliation_strategy !== 'QUARANTINED' && decision.match && decision.match.disputeId === disputeId) {
           // Found match - reconcile
-          return await this.reconcilePayout(match, userId, tenantId);
+          return await this.reconcilePayout(decision.match, userId, tenantId);
         }
       }
 
