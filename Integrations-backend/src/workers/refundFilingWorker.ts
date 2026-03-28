@@ -1131,9 +1131,9 @@ class RefundFilingWorker {
               filename: doc.filename
             });
 
-            const parsedData = await documentParsingService.parseDocumentWithRetry(doc.id, sellerId, 2);
-            if (parsedData?.raw_text) {
-              rawText = parsedData.raw_text;
+            const parsingOutcome = await documentParsingService.parseDocumentWithRetry(doc.id, sellerId, 2);
+            if (parsingOutcome?.parsed_data?.raw_text) {
+              rawText = parsingOutcome.parsed_data.raw_text;
             }
           } catch (parseError: any) {
             logger.warn('[WARN] [REFUND FILING] On-demand parsing failed, skipping content check for doc', {

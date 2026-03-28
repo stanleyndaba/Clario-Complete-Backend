@@ -11,7 +11,7 @@ import cron from 'node-cron';
 import logger from '../utils/logger';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import { createTenantScopedQueryById } from '../database/tenantScopedClient';
-import documentParsingService, { ParsedDocumentData } from '../services/documentParsingService';
+import documentParsingService, { DocumentParsingOutcome, ParsedDocumentData } from '../services/documentParsingService';
 import sseHub from '../utils/sseHub';
 import workerContinuationService from '../services/workerContinuationService';
 import runtimeCapacityService from '../services/runtimeCapacityService';
@@ -398,7 +398,7 @@ export class DocumentParsingWorker {
       const documentIds = Array.from(new Set((parserJobs || []).map((job: any) => job.document_id).filter(Boolean)));
       const { data: documents, error: documentsError } = documentIds.length
         ? await createTenantScopedQueryById(tenantId, 'evidence_documents')
-            .select('id, seller_id, filename, content_type, storage_path, parsed_metadata, parser_status, parser_started_at, parser_completed_at, parser_error, parser_job_id, created_at')
+            .select('id, seller_id, filename, content_type, storage_path, raw_text, extracted, metadata, parsed_metadata, supplier_name, invoice_number, total_amount, document_date, currency, parser_status, parser_started_at, parser_completed_at, parser_error, parser_job_id, created_at')
             .in('id', documentIds)
         : { data: [] as any[], error: null as any };
 
@@ -519,7 +519,7 @@ export class DocumentParsingWorker {
       // Filter for PDFs only - PNGs and images can't be parsed by pdfExtractor
       let { data: documents, error } = await client
         .from('evidence_documents')
-        .select('id, seller_id, filename, content_type, storage_path, parsed_metadata, parser_status, parser_started_at, parser_completed_at, parser_error')
+        .select('id, seller_id, filename, content_type, storage_path, raw_text, extracted, metadata, parsed_metadata, supplier_name, invoice_number, total_amount, document_date, currency, parser_status, parser_started_at, parser_completed_at, parser_error')
         .in('parser_status', ['pending', 'processing'])
         .limit(100) // Increased from 50 to process more docs per run
         .order('created_at', { ascending: true });
@@ -591,51 +591,49 @@ export class DocumentParsingWorker {
         sellerId: document.seller_id
       });
 
-      // Update document status to processing
       await this.updateDocumentStatus(document.id, 'processing');
 
-      // Parse document with retry logic
-      const parsedData = await retryWithBackoff(async () => {
-        return await documentParsingService.parseDocumentWithRetry(
-          document.id,
-          document.seller_id,
-          3 // max retries
-        );
-      }, 2, 2000); // 2 additional retries at worker level
+      const parsingOutcome = await documentParsingService.parseDocumentWithRetry(
+        document.id,
+        document.seller_id,
+        3
+      );
 
-      if (!parsedData) {
-        throw new Error('Parsing returned no data');
+      if (parsingOutcome.parsing_strategy === 'FAILED_DURABLE') {
+        await this.logError(document.id, document.seller_id, new Error(parsingOutcome.parsing_explanation.reason));
+        await this.markDocumentFailed(document.id, parsingOutcome.parsing_explanation.reason, 'failed', parsingOutcome);
+        return { success: false, error: parsingOutcome.parsing_explanation.reason };
       }
 
-      // Store parsed data
-      await this.storeParsedData(document.id, document.seller_id, parsedData);
+      await this.storeParsedData(document.id, document.seller_id, parsingOutcome);
+      await this.updateDocumentStatus(document.id, 'completed', parsingOutcome.parsed_data.confidence_score);
 
-      // Update document status to completed
-      await this.updateDocumentStatus(document.id, 'completed', parsedData.confidence_score);
+      const parsingStatus = parsingOutcome.parsing_strategy === 'PARTIAL' ? 'partial' : 'completed';
 
       logger.info(`✅ [DOCUMENT PARSING WORKER] Successfully parsed document: ${document.id}`, {
         documentId: document.id,
-        confidence: parsedData.confidence_score,
-        extractionMethod: parsedData.extraction_method
+        confidence: parsingOutcome.parsed_data.confidence_score,
+        extractionMethod: parsingOutcome.parsed_data.extraction_method,
+        parsingStrategy: parsingOutcome.parsing_strategy
       });
 
-      // 🎯 SEND SSE EVENT FOR FRONTEND REAL-TIME LOG
       try {
         sseHub.sendEvent(document.seller_id, 'message', {
           type: 'parsing',
-          status: 'completed',
+          status: parsingStatus,
           document_id: document.id,
           filename: document.filename,
-          confidence: parsedData.confidence_score,
-          extraction_method: parsedData.extraction_method,
-          message: `Document parsed: ${document.filename || document.id}`,
+          confidence: parsingOutcome.parsed_data.confidence_score,
+          extraction_method: parsingOutcome.parsed_data.extraction_method,
+          parsing_strategy: parsingOutcome.parsing_strategy,
+          parsing_explanation: parsingOutcome.parsing_explanation,
+          message: `Document parsed (${parsingOutcome.parsing_strategy.toLowerCase()}): ${document.filename || document.id}`,
           timestamp: new Date().toISOString()
         });
       } catch (sseError: any) {
         logger.debug('SSE event failed (non-critical)', { error: sseError.message });
       }
 
-      // 🎯 AGENT 11 INTEGRATION: Log parsing event
       try {
         const agentEventLogger = (await import('../services/agentEventLogger')).default;
         const parsingStartTime = Date.now();
@@ -643,8 +641,8 @@ export class DocumentParsingWorker {
           userId: document.seller_id,
           documentId: document.id,
           success: true,
-          confidence: parsedData.confidence_score || 0,
-          extractionMethod: parsedData.extraction_method || 'unknown',
+          confidence: parsingOutcome.parsed_data.confidence_score || 0,
+          extractionMethod: parsingOutcome.parsed_data.extraction_method || 'unknown',
           duration: Date.now() - parsingStartTime
         });
       } catch (logError: any) {
@@ -653,7 +651,6 @@ export class DocumentParsingWorker {
         });
       }
 
-      // 🎯 AGENT 10 INTEGRATION: Notify when evidence is parsed
       try {
         const notificationHelper = (await import('../services/notificationHelper')).default;
         const { data: doc } = await supabaseAdmin
@@ -677,15 +674,16 @@ export class DocumentParsingWorker {
         });
       }
 
-      // 🎯 SSE: Send real-time event to frontend
       try {
         const sseHub = (await import('../utils/sseHub')).default;
         sseHub.sendEvent(document.seller_id, 'parsing', {
           type: 'parsing',
-          status: 'completed',
+          status: parsingStatus,
           document_id: document.id,
-          confidence: parsedData?.confidence_score || 0,
-          extraction_method: parsedData?.extraction_method || 'unknown',
+          confidence: parsingOutcome.parsed_data.confidence_score || 0,
+          extraction_method: parsingOutcome.parsed_data.extraction_method || 'unknown',
+          parsing_strategy: parsingOutcome.parsing_strategy,
+          parsing_explanation: parsingOutcome.parsing_explanation,
           timestamp: new Date().toISOString()
         });
         logger.debug('📡 [DOCUMENT PARSING WORKER] Sent SSE parsing completion event', {
@@ -698,14 +696,11 @@ export class DocumentParsingWorker {
         });
       }
 
-      // 🎯 TRIGGER AGENT 6: Evidence Matching
-      // Trigger matching for this user when document parsing completes
       try {
         const evidenceMatchingWorker = (await import('./evidenceMatchingWorker')).default;
         await evidenceMatchingWorker.triggerMatchingForParsedDocument(document.seller_id, tenantId);
         logger.info(`🔄 [DOCUMENT PARSING WORKER] Triggered evidence matching for user: ${document.seller_id}`);
       } catch (error: any) {
-        // Non-blocking - matching can be triggered by scheduled worker
         logger.debug('⚠️ [DOCUMENT PARSING WORKER] Failed to trigger evidence matching (non-critical)', {
           error: error.message,
           userId: document.seller_id
@@ -713,37 +708,15 @@ export class DocumentParsingWorker {
       }
 
       return { success: true };
-
     } catch (error: any) {
-      // Log error
       await this.logError(document.id, document.seller_id, error);
+      await this.markDocumentFailed(
+        document.id,
+        error.message,
+        'failed',
+        this.buildFailedDurableOutcome(document, error.message)
+      );
 
-      // Update document status to failed
-      await this.updateDocumentStatus(document.id, 'failed', undefined, error.message);
-
-      // Set parsed_metadata to a failure sentinel so the document isn't re-picked
-      // (getPendingDocuments queries for parsed_metadata IS NULL)
-      try {
-        const client = supabaseAdmin || supabase;
-        await client
-          .from('evidence_documents')
-          .update({
-            parsed_metadata: {
-              _parse_failed: true,
-              parser_status: 'failed',
-              parse_state: 'failed',
-              error: (error.message || 'Unknown error').substring(0, 500),
-              failed_at: new Date().toISOString(),
-              retry_eligible: false
-            },
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', document.id);
-      } catch (metaErr: any) {
-        logger.debug('Could not set failure sentinel on parsed_metadata', { error: metaErr.message });
-      }
-
-      // Also track in memory to prevent re-processing in same process
       if (this.failedDocIds.size >= this.MAX_FAILED_CACHE) {
         const first = this.failedDocIds.values().next().value;
         if (first) this.failedDocIds.delete(first);
@@ -755,7 +728,6 @@ export class DocumentParsingWorker {
         documentId: document.id
       });
 
-      // 🎯 AGENT 11 INTEGRATION: Log parsing failure
       try {
         const agentEventLogger = (await import('../services/agentEventLogger')).default;
         await agentEventLogger.logDocumentParsing({
@@ -789,18 +761,18 @@ export class DocumentParsingWorker {
       contentType.includes('text') ||
       filename.endsWith('.txt');
 
-    if (parsedMetadata && !parsedMetadata._parse_failed) {
+    if (parsedMetadata?.parsing_strategy === 'FAILED_DURABLE' || parsedMetadata?._parse_failed) {
+      if (parserStatus !== 'failed') {
+        await this.updateDocumentStatus(doc.id, 'failed', undefined, parsedMetadata?.parsing_explanation?.reason || parsedMetadata.error || 'Parsing failed');
+      }
+      return 'failed';
+    }
+
+    if (parsedMetadata && Object.keys(parsedMetadata).length > 0) {
       if (parserStatus !== 'completed') {
         await this.updateDocumentStatus(doc.id, 'completed', parsedMetadata.confidence_score);
       }
       return 'completed';
-    }
-
-    if (parsedMetadata?._parse_failed) {
-      if (parserStatus !== 'failed') {
-        await this.updateDocumentStatus(doc.id, 'failed', undefined, parsedMetadata.error || 'Parsing failed');
-      }
-      return 'failed';
     }
 
     if (!isParsable) {
@@ -809,6 +781,19 @@ export class DocumentParsingWorker {
     }
 
     if (!doc.storage_path) {
+      const partialOutcome = documentParsingService.createOutcomeFromPersistedHints(
+        doc,
+        'Raw file missing from storage; preserving degraded parser hints instead of dropping the document',
+        ['ingestion_preserved_hints'],
+        ['raw_file_missing']
+      );
+
+      if (partialOutcome) {
+        await this.storeParsedData(doc.id, doc.seller_id, partialOutcome);
+        await this.updateDocumentStatus(doc.id, 'completed', partialOutcome.parsed_data.confidence_score);
+        return 'completed';
+      }
+
       await this.markDocumentFailed(doc.id, 'Raw file missing from storage', 'not_parseable');
       return 'failed';
     }
@@ -835,10 +820,20 @@ export class DocumentParsingWorker {
   private async markDocumentFailed(
     documentId: string,
     errorMessage: string,
-    parseState: 'failed' | 'not_parseable' = 'failed'
+    parseState: 'failed' | 'not_parseable' = 'failed',
+    outcome?: DocumentParsingOutcome
   ): Promise<void> {
     const client = supabaseAdmin || supabase;
     const now = new Date().toISOString();
+
+    const { data: document } = await client
+      .from('evidence_documents')
+      .select('seller_id, raw_text, extracted, metadata, parsed_metadata, supplier_name, invoice_number, total_amount, document_date, currency')
+      .eq('id', documentId)
+      .maybeSingle();
+
+    const failureOutcome = outcome || this.buildFailedDurableOutcome(document, errorMessage, parseState);
+    const structuredData = this.buildStructuredParsedMetadata(failureOutcome, now);
 
     await client
       .from('evidence_documents')
@@ -849,6 +844,7 @@ export class DocumentParsingWorker {
         parsed_at: null,
         updated_at: now,
         parsed_metadata: {
+          ...structuredData,
           _parse_failed: true,
           parser_status: 'failed',
           parse_state: parseState,
@@ -859,9 +855,95 @@ export class DocumentParsingWorker {
       })
       .eq('id', documentId);
 
+    if (document?.seller_id) {
+      await this.storeParserJobResult(documentId, document.seller_id, failureOutcome, structuredData);
+    }
+
     await this.syncParserJobState(documentId, 'failed', {
-      error: errorMessage.substring(0, 500)
+      error: errorMessage.substring(0, 500),
+      result: {
+        ...structuredData,
+        _parse_failed: true,
+        parser_status: 'failed',
+        parse_state: parseState
+      }
     });
+  }
+
+  private buildFailedDurableOutcome(
+    document: any,
+    reason: string,
+    parseState: 'failed' | 'not_parseable' = 'failed'
+  ): DocumentParsingOutcome {
+    const hintedOutcome = documentParsingService.createOutcomeFromPersistedHints(
+      document,
+      reason,
+      [],
+      [parseState]
+    );
+
+    if (hintedOutcome) {
+      return {
+        parsing_strategy: 'FAILED_DURABLE',
+        parsing_explanation: {
+          ...hintedOutcome.parsing_explanation,
+          reason,
+          failed_steps: Array.from(new Set([...(hintedOutcome.parsing_explanation.failed_steps || []), parseState]))
+        },
+        parsed_data: hintedOutcome.parsed_data
+      };
+    }
+
+    return {
+      parsing_strategy: 'FAILED_DURABLE',
+      parsing_explanation: {
+        reason,
+        completed_steps: [],
+        failed_steps: [parseState],
+        preserved_outputs: []
+      },
+      parsed_data: {}
+    };
+  }
+
+  private buildStructuredParsedMetadata(
+    outcome: DocumentParsingOutcome,
+    timestamp: string
+  ): Record<string, any> {
+    const parsedData = outcome.parsed_data || {};
+    const parserStatus = outcome.parsing_strategy === 'FAILED_DURABLE'
+      ? 'failed'
+      : outcome.parsing_strategy === 'PARTIAL'
+        ? 'partial'
+        : 'completed';
+
+    return {
+      parser_status: parserStatus,
+      parsing_strategy: outcome.parsing_strategy,
+      parsing_explanation: outcome.parsing_explanation,
+      supplier_name: parsedData.supplier_name,
+      invoice_number: parsedData.invoice_number,
+      invoice_date: parsedData.invoice_date || parsedData.document_date,
+      purchase_order_number: parsedData.purchase_order_number,
+      document_date: parsedData.document_date || parsedData.invoice_date,
+      currency: parsedData.currency || 'USD',
+      total_amount: parsedData.total_amount,
+      tax_amount: parsedData.tax_amount,
+      shipping_amount: parsedData.shipping_amount,
+      payment_terms: parsedData.payment_terms,
+      line_items: parsedData.line_items || [],
+      raw_text: parsedData.raw_text,
+      extraction_method: parsedData.extraction_method || 'regex',
+      confidence_score: parsedData.confidence_score || 0.0,
+      parsed_at: outcome.parsing_strategy === 'FAILED_DURABLE' ? null : timestamp,
+      order_ids: parsedData.order_ids || [],
+      asins: parsedData.asins || [],
+      skus: parsedData.skus || [],
+      tracking_numbers: parsedData.tracking_numbers || [],
+      invoice_numbers: parsedData.invoice_numbers || [],
+      amounts: parsedData.amounts || [],
+      dates: parsedData.dates || []
+    };
   }
 
   /**
@@ -932,61 +1014,30 @@ export class DocumentParsingWorker {
   private async storeParsedData(
     documentId: string,
     sellerId: string,
-    parsedData: ParsedDocumentData
+    outcome: DocumentParsingOutcome
   ): Promise<void> {
     try {
       const client = supabaseAdmin || supabase;
+      const structuredData = this.buildStructuredParsedMetadata(outcome, new Date().toISOString());
+      const parsedData = outcome.parsed_data;
 
-      // Prepare structured JSON output including extracted arrays for frontend
-      const structuredData = {
-        parser_status: 'completed',
-        supplier_name: parsedData.supplier_name,
-        invoice_number: parsedData.invoice_number,
-        invoice_date: parsedData.invoice_date || parsedData.document_date,
-        purchase_order_number: parsedData.purchase_order_number,
-        document_date: parsedData.document_date || parsedData.invoice_date,
-        currency: parsedData.currency || 'USD',
-        total_amount: parsedData.total_amount,
-        tax_amount: parsedData.tax_amount,
-        shipping_amount: parsedData.shipping_amount,
-        payment_terms: parsedData.payment_terms,
-        line_items: parsedData.line_items || [],
-        raw_text: parsedData.raw_text,
-        extraction_method: parsedData.extraction_method || 'regex',
-        confidence_score: parsedData.confidence_score || 0.0,
-        parsed_at: new Date().toISOString(),
-        // Extracted arrays for frontend display
-        order_ids: parsedData.order_ids || [],
-        asins: parsedData.asins || [],
-        skus: parsedData.skus || [],
-        tracking_numbers: parsedData.tracking_numbers || [],
-        invoice_numbers: parsedData.invoice_numbers || [],
-        amounts: parsedData.amounts || [],
-        dates: parsedData.dates || []
-      };
-
-      // Update document with parsed metadata
       const updateData: any = {
         parsed_metadata: structuredData,
         parsed_at: structuredData.parsed_at,
         updated_at: new Date().toISOString()
       };
 
-      // Also update individual fields if they exist and are null
-      if (parsedData.supplier_name && !structuredData.supplier_name) {
+      if (parsedData.supplier_name) {
         updateData.supplier_name = parsedData.supplier_name;
       }
-      if (parsedData.invoice_number && !structuredData.invoice_number) {
+      if (parsedData.invoice_number) {
         updateData.invoice_number = parsedData.invoice_number;
       }
-      if (parsedData.purchase_order_number && !structuredData.purchase_order_number) {
+      if (parsedData.purchase_order_number) {
         updateData.purchase_order_number = parsedData.purchase_order_number;
       }
       if (parsedData.document_date || parsedData.invoice_date) {
-        const dateStr = parsedData.document_date || parsedData.invoice_date;
-        if (dateStr) {
-          updateData.document_date = dateStr;
-        }
+        updateData.document_date = parsedData.document_date || parsedData.invoice_date;
       }
       if (parsedData.currency) {
         updateData.currency = parsedData.currency;
@@ -997,8 +1048,6 @@ export class DocumentParsingWorker {
       if (parsedData.raw_text) {
         updateData.raw_text = parsedData.raw_text;
       }
-
-      // Update extracted field with line items
       if (parsedData.line_items && parsedData.line_items.length > 0) {
         updateData.extracted = {
           items: parsedData.line_items.map(item => ({
@@ -1025,12 +1074,13 @@ export class DocumentParsingWorker {
           documentId,
           supplierName: parsedData.supplier_name,
           invoiceNumber: parsedData.invoice_number,
-          lineItemCount: parsedData.line_items?.length || 0
+          lineItemCount: parsedData.line_items?.length || 0,
+          parsingStrategy: outcome.parsing_strategy
         });
       }
 
       try {
-        await this.storeParserJobResult(documentId, sellerId, structuredData, parsedData);
+        await this.storeParserJobResult(documentId, sellerId, outcome, structuredData);
       } catch (resultError: any) {
         const persistenceError = new Error(`Parser result persistence failed: ${resultError.message}`);
         persistenceError.name = 'ParserResultPersistenceError';
@@ -1047,7 +1097,6 @@ export class DocumentParsingWorker {
         result: structuredData,
         error: null
       });
-
     } catch (error: any) {
       logger.warn('⚠️ [DOCUMENT PARSING WORKER] Error storing parsed data', {
         documentId,
@@ -1062,8 +1111,8 @@ export class DocumentParsingWorker {
   private async storeParserJobResult(
     documentId: string,
     sellerId: string,
-    structuredData: any,
-    parsedData: ParsedDocumentData
+    outcome: DocumentParsingOutcome,
+    structuredData: Record<string, any>
   ): Promise<void> {
     const client = supabaseAdmin || supabase;
     const { data: document, error: documentError } = await client
@@ -1081,6 +1130,8 @@ export class DocumentParsingWorker {
     }
 
     const safeUserId = isUuid(sellerId) ? sellerId : null;
+    const parsedData = outcome.parsed_data || {};
+    const parserJobStatus = outcome.parsing_strategy === 'FAILED_DURABLE' ? 'failed' : 'completed';
 
     const { error: upsertError } = await client
       .from('parser_job_results')
@@ -1090,7 +1141,7 @@ export class DocumentParsingWorker {
         parser_job_id: document.parser_job_id || null,
         seller_id: sellerId,
         user_id: safeUserId,
-        status: 'completed',
+        status: parserJobStatus,
         supplier_name: parsedData.supplier_name,
         invoice_number: parsedData.invoice_number,
         invoice_date: parsedData.invoice_date || parsedData.document_date,
@@ -1106,7 +1157,9 @@ export class DocumentParsingWorker {
         extraction_method: parsedData.extraction_method || 'regex',
         confidence_score: parsedData.confidence_score || 0.0,
         processing_time_ms: 0,
-        error_message: null,
+        error_message: outcome.parsing_strategy === 'FAILED_DURABLE'
+          ? outcome.parsing_explanation.reason
+          : null,
         updated_at: new Date().toISOString()
       }, {
         onConflict: 'document_id',
@@ -1120,7 +1173,8 @@ export class DocumentParsingWorker {
     logger.info('🧾 [DOCUMENT PARSING WORKER] Stored parser result rail', {
       documentId,
       parserJobId: document.parser_job_id || null,
-      tenantId: document.tenant_id
+      tenantId: document.tenant_id,
+      parsingStrategy: outcome.parsing_strategy
     });
   }
 
@@ -1326,9 +1380,6 @@ export class DocumentParsingWorker {
     return await this.parseDocument(document, (document as any).tenant_id || '');
   }
 
-  /**
-   * Get document by ID
-   */
   /**
    * Get document by ID
    */

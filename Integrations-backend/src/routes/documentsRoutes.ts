@@ -15,7 +15,8 @@ function getAuthoritativeParserStatus(doc: any) {
     const parsedMetadata = doc?.parsed_metadata || {};
     const metadata = doc?.metadata || {};
 
-    if (parsedMetadata?._parse_failed) return 'failed';
+    if (parsedMetadata?._parse_failed || parsedMetadata?.parsing_strategy === 'FAILED_DURABLE') return 'failed';
+    if (parsedMetadata?.parsing_strategy === 'PARTIAL') return 'partial';
     if (parsedMetadata && Object.keys(parsedMetadata).length > 0) {
         return parsedMetadata.parser_status || 'completed';
     }
