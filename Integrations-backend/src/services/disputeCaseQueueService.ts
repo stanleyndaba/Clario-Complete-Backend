@@ -170,10 +170,15 @@ function deriveNextAction(row: any) {
   const filingStatus = normalize(row.filing_status);
   const recoveryStatus = normalize(row.recovery_status);
   const billingStatus = normalize(row.billing_status);
+  const operationalState = normalize(row.operational_state);
 
   if (BILLING_COMPLETE_STATUSES.has(billingStatus)) return 'Billing complete';
   if (recoveryStatus === 'reconciled' && billingStatus === 'pending') return 'Billing pending';
   if (recoveryStatus === 'reconciled') return 'Recovered';
+  if (operationalState === 'retry_scheduled') return 'Retry scheduled';
+  if (operationalState === 'deferred_explicit') return 'Deferred operationally';
+  if (operationalState === 'blocked_operational') return 'Dispatch blocked';
+  if (operationalState === 'failed_durable') return 'Operational failure';
   if (row.actual_payout_amount) return 'Payout detected, review reconciliation';
   if (REJECTED_STATUSES.has(status) || row.rejection_reason || row.rejection_category) return 'Review rejection';
   if (APPROVED_STATUSES.has(status)) return 'Waiting for payout';
@@ -305,6 +310,10 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       ? decisionIntelligence.filing_strategy
       : null;
     const explanationPayload = decisionIntelligence?.explanation_payload || proofSnapshot?.explanationPayload || null;
+    const operationalState = typeof decisionIntelligence?.operational_state === 'string'
+      ? decisionIntelligence.operational_state
+      : null;
+    const operationalExplanation = decisionIntelligence?.operational_explanation || null;
     const matchedDocumentCount = getMatchedDocumentCount(record, evidenceCountByCase.get(record.id) || 0);
     const requestedAmount = toMoney(record.claim_amount);
     const approvedAmount = deriveApprovedAmount(record);
@@ -338,6 +347,9 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       evidence_state: evidenceState,
       filing_strategy: filingStrategy,
       explanation_payload: explanationPayload,
+      operational_state: operationalState,
+      operational_explanation: operationalExplanation,
+      operational_updated_at: decisionIntelligence?.operational_updated_at || null,
       proof_status: proofSnapshot?.filingRecommendation || null,
       missing_requirements: Array.isArray(proofSnapshot?.missingRequirements) ? proofSnapshot.missingRequirements : [],
       manual_review_reason: Array.isArray(record.block_reasons) && record.block_reasons.length > 0

@@ -10,6 +10,11 @@ import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import { supabaseAdmin } from '../database/supabaseClient';
 import runtimeCapacityService from './runtimeCapacityService';
 import financialWorkItemService from './financialWorkItemService';
+import {
+  type OperationalExplanation,
+  type OperationalState,
+  buildOperationalDecision
+} from '../utils/operationalContinuity';
 
 function parseJsonObject(value: any): Record<string, any> {
   if (!value) return {};
@@ -57,6 +62,8 @@ export interface ReconciliationResult {
     selected_basis: string;
     confidence: number;
   };
+  operational_state?: OperationalState;
+  operational_explanation?: OperationalExplanation;
 }
 
 export interface RecoveryMatchDecision {
@@ -92,6 +99,24 @@ class RecoveriesService {
   constructor() {
     this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
     this.reconciliationThreshold = parseFloat(process.env.RECONCILIATION_THRESHOLD || '0.01');
+  }
+
+  private buildOperationalResult(
+    operationalState: OperationalState,
+    explanation: Partial<OperationalExplanation>,
+    overrides: Partial<ReconciliationResult> = {}
+  ): ReconciliationResult {
+    const decision = buildOperationalDecision(operationalState, explanation);
+    return {
+      success: false,
+      status: 'failed',
+      expectedAmount: Number(overrides.expectedAmount || 0),
+      actualAmount: Number(overrides.actualAmount || 0),
+      discrepancy: Number(overrides.discrepancy || 0),
+      ...overrides,
+      operational_state: decision.operational_state,
+      operational_explanation: decision.operational_explanation
+    };
   }
 
   private async quarantineAmbiguousRecovery(
@@ -1452,7 +1477,11 @@ class RecoveriesService {
         discrepancy: match.discrepancy,
         discrepancyType: match.discrepancyType !== 'none' ? match.discrepancyType : undefined,
         reconciliation_strategy: match.reconciliation_strategy,
-        match_explanation: match.match_explanation
+        match_explanation: match.match_explanation,
+        ...buildOperationalDecision('READY', {
+          reason: 'Recovery reconciliation completed successfully.',
+          next_action: status === 'reconciled' ? 'await_billing_lane' : 'review_discrepancy'
+        })
       };
 
     } catch (error: any) {
@@ -1468,7 +1497,11 @@ class RecoveriesService {
         discrepancy: match.discrepancy,
         error: error.message,
         reconciliation_strategy: match.reconciliation_strategy,
-        match_explanation: match.match_explanation
+        match_explanation: match.match_explanation,
+        ...buildOperationalDecision('RETRY_SCHEDULED', {
+          reason: error.message || 'Recovery reconciliation failed and should be retried.',
+          next_action: 'retry_reconciliation'
+        })
       };
     }
   }
@@ -1476,7 +1509,7 @@ class RecoveriesService {
   /**
    * Process recovery for a single approved case
    */
-  async processRecoveryForCase(disputeId: string, userId: string, tenantId?: string): Promise<ReconciliationResult | null> {
+  async processRecoveryForCase(disputeId: string, userId: string, tenantId?: string): Promise<ReconciliationResult> {
     try {
       logger.info('🔄 [RECOVERIES] Processing recovery for case', {
         disputeId,
@@ -1495,11 +1528,22 @@ class RecoveriesService {
         disputeCaseQuery = disputeCaseQuery.eq('tenant_id', tenantId);
       }
 
-      const { data: disputeCase } = await disputeCaseQuery.single();
+      const { data: disputeCase, error: disputeCaseError } = await disputeCaseQuery.maybeSingle();
+
+      if (disputeCaseError) {
+        return this.buildOperationalResult('RETRY_SCHEDULED', {
+          reason: `Failed to load dispute case for recovery processing: ${disputeCaseError.message}`,
+          retry_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+          next_action: 'retry_case_lookup'
+        });
+      }
 
       if (!disputeCase) {
         logger.warn('⚠️ [RECOVERIES] Dispute case not found', { disputeId, userId });
-        return null;
+        return this.buildOperationalResult('FAILED_DURABLE', {
+          reason: 'Dispute case no longer exists for recovery processing.',
+          next_action: 'close_or_rebuild_recovery_work_item'
+        });
       }
 
       if (disputeCase.status !== 'approved') {
@@ -1507,13 +1551,27 @@ class RecoveriesService {
           disputeId,
           status: disputeCase.status
         });
-        return null;
+        return this.buildOperationalResult('BLOCKED_OPERATIONAL', {
+          reason: `Recovery processing is blocked until the case reaches approved status (current: ${disputeCase.status}).`,
+          blocking_guard: 'case_not_approved',
+          next_action: 'wait_for_case_approval'
+        });
       }
 
       // Check if already reconciled
       if (disputeCase.recovery_status === 'reconciled') {
         logger.debug('ℹ️ [RECOVERIES] Case already reconciled', { disputeId });
-        return null;
+        return this.buildOperationalResult('BLOCKED_OPERATIONAL', {
+          reason: 'Recovery has already been reconciled for this case.',
+          blocking_guard: 'already_reconciled',
+          next_action: 'close_recovery_work_item'
+        }, {
+          recoveryId: disputeCase.recovery_id || undefined,
+          status: 'reconciled',
+          expectedAmount: Number(disputeCase.approved_amount || disputeCase.claim_amount || 0),
+          actualAmount: Number(disputeCase.actual_payout_amount || disputeCase.recovered_amount || 0),
+          discrepancy: 0
+        });
       }
 
       if (disputeCase.recovery_status === 'quarantined') {
@@ -1543,7 +1601,18 @@ class RecoveriesService {
         payoutCount: payouts.length
       });
 
-      return null;
+      const retryAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+      return this.buildOperationalResult('DEFERRED_EXPLICIT', {
+        reason: payouts.length > 0
+          ? 'Payouts were detected, but none defensibly matched this case yet.'
+          : 'No payout has been detected for this case yet.',
+        retry_at: retryAt,
+        next_action: 'wait_for_next_payout_detection'
+      }, {
+        expectedAmount: Number(disputeCase.approved_amount || disputeCase.claim_amount || 0),
+        actualAmount: 0,
+        discrepancy: 0
+      });
 
     } catch (error: any) {
       logger.error('❌ [RECOVERIES] Failed to process recovery for case', {
@@ -1551,7 +1620,11 @@ class RecoveriesService {
         userId,
         error: error.message
       });
-      return null;
+      return this.buildOperationalResult('RETRY_SCHEDULED', {
+        reason: error.message || 'Recovery processing failed unexpectedly.',
+        retry_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+        next_action: 'retry_recovery_processing'
+      });
     }
   }
 

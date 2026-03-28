@@ -149,7 +149,12 @@ class FinancialWorkItemService {
       last_execution_lane: workerName,
       last_runtime_role: process.env.RUNTIME_ROLE || 'monolith',
       lifecycle_state: 'claimed',
-      claim_count: Number(item?.payload?.claim_count || 0) + 1
+      claim_count: Number(item?.payload?.claim_count || 0) + 1,
+      operational_state: 'READY',
+      operational_explanation: {
+        reason: 'Work item was claimed by the execution lane and is ready to continue.',
+        next_action: 'process_in_worker'
+      }
     });
 
     const { data: claimed, error: claimError } = await supabaseAdmin
@@ -175,29 +180,59 @@ class FinancialWorkItemService {
 
   private async releaseStaleLocks(kind: WorkKind, tenantId?: string): Promise<void> {
     const staleBefore = new Date(Date.now() - LOCK_TIMEOUT_MS).toISOString();
-    let query = supabaseAdmin
+    const timestamp = new Date().toISOString();
+    let staleQuery = supabaseAdmin
       .from(this.getTable(kind))
-      .update({
-        status: 'pending',
-        locked_at: null,
-        locked_by: null,
-        last_error: 'stale_processing_lock_recovered',
-        next_attempt_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      })
+      .select('id, payload')
       .eq('status', 'processing')
-      .lt('locked_at', staleBefore);
+      .lt('locked_at', staleBefore)
+      .limit(200);
 
     if (tenantId) {
-      query = query.eq('tenant_id', tenantId);
+      staleQuery = staleQuery.eq('tenant_id', tenantId);
     }
 
-    const { error } = await query;
-    if (error) {
-      logger.warn(`[FINANCIAL WORK] Failed to release stale ${kind} locks`, {
+    const { data: staleItems, error: staleItemsError } = await staleQuery;
+
+    if (staleItemsError) {
+      logger.warn(`[FINANCIAL WORK] Failed to inspect stale ${kind} locks`, {
         tenantId,
-        error: error.message
+        error: staleItemsError.message
       });
+      return;
+    }
+
+    for (const item of staleItems || []) {
+      const { error } = await supabaseAdmin
+        .from(this.getTable(kind))
+        .update({
+          status: 'pending',
+          locked_at: null,
+          locked_by: null,
+          last_error: 'stale_processing_lock_recovered',
+          next_attempt_at: timestamp,
+          updated_at: timestamp,
+          payload: this.mergePayload(item?.payload, {
+            lifecycle_state: 'retry_scheduled',
+            operational_state: 'RETRY_SCHEDULED',
+            operational_explanation: {
+              reason: 'A stale processing lock was recovered and the work item was rescheduled.',
+              retry_at: timestamp,
+              blocking_guard: 'stale_processing_lock',
+              next_action: 'reclaim_in_execution_lane'
+            }
+          })
+        })
+        .eq('id', item.id)
+        .eq('status', 'processing');
+
+      if (error) {
+        logger.warn(`[FINANCIAL WORK] Failed to release stale ${kind} lock`, {
+          tenantId,
+          itemId: item.id,
+          error: error.message
+        });
+      }
     }
   }
 
@@ -262,12 +297,23 @@ class FinancialWorkItemService {
     }
   }
 
-  async fail(kind: WorkKind, item: any, reason: string, metadata?: Record<string, any>): Promise<'pending' | 'failed_retry_exhausted'> {
+  async fail(
+    kind: WorkKind,
+    item: any,
+    reason: string,
+    metadata?: Record<string, any>,
+    options?: {
+      forceTerminal?: boolean;
+      nextAttemptAt?: string | null;
+    }
+  ): Promise<'pending' | 'failed_retry_exhausted'> {
     const attempts = Number(item?.attempts || 0) + 1;
     const maxAttempts = Number(item?.max_attempts || 5);
-    const terminal = attempts >= maxAttempts;
+    const terminal = Boolean(options?.forceTerminal) || attempts >= maxAttempts;
     const status: 'pending' | 'failed_retry_exhausted' = terminal ? TERMINAL_FAILURE_STATUS : 'pending';
-    const nextAttemptAt = terminal ? item?.next_attempt_at || new Date().toISOString() : new Date(Date.now() + buildBackoffDelayMs(attempts)).toISOString();
+    const nextAttemptAt = terminal
+      ? options?.nextAttemptAt || item?.next_attempt_at || new Date().toISOString()
+      : options?.nextAttemptAt || new Date(Date.now() + buildBackoffDelayMs(attempts)).toISOString();
     const timestamp = new Date().toISOString();
 
     const { error } = await supabaseAdmin

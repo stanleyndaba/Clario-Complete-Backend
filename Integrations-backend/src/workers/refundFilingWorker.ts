@@ -33,6 +33,11 @@ import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import runtimeCapacityService from '../services/runtimeCapacityService';
 import operationalControlService from '../services/operationalControlService';
 import financialWorkItemService from '../services/financialWorkItemService';
+import {
+  type OperationalExplanation,
+  type OperationalState,
+  buildOperationalDecision
+} from '../utils/operationalContinuity';
 
 
 /**
@@ -352,6 +357,8 @@ class RefundFilingWorker {
     filingStatus?: string;
     status?: string;
     lastError?: string | null;
+    operationalState?: OperationalState;
+    operationalExplanation?: Partial<OperationalExplanation> | null;
   }): Promise<void> {
     const {
       tenantId,
@@ -359,7 +366,9 @@ class RefundFilingWorker {
       decision,
       filingStatus,
       status,
-      lastError
+      lastError,
+      operationalState,
+      operationalExplanation
     } = params;
 
     const timestamp = new Date().toISOString();
@@ -367,6 +376,9 @@ class RefundFilingWorker {
       ? disputeCase.evidence_attachments
       : {};
     const decisionIntelligence = (evidenceAttachments as any)?.decision_intelligence || {};
+    const operationalDecision = operationalState
+      ? buildOperationalDecision(operationalState, operationalExplanation)
+      : null;
     const updatedProofSnapshot = this.applyDecisionToProofSnapshot(
       decision.proofSnapshot,
       decision.filingStrategy,
@@ -386,7 +398,10 @@ class RefundFilingWorker {
           explanation_payload: decision.explanationPayload,
           proof_snapshot: updatedProofSnapshot,
           final_supported_amount: Number(decision.amountToFile || disputeCase.claim_amount || 0),
-          evaluated_at: timestamp
+          evaluated_at: timestamp,
+          operational_state: operationalDecision?.operational_state || decisionIntelligence?.operational_state || null,
+          operational_explanation: operationalDecision?.operational_explanation || decisionIntelligence?.operational_explanation || null,
+          operational_updated_at: operationalDecision ? timestamp : (decisionIntelligence?.operational_updated_at || null)
         }
       },
       updated_at: timestamp
@@ -408,6 +423,66 @@ class RefundFilingWorker {
     if (error) {
       throw new Error(`Failed to persist filing decision: ${error.message}`);
     }
+  }
+
+  private async markTenantOperationalDeferral(params: {
+    tenantId: string;
+    reason: string;
+    blockingGuard: string;
+    nextAction: string;
+    retryAt?: string | null;
+    limit?: number;
+  }): Promise<number> {
+    const { tenantId, reason, blockingGuard, nextAction, retryAt, limit = 100 } = params;
+    const { data: cases, error } = await createTenantScopedQueryById(tenantId, 'dispute_cases')
+      .select('id, claim_amount, evidence_attachments, filing_status')
+      .in('filing_status', ['pending', 'retrying'])
+      .order('updated_at', { ascending: true })
+      .limit(limit);
+
+    if (error || !cases?.length) {
+      if (error) {
+        logger.warn('[REFUND FILING] Failed to mark tenant operational deferral state', {
+          tenantId,
+          reason,
+          error: error.message
+        });
+      }
+      return 0;
+    }
+
+    const timestamp = new Date().toISOString();
+    const operationalDecision = buildOperationalDecision('DEFERRED_EXPLICIT', {
+      reason,
+      retry_at: retryAt || undefined,
+      blocking_guard: blockingGuard,
+      next_action: nextAction
+    });
+
+    for (const disputeCase of cases) {
+      const evidenceAttachments = disputeCase?.evidence_attachments && typeof disputeCase.evidence_attachments === 'object'
+        ? disputeCase.evidence_attachments
+        : {};
+      const decisionIntelligence = (evidenceAttachments as any)?.decision_intelligence || {};
+
+      await createTenantScopedQueryById(tenantId, 'dispute_cases')
+        .update({
+          last_error: reason,
+          updated_at: timestamp,
+          evidence_attachments: {
+            ...evidenceAttachments,
+            decision_intelligence: {
+              ...decisionIntelligence,
+              operational_state: operationalDecision.operational_state,
+              operational_explanation: operationalDecision.operational_explanation,
+              operational_updated_at: timestamp
+            }
+          }
+        })
+        .eq('id', disputeCase.id);
+    }
+
+    return cases.length;
   }
 
   async getSubmissionQueueMetrics(): Promise<SubmissionQueueMetrics> {
@@ -602,6 +677,7 @@ class RefundFilingWorker {
     // Schedule filing job (every 5 minutes)
     this.cronJob = cron.schedule(this.schedule, async () => {
       if (this.isRunning) {
+        runtimeCapacityService.recordWorkerSkip(this.workerName, 'previous_filing_run_still_in_progress');
         logger.debug('⏸️ [REFUND FILING] Previous run still in progress, skipping');
         return;
       }
@@ -619,6 +695,7 @@ class RefundFilingWorker {
     // Schedule status polling job (every 10 minutes)
     this.statusPollingJob = cron.schedule(this.statusPollingSchedule, async () => {
       if (this.isRunning) {
+        runtimeCapacityService.recordWorkerSkip(`${this.workerName}:status-polling`, 'filing_run_or_polling_still_in_progress');
         logger.debug('⏸️ [REFUND FILING] Previous run still in progress, skipping status polling');
         return;
       }
@@ -1594,13 +1671,24 @@ class RefundFilingWorker {
 
     if (queueGate.paused) {
       const breakerReason = `auto_filing_paused:${queueGate.reason}`;
+      const retryAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      const markedCount = await this.markTenantOperationalDeferral({
+        tenantId,
+        reason: `Automatic filing is paused because the dispatch queue cannot safely accept more work (${queueGate.reason}).`,
+        blockingGuard: 'filing_queue_gate',
+        nextAction: 'wait_for_queue_capacity_and_resume_dispatch',
+        retryAt
+      });
       runtimeCapacityService.setCircuitBreaker('filing-auto-dispatch', 'open', breakerReason);
       logger.warn('[REFUND FILING] Auto filing paused for tenant due to queue pressure or infrastructure state', {
         tenantId,
         reason: queueGate.reason,
-        metrics: queueGate.metrics
+        metrics: queueGate.metrics,
+        markedCount,
+        retryAt
       });
       stats.errors.push(breakerReason);
+      stats.skipped += markedCount;
       return stats;
     }
 
@@ -1611,11 +1699,22 @@ class RefundFilingWorker {
     const remainingHourlyQuota = RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR - filingsLastHour;
 
     if (remainingHourlyQuota <= 0) {
+      const retryAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      const markedCount = await this.markTenantOperationalDeferral({
+        tenantId,
+        reason: `Tenant hourly filing quota is exhausted (${filingsLastHour}/${RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR}).`,
+        blockingGuard: 'tenant_hourly_filing_quota',
+        nextAction: 'resume_after_hourly_quota_reset',
+        retryAt
+      });
       logger.info(' [REFUND FILING] Hourly quota reached for tenant, skipping', {
         tenantId,
         filingsLastHour,
-        maxPerHour: RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR
+        maxPerHour: RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_HOUR,
+        markedCount,
+        retryAt
       });
+      stats.skipped += markedCount;
       return stats;
     }
 
@@ -2223,12 +2322,14 @@ class RefundFilingWorker {
         // PER-SELLER DAILY LIMIT: operational throttle only after the final filing strategy is known.
         const sellerFilingsToday = await this.getFilingsInLastDayForSeller(disputeCase.seller_id, tenantId);
         if (sellerFilingsToday >= RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_SELLER_PER_DAY) {
+          const retryAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
           logger.info('[DEFER] [REFUND FILING] Seller daily limit reached after decisioning', {
             disputeId: disputeCase.id,
             sellerId: disputeCase.seller_id,
             filedToday: sellerFilingsToday,
             maxPerSellerPerDay: RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_SELLER_PER_DAY,
-            filingStrategy: decisionState.filingStrategy
+            filingStrategy: decisionState.filingStrategy,
+            retryAt
           });
           stats.skipped++;
           await this.persistFilingDecision({
@@ -2236,7 +2337,14 @@ class RefundFilingWorker {
             disputeCase,
             decision: decisionState,
             filingStatus: disputeCase.filing_status === 'retrying' ? 'retrying' : 'pending',
-            lastError: `Seller daily filing cap reached (${sellerFilingsToday}/${RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_SELLER_PER_DAY}); dispatch deferred after ${decisionState.filingStrategy} decision.`
+            lastError: `Seller daily filing cap reached (${sellerFilingsToday}/${RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_SELLER_PER_DAY}); dispatch deferred after ${decisionState.filingStrategy} decision.`,
+            operationalState: 'DEFERRED_EXPLICIT',
+            operationalExplanation: {
+              reason: `Seller daily filing cap reached (${sellerFilingsToday}/${RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_SELLER_PER_DAY}).`,
+              retry_at: retryAt,
+              blocking_guard: 'seller_daily_filing_cap',
+              next_action: 'resume_after_seller_daily_cap_resets'
+            }
           });
           continue;
         }
@@ -2248,7 +2356,12 @@ class RefundFilingWorker {
           filingStatus: disputeCase.filing_status === 'retrying' ? 'retrying' : 'pending',
           lastError: decisionState.filingStrategy === 'SMART'
             ? decisionState.explanationPayload.justification
-            : null
+            : null,
+          operationalState: 'READY',
+          operationalExplanation: {
+            reason: 'Filing decision is complete and the case is ready for dispatch.',
+            next_action: 'dispatch_submission'
+          }
         });
         const finalProofSnapshot = this.applyDecisionToProofSnapshot(
           decisionState.proofSnapshot,
@@ -2323,6 +2436,21 @@ class RefundFilingWorker {
             } else {
               runtimeCapacityService.setCircuitBreaker('filing-auto-dispatch', 'open', reason);
               stats.skipped++;
+              const retryAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+              await this.persistFilingDecision({
+                tenantId,
+                disputeCase,
+                decision: decisionState,
+                filingStatus: 'retrying',
+                lastError: `Scheduled filing fallback blocked: ${reason}`,
+                operationalState: 'RETRY_SCHEDULED',
+                operationalExplanation: {
+                  reason: `Scheduled filing fallback could not dispatch because ${reason}.`,
+                  retry_at: retryAt,
+                  blocking_guard: 'queue_infrastructure_unavailable',
+                  next_action: 'retry_direct_or_queue_dispatch'
+                }
+              });
               await this.logError(disputeCase.id, disputeCase.seller_id, `Scheduled filing fallback blocked: ${reason}`);
             }
             continue;
@@ -2352,6 +2480,21 @@ class RefundFilingWorker {
           });
           stats.failed++;
           stats.errors.push(`Queue Failure ${disputeCase.id}: ${queueError.message}`);
+          const retryAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+          await this.persistFilingDecision({
+            tenantId,
+            disputeCase,
+            decision: decisionState,
+            filingStatus: 'retrying',
+            lastError: `Queue enqueue failed: ${queueError.message}`,
+            operationalState: 'RETRY_SCHEDULED',
+            operationalExplanation: {
+              reason: `Queue enqueue failed: ${queueError.message}`,
+              retry_at: retryAt,
+              blocking_guard: 'submission_queue_enqueue_failed',
+              next_action: 'retry_queue_dispatch'
+            }
+          });
           await this.logError(disputeCase.id, disputeCase.seller_id, `Queue enqueue failed: ${queueError.message}`);
         }
       } catch (error: any) {
@@ -2819,6 +2962,21 @@ class RefundFilingWorker {
   ): Promise<void> {
     const maxRetries = 3;
     const newRetryCount = currentRetryCount + 1;
+    const now = new Date().toISOString();
+    const retryAt = newRetryCount < maxRetries
+      ? new Date(Date.now() + Math.min(60, 5 * Math.pow(2, currentRetryCount)) * 60 * 1000).toISOString()
+      : null;
+
+    const { data: disputeCase } = await supabaseAdmin
+      .from('dispute_cases')
+      .select('id, evidence_attachments')
+      .eq('id', disputeId)
+      .maybeSingle();
+
+    const evidenceAttachments = disputeCase?.evidence_attachments && typeof disputeCase.evidence_attachments === 'object'
+      ? disputeCase.evidence_attachments
+      : {};
+    const decisionIntelligence = (evidenceAttachments as any)?.decision_intelligence || {};
 
     if (newRetryCount < maxRetries) {
       // Mark for retry
@@ -2828,7 +2986,21 @@ class RefundFilingWorker {
           filing_status: 'retrying',
           retry_count: newRetryCount,
           last_error: result.error_message || 'Filing failed',
-          updated_at: new Date().toISOString()
+          updated_at: now,
+          evidence_attachments: {
+            ...evidenceAttachments,
+            decision_intelligence: {
+              ...decisionIntelligence,
+              operational_state: 'RETRY_SCHEDULED',
+              operational_explanation: {
+                reason: result.error_message || 'Filing failed and has been scheduled for retry.',
+                retry_at: retryAt || undefined,
+                blocking_guard: 'filing_submission_error',
+                next_action: 'retry_filing_submission'
+              },
+              operational_updated_at: now
+            }
+          }
         })
         .eq('id', disputeId);
 
@@ -2845,7 +3017,20 @@ class RefundFilingWorker {
           filing_status: 'failed',
           retry_count: newRetryCount,
           last_error: result.error_message || 'Filing failed',
-          updated_at: new Date().toISOString()
+          updated_at: now,
+          evidence_attachments: {
+            ...evidenceAttachments,
+            decision_intelligence: {
+              ...decisionIntelligence,
+              operational_state: 'FAILED_DURABLE',
+              operational_explanation: {
+                reason: result.error_message || 'Filing failed and exhausted all retries.',
+                blocking_guard: 'filing_retry_exhausted',
+                next_action: 'manual_operator_intervention'
+              },
+              operational_updated_at: now
+            }
+          }
         })
         .eq('id', disputeId);
 
@@ -3277,7 +3462,7 @@ class RefundFilingWorker {
       
       const { data: ghosts, error } = await supabaseAdmin
         .from('dispute_cases')
-        .select('id, seller_id, idempotency_key')
+        .select('id, seller_id, idempotency_key, evidence_attachments')
         .eq('filing_status', 'submitting')
         .lt('updated_at', fifteenMinutesAgo);
 
@@ -3293,9 +3478,31 @@ class RefundFilingWorker {
         } else {
            // No key? Safely revert to pending so it can be re-processed fresh
            logger.warn(`⚠️ [GHOST HUNT] No idempotency key for ghost ${ghost.id}. Reverting to pending.`);
+           const retryAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+           const evidenceAttachments = ghost?.evidence_attachments && typeof ghost.evidence_attachments === 'object'
+             ? ghost.evidence_attachments
+             : {};
+           const decisionIntelligence = (evidenceAttachments as any)?.decision_intelligence || {};
            await supabaseAdmin
              .from('dispute_cases')
-             .update({ filing_status: 'pending', updated_at: new Date().toISOString() })
+             .update({
+               filing_status: 'pending',
+               updated_at: new Date().toISOString(),
+               evidence_attachments: {
+                 ...evidenceAttachments,
+                 decision_intelligence: {
+                   ...decisionIntelligence,
+                   operational_state: 'RETRY_SCHEDULED',
+                   operational_explanation: {
+                     reason: 'Submission was stranded in submitting without an idempotency key and was safely reset for a clean retry.',
+                     retry_at: retryAt,
+                     blocking_guard: 'ghost_submission_without_idempotency_key',
+                     next_action: 'retry_clean_submission'
+                   },
+                   operational_updated_at: new Date().toISOString()
+                 }
+               }
+             })
              .eq('id', ghost.id);
         }
       }
@@ -3308,4 +3515,3 @@ class RefundFilingWorker {
 // Export singleton instance
 const refundFilingWorker = new RefundFilingWorker();
 export default refundFilingWorker;
-

@@ -15,6 +15,7 @@ import documentParsingService, { DocumentParsingOutcome, ParsedDocumentData } fr
 import sseHub from '../utils/sseHub';
 import workerContinuationService from '../services/workerContinuationService';
 import runtimeCapacityService from '../services/runtimeCapacityService';
+import { buildOperationalDecision } from '../utils/operationalContinuity';
 
 function isUuid(value: string | null | undefined): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
@@ -807,6 +808,12 @@ export class DocumentParsingWorker {
 
     if (parserStatus === 'retrying') {
       await this.updateDocumentStatus(doc.id, 'pending');
+      await this.syncParserJobState(doc.id, 'pending', {
+        result: buildOperationalDecision('RETRY_SCHEDULED', {
+          reason: 'Parser work was moved back to pending so the next worker pass can resume deterministically.',
+          next_action: 'resume_parser_execution'
+        })
+      });
       return 'pending';
     }
 
@@ -916,11 +923,28 @@ export class DocumentParsingWorker {
       : outcome.parsing_strategy === 'PARTIAL'
         ? 'partial'
         : 'completed';
+    const operationalDecision = outcome.parsing_strategy === 'FAILED_DURABLE'
+      ? buildOperationalDecision('FAILED_DURABLE', {
+          reason: outcome.parsing_explanation.reason,
+          blocking_guard: 'parser_runtime_terminal_failure',
+          next_action: 'replace_or_reparse_document'
+        })
+      : outcome.parsing_strategy === 'PARTIAL'
+        ? buildOperationalDecision('READY', {
+            reason: 'Parsing preserved usable partial outputs for downstream matching.',
+            next_action: 'continue_with_partial_parser_truth'
+          })
+        : buildOperationalDecision('READY', {
+            reason: 'Parsing completed successfully.',
+            next_action: 'continue_to_matching'
+          });
 
     return {
       parser_status: parserStatus,
       parsing_strategy: outcome.parsing_strategy,
       parsing_explanation: outcome.parsing_explanation,
+      operational_state: operationalDecision.operational_state,
+      operational_explanation: operationalDecision.operational_explanation,
       supplier_name: parsedData.supplier_name,
       invoice_number: parsedData.invoice_number,
       invoice_date: parsedData.invoice_date || parsedData.document_date,
@@ -1414,4 +1438,3 @@ export class DocumentParsingWorker {
 const documentParsingWorker = new DocumentParsingWorker();
 
 export default documentParsingWorker;
-

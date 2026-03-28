@@ -115,6 +115,13 @@ class RecoveriesWorker {
     return [...tenants.slice(offset), ...tenants.slice(0, offset)];
   }
 
+  private getDelayMsFromIso(retryAt?: string | null, fallbackMs: number = 30 * 60 * 1000): number {
+    if (!retryAt) return fallbackMs;
+    const target = Date.parse(retryAt);
+    if (Number.isNaN(target)) return fallbackMs;
+    return Math.max(60 * 1000, target - Date.now());
+  }
+
   private async getRecoveryEligibleTenants(): Promise<Array<{ id: string; name?: string; status?: string }>> {
     const [activeTenantsResult, pendingWorkResult, approvedCasesResult] = await Promise.all([
       supabaseAdmin
@@ -713,7 +720,7 @@ class RecoveriesWorker {
     return stats;
   }
 
-  private async processRecoveryWorkItem(item: any): Promise<'completed' | 'discrepancy' | 'deferred' | 'quarantined' | 'failed'> {
+  private async processRecoveryWorkItem(item: any): Promise<'completed' | 'discrepancy' | 'deferred' | 'quarantined' | 'failed' | 'blocked'> {
     try {
       const result = await recoveriesService.processRecoveryForCase(item.dispute_case_id, item.user_id, item.tenant_id);
 
@@ -723,7 +730,12 @@ class RecoveriesWorker {
           lifecycle_state: 'completed',
           status: result.status,
           recovery_id: result.recoveryId || item.payload?.recovery_id || null,
-          completed_at: new Date().toISOString()
+          completed_at: new Date().toISOString(),
+          operational_state: result.operational_state || 'READY',
+          operational_explanation: result.operational_explanation || {
+            reason: 'Recovery work completed successfully.',
+            next_action: result.status === 'reconciled' ? 'await_billing_lane' : 'review_discrepancy'
+          }
           })
         });
         await this.emitRecoveryEvent('recovery.completed', item, {
@@ -731,6 +743,112 @@ class RecoveriesWorker {
           recovery_id: result.recoveryId || item.payload?.recovery_id || null
         });
         return result.status === 'discrepancy' ? 'discrepancy' : 'completed';
+      }
+
+      if (result?.operational_state === 'BLOCKED_OPERATIONAL') {
+        await financialWorkItemService.complete('recovery', item.id, {
+          ...this.buildExecutionMetadata(item, {
+            lifecycle_state: 'blocked_operational',
+            status: result.status,
+            operational_state: result.operational_state,
+            operational_explanation: result.operational_explanation,
+            completed_at: new Date().toISOString()
+          })
+        });
+        await this.emitRecoveryEvent('recovery.blocked_operational', item, {
+          status: result.status,
+          operational_state: result.operational_state,
+          operational_explanation: result.operational_explanation,
+          reason: result.operational_explanation?.reason || result.error || 'blocked_operational'
+        });
+        return 'blocked';
+      }
+
+      if (result?.operational_state === 'DEFERRED_EXPLICIT') {
+        const retryAt = result.operational_explanation?.retry_at || new Date(Date.now() + 30 * 60 * 1000).toISOString();
+        await financialWorkItemService.defer(
+          'recovery',
+          item.id,
+          result.operational_explanation?.reason || 'recovery_deferred',
+          this.getDelayMsFromIso(retryAt),
+          {
+            ...this.buildExecutionMetadata(item, {
+              lifecycle_state: 'deferred',
+              defer_count: Number(item?.payload?.defer_count || 0) + 1,
+              deferred_reason: result.operational_explanation?.reason || 'payout_not_found_yet',
+              last_deferred_reason: result.operational_explanation?.reason || 'payout_not_found_yet',
+              next_attempt_at: retryAt,
+              operational_state: result.operational_state,
+              operational_explanation: result.operational_explanation
+            })
+          }
+        );
+        await this.emitRecoveryEvent('recovery.work_deferred', item, {
+          status: 'pending',
+          reason: result.operational_explanation?.reason || 'payout_not_found_yet',
+          defer_count: Number(item?.payload?.defer_count || 0) + 1,
+          next_attempt_at: retryAt,
+          operational_state: result.operational_state,
+          operational_explanation: result.operational_explanation
+        });
+        return 'deferred';
+      }
+
+      if (result?.operational_state === 'RETRY_SCHEDULED') {
+        const terminalState = await financialWorkItemService.fail(
+          'recovery',
+          item,
+          result.operational_explanation?.reason || result.error || 'recovery_retry_scheduled',
+          {
+            ...this.buildExecutionMetadata(item, {
+              lifecycle_state: 'retry_scheduled',
+              failed_reason: result.operational_explanation?.reason || result.error || 'recovery_retry_scheduled',
+              operational_state: result.operational_state,
+              operational_explanation: result.operational_explanation
+            })
+          },
+          {
+            nextAttemptAt: result.operational_explanation?.retry_at || null
+          }
+        );
+        await this.emitRecoveryEvent(
+          terminalState === 'failed_retry_exhausted' ? 'recovery.failed_retry_exhausted' : 'recovery.retry_scheduled',
+          item,
+          {
+            status: terminalState,
+            reason: result.operational_explanation?.reason || result.error || 'recovery_retry_scheduled',
+            retry_at: result.operational_explanation?.retry_at || null,
+            operational_state: result.operational_state,
+            operational_explanation: result.operational_explanation
+          }
+        );
+        return terminalState === 'failed_retry_exhausted' ? 'failed' : 'deferred';
+      }
+
+      if (result?.operational_state === 'FAILED_DURABLE') {
+        await financialWorkItemService.fail(
+          'recovery',
+          item,
+          result.operational_explanation?.reason || result.error || 'recovery_failed_durable',
+          {
+            ...this.buildExecutionMetadata(item, {
+              lifecycle_state: 'failed_durable',
+              failed_reason: result.operational_explanation?.reason || result.error || 'recovery_failed_durable',
+              operational_state: result.operational_state,
+              operational_explanation: result.operational_explanation
+            })
+          },
+          {
+            forceTerminal: true
+          }
+        );
+        await this.emitRecoveryEvent('recovery.failed_durable', item, {
+          status: 'failed_retry_exhausted',
+          reason: result.operational_explanation?.reason || result.error || 'recovery_failed_durable',
+          operational_state: result.operational_state,
+          operational_explanation: result.operational_explanation
+        });
+        return 'failed';
       }
 
       const { data: disputeCase } = await supabaseAdmin
@@ -762,14 +880,26 @@ class RecoveriesWorker {
         defer_count: Number(item?.payload?.defer_count || 0) + 1,
         deferred_reason: 'payout_not_found_yet',
         last_deferred_reason: 'payout_not_found_yet',
-        next_attempt_at: nextAttemptAt
+        next_attempt_at: nextAttemptAt,
+        operational_state: 'DEFERRED_EXPLICIT',
+        operational_explanation: {
+          reason: 'Recovery work was deferred because no payout was found yet.',
+          retry_at: nextAttemptAt,
+          next_action: 'wait_for_next_payout_detection'
+        }
         })
       });
       await this.emitRecoveryEvent('recovery.work_deferred', item, {
         status: 'pending',
         reason: 'payout_not_found_yet',
         defer_count: Number(item?.payload?.defer_count || 0) + 1,
-        next_attempt_at: nextAttemptAt
+        next_attempt_at: nextAttemptAt,
+        operational_state: 'DEFERRED_EXPLICIT',
+        operational_explanation: {
+          reason: 'Recovery work was deferred because no payout was found yet.',
+          retry_at: nextAttemptAt,
+          next_action: 'wait_for_next_payout_detection'
+        }
       });
       return 'deferred';
     } catch (error: any) {
@@ -779,7 +909,18 @@ class RecoveriesWorker {
       const terminalState = await financialWorkItemService.fail('recovery', item, error.message, {
         ...this.buildExecutionMetadata(item, {
         lifecycle_state: predictedTerminalState === 'failed_retry_exhausted' ? 'failed_retry_exhausted' : 'failed',
-        failed_reason: error.message
+        failed_reason: error.message,
+        operational_state: predictedTerminalState === 'failed_retry_exhausted' ? 'FAILED_DURABLE' : 'RETRY_SCHEDULED',
+        operational_explanation: predictedTerminalState === 'failed_retry_exhausted'
+          ? {
+              reason: error.message,
+              blocking_guard: 'recovery_retry_exhausted',
+              next_action: 'manual_operator_intervention'
+            }
+          : {
+              reason: error.message,
+              next_action: 'retry_recovery_processing'
+            }
         })
       });
       await this.emitRecoveryEvent(
