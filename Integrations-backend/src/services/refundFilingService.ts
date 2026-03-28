@@ -84,7 +84,7 @@ interface AttachmentPack {
 }
 
 type ClaimAttachmentProfile = {
-    key: 'inbound' | 'fc_damage' | 'refund_return' | 'generic';
+    key: 'inbound' | 'fc_damage' | 'refund_return' | 'generic' | 'transfer_loss' | 'warehouse_damage' | 'fee_overcharge' | 'missing_return' | 'reimbursement_missing';
     requiredCategories: string[][];
 };
 
@@ -134,6 +134,70 @@ class RefundFilingService {
 
     private resolveClaimAttachmentProfile(claimType: string): ClaimAttachmentProfile {
         const normalized = (claimType || '').toLowerCase();
+
+        if (
+            normalized.includes('fee') ||
+            normalized.includes('overcharge') ||
+            normalized.includes('dimension') ||
+            normalized.includes('weight') ||
+            normalized.includes('storage')
+        ) {
+            return {
+                key: 'fee_overcharge',
+                requiredCategories: [
+                    ['invoice', 'inventory', 'reference']
+                ]
+            };
+        }
+
+        if (
+            normalized.includes('return') ||
+            normalized.includes('refund')
+        ) {
+            return {
+                key: 'missing_return',
+                requiredCategories: [
+                    ['invoice', 'purchase_order'],
+                    ['reference']
+                ]
+            };
+        }
+
+        if (
+            normalized.includes('reimbursement') ||
+            normalized.includes('adjustment')
+        ) {
+            return {
+                key: 'reimbursement_missing',
+                requiredCategories: [
+                    ['inventory', 'reference']
+                ]
+            };
+        }
+
+        if (normalized.includes('transfer')) {
+            return {
+                key: 'transfer_loss',
+                requiredCategories: [
+                    ['invoice', 'purchase_order', 'inventory'],
+                    ['shipping', 'reference']
+                ]
+            };
+        }
+
+        if (
+            normalized.includes('warehouse') ||
+            normalized.includes('damage') ||
+            normalized.includes('fulfillment') ||
+            normalized.includes('fc_')
+        ) {
+            return {
+                key: 'warehouse_damage',
+                requiredCategories: [
+                    ['invoice', 'purchase_order', 'inventory']
+                ]
+            };
+        }
 
         if (
             normalized.includes('inbound') ||
@@ -274,7 +338,10 @@ class RefundFilingService {
 
     private async buildAttachmentPack(
         evidenceDocuments: EvidenceDocumentRecord[],
-        claimType: string
+        claimType: string,
+        options?: {
+            allowPartial?: boolean;
+        }
     ): Promise<AttachmentPack> {
         const profile = this.resolveClaimAttachmentProfile(claimType);
         const attachments: SubmissionAttachment[] = [];
@@ -308,7 +375,7 @@ class RefundFilingService {
             !attachments.some((attachment) => group.some((category) => attachment.categories.includes(category)))
         );
 
-        if (missingGroups.length > 0) {
+        if (missingGroups.length > 0 && !options?.allowPartial) {
             const missing = missingGroups.map((group) => group.join('|')).join(', ');
             throw new Error(`Submission blocked: missing required attachment categories for ${profile.key}: ${missing}`);
         }
@@ -431,7 +498,10 @@ class RefundFilingService {
 
             // Get evidence documents
             const evidenceDocuments = await this.getEvidenceDocuments(request.evidence_document_ids, request.user_id);
-            const attachmentPack = await this.buildAttachmentPack(evidenceDocuments, request.claim_type);
+            const filingStrategy = String(request.metadata?.filing_strategy || '').toUpperCase();
+            const attachmentPack = await this.buildAttachmentPack(evidenceDocuments, request.claim_type, {
+                allowPartial: filingStrategy === 'SMART'
+            });
 
             // Prepare payload for Python API
             const context = {
@@ -450,6 +520,10 @@ class RefundFilingService {
             };
 
             const brief = briefGeneratorService.generateBrief(context);
+            const explanationPayload = request.metadata?.explanation_payload || null;
+            const explanationSuffix = explanationPayload
+                ? `\n\nDecision note:\n${explanationPayload.justification}${Array.isArray(explanationPayload.missing_fields) && explanationPayload.missing_fields.length > 0 ? `\nMissing fields: ${explanationPayload.missing_fields.join(', ')}` : ''}${Array.isArray(explanationPayload.assumptions) && explanationPayload.assumptions.length > 0 ? `\nAssumptions: ${explanationPayload.assumptions.join('; ')}` : ''}`
+                : '';
 
             const payload = {
                 dispute_id: request.dispute_id,
@@ -465,7 +539,7 @@ class RefundFilingService {
                 attachment_manifest: attachmentPack.manifest,
                 confidence_score: request.confidence_score,
                 subject: brief.subject,
-                body: brief.body,
+                body: `${brief.body}${explanationSuffix}`,
                 policy_cited: brief.policyCited,
                 metadata: request.metadata || {}
             };

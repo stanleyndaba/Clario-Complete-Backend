@@ -1125,7 +1125,7 @@ class EvidenceMatchingService {
       return 'auto_submit';
     }
 
-    if (proofSnapshot.filingRecommendation === 'manual_review') {
+    if (proofSnapshot.filingRecommendation === 'smart_filing') {
       return 'smart_prompt';
     }
 
@@ -1146,7 +1146,11 @@ class EvidenceMatchingService {
     proofSnapshot?: ProofSnapshot | null
   ): Promise<void> {
     const evidence = detectionResult?.evidence || {};
-    const packetKind = proofSnapshot?.filingRecommendation === 'filing_ready' ? 'filing_ready' : 'manual_review';
+    const packetKind = proofSnapshot?.filingRecommendation === 'filing_ready'
+      ? 'filing_ready'
+      : proofSnapshot?.filingRecommendation === 'smart_filing'
+        ? 'smart_filing'
+        : 'manual_review';
     await proofPacketService.createPacket({
       tenantId,
       sellerId: userId,
@@ -1154,7 +1158,7 @@ class EvidenceMatchingService {
       packetUrl: `opside://proof-packets/${disputeCaseId}/${packetKind}`,
       summary: {
         packetKind,
-        filingRecommendation: proofSnapshot?.filingRecommendation || 'manual_review',
+        filingRecommendation: proofSnapshot?.filingRecommendation || 'smart_filing',
         missingRequirements: proofSnapshot?.missingRequirements || [],
         riskFlags: proofSnapshot?.riskFlags || [],
         sku: evidence?.sku || undefined,

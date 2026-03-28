@@ -6,8 +6,8 @@ export interface ProofPacketInput {
   sellerId: string;
   disputeId: string;
   summary: {
-    packetKind?: 'filing_ready' | 'manual_review' | 'recovery_review';
-    filingRecommendation?: 'filing_ready' | 'manual_review' | 'ineligible';
+    packetKind?: 'filing_ready' | 'smart_filing' | 'manual_review' | 'recovery_review';
+    filingRecommendation?: 'filing_ready' | 'smart_filing' | 'ineligible';
     missingRequirements?: string[];
     riskFlags?: string[];
     sku?: string;
@@ -87,7 +87,7 @@ export const proofPacketService = {
     logger.info('[PROOF PACKET] Upserted proof packet', {
       disputeId: input.disputeId,
       tenantId: input.tenantId || null,
-      packetKind: input.summary.packetKind || 'manual_review'
+      packetKind: input.summary.packetKind || 'smart_filing'
     });
     return data.id as string;
   }

@@ -18,6 +18,14 @@ export interface FilingEligibilityResult {
   decisionProfile?: AdaptiveDecisionProfile | null;
 }
 
+export type FilingStrategy = 'AUTO' | 'SMART' | 'BLOCKED';
+
+export interface ExplanationPayload {
+  missing_fields: string[];
+  assumptions: string[];
+  justification: string;
+}
+
 export interface ProofSnapshot {
   claimFamily: string;
   requiredRequirements: string[];
@@ -30,7 +38,9 @@ export interface ProofSnapshot {
   unitCostProofStatus: 'present' | 'missing' | 'not_required';
   deadlineStatus: 'within_window' | 'outside_window' | 'missing_reference_date';
   riskFlags: string[];
-  filingRecommendation: 'filing_ready' | 'manual_review' | 'ineligible';
+  filingRecommendation: 'filing_ready' | 'smart_filing' | 'ineligible';
+  filingStrategy: FilingStrategy;
+  explanationPayload: ExplanationPayload;
   evidenceDocumentCount: number;
   linkedEvidenceCount: number;
 }
@@ -51,6 +61,11 @@ const DEFAULT_CONFIDENCE_THRESHOLD = Number(
 const CLAIM_WINDOWS_DAYS: Record<string, number> = {
   inbound: 270,
   fc_damage: 60,
+  transfer_loss: 90,
+  warehouse_damage: 60,
+  fee_overcharge: 90,
+  missing_return: 45,
+  reimbursement_missing: 90,
   refund_return: 45,
   generic: 90
 };
@@ -96,6 +111,89 @@ function hasDangerousDocument(document: any): boolean {
 
 function resolveClaimProfile(caseType: string) {
   const normalized = normalize(caseType);
+
+  if (
+    normalized.includes('fee') ||
+    normalized.includes('overcharge') ||
+    normalized.includes('dimension') ||
+    normalized.includes('weight') ||
+    normalized.includes('storage')
+  ) {
+    return {
+      key: 'fee_overcharge',
+      windowDays: CLAIM_WINDOWS_DAYS.fee_overcharge,
+      requiresOrderId: false,
+      requiresShipmentId: false,
+      requiresProductId: true,
+      requiresUnitCost: false,
+      requiredDocTypes: [],
+      requiredOneOfDocTypes: ['invoice', 'inventory', 'reference']
+    };
+  }
+
+  if (
+    normalized.includes('return') ||
+    normalized.includes('refund')
+  ) {
+    return {
+      key: 'missing_return',
+      windowDays: CLAIM_WINDOWS_DAYS.missing_return,
+      requiresOrderId: true,
+      requiresShipmentId: false,
+      requiresProductId: true,
+      requiresUnitCost: true,
+      requiredDocTypes: [],
+      requiredOneOfDocTypes: ['invoice', 'reference']
+    };
+  }
+
+  if (
+    normalized.includes('reimbursement') ||
+    normalized.includes('adjustment')
+  ) {
+    return {
+      key: 'reimbursement_missing',
+      windowDays: CLAIM_WINDOWS_DAYS.reimbursement_missing,
+      requiresOrderId: false,
+      requiresShipmentId: false,
+      requiresProductId: true,
+      requiresUnitCost: false,
+      requiredDocTypes: [],
+      requiredOneOfDocTypes: ['inventory', 'reference']
+    };
+  }
+
+  if (normalized.includes('transfer')) {
+    return {
+      key: 'transfer_loss',
+      windowDays: CLAIM_WINDOWS_DAYS.transfer_loss,
+      requiresOrderId: false,
+      requiresShipmentId: true,
+      requiresProductId: true,
+      requiresUnitCost: true,
+      requiredDocTypes: ['shipping'],
+      requiredOneOfDocTypes: ['invoice', 'po', 'inventory']
+    };
+  }
+
+  if (
+    normalized.includes('warehouse') ||
+    normalized.includes('fulfillment') ||
+    normalized.includes('damage') ||
+    normalized.includes('fc_')
+  ) {
+    return {
+      key: 'warehouse_damage',
+      windowDays: CLAIM_WINDOWS_DAYS.warehouse_damage,
+      requiresOrderId: false,
+      requiresShipmentId: false,
+      requiresProductId: true,
+      requiresUnitCost: true,
+      requiredDocTypes: [],
+      requiredOneOfDocTypes: ['invoice', 'po', 'inventory']
+    };
+  }
+
   if (
     normalized.includes('inbound') ||
     normalized.includes('shipment') ||
@@ -115,28 +213,12 @@ function resolveClaimProfile(caseType: string) {
   }
 
   if (
-    normalized.includes('warehouse') ||
-    normalized.includes('fulfillment') ||
-    normalized.includes('damage') ||
-    normalized.includes('fc_')
+    normalized.includes('fc_damage')
   ) {
     return {
       key: 'fc_damage',
       windowDays: CLAIM_WINDOWS_DAYS.fc_damage,
       requiresOrderId: false,
-      requiresShipmentId: false,
-      requiresProductId: true,
-      requiresUnitCost: true,
-      requiredDocTypes: [],
-      requiredOneOfDocTypes: ['invoice', 'po']
-    };
-  }
-
-  if (normalized.includes('refund') || normalized.includes('return')) {
-    return {
-      key: 'refund_return',
-      windowDays: CLAIM_WINDOWS_DAYS.refund_return,
-      requiresOrderId: true,
       requiresShipmentId: false,
       requiresProductId: true,
       requiresUnitCost: true,
@@ -251,22 +333,93 @@ function classifyMissingRequirement(reason: string): string | null {
   return null;
 }
 
-function classifyFilingRecommendation(reasons: string[]): ProofSnapshot['filingRecommendation'] {
+function isHardBlockReason(reason: string): boolean {
+  return (
+    reason === 'missing_evidence_links' ||
+    reason === 'dangerous_or_prohibited_document_detected' ||
+    reason === 'already_recovered_or_reconciled' ||
+    reason === 'evidence_identity_mismatch' ||
+    reason.startsWith('outside_policy_window:') ||
+    reason.startsWith('filing_conflict:duplicate_blocked') ||
+    reason.startsWith('filing_conflict:already_reimbursed') ||
+    reason.startsWith('filing_conflict:quarantined_dangerous_doc') ||
+    reason.startsWith('filing_conflict:payment_required') ||
+    reason.startsWith('case_not_ready_for_filing_status:') ||
+    reason.startsWith('case_status_not_fileable:')
+  );
+}
+
+function classifyFilingStrategy(reasons: string[]): FilingStrategy {
+  if (reasons.some((reason) => isHardBlockReason(reason))) {
+    return 'BLOCKED';
+  }
+
   if (reasons.length === 0) {
+    return 'AUTO';
+  }
+
+  return 'SMART';
+}
+
+function classifyFilingRecommendation(strategy: FilingStrategy): ProofSnapshot['filingRecommendation'] {
+  if (strategy === 'AUTO') {
     return 'filing_ready';
   }
 
-  const hardStops = reasons.some((reason) =>
-    reason === 'dangerous_or_prohibited_document_detected' ||
-    reason === 'already_recovered_or_reconciled' ||
-    reason.startsWith('billing_conflict:') ||
-    reason.startsWith('filing_conflict:') ||
-    reason.startsWith('case_status_not_fileable:') ||
-    reason.startsWith('case_not_ready_for_filing_status:') ||
-    reason.startsWith('outside_policy_window:')
-  );
+  if (strategy === 'SMART') {
+    return 'smart_filing';
+  }
 
-  return hardStops ? 'ineligible' : 'manual_review';
+  return 'ineligible';
+}
+
+function buildExplanationPayload(params: {
+  profile: ReturnType<typeof resolveClaimProfile>;
+  reasons: string[];
+  missingRequirements: string[];
+  filingStrategy: FilingStrategy;
+}): ExplanationPayload {
+  const { profile, reasons, missingRequirements, filingStrategy } = params;
+  const assumptions = new Set<string>();
+
+  for (const reason of reasons) {
+    if (reason.startsWith('missing_required_document_family:') || reason.startsWith('missing_required_document_type:')) {
+      assumptions.add('Claim scope is limited to the linked evidence already verified in the platform.');
+    }
+
+    if (reason === 'missing_unit_cost_proof') {
+      assumptions.add('Amount should be constrained to the most conservative supported figure available.');
+    }
+
+    if (reason === 'evidence_not_fully_parsed') {
+      assumptions.add('Structured parsing is incomplete, so filing relies only on verified identifiers and linked documents.');
+    }
+
+    if (reason.startsWith('confidence_below_threshold:') || reason === 'missing_match_confidence') {
+      assumptions.add('Confidence is below the ideal threshold, so only the strongest verified case facts should be used.');
+    }
+
+    if (reason.startsWith('historical_')) {
+      assumptions.add('Historical rejection patterns were considered, but the claim can still be filed conservatively.');
+    }
+
+    if (reason === 'missing_policy_window_reference_date') {
+      assumptions.add('Reference timing is inferred from the best available case timestamps.');
+    }
+  }
+
+  let justification = `Claim has complete evidence coverage for ${profile.key} and can be filed without scope reduction.`;
+  if (filingStrategy === 'SMART') {
+    justification = `Claim has enough verified evidence to file conservatively for ${profile.key}. Missing or weak proof is explicitly disclosed and the claim scope should be reduced to supported facts only.`;
+  } else if (filingStrategy === 'BLOCKED') {
+    justification = `Claim cannot be filed safely for ${profile.key} because the current evidence indicates fraud risk, contradiction, a policy-window violation, or no usable evidence.`;
+  }
+
+  return {
+    missing_fields: missingRequirements,
+    assumptions: Array.from(assumptions),
+    justification
+  };
 }
 
 function buildProofSnapshot(params: {
@@ -304,6 +457,13 @@ function buildProofSnapshot(params: {
   }
 
   const riskFlags = reasons.filter((reason) => !classifyMissingRequirement(reason));
+  const filingStrategy = classifyFilingStrategy(reasons);
+  const explanationPayload = buildExplanationPayload({
+    profile,
+    reasons,
+    missingRequirements,
+    filingStrategy
+  });
 
   return {
     claimFamily: profile.key,
@@ -319,7 +479,9 @@ function buildProofSnapshot(params: {
       : 'not_required',
     deadlineStatus,
     riskFlags,
-    filingRecommendation: classifyFilingRecommendation(reasons),
+    filingRecommendation: classifyFilingRecommendation(filingStrategy),
+    filingStrategy,
+    explanationPayload,
     evidenceDocumentCount: evidenceDocuments.length,
     linkedEvidenceCount
   };
@@ -533,7 +695,7 @@ export function evaluateCaseEligibility(
   });
 
   return {
-    eligible: reasons.size === 0,
+    eligible: proofSnapshot.filingStrategy !== 'BLOCKED',
     reasons: finalReasons,
     confidenceScore,
     claimType: profile.key,
@@ -639,7 +801,6 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
   }
 
   const finalReasons = Array.from(reasons);
-  const eligible = finalReasons.length === 0;
   const finalProofSnapshot = buildProofSnapshot({
     profile,
     identifiers: collectIdentifiers(context),
@@ -648,9 +809,10 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
     linkedEvidenceCount: context.linkedEvidenceCount
   });
   const evidenceAttachment = parseJsonObject(disputeCase.evidence_attachments);
+  const finalFilingStrategy = finalProofSnapshot.filingStrategy;
 
   const updates: Record<string, any> = {
-    eligible_to_file: eligible,
+    eligible_to_file: finalFilingStrategy !== 'BLOCKED',
     block_reasons: finalReasons,
     estimated_recovery_amount: toNumber(disputeCase.estimated_recovery_amount) ?? toNumber(disputeCase.claim_amount) ?? 0,
     evidence_attachments: {
@@ -664,7 +826,9 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
         evidence_strength: evidenceSnapshot.score,
         evidence_strength_label: evidenceSnapshot.label,
         dominant_rejection_category: decisionProfile.dominantRejectionCategory,
-        filing_strategy: decisionProfile.filingStrategy,
+        filing_strategy: finalFilingStrategy,
+        adaptive_strategy_hints: decisionProfile.filingStrategy,
+        explanation_payload: finalProofSnapshot.explanationPayload,
         days_until_expiry: daysUntilExpiry,
         adjustments: decisionProfile.adjustments,
         signals: evidenceSnapshot.signals,
@@ -676,18 +840,18 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
     updated_at: new Date().toISOString()
   };
 
-  const reviewRequired = finalReasons.some((reason) =>
-    reason.startsWith('historical_') || reason.startsWith('insufficient_evidence_documents:')
-  );
-
-  if (!eligible) {
-    updates.last_error = finalReasons.join('; ');
+  if (finalFilingStrategy === 'BLOCKED') {
+    updates.last_error = finalProofSnapshot.explanationPayload.justification;
     if (['pending', 'retrying', 'blocked', 'failed', 'pending_approval', ''].includes(currentFilingStatus)) {
-      updates.filing_status = reviewRequired ? 'pending_approval' : 'blocked';
+      updates.filing_status = 'blocked';
     }
   } else {
-    updates.last_error = null;
-    if (
+    updates.last_error = finalFilingStrategy === 'SMART'
+      ? finalProofSnapshot.explanationPayload.justification
+      : null;
+    if (['blocked', 'pending_approval', 'failed', ''].includes(currentFilingStatus)) {
+      updates.filing_status = 'pending';
+    } else if (
       ['blocked', 'pending_approval'].includes(currentFilingStatus) &&
       storedReasons.every(isAutoClearableStoredReason)
     ) {
@@ -708,7 +872,7 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
   }
 
   return {
-    eligible,
+    eligible: finalFilingStrategy !== 'BLOCKED',
     reasons: finalReasons,
     confidenceScore: result.confidenceScore,
     claimType: result.claimType,

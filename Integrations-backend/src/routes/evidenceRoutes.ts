@@ -83,7 +83,7 @@ function deriveEvidenceMatchDisplayAction(
     return 'auto_submit';
   }
 
-  if (proofRecommendation === 'manual_review') {
+  if (proofRecommendation === 'smart_filing') {
     return 'smart_prompt';
   }
 

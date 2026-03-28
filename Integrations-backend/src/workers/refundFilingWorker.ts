@@ -23,12 +23,16 @@ import {
   getRejectionPreventionDecision,
   recordRejectionMemory
 } from '../services/rejectionClassifier';
-import { evaluateAndPersistCaseEligibility } from '../services/agent7EligibilityService';
+import {
+  evaluateAndPersistCaseEligibility,
+  ExplanationPayload,
+  FilingStrategy,
+  ProofSnapshot
+} from '../services/agent7EligibilityService';
 import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import runtimeCapacityService from '../services/runtimeCapacityService';
 import operationalControlService from '../services/operationalControlService';
 import financialWorkItemService from '../services/financialWorkItemService';
-import manualReviewService from '../services/manualReviewService';
 
 
 /**
@@ -110,6 +114,14 @@ type SubmissionQueueMetrics = {
   failed: number;
   delayed: number;
   oldestWaitingAgeMs: number | null;
+};
+
+type FilingDecisionState = {
+  filingStrategy: FilingStrategy;
+  explanationPayload: ExplanationPayload;
+  amountToFile: number;
+  blockReasons: string[];
+  proofSnapshot?: ProofSnapshot | null;
 };
 
 class RefundFilingWorker {
@@ -282,73 +294,120 @@ class RefundFilingWorker {
       .eq('id', caseId);
   }
 
-  private async routeCaseToManualReview(params: {
+  private normalizeExplanationPayload(payload?: Partial<ExplanationPayload> | null): ExplanationPayload {
+    return {
+      missing_fields: Array.isArray(payload?.missing_fields) ? payload!.missing_fields.filter(Boolean) : [],
+      assumptions: Array.isArray(payload?.assumptions) ? payload!.assumptions.filter(Boolean) : [],
+      justification: String(payload?.justification || '').trim() || 'Decision recorded by Agent 7.'
+    };
+  }
+
+  private extendExplanationPayload(
+    payload: ExplanationPayload,
+    additions: {
+      missingFields?: string[];
+      assumptions?: string[];
+      justification?: string;
+    }
+  ): ExplanationPayload {
+    const mergedMissingFields = Array.from(new Set([
+      ...payload.missing_fields,
+      ...(additions.missingFields || []).filter(Boolean)
+    ]));
+    const mergedAssumptions = Array.from(new Set([
+      ...payload.assumptions,
+      ...(additions.assumptions || []).filter(Boolean)
+    ]));
+
+    return {
+      missing_fields: mergedMissingFields,
+      assumptions: mergedAssumptions,
+      justification: additions.justification || payload.justification
+    };
+  }
+
+  private applyDecisionToProofSnapshot(
+    proofSnapshot: ProofSnapshot | null | undefined,
+    filingStrategy: FilingStrategy,
+    explanationPayload: ExplanationPayload
+  ): ProofSnapshot | null {
+    if (!proofSnapshot) return null;
+
+    return {
+      ...proofSnapshot,
+      filingStrategy,
+      filingRecommendation: filingStrategy === 'AUTO'
+        ? 'filing_ready'
+        : filingStrategy === 'SMART'
+          ? 'smart_filing'
+          : 'ineligible',
+      explanationPayload
+    };
+  }
+
+  private async persistFilingDecision(params: {
     tenantId: string;
     disputeCase: any;
-    reasonCode: string;
-    message: string;
-    blockingRequirement: string;
-    expectedNextAction: string;
-    evidenceIds?: string[];
-    priority?: 'low' | 'normal' | 'high' | 'urgent';
-    nextStatus?: string;
-    context?: Record<string, any>;
+    decision: FilingDecisionState;
+    filingStatus?: string;
+    status?: string;
+    lastError?: string | null;
   }): Promise<void> {
     const {
       tenantId,
       disputeCase,
-      reasonCode,
-      message,
-      blockingRequirement,
-      expectedNextAction,
-      evidenceIds = [],
-      priority = 'normal',
-      nextStatus,
-      context = {}
+      decision,
+      filingStatus,
+      status,
+      lastError
     } = params;
 
     const timestamp = new Date().toISOString();
     const evidenceAttachments = disputeCase?.evidence_attachments && typeof disputeCase.evidence_attachments === 'object'
       ? disputeCase.evidence_attachments
       : {};
-    const proofSnapshot = (evidenceAttachments as any)?.decision_intelligence?.proof_snapshot || null;
+    const decisionIntelligence = (evidenceAttachments as any)?.decision_intelligence || {};
+    const updatedProofSnapshot = this.applyDecisionToProofSnapshot(
+      decision.proofSnapshot,
+      decision.filingStrategy,
+      decision.explanationPayload
+    );
 
     const updatePayload: Record<string, any> = {
-      filing_status: 'pending_approval',
-      eligible_to_file: false,
-      block_reasons: [reasonCode],
-      last_error: message,
+      eligible_to_file: decision.filingStrategy !== 'BLOCKED',
+      block_reasons: decision.blockReasons,
+      estimated_recovery_amount: Number(decision.amountToFile || disputeCase.claim_amount || 0),
+      last_error: lastError ?? (decision.filingStrategy === 'BLOCKED' ? decision.explanationPayload.justification : null),
+      evidence_attachments: {
+        ...evidenceAttachments,
+        decision_intelligence: {
+          ...decisionIntelligence,
+          filing_strategy: decision.filingStrategy,
+          explanation_payload: decision.explanationPayload,
+          proof_snapshot: updatedProofSnapshot,
+          final_supported_amount: Number(decision.amountToFile || disputeCase.claim_amount || 0),
+          evaluated_at: timestamp
+        }
+      },
       updated_at: timestamp
     };
 
-    if (nextStatus) {
-      updatePayload.status = nextStatus;
+    if (filingStatus) {
+      updatePayload.filing_status = filingStatus;
     }
 
-    const reviewQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-    const { error: updateError } = await reviewQuery
+    if (status) {
+      updatePayload.status = status;
+    }
+
+    const updateQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+    const { error } = await updateQuery
       .update(updatePayload)
       .eq('id', disputeCase.id);
 
-    if (updateError) {
-      throw new Error(`Failed to route case to manual review: ${updateError.message}`);
+    if (error) {
+      throw new Error(`Failed to persist filing decision: ${error.message}`);
     }
-
-    await manualReviewService.queueFilingException(disputeCase.seller_id, reasonCode, {
-      tenant_id: tenantId,
-      dispute_case_id: disputeCase.id,
-      claim_amount: Number(disputeCase.claim_amount || 0),
-      currency: disputeCase.currency || 'USD',
-      blocking_requirement: blockingRequirement,
-      expected_next_action: expectedNextAction,
-      evidence_document_ids: evidenceIds,
-      proof_snapshot: proofSnapshot,
-      ...context
-    }, {
-      disputeId: disputeCase.id,
-      amazonCaseId: disputeCase.amazon_case_id || undefined,
-      priority
-    });
   }
 
   async getSubmissionQueueMetrics(): Promise<SubmissionQueueMetrics> {
@@ -441,24 +500,22 @@ class RefundFilingWorker {
   /**
   * HIGH-VALUE CLAIM APPROVAL
   * LLMs can hallucinate - reading "10 units" as "100 units" on blurry documents.
-  * To prevent fraud accusations from Amazon, high-value claims require human approval.
+  * High-value claims now downgrade to SMART filing with conservative scope instead of halting.
   * 
-  * Rule: Claims over this threshold are flagged 'pending_approval' instead of auto-submitted.
+  * Rule: Claims over this threshold should not stay in AUTO mode.
   */
-  private static readonly HIGH_VALUE_THRESHOLD = 500; // USD - ceiling; claims above this require manual approval
+  private static readonly HIGH_VALUE_THRESHOLD = 500; // USD - claims above this are forced into SMART mode
 
   /**
   * MINIMUM ROI THRESHOLD
-  * Don't waste the 10-claim-per-day quota on sub-$25 discrepancies.
-  * At 20% commission, a $25 claim nets Margin $5.00 minimum.
-  * Below this, cost-of-filing exceeds expected return.
+  * Legacy operator threshold retained as a SMART-filing trigger for low-value claims.
   */
   private static readonly MIN_FILING_THRESHOLD = 25.00; // USD
 
   /**
   * DIMENSION / WEIGHT FEE CLAIM TYPES
   * These claim types require physical dimension proof (spec sheets, GS1, Cubiscan).
-  * Agent 7 has no way to attach such proof, so route to pending_approval for manual review.
+  * Agent 7 now files them in SMART mode using conservative fee evidence when possible.
   */
   private static readonly DIMENSION_CLAIM_TYPES = [
     'weight_fee', 'dimension_fee', 'weight_fee_overcharge',
@@ -902,17 +959,40 @@ class RefundFilingWorker {
     detail: string
   ): Promise<void> {
     const safetyQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-    const { error } = await safetyQuery
-      .update({
-        filing_status: filingStatus,
-        eligible_to_file: false,
-        block_reasons: [blockReason],
-        last_error: detail,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', disputeId);
+    const { data: disputeCase, error: fetchError } = await safetyQuery
+      .select('id, claim_amount, currency, evidence_attachments')
+      .eq('id', disputeId)
+      .maybeSingle();
 
-    if (error) {
+    if (fetchError || !disputeCase) {
+      logger.error('[ERROR] [REFUND FILING] Failed to load case for safety block', {
+        disputeId,
+        filingStatus,
+        blockReason,
+        error: fetchError?.message || 'not_found'
+      });
+      return;
+    }
+
+    try {
+      await this.persistFilingDecision({
+        tenantId,
+        disputeCase,
+        decision: {
+          filingStrategy: 'BLOCKED',
+          amountToFile: Number((disputeCase as any).claim_amount || 0),
+          blockReasons: [blockReason],
+          explanationPayload: {
+            missing_fields: [],
+            assumptions: [],
+            justification: detail
+          },
+          proofSnapshot: null
+        },
+        filingStatus,
+        lastError: detail
+      });
+    } catch (error: any) {
       logger.error('[ERROR] [REFUND FILING] Failed to mark case as safety blocked', {
         disputeId,
         filingStatus,
@@ -1659,6 +1739,23 @@ class RefundFilingWorker {
             disputeId: rawCase.id
           });
           stats.skipped++;
+          await this.persistFilingDecision({
+            tenantId,
+            disputeCase: rawCase,
+            decision: {
+              filingStrategy: 'BLOCKED',
+              amountToFile: Number((rawCase as any).claim_amount || 0),
+              blockReasons: ['missing_evidence_links'],
+              explanationPayload: {
+                missing_fields: ['evidence_links'],
+                assumptions: [],
+                justification: 'Claim cannot be filed because there is no linked evidence to support any recoverable fact pattern.'
+              },
+              proofSnapshot: null
+            },
+            filingStatus: 'blocked',
+            lastError: 'Claim cannot be filed because there is no linked evidence to support any recoverable fact pattern.'
+          });
           continue;
         }
 
@@ -1668,25 +1765,6 @@ class RefundFilingWorker {
             disputeId: rawCase.id,
             reasons: eligibility.reasons
           });
-          if (eligibility.proofSnapshot?.filingRecommendation === 'manual_review') {
-            await this.routeCaseToManualReview({
-              tenantId,
-              disputeCase: {
-                ...rawCase,
-                ...(eligibility.disputeCase || {})
-              },
-              reasonCode: 'missing_required_document_family',
-              message: `Eligibility gate requires more proof before filing: ${eligibility.reasons.join('; ')}`,
-              blockingRequirement: (eligibility.proofSnapshot.missingRequirements || []).join(', ') || 'additional proof coverage',
-              expectedNextAction: 'Collect the missing proof requirements and review before filing.',
-              evidenceIds,
-              priority: 'normal',
-              context: {
-                eligibility_reasons: eligibility.reasons,
-                proof_snapshot: eligibility.proofSnapshot
-              }
-            });
-          }
           stats.skipped++;
           continue;
         }
@@ -1777,22 +1855,26 @@ class RefundFilingWorker {
           });
           stats.skipped++;
 
-          // Quarantine this case - it must NEVER be auto-submitted (tenant-scoped)
-          const quarantineQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-          const { error: qErr } = await quarantineQuery
-            .update({
-              filing_status: 'quarantined_dangerous_doc',
-              eligible_to_file: false,
-              block_reasons: ['dangerous_document_filename'],
-              last_error: `Dangerous evidence filename detected: ${dangerousDocCheck.dangerousFilenames.join(', ')}`,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', disputeCase.id);
-
-          if (qErr) {
+          try {
+            await this.persistFilingDecision({
+              tenantId,
+              disputeCase,
+              decision: {
+                filingStrategy: 'BLOCKED',
+                amountToFile: Number(disputeCase.claim_amount || 0),
+                blockReasons: ['dangerous_document_filename'],
+                explanationPayload: {
+                  missing_fields: [],
+                  assumptions: [],
+                  justification: `Dangerous evidence filename detected: ${dangerousDocCheck.dangerousFilenames.join(', ')}`
+                },
+                proofSnapshot: null
+              },
+              filingStatus: 'quarantined_dangerous_doc',
+              lastError: `Dangerous evidence filename detected: ${dangerousDocCheck.dangerousFilenames.join(', ')}`
+            });
+          } catch (qErr: any) {
             logger.error('[ERROR] [REFUND FILING] Failed to quarantine dangerous case', { disputeId: disputeCase.id, error: qErr.message });
-          } else {
-            console.log(`DEBUG: Successfully quarantined case ${disputeCase.id}`);
           }
 
           continue; // Skip to next case - this one is quarantined
@@ -1809,22 +1891,26 @@ class RefundFilingWorker {
           });
           stats.skipped++;
 
-          // Quarantine this case - it must NEVER be auto-submitted (tenant-scoped)
-          const quarantineQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-          const { error: qErr } = await quarantineQuery
-            .update({
-              filing_status: 'quarantined_dangerous_doc',
-              eligible_to_file: false,
-              block_reasons: ['dangerous_document_content'],
-              last_error: `Dangerous evidence content detected: ${dangerousContentCheck.dangerousFindings.join(', ')}`,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', disputeCase.id);
-
-          if (qErr) {
+          try {
+            await this.persistFilingDecision({
+              tenantId,
+              disputeCase,
+              decision: {
+                filingStrategy: 'BLOCKED',
+                amountToFile: Number(disputeCase.claim_amount || 0),
+                blockReasons: ['dangerous_document_content'],
+                explanationPayload: {
+                  missing_fields: [],
+                  assumptions: [],
+                  justification: `Dangerous evidence content detected: ${dangerousContentCheck.dangerousFindings.join(', ')}`
+                },
+                proofSnapshot: null
+              },
+              filingStatus: 'quarantined_dangerous_doc',
+              lastError: `Dangerous evidence content detected: ${dangerousContentCheck.dangerousFindings.join(', ')}`
+            });
+          } catch (qErr: any) {
             logger.error('[ERROR] [REFUND FILING] Failed to quarantine dangerous content case', { disputeId: disputeCase.id, error: qErr.message });
-          } else {
-            console.log(`DEBUG: Successfully quarantined dangerous content case ${disputeCase.id}`);
           }
 
           continue; // Skip to next case - this one is quarantined
@@ -1847,23 +1933,39 @@ class RefundFilingWorker {
           });
           stats.skipped++;
 
-          const preventionQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
-          const { error: preventionError } = await preventionQuery
-            .update({
-              filing_status: rejectionPreventionDecision.filingStatus,
-              ...(rejectionPreventionDecision.status ? { status: rejectionPreventionDecision.status } : {}),
-              eligible_to_file: false,
-              block_reasons: [rejectionPreventionDecision.reason],
-              last_error: rejectionPreventionDecision.reason,
-              evidence_attachments: {
-                ...((disputeCase as any).evidence_attachments || {}),
-                ...rejectionPreventionDecision.metadata
+          try {
+            await this.persistFilingDecision({
+              tenantId,
+              disputeCase,
+              decision: {
+                filingStrategy: 'BLOCKED',
+                amountToFile: Number(disputeCase.claim_amount || 0),
+                blockReasons: [rejectionPreventionDecision.reason],
+                explanationPayload: {
+                  missing_fields: [],
+                  assumptions: [],
+                  justification: rejectionPreventionDecision.reason
+                },
+                proofSnapshot: null
               },
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', disputeCase.id);
+              filingStatus: rejectionPreventionDecision.filingStatus,
+              status: rejectionPreventionDecision.status || undefined,
+              lastError: rejectionPreventionDecision.reason
+            });
 
-          if (preventionError) {
+            if (rejectionPreventionDecision.metadata && Object.keys(rejectionPreventionDecision.metadata).length > 0) {
+              const preventionQuery = createTenantScopedQueryById(tenantId, 'dispute_cases');
+              await preventionQuery
+                .update({
+                  evidence_attachments: {
+                    ...((disputeCase as any).evidence_attachments || {}),
+                    ...rejectionPreventionDecision.metadata
+                  },
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', disputeCase.id);
+            }
+          } catch (preventionError: any) {
             logger.error('[ERROR] [REFUND FILING] Failed to apply rejection memory rule', {
               disputeId: disputeCase.id,
               error: preventionError.message
@@ -1930,61 +2032,48 @@ class RefundFilingWorker {
         }
 
         const confidenceScore = eligibility.confidenceScore || 0.85;
+        let decisionState: FilingDecisionState = {
+          filingStrategy: eligibility.proofSnapshot?.filingStrategy || 'AUTO',
+          explanationPayload: this.normalizeExplanationPayload(eligibility.proofSnapshot?.explanationPayload),
+          amountToFile: claimAmount,
+          blockReasons: [...(eligibility.reasons || [])],
+          proofSnapshot: eligibility.proofSnapshot || null
+        };
 
-        // PER-SELLER DAILY LIMIT: Prevent one seller from exhausting tenant quota
-        const sellerFilingsToday = await this.getFilingsInLastDayForSeller(disputeCase.seller_id, tenantId);
-        if (sellerFilingsToday >= RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_SELLER_PER_DAY) {
-          logger.info('[SKIP] [REFUND FILING] Seller daily limit reached', {
-            disputeId: disputeCase.id,
-            sellerId: disputeCase.seller_id,
-            filedToday: sellerFilingsToday,
-            maxPerSellerPerDay: RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_SELLER_PER_DAY
-          });
-          stats.skipped++;
-          continue; // Skip this case - seller hit their daily limit
-        }
-
-        // P4: MINIMUM ROI THRESHOLD — Skip claims under $25
-        // At 10 claims/day/seller, every slot is worth protecting.
-        // A $25 floor ensures minimum $5 return at 20% commission.
+        // P4: LOW VALUE CLAIMS — File conservatively instead of dropping them.
         if (claimAmount < RefundFilingWorker.MIN_FILING_THRESHOLD) {
-          logger.info('[SKIP] [REFUND FILING] Claim below minimum filing threshold', {
+          logger.info('[SMART] [REFUND FILING] Claim below internal filing threshold, filing conservatively', {
             disputeId: disputeCase.id,
             claimAmount,
             threshold: RefundFilingWorker.MIN_FILING_THRESHOLD
           });
-          stats.skipped++;
-          await supabaseAdmin.from('dispute_cases').update({
-            filing_status: 'blocked',
-            eligible_to_file: false,
-            block_reasons: ['claim_below_minimum_threshold'],
-            last_error: `Claim below minimum filing threshold (${RefundFilingWorker.MIN_FILING_THRESHOLD})`,
-            updated_at: new Date().toISOString()
-          }).eq('id', disputeCase.id);
-          continue;
+          decisionState = {
+            ...decisionState,
+            filingStrategy: 'SMART',
+            blockReasons: Array.from(new Set([...decisionState.blockReasons, 'claim_below_minimum_threshold'])),
+            explanationPayload: this.extendExplanationPayload(decisionState.explanationPayload, {
+              assumptions: ['The claim is valid but low-value, so it is filed only for the directly supported amount.'],
+              justification: `Claim value is below the internal threshold (${RefundFilingWorker.MIN_FILING_THRESHOLD}), but the case is still supportable and should be filed conservatively.`
+            })
+          };
         }
 
-        // P10: DIMENSION / WEIGHT FEE GATE — Route to manual review
-        // Agent 7 has no independent physical dimension proof (spec sheets, GS1, Cubiscan).
-        // Auto-filing dimension claims without proof = guaranteed denial.
+        // P10: DIMENSION / WEIGHT FEE GATE — downgrade to SMART with explicit scope limits.
         if (RefundFilingWorker.DIMENSION_CLAIM_TYPES.includes((disputeCase.case_type || '').toLowerCase())) {
-          logger.warn('[SKIP] [REFUND FILING] Dimension/weight claim requires manual review — no spec sheet proof available', {
+          logger.warn('[SMART] [REFUND FILING] Dimension/weight claim missing independent physical proof, using SMART filing mode', {
             disputeId: disputeCase.id,
             caseType: disputeCase.case_type
           });
-          stats.skipped++;
-          await this.routeCaseToManualReview({
-            tenantId,
-            disputeCase,
-            reasonCode: 'dimension_proof_required',
-            message: 'Physical dimension proof is required before filing this claim type',
-            blockingRequirement: 'Dimension or weight proof from a trusted source',
-            expectedNextAction: 'Attach the spec sheet, GS1, or other physical-dimension proof before filing.',
-            evidenceIds,
-            priority: 'high',
-            nextStatus: 'needs_dimension_proof'
-          });
-          continue;
+          decisionState = {
+            ...decisionState,
+            filingStrategy: 'SMART',
+            blockReasons: Array.from(new Set([...decisionState.blockReasons, 'dimension_proof_required'])),
+            explanationPayload: this.extendExplanationPayload(decisionState.explanationPayload, {
+              missingFields: ['dimension_proof'],
+              assumptions: ['Claim relies on the billed fee event and linked seller evidence because independent physical dimension proof is not attached.'],
+              justification: 'Filing in SMART mode because independent dimension proof is missing; claim scope should be limited to the confirmed fee variance and linked seller records.'
+            })
+          };
         }
 
         // P3: INVOICE DATE VALIDATION — Reject future-dated invoices
@@ -1996,119 +2085,109 @@ class RefundFilingWorker {
             reason: dateValidation.reason
           });
           stats.skipped++;
-          await supabaseAdmin.from('dispute_cases').update({
-            filing_status: 'blocked',
-            eligible_to_file: false,
-            block_reasons: ['invalid_invoice_date'],
-            last_error: dateValidation.reason,
-            updated_at: new Date().toISOString()
-          }).eq('id', disputeCase.id);
+          decisionState = {
+            ...decisionState,
+            filingStrategy: 'BLOCKED',
+            blockReasons: Array.from(new Set([...decisionState.blockReasons, 'invalid_invoice_date'])),
+            explanationPayload: this.extendExplanationPayload(decisionState.explanationPayload, {
+              missingFields: ['valid_invoice_date'],
+              justification: dateValidation.reason || 'Invoice timing contradicts shipment timing and creates a fraud-risk contradiction.'
+            })
+          };
+          await this.persistFilingDecision({
+            tenantId,
+            disputeCase,
+            decision: decisionState,
+            filingStatus: 'blocked',
+            lastError: dateValidation.reason || decisionState.explanationPayload.justification
+          });
           continue;
         }
 
-        // P9: POD KEYWORD VALIDATION — Flag PODs without delivery-confirmation text
-        // A blank PDF named "pod_123.pdf" has no evidentiary value.
+        // P9: POD KEYWORD VALIDATION — downgrade to SMART when POD is weak.
         const podValidation = await this.validatePodEvidence(evidenceIds, disputeCase.seller_id);
         if (!podValidation.hasValidPod) {
-          logger.warn('[WARN] [REFUND FILING] Weak POD evidence detected — routing to manual review', {
+          logger.warn('[SMART] [REFUND FILING] Weak POD evidence detected, reducing scope instead of halting', {
             disputeId: disputeCase.id,
             weakPods: podValidation.weakPods
           });
-          stats.skipped++;
-          await this.routeCaseToManualReview({
-            tenantId,
-            disputeCase,
-            reasonCode: 'weak_pod_evidence',
-            message: `Weak proof of delivery evidence: ${podValidation.weakPods.join(', ')}`,
-            blockingRequirement: 'A POD with clear delivery-confirmation language',
-            expectedNextAction: 'Replace weak POD files with a stronger delivery confirmation before filing.',
-            evidenceIds,
-            priority: 'normal',
-            context: {
-              weak_pods: podValidation.weakPods
-            }
-          });
-          continue;
+          decisionState = {
+            ...decisionState,
+            filingStrategy: 'SMART',
+            blockReasons: Array.from(new Set([...decisionState.blockReasons, 'weak_pod_evidence'])),
+            explanationPayload: this.extendExplanationPayload(decisionState.explanationPayload, {
+              missingFields: ['proof_of_delivery'],
+              assumptions: ['Proof of delivery is weak, so the claim should rely on confirmed inventory and invoice variance only.'],
+              justification: `POD evidence is weak (${podValidation.weakPods.join(', ')}); filing should proceed in SMART mode with limited scope and explicit disclosure.`
+            })
+          };
         }
 
         // CLAIM AMOUNT VALIDATION: Cross-check against parsed invoice total
         // Catches LLM hallucinations where detection says $1000 but invoice shows $100
         const amountValidation = await this.validateClaimAmount(claimAmount, evidenceIds, disputeCase.seller_id);
         if (!amountValidation.isValid) {
-          logger.warn('[WARN] [REFUND FILING] CLAIM AMOUNT MISMATCH - Flagging for review', {
+          logger.warn('[SMART] [REFUND FILING] Claim amount mismatch detected, computing conservative supported amount', {
             disputeId: disputeCase.id,
             claimAmount,
             invoiceAmount: amountValidation.invoiceAmount,
             variance: amountValidation.variance,
             reason: amountValidation.reason
           });
-          stats.skipped++;
-          await this.routeCaseToManualReview({
-            tenantId,
-            disputeCase,
-            reasonCode: 'amount_mismatch',
-            message: amountValidation.reason,
-            blockingRequirement: 'Claim amount must reconcile to parsed invoice totals',
-            expectedNextAction: 'Review the amount calculation and correct the variance before filing.',
-            evidenceIds,
-            priority: 'high',
-            context: {
-              invoice_amount: amountValidation.invoiceAmount,
-              variance: amountValidation.variance
-            }
-          });
-          continue; // Skip to next case - needs human review
+          const supportedAmount = amountValidation.invoiceAmount && amountValidation.invoiceAmount > 0
+            ? Math.min(claimAmount, amountValidation.invoiceAmount)
+            : claimAmount;
+          decisionState = {
+            ...decisionState,
+            filingStrategy: 'SMART',
+            amountToFile: supportedAmount,
+            blockReasons: Array.from(new Set([...decisionState.blockReasons, 'amount_mismatch'])),
+            explanationPayload: this.extendExplanationPayload(decisionState.explanationPayload, {
+              missingFields: ['amount_reconciliation'],
+              assumptions: ['Requested amount is reduced to the most conservative supported invoice-backed value.'],
+              justification: amountValidation.reason
+                ? `${amountValidation.reason}. Filing should proceed only for the supported amount of ${supportedAmount}.`
+                : `Claim amount exceeded the invoice-backed amount. Filing should proceed only for the supported amount of ${supportedAmount}.`
+            })
+          };
         }
 
-        // HIGH-VALUE CLAIM CHECK: Require human approval for large claims
-        // LLMs can hallucinate (read 10 units as 100), causing fraud accusations
-        // Claims over threshold must be manually reviewed before submission
+        // HIGH-VALUE CLAIM CHECK: use SMART filing with explicit conservatism.
         if (claimAmount > RefundFilingWorker.HIGH_VALUE_THRESHOLD) {
-          logger.warn(' [REFUND FILING] HIGH-VALUE CLAIM - Requires manual approval', {
+          logger.warn(' [REFUND FILING] HIGH-VALUE CLAIM - switching to SMART filing strategy', {
             disputeId: disputeCase.id,
             claimAmount: claimAmount,
             threshold: RefundFilingWorker.HIGH_VALUE_THRESHOLD,
             currency: disputeCase.currency || 'USD'
           });
-          stats.skipped++;
-          await this.routeCaseToManualReview({
-            tenantId,
-            disputeCase,
-            reasonCode: 'manual_approval_required_high_value',
-            message: `Manual approval required for claim amount ${claimAmount}`,
-            blockingRequirement: `Claim exceeds the auto-file threshold of ${RefundFilingWorker.HIGH_VALUE_THRESHOLD}`,
-            expectedNextAction: 'Ops should approve the filing strategy before Amazon submission.',
-            evidenceIds,
-            priority: 'urgent'
-          });
-          continue; // Skip to next case - human must approve this one
+          decisionState = {
+            ...decisionState,
+            filingStrategy: 'SMART',
+            blockReasons: Array.from(new Set([...decisionState.blockReasons, 'manual_approval_required_high_value'])),
+            explanationPayload: this.extendExplanationPayload(decisionState.explanationPayload, {
+              assumptions: ['High-value exposure is handled by filing the most conservative evidence-backed amount only.'],
+              justification: `Claim amount ${claimAmount} exceeds the normal auto threshold of ${RefundFilingWorker.HIGH_VALUE_THRESHOLD}; filing should proceed in SMART mode with conservative scope.`
+            })
+          };
         }
 
         const adaptiveDecision = eligibility.decisionProfile;
         if (adaptiveDecision && !adaptiveDecision.filingStrategy.autoFileRecommended) {
-          logger.info('[SKIP] [REFUND FILING] Historical decision feedback routed case to manual review', {
+          logger.info('[SMART] [REFUND FILING] Historical decision feedback downgraded case to SMART filing', {
             disputeId: disputeCase.id,
             successProbability: adaptiveDecision.successProbability,
             autoFileThreshold: adaptiveDecision.autoFileThreshold,
             dominantRejectionCategory: adaptiveDecision.dominantRejectionCategory
           });
-          stats.skipped++;
-          await this.routeCaseToManualReview({
-            tenantId,
-            disputeCase,
-            reasonCode: 'low_historical_success_probability',
-            message: `Historical approval performance suggests manual review before filing (${adaptiveDecision.successProbability.toFixed(2)} success probability).`,
-            blockingRequirement: 'Historical success probability is below the auto-file threshold',
-            expectedNextAction: 'Review the strategy and evidence before retrying or filing.',
-            evidenceIds,
-            priority: 'normal',
-            context: {
-              success_probability: adaptiveDecision.successProbability,
-              auto_file_threshold: adaptiveDecision.autoFileThreshold,
-              dominant_rejection_category: adaptiveDecision.dominantRejectionCategory
-            }
-          });
-          continue;
+          decisionState = {
+            ...decisionState,
+            filingStrategy: 'SMART',
+            blockReasons: Array.from(new Set([...decisionState.blockReasons, 'low_historical_success_probability'])),
+            explanationPayload: this.extendExplanationPayload(decisionState.explanationPayload, {
+              assumptions: ['Historical denial patterns were used to tighten claim scope, not to suppress a supportable filing.'],
+              justification: `Historical approval performance is below the auto threshold (${adaptiveDecision.successProbability.toFixed(2)} vs ${adaptiveDecision.autoFileThreshold.toFixed(2)}), so the case should file in SMART mode.`
+            })
+          };
         }
 
         let autoFileEnabled = autoFilePreferenceCache.get(disputeCase.seller_id);
@@ -2118,23 +2197,64 @@ class RefundFilingWorker {
         }
 
         if (!autoFileEnabled) {
-          logger.info('[SKIP] [REFUND FILING] Auto-file is turned off for this user, routing case to manual review', {
+          logger.info('[BLOCK] [REFUND FILING] Seller has disabled autonomous dispatch', {
             disputeId: disputeCase.id,
             sellerId: disputeCase.seller_id
           });
           stats.skipped++;
-          await this.routeCaseToManualReview({
+          decisionState = {
+            ...decisionState,
+            filingStrategy: 'BLOCKED',
+            blockReasons: Array.from(new Set([...decisionState.blockReasons, 'user_auto_file_disabled'])),
+            explanationPayload: this.extendExplanationPayload(decisionState.explanationPayload, {
+              justification: 'Seller preference currently disables autonomous filing. The case is supportable, but dispatch must remain blocked until seller authorization changes.'
+            })
+          };
+          await this.persistFilingDecision({
             tenantId,
             disputeCase,
-            reasonCode: 'user_auto_file_disabled',
-            message: 'Auto-file is turned off. Review this case before filing.',
-            blockingRequirement: 'Seller preference currently disables auto-file',
-            expectedNextAction: 'Seller or Ops must review and manually authorize the filing.',
-            evidenceIds,
-            priority: 'normal'
+            decision: decisionState,
+            filingStatus: 'blocked',
+            lastError: decisionState.explanationPayload.justification
           });
           continue;
         }
+
+        // PER-SELLER DAILY LIMIT: operational throttle only after the final filing strategy is known.
+        const sellerFilingsToday = await this.getFilingsInLastDayForSeller(disputeCase.seller_id, tenantId);
+        if (sellerFilingsToday >= RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_SELLER_PER_DAY) {
+          logger.info('[DEFER] [REFUND FILING] Seller daily limit reached after decisioning', {
+            disputeId: disputeCase.id,
+            sellerId: disputeCase.seller_id,
+            filedToday: sellerFilingsToday,
+            maxPerSellerPerDay: RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_SELLER_PER_DAY,
+            filingStrategy: decisionState.filingStrategy
+          });
+          stats.skipped++;
+          await this.persistFilingDecision({
+            tenantId,
+            disputeCase,
+            decision: decisionState,
+            filingStatus: disputeCase.filing_status === 'retrying' ? 'retrying' : 'pending',
+            lastError: `Seller daily filing cap reached (${sellerFilingsToday}/${RefundFilingWorker.THROTTLE_CONFIG.MAX_PER_SELLER_PER_DAY}); dispatch deferred after ${decisionState.filingStrategy} decision.`
+          });
+          continue;
+        }
+
+        await this.persistFilingDecision({
+          tenantId,
+          disputeCase,
+          decision: decisionState,
+          filingStatus: disputeCase.filing_status === 'retrying' ? 'retrying' : 'pending',
+          lastError: decisionState.filingStrategy === 'SMART'
+            ? decisionState.explanationPayload.justification
+            : null
+        });
+        const finalProofSnapshot = this.applyDecisionToProofSnapshot(
+          decisionState.proofSnapshot,
+          decisionState.filingStrategy,
+          decisionState.explanationPayload
+        );
 
         // Prepare filing request
         const filingRequest: FilingRequest = {
@@ -2143,8 +2263,8 @@ class RefundFilingWorker {
           order_id: orderId,
           asin: asin,
           sku: sku,
-          claim_type: disputeCase.case_type,
-          amount_claimed: parseFloat(disputeCase.claim_amount?.toString() || '0'),
+          claim_type: disputeCase.case_type || eligibility.claimType,
+          amount_claimed: Number(decisionState.amountToFile || parseFloat(disputeCase.claim_amount?.toString() || '0')),
           currency: disputeCase.currency || 'USD',
           evidence_document_ids: evidenceIds,
           confidence_score: confidenceScore,
@@ -2160,7 +2280,11 @@ class RefundFilingWorker {
                   adaptiveDecision.filingStrategy.timing
                 ]
               : [],
-            filing_strategy: adaptiveDecision?.filingStrategy ?? null
+            claim_family: eligibility.claimType,
+            proof_snapshot: finalProofSnapshot,
+            explanation_payload: decisionState.explanationPayload,
+            adaptive_strategy_hints: adaptiveDecision?.filingStrategy ?? null,
+            filing_strategy: decisionState.filingStrategy
           }
         };
 
@@ -2465,20 +2589,23 @@ class RefundFilingWorker {
                 }).eq('id', disputeCase.id);
 
               } else if (rejectionCategory === 'INVALID_CLAIM' || rejectionCategory === 'OUT_OF_WINDOW') {
-                // Claim type mismatch — needs human to re-categorise, don't auto-retry
-                logger.warn(' [REFUND FILING] Rejection: wrong claim type — routing to manual review', { disputeId: disputeCase.id });
-                await this.routeCaseToManualReview({
+                logger.warn(' [REFUND FILING] Rejection: wrong claim type or policy lane — blocking resubmission', { disputeId: disputeCase.id });
+                await this.persistFilingDecision({
                   tenantId: (disputeCase as any).tenant_id,
                   disputeCase,
-                  reasonCode: 'wrong_claim_type',
-                  message: rejectionReason,
-                  blockingRequirement: 'Claim type or policy lane must be corrected before resubmission',
-                  expectedNextAction: 'Ops should recategorize the claim and confirm the right filing lane.',
-                  priority: 'high',
-                  context: {
-                    rejection_category: rejectionCategory,
-                    amazon_case_id: statusResult.amazon_case_id || null
-                  }
+                  decision: {
+                    filingStrategy: 'BLOCKED',
+                    amountToFile: Number((disputeCase as any).claim_amount || 0),
+                    blockReasons: ['wrong_claim_type'],
+                    explanationPayload: {
+                      missing_fields: ['correct_claim_lane'],
+                      assumptions: [],
+                      justification: rejectionReason || 'Amazon rejected the claim because the claim lane or policy window is invalid.'
+                    },
+                    proofSnapshot: null
+                  },
+                  filingStatus: 'blocked',
+                  lastError: rejectionReason
                 });
 
               } else {
