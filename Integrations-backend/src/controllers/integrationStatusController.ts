@@ -8,6 +8,7 @@ import { Request, Response } from 'express';
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifier';
+import { normalizeResolvedAmazonSellerId } from '../utils/sellerIdentity';
 
 type ProviderKey = 'amazon' | 'gmail' | 'outlook' | 'gdrive' | 'dropbox' | 'slack' | 'adobe_sign' | 'onedrive';
 const DOC_TOKEN_PROVIDERS: ProviderKey[] = ['gmail', 'outlook', 'gdrive', 'dropbox'];
@@ -650,12 +651,17 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         .maybeSingle();
 
       if (!tenantUserError && tenantUser) {
-        amazonSellerResolved = !!(tenantUser.amazon_seller_id || tenantUser.seller_id);
+        const resolvedAmazonSellerId = normalizeResolvedAmazonSellerId(
+          tenantUser.amazon_seller_id,
+          tenantUser.seller_id
+        );
+
+        amazonSellerResolved = !!resolvedAmazonSellerId;
         response.providers.amazon.seller_resolved = amazonSellerResolved;
 
         if (!response.amazon_account) {
           response.amazon_account = {
-            seller_id: tenantUser.amazon_seller_id || tenantUser.seller_id || undefined,
+            seller_id: resolvedAmazonSellerId || undefined,
             display_name: tenantUser.company_name || undefined,
             email: tenantUser.email || undefined
           };

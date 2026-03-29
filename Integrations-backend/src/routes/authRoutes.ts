@@ -1,8 +1,63 @@
 import { Router } from 'express';
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifier';
+import { ensureAuthenticatedUserWorkspace } from '../services/userWorkspaceBootstrap';
+import { normalizeResolvedAmazonSellerId } from '../utils/sellerIdentity';
 
 const router = Router();
+
+router.post('/bootstrap', async (req, res) => {
+  try {
+    const token = extractRequestToken(req);
+
+    if (!token) {
+      res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+      return;
+    }
+
+    const decoded = await verifyAccessToken(token);
+    if (!decoded?.id) {
+      res.status(401).json({
+        success: false,
+        message: 'Invalid or expired token'
+      });
+      return;
+    }
+
+    const result = await ensureAuthenticatedUserWorkspace({
+      userId: decoded.id,
+      email: decoded.email || null,
+      preferredWorkspaceName: typeof req.body?.workspaceName === 'string' ? req.body.workspaceName : null,
+      preferredTenantSlug: typeof req.body?.preferredTenantSlug === 'string' ? req.body.preferredTenantSlug : null
+    });
+
+    res.json({
+      success: true,
+      user: {
+        id: result.userId,
+        email: result.email
+      },
+      tenant: {
+        id: result.tenant.id,
+        name: result.tenant.name,
+        slug: result.tenant.slug,
+        plan: result.tenant.plan,
+        status: result.tenant.status,
+        role: result.role
+      },
+      createdUser: result.createdUser,
+      createdTenant: result.createdTenant
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      message: error?.message || 'Failed to bootstrap authenticated workspace'
+    });
+  }
+});
 
 router.get('/me', async (req, res) => {
   try {
@@ -170,9 +225,14 @@ router.get('/me', async (req, res) => {
       amazon_connected = false;
     }
 
+    const resolvedAmazonSellerId = normalizeResolvedAmazonSellerId(
+      userRecord?.amazon_seller_id,
+      userRecord?.seller_id
+    );
+
     if (userRecord) {
       amazonAccount = {
-        seller_id: userRecord.amazon_seller_id || userRecord.seller_id || undefined,
+        seller_id: resolvedAmazonSellerId || undefined,
         display_name: userRecord.company_name || undefined,
         email: userRecord.email || undefined
       };
@@ -186,8 +246,8 @@ router.get('/me', async (req, res) => {
       email: resolvedEmail,
       name: resolvedName,
       company_name: userRecord?.company_name || null,
-      amazon_seller_id: userRecord?.amazon_seller_id || userRecord?.seller_id || null,
-      seller_id: userRecord?.seller_id || null,
+      amazon_seller_id: resolvedAmazonSellerId,
+      seller_id: resolvedAmazonSellerId,
       amazon_connected,
       amazon_account: amazonAccount,
       stripe_connected: false,

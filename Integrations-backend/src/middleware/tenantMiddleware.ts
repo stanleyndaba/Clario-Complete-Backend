@@ -70,7 +70,7 @@ function extractTenantSlugFromPath(path: string): string | null {
 
 function getRequestedTenantSlug(req: Request): string | null {
     const fullPath = req.originalUrl?.split('?')[0] || req.path;
-    const queryTenantSlug = String(req.query.tenantSlug || req.query.tenant_slug || '').trim();
+    const queryTenantSlug = String(req.query.tenantSlug || req.query.tenant_slug || req.query.slug || '').trim();
     return extractTenantSlugFromPath(fullPath) || queryTenantSlug || null;
 }
 
