@@ -1835,6 +1835,7 @@ router.get('/sources', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     const tenantId = (req as any).tenant?.tenantId;
+    const adminClient = supabaseAdmin || supabase;
 
     if (!userId) {
       return res.status(401).json({
@@ -1844,10 +1845,10 @@ router.get('/sources', async (req: Request, res: Response) => {
     }
 
     // Try user_id first, fallback to seller_id if needed
-    let sourcesQuery = supabase
+    let sourcesQuery = adminClient
       .from('evidence_sources')
       .select('id, provider, account_email, status, last_sync_at, created_at, metadata')
-      .eq('user_id', userId)
+      .or(buildUserFilter(userId))
       .order('created_at', { ascending: false });
 
     if (tenantId) {
@@ -3843,4 +3844,3 @@ router.get('/claims/:id/proof-checklist', async (req: Request, res: Response) =>
 });
 
 export default router;
-

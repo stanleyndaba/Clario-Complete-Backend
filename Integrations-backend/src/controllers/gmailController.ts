@@ -665,6 +665,7 @@ export const getGmailStatus = async (req: Request, res: Response) => {
     // Support both userIdMiddleware (req.userId) and auth middleware (req.user.id)
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     const safeUserId = userId ? convertUserIdToUuid(userId) : null;
+    const adminClient = supabaseAdmin || supabase;
 
     if (!userId) {
       return res.status(401).json({
@@ -676,8 +677,7 @@ export const getGmailStatus = async (req: Request, res: Response) => {
     // Check if Gmail is connected using a more flexible check (find ANY valid gmail token)
     let tokenData = null;
     try {
-      const { supabase } = await import('../database/supabaseClient');
-      const { data: tokenRecord } = await supabase
+      const { data: tokenRecord } = await adminClient
         .from('tokens')
         .select('access_token_data, expires_at')
         .eq('user_id', safeUserId)
@@ -705,8 +705,7 @@ export const getGmailStatus = async (req: Request, res: Response) => {
 
     // BASELINE: Always try to get metadata from local database first (source of truth for connection)
     try {
-      const { supabase } = await import('../database/supabaseClient');
-      const { data: source } = await supabase
+      const { data: source } = await adminClient
         .from('evidence_sources')
         .select('account_email, last_sync_at')
         .or(`user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`)

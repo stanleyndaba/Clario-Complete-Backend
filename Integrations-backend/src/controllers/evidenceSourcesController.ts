@@ -10,7 +10,7 @@ import logger from '../utils/logger';
 import config from '../config/env';
 import tokenManager from '../utils/tokenManager';
 import oauthStateStore from '../utils/oauthStateStore';
-import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
+import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 
 // OAuth URLs for different providers
 const OAUTH_URLS = {
@@ -113,7 +113,7 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
     }
 
     // Use provided redirect_uri or construct default
-    const backendUrl = process.env.INTEGRATIONS_URL || process.env.VITE_API_BASE_URL || 'http://localhost:3001';
+    const backendUrl = resolveBackendCallbackBase(req);
     const defaultRedirectUri = `${backendUrl}/api/v1/integrations/${provider}/callback`;
     const callbackRedirectUri = redirectUri || defaultRedirectUri;
 
@@ -265,6 +265,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
     const tenantSlug = stateData.tenantSlug;
     const storeId = stateData.storeId;
     const tenantSuccessPath = tenantSlug ? `/app/${tenantSlug}/auth/success` : '/auth/success';
+    const adminClient = supabaseAdmin || supabase;
 
     await oauthStateStore.delete(state as string);
 
@@ -272,7 +273,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
     let tenantId: string | undefined = undefined;
     if (tenantSlug) {
       try {
-        const { data: tenant } = await supabase
+        const { data: tenant } = await adminClient
           .from('tenants')
           .select('id')
           .eq('slug', tenantSlug)
@@ -286,6 +287,15 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
       }
     }
 
+    if (tenantSlug && !tenantId) {
+      logger.error('Evidence source callback could not resolve tenant from OAuth state; refusing tenantless persistence', {
+        provider,
+        userId,
+        tenantSlug
+      });
+      return res.redirect(`${frontendUrl}${tenantSuccessPath}?status=error&provider=${encodeURIComponent(provider)}&error=tenant_resolution_failed&tenant_slug=${encodeURIComponent(tenantSlug)}`);
+    }
+
     // Get OAuth configuration
     const oauthConfig = getOAuthConfig(provider);
     if (!oauthConfig) {
@@ -293,8 +303,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
     }
 
     // Exchange code for token
-    const backendUrl = process.env.INTEGRATIONS_URL || process.env.VITE_API_BASE_URL || 'http://localhost:3001';
-    const redirectUri = `${backendUrl}/api/v1/integrations/${provider}/callback`;
+    const redirectUri = stateData.redirectUri || `${resolveBackendCallbackBase(req)}/api/v1/integrations/${provider}/callback`;
 
     let tokenResponse: any;
 
@@ -478,12 +487,17 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
 
       // Create or update evidence source in database
       try {
-        const { data: existingSource } = await supabase
+        let existingSourceQuery = adminClient
           .from('evidence_sources')
           .select('id')
           .eq('user_id', dbUserId)
-          .eq('provider', provider)
-          .maybeSingle();
+          .eq('provider', provider);
+
+        existingSourceQuery = tenantId
+          ? existingSourceQuery.eq('tenant_id', tenantId)
+          : existingSourceQuery.is('tenant_id', null);
+
+        const { data: existingSource } = await existingSourceQuery.maybeSingle();
 
         const sourceMetadata = {
           access_token,
@@ -496,7 +510,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
 
         if (existingSource) {
           // Update existing source
-          await supabase
+          await adminClient
             .from('evidence_sources')
             .update({
               status: 'connected',
@@ -513,7 +527,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
           // Create new source
           // Note: We're storing tokens in tokenManager, not in database encrypted fields
           // The database just stores metadata
-          await supabase
+          await adminClient
             .from('evidence_sources')
             .insert({
               user_id: dbUserId,
@@ -569,6 +583,17 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
     return res.redirect(`${frontendUrl}/auth/success?status=error&provider=${encodeURIComponent(req.params.provider)}&error=callback_error`);
   }
 };
+
+function resolveBackendCallbackBase(req: Request): string {
+  const requestHost = req.get('host');
+  const requestProtocol = req.protocol || 'http';
+
+  if (requestHost) {
+    return `${requestProtocol}://${requestHost}`;
+  }
+
+  return process.env.INTEGRATIONS_URL || process.env.VITE_API_BASE_URL || 'http://localhost:3001';
+}
 
 /**
  * Get OAuth configuration for a provider
