@@ -222,15 +222,23 @@ async function syncTenantEvidenceSourceMetadata(tenantId: string, userId: string
  */
 router.get('/sources', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
     const tenantId = (req as any).tenant?.tenantId;
+    const adminClient = supabaseAdmin || supabase;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
 
     logger.info('📋 [EVIDENCE] Fetching evidence sources', { userId });
 
     // Try to get sources from evidence_sources table
-    let sourcesQuery = supabaseAdmin
+    let sourcesQuery = adminClient
       .from('evidence_sources')
-      .select('*')
+      .select('id, provider, account_email, status, last_sync_at, created_at, metadata')
       .or(buildUserFilter(userId))
       .order('created_at', { ascending: false });
 
@@ -261,7 +269,8 @@ router.get('/sources', async (req: Request, res: Response) => {
           // No connected integrations found - return empty sources
           return res.json({
             success: true,
-            sources: []
+            sources: [],
+            count: 0
           });
         }
 
@@ -278,13 +287,15 @@ router.get('/sources', async (req: Request, res: Response) => {
 
         return res.json({
           success: true,
-          sources: mappedSources
+          sources: mappedSources,
+          count: mappedSources.length
         });
       } catch (fallbackError: any) {
         // Fallback table also failed - return empty
         return res.json({
           success: true,
-          sources: []
+          sources: [],
+          count: 0
         });
       }
     }
@@ -320,7 +331,8 @@ router.get('/sources', async (req: Request, res: Response) => {
               account_email: int.email || int.account_email || int.metadata?.email || `${int.provider}@connected.local`,
               status: int.status || 'connected',
               last_sync_at: int.last_sync_at || int.updated_at
-            }))
+            })),
+            count: productIntegrations.length
           });
         }
       } catch (fallbackError: any) {
@@ -330,7 +342,8 @@ router.get('/sources', async (req: Request, res: Response) => {
       // No connected sources at all
       return res.json({
         success: true,
-        sources: []
+        sources: [],
+        count: 0
       });
     }
 
@@ -342,17 +355,19 @@ router.get('/sources', async (req: Request, res: Response) => {
         account_email: s.account_email || s.email || `${s.provider}@connected.local`,
         status: s.status || 'connected',
         last_sync_at: s.last_sync_at || s.updated_at
-      }))
+      })),
+      count: connectedSources.length
     });
   } catch (error: any) {
     logger.error('❌ [EVIDENCE] Error fetching evidence sources', {
       error: error?.message || String(error)
     });
 
-    res.json({
-      success: true,
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch evidence sources',
       sources: [],
-      note: 'No evidence sources available'
+      count: 0
     });
   }
 });
