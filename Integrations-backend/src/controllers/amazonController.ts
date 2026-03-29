@@ -113,6 +113,17 @@ function resolveTenantSlug(req: Request): string | null {
   return typeof tenantSlug === 'string' && tenantSlug.trim().length > 0 ? tenantSlug.trim() : null;
 }
 
+function extractAmazonCallbackSellerId(req: Request): string | null {
+  const querySellerId = typeof req.query?.selling_partner_id === 'string'
+    ? req.query.selling_partner_id
+    : null;
+  const bodySellerId = typeof req.body?.selling_partner_id === 'string'
+    ? req.body.selling_partner_id
+    : null;
+  const sellerId = querySellerId || bodySellerId;
+  return typeof sellerId === 'string' && sellerId.trim().length > 0 ? sellerId.trim() : null;
+}
+
 export const startAmazonOAuth = async (req: Request, res: Response) => {
   try {
     const userId = await extractVerifiedAppUserId(req);
@@ -359,6 +370,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     // Handle both GET (query params) and POST (JSON body) requests
     let code: string | undefined;
     let state: string | undefined;
+    const callbackSellerId = extractAmazonCallbackSellerId(req);
 
     // Log all request details for debugging
     logger.info('Amazon OAuth callback received', {
@@ -392,6 +404,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       codeLength: typeof code === 'string' ? code.length : 0,
       hasState: !!state,
       state: trapState(state),
+      hasSellingPartnerId: !!callbackSellerId,
       isSandbox: req.path.includes('sandbox')
     });
 
@@ -553,9 +566,32 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       // Step 3: Get real seller identity from Amazon SP-API
       trapInfo('seller_profile_started', {
         tenantSlug,
-        userId
+        userId,
+        callbackSellerId: callbackSellerId || null
       });
-      profile = await amazonService.getSellerProfile(access_token, marketplaceIdFromState);
+
+      try {
+        profile = await amazonService.getSellerProfile(access_token, marketplaceIdFromState);
+      } catch (profileError: any) {
+        if (!callbackSellerId) {
+          throw profileError;
+        }
+
+        profile = {
+          sellerId: callbackSellerId,
+          marketplaces: marketplaceIdFromState ? [marketplaceIdFromState] : [],
+          companyName: undefined,
+          sellerName: undefined
+        };
+
+        trapWarn('seller_profile_fallback_to_callback_id', {
+          tenantSlug,
+          userId,
+          sellerId: callbackSellerId,
+          marketplaceId: marketplaceIdFromState || null,
+          error: profileError?.message || String(profileError)
+        });
+      }
 
       if (!profile?.sellerId) {
         trapError('seller_profile_failed', {

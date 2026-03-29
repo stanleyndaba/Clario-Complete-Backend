@@ -9,6 +9,7 @@ import { withErrorHandling } from '../utils/errorHandlingUtils';
 import { SPAPIRateLimiter } from '../utils/rateLimitHandler';
 
 const AGENT1_SUCCESS_TRAP = 'AGENT1_SUCCESS_TRAP';
+const SOUTH_AFRICA_MARKETPLACE_IDS = new Set(['AE08WJ6YKNBMC', 'ARE699S9C6Y0F']);
 
 function trapState(state?: string | null): string | null {
   if (!state) return null;
@@ -65,7 +66,8 @@ const MARKETPLACE_TO_REGION: Record<string, string> = {
   'A1HE1Q3U7G66W': 'https://sellingpartnerapi-eu.amazon.com',  // Saudi Arabia
   'A2VIGQ35RCS4UG': 'https://sellingpartnerapi-eu.amazon.com', // UAE
   'A21TJ7U6ET9TOA': 'https://sellingpartnerapi-eu.amazon.com', // Belgium
-  'ARE699S9C6Y0F': 'https://sellingpartnerapi-eu.amazon.com',  // South Africa
+  'AE08WJ6YKNBMC': 'https://sellingpartnerapi-eu.amazon.com',  // South Africa (current live callback marketplace id)
+  'ARE699S9C6Y0F': 'https://sellingpartnerapi-eu.amazon.com',  // South Africa (legacy/internal alias)
 
   // Far East
   'A1VC38T7YXB528': 'https://sellingpartnerapi-fe.amazon.com', // Japan
@@ -442,7 +444,7 @@ export class AmazonService {
 
         if (marketplaceId) {
           const region = MARKETPLACE_TO_REGION[marketplaceId];
-          if (marketplaceId === 'ARE699S9C6Y0F') {
+          if (SOUTH_AFRICA_MARKETPLACE_IDS.has(marketplaceId)) {
             oauthBase = 'https://sellercentral.amazon.co.za/apps/authorize/consent';
           } else if (region?.includes('eu')) {
             oauthBase = 'https://sellercentral-europe.amazon.com/apps/authorize/consent';

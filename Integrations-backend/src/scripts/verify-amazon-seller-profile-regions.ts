@@ -11,7 +11,7 @@ const REGION_ENDPOINTS = [
   { key: 'fe', baseUrl: 'https://sellingpartnerapi-fe.amazon.com' },
 ];
 
-const preferredMarketplaceId = process.argv[2] || 'ARE699S9C6Y0F';
+const preferredMarketplaceId = process.argv[2] || 'AE08WJ6YKNBMC';
 
 async function main(): Promise<void> {
   console.log(`VERIFY_MARKETPLACE=${preferredMarketplaceId}`);
