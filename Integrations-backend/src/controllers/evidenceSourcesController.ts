@@ -246,17 +246,17 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
 
     if (error) {
       logger.warn('OAuth callback error', { provider, error });
-      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?error=${encodeURIComponent(error as string)}`);
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/success?status=error&provider=${encodeURIComponent(provider)}&error=${encodeURIComponent(error as string)}`);
     }
 
     if (!code || !state) {
-      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?error=missing_code_or_state`);
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/success?status=error&provider=${encodeURIComponent(provider)}&error=missing_code_or_state`);
     }
 
     // Verify state
     const stateData = await oauthStateStore.get(state as string);
     if (!stateData || !stateData.userId) {
-      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?error=invalid_state`);
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/success?status=error&provider=${encodeURIComponent(provider)}&error=invalid_state`);
     }
 
     const userId = stateData.userId;
@@ -264,6 +264,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
     const frontendUrl = stateData.frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
     const tenantSlug = stateData.tenantSlug;
     const storeId = stateData.storeId;
+    const tenantSuccessPath = tenantSlug ? `/app/${tenantSlug}/auth/success` : '/auth/success';
 
     await oauthStateStore.delete(state as string);
 
@@ -288,7 +289,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
     // Get OAuth configuration
     const oauthConfig = getOAuthConfig(provider);
     if (!oauthConfig) {
-      return res.redirect(`${frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?error=oauth_config_not_found`);
+      return res.redirect(`${frontendUrl}${tenantSuccessPath}?status=error&provider=${encodeURIComponent(provider)}&error=oauth_config_not_found${tenantSlug ? `&tenant_slug=${encodeURIComponent(tenantSlug)}` : ''}`);
     }
 
     // Exchange code for token
@@ -379,7 +380,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
           }
         });
       } else {
-        return res.redirect(`${frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?error=unsupported_provider`);
+        return res.redirect(`${frontendUrl}${tenantSuccessPath}?status=error&provider=${encodeURIComponent(provider)}&error=unsupported_provider${tenantSlug ? `&tenant_slug=${encodeURIComponent(tenantSlug)}` : ''}`);
       }
 
       const { access_token, refresh_token, expires_in } = tokenResponse.data;
@@ -403,7 +404,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
           });
           // This is a critical error - without the token, Gmail won't work
           // Return error to user instead of silently continuing
-          return res.redirect(`${frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000'}/integrations-hub?error=${encodeURIComponent('Failed to save Gmail token. Please try reconnecting.')}\u0026${provider}_connected=false`);
+          return res.redirect(`${frontendUrl}${tenantSuccessPath}?status=error&provider=${encodeURIComponent(provider)}&error=${encodeURIComponent('Failed to save Gmail token. Please try reconnecting.')}${tenantSlug ? `&tenant_slug=${encodeURIComponent(tenantSlug)}` : ''}`);
         }
       } else {
         // For other providers (outlook, gdrive, dropbox), store in token manager as well
@@ -541,15 +542,13 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
         accountEmail
       });
 
-      // Redirect to integrations-hub instead of /auth/callback (which may not exist)
-      // This route exists and shows the integrations status
-      const redirectUrl = `${frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000'}/integrations-hub?${provider}_connected=true&email=${encodeURIComponent(accountEmail || '')}`;
+      const redirectUrl = `${frontendUrl}${tenantSuccessPath}?status=ok&provider=${encodeURIComponent(provider)}&${provider}_connected=true&email=${encodeURIComponent(accountEmail || '')}${tenantSlug ? `&tenant_slug=${encodeURIComponent(tenantSlug)}` : ''}`;
 
       logger.info('Redirecting to frontend after evidence source OAuth success', {
         userId,
         provider,
         accountEmail,
-        redirectPath: '/integrations-hub'
+        redirectPath: tenantSuccessPath
       });
 
       return res.redirect(302, redirectUrl);
@@ -558,7 +557,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
         error: tokenError?.message || String(tokenError),
         provider
       });
-      return res.redirect(`${frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?error=token_exchange_failed`);
+      return res.redirect(`${frontendUrl}${tenantSuccessPath}?status=error&provider=${encodeURIComponent(provider)}&error=token_exchange_failed${tenantSlug ? `&tenant_slug=${encodeURIComponent(tenantSlug)}` : ''}`);
     }
   } catch (error: any) {
     logger.error('Error handling evidence source callback', {
@@ -567,7 +566,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
     });
 
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    return res.redirect(`${frontendUrl}/auth/callback?error=callback_error`);
+    return res.redirect(`${frontendUrl}/auth/success?status=error&provider=${encodeURIComponent(req.params.provider)}&error=callback_error`);
   }
 };
 

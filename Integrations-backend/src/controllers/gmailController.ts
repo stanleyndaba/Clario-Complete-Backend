@@ -136,13 +136,29 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
 };
 
 export const handleGmailCallback = async (req: Request, res: Response) => {
+  let redirectFrontendUrl: string | null = null;
+  let redirectTenantSlug: string | null = null;
+
   try {
     const { code, state, error } = req.query;
 
     if (error) {
       logger.error('Gmail OAuth error:', error);
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-      return res.redirect(`${frontendUrl}/auth/error?reason=${encodeURIComponent(error as string)}`);
+      const frontendUrl = redirectFrontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
+      const successPath = redirectTenantSlug ? `/app/${redirectTenantSlug}/auth/success` : '/auth/success';
+
+      try {
+        const url = new URL(successPath, frontendUrl);
+        url.searchParams.append('status', 'error');
+        url.searchParams.append('provider', 'gmail');
+        url.searchParams.append('error', String(error));
+        if (redirectTenantSlug) {
+          url.searchParams.append('tenant_slug', redirectTenantSlug);
+        }
+        return res.redirect(url.toString());
+      } catch {
+        return res.redirect(`${frontendUrl}/auth/error?reason=${encodeURIComponent(error as string)}`);
+      }
     }
 
     if (!code) {
@@ -170,6 +186,8 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
       if (stateData) {
         userId = stateData.userId || null;
         frontendUrl = stateData.frontendUrl || null;
+        redirectFrontendUrl = frontendUrl;
+        redirectTenantSlug = stateData.tenantSlug || null;
         redirectUriFromState = stateData.redirectUri;
 
         // Resolve tenantId if we have a slug
@@ -259,8 +277,9 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
 
     if (!userId) {
       logger.error('Invalid or expired OAuth state', { state });
-      const defaultFrontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-      return res.redirect(`${defaultFrontendUrl}/auth/error?reason=${encodeURIComponent('invalid_state')}`);
+      const defaultFrontendUrl = frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
+      const successPath = redirectTenantSlug ? `/app/${redirectTenantSlug}/auth/success` : '/auth/success';
+      return res.redirect(`${defaultFrontendUrl}${successPath}?status=error&provider=gmail&error=${encodeURIComponent('invalid_state')}${redirectTenantSlug ? `&tenant_slug=${encodeURIComponent(redirectTenantSlug)}` : ''}`);
     }
 
     // Clean up used state now
@@ -279,7 +298,8 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
     } catch (error) {
       logger.error('Failed to save Gmail tokens:', error);
       const defaultFrontendUrl = frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
-      return res.redirect(`${defaultFrontendUrl}/auth/error?reason=${encodeURIComponent('token_save_failed')}`);
+      const successPath = redirectTenantSlug ? `/app/${redirectTenantSlug}/auth/success` : '/auth/success';
+      return res.redirect(`${defaultFrontendUrl}${successPath}?status=error&provider=gmail&error=${encodeURIComponent('token_save_failed')}${redirectTenantSlug ? `&tenant_slug=${encodeURIComponent(redirectTenantSlug)}` : ''}`);
     }
 
     // Persist provider connection truth for the Integrations status API.
@@ -378,9 +398,9 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
     }
 
     // Use frontend URL from state, or fallback to env var
-    const redirectFrontendUrl = frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
-    const cleanBase = redirectFrontendUrl.endsWith('/') ? redirectFrontendUrl.slice(0, -1) : redirectFrontendUrl;
-    const successPath = '/auth/success';
+    const resolvedFrontendUrl = frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
+    const cleanBase = resolvedFrontendUrl.endsWith('/') ? resolvedFrontendUrl.slice(0, -1) : resolvedFrontendUrl;
+    const successPath = redirectTenantSlug ? `/app/${redirectTenantSlug}/auth/success` : '/auth/success';
 
     try {
       const url = new URL(successPath, cleanBase);
@@ -389,6 +409,9 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
       url.searchParams.append('email', userEmail);
       url.searchParams.append('auth_bridge', 'true');
       url.searchParams.append('gmail_connected', 'true');
+      if (redirectTenantSlug) {
+        url.searchParams.append('tenant_slug', redirectTenantSlug);
+      }
       if (sourceState !== 'synced') {
         url.searchParams.append('gmail_source_state', sourceState);
       }
@@ -398,10 +421,13 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
       return res.redirect(302, finalUrl);
     } catch (err) {
       // Fallback redirect
+      const tenantParams = redirectTenantSlug
+        ? `&tenant_slug=${encodeURIComponent(redirectTenantSlug)}`
+        : '';
       const extraParams = sourceState !== 'synced'
         ? `&gmail_source_state=${encodeURIComponent(sourceState)}`
         : '';
-      const redirectUrl = `${cleanBase}${successPath}?status=ok&provider=gmail&gmail_connected=true&email=${encodeURIComponent(userEmail)}&auth_bridge=true${extraParams}`;
+      const redirectUrl = `${cleanBase}${successPath}?status=ok&provider=gmail&gmail_connected=true&email=${encodeURIComponent(userEmail)}&auth_bridge=true${tenantParams}${extraParams}`;
       return res.redirect(302, redirectUrl);
     }
   } catch (error: any) {
@@ -411,9 +437,9 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
       data: error.response?.data
     });
 
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const frontendUrl = redirectFrontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
     const cleanBase = frontendUrl.endsWith('/') ? frontendUrl.slice(0, -1) : frontendUrl;
-    const successPath = '/auth/success';
+    const successPath = redirectTenantSlug ? `/app/${redirectTenantSlug}/auth/success` : '/auth/success';
 
     try {
       const url = new URL(successPath, cleanBase);
@@ -421,10 +447,16 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
       url.searchParams.append('error', error.response?.data?.error_description || error.message || 'gmail_oauth_failed');
       url.searchParams.append('auth_bridge', 'true');
       url.searchParams.append('provider', 'gmail');
+      if (redirectTenantSlug) {
+        url.searchParams.append('tenant_slug', redirectTenantSlug);
+      }
 
       return res.redirect(302, url.toString());
     } catch (err) {
-      const errorUrl = `${cleanBase}${successPath}?status=error&error=${encodeURIComponent('gmail_oauth_failed')}&provider=gmail&auth_bridge=true`;
+      const tenantParams = redirectTenantSlug
+        ? `&tenant_slug=${encodeURIComponent(redirectTenantSlug)}`
+        : '';
+      const errorUrl = `${cleanBase}${successPath}?status=error&error=${encodeURIComponent('gmail_oauth_failed')}&provider=gmail&auth_bridge=true${tenantParams}`;
       res.redirect(302, errorUrl);
     }
   }
