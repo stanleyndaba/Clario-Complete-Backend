@@ -7,6 +7,7 @@ import { mockSPAPIService } from './mockSPAPIService';
 import { getMockDataGenerator, type MockScenario } from './mockDataGenerator';
 import { withErrorHandling } from '../utils/errorHandlingUtils';
 import { SPAPIRateLimiter } from '../utils/rateLimitHandler';
+import { supabaseAdmin } from '../database/supabaseClient';
 
 const AGENT1_SUCCESS_TRAP = 'AGENT1_SUCCESS_TRAP';
 const SOUTH_AFRICA_MARKETPLACE_IDS = new Set(['AE08WJ6YKNBMC', 'ARE699S9C6Y0F']);
@@ -186,6 +187,39 @@ export class AmazonService {
     }
 
     return candidates;
+  }
+
+  private async resolveMarketplaceContext(storeId?: string): Promise<{ marketplaceId: string; baseUrl: string }> {
+    let marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
+
+    if (storeId) {
+      try {
+        const { data: store, error } = await supabaseAdmin
+          .from('stores')
+          .select('marketplace')
+          .eq('id', storeId)
+          .maybeSingle();
+
+        if (!error && typeof store?.marketplace === 'string' && store.marketplace.trim().length > 0) {
+          marketplaceId = store.marketplace.trim();
+        } else if (error) {
+          logger.warn('Failed to resolve store marketplace for Amazon SP-API call', {
+            storeId,
+            error: error.message
+          });
+        }
+      } catch (error: any) {
+        logger.warn('Unexpected error resolving store marketplace for Amazon SP-API call', {
+          storeId,
+          error: error?.message || String(error)
+        });
+      }
+    }
+
+    return {
+      marketplaceId,
+      baseUrl: this.getRegionalBaseUrl(marketplaceId)
+    };
   }
 
   /**
@@ -659,8 +693,7 @@ export class AmazonService {
     // Default to last 90 days if no dates provided
     const postedAfter = startDate || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
     const postedBefore = endDate || new Date();
-    const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
-    const regionalBaseUrl = this.getRegionalBaseUrl(marketplaceId);
+    const { marketplaceId, baseUrl: regionalBaseUrl } = await this.resolveMarketplaceContext(storeId);
 
     // Use Financial Events API to get reimbursements (claims)
     // Financial Events includes: Reimbursement events, Adjustments, etc.
@@ -733,7 +766,7 @@ export class AmazonService {
       const accessToken = await this.getAccessToken(accountId, storeId);
 
       logger.info(`Fetching claims/reimbursements for account ${accountId} from SP-API ${environment}`, {
-        baseUrl: this.baseUrl,
+        baseUrl: regionalBaseUrl,
         marketplaceId,
         postedAfter: postedAfter.toISOString(),
         postedBefore: postedBefore.toISOString(),
@@ -1142,14 +1175,17 @@ export class AmazonService {
       }
 
       const accessToken = await this.getAccessToken(accountId, storeId);
-      const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
+      const { marketplaceId, baseUrl: regionalBaseUrl } = await this.resolveMarketplaceContext(storeId);
 
-      logger.info(`Fetching inventory for account ${accountId} from SP-API SANDBOX`, {
-        baseUrl: this.baseUrl,
+      logger.info(`Fetching inventory for account ${accountId} from SP-API`, {
+        baseUrl: regionalBaseUrl,
         marketplaceId,
+        storeId: storeId || null,
         isSandbox: this.isSandbox(),
-        dataType: 'SANDBOX_TEST_DATA',
-        note: 'Using Amazon SP-API sandbox - returns test/fake data only, not real production data'
+        dataType: this.isSandbox() ? 'SANDBOX_TEST_DATA' : 'LIVE_PRODUCTION_DATA',
+        note: this.isSandbox()
+          ? 'Using Amazon SP-API sandbox - returns test/fake data only, not real production data'
+          : 'Using Amazon SP-API production - fetching real live data from Amazon'
       });
 
       // Build params - sandbox may not support granularityType
@@ -1165,7 +1201,7 @@ export class AmazonService {
 
       // Make real SP-API call to fetch inventory
       const response = await axios.get(
-        `${this.baseUrl}/fba/inventory/v1/summaries`,
+        `${regionalBaseUrl}/fba/inventory/v1/summaries`,
         {
           headers: {
             'Authorization': `Bearer ${accessToken}`,
@@ -1467,7 +1503,8 @@ export class AmazonService {
   async getSellersInfo(userId?: string, storeId?: string): Promise<any> {
     try {
       const accessToken = await this.getAccessToken(userId, storeId);
-      const candidateBaseUrls = this.getSellerProfileCandidateBaseUrls(process.env.AMAZON_MARKETPLACE_ID);
+      const { marketplaceId } = await this.resolveMarketplaceContext(storeId);
+      const candidateBaseUrls = this.getSellerProfileCandidateBaseUrls(marketplaceId);
       let lastError: any = null;
 
       for (const candidateBaseUrl of candidateBaseUrls) {
@@ -1594,7 +1631,7 @@ export class AmazonService {
   async fetchFees(accountId: string, startDate?: Date, endDate?: Date, storeId?: string): Promise<any> {
     try {
       const accessToken = await this.getAccessToken(accountId, storeId);
-      const marketplaceId = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
+      const { marketplaceId, baseUrl: regionalBaseUrl } = await this.resolveMarketplaceContext(storeId);
 
       // Default to last 18 months for Phase 1 (first sync)
       // If no dates provided, fetch 18 months of historical data
@@ -1602,7 +1639,7 @@ export class AmazonService {
       const postedBefore = endDate || new Date();
 
       logger.info(`Fetching fees for account ${accountId} from SP-API`, {
-        baseUrl: this.baseUrl,
+        baseUrl: regionalBaseUrl,
         marketplaceId,
         postedAfter: postedAfter.toISOString(),
         postedBefore: postedBefore.toISOString(),
@@ -1700,8 +1737,6 @@ export class AmazonService {
       let allFees: any[] = [];
       let nextToken: string | undefined = undefined;
       const rateLimitDelay = this.getRateLimitDelay();
-      const regionalBaseUrl = this.getRegionalBaseUrl(marketplaceId);
-
       // Paginate through all financial events
       do {
         if (nextToken) {
