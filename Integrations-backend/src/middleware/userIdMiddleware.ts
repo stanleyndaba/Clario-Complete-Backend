@@ -29,10 +29,17 @@ const PUBLIC_PATH_PREFIXES = [
   '/api/amazon/callback', // OAuth callbacks
   '/api/v1/integrations/amazon/auth', // Amazon OAuth
   '/api/webhooks/amazon/notifications', // Amazon SNS/webhook intake
+  '/api/v1/integrations/gmail/callback',  // Gmail OAuth callback
   '/api/v1/integrations/gmail/auth',  // Gmail OAuth
+  '/api/v1/integrations/outlook/callback', // Outlook OAuth callback
   '/api/v1/integrations/outlook/auth', // Outlook OAuth
+  '/api/v1/integrations/gdrive/callback',  // Google Drive OAuth callback
   '/api/v1/integrations/gdrive/auth',  // Google Drive OAuth
+  '/api/v1/integrations/dropbox/callback', // Dropbox OAuth callback
   '/api/v1/integrations/dropbox/auth', // Dropbox OAuth
+  '/api/v1/integrations/onedrive/callback', // OneDrive OAuth callback
+  '/api/v1/integrations/adobe_sign/callback', // Adobe Sign OAuth callback
+  '/api/v1/integrations/slack/callback', // Slack OAuth callback
 ];
 
 // Agent 2 ingestion and sync routes must always require a real authenticated identity.
