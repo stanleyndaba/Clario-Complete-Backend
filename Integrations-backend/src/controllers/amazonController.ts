@@ -927,6 +927,8 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           status: 'connected',
           account_email: userEmail,
           display_name: profile.companyName || `Amazon Store (${storeId})`,
+          encrypted_access_token: 'managed-by-token-manager',
+          encrypted_refresh_token: refresh_token ? 'managed-by-token-manager' : 'refresh-token-unavailable',
           tenant_id: tenantIdToUse,
           store_id: storeId,
           metadata: {
