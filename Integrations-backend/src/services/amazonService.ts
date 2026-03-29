@@ -310,7 +310,7 @@ export class AmazonService {
       if (userId) {
         try {
           const tokenManager = (await import('../utils/tokenManager')).default;
-          const tokenData = await tokenManager.getToken(userId, 'amazon', storeId);
+          const tokenData = await tokenManager.getRefreshableToken(userId, 'amazon', storeId);
 
           if (tokenData && tokenData.refreshToken) {
             refreshToken = tokenData.refreshToken;

@@ -166,11 +166,10 @@ export class Agent2DataSyncService {
   private async assertValidAmazonTenantToken(userId: string, tenantId: string, storeId?: string): Promise<void> {
     let query = supabaseAdmin
       .from('tokens')
-      .select('id, expires_at')
+      .select('id, expires_at, refresh_token_iv, refresh_token_data')
       .eq('user_id', userId)
       .eq('tenant_id', tenantId)
       .eq('provider', 'amazon')
-      .gt('expires_at', new Date().toISOString())
       .order('expires_at', { ascending: false })
       .limit(1);
 
@@ -182,7 +181,9 @@ export class Agent2DataSyncService {
     if (error) {
       throw new Error(`Failed to validate tenant token: ${error.message}`);
     }
-    if (!data) {
+    const hasRefreshToken = !!data?.refresh_token_iv && !!data?.refresh_token_data;
+    const hasLiveAccessToken = !!data?.expires_at && new Date(data.expires_at).getTime() > Date.now();
+    if (!data || (!hasLiveAccessToken && !hasRefreshToken)) {
       throw new Error('No valid Amazon token found for tenant context');
     }
   }
@@ -194,12 +195,11 @@ export class Agent2DataSyncService {
 
     const { data, error } = await supabaseAdmin
       .from('tokens')
-      .select('store_id')
+      .select('store_id, expires_at, refresh_token_iv, refresh_token_data')
       .eq('user_id', userId)
       .eq('tenant_id', tenantId)
       .eq('provider', 'amazon')
       .not('store_id', 'is', null)
-      .gt('expires_at', new Date().toISOString())
       .order('expires_at', { ascending: false })
       .limit(10);
 
@@ -207,7 +207,13 @@ export class Agent2DataSyncService {
       throw new Error(`Failed to resolve Amazon store binding: ${error.message}`);
     }
 
-    const uniqueStoreIds = [...new Set((data || []).map((row: any) => row.store_id).filter((value): value is string => typeof value === 'string' && value.length > 0))];
+    const usableRows = (data || []).filter((row: any) => {
+      const hasRefreshToken = !!row?.refresh_token_iv && !!row?.refresh_token_data;
+      const hasLiveAccessToken = !!row?.expires_at && new Date(row.expires_at).getTime() > Date.now();
+      return hasLiveAccessToken || hasRefreshToken;
+    });
+
+    const uniqueStoreIds = [...new Set(usableRows.map((row: any) => row.store_id).filter((value): value is string => typeof value === 'string' && value.length > 0))];
     if (uniqueStoreIds.length === 1) {
       return uniqueStoreIds[0] as string;
     }
@@ -310,7 +316,7 @@ export class Agent2DataSyncService {
     await this.assertValidAmazonTenantToken(userId, resolvedTenantId, resolvedStoreId);
     const isConnected = await tokenManager.isTokenValid(userId, 'amazon', resolvedStoreId);
     if (!isConnected) {
-      throw new Error('Amazon token is missing or expired for this tenant.');
+      throw new Error('Amazon token is missing or unusable for this tenant.');
     }
 
     const useMockGenerator = false;

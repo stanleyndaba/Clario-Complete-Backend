@@ -117,6 +117,31 @@ export class TokenManager {
     }
   }
 
+  async getRefreshableToken(
+    userId: string,
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    storeId?: string
+  ): Promise<TokenData | null> {
+    try {
+      const tokenStatus = await this.getTokenWithStatus(userId, provider, storeId);
+
+      if (!tokenStatus) {
+        return null;
+      }
+
+      // A token that can be refreshed is still usable for long-running integrations,
+      // even if the short-lived access token itself has expired.
+      if (!tokenStatus.isExpired || tokenStatus.token.refreshToken) {
+        return tokenStatus.token;
+      }
+
+      return null;
+    } catch (error) {
+      logger.error('Error getting refreshable token', { error, userId, provider });
+      throw error;
+    }
+  }
+
   async getTokenWithStatus(
     userId: string,
     provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
@@ -244,9 +269,11 @@ export class TokenManager {
     storeId?: string
   ): Promise<boolean> {
     try {
-      // Strict truth: token validity is database-backed only.
+      // Truthfully treat refreshable tokens as usable connections. The access token
+      // may expire between sync attempts, but the integration is still connected if
+      // we can refresh it from the stored refresh token.
       const tokenStatus = await this.getTokenWithStatus(userId, provider, storeId);
-      if (tokenStatus && !tokenStatus.isExpired) {
+      if (tokenStatus && (!tokenStatus.isExpired || !!tokenStatus.token.refreshToken)) {
         return true;
       }
 
