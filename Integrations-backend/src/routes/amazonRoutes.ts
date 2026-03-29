@@ -9,6 +9,7 @@ import {
   diagnoseAmazonConnection
 } from '../controllers/amazonController';
 import amazonService from '../services/amazonService';
+import { runAmazonLiveDiagnostics } from '../services/amazonLiveDiagnosticsService';
 import { syncJobManager } from '../services/syncJobManager';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import { authRateLimiter } from '../security/rateLimiter';
@@ -215,6 +216,14 @@ function isValidOrigin(origin: string | undefined): boolean {
   return allowedOrigins.includes(origin);
 }
 
+function hasTrustedInternalApiKey(req: Request): boolean {
+  const configuredKey = process.env.INTERNAL_API_KEY;
+  if (!configuredKey || configuredKey.trim().length === 0) return false;
+
+  const providedKey = req.headers['x-internal-api-key'] || req.headers['x-api-key'];
+  return typeof providedKey === 'string' && providedKey === configuredKey;
+}
+
 // CORS preflight handler for auth endpoints
 router.options('/auth', (req, res) => {
   const origin = req.headers.origin;
@@ -281,6 +290,36 @@ router.post('/sync', wrap(syncAmazonData));
 router.get('/inventory', wrap(getAmazonInventory));
 router.post('/disconnect', wrap(disconnectAmazon));
 router.get('/diagnose', wrap(diagnoseAmazonConnection)); // Diagnostic endpoint
+router.get('/diagnose/live', wrap(async (req: Request, res: Response) => {
+  if (!hasTrustedInternalApiKey(req)) {
+    return res.status(403).json({
+      success: false,
+      error: 'Trusted internal API key is required for live Amazon diagnostics.',
+    });
+  }
+
+  const marketplaceId =
+    (typeof req.query.marketplaceId === 'string' && req.query.marketplaceId.trim()) ||
+    process.env.AMAZON_MARKETPLACE_ID ||
+    undefined;
+  const userId = typeof req.query.userId === 'string' && req.query.userId.trim()
+    ? req.query.userId.trim()
+    : undefined;
+  const storeId = typeof req.query.storeId === 'string' && req.query.storeId.trim()
+    ? req.query.storeId.trim()
+    : undefined;
+
+  const diagnostics = await runAmazonLiveDiagnostics({
+    preferredMarketplaceId: marketplaceId,
+    userId,
+    storeId,
+  });
+
+  return res.status(diagnostics.ok ? 200 : 500).json({
+    success: diagnostics.ok,
+    ...diagnostics,
+  });
+}));
 
 // Mock fee endpoint since it was referenced
 router.get('/fees', (_, res) => {
