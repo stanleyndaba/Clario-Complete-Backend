@@ -160,6 +160,32 @@ export class AmazonService {
     return this.baseUrl;
   }
 
+  private getSellerProfileCandidateBaseUrls(preferredMarketplaceId?: string): string[] {
+    const candidates: string[] = [];
+    const pushCandidate = (url?: string | null) => {
+      if (!url || typeof url !== 'string') return;
+      const normalized = url.trim().replace(/\/+$/, '');
+      if (!normalized || candidates.includes(normalized)) return;
+      candidates.push(normalized);
+    };
+
+    if (preferredMarketplaceId) {
+      pushCandidate(this.getRegionalBaseUrl(preferredMarketplaceId));
+    }
+
+    pushCandidate(this.baseUrl);
+
+    for (const regionalUrl of Object.values(MARKETPLACE_TO_REGION)) {
+      if (this.isSandbox()) {
+        pushCandidate(regionalUrl.replace('https://', 'https://sandbox.'));
+      } else {
+        pushCandidate(regionalUrl);
+      }
+    }
+
+    return candidates;
+  }
+
   /**
    * Check if we're using sandbox environment
    */
@@ -1319,35 +1345,40 @@ export class AmazonService {
    * Get seller profile information (seller_id, marketplaces, company name)
    * This is a convenience wrapper around getSellersInfo for OAuth callback
    */
-  async getSellerProfile(accessToken: string): Promise<{
+  async getSellerProfile(accessToken: string, preferredMarketplaceId?: string): Promise<{
     sellerId: string;
     marketplaces: string[];
     companyName?: string;
     sellerName?: string;
   }> {
-    try {
-      const sellersUrl = `${this.baseUrl}/sellers/v1/marketplaceParticipations`;
+    const candidateBaseUrls = this.getSellerProfileCandidateBaseUrls(preferredMarketplaceId);
+    const attemptErrors: Array<{ baseUrl: string; status?: number; message: string }> = [];
 
-      logger.info(`${AGENT1_SUCCESS_TRAP} seller_profile_http_started`, {
-        sellersUrl,
-        baseUrl: this.baseUrl,
-        isSandbox: this.isSandbox()
-      });
-      logger.info('Fetching seller profile from SP-API', {
-        baseUrl: this.baseUrl,
-        isSandbox: this.isSandbox()
-      });
+    for (const candidateBaseUrl of candidateBaseUrls) {
+      try {
+        const sellersUrl = `${candidateBaseUrl}/sellers/v1/marketplaceParticipations`;
 
-      const response = await axios.get(sellersUrl, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'x-amz-access-token': accessToken,
-          'Content-Type': 'application/json'
-        },
-        timeout: 30000
-      });
+        logger.info(`${AGENT1_SUCCESS_TRAP} seller_profile_http_started`, {
+          sellersUrl,
+          baseUrl: candidateBaseUrl,
+          preferredMarketplaceId: preferredMarketplaceId || null,
+          isSandbox: this.isSandbox()
+        });
+        logger.info('Fetching seller profile from SP-API', {
+          baseUrl: candidateBaseUrl,
+          preferredMarketplaceId: preferredMarketplaceId || null,
+          isSandbox: this.isSandbox()
+        });
 
-      if (response.status === 200) {
+        const response = await axios.get(sellersUrl, {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'x-amz-access-token': accessToken,
+            'Content-Type': 'application/json'
+          },
+          timeout: 30000
+        });
+
         const data = response.data;
         const payload = data.payload || data;
 
@@ -1387,7 +1418,8 @@ export class AmazonService {
 
         logger.info(`${AGENT1_SUCCESS_TRAP} seller_profile_http_succeeded`, {
           sellerId,
-          marketplaces
+          marketplaces,
+          baseUrl: candidateBaseUrl
         });
 
         return {
@@ -1396,21 +1428,34 @@ export class AmazonService {
           companyName,
           sellerName
         };
-      } else {
-        throw new Error(`Sellers API error: ${response.status}`);
+      } catch (error: any) {
+        const message = error.response?.data?.errors?.[0]?.message || error.message;
+        const status = error.response?.status;
+        attemptErrors.push({
+          baseUrl: candidateBaseUrl,
+          status,
+          message
+        });
+
+        logger.warn('Seller profile lookup failed on SP-API endpoint', {
+          baseUrl: candidateBaseUrl,
+          preferredMarketplaceId: preferredMarketplaceId || null,
+          status,
+          message
+        });
       }
-    } catch (error: any) {
-      logger.error('Failed to get seller profile', {
-        error: error.message,
-        status: error.response?.status,
-        data: error.response?.data
-      });
-      logger.error(`${AGENT1_SUCCESS_TRAP} seller_profile_http_failed`, {
-        error: error.message,
-        status: error.response?.status
-      });
-      throw new Error(`Failed to get seller profile: ${error.response?.data?.errors?.[0]?.message || error.message}`);
     }
+
+    const lastError = attemptErrors[attemptErrors.length - 1];
+    logger.error('Failed to get seller profile', {
+      preferredMarketplaceId: preferredMarketplaceId || null,
+      attempts: attemptErrors
+    });
+    logger.error(`${AGENT1_SUCCESS_TRAP} seller_profile_http_failed`, {
+      preferredMarketplaceId: preferredMarketplaceId || null,
+      attempts: attemptErrors
+    });
+    throw new Error(`Failed to get seller profile: ${lastError?.message || 'Unable to resolve seller profile from any SP-API region.'}`);
   }
 
   /**
@@ -1420,103 +1465,117 @@ export class AmazonService {
   async getSellersInfo(userId?: string, storeId?: string): Promise<any> {
     try {
       const accessToken = await this.getAccessToken(userId, storeId);
-      // For getSellersInfo, we first try the default baseUrl, then fall back to regional if that fails
-      // or we can just use the provided marketplace if known.
-      // But usually this is the FIRST call, so we use the default.
-      const sellersUrl = `${this.baseUrl}/sellers/v1/marketplaceParticipations`;
+      const candidateBaseUrls = this.getSellerProfileCandidateBaseUrls(process.env.AMAZON_MARKETPLACE_ID);
+      let lastError: any = null;
 
-      logger.info('Fetching seller information from SP-API', {
-        baseUrl: this.baseUrl,
-        isSandbox: this.isSandbox()
-      });
+      for (const candidateBaseUrl of candidateBaseUrls) {
+        try {
+          const sellersUrl = `${candidateBaseUrl}/sellers/v1/marketplaceParticipations`;
 
-      const response = await axios.get(sellersUrl, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'x-amz-access-token': accessToken,
-          'Content-Type': 'application/json'
-        },
-        timeout: 30000
-      });
+          logger.info('Fetching seller information from SP-API', {
+            baseUrl: candidateBaseUrl,
+            isSandbox: this.isSandbox()
+          });
 
-      if (response.status === 200) {
-        const data = response.data;
-        const payload = data.payload || data;
+          const response = await axios.get(sellersUrl, {
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'x-amz-access-token': accessToken,
+              'Content-Type': 'application/json'
+            },
+            timeout: 30000
+          });
 
-        // Handle different response formats:
-        // Production: {"payload": {"marketplaceParticipations": [...]}}
-        // Sandbox: {"payload": [...]} or just [...]
-        let participations: any[] = [];
+          if (response.status === 200) {
+            const data = response.data;
+            const payload = data.payload || data;
 
-        if (Array.isArray(payload)) {
-          // Sandbox format: payload is directly an array
-          participations = payload;
-        } else if (typeof payload === 'object' && payload !== null) {
-          // Production format: payload has marketplaceParticipations key
-          participations = payload.marketplaceParticipations || [];
+            // Handle different response formats:
+            // Production: {"payload": {"marketplaceParticipations": [...]}}
+            // Sandbox: {"payload": [...]} or just [...]
+            let participations: any[] = [];
 
-          // Alternative sandbox format: payload is the participation itself
-          if (participations.length === 0 && payload.marketplace) {
-            participations = [payload];
-          }
-        }
+            if (Array.isArray(payload)) {
+              // Sandbox format: payload is directly an array
+              participations = payload;
+            } else if (typeof payload === 'object' && payload !== null) {
+              // Production format: payload has marketplaceParticipations key
+              participations = payload.marketplaceParticipations || [];
 
-        // Extract seller info
-        const sellerInfo: any = {};
-        const marketplaces: any[] = [];
-
-        if (participations.length > 0) {
-          const first = participations[0];
-
-          // Extract seller/store info - handle both formats
-          sellerInfo.seller_id = first.participation?.sellerId || first.sellerId;
-          sellerInfo.seller_name =
-            first.participation?.sellerName ||
-            first.storeName ||
-            first.sellerName ||
-            'Unknown Seller';
-          sellerInfo.store_name = first.storeName;
-          sellerInfo.has_suspended_participation =
-            first.participation?.hasSuspendedParticipation ||
-            first.participation?.hasSuspendedListings ||
-            false;
-
-          // Extract marketplace info
-          for (const p of participations) {
-            const mpData = p.marketplace || p;
-            if (mpData && (mpData.id || mpData.marketplaceId)) {
-              marketplaces.push({
-                id: mpData.id || mpData.marketplaceId,
-                name: mpData.name || 'Unknown Marketplace',
-                country_code: mpData.countryCode,
-                currency_code: mpData.defaultCurrencyCode || mpData.currencyCode,
-                language_code: mpData.defaultLanguageCode || mpData.languageCode,
-                domain: mpData.domainName || mpData.domain
-              });
+              // Alternative sandbox format: payload is the participation itself
+              if (participations.length === 0 && payload.marketplace) {
+                participations = [payload];
+              }
             }
-          }
-        }
 
-        return {
-          success: true,
-          seller_info: sellerInfo,
-          marketplaces: marketplaces,
-          total_marketplaces: marketplaces.length,
-          raw_response: data, // Include for debugging
-          is_sandbox: this.isSandbox()
-        };
-      } else {
-        const errorText = response.data || response.statusText;
-        logger.error('Sellers API failed', {
-          status: response.status,
-          error: errorText
-        });
-        return {
-          success: false,
-          error: `Sellers API error: ${response.status}`,
-          details: errorText
-        };
+            // Extract seller info
+            const sellerInfo: any = {};
+            const marketplaces: any[] = [];
+
+            if (participations.length > 0) {
+              const first = participations[0];
+
+              // Extract seller/store info - handle both formats
+              sellerInfo.seller_id = first.participation?.sellerId || first.sellerId;
+              sellerInfo.seller_name =
+                first.participation?.sellerName ||
+                first.storeName ||
+                first.sellerName ||
+                'Unknown Seller';
+              sellerInfo.store_name = first.storeName;
+              sellerInfo.has_suspended_participation =
+                first.participation?.hasSuspendedParticipation ||
+                first.participation?.hasSuspendedListings ||
+                false;
+
+              // Extract marketplace info
+              for (const p of participations) {
+                const mpData = p.marketplace || p;
+                if (mpData && (mpData.id || mpData.marketplaceId)) {
+                  marketplaces.push({
+                    id: mpData.id || mpData.marketplaceId,
+                    name: mpData.name || 'Unknown Marketplace',
+                    country_code: mpData.countryCode,
+                    currency_code: mpData.defaultCurrencyCode || mpData.currencyCode,
+                    language_code: mpData.defaultLanguageCode || mpData.languageCode,
+                    domain: mpData.domainName || mpData.domain
+                  });
+                }
+              }
+            }
+
+            return {
+              success: true,
+              seller_info: sellerInfo,
+              marketplaces: marketplaces,
+              total_marketplaces: marketplaces.length,
+              raw_response: data, // Include for debugging
+              is_sandbox: this.isSandbox()
+            };
+          }
+
+          const errorText = response.data || response.statusText;
+          logger.error('Sellers API failed', {
+            baseUrl: candidateBaseUrl,
+            status: response.status,
+            error: errorText
+          });
+          return {
+            success: false,
+            error: `Sellers API error: ${response.status}`,
+            details: errorText
+          };
+        } catch (error: any) {
+          lastError = error;
+          logger.warn('Seller information lookup failed on SP-API endpoint', {
+            baseUrl: candidateBaseUrl,
+            status: error.response?.status,
+            message: error.response?.data?.errors?.[0]?.message || error.message
+          });
+        }
       }
+
+      throw lastError || new Error('Unable to retrieve seller information from any SP-API region.');
     } catch (error: any) {
       logger.error('Failed to get sellers info', {
         error: error.message,

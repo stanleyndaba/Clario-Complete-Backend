@@ -555,7 +555,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         tenantSlug,
         userId
       });
-      profile = await amazonService.getSellerProfile(access_token);
+      profile = await amazonService.getSellerProfile(access_token, marketplaceIdFromState);
 
       if (!profile?.sellerId) {
         trapError('seller_profile_failed', {
