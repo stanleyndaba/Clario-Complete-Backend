@@ -413,8 +413,8 @@ class SyncJobManager {
       await notificationHelper.notifyUser(
         userId,
         NotificationType.SYNC_STARTED,
-        'Data Sync Started',
-        'Your Amazon data sync has started. We\'re pulling your latest FBA records.',
+        'Amazon Update Started',
+        'We\'re pulling your latest Amazon records, including recent FBA activity.',
         NotificationPriority.LOW,
         NotificationChannel.IN_APP,
         { syncId }
@@ -443,7 +443,7 @@ class SyncJobManager {
       logger.error(`Sync job ${syncId} failed:`, error);
       syncStatus.status = 'failed';
       syncStatus.error = error.message;
-      syncStatus.message = `Sync failed: ${error.message}`;
+      syncStatus.message = 'We hit a temporary issue while updating your Amazon records.';
       this.updateSyncStatus(syncStatus);
     });
 
@@ -548,11 +548,11 @@ class SyncJobManager {
 
         // Update progress: 40% - Running Agent 2 data sync
         syncStatus.progress = 40;
-        syncStatus.message = 'Agent 2 Active: Cross-referencing FBA data...';
+        syncStatus.message = 'Reviewing your latest Amazon records...';
         this.updateSyncStatus(syncStatus);
         this.sendProgressUpdate(userId, syncStatus);
-        this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Processing FBA data streams...' });
-        this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Normalizing data across multiple report types...' });
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Reviewing FBA inventory, orders, returns, and fees...' });
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Checking your account for missed reimbursements and fee discrepancies...' });
 
         // Run Agent 2 Data Sync Service (comprehensive data sync with normalization)
         // CRITICAL: This must complete quickly to meet 30s timeout
@@ -595,8 +595,8 @@ class SyncJobManager {
 
           syncStatus.progress = Math.max(syncStatus.progress, 70);
           syncStatus.message = partialItemsPersisted > 0
-            ? `Sync partially ingested ${partialItemsPersisted} persisted records before failure.`
-            : 'Sync failed before any Agent 2 data was persisted.';
+            ? 'We synced part of your Amazon data, but this run did not finish cleanly.'
+            : 'We hit a temporary issue while updating your Amazon records.';
           syncStatus.error = syncResult.errors.join(', ') || 'Unknown Agent 2 sync error';
 
           throw new Error(
@@ -631,7 +631,7 @@ class SyncJobManager {
 
         // Update progress: 70% - Data normalization complete
         syncStatus.progress = 70;
-        syncStatus.message = 'Data normalization complete. Processing results...';
+        syncStatus.message = 'Your Amazon records are in. Preparing the results...';
         // Store all data type counts from Agent 2 at this point
         this.updateSyncStatus(syncStatus);
         this.sendProgressUpdate(userId, syncStatus);
@@ -727,13 +727,13 @@ class SyncJobManager {
         // Agent 2 now runs detection as part of the sync, so we have results immediately
         syncStatus.progress = 80;
         syncStatus.status = 'detecting'; // New status phase!
-        syncStatus.message = 'Agent 3 Active: Scanning for discrepancies...';
+        syncStatus.message = 'Checking your account for discrepancies...';
         this.updateSyncStatus(syncStatus);
         this.sendProgressUpdate(userId, syncStatus);
-        this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Initiating discrepancy scan...' });
-        this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Comparing shipment manifests with received inventory...' });
-        this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Checking for unreimbursed lost/damaged units...' });
-        this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Validating fee calculations against product dimensions...' });
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Scanning for missing reimbursements, losses, and fee issues...' });
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Comparing shipped, received, and returned units...' });
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Checking for units Amazon may owe you for...' });
+        this.sendLogEvent(userId, syncId, { type: 'info', category: 'detection', message: 'Reviewing fee charges against your product data...' });
 
         // Get detection results from Agent 2 (now included in syncResult)
         const detectionResult = syncResult?.detectionResult;
@@ -844,7 +844,7 @@ class SyncJobManager {
 
         // Update progress: 95% - Finalizing
         syncStatus.progress = 95;
-        syncStatus.message = 'Compiling analysis report...';
+        syncStatus.message = 'Finalizing your sync results...';
         this.updateSyncStatus(syncStatus);
         this.sendProgressUpdate(userId, syncStatus);
         this.sendLogEvent(userId, syncId, { type: 'info', category: 'system', message: 'Compiling analysis results...' });
@@ -890,8 +890,8 @@ class SyncJobManager {
         syncStatus.progress = 100;
         syncStatus.status = 'completed';
         syncStatus.message = syncResults.claimsDetected > 0
-          ? `Sync completed successfully - ${totalItemsSynced} items synced, ${syncResults.claimsDetected} discrepancies detected`
-          : `Sync completed successfully - ${totalItemsSynced} items synced`;
+          ? `Amazon sync finished. ${syncResults.claimsDetected} potential discrepanc${syncResults.claimsDetected === 1 ? 'y was' : 'ies were'} found.`
+          : 'Your Amazon records are up to date. No discrepancies found.';
         syncStatus.completedAt = new Date().toISOString();
         // Store all data type counts from Agent 2 - ALWAYS use Agent 2 result, never fall back to database
         // The database might have old/incomplete data from previous updates
@@ -1016,7 +1016,7 @@ class SyncJobManager {
           const notificationHelper = (await import('./notificationHelper')).default;
           const { NotificationType, NotificationPriority, NotificationChannel } = await import('../notifications/models/notification');
           const claimMsg = syncStatus.claimsDetected && syncStatus.claimsDetected > 0
-            ? ` ${syncStatus.claimsDetected} potential recoveries identified.`
+            ? ` ${syncStatus.claimsDetected} potential recover${syncStatus.claimsDetected === 1 ? 'y was' : 'ies were'} found.`
             : ' No discrepancies found.';
           const valueMsg = syncStatus.totalRecoverableValue && syncStatus.totalRecoverableValue > 0
             ? ` Estimated value: ${new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(syncStatus.totalRecoverableValue)}.`
@@ -1024,8 +1024,8 @@ class SyncJobManager {
           await notificationHelper.notifyUser(
             userId,
             NotificationType.SYNC_COMPLETED,
-            'Sync Complete',
-            `Data sync finished successfully.${claimMsg}${valueMsg}`,
+            'Amazon Update Complete',
+            `Your Amazon update finished successfully.${claimMsg}${valueMsg}`,
             syncStatus.claimsDetected && syncStatus.claimsDetected > 0 ? NotificationPriority.HIGH : NotificationPriority.NORMAL,
             NotificationChannel.IN_APP,
             {
@@ -1082,8 +1082,8 @@ class SyncJobManager {
           (syncStatus.settlementsCount || 0) +
           (syncStatus.feesCount || 0);
         syncStatus.message = partialItemsPersisted > 0
-          ? `Sync partially failed after persisting ${partialItemsPersisted} records: ${structuredError.message}`
-          : `Sync failed: ${structuredError.message}`;
+          ? 'We synced part of your Amazon data, but this run did not finish cleanly.'
+          : 'We hit a temporary issue while updating your Amazon records.';
         syncStatus.completedAt = new Date().toISOString();
 
         // Log structured error with next action
@@ -1143,8 +1143,8 @@ class SyncJobManager {
           await notificationHelper.notifyUser(
             userId,
             NotificationType.SYNC_FAILED,
-            'Sync Issue',
-            `Data sync encountered an issue: ${error.message}. We'll retry automatically.`,
+            'Amazon Update Paused',
+            'We hit a temporary issue while updating your Amazon records. We\'ll retry automatically.',
             NotificationPriority.HIGH,
             NotificationChannel.IN_APP,
             { syncId, errorCode: structuredError.code, error: error.message }
@@ -1161,7 +1161,7 @@ class SyncJobManager {
           tenant_slug: syncStatus.tenantSlug,
           syncId: syncId,
           error: error.message,
-          message: `Sync failed: ${error.message}`,
+          message: syncStatus.message,
           timestamp: new Date().toISOString()
         });
 
@@ -1183,7 +1183,7 @@ class SyncJobManager {
 
         syncStatus.status = 'failed';
         syncStatus.error = `Sync timeout after ${SYNC_TIMEOUT_MS / 1000} seconds`;
-        syncStatus.message = `Sync failed: Timeout after ${SYNC_TIMEOUT_MS / 1000} seconds`;
+        syncStatus.message = 'Updating your Amazon records took longer than expected and has been stopped. Please try again.';
         syncStatus.completedAt = new Date().toISOString();
         this.updateSyncStatus(syncStatus);
         this.sendProgressUpdate(userId, syncStatus);
