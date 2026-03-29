@@ -171,7 +171,10 @@ export async function ensureAuthenticatedUserWorkspace(options: BootstrapOptions
         slug: tenantSlug,
         plan: 'free',
         status: 'active',
-        created_by: safeUserId
+        metadata: {
+          created_by_user_id: safeUserId,
+          origin: 'auth_bootstrap'
+        }
       })
       .select('id, name, slug, plan, status')
       .single();

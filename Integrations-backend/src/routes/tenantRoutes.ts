@@ -182,7 +182,10 @@ router.post('/create', async (req: Request, res: Response) => {
                 slug: tenantSlug,
                 plan: 'free',
                 status: 'active',
-                created_by: userId
+                metadata: {
+                    created_by_user_id: userId,
+                    origin: 'tenant_create'
+                }
             })
             .select()
             .single();
