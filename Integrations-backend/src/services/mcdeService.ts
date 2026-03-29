@@ -78,7 +78,7 @@ class MCDEService {
         this.pythonApiUrl =
             process.env.PYTHON_API_URL ||
             process.env.API_URL ||
-            'https://docker-api-13.onrender.com';
+            'https://clario-complete-backend-6ca7.onrender.com';
 
         this.mcdeEndpoint = `${this.pythonApiUrl}/api/v1/mcde`;
         this.enabled = process.env.ENABLE_MCDE_INTEGRATION === 'true';

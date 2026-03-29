@@ -89,7 +89,7 @@ export interface DetectionResultRecord {
 
 export class DetectionService {
   private readonly queueName = 'detection_queue';
-  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
+  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-6ca7.onrender.com';
 
   /**
    * Enqueue a detection job after sync completion
@@ -2212,7 +2212,7 @@ export class DetectionService {
     sellerId: string,
     results: DetectionResult[]
   ): Promise<void> {
-    const pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
+    const pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-6ca7.onrender.com';
     const maxRetries = 3;
     const baseDelay = 2000; // 2 seconds
     let lastError: Error | null = null;
@@ -2329,7 +2329,7 @@ export class DetectionService {
     results: DetectionResult[]
   ): Promise<void> {
     try {
-      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
+      const pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-6ca7.onrender.com';
 
       // Transform results to claims format
       const claims = results.map((result, index) => ({

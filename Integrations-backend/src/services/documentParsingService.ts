@@ -111,7 +111,7 @@ class DocumentParsingService {
     this.pythonApiUrl =
       process.env.PYTHON_API_URL ||
       process.env.API_URL ||
-      'https://docker-api-13.onrender.com';
+      'https://clario-complete-backend-6ca7.onrender.com';
 
     logger.info('📄 [DOCUMENT PARSING] Service initialized', {
       pythonApiUrl: this.pythonApiUrl
@@ -977,4 +977,3 @@ class DocumentParsingService {
 
 export const documentParsingService = new DocumentParsingService();
 export default documentParsingService;
-

@@ -492,7 +492,7 @@ app.use('/api/v1/inventory-sync', consolidatedInventorySyncRoutes);
 
 // Proxy routes to Python backend (recoveries, documents, metrics)
 // IMPORTANT: These must be registered after all other routes to avoid conflicts
-// These proxy requests to docker-api-13.onrender.com
+// These proxy requests to the Python API service
 app.use('/', proxyRoutes);
 
 // Sentry error handler middleware (must be before our own error handler)

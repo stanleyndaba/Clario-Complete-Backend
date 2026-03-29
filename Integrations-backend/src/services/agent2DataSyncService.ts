@@ -88,7 +88,7 @@ export class Agent2DataSyncService {
   private shipmentsService: ShipmentsService;
   private returnsService: ReturnsService;
   private settlementsService: SettlementsService;
-  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
+  private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-6ca7.onrender.com';
   private readonly buildVersion = 'v2025.11.25.fix-agent3'; // Build marker for deployment verification
   private readonly BATCH_SIZE = 1000; // Process 1000 records per batch for large datasets
   private readonly ONBOARDING_BACKFILL_DAYS = 540; // 18 months

@@ -97,7 +97,7 @@ class RecoveriesService {
   private reconciliationThreshold: number = 0.01; // 1 cent threshold
 
   constructor() {
-    this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
+    this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-6ca7.onrender.com';
     this.reconciliationThreshold = parseFloat(process.env.RECONCILIATION_THRESHOLD || '0.01');
   }
 

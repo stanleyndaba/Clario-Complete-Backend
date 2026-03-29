@@ -1354,7 +1354,7 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
     });
 
     // Proxy to Python API /api/documents/upload endpoint
-    const pythonApiUrl = process.env.PYTHON_API_URL || process.env.VITE_PYTHON_API_URL || 'https://docker-api-13.onrender.com';
+    const pythonApiUrl = process.env.PYTHON_API_URL || process.env.VITE_PYTHON_API_URL || 'https://clario-complete-backend-6ca7.onrender.com';
     const pythonUrl = `${pythonApiUrl}/api/documents/upload${claim_id ? `?claim_id=${claim_id}` : ''}`;
 
     // DEMO MODE: Check if Python API should be skipped (for YC demo)
@@ -3843,5 +3843,4 @@ router.get('/claims/:id/proof-checklist', async (req: Request, res: Response) =>
 });
 
 export default router;
-
 

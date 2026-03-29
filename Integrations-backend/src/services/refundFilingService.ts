@@ -113,7 +113,7 @@ class RefundFilingService {
     private retryDelayMs: number = 5000; // 5 seconds base delay
 
     constructor() {
-        this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://docker-api-13.onrender.com';
+        this.pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-6ca7.onrender.com';
         this.maxRetries = parseInt(process.env.REFUND_FILING_MAX_RETRIES || '3', 10);
         this.retryDelayMs = parseInt(process.env.REFUND_FILING_RETRY_DELAY_MS || '5000', 10);
     }
