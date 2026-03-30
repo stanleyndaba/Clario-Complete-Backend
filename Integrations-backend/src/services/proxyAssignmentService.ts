@@ -63,13 +63,15 @@ class ProxyAssignmentService {
      */
     async getProxyForSeller(sellerId: string): Promise<ProxyConfig | null> {
         if (!PROXY_CONFIG.ENABLED) {
-            logger.debug('[PROXY] Proxy routing disabled, using direct connection');
-            return null;
+            const message = '[FAIL-CLOSED] Proxy routing is disabled (ENABLE_PROXY_ROUTING != true)';
+            logger.warn('[PROXY] Proxy routing disabled', { sellerId });
+            throw new Error(message);
         }
 
         if (!PROXY_CONFIG.USERNAME || !PROXY_CONFIG.PASSWORD) {
-            logger.warn('[PROXY] Proxy credentials not configured, using direct connection');
-            return null;
+            const message = '[FAIL-CLOSED] Proxy credentials are missing (PROXY_USERNAME / PROXY_PASSWORD)';
+            logger.warn('[PROXY] Proxy credentials not configured', { sellerId });
+            throw new Error(message);
         }
 
         try {
@@ -83,7 +85,7 @@ class ProxyAssignmentService {
 
             if (!assignment) {
                 logger.error('[PROXY] Failed to get/create proxy assignment for seller', { sellerId });
-                return null;
+                throw new Error(`[FAIL-CLOSED] Active proxy assignment missing for seller ${sellerId}`);
             }
 
             // Build proxy configuration based on provider
@@ -94,7 +96,7 @@ class ProxyAssignmentService {
                 sellerId,
                 error: error.message
             });
-            return null;
+            throw error;
         }
     }
 
