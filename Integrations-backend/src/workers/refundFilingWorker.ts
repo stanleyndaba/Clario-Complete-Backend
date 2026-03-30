@@ -265,18 +265,27 @@ class RefundFilingWorker {
       return this.executeDirectFallback(caseId, sellerId);
     }
 
-    const job = await this.submissionQueue.add(
-      `filing_${caseId}`,
-      { 
-        caseId, 
-        sellerId 
-      },
-      { 
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 300000 }
-      }
-    );
-    return { id: String(job.id), mode: 'queued' };
+    try {
+      const job = await this.submissionQueue.add(
+        `filing_${caseId}`,
+        {
+          caseId,
+          sellerId
+        },
+        {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 300000 }
+        }
+      );
+      return { id: String(job.id), mode: 'queued' };
+    } catch (error: any) {
+      logger.warn('[AGENT 7] Queue add failed for manual filing trigger - using governed DB fallback', {
+        caseId,
+        sellerId,
+        error: error?.message || String(error)
+      });
+      return this.executeDirectFallback(caseId, sellerId);
+    }
   }
 
   private rotateTenants<T>(tenants: T[]): T[] {
