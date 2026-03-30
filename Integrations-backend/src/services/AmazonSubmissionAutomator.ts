@@ -204,6 +204,7 @@ export class AmazonSubmissionAutomator {
             const filingResult = await refundFilingService.fileDispute({
                 dispute_id: caseId,
                 user_id: sellerId,
+                tenant_id: caseInfo.tenant_id,
                 order_id: detectionEvidence.order_id || '',
                 shipment_id: detectionEvidence.shipment_id || detectionEvidence.fba_shipment_id || undefined,
                 asin: detectionEvidence.asin || undefined,

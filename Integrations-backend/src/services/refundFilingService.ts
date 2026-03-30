@@ -21,6 +21,7 @@ import crypto from 'crypto';
 export interface FilingRequest {
     dispute_id: string;
     user_id: string;
+    tenant_id?: string;
     order_id: string;
     shipment_id?: string;
     asin?: string;
@@ -497,7 +498,11 @@ class RefundFilingService {
             });
 
             // Get evidence documents
-            const evidenceDocuments = await this.getEvidenceDocuments(request.evidence_document_ids, request.user_id);
+            const evidenceDocuments = await this.getEvidenceDocuments(
+                request.evidence_document_ids,
+                request.user_id,
+                request.tenant_id
+            );
             const filingStrategy = String(request.metadata?.filing_strategy || '').toUpperCase();
             const attachmentPack = await this.buildAttachmentPack(evidenceDocuments, request.claim_type, {
                 allowPartial: filingStrategy === 'SMART'
@@ -573,7 +578,7 @@ class RefundFilingService {
 
             // IDEMPOTENCY KEY: Deterministic per dispute_id so crash-retries
             // send the same key and Amazon's SP-API rejects the duplicate.
-            const idempotencyKey = crypto.createHash('sha256')
+            const idempotencyKey = String(request.metadata?.idempotency_key || '').trim() || crypto.createHash('sha256')
                 .update(`filing_${request.dispute_id}`)
                 .digest('hex');
 
@@ -739,7 +744,7 @@ class RefundFilingService {
     /**
     * Collect additional evidence for retry (stronger evidence package)
     */
-    async collectStrongerEvidence(disputeId: string, userId: string): Promise<string[]> {
+    async collectStrongerEvidence(disputeId: string, userId: string, tenantId?: string): Promise<string[]> {
         try {
             logger.info(' [REFUND FILING] Collecting stronger evidence for retry', {
                 disputeId,
@@ -781,12 +786,18 @@ class RefundFilingService {
 
                 // Get additional evidence documents that might match the same order
                 // Note: evidence_documents doesn't have order_id column, so we search in extracted/parsed_metadata
-                const { data: additionalEvidence } = await supabaseAdmin
+                let additionalEvidenceQuery = supabaseAdmin
                     .from('evidence_documents')
                     .select('id, extracted, parsed_metadata')
                     .eq('seller_id', userId)
                     .neq('parser_status', 'failed')
                     .limit(20);
+
+                if (tenantId) {
+                    additionalEvidenceQuery = additionalEvidenceQuery.eq('tenant_id', tenantId);
+                }
+
+                const { data: additionalEvidence } = await additionalEvidenceQuery;
 
                 // Filter evidence that matches order details
                 const matchingEvidence = (additionalEvidence || []).filter(doc => {
@@ -829,13 +840,19 @@ class RefundFilingService {
     /**
     * Get evidence documents by IDs
     */
-    private async getEvidenceDocuments(evidenceIds: string[], userId: string): Promise<EvidenceDocumentRecord[]> {
+    private async getEvidenceDocuments(evidenceIds: string[], userId: string, tenantId?: string): Promise<EvidenceDocumentRecord[]> {
         try {
-            const { data: documents, error } = await supabaseAdmin
+            let query = supabaseAdmin
                 .from('evidence_documents')
                 .select('id, filename, content_type, size_bytes, file_url, storage_path, doc_type, parsed_metadata, extracted, metadata, created_at')
                 .in('id', evidenceIds)
                 .eq('seller_id', userId);
+
+            if (tenantId) {
+                query = query.eq('tenant_id', tenantId);
+            }
+
+            const { data: documents, error } = await query;
 
             if (error) {
                 logger.error(' [REFUND FILING] Failed to get evidence documents', { error: error.message });

@@ -2411,7 +2411,8 @@ class RefundFilingWorker {
           // Collect stronger evidence
           const strongerEvidenceIds = await refundFilingService.collectStrongerEvidence(
             disputeCase.id,
-            disputeCase.seller_id
+            disputeCase.seller_id,
+            disputeCase.tenant_id
           );
 
           if (strongerEvidenceIds.length > evidenceIds.length) {

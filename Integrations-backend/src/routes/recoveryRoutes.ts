@@ -1082,6 +1082,10 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
         const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
 
         logger.info('Submitting claim', { claimId: id, userId, tenantId });
+        return res.status(410).json({
+            success: false,
+            error: 'Legacy recoveries submit is disabled. Use the real dispute filing queue instead.'
+        });
 
         // First, check if this is a dispute_case that already exists
         const { data: existingCase, error: caseError } = await supabaseAdmin
@@ -1281,6 +1285,10 @@ router.post('/:id/resubmit', async (req: Request, res: Response) => {
         const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
 
         logger.info('Resubmitting claim', { claimId: id, userId, tenantId });
+        return res.status(410).json({
+            success: false,
+            error: 'Legacy recoveries resubmit is disabled. Use the real dispute retry queue instead.'
+        });
 
         // Find the existing dispute_case — scoped by tenant
         let disputeCase = null;
