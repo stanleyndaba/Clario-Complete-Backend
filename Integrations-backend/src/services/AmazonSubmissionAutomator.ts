@@ -15,12 +15,32 @@ import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import refundFilingService from './refundFilingService';
 import { evaluateAndPersistCaseEligibility } from './agent7EligibilityService';
+import {
+    isAgent7UnpaidFilingOverrideEnabled,
+    recordAgent7UnpaidFilingOverride
+} from './agent7UnpaidFilingOverride';
 
 /**
  * Enhanced Agent 7: Automated Amazon Interface Handler
  * Manages the full lifecycle of a claim submission from validation to handoff.
  */
 export class AmazonSubmissionAutomator {
+    private async resolveSubmissionAttemptNumber(caseId: string): Promise<number> {
+        const { data, error } = await supabaseAdmin
+            .from('dispute_submissions')
+            .select('attempt_number')
+            .eq('dispute_id', caseId)
+            .order('attempt_number', { ascending: false })
+            .limit(1);
+
+        if (error) {
+            throw error;
+        }
+
+        const lastAttempt = Number(data?.[0]?.attempt_number || 0);
+        return lastAttempt + 1;
+    }
+
     private async markSubmissionStateDivergence(
         caseId: string,
         sellerId: string,
@@ -101,12 +121,14 @@ export class AmazonSubmissionAutomator {
 
             // 0. FINANCIAL SENTRY: Pre-Flight Payment Verification
             // Must occur BEFORE the database lock.
-            const internalUserId = await this.enforcePaywall(caseId, sellerId);
+            const internalUserId = await this.enforcePaywall(caseId, sellerId, caseInfo.tenant_id);
 
             const eligibilitySnapshot = await evaluateAndPersistCaseEligibility(caseId, caseInfo.tenant_id);
             if (!eligibilitySnapshot.eligible) {
                 throw new Error(`[AGENT 7 BLOCKED] Case ${caseId} is not eligible to file: ${eligibilitySnapshot.reasons.join(', ')}`);
             }
+
+            const submissionAttempts = await this.resolveSubmissionAttemptNumber(caseId);
 
             // 1. ATOMIC LOCK: 'pending' -> 'submitting'
             // This prevents race conditions where multiple workers pick up the same claim.
@@ -121,14 +143,13 @@ export class AmazonSubmissionAutomator {
                 .eq('tenant_id', caseInfo.tenant_id)
                 .eq('eligible_to_file', true)
                 .in('filing_status', ['pending', 'retrying'])
-                .select('id, filing_status, submission_attempts, idempotency_key, claim_amount, currency, case_type, tenant_id, detection_result_id, estimated_recovery_amount');
+                .select('id, filing_status, idempotency_key, claim_amount, currency, case_type, tenant_id, detection_result_id, estimated_recovery_amount');
 
             if (lockError || !lockData || lockData.length === 0) {
                 throw new Error(`[AGENT 7 FATAL] Atomic Lock Failed: Case ${caseId} already processed or not in 'pending' state.`);
             }
 
             const activeCase = lockData[0];
-            const submissionAttempts = (activeCase.submission_attempts || 0) + 1;
 
             // 2. IDEMPOTENCY KEY GENERATION
             // Deterministic hash ensures same claim + same seller = same key for Amazon SP-API
@@ -140,8 +161,7 @@ export class AmazonSubmissionAutomator {
             const { error: keyUpdateError } = await supabaseAdmin
                 .from('dispute_cases')
                 .update({ 
-                    idempotency_key: idempotencyKey,
-                    submission_attempts: submissionAttempts 
+                    idempotency_key: idempotencyKey
                 })
                 .eq('id', caseId);
 
@@ -360,8 +380,6 @@ export class AmazonSubmissionAutomator {
                 filing_status: 'filed',
                 status: 'submitted',
                 submission_date: timestamp,
-                last_submission_attempt: timestamp,
-                submission_attempts: submissionAttempts,
                 last_error: null,
                 eligible_to_file: true,
                 block_reasons: []
@@ -378,10 +396,13 @@ export class AmazonSubmissionAutomator {
         const { error: claimSyncError } = await supabaseAdmin
             .from('claims')
             .update({
-                amazon_case_id: amazonCaseId,
                 status: 'submitted',
-                last_submission_attempt: timestamp,
-                submission_attempts: submissionAttempts
+                submitted_at: timestamp,
+                metadata: {
+                    amazon_case_id: amazonCaseId,
+                    provider_case_id: externalReference,
+                    submission_id: submissionId
+                }
             })
             .match({ reference_id: caseId });
 
@@ -397,7 +418,7 @@ export class AmazonSubmissionAutomator {
      * Financial Sentry: Patched Zero-Trust Financial Gate
      * Maps Amazon Merchant Token -> User ID -> Payment Status
      */
-    private async enforcePaywall(caseId: string, sellerId: string): Promise<string> {
+    private async enforcePaywall(caseId: string, sellerId: string, tenantId: string): Promise<string> {
         try {
             const userId = await this.resolveInternalUserIdForSeller(sellerId);
 
@@ -408,7 +429,22 @@ export class AmazonSubmissionAutomator {
                 .eq('id', userId)
                 .single();
 
-            if (error || !user?.is_paid_beta) {
+            if (error || !user) {
+                throw new Error(`[AGENT 7 FATAL] Could not resolve billing state for mapped user ${userId}.`);
+            }
+
+            if (!user?.is_paid_beta && isAgent7UnpaidFilingOverrideEnabled()) {
+                await recordAgent7UnpaidFilingOverride({
+                    tenantId,
+                    disputeId: caseId,
+                    userId,
+                    sellerId,
+                    stage: 'submission_gate'
+                });
+                return userId;
+            }
+
+            if (!user?.is_paid_beta) {
                 logger.error(`🚨 [SECURITY] Unauthorized filing attempt for unpaid user: ${userId}`, { caseId });
 
                 // Move claim to terminal 'payment_required' state
@@ -444,7 +480,7 @@ export class AmazonSubmissionAutomator {
             const internalUserId = await this.resolveInternalUserIdForSeller(sellerId);
             const { data: existingCase, error: caseLookupError } = await supabaseAdmin
                 .from('dispute_cases')
-                .select('tenant_id, submission_attempts')
+                .select('tenant_id')
                 .eq('id', caseId)
                 .single();
 
@@ -468,7 +504,7 @@ export class AmazonSubmissionAutomator {
                     submission_channel: 'amazon_spapi',
                     idempotency_key: idempotencyKey
                 },
-                Number(existingCase.submission_attempts || 1)
+                await this.resolveSubmissionAttemptNumber(caseId)
             );
             return amazonCase.id;
         } else {

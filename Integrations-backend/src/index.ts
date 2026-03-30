@@ -21,6 +21,7 @@ import { supabaseAdmin } from './database/supabaseClient';
 import { securityHeadersMiddleware, enforceHttpsMiddleware, validateTlsMiddleware } from './security/securityHeaders';
 import { validateRedirectMiddleware } from './security/validateRedirect';
 import { validateEnvironmentOrFail } from './security/envValidation';
+import { warnIfAgent7UnpaidFilingOverrideEnabledOnBoot } from './services/agent7UnpaidFilingOverride';
 
 // Import middleware
 import { userIdMiddleware } from './middleware/userIdMiddleware';
@@ -109,6 +110,7 @@ websocketService.initialize(server);
 // Validate environment variables at startup (fail fast if missing)
 try {
   validateEnvironmentOrFail(process.env.NODE_ENV === 'production');
+  warnIfAgent7UnpaidFilingOverrideEnabledOnBoot();
 } catch (error: any) {
   logger.error('Environment validation failed - server will not start', {
     error: error.message,

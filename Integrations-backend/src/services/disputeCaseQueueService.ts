@@ -37,7 +37,7 @@ const REVIEW_FILINGS = new Set([
   'already_reimbursed',
   'skipped_low_value'
 ]);
-const INVALID_TENANT_SLUGS = new Set(['default', 'beta', 'null', 'undefined']);
+const INVALID_TENANT_SLUGS = new Set(['beta', 'null', 'undefined']);
 
 function normalize(value: unknown): string {
   return String(value || '').trim().toLowerCase();
@@ -351,6 +351,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       billing_status: billingStatus,
       eligible_to_file: record.eligible_to_file === true,
       block_reasons: Array.isArray(record.block_reasons) ? record.block_reasons : [],
+      last_error: record.last_error || null,
       requested_amount: requestedAmount,
       approved_amount: approvedAmount,
       actual_payout_amount: actualPayoutAmount,

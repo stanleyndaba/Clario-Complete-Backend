@@ -4,6 +4,10 @@ import { supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import refundFilingWorker from '../workers/refundFilingWorker';
 import { evaluateAndPersistCaseEligibility } from '../services/agent7EligibilityService';
+import {
+  isAgent7UnpaidFilingOverrideEnabled,
+  recordAgent7UnpaidFilingOverride
+} from '../services/agent7UnpaidFilingOverride';
 
 const router = Router();
 
@@ -72,7 +76,7 @@ async function resolveDisputeScope(req: any) {
   };
 }
 
-async function resolvePaidSellerIdentity(userId: string) {
+async function resolvePaidSellerIdentity(userId: string, tenantId: string, disputeId: string) {
   const { data: user, error } = await supabaseAdmin
     .from('users')
     .select('id, is_paid_beta, amazon_seller_id, billing_status, billing_unlocked_at, billing_source')
@@ -83,8 +87,18 @@ async function resolvePaidSellerIdentity(userId: string) {
     throw new Error('User identity could not be resolved');
   }
 
-  if (!user?.is_paid_beta) {
+  if (!user?.is_paid_beta && !isAgent7UnpaidFilingOverrideEnabled()) {
     throw new Error('Upgrade required to file disputes ($99 Beta Activation)');
+  }
+
+  if (!user?.is_paid_beta) {
+    await recordAgent7UnpaidFilingOverride({
+      tenantId,
+      disputeId,
+      userId,
+      sellerId: user.amazon_seller_id || userId,
+      stage: 'route_gate'
+    });
   }
 
   return {
@@ -858,10 +872,10 @@ router.post('/file-now', async (req, res) => {
       });
     }
 
-    const { sellerId } = await resolvePaidSellerIdentity(userId);
+    await resolvePaidSellerIdentity(userId, tenantId, dispute_id);
     const { data: caseData, error: fetchError } = await supabaseAdmin
       .from('dispute_cases')
-      .select('id, filing_status')
+      .select('id, filing_status, seller_id')
       .eq('id', dispute_id)
       .eq('tenant_id', tenantId)
       .single();
@@ -902,19 +916,41 @@ router.post('/file-now', async (req, res) => {
       .eq('id', dispute_id)
       .eq('tenant_id', tenantId);
 
-    const job = await refundFilingWorker.addJob(dispute_id, sellerId);
+    const caseSellerId = String(caseData.seller_id || '').trim();
+    if (!caseSellerId) {
+      return res.status(409).json({
+        success: false,
+        message: 'Case is missing canonical seller linkage'
+      });
+    }
+
+    const job = await refundFilingWorker.addJob(dispute_id, caseSellerId);
     const queued = job.mode === 'queued';
     const blocked = job.mode === 'blocked';
 
+    if (blocked) {
+      const { data: latestCase } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('filing_status, block_reasons, last_error')
+        .eq('id', dispute_id)
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+
+      return res.status(409).json({
+        success: false,
+        message: latestCase?.last_error || 'Case is blocked and could not enter filing.',
+        filing_status: latestCase?.filing_status || 'blocked',
+        block_reasons: Array.isArray(latestCase?.block_reasons) ? latestCase?.block_reasons : []
+      });
+    }
+
     res.json({
       success: true,
-      message: blocked
-        ? 'Case held for safety verification; queue governance was unavailable.'
-        : 'Case queued for filing.',
+      message: 'Case queued for filing.',
       jobId: job.id,
-      filing_status: blocked ? 'pending_safety_verification' : 'pending',
+      filing_status: 'pending',
       queued,
-      blocked,
+      blocked: false,
       mode: job.mode
     });
 
@@ -943,7 +979,7 @@ router.post('/retry-filing', async (req, res) => {
       });
     }
 
-    const { sellerId } = await resolvePaidSellerIdentity(userId);
+    await resolvePaidSellerIdentity(userId, tenantId, dispute_id);
     const { data: caseData, error: fetchError } = await supabaseAdmin
       .from('dispute_cases')
       .select('*')
@@ -982,21 +1018,43 @@ router.post('/retry-filing', async (req, res) => {
       .eq('id', dispute_id)
       .eq('tenant_id', tenantId);
 
-    const job = await refundFilingWorker.addJob(dispute_id, sellerId);
+    const caseSellerId = String(caseData.seller_id || '').trim();
+    if (!caseSellerId) {
+      return res.status(409).json({
+        success: false,
+        message: 'Case is missing canonical seller linkage'
+      });
+    }
+
+    const job = await refundFilingWorker.addJob(dispute_id, caseSellerId);
     const queued = job.mode === 'queued';
     const blocked = job.mode === 'blocked';
 
+    if (blocked) {
+      const { data: latestCase } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('filing_status, block_reasons, last_error')
+        .eq('id', dispute_id)
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+
+      return res.status(409).json({
+        success: false,
+        message: latestCase?.last_error || 'Retry is blocked and could not enter filing.',
+        filing_status: latestCase?.filing_status || 'blocked',
+        block_reasons: Array.isArray(latestCase?.block_reasons) ? latestCase?.block_reasons : []
+      });
+    }
+
     res.json({
       success: true,
-      message: blocked
-        ? 'Retry held for safety verification; queue governance was unavailable.'
-        : 'Retry queued for filing',
+      message: 'Retry queued for filing',
       jobId: job.id,
       dispute_id,
-      filing_status: blocked ? 'pending_safety_verification' : 'retrying',
+      filing_status: 'retrying',
       retry_count: newRetryCount,
       queued,
-      blocked,
+      blocked: false,
       mode: job.mode
     });
 
@@ -1025,7 +1083,7 @@ router.post('/approve-filing', async (req, res) => {
       });
     }
 
-    const { sellerId } = await resolvePaidSellerIdentity(userId);
+    await resolvePaidSellerIdentity(userId, tenantId, dispute_id);
     const { data: caseData, error: fetchError } = await supabaseAdmin
       .from('dispute_cases')
       .select('*')
@@ -1076,21 +1134,43 @@ router.post('/approve-filing', async (req, res) => {
 
     console.log(`[approve-filing] User ${userId} approved claim ${dispute_id}`);
 
-    const job = await refundFilingWorker.addJob(dispute_id, sellerId);
+    const caseSellerId = String(caseData.seller_id || '').trim();
+    if (!caseSellerId) {
+      return res.status(409).json({
+        success: false,
+        message: 'Case is missing canonical seller linkage'
+      });
+    }
+
+    const job = await refundFilingWorker.addJob(dispute_id, caseSellerId);
     const queued = job.mode === 'queued';
     const blocked = job.mode === 'blocked';
 
+    if (blocked) {
+      const { data: latestCase } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('filing_status, block_reasons, last_error')
+        .eq('id', dispute_id)
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+
+      return res.status(409).json({
+        success: false,
+        message: latestCase?.last_error || 'Approved claim is blocked and could not enter filing.',
+        filing_status: latestCase?.filing_status || 'blocked',
+        block_reasons: Array.isArray(latestCase?.block_reasons) ? latestCase?.block_reasons : []
+      });
+    }
+
     res.json({
       success: true,
-      message: blocked
-        ? 'Claim approval recorded, but filing is held for safety verification.'
-        : 'Claim approved and queued for filing',
+      message: 'Claim approved and queued for filing',
       dispute_id,
-      filing_status: blocked ? 'pending_safety_verification' : 'pending',
+      filing_status: 'pending',
       approved_by: userId,
       jobId: job.id,
       queued,
-      blocked,
+      blocked: false,
       mode: job.mode
     });
 
