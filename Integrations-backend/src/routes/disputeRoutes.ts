@@ -4,6 +4,8 @@ import { supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import refundFilingWorker from '../workers/refundFilingWorker';
 import { evaluateAndPersistCaseEligibility } from '../services/agent7EligibilityService';
+import { createSellerHttpClient } from '../services/sellerHttpClient';
+import proxyAssignmentService from '../services/proxyAssignmentService';
 import {
   isAgent7UnpaidFilingOverrideEnabled,
   recordAgent7UnpaidFilingOverride
@@ -148,6 +150,185 @@ function getDisputeRouteStatusCode(error: any) {
 
   return 500;
 }
+
+function hasTrustedInternalApiKey(req: any): boolean {
+  const configuredKey = process.env.INTERNAL_API_KEY;
+  if (!configuredKey || configuredKey.trim().length === 0) {
+    return false;
+  }
+
+  const providedKey = req.headers['x-internal-api-key'] || req.headers['x-api-key'];
+  return typeof providedKey === 'string' && providedKey === configuredKey;
+}
+
+function classifyProxyEnvVar(name: string, value?: string | null): {
+  name: string;
+  state: 'present_and_usable' | 'present_but_malformed' | 'missing' | 'ignored_by_code_path';
+  detail: string;
+} {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+
+  if (name === 'PROXY_PASSWORD' || name === 'PROXY_USERNAME') {
+    return trimmed
+      ? {
+          name,
+          state: 'present_and_usable',
+          detail: `${name} is present`
+        }
+      : {
+          name,
+          state: 'missing',
+          detail: `${name} is missing`
+        };
+  }
+
+  if (name === 'ENABLE_PROXY_ROUTING') {
+    if (!trimmed) {
+      return {
+        name,
+        state: 'missing',
+        detail: 'ENABLE_PROXY_ROUTING is missing and code treats proxy routing as disabled'
+      };
+    }
+
+    return trimmed === 'true'
+      ? {
+          name,
+          state: 'present_and_usable',
+          detail: 'ENABLE_PROXY_ROUTING=true'
+        }
+      : {
+          name,
+          state: 'present_but_malformed',
+          detail: `ENABLE_PROXY_ROUTING=${trimmed} (code requires literal true)`
+        };
+  }
+
+  if (name === 'PROXY_PORT') {
+    if (!trimmed) {
+      return {
+          name,
+          state: 'missing',
+          detail: 'PROXY_PORT is missing and code falls back to 22225'
+        };
+    }
+
+    return Number.isFinite(Number(trimmed))
+      ? {
+          name,
+          state: 'present_and_usable',
+          detail: `PROXY_PORT=${trimmed}`
+        }
+      : {
+          name,
+          state: 'present_but_malformed',
+          detail: `PROXY_PORT=${trimmed} is not numeric`
+        };
+  }
+
+  if (!trimmed) {
+    return {
+      name,
+      state: 'missing',
+      detail: `${name} is missing and code uses its default`
+    };
+  }
+
+  return {
+    name,
+    state: 'present_and_usable',
+    detail: `${name}=${trimmed}`
+  };
+}
+
+router.get('/proxy-runtime-check', async (req, res) => {
+  try {
+    if (!hasTrustedInternalApiKey(req)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Trusted internal API key required'
+      });
+    }
+
+    const sellerId = String(req.query.seller_id || '').trim();
+    if (!sellerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'seller_id is required'
+      });
+    }
+
+    const proxyEnvAudit = {
+      ENABLE_PROXY_ROUTING: classifyProxyEnvVar('ENABLE_PROXY_ROUTING', process.env.ENABLE_PROXY_ROUTING),
+      PROXY_PROVIDER: classifyProxyEnvVar('PROXY_PROVIDER', process.env.PROXY_PROVIDER),
+      PROXY_HOST: classifyProxyEnvVar('PROXY_HOST', process.env.PROXY_HOST),
+      PROXY_PORT: classifyProxyEnvVar('PROXY_PORT', process.env.PROXY_PORT),
+      PROXY_USERNAME: classifyProxyEnvVar('PROXY_USERNAME', process.env.PROXY_USERNAME),
+      PROXY_PASSWORD: classifyProxyEnvVar('PROXY_PASSWORD', process.env.PROXY_PASSWORD),
+      PROXY_COUNTRY: classifyProxyEnvVar('PROXY_COUNTRY', process.env.PROXY_COUNTRY)
+    };
+
+    const { data: assignment } = await supabaseAdmin
+      .from('seller_proxy_assignments')
+      .select('id, seller_id, proxy_session_id, proxy_provider, proxy_region, status, tenant_id, created_at, updated_at')
+      .eq('seller_id', sellerId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    let proxyResolution: Record<string, any>;
+    try {
+      const resolvedProxy = await proxyAssignmentService.getProxyForSeller(sellerId);
+      proxyResolution = {
+        ok: true,
+        config: resolvedProxy
+          ? {
+              host: resolvedProxy.host,
+              port: resolvedProxy.port,
+              protocol: resolvedProxy.protocol,
+              sessionId: resolvedProxy.sessionId,
+              usernamePreview: `${String(resolvedProxy.username || '').slice(0, 12)}...`
+            }
+          : null
+      };
+    } catch (error: any) {
+      proxyResolution = {
+        ok: false,
+        error: error?.message || String(error)
+      };
+    }
+
+    let clientInitialization: Record<string, any>;
+    try {
+      const client = createSellerHttpClient(sellerId);
+      await (client as any).initialize();
+      clientInitialization = {
+        ok: true,
+        proxyInfo: client.getProxyInfo()
+      };
+    } catch (error: any) {
+      clientInitialization = {
+        ok: false,
+        error: error?.message || String(error)
+      };
+    }
+
+    return res.json({
+      success: true,
+      seller_id: sellerId,
+      runtime_config: proxyAssignmentService.getConfigSummary(),
+      env_audit: proxyEnvAudit,
+      assignment: assignment || null,
+      proxy_resolution: proxyResolution,
+      client_initialization: clientInitialization
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      success: false,
+      message: error?.message || 'Failed to inspect proxy runtime'
+    });
+  }
+});
 
 router.get('/', async (req, res) => {
   try {
