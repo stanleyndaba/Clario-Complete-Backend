@@ -28,6 +28,7 @@ const BILLING_COMPLETE_STATUSES = new Set(['paid', 'charged', 'credited', 'compl
 const REJECTED_STATUSES = new Set(['rejected', 'denied']);
 const APPROVED_STATUSES = new Set(['approved', 'won']);
 const FILED_STATUSES = new Set(['filed', 'submitted', 'resubmitted', 'filing', 'submitting']);
+const DETECTED_FILING_READY_THRESHOLD = 0.6;
 const REVIEW_FILINGS = new Set([
   'pending_approval',
   'quarantined_dangerous_doc',
@@ -50,6 +51,11 @@ function toNumber(value: unknown): number | null {
 function toMoney(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
+}
+
+function buildOpportunityCaseNumber(id: string | null | undefined) {
+  const compact = String(id || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+  return `OPP-${compact.slice(0, 8) || 'UNFILED'}`;
 }
 
 function compareValues(left: unknown, right: unknown) {
@@ -146,6 +152,8 @@ function deriveApprovedAmount(record: any): number | null {
 
 function getMatchedDocumentCount(record: any, linkedDocumentCount: number) {
   if (linkedDocumentCount > 0) return linkedDocumentCount;
+  if (typeof record?.matched_document_count === 'number' && record.matched_document_count > 0) return record.matched_document_count;
+  if (Array.isArray(record?.matched_document_ids)) return record.matched_document_ids.length;
   if (record?.evidence_attachments?.document_id) return 1;
   if (Array.isArray(record?.evidence_document_ids)) return record.evidence_document_ids.length;
   return 0;
@@ -197,15 +205,6 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
   const sortBy = String(filters.sort_by || 'updated_at');
   const sortOrder = normalize(filters.sort_order) === 'asc' ? 'asc' : 'desc';
 
-  const totalCasesQuery = await supabaseAdmin
-    .from('dispute_cases')
-    .select('id', { count: 'exact', head: true })
-    .eq('tenant_id', scope.tenantId);
-
-  if (totalCasesQuery.error) {
-    throw new Error('Failed to count dispute cases');
-  }
-
   const rows: any[] = [];
   const batchSize = 1000;
   let from = 0;
@@ -217,19 +216,6 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       .eq('tenant_id', scope.tenantId)
       .order('updated_at', { ascending: false })
       .range(from, from + batchSize - 1);
-
-    if (filters.status && filters.status !== 'all') {
-      disputeQuery = disputeQuery.eq('status', filters.status);
-    }
-    if (filters.filing_status && filters.filing_status !== 'all') {
-      disputeQuery = disputeQuery.eq('filing_status', filters.filing_status);
-    }
-    if (filters.recovery_status && filters.recovery_status !== 'all') {
-      disputeQuery = disputeQuery.eq('recovery_status', filters.recovery_status);
-    }
-    if (filters.billing_status && filters.billing_status !== 'all') {
-      disputeQuery = disputeQuery.eq('billing_status', filters.billing_status);
-    }
 
     const { data: batch, error: disputeError } = await disputeQuery;
     if (disputeError) {
@@ -244,7 +230,33 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
 
   const disputeIds = rows.map((row: any) => row.id);
   const detectionIds = rows.map((row: any) => row.detection_result_id).filter(Boolean);
-  const storeIds = rows.map((row: any) => row.store_id).filter(Boolean);
+  const linkedDetectionIds = new Set(detectionIds);
+  const orphanDetections: any[] = [];
+  let detectionFrom = 0;
+
+  while (true) {
+    const { data: detectionBatch, error: detectionBatchError } = await supabaseAdmin
+      .from('detection_results')
+      .select('*')
+      .eq('tenant_id', scope.tenantId)
+      .order('updated_at', { ascending: false })
+      .range(detectionFrom, detectionFrom + batchSize - 1);
+
+    if (detectionBatchError) {
+      throw new Error(`Failed to load detection results: ${detectionBatchError.message || 'unknown query error'}`);
+    }
+
+    const filteredBatch = (detectionBatch || []).filter((row: any) => !linkedDetectionIds.has(row.id));
+    orphanDetections.push(...filteredBatch);
+
+    if ((detectionBatch || []).length < batchSize) break;
+    detectionFrom += batchSize;
+  }
+
+  const storeIds = [
+    ...rows.map((row: any) => row.store_id).filter(Boolean),
+    ...orphanDetections.map((row: any) => row.store_id).filter(Boolean)
+  ];
 
   const [{ data: evidenceLinks }, { data: detectionRows }, { data: stores }, { data: billingRows }] = await Promise.all([
     disputeIds.length
@@ -385,11 +397,79 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     };
   });
 
+  const detectedRows = orphanDetections.map((record: any) => {
+    const matchedDocumentCount = getMatchedDocumentCount(record, 0);
+    const confidenceScore = toNumber(record.confidence_score) ?? 0;
+    const eligibleToFile = matchedDocumentCount > 0 && confidenceScore >= DETECTED_FILING_READY_THRESHOLD;
+    const filingStatus = eligibleToFile ? 'pending' : 'blocked';
+    const row = {
+      dispute_case_id: record.id,
+      detection_result_id: record.id,
+      case_number: buildOpportunityCaseNumber(record.id),
+      claim_number: buildOpportunityCaseNumber(record.id),
+      case_type: record.case_type || record.anomaly_type || null,
+      anomaly_type: record.anomaly_type || record.case_type || null,
+      status: record.status || 'detected',
+      filing_status: filingStatus,
+      recovery_status: null,
+      billing_status: null,
+      eligible_to_file: eligibleToFile,
+      block_reasons: eligibleToFile ? [] : (matchedDocumentCount === 0 ? ['missing_evidence'] : ['manual_review']),
+      requested_amount: toMoney(record.estimated_value),
+      approved_amount: null,
+      actual_payout_amount: null,
+      billed_amount: null,
+      currency: record.currency || 'USD',
+      evidence_state: deriveEvidenceState(
+        {
+          ...record,
+          eligible_to_file: eligibleToFile,
+          filing_status: filingStatus,
+          block_reasons: eligibleToFile ? [] : ['missing_evidence']
+        },
+        matchedDocumentCount
+      ),
+      filing_strategy: null,
+      explanation_payload: null,
+      operational_state: null,
+      operational_explanation: null,
+      operational_updated_at: null,
+      proof_status: eligibleToFile ? 'filing_ready' : (matchedDocumentCount > 0 ? 'manual_review' : 'missing_requirements'),
+      missing_requirements: matchedDocumentCount > 0 ? [] : ['supporting_document'],
+      manual_review_reason: eligibleToFile ? null : (matchedDocumentCount === 0 ? 'missing_evidence' : 'manual_review'),
+      payout_proof_status: 'not_applicable',
+      quarantine_reason: null,
+      matched_document_count: matchedDocumentCount,
+      rejection_category: null,
+      rejection_reason: null,
+      created_at: record.created_at || null,
+      updated_at: record.updated_at || record.created_at || null,
+      amazon_case_id: null,
+      store_name: storeById.get(record.store_id) || null,
+      order_id: record.order_id || record.evidence?.order_id || null,
+      sku: record.sku || record.evidence?.sku || null,
+      asin: record.asin || record.evidence?.asin || null,
+      expected_payout_amount: toMoney(record.estimated_value),
+      expected_payout_date: null
+    };
+
+    return {
+      ...row,
+      next_action: deriveNextAction(row)
+    };
+  });
+
+  const allRows = [...enrichedRows, ...detectedRows];
+
   const search = normalize(filters.search);
   const evidenceFilter = normalize(filters.evidence_state);
   const rejectionCategoryFilter = normalize(filters.rejection_category);
+  const statusFilter = normalize(filters.status);
+  const filingStatusFilter = normalize(filters.filing_status);
+  const recoveryStatusFilter = normalize(filters.recovery_status);
+  const billingStatusFilter = normalize(filters.billing_status);
 
-  const filteredRows = enrichedRows.filter((row) => {
+  const filteredRows = allRows.filter((row) => {
     const searchMatch = !search || [
       row.case_number,
       row.claim_number,
@@ -403,9 +483,13 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       row.rejection_reason
     ].some((value) => normalize(value).includes(search));
 
+    const statusMatch = !statusFilter || statusFilter === 'all' || normalize(row.status) === statusFilter;
+    const filingMatch = !filingStatusFilter || filingStatusFilter === 'all' || normalize(row.filing_status) === filingStatusFilter;
+    const recoveryMatch = !recoveryStatusFilter || recoveryStatusFilter === 'all' || normalize(row.recovery_status) === recoveryStatusFilter;
+    const billingMatch = !billingStatusFilter || billingStatusFilter === 'all' || normalize(row.billing_status) === billingStatusFilter;
     const evidenceMatch = !evidenceFilter || evidenceFilter === 'all' || normalize(row.evidence_state) === evidenceFilter;
     const rejectionMatch = !rejectionCategoryFilter || rejectionCategoryFilter === 'all' || normalize(row.rejection_category) === rejectionCategoryFilter;
-    return searchMatch && evidenceMatch && rejectionMatch;
+    return searchMatch && statusMatch && filingMatch && recoveryMatch && billingMatch && evidenceMatch && rejectionMatch;
   });
 
   const sortedRows = [...filteredRows].sort((left, right) => {
@@ -434,7 +518,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
   return {
     tenant_id: scope.tenantId,
     tenant_slug: scope.tenantSlug,
-    total_cases: totalCasesQuery.count || 0,
+    total_cases: allRows.length,
     filtered_results: filteredRows.length,
     blocked_count: blockedCount,
     ready_to_file_count: readyToFileCount,

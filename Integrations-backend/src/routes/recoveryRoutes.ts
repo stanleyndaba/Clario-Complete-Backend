@@ -517,7 +517,42 @@ router.get('/ledger', async (req: Request, res: Response) => {
         }
 
         const recoveryRelevantCases = (disputeCases || []).filter(isRecoveryRelevant);
+        const linkedDetectionIds = new Set(
+            recoveryRelevantCases
+                .map((row: any) => row.detection_result_id)
+                .filter(Boolean)
+        );
+        const { data: persistedDetections, error: detectionError } = await supabaseAdmin
+            .from('detection_results')
+            .select('*')
+            .eq('tenant_id', tenantId);
+
+        if (detectionError) {
+            throw detectionError;
+        }
+
+        const orphanDetections = (persistedDetections || []).filter((row: any) => !linkedDetectionIds.has(row.id));
         const disputeIds = recoveryRelevantCases.map((row: any) => row.id).filter(Boolean);
+        const storeIds = Array.from(new Set([
+            ...recoveryRelevantCases.map((row: any) => row.store_id).filter(Boolean),
+            ...orphanDetections.map((row: any) => row.store_id).filter(Boolean)
+        ]));
+        const storeNameById = new Map<string, string>();
+
+        if (storeIds.length > 0) {
+            const { data: stores, error: storeError } = await supabaseAdmin
+                .from('stores')
+                .select('id, name')
+                .in('id', storeIds);
+
+            if (storeError) {
+                throw storeError;
+            }
+
+            (stores || []).forEach((store: any) => {
+                storeNameById.set(store.id, store.name);
+            });
+        }
 
         let latestBillingByDisputeId = new Map<string, any>();
         let latestRecoveryWorkByDisputeId = new Map<string, any>();
@@ -579,7 +614,7 @@ router.get('/ledger', async (req: Request, res: Response) => {
             });
         }
 
-        const ledgerRows = recoveryRelevantCases.map((record: any) => {
+        const caseLedgerRows = recoveryRelevantCases.map((record: any) => {
             const approvedAmount = deriveApprovedAmount(record);
             const actualPayoutAmount = toOptionalAmount(record.recovered_amount ?? record.actual_payout_amount);
             const latestBilling = latestBillingByDisputeId.get(record.id);
@@ -606,7 +641,7 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 detection_result_id: record.detection_result_id || null,
                 case_number: record.case_number || record.claim_number || record.amazon_case_id || record.id.slice(0, 8),
                 provider_case_id: record.amazon_case_id || null,
-                merchant_reference: record.store_name || record.seller_id || null,
+                merchant_reference: storeNameById.get(record.store_id) || record.store_name || record.seller_id || null,
                 status: record.status || null,
                 recovery_status: record.recovery_status || null,
                 billing_status: billingStatus,
@@ -664,6 +699,79 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 last_updated_at: latestBilling?.updated_at || latestBillingWork?.updated_at || latestRecoveryWork?.updated_at || record.updated_at || record.created_at || null,
             };
         });
+
+        const detectionLedgerRows = orphanDetections.map((record: any) => {
+            const matchedDocumentCount =
+                Number.isFinite(Number(record?.matched_document_count))
+                    ? Number(record.matched_document_count)
+                    : (Array.isArray(record?.matched_document_ids) ? record.matched_document_ids.length : 0);
+            const expectedPayoutAmount = toOptionalAmount(record.estimated_value);
+            const operatorState = matchedDocumentCount > 0 ? 'opportunity_detected' : 'investigation_required';
+
+            return {
+                recovery_id: record.id,
+                dispute_case_id: record.id,
+                detection_result_id: record.id,
+                case_number: `OPP-${String(record.id || '').replace(/-/g, '').slice(0, 8).toUpperCase() || 'UNFILED'}`,
+                provider_case_id: null,
+                merchant_reference: storeNameById.get(record.store_id) || record.seller_id || null,
+                status: record.status || 'detected',
+                recovery_status: null,
+                billing_status: null,
+                recovery_work_status: null,
+                billing_work_status: null,
+                recovery_work_item_id: null,
+                billing_work_item_id: null,
+                recovery_execution_lane: null,
+                billing_execution_lane: null,
+                recovery_work_error: null,
+                billing_work_error: null,
+                recovery_work_attempts: 0,
+                billing_work_attempts: 0,
+                recovery_work_max_attempts: 0,
+                billing_work_max_attempts: 0,
+                recovery_locked_by: null,
+                billing_locked_by: null,
+                recovery_work_payload: null,
+                billing_work_payload: null,
+                recovery_lifecycle_state: null,
+                billing_lifecycle_state: null,
+                recovery_operational_state: null,
+                billing_operational_state: null,
+                recovery_operational_explanation: null,
+                billing_operational_explanation: null,
+                recovery_defer_count: 0,
+                billing_defer_count: 0,
+                recovery_last_deferred_reason: null,
+                billing_last_deferred_reason: null,
+                recovery_last_processed_at: null,
+                billing_last_processed_at: null,
+                recovery_last_claimed_at: null,
+                billing_last_claimed_at: null,
+                recovery_last_runtime_role: null,
+                billing_last_runtime_role: null,
+                recovery_execution_processed_at: null,
+                billing_execution_processed_at: null,
+                recovery_next_attempt_at: null,
+                billing_next_attempt_at: null,
+                approved_amount: null,
+                actual_payout_amount: null,
+                expected_payout_amount: expectedPayoutAmount,
+                billed_revenue_amount: null,
+                reconciliation_status: 'unknown',
+                reconciliation_strategy: null,
+                match_explanation: null,
+                operator_state: operatorState,
+                investigation_required: operatorState === 'investigation_required',
+                currency: record.currency || 'USD',
+                expected_payout_date: null,
+                recovered_at: null,
+                detected_at: record.created_at || null,
+                last_updated_at: record.updated_at || record.created_at || null,
+            };
+        });
+
+        const ledgerRows = [...caseLedgerRows, ...detectionLedgerRows];
 
         const summary = buildRecoveriesSummary(ledgerRows);
 

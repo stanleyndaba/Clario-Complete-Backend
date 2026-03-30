@@ -1564,6 +1564,18 @@ export class CSVIngestionService {
             return;
         }
 
+        try {
+            const { upsertDisputesAndRecoveriesFromDetections } = await import('./disputeBackfillService');
+            await upsertDisputesAndRecoveriesFromDetections(detectionResults as any[]);
+        } catch (backfillError: any) {
+            logger.warn('⚠️ [CSV INGESTION] Failed to backfill dispute/recovery records from persisted detections', {
+                userId,
+                tenantId,
+                syncId,
+                error: backfillError?.message || backfillError,
+            });
+        }
+
         const [{ default: sseHub }, { resolveTenantSlug }] = await Promise.all([
             import('../utils/sseHub'),
             import('../utils/tenantEventRouting'),
@@ -1607,18 +1619,11 @@ export class CSVIngestionService {
         userId: string,
         tenantId: string,
         syncId: string
-    ): Promise<Array<{
-        id: string;
-        anomaly_type: string | null;
-        estimated_value: number | null;
-        currency: string | null;
-        status: string | null;
-        created_at: string | null;
-    }>> {
+    ): Promise<any[]> {
         for (let attempt = 1; attempt <= 3; attempt++) {
             const { data, error } = await supabaseAdmin
                 .from('detection_results')
-                .select('id, anomaly_type, estimated_value, currency, status, created_at')
+                .select('*')
                 .eq('seller_id', userId)
                 .eq('tenant_id', tenantId)
                 .eq('sync_id', syncId)
