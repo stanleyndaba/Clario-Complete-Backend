@@ -55,6 +55,30 @@ export class AmazonSubmissionAutomator {
             });
     }
 
+    private async resolveInternalUserIdForSeller(sellerId: string): Promise<string> {
+        const { data: mapping } = await supabaseAdmin
+            .from('v1_seller_identity_map')
+            .select('user_id')
+            .eq('merchant_token', sellerId)
+            .maybeSingle();
+
+        if (mapping?.user_id) {
+            return mapping.user_id;
+        }
+
+        const { data: user } = await supabaseAdmin
+            .from('users')
+            .select('id')
+            .eq('amazon_seller_id', sellerId)
+            .maybeSingle();
+
+        if (user?.id) {
+            return user.id;
+        }
+
+        throw new Error(`[AGENT 7 FATAL] Identity Mapping Missing: Seller ${sellerId} is not mapped to any internal user.`);
+    }
+
     /**
      * Executes the full submission protocol for a dispute case.
      */
@@ -77,10 +101,7 @@ export class AmazonSubmissionAutomator {
 
             // 0. FINANCIAL SENTRY: Pre-Flight Payment Verification
             // Must occur BEFORE the database lock.
-            const isAuthorized = await this.enforcePaywall(caseId, sellerId);
-            if (!isAuthorized) {
-                throw new Error(`[AGENT 7 FATAL] Financial Sentry: Paywall check failed. Seller: ${sellerId}`);
-            }
+            const internalUserId = await this.enforcePaywall(caseId, sellerId);
 
             const eligibilitySnapshot = await evaluateAndPersistCaseEligibility(caseId, caseInfo.tenant_id);
             if (!eligibilitySnapshot.eligible) {
@@ -203,7 +224,8 @@ export class AmazonSubmissionAutomator {
 
             const filingResult = await refundFilingService.fileDispute({
                 dispute_id: caseId,
-                user_id: sellerId,
+                user_id: internalUserId,
+                seller_id: sellerId,
                 tenant_id: caseInfo.tenant_id,
                 order_id: detectionEvidence.order_id || '',
                 shipment_id: detectionEvidence.shipment_id || detectionEvidence.fba_shipment_id || undefined,
@@ -236,8 +258,8 @@ export class AmazonSubmissionAutomator {
                 await supabaseAdmin
                     .from('dispute_cases')
                     .update({
-                        filing_status: 'failed',
-                        last_error: filingResult.error_message || 'Filing failed',
+                        filing_status: filingResult.status === 'blocked' ? 'blocked' : filingResult.status === 'retrying' ? 'retrying' : 'failed',
+                        last_error: filingResult.last_error || filingResult.error_message || 'Filing failed',
                         updated_at: new Date().toISOString()
                     })
                     .eq('id', caseId)
@@ -256,7 +278,7 @@ export class AmazonSubmissionAutomator {
 
 
             // 4. Update tracking info
-            await this.updateClaimWithCaseInfo(caseId, sellerId, caseInfo.tenant_id, filingResult, submissionAttempts);
+            await this.updateClaimWithCaseInfo(caseId, sellerId, internalUserId, caseInfo.tenant_id, filingResult, submissionAttempts);
 
             // 5. Handoff to monitoring (Agent 8)
             logger.info(`✅ [AGENT 7] Handoff and complete. Case: ${amazonCaseId}`);
@@ -269,22 +291,51 @@ export class AmazonSubmissionAutomator {
         }
     }
 
-    private async updateClaimWithCaseInfo(caseId: string, sellerId: string, tenantId: string, result: Awaited<ReturnType<typeof refundFilingService.fileDispute>>, submissionAttempts: number) {
-        const timestamp = new Date().toISOString();
+    private async updateClaimWithCaseInfo(
+        caseId: string,
+        sellerId: string,
+        internalUserId: string,
+        tenantId: string,
+        result: Awaited<ReturnType<typeof refundFilingService.fileDispute>>,
+        submissionAttempts: number
+    ) {
+        const timestamp = result.response_received_at || new Date().toISOString();
         const amazonCaseId = result.amazon_case_id || null;
-        const submissionId = result.submission_id || amazonCaseId;
+        const externalReference = result.external_reference || amazonCaseId || null;
+        const submissionId = result.submission_id || externalReference;
+
+        if (!result.authoritative_proof || !externalReference) {
+            throw new Error('Agent 7 refused to mark the claim filed because no authoritative external submission proof was returned.');
+        }
+
+        const ledgerRow = {
+            dispute_id: caseId,
+            tenant_id: tenantId,
+            user_id: internalUserId,
+            seller_id: sellerId,
+            submission_id: submissionId,
+            amazon_case_id: amazonCaseId,
+            external_reference: externalReference,
+            idempotency_key: result.idempotency_key || null,
+            request_started_at: result.request_started_at || timestamp,
+            response_received_at: result.response_received_at || timestamp,
+            submission_channel: result.submission_channel || 'amazon_spapi',
+            request_summary: result.request_summary || {},
+            response_summary: result.response_summary || {},
+            attachment_manifest: result.attachment_manifest || [],
+            outcome: result.outcome || result.status || 'submitted',
+            status: result.status,
+            last_error: null,
+            attempt_number: submissionAttempts,
+            submission_timestamp: timestamp,
+            created_at: timestamp,
+            updated_at: timestamp
+        };
 
         const { error: submissionError } = await supabaseAdmin
             .from('dispute_submissions')
-            .insert({
-                dispute_id: caseId,
-                tenant_id: tenantId,
-                user_id: sellerId,
-                submission_id: submissionId,
-                amazon_case_id: amazonCaseId,
-                status: result.status,
-                created_at: timestamp,
-                updated_at: timestamp
+            .upsert(ledgerRow, {
+                onConflict: 'tenant_id,dispute_id,idempotency_key'
             });
 
         if (submissionError) {
@@ -305,7 +356,9 @@ export class AmazonSubmissionAutomator {
             .from('dispute_cases')
             .update({
                 amazon_case_id: amazonCaseId,
+                provider_case_id: externalReference,
                 filing_status: 'filed',
+                status: 'submitted',
                 submission_date: timestamp,
                 last_submission_attempt: timestamp,
                 submission_attempts: submissionAttempts,
@@ -322,16 +375,15 @@ export class AmazonSubmissionAutomator {
             throw new Error(divergenceMessage);
         }
 
-        // Sync with claims table (frontend)
         const { error: claimSyncError } = await supabaseAdmin
             .from('claims')
             .update({
                 amazon_case_id: amazonCaseId,
-                status: 'filed',
+                status: 'submitted',
                 last_submission_attempt: timestamp,
                 submission_attempts: submissionAttempts
             })
-            .match({ reference_id: caseId }); // Assuming reference_id maps to caseId
+            .match({ reference_id: caseId });
 
         if (claimSyncError) {
             logger.warn('[AGENT 7] Failed to sync claims table after filing', {
@@ -345,21 +397,9 @@ export class AmazonSubmissionAutomator {
      * Financial Sentry: Patched Zero-Trust Financial Gate
      * Maps Amazon Merchant Token -> User ID -> Payment Status
      */
-    private async enforcePaywall(caseId: string, sellerId: string): Promise<boolean> {
+    private async enforcePaywall(caseId: string, sellerId: string): Promise<string> {
         try {
-            // 1. RELATIONAL SYNC: Map Amazon Merchant Token to internal userId
-            const { data: mapping, error: mapError } = await supabaseAdmin
-                .from('v1_seller_identity_map')
-                .select('user_id')
-                .eq('merchant_token', sellerId)
-                .single();
-
-            if (mapError || !mapping) {
-                logger.error(`❌ [IDENTITY] Unmapped seller attempt: ${sellerId}. Gate Closed.`);
-                throw new Error(`[AGENT 7 FATAL] Identity Mapping Missing: Seller ${sellerId} is not mapped to any user_id in v1_seller_identity_map.`);
-            }
-
-            const userId = mapping.user_id;
+            const userId = await this.resolveInternalUserIdForSeller(sellerId);
 
             // 2. FINANCIAL GUARD: Check payment status for the mapped userId
             const { data: user, error } = await supabaseAdmin
@@ -383,10 +423,10 @@ export class AmazonSubmissionAutomator {
                 throw new Error(`[AGENT 7 FATAL] Security Violation: Mapped user ${userId} is not a paid beta user.`);
             }
 
-            return true; // Authorized
+            return userId;
         } catch (err: any) {
             logger.error(`❌ [AGENT 7] Paywall Check Error: ${err.message}`);
-            return false;
+            throw err;
         }
     }
 
@@ -401,6 +441,7 @@ export class AmazonSubmissionAutomator {
 
         if (amazonCase) {
             logger.info(`✅ [FORTRESS] Amazon match found! Recovered Case ID: ${amazonCase.id}`);
+            const internalUserId = await this.resolveInternalUserIdForSeller(sellerId);
             const { data: existingCase, error: caseLookupError } = await supabaseAdmin
                 .from('dispute_cases')
                 .select('tenant_id, submission_attempts')
@@ -414,12 +455,18 @@ export class AmazonSubmissionAutomator {
             await this.updateClaimWithCaseInfo(
                 caseId,
                 sellerId,
+                internalUserId,
                 existingCase.tenant_id,
                 {
                     success: true,
                     status: 'submitted',
                     submission_id: amazonCase.id,
-                    amazon_case_id: amazonCase.id
+                    amazon_case_id: amazonCase.id,
+                    external_reference: amazonCase.id,
+                    authoritative_proof: true,
+                    outcome: 'submitted',
+                    submission_channel: 'amazon_spapi',
+                    idempotency_key: idempotencyKey
                 },
                 Number(existingCase.submission_attempts || 1)
             );

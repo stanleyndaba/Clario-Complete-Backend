@@ -84,6 +84,35 @@ class Settings(BaseModel):
     _spapi_client_secret = os.getenv("AMAZON_SPAPI_CLIENT_SECRET") or os.getenv("AMAZON_CLIENT_SECRET", "")
     AMAZON_SPAPI_CLIENT_SECRET: str = _spapi_client_secret
     AMAZON_SPAPI_REFRESH_TOKEN: str = os.getenv("AMAZON_SPAPI_REFRESH_TOKEN", "")
+
+    @property
+    def is_production(self) -> bool:
+        return str(self.ENV or "").strip().lower() == "production"
+
+    @property
+    def is_mock_spapi_enabled(self) -> bool:
+        return os.getenv("USE_MOCK_SPAPI", "false").strip().lower() == "true"
+
+    @property
+    def is_sandbox_spapi(self) -> bool:
+        return "sandbox" in (self.AMAZON_SPAPI_BASE_URL or "").lower()
+
+    def assert_real_filing_config(self, context: str = "Amazon filing") -> None:
+        if not self.is_production:
+            return
+
+        if self.is_mock_spapi_enabled:
+            raise RuntimeError(f"{context} is blocked: USE_MOCK_SPAPI=true is not allowed in production")
+
+        if self.is_sandbox_spapi:
+            raise RuntimeError(
+                f"{context} is blocked: AMAZON_SPAPI_BASE_URL points to sandbox and cannot be used for production filing"
+            )
+
+        if not self.AMAZON_SPAPI_CLIENT_ID or not self.AMAZON_SPAPI_CLIENT_SECRET:
+            raise RuntimeError(
+                f"{context} is blocked: AMAZON_SPAPI_CLIENT_ID and AMAZON_SPAPI_CLIENT_SECRET are required in production"
+            )
     
     @property
     def is_postgresql(self) -> bool:

@@ -62,10 +62,15 @@ class SubmissionResult:
     success: bool
     submission_id: Optional[str] = None
     amazon_case_id: Optional[str] = None
+    external_reference: Optional[str] = None
     status: SubmissionStatus = SubmissionStatus.PENDING
     error_message: Optional[str] = None
     retry_after: Optional[datetime] = None
     submission_timestamp: Optional[datetime] = None
+    response_received_at: Optional[datetime] = None
+    submission_channel: str = "amazon_spapi"
+    authoritative_proof: bool = False
+    response_summary: Optional[Dict[str, Any]] = None
 
     @property
     def error(self) -> Optional[str]:
@@ -83,25 +88,46 @@ class AmazonSPAPIService:
         self.refresh_token = getattr(settings, "AMAZON_SPAPI_REFRESH_TOKEN", os.getenv("AMAZON_SPAPI_REFRESH_TOKEN", ""))
         self.access_token = None
         self.token_expires_at = None
+        self.token_user_id = None
         self.rate_limiter = RateLimiter()
         self.use_mock = os.getenv("USE_MOCK_SPAPI", "false").lower() == "true"
         if self.use_mock:
             logger.info("Initializing AmazonSPAPIService in MOCK MODE")
+
+    def _assert_real_submission_allowed(self, context: str = "Amazon SP-API dispute submission") -> None:
+        settings.assert_real_filing_config(context)
+
+    def _resolve_refresh_token(self, user_id: Optional[str] = None) -> str:
+        if user_id:
+            token = self.db.get_oauth_token(user_id, "amazon")
+            if token:
+                return token
+            raise RuntimeError(f"Amazon OAuth refresh token missing for user {user_id}")
+
+        if settings.is_production:
+            raise RuntimeError("Amazon filing requires a user-scoped OAuth refresh token in production")
+
+        if self.refresh_token:
+            return self.refresh_token
+
+        raise RuntimeError("Amazon SP-API refresh token is not configured")
         
     async def submit_dispute(
         self, 
         claim: SPAPIClaim, 
         user_id: str,
         evidence_documents: List[Dict[str, Any]],
-        confidence_score: float
+        confidence_score: float,
+        persist_submission: bool = True
     ) -> SubmissionResult:
         """Submit dispute to Amazon SP-API"""
         try:
+            self._assert_real_submission_allowed()
             # Check rate limits
             await self.rate_limiter.wait_if_needed()
             
             # Get valid access token
-            await self._ensure_valid_token()
+            await self._ensure_valid_token(user_id=user_id)
             
             # Prepare submission payload
             payload = await self._prepare_submission_payload(claim, evidence_documents)
@@ -116,29 +142,41 @@ class AmazonSPAPIService:
                     "success": True,
                     "submission_id": submission_id,
                     "amazon_case_id": case_id,
+                    "external_reference": case_id,
+                    "accepted": True,
                     "status": "submitted",
-                    "message": "Mock dispute submitted successfully"
+                    "message": "Mock dispute submitted successfully",
+                    "response_summary": {
+                        "message": "Mock dispute submitted successfully",
+                        "status": "submitted"
+                    }
                 }
             else:
                 response = await self._submit_to_spapi(payload, user_id)
             
             if response["success"]:
                 # Log successful submission
-                await self._log_submission_success(
-                    user_id, claim, response, confidence_score
-                )
+                if persist_submission:
+                    await self._log_submission_success(
+                        user_id, claim, response, confidence_score
+                    )
                 
                 return SubmissionResult(
                     success=True,
                     submission_id=response["submission_id"],
                     amazon_case_id=response["amazon_case_id"],
+                    external_reference=response.get("external_reference"),
                     status=SubmissionStatus.SUBMITTED,
-                    submission_timestamp=datetime.utcnow()
+                    submission_timestamp=datetime.utcnow(),
+                    response_received_at=datetime.utcnow(),
+                    authoritative_proof=bool(response.get("accepted")),
+                    response_summary=response.get("response_summary") or response,
+                    submission_channel="amazon_spapi"
                 )
             else:
                 # Handle submission failure
                 return await self._handle_submission_failure(
-                    user_id, claim, response, confidence_score
+                    user_id, claim, response, confidence_score, persist_submission
                 )
                 
         except Exception as e:
@@ -156,7 +194,8 @@ class AmazonSPAPIService:
     ) -> Dict[str, Any]:
         """Check status of submitted dispute"""
         try:
-            await self._ensure_valid_token()
+            self._assert_real_submission_allowed("Amazon SP-API status polling")
+            await self._ensure_valid_token(user_id=user_id)
             
             async with httpx.AsyncClient() as client:
                 response = await client.get(
@@ -311,21 +350,26 @@ class AmazonSPAPIService:
             logger.error(f"Failed to get user submissions: {e}")
             raise
     
-    async def _ensure_valid_token(self):
+    async def _ensure_valid_token(self, user_id: Optional[str] = None):
         """Ensure we have a valid access token"""
-        if not self.access_token or (self.token_expires_at and datetime.utcnow() >= self.token_expires_at):
-            await self._refresh_access_token()
+        if (
+            not self.access_token
+            or (self.token_expires_at and datetime.utcnow() >= self.token_expires_at)
+            or self.token_user_id != user_id
+        ):
+            await self._refresh_access_token(user_id=user_id)
     
-    async def _refresh_access_token(self):
+    async def _refresh_access_token(self, user_id: Optional[str] = None):
         """Refresh SP-API access token"""
         try:
+            refresh_token = self._resolve_refresh_token(user_id)
             # Use LWA (Login with Amazon) token endpoint, NOT SP-API endpoint
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     "https://api.amazon.com/auth/o2/token",  # LWA endpoint
                     data={
                         "grant_type": "refresh_token",
-                        "refresh_token": self.refresh_token,
+                        "refresh_token": refresh_token,
                         "client_id": self.client_id,
                         "client_secret": self.client_secret
                     },
@@ -338,6 +382,7 @@ class AmazonSPAPIService:
                     self.access_token = data["access_token"]
                     expires_in = data.get("expires_in", 3600)
                     self.token_expires_at = datetime.utcnow() + timedelta(seconds=expires_in - 60)
+                    self.token_user_id = user_id
                     logger.info("SP-API access token refreshed successfully")
                     return True
                 else:
@@ -559,12 +604,25 @@ class AmazonSPAPIService:
                 
                 if response.status_code == 201:
                     data = response.json()
+                    amazon_case_id = data.get("case_id")
+                    submission_id = data.get("submission_id")
+                    external_reference = amazon_case_id or submission_id
+                    accepted = bool(external_reference)
+                    if not accepted:
+                        return {
+                            "success": False,
+                            "error": "Amazon accepted the request but returned no authoritative submission reference",
+                            "response_summary": data
+                        }
                     return {
                         "success": True,
-                        "submission_id": data.get("submission_id"),
-                        "amazon_case_id": data.get("case_id"),
+                        "submission_id": submission_id,
+                        "amazon_case_id": amazon_case_id,
+                        "external_reference": external_reference,
+                        "accepted": accepted,
                         "status": data.get("status"),
-                        "message": "Dispute submitted successfully"
+                        "message": "Dispute submitted successfully",
+                        "response_summary": data
                     }
                 elif response.status_code == 429:
                     # Rate limited
@@ -638,14 +696,16 @@ class AmazonSPAPIService:
         user_id: str, 
         claim: SPAPIClaim, 
         response: Dict[str, Any],
-        confidence_score: float
+        confidence_score: float,
+        persist_submission: bool = True
     ) -> SubmissionResult:
         """Handle submission failure with retry logic"""
         error_message = response.get("error", "Unknown error")
         retry_after = response.get("retry_after")
         
         # Log failure
-        await self._log_submission_failure(user_id, claim, error_message, confidence_score)
+        if persist_submission:
+            await self._log_submission_failure(user_id, claim, error_message, confidence_score)
         
         # Determine if we should retry
         if retry_after and retry_after < 3600:  # Retry if less than 1 hour

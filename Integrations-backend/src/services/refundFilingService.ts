@@ -11,7 +11,7 @@
 import axios from 'axios';
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
-import { buildPythonServiceAuthHeader } from '../utils/pythonServiceAuth';
+import { buildPythonServiceAuthHeader, isPythonServiceAuthConfigured } from '../utils/pythonServiceAuth';
 import { createSellerHttpClient } from './sellerHttpClient';
 import { briefGeneratorService } from './briefGeneratorService';
 import * as fs from 'fs';
@@ -21,6 +21,7 @@ import crypto from 'crypto';
 export interface FilingRequest {
     dispute_id: string;
     user_id: string;
+    seller_id?: string;
     tenant_id?: string;
     order_id: string;
     shipment_id?: string;
@@ -93,9 +94,20 @@ export interface FilingResult {
     success: boolean;
     submission_id?: string;
     amazon_case_id?: string;
-    status: 'pending' | 'submitted' | 'approved' | 'rejected' | 'failed';
+    external_reference?: string;
+    status: 'pending' | 'submitted' | 'approved' | 'rejected' | 'failed' | 'retrying' | 'blocked';
     error_message?: string;
     retry_after?: Date;
+    submission_channel?: string;
+    authoritative_proof?: boolean;
+    idempotency_key?: string;
+    request_started_at?: string;
+    response_received_at?: string;
+    request_summary?: Record<string, any>;
+    response_summary?: Record<string, any>;
+    attachment_manifest?: Array<Record<string, any>>;
+    outcome?: string;
+    last_error?: string;
 }
 
 export interface CaseStatus {
@@ -119,15 +131,72 @@ class RefundFilingService {
         this.retryDelayMs = parseInt(process.env.REFUND_FILING_RETRY_DELAY_MS || '5000', 10);
     }
 
+    private isProduction(): boolean {
+        return ['production', 'prod'].includes(String(process.env.NODE_ENV || process.env.ENV || '').trim().toLowerCase());
+    }
+
+    private assertRealFilingConfig(): void {
+        if (!this.pythonApiUrl || !String(this.pythonApiUrl).trim()) {
+            throw new Error('Python filing service is not configured (PYTHON_API_URL missing)');
+        }
+
+        if (!isPythonServiceAuthConfigured()) {
+            throw new Error('Python filing auth is not configured (PYTHON_API_JWT_SECRET missing)');
+        }
+
+        if (this.isProduction() && (process.env.DRY_RUN === 'true' || (global as any).DRY_RUN === true)) {
+            throw new Error('Production filing is blocked because DRY_RUN is enabled');
+        }
+    }
+
+    private async resolveInternalUserId(sellerOrUserId: string): Promise<string> {
+        const candidate = String(sellerOrUserId || '').trim();
+        if (!candidate) {
+            throw new Error('Missing filing user identity');
+        }
+
+        const { data: mapping } = await supabaseAdmin
+            .from('v1_seller_identity_map')
+            .select('user_id')
+            .eq('merchant_token', candidate)
+            .maybeSingle();
+
+        if (mapping?.user_id) {
+            return mapping.user_id;
+        }
+
+        const looksLikeUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate);
+        let userQuery = supabaseAdmin
+            .from('users')
+            .select('id')
+            .limit(1);
+
+        if (looksLikeUuid) {
+            userQuery = userQuery.or(`id.eq.${candidate},amazon_seller_id.eq.${candidate}`);
+        } else {
+            userQuery = userQuery.eq('amazon_seller_id', candidate);
+        }
+
+        const { data: user } = await userQuery.maybeSingle();
+
+        if (user?.id) {
+            return user.id;
+        }
+
+        throw new Error(`Internal user identity could not be resolved for filing actor ${candidate}`);
+    }
+
     private buildServiceHeaders(
         userId: string,
         context: string,
-        extraHeaders: Record<string, string> = {}
+        extraHeaders: Record<string, string> = {},
+        amazonSellerId?: string | null
     ): Record<string, string> {
         return {
             ...extraHeaders,
             Authorization: buildPythonServiceAuthHeader({
                 userId,
+                amazonSellerId: amazonSellerId || undefined,
                 metadata: { source: `refund-filing:${context}` }
             })
         };
@@ -402,7 +471,8 @@ class RefundFilingService {
     private async postMultipartSubmission(
         payload: Record<string, any>,
         attachmentPack: AttachmentPack,
-        userId: string,
+        internalUserId: string,
+        sellerId: string,
         idempotencyKey: string,
         httpClient: ReturnType<typeof createSellerHttpClient>
     ) {
@@ -434,10 +504,11 @@ class RefundFilingService {
             `${this.pythonApiUrl}/api/v1/disputes/submit`,
             form,
             {
-                headers: this.buildServiceHeaders(userId, 'file-dispute-multipart', {
-                    'X-User-Id': userId,
+                headers: this.buildServiceHeaders(internalUserId, 'file-dispute-multipart', {
+                    'X-User-Id': internalUserId,
+                    'X-Amazon-Seller-Id': sellerId,
                     'x-amzn-idempotency-key': idempotencyKey
-                }),
+                }, sellerId),
                 timeout: 120000
             }
         );
@@ -446,7 +517,8 @@ class RefundFilingService {
     private async postJsonSubmission(
         payload: Record<string, any>,
         attachmentPack: AttachmentPack,
-        userId: string,
+        internalUserId: string,
+        sellerId: string,
         idempotencyKey: string,
         httpClient: ReturnType<typeof createSellerHttpClient>
     ) {
@@ -475,11 +547,12 @@ class RefundFilingService {
                 attachment_manifest: attachmentPack.manifest
             },
             {
-                headers: this.buildServiceHeaders(userId, 'file-dispute-json', {
+                headers: this.buildServiceHeaders(internalUserId, 'file-dispute-json', {
                     'Content-Type': 'application/json',
-                    'X-User-Id': userId,
+                    'X-User-Id': internalUserId,
+                    'X-Amazon-Seller-Id': sellerId,
                     'x-amzn-idempotency-key': idempotencyKey
-                }),
+                }, sellerId),
                 timeout: 120000
             }
         );
@@ -490,19 +563,101 @@ class RefundFilingService {
     */
     async fileDispute(request: FilingRequest): Promise<FilingResult> {
         try {
+            this.assertRealFilingConfig();
+
+            const internalUserId = String(request.user_id || '').trim();
+            const sellerId = String(request.seller_id || request.user_id || '').trim();
+            const idempotencyKey = String(request.metadata?.idempotency_key || '').trim() || crypto.createHash('sha256')
+                .update(`filing_${request.dispute_id}`)
+                .digest('hex');
+            const requestStartedAt = new Date().toISOString();
+
+            if (!internalUserId || !sellerId) {
+                return {
+                    success: false,
+                    status: 'blocked',
+                    error_message: 'Filing blocked: internal user identity and seller identity are required',
+                    idempotency_key: idempotencyKey,
+                    request_started_at: requestStartedAt,
+                    outcome: 'blocked',
+                    last_error: 'missing_submission_identity'
+                };
+            }
+
             logger.info('[REFUND FILING] Filing dispute case', {
                 disputeId: request.dispute_id,
-                userId: request.user_id,
+                userId: internalUserId,
+                sellerId,
                 amount: request.amount_claimed,
                 confidence: request.confidence_score
             });
 
+            if (!request.tenant_id) {
+                return {
+                    success: false,
+                    status: 'blocked',
+                    error_message: 'Filing blocked: tenant context is required',
+                    idempotency_key: idempotencyKey,
+                    request_started_at: requestStartedAt,
+                    outcome: 'blocked',
+                    last_error: 'tenant_context_missing'
+                };
+            }
+
+            if (!request.dispute_id || !request.claim_type || !Number.isFinite(Number(request.amount_claimed))) {
+                return {
+                    success: false,
+                    status: 'blocked',
+                    error_message: 'Filing blocked: dispute id, claim type, and amount are required',
+                    idempotency_key: idempotencyKey,
+                    request_started_at: requestStartedAt,
+                    outcome: 'blocked',
+                    last_error: 'missing_claim_facts'
+                };
+            }
+
+            if (!request.order_id && !request.shipment_id && !request.asin && !request.sku) {
+                return {
+                    success: false,
+                    status: 'blocked',
+                    error_message: 'Filing blocked: at least one filing identifier is required',
+                    idempotency_key: idempotencyKey,
+                    request_started_at: requestStartedAt,
+                    outcome: 'blocked',
+                    last_error: 'missing_filing_identifiers'
+                };
+            }
+
+            if (!request.evidence_document_ids?.length) {
+                return {
+                    success: false,
+                    status: 'blocked',
+                    error_message: 'Filing blocked: no evidence documents were linked to the case',
+                    idempotency_key: idempotencyKey,
+                    request_started_at: requestStartedAt,
+                    outcome: 'blocked',
+                    last_error: 'missing_evidence_documents'
+                };
+            }
+
             // Get evidence documents
             const evidenceDocuments = await this.getEvidenceDocuments(
                 request.evidence_document_ids,
-                request.user_id,
+                sellerId,
                 request.tenant_id
             );
+
+            if (!evidenceDocuments.length) {
+                return {
+                    success: false,
+                    status: 'blocked',
+                    error_message: 'Filing blocked: evidence documents could not be resolved for this seller and tenant',
+                    idempotency_key: idempotencyKey,
+                    request_started_at: requestStartedAt,
+                    outcome: 'blocked',
+                    last_error: 'evidence_resolution_failed'
+                };
+            }
             const filingStrategy = String(request.metadata?.filing_strategy || '').toUpperCase();
             const attachmentPack = await this.buildAttachmentPack(evidenceDocuments, request.claim_type, {
                 allowPartial: filingStrategy === 'SMART'
@@ -532,7 +687,8 @@ class RefundFilingService {
 
             const payload = {
                 dispute_id: request.dispute_id,
-                user_id: request.user_id,
+                user_id: internalUserId,
+                seller_id: sellerId,
                 order_id: request.order_id,
                 shipment_id: request.shipment_id,
                 asin: request.asin,
@@ -551,6 +707,10 @@ class RefundFilingService {
 
             // DRY RUN Support: persist the payload for inspection, but never pretend filing succeeded.
             if (process.env.DRY_RUN === 'true' || (global as any).DRY_RUN === true) {
+                if (this.isProduction()) {
+                    throw new Error('Production filing is blocked because DRY_RUN is enabled');
+                }
+
                 const outputDir = path.join(process.cwd(), 'test_output');
                 if (!fs.existsSync(outputDir)) {
                     fs.mkdirSync(outputDir, { recursive: true });
@@ -566,21 +726,11 @@ class RefundFilingService {
 
                 logger.info('[DRY RUN] Case payload saved safely', { filePath });
 
-                return {
-                    success: false,
-                    status: 'failed',
-                    error_message: 'DRY_RUN is enabled. Submission payload was captured, but no real Amazon filing occurred.'
-                };
+                throw new Error(`DRY_RUN is enabled. Submission payload was captured at ${filePath}, but no real Amazon filing occurred.`);
             }
 
             // Use seller-specific HTTP client for IP isolation
-            const httpClient = createSellerHttpClient(request.user_id);
-
-            // IDEMPOTENCY KEY: Deterministic per dispute_id so crash-retries
-            // send the same key and Amazon's SP-API rejects the duplicate.
-            const idempotencyKey = String(request.metadata?.idempotency_key || '').trim() || crypto.createHash('sha256')
-                .update(`filing_${request.dispute_id}`)
-                .digest('hex');
+            const httpClient = createSellerHttpClient(sellerId);
 
             // --- CHAOS HOOK: TOKEN DECAY ---
             if (process.env.SIMULATE_TOKEN_EXPIRE === 'true') {
@@ -592,13 +742,13 @@ class RefundFilingService {
 
             let response;
             try {
-                response = await this.postMultipartSubmission(payload, attachmentPack, request.user_id, idempotencyKey, httpClient);
+                response = await this.postMultipartSubmission(payload, attachmentPack, internalUserId, sellerId, idempotencyKey, httpClient);
             } catch (multipartError: any) {
                 logger.warn('[REFUND FILING] Multipart submission failed, retrying with JSON attachment bytes', {
                     disputeId: request.dispute_id,
                     error: multipartError.message
                 });
-                response = await this.postJsonSubmission(payload, attachmentPack, request.user_id, idempotencyKey, httpClient);
+                response = await this.postJsonSubmission(payload, attachmentPack, internalUserId, sellerId, idempotencyKey, httpClient);
             }
 
             // Log proxy info for audit
@@ -611,29 +761,99 @@ class RefundFilingService {
 
             if (response.data?.ok && response.data?.data) {
                 const data = response.data.data;
+                const responseReceivedAt = new Date().toISOString();
+                const externalReference = data.external_reference || data.amazon_case_id || data.submission_id || null;
+                const authoritativeProof = data.accepted === true && Boolean(externalReference);
+
+                if (!authoritativeProof) {
+                    return {
+                        success: false,
+                        status: 'failed',
+                        error_message: 'Amazon submission returned no authoritative external reference',
+                        idempotency_key: idempotencyKey,
+                        request_started_at: requestStartedAt,
+                        response_received_at: responseReceivedAt,
+                        request_summary: {
+                            dispute_id: request.dispute_id,
+                            claim_type: request.claim_type,
+                            amount_claimed: request.amount_claimed,
+                            currency: request.currency,
+                            seller_id: sellerId,
+                            order_id: request.order_id || null,
+                            shipment_id: request.shipment_id || null,
+                            asin: request.asin || null,
+                            sku: request.sku || null
+                        },
+                        response_summary: data.response_summary || data,
+                        attachment_manifest: attachmentPack.manifest,
+                        submission_channel: data.submission_channel || 'amazon_spapi',
+                        outcome: 'failed',
+                        last_error: 'missing_external_submission_reference'
+                    };
+                }
+
                 return {
                     success: true,
                     submission_id: data.submission_id,
                     amazon_case_id: data.amazon_case_id,
+                    external_reference: externalReference,
                     status: this.mapStatus(data.status),
-                    error_message: undefined
+                    error_message: undefined,
+                    submission_channel: data.submission_channel || 'amazon_spapi',
+                    authoritative_proof: authoritativeProof,
+                    idempotency_key: idempotencyKey,
+                    request_started_at: requestStartedAt,
+                    response_received_at: responseReceivedAt,
+                    request_summary: {
+                        dispute_id: request.dispute_id,
+                        claim_type: request.claim_type,
+                        amount_claimed: request.amount_claimed,
+                        currency: request.currency,
+                        seller_id: sellerId,
+                        order_id: request.order_id || null,
+                        shipment_id: request.shipment_id || null,
+                        asin: request.asin || null,
+                        sku: request.sku || null
+                    },
+                    response_summary: data.response_summary || data,
+                    attachment_manifest: attachmentPack.manifest,
+                    outcome: 'submitted'
                 };
             } else {
                 throw new Error(`Python API returned unexpected response: ${JSON.stringify(response.data)}`);
             }
 
         } catch (error: any) {
+            const backendMessage = error?.response?.data?.detail
+                || error?.response?.data?.message
+                || error?.response?.data?.error;
+            const message = backendMessage || error.message || 'Unknown error';
+            const normalized = String(message).toLowerCase();
+            const status: FilingResult['status'] =
+                normalized.includes('blocked') ||
+                normalized.includes('missing') ||
+                normalized.includes('tenant context') ||
+                normalized.includes('oauth refresh token') ||
+                normalized.includes('proxy')
+                    ? 'blocked'
+                    : (normalized.includes('rate limited') || normalized.includes('retry'))
+                        ? 'retrying'
+                        : 'failed';
+
             logger.error('[ERROR] [REFUND FILING] Failed to file dispute', {
                 disputeId: request.dispute_id,
                 userId: request.user_id,
-                error: error.message,
+                sellerId: request.seller_id || request.user_id,
+                error: message,
                 response: error.response?.data
             });
 
             return {
                 success: false,
-                status: 'failed',
-                error_message: error.message || 'Unknown error'
+                status,
+                error_message: message,
+                outcome: status === 'retrying' ? 'retrying' : status,
+                last_error: message
             };
         }
     }
@@ -696,14 +916,18 @@ class RefundFilingService {
     /**
     * Check case status from Amazon (via Python API)
     */
-    async checkCaseStatus(submissionId: string, userId: string): Promise<CaseStatus> {
+    async checkCaseStatus(submissionId: string, userId: string, sellerId?: string): Promise<CaseStatus> {
+        let internalUserId = userId;
         try {
+            this.assertRealFilingConfig();
+            internalUserId = await this.resolveInternalUserId(userId);
             const response = await axios.get(
                 `${this.pythonApiUrl}/api/v1/disputes/status/${submissionId}`,
                 {
-                    headers: this.buildServiceHeaders(userId, 'case-status', {
-                        'X-User-Id': userId
-                    }),
+                    headers: this.buildServiceHeaders(internalUserId, 'case-status', {
+                        'X-User-Id': internalUserId,
+                        ...(sellerId ? { 'X-Amazon-Seller-Id': sellerId } : {})
+                    }, sellerId || null),
                     timeout: 30000
                 }
             );
@@ -729,7 +953,7 @@ class RefundFilingService {
         } catch (error: any) {
             logger.error(' [REFUND FILING] Failed to check case status', {
                 submissionId,
-                userId,
+                userId: internalUserId,
                 error: error.message
             });
 
@@ -884,18 +1108,19 @@ class RefundFilingService {
     /**
     * Map Python API status to internal status
     */
-    private mapStatus(status: string): 'pending' | 'submitted' | 'approved' | 'rejected' | 'failed' {
-        const statusMap: Record<string, 'pending' | 'submitted' | 'approved' | 'rejected' | 'failed'> = {
+    private mapStatus(status: string): 'pending' | 'submitted' | 'approved' | 'rejected' | 'failed' | 'retrying' | 'blocked' {
+        const statusMap: Record<string, 'pending' | 'submitted' | 'approved' | 'rejected' | 'failed' | 'retrying' | 'blocked'> = {
             'pending': 'pending',
             'submitted': 'submitted',
             'approved': 'approved',
             'rejected': 'rejected',
             'denied': 'rejected',
             'failed': 'failed',
-            'retrying': 'pending'
+            'retrying': 'retrying',
+            'blocked': 'blocked'
         };
 
-        return statusMap[status.toLowerCase()] || 'pending';
+        return statusMap[String(status || '').toLowerCase()] || 'pending';
     }
 
     /**
@@ -923,20 +1148,21 @@ class RefundFilingService {
      */
     async findCaseByIdempotencyKey(sellerId: string, idempotencyKey: string): Promise<{ id: string } | null> {
         try {
-            const httpClient = createSellerHttpClient(sellerId);
-            const response = await httpClient.get(
-                `${this.pythonApiUrl}/api/v1/disputes/search`,
-                {
-                    params: { idempotency_key: idempotencyKey },
-                    headers: this.buildServiceHeaders(sellerId, 'search-disputes')
-                }
-            );
+            const { data, error } = await supabaseAdmin
+                .from('dispute_submissions')
+                .select('external_reference, amazon_case_id, submission_id')
+                .eq('seller_id', sellerId)
+                .eq('idempotency_key', idempotencyKey)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
 
-            if (response.data?.ok && response.data?.data?.case_id) {
-                return { id: response.data.data.case_id };
+            if (error) {
+                throw error;
             }
 
-            return null;
+            const externalReference = data?.amazon_case_id || data?.external_reference || data?.submission_id;
+            return externalReference ? { id: externalReference } : null;
         } catch (err: any) {
             logger.error(`[FORTRESS] Failed to search Amazon for idempotency key: ${idempotencyKey}`, { error: err.message });
             return null;

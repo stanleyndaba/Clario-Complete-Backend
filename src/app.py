@@ -31,6 +31,7 @@ from datetime import datetime
 import asyncio
 import logging
 import os
+from .common.config import settings
 
 # Core API routers - Enable for MVP
 from .api.auth_sandbox import router as auth_router
@@ -69,6 +70,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     # Startup
     logger.info("Starting Opside Python API (Consolidated Services)...")
+    settings.assert_real_filing_config("Python API startup")
     
     # Note: All Python services are now consolidated internally
     # Only start health monitoring if there are external services to check

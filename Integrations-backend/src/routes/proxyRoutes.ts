@@ -15,6 +15,14 @@ interface MulterFile {
 
 const router = express.Router();
 
+function failClosedLegacyFilingRoute(res: Response, message: string) {
+  return res.status(410).json({
+    ok: false,
+    error: 'legacy_filing_path_disabled',
+    message
+  });
+}
+
 // Python backend URL - can be overridden by environment variable
 const PYTHON_API_URL = process.env.PYTHON_API_URL || process.env.VITE_PYTHON_API_URL || 'https://clario-complete-backend-6ca7.onrender.com';
 
@@ -171,8 +179,18 @@ async function proxyToPython(req: Request, res: Response, path: string) {
 router.get('/api/recoveries', (req, res) => proxyToPython(req, res, '/api/recoveries'));
 router.get('/api/recoveries/:id', (req, res) => proxyToPython(req, res, `/api/recoveries/${req.params.id}`));
 router.get('/api/recoveries/:id/status', (req, res) => proxyToPython(req, res, `/api/recoveries/${req.params.id}/status`));
-router.post('/api/recoveries/:id/submit', (req, res) => proxyToPython(req, res, `/api/recoveries/${req.params.id}/submit`));
-router.post('/api/claims/:id/submit', (req, res) => proxyToPython(req, res, `/api/claims/${req.params.id}/submit`));
+router.post('/api/recoveries/:id/submit', (_req, res) =>
+  failClosedLegacyFilingRoute(
+    res,
+    'Legacy recoveries submit is disabled. Use the canonical dispute filing queue instead.'
+  )
+);
+router.post('/api/claims/:id/submit', (_req, res) =>
+  failClosedLegacyFilingRoute(
+    res,
+    'Legacy claims submit is disabled. Use the canonical dispute filing queue instead.'
+  )
+);
 router.get('/api/recoveries/:id/document', (req, res) => proxyToPython(req, res, `/api/recoveries/${req.params.id}/document`));
 router.post('/api/recoveries/:id/answer', (req, res) => proxyToPython(req, res, `/api/recoveries/${req.params.id}/answer`));
 router.post('/api/recoveries/:id/documents/upload', (req, res) => proxyToPython(req, res, `/api/recoveries/${req.params.id}/documents/upload`));

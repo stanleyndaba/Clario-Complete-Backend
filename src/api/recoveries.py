@@ -3,6 +3,7 @@ Recoveries API endpoints - Production Implementation
 """
 
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import logging
@@ -121,35 +122,17 @@ async def submit_claim(
     user: dict = Depends(get_current_user)
 ):
     """Submit claim to Amazon - supports both /claims/{id}/submit and /recoveries/{id}/submit"""
-    
-    try:
-        user_id = user["user_id"]
-        logger.info(f"Submitting claim {id} for user {user_id}")
-        
-        # Call real refund engine service to submit claim
-        result = await refund_engine_client.create_claim(user_id, {
-            "claim_id": id,
-            "action": "submit"
-        })
-        
-        if "error" in result:
-            logger.error(f"Submit claim failed: {result['error']}")
-            raise HTTPException(status_code=502, detail=f"Refund engine error: {result['error']}")
-        
-        return ClaimSubmissionResponse(
-            id=id,
-            status="submitted",
-            submitted_at=datetime.utcnow().isoformat() + "Z",
-            amazon_case_id=result.get("amazon_case_id"),
-            message="Claim submitted successfully to Amazon SP-API",
-            estimated_resolution=(datetime.utcnow() + timedelta(days=7)).isoformat() + "Z"
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error in submit_claim: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+
+    user_id = user["user_id"]
+    logger.warning(f"Blocking legacy recovery submit path for user {user_id}, claim {id}")
+    return JSONResponse(
+        status_code=410,
+        content={
+            "ok": False,
+            "error": "legacy_filing_path_disabled",
+            "message": "Legacy recovery submit is disabled. Use the canonical dispute filing queue instead."
+        }
+    )
 
 @router.get("/api/recoveries/{id}/document")
 async def get_recovery_documents(

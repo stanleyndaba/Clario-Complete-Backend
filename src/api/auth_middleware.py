@@ -4,6 +4,7 @@ Handles JWT token validation and user extraction for all API endpoints
 """
 
 import jwt
+import os
 from fastapi import HTTPException, Depends, status, Request
 from fastapi import WebSocket
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -12,6 +13,7 @@ import logging
 from src.common.config import settings
 
 logger = logging.getLogger(__name__)
+SERVICE_JWT_SECRET = os.getenv("PYTHON_API_JWT_SECRET")
 
 # HTTP Bearer token scheme (optional for cookie-based auth)
 security = HTTPBearer(auto_error=False)
@@ -34,12 +36,23 @@ def verify_jwt_token(token: str) -> dict:
         JWTError: If token is invalid or expired
     """
     try:
-        payload = jwt.decode(
-            token,
-            settings.JWT_SECRET,
-            algorithms=[settings.JWT_ALGORITHM]
-        )
-        return payload
+        secrets_to_try = [settings.JWT_SECRET]
+        if SERVICE_JWT_SECRET and SERVICE_JWT_SECRET != settings.JWT_SECRET:
+            secrets_to_try.append(SERVICE_JWT_SECRET)
+
+        last_error = None
+        for secret in secrets_to_try:
+            try:
+                payload = jwt.decode(
+                    token,
+                    secret,
+                    algorithms=[settings.JWT_ALGORITHM]
+                )
+                return payload
+            except jwt.InvalidTokenError as err:
+                last_error = err
+
+        raise last_error or JWTError("Invalid token")
     except jwt.ExpiredSignatureError:
         raise JWTError("Token has expired")
     except jwt.InvalidTokenError:

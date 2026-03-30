@@ -15,6 +15,7 @@ from src.api.schemas import (
 from src.integrations.amazon_spapi_service import amazon_spapi_service
 from src.evidence.auto_submit_engine import auto_submit_engine
 from src.websocket.websocket_manager import websocket_manager
+from src.common.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -28,14 +29,18 @@ class DirectDisputeSubmitRequest(BaseModel):
     """Request model for direct dispute submission from Agent 7"""
     dispute_id: str
     user_id: str
+    seller_id: Optional[str] = None
     order_id: Optional[str] = None
+    shipment_id: Optional[str] = None
     asin: Optional[str] = None
     sku: Optional[str] = None
     claim_type: str
     amount_claimed: float
     currency: str = "USD"
     evidence_documents: List[Dict[str, Any]] = []
+    attachment_manifest: List[Dict[str, Any]] = []
     confidence_score: float = 0.85
+    metadata: Dict[str, Any] = {}
 
 
 @router.post("/api/v1/disputes/submit")
@@ -51,6 +56,11 @@ async def submit_dispute_direct(
     
     try:
         user_id = user["user_id"]
+        settings.assert_real_filing_config("Direct dispute submission")
+
+        if request.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Authenticated user does not match filing user_id")
+
         logger.info(f"Submitting dispute directly for user {user_id}, dispute_id={request.dispute_id}")
         
         # Submit via SP-API service
@@ -71,7 +81,8 @@ async def submit_dispute_direct(
             claim=claim,
             user_id=user_id,
             evidence_documents=request.evidence_documents,
-            confidence_score=request.confidence_score
+            confidence_score=request.confidence_score,
+            persist_submission=False
         )
         
         if result.success:
@@ -80,7 +91,12 @@ async def submit_dispute_direct(
                 "data": {
                     "submission_id": result.submission_id,
                     "amazon_case_id": result.amazon_case_id,
+                    "external_reference": result.external_reference,
+                    "accepted": result.authoritative_proof,
                     "status": result.status,
+                    "submission_channel": result.submission_channel,
+                    "response_timestamp": result.response_received_at.isoformat() + "Z" if result.response_received_at else None,
+                    "response_summary": result.response_summary or {},
                     "message": "Dispute submitted successfully"
                 }
             }

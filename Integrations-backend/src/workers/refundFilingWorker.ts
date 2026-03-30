@@ -2560,6 +2560,7 @@ class RefundFilingWorker {
         .from('dispute_cases')
         .select(`
           id,
+          user_id,
           seller_id,
           filing_status,
           detection_result_id,
@@ -2608,6 +2609,7 @@ class RefundFilingWorker {
           // Check status from Amazon
           const statusResult = await refundFilingService.checkCaseStatus(
             submission.submission_id,
+            disputeCase.user_id || disputeCase.seller_id,
             disputeCase.seller_id
           );
 
@@ -2808,120 +2810,11 @@ class RefundFilingWorker {
   * Update case after successful filing
   */
   private async updateCaseAfterFiling(disputeId: string, result: FilingResult): Promise<void> {
-    try {
-      const updates: any = {
-        filing_status: 'filed',
-        status: 'submitted',
-        amazon_case_id: result.amazon_case_id || null,
-        submission_date: new Date().toISOString(),
-        last_error: null,
-        eligible_to_file: true,
-        block_reasons: [],
-        updated_at: new Date().toISOString()
-      };
-
-      const { error } = await supabaseAdmin
-        .from('dispute_cases')
-        .update(updates)
-        .eq('id', disputeId);
-
-      if (error) {
-        logger.error(' [REFUND FILING] Failed to update case after filing', {
-          disputeId,
-          error: error.message
-        });
-      } else {
-        // Create submission record
-        const { data: disputeCase } = await supabaseAdmin
-          .from('dispute_cases')
-          .select('seller_id, tenant_id, claim_amount, currency')
-          .eq('id', disputeId)
-          .single();
-
-        await supabaseAdmin
-          .from('dispute_submissions')
-          .insert({
-            dispute_id: disputeId,
-            user_id: disputeCase?.seller_id,
-            tenant_id: disputeCase?.tenant_id,
-            submission_id: result.submission_id,
-            amazon_case_id: result.amazon_case_id,
-            status: result.status,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          });
-
-        logger.info(' [REFUND FILING] Case filed successfully', {
-          disputeId,
-          submissionId: result.submission_id,
-          amazonCaseId: result.amazon_case_id
-        });
-
-        // AGENT 11 INTEGRATION: Log filing event
-        try {
-          const agentEventLogger = (await import('../services/agentEventLogger')).default;
-          await agentEventLogger.logRefundFiling({
-            userId: disputeCase.seller_id,
-            disputeId,
-            success: true,
-            status: 'filed',
-            amazonCaseId: result.amazon_case_id,
-            duration: 0
-          });
-        } catch (logError: any) {
-          logger.warn(' [REFUND FILING] Failed to log event', {
-            error: logError.message
-          });
-        }
-
-        // AGENT 10 INTEGRATION: Notify when case is filed
-        try {
-          const notificationHelper = (await import('../services/notificationHelper')).default;
-          await notificationHelper.notifyCaseFiled(disputeCase.seller_id, {
-            tenantId: disputeCase.tenant_id,
-            disputeId,
-            caseId: result.submission_id,
-            amazonCaseId: result.amazon_case_id,
-            claimAmount: disputeCase.claim_amount || 0,
-            currency: disputeCase.currency || 'usd',
-            status: 'filed'
-          });
-        } catch (notifError: any) {
-          logger.warn(' [REFUND FILING] Failed to send notification', {
-            error: notifError.message
-          });
-        }
-
-        try {
-          const sseHub = (await import('../utils/sseHub')).default;
-          const tenantSlug = await resolveTenantSlug(disputeCase.tenant_id);
-          sseHub.sendEvent(disputeCase.seller_id, 'filing.submitted', {
-            tenant_id: disputeCase.tenant_id,
-            tenant_slug: tenantSlug,
-            dispute_case_id: disputeId,
-            detection_id: result.submission_id || disputeId,
-            submission_id: result.submission_id,
-            amazon_case_id: result.amazon_case_id,
-            amount: disputeCase.claim_amount || 0,
-            currency: disputeCase.currency || 'USD',
-            status: 'submitted',
-            filing_status: 'filed',
-            message: `Case ${disputeId} submitted to Amazon`
-          });
-        } catch (eventError: any) {
-          logger.warn(' [REFUND FILING] Failed to emit filing.submitted event', {
-            disputeId,
-            error: eventError.message
-          });
-        }
-      }
-
-    } catch (error: any) {
-      logger.error(' [REFUND FILING] Error updating case after filing', {
-        disputeId,
-        error: error.message
-      });
-    }
+    logger.warn(' [REFUND FILING] Deprecated updateCaseAfterFiling invoked; canonical proof persistence now lives in AmazonSubmissionAutomator.', {
+      disputeId,
+      submissionId: result.submission_id,
+      amazonCaseId: result.amazon_case_id
+    });
   }
 
   private async executeDirectFallback(caseId: string, sellerId: string): Promise<FilingDispatchResult> {

@@ -387,6 +387,7 @@ function buildCaseResponse(record: any, documents: any[], events: any[], objectT
         id: record.id,
         object_type: objectType,
         dispute_case_id: objectType === 'case' ? record.id : null,
+        linked_dispute_case_id: objectType === 'case' ? record.id : null,
         detection_result_id: objectType === 'case' ? (record.detection_result_id || null) : record.id,
         title: record.case_type || record.anomaly_type || 'Claim Details',
         status: record.status || null,
@@ -399,7 +400,8 @@ function buildCaseResponse(record: any, documents: any[], events: any[], objectT
         sku: record.sku || record.evidence?.sku || 'N/A',
         asin: record.asin || record.evidence?.asin || null,
         productName: record.case_type || record.anomaly_type || 'Unknown Product',
-        amazonCaseId: record.amazon_case_id || null,
+        amazonCaseId: record.amazon_case_id || record.provider_case_id || null,
+        provider_case_id: record.provider_case_id || record.amazon_case_id || null,
         currency: record.currency || 'USD',
         case_number: record.case_number || null,
         claim_number: record.claim_id || record.case_number || record.claim_number || null,
@@ -430,6 +432,8 @@ function buildCaseResponse(record: any, documents: any[], events: any[], objectT
         evidence_summary: evidenceSummary,
         rejection_category: record?.evidence_attachments?.rejection_category || null,
         rejection_reason: record?.rejection_reason || null,
+        block_reasons: Array.isArray(record?.block_reasons) ? record.block_reasons : [],
+        last_error: record?.last_error || null,
         duplicate_blocked: record.filing_status === 'duplicate_blocked' || record.duplicate_blocked === true,
         generated_context: buildGeneratedContext(record),
         next_step_context: deriveNextStepContext(record, documents),
@@ -638,13 +642,17 @@ router.get('/ledger', async (req: Request, res: Response) => {
             return {
                 recovery_id: record.id,
                 dispute_case_id: record.id,
+                linked_dispute_case_id: record.id,
                 detection_result_id: record.detection_result_id || null,
                 case_number: record.case_number || record.claim_number || record.amazon_case_id || record.id.slice(0, 8),
-                provider_case_id: record.amazon_case_id || null,
+                provider_case_id: record.provider_case_id || record.amazon_case_id || null,
                 merchant_reference: storeNameById.get(record.store_id) || record.store_name || record.seller_id || null,
                 status: record.status || null,
+                filing_status: record.filing_status || null,
                 recovery_status: record.recovery_status || null,
                 billing_status: billingStatus,
+                block_reasons: Array.isArray(record.block_reasons) ? record.block_reasons : [],
+                last_error: record.last_error || null,
                 recovery_work_status: latestRecoveryWork?.status || null,
                 billing_work_status: latestBillingWork?.status || null,
                 recovery_work_item_id: latestRecoveryWork?.id || null,
@@ -710,14 +718,18 @@ router.get('/ledger', async (req: Request, res: Response) => {
 
             return {
                 recovery_id: record.id,
-                dispute_case_id: record.id,
+                dispute_case_id: null,
+                linked_dispute_case_id: null,
                 detection_result_id: record.id,
                 case_number: `OPP-${String(record.id || '').replace(/-/g, '').slice(0, 8).toUpperCase() || 'UNFILED'}`,
                 provider_case_id: null,
                 merchant_reference: storeNameById.get(record.store_id) || record.seller_id || null,
                 status: record.status || 'detected',
+                filing_status: null,
                 recovery_status: null,
                 billing_status: null,
+                block_reasons: [],
+                last_error: null,
                 recovery_work_status: null,
                 billing_work_status: null,
                 recovery_work_item_id: null,
@@ -1084,7 +1096,8 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
         logger.info('Submitting claim', { claimId: id, userId, tenantId });
         return res.status(410).json({
             success: false,
-            error: 'Legacy recoveries submit is disabled. Use the real dispute filing queue instead.'
+            error: 'legacy_filing_path_disabled',
+            message: 'Legacy recoveries submit is disabled. Use the real dispute filing queue instead.'
         });
 
         // First, check if this is a dispute_case that already exists
@@ -1287,7 +1300,8 @@ router.post('/:id/resubmit', async (req: Request, res: Response) => {
         logger.info('Resubmitting claim', { claimId: id, userId, tenantId });
         return res.status(410).json({
             success: false,
-            error: 'Legacy recoveries resubmit is disabled. Use the real dispute retry queue instead.'
+            error: 'legacy_filing_path_disabled',
+            message: 'Legacy recoveries resubmit is disabled. Use the real dispute retry queue instead.'
         });
 
         // Find the existing dispute_case — scoped by tenant
