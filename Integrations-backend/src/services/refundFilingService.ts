@@ -64,6 +64,7 @@ interface SubmissionAttachment {
     metadata: Record<string, any>;
     createdAt?: string | null;
     ingestedAt?: string | null;
+    downloadUrl?: string | null;
     bytes: Buffer;
     sha256: string;
     categories: string[];
@@ -460,6 +461,7 @@ class RefundFilingService {
                 metadata: document.metadata || {},
                 createdAt: document.created_at || null,
                 ingestedAt: document.ingested_at || null,
+                downloadUrl: document.file_url || null,
                 bytes,
                 sha256,
                 categories
@@ -548,6 +550,7 @@ class RefundFilingService {
         const evidenceDocuments = attachmentPack.attachments.map((attachment) => ({
             id: attachment.id,
             filename: attachment.filename,
+            download_url: attachment.downloadUrl || null,
             content_type: attachment.contentType,
             size_bytes: attachment.sizeBytes,
             doc_type: attachment.docType,
