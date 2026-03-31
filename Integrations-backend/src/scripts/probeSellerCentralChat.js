@@ -922,6 +922,55 @@ async function inspectChatUi(page) {
   };
 }
 
+async function inspectSupportState(page) {
+  const frames = page.frames();
+  for (const frame of frames) {
+    try {
+      const state = await frame.evaluate(() => {
+        const bodyText = String(document.body?.innerText || "").replace(/\s+/g, " ").trim();
+        const lowered = bodyText.toLowerCase();
+        const keywords = [
+          "contact associates",
+          "additional information",
+          "provide additional details about your issue",
+          "chat now",
+          "contact an associate",
+          "type your message",
+        ].filter((keyword) => lowered.includes(keyword));
+
+        return {
+          frameUrl: window.location.href,
+          bodySample: bodyText.slice(0, 2500),
+          keywords,
+          chatNowVisible: lowered.includes("chat now"),
+          contactAssociatesVisible: lowered.includes("contact associates"),
+          additionalDetailsVisible: lowered.includes("provide additional details about your issue"),
+        };
+      });
+
+      if (state.keywords.length > 0) {
+        return {
+          frameUrl: frame.url(),
+          frameName: frame.name() || null,
+          ...state,
+        };
+      }
+    } catch (_error) {
+      // Ignore detached or restricted frame errors.
+    }
+  }
+
+  return {
+    frameUrl: null,
+    frameName: null,
+    bodySample: null,
+    keywords: [],
+    chatNowVisible: false,
+    contactAssociatesVisible: false,
+    additionalDetailsVisible: false,
+  };
+}
+
 async function findBestContentFrame(page, expectedNeedles = ["create new issue", "get help and resources"]) {
   const frames = page.frames();
   for (const frame of frames) {
@@ -1025,8 +1074,197 @@ async function locateFirstVisibleTextField(frame) {
   return element;
 }
 
-async function fillFirstVisibleTextField(page, frame, value) {
-  const candidate = await locateFirstVisibleTextField(frame);
+async function collectVisibleTextFields(frame) {
+  try {
+    return await frame.evaluate(() => {
+      const results = [];
+
+      function getLabelText(node) {
+        const bits = [];
+        const directLabel = node.getAttribute?.("aria-label") || node.getAttribute?.("placeholder") || "";
+        if (directLabel) bits.push(directLabel);
+
+        let current = node.parentElement;
+        let depth = 0;
+        while (current && depth < 5) {
+          const text = String(current.innerText || current.textContent || "").replace(/\s+/g, " ").trim();
+          if (text) {
+            bits.push(text);
+          }
+          current = current.parentElement;
+          depth += 1;
+        }
+
+        return bits.join(" | ").slice(0, 600);
+      }
+
+      function pushCandidate(node) {
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        if (
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          rect.width === 0 ||
+          rect.height === 0
+        ) {
+          return;
+        }
+
+        results.push({
+          tag: String(node.tagName || "").toLowerCase(),
+          id: node.id || null,
+          name: node.getAttribute?.("name") || null,
+          type: node.getAttribute?.("type") || null,
+          role: node.getAttribute?.("role") || null,
+          ariaLabel: node.getAttribute?.("aria-label") || null,
+          placeholder: node.getAttribute?.("placeholder") || null,
+          writable: !(node.disabled || node.readOnly || node.getAttribute?.("aria-disabled") === "true"),
+          labelText: getLabelText(node),
+          rect: {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          },
+        });
+      }
+
+      function visitRoot(root) {
+        if (!root) return;
+        const selector = [
+          "input:not([type='hidden']):not([type='checkbox']):not([type='radio']):not([type='file'])",
+          "textarea",
+          "[contenteditable='true']",
+        ].join(",");
+
+        const nodes = root.querySelectorAll(selector);
+        for (const node of nodes) {
+          pushCandidate(node);
+          if (node.shadowRoot) {
+            visitRoot(node.shadowRoot);
+          }
+        }
+
+        const shadowHosts = root.querySelectorAll("*");
+        for (const host of shadowHosts) {
+          if (host.shadowRoot) {
+            visitRoot(host.shadowRoot);
+          }
+        }
+      }
+
+      visitRoot(document);
+      return results;
+    });
+  } catch (error) {
+    return [{ error: error.message || String(error) }];
+  }
+}
+
+async function findFieldByLabel(frame, needles, options = {}) {
+  const normalizedNeedles = (needles || [])
+    .map((needle) => String(needle || "").trim().toLowerCase())
+    .filter(Boolean);
+  const preferredTags = (options.preferredTags || []).map((tag) => String(tag || "").toLowerCase());
+
+  const handle = await frame.evaluateHandle((criteria) => {
+    const { normalizedNeedles, preferredTags } = criteria;
+    const preferredTagSet = new Set(preferredTags || []);
+
+    function isVisible(node) {
+      const rect = node.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return false;
+      const style = window.getComputedStyle(node);
+      return style.display !== "none" && style.visibility !== "hidden";
+    }
+
+    function getLabelText(node) {
+      const bits = [];
+      const direct = node.getAttribute?.("aria-label") || node.getAttribute?.("placeholder") || "";
+      if (direct) bits.push(direct);
+      let current = node.parentElement;
+      let depth = 0;
+      while (current && depth < 5) {
+        const text = String(current.innerText || current.textContent || "").replace(/\s+/g, " ").trim();
+        if (text) bits.push(text);
+        current = current.parentElement;
+        depth += 1;
+      }
+      return bits.join(" ").toLowerCase();
+    }
+
+    function score(node) {
+      if (!isVisible(node)) return -1;
+      if (node.disabled || node.readOnly || node.getAttribute?.("aria-disabled") === "true") return -1;
+      const tag = String(node.tagName || "").toLowerCase();
+      const labelText = getLabelText(node);
+      let value = 0;
+      for (const needle of normalizedNeedles) {
+        if (labelText.includes(needle)) {
+          value += 20 + needle.length;
+        }
+      }
+      if (preferredTagSet.has(tag)) {
+        value += 30;
+      }
+      const rect = node.getBoundingClientRect();
+      value += Math.min(rect.width, 500) / 50;
+      return value;
+    }
+
+    function searchRoot(root) {
+      if (!root) return null;
+      const selector = [
+        "input:not([type='hidden']):not([type='checkbox']):not([type='radio']):not([type='file'])",
+        "textarea",
+        "[contenteditable='true']",
+      ].join(",");
+
+      let bestNode = null;
+      let bestScore = -1;
+      const candidates = root.querySelectorAll(selector);
+      for (const candidate of candidates) {
+        const candidateScore = score(candidate);
+        if (candidateScore > bestScore) {
+          bestNode = candidate;
+          bestScore = candidateScore;
+        }
+        if (candidate.shadowRoot) {
+          const nested = searchRoot(candidate.shadowRoot);
+          if (nested) {
+            const nestedScore = score(nested);
+            if (nestedScore > bestScore) {
+              bestNode = nested;
+              bestScore = nestedScore;
+            }
+          }
+        }
+      }
+
+      const shadowHosts = root.querySelectorAll("*");
+      for (const host of shadowHosts) {
+        if (host.shadowRoot) {
+          const nested = searchRoot(host.shadowRoot);
+          if (nested) {
+            const nestedScore = score(nested);
+            if (nestedScore > bestScore) {
+              bestNode = nested;
+              bestScore = nestedScore;
+            }
+          }
+        }
+      }
+
+      return bestScore >= 0 ? bestNode : null;
+    }
+
+    return searchRoot(document);
+  }, { normalizedNeedles, preferredTags });
+
+  return handle.asElement();
+}
+
+async function fillTextFieldHandle(page, candidate, value) {
   if (!candidate) {
     return null;
   }
@@ -1034,7 +1272,7 @@ async function fillFirstVisibleTextField(page, frame, value) {
   const valueString = String(value || "");
   await candidate.click({ clickCount: 3, delay: 50 });
   await page.keyboard.press("Backspace");
-  await candidate.type(valueString, { delay: 45 });
+  await candidate.type(valueString, { delay: 25 });
   await page.keyboard.press("Tab");
   await new Promise((resolve) => setTimeout(resolve, 400));
 
@@ -1054,10 +1292,22 @@ async function fillFirstVisibleTextField(page, frame, value) {
       id: node.id || null,
       name: node.getAttribute?.("name") || null,
       type: node.getAttribute?.("type") || null,
+      ariaLabel: node.getAttribute?.("aria-label") || null,
+      placeholder: node.getAttribute?.("placeholder") || null,
       value: "value" in node ? String(node.value || "") : String(node.textContent || ""),
     };
   });
 
+  return details;
+}
+
+async function fillFirstVisibleTextField(page, frame, value) {
+  const candidate = await locateFirstVisibleTextField(frame);
+  if (!candidate) {
+    return null;
+  }
+
+  const details = await fillTextFieldHandle(page, candidate, value);
   await candidate.dispose();
   return details;
 }
@@ -1125,6 +1375,7 @@ async function main() {
     const finalExpectedTimeoutMs = Number(
       process.env.SELLER_CENTRAL_FINAL_EXPECTED_TIMEOUT_MS || 15000,
     );
+    const intakeDetailsValue = String(process.env.SELLER_CENTRAL_INTAKE_DETAILS_VALUE || "").trim();
 
     const steps = [];
     async function executeClicks(sequence, phase) {
@@ -1183,12 +1434,59 @@ async function main() {
       await executeClicks(postFillClickSequence, "post_fill");
     }
 
+    let intakeForm = null;
+    let intakeDetailsField = null;
+    if (intakeDetailsValue) {
+      const intakeFrame = await waitForBestContentFrame(
+        page,
+        ["contact associates", "additional information", "provide additional details about your issue"],
+        15000,
+      );
+      intakeForm = {
+        frameUrl: intakeFrame.url(),
+        frameName: intakeFrame.name() || null,
+        fields: await collectVisibleTextFields(intakeFrame),
+      };
+
+      const detailsField = await findFieldByLabel(
+        intakeFrame,
+        ["provide additional details about your issue", "additional details"],
+        { preferredTags: ["textarea", "div"] },
+      );
+
+      if (detailsField) {
+        intakeDetailsField = await fillTextFieldHandle(page, detailsField, intakeDetailsValue);
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+
+      await executeClicks(["Continue"], "intake_submit");
+
+      const chatNowLocated = await waitForElementAcrossFrames(page, "Chat now", 12000);
+      if (chatNowLocated.element) {
+        const chatNowClick = await clickElementWithStrategies(page, chatNowLocated.element);
+        await new Promise((resolve) => setTimeout(resolve, stepWaitMs));
+        steps.push({
+          clickTarget: "Chat now",
+          clicked: chatNowClick.clicked,
+          clickedElement: chatNowClick.clickedElement,
+          clickStrategies: chatNowClick.strategies,
+          phase: "chat_launch",
+          url: page.url(),
+          title: await page.title(),
+          frameUrl: chatNowLocated.frame?.url?.() || null,
+          frameName: chatNowLocated.frame?.name?.() || null,
+          frameDiagnostics: chatNowLocated.frameDiagnostics,
+        });
+      }
+    }
+
     if (finalExpectedTexts.length > 0) {
       await waitForBestContentFrame(page, finalExpectedTexts, finalExpectedTimeoutMs);
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
 
     const chatUi = await inspectChatUi(page);
+    const supportState = await inspectSupportState(page);
 
     const frames = page.frames();
     const snapshots = [];
@@ -1218,8 +1516,11 @@ async function main() {
           title: await page.title(),
           loginRedirected,
           chatUi,
+          supportState,
           screenshotPath,
           firstTextInput,
+          intakeForm,
+          intakeDetailsField,
           steps,
           frames: snapshots,
         },
