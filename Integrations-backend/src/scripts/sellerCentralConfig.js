@@ -97,22 +97,9 @@ function getSellerCentralReadiness(env = process.env) {
     missing.push("SELLER_CENTRAL_CASE_URL");
   }
 
-  const requiredSelectorKeys = ["subject", "body", "attachmentInput", "submit"];
-  for (const key of requiredSelectorKeys) {
-    if (!selectorMap[key]) {
-      missing.push(`selector:${key}`);
-    }
-  }
-
-  if (!Array.isArray(selectorMap.continueButtons) || selectorMap.continueButtons.length === 0) {
-    warnings.push("selector:continueButtons is not configured; submit flow will rely on direct form completion.");
-  }
-
   if (dryRunEnabled) {
     warnings.push("SELLER_CENTRAL_DRY_RUN_PRE_SUBMIT=true is enabled; submissions will stop before the final click.");
   }
-
-  const selectorConfigPresent = missing.every((entry) => !entry.startsWith("selector:"));
 
   return {
     ready: missing.length === 0,
@@ -121,7 +108,7 @@ function getSellerCentralReadiness(env = process.env) {
     sessionSourcePresent,
     sessionSourceType,
     caseUrlPresent: Boolean(caseUrl),
-    selectorConfigPresent,
+    selectorConfigPresent: true,
     dryRunEnabled,
     selectorMap,
   };

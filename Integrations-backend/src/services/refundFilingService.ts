@@ -30,6 +30,7 @@ export interface FilingRequest {
     shipment_id?: string;
     asin?: string;
     sku?: string;
+    fnsku?: string;
     claim_type: string;
     amount_claimed: number;
     currency: string;
@@ -87,6 +88,14 @@ interface AttachmentPack {
         source_provider?: string | null;
     }>;
     labels: string[];
+}
+
+function parseJsonObject(value: any): Record<string, any> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return {};
+    }
+
+    return value as Record<string, any>;
 }
 
 type ClaimAttachmentProfile = {
@@ -268,13 +277,13 @@ class RefundFilingService {
                 success: false,
                 status: 'blocked',
                 error_message: message,
-                submission_channel: 'seller_central_browser',
+                submission_channel: 'seller_central_chat',
                 authoritative_proof: false,
                 idempotency_key: idempotencyKey,
                 request_started_at: requestStartedAt,
                 response_received_at: new Date().toISOString(),
                 request_summary: {
-                    channel: 'seller_central_browser',
+                    channel: 'seller_central_chat',
                     dispute_id: request.dispute_id,
                     order_id: request.order_id || null,
                     shipment_id: request.shipment_id || null,
@@ -320,6 +329,7 @@ class RefundFilingService {
                 shipment_id: request.shipment_id || null,
                 asin: request.asin || null,
                 sku: request.sku || null,
+                fnsku: request.fnsku || String(request.metadata?.fnsku || '').trim() || null,
                 quantity: Number(request.metadata?.quantity || 1),
                 amount_claimed: request.amount_claimed,
                 claim_type: request.claim_type,
@@ -342,13 +352,25 @@ class RefundFilingService {
 
             const rawResponse = JSON.parse(String(stdout || '{}'));
             const responseReceivedAt = new Date().toISOString();
-            const externalReference = rawResponse.external_case_id || null;
+            const rawTrace = parseJsonObject(rawResponse.raw_response_or_trace);
+            const externalReference = rawResponse.external_case_id || rawResponse.case_id || rawTrace.case_id || null;
+            const submissionChannel = rawResponse.submission_channel || 'seller_central_chat';
             const authoritativeProof = Boolean(rawResponse.downstream_submission_confirmed && externalReference);
+            const popupUrl = String(rawTrace.popup_url || rawTrace.popupUrl || '').trim() || null;
+            const contactRequestId =
+                String(rawResponse.contact_request_id || rawTrace.contact_request_id || rawTrace.contactRequestId || '').trim() || null;
+            const transcriptSnapshot = String(rawTrace.transcript_snapshot || '').trim() || null;
+            const supportHeader = String(rawTrace.support_header || '').trim() || null;
+            const screenshotPath =
+                String(rawTrace.screenshot_path || rawTrace.screenshot || '').trim() || null;
+            const chatSurface = Boolean(rawTrace.chat_surface);
+            const composerDetected = Boolean(rawTrace.composer_detected);
             const requestSummary = {
-                channel: 'seller_central_browser',
+                channel: submissionChannel,
                 dispute_id: request.dispute_id,
                 order_id: request.order_id || null,
                 shipment_id: request.shipment_id || null,
+                fnsku: request.fnsku || String(request.metadata?.fnsku || '').trim() || null,
                 claim_type: request.claim_type,
                 amount_claimed: request.amount_claimed,
                 attachment_count: attachmentPack.attachments.length,
@@ -361,6 +383,19 @@ class RefundFilingService {
                 })()
             };
             const responseSummary = {
+                status: rawResponse.status || (authoritativeProof ? 'submission_confirmed' : 'failed'),
+                submission_channel: submissionChannel,
+                external_case_id: externalReference,
+                case_id: externalReference,
+                contact_request_id: contactRequestId,
+                popup_url: popupUrl,
+                support_header: supportHeader,
+                transcript_snapshot: transcriptSnapshot,
+                screenshot_path: screenshotPath,
+                chat_surface: chatSurface,
+                composer_detected: composerDetected,
+                attachment_count: attachmentPack.attachments.length,
+                raw_response_or_trace: rawTrace,
                 ...rawResponse,
                 stderr: String(stderr || '').trim() || null
             };
@@ -371,7 +406,7 @@ class RefundFilingService {
                     success: false,
                     status: rawResponse.downstream_submission_attempted ? 'failed' : 'blocked',
                     error_message: failureReason,
-                    submission_channel: 'seller_central_browser',
+                    submission_channel: submissionChannel,
                     authoritative_proof: false,
                     idempotency_key: idempotencyKey,
                     request_started_at: requestStartedAt,
@@ -390,7 +425,7 @@ class RefundFilingService {
                 amazon_case_id: externalReference,
                 external_reference: externalReference,
                 status: 'submitted',
-                submission_channel: 'seller_central_browser',
+                submission_channel: submissionChannel,
                 authoritative_proof: true,
                 idempotency_key: idempotencyKey,
                 request_started_at: requestStartedAt,
@@ -412,13 +447,13 @@ class RefundFilingService {
                 success: false,
                 status: 'failed',
                 error_message: message,
-                submission_channel: 'seller_central_browser',
+                submission_channel: 'seller_central_chat',
                 authoritative_proof: false,
                 idempotency_key: idempotencyKey,
                 request_started_at: requestStartedAt,
                 response_received_at: responseReceivedAtFallback,
                 request_summary: {
-                    channel: 'seller_central_browser',
+                    channel: 'seller_central_chat',
                     dispute_id: request.dispute_id,
                     attachment_count: attachmentPack.attachments.length
                 },
@@ -856,7 +891,9 @@ class RefundFilingService {
                 };
             }
 
-            if (!request.order_id && !request.shipment_id && !request.asin && !request.sku) {
+            const fnsku = String(request.fnsku || request.metadata?.fnsku || '').trim() || undefined;
+
+            if (!request.order_id && !request.shipment_id && !request.asin && !request.sku && !fnsku) {
                 return {
                     success: false,
                     status: 'blocked',
@@ -912,6 +949,7 @@ class RefundFilingService {
                 shipmentId: request.shipment_id || undefined,
                 asin: request.asin,
                 sku: request.sku,
+                fnsku,
                 evidenceFilenames: attachmentPack.labels,
                 quantity: (request.metadata?.quantity as number | undefined) || 1,
                 strategyHints: Array.isArray(request.metadata?.strategy_hints)
@@ -933,6 +971,7 @@ class RefundFilingService {
                 shipment_id: request.shipment_id,
                 asin: request.asin,
                 sku: request.sku,
+                fnsku,
                 claim_type: request.claim_type,
                 quantity: (request.metadata?.quantity as number | undefined) || 1,
                 amount_claimed: request.amount_claimed,

@@ -3,7 +3,11 @@
 const fs = require("fs");
 const path = require("path");
 const puppeteer = require("puppeteer");
+const { execFile } = require("child_process");
+const { promisify } = require("util");
 const { getSellerCentralReadiness, truthy } = require("./sellerCentralConfig");
+
+const execFileAsync = promisify(execFile);
 
 function resolveBrowserExecutable() {
   const explicit = String(process.env.PUPPETEER_EXECUTABLE_PATH || process.env.SELLER_CENTRAL_BROWSER_PATH || "").trim();
@@ -180,6 +184,29 @@ async function inspectSubmitButton(page, selector) {
   });
 }
 
+function extractQueryParams(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    return {
+      popupUrl: parsed.toString(),
+      caseId: parsed.searchParams.get("caseID") || parsed.searchParams.get("caseId") || null,
+      contactRequestId: parsed.searchParams.get("contactRequestId") || null,
+    };
+  } catch (_error) {
+    return {
+      popupUrl: String(value || "") || null,
+      caseId: null,
+      contactRequestId: null,
+    };
+  }
+}
+
+function buildTranscriptSnapshot(chatState) {
+  const sample = String(chatState?.bodySample || "").replace(/\s+/g, " ").trim();
+  if (!sample) return null;
+  return sample.slice(0, 4000);
+}
+
 async function run() {
   const inputPath = process.argv[2];
   if (!inputPath) {
@@ -188,7 +215,6 @@ async function run() {
 
   const payload = readJsonFile(inputPath);
   const readiness = getSellerCentralReadiness(process.env);
-  const selectors = readiness.selectorMap;
   if (!readiness.ready) {
     return {
       downstream_submission_attempted: false,
@@ -202,151 +228,120 @@ async function run() {
     };
   }
 
-  const browser = await puppeteer.launch({
-    headless: !truthy(process.env.SELLER_CENTRAL_HEADFUL),
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    executablePath: resolveBrowserExecutable() || undefined,
-  });
-
-  let submissionAttempted = false;
-
-  try {
-    const page = await browser.newPage();
-    await applySession(page);
-    await page.goto(process.env.SELLER_CENTRAL_CASE_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: Number(process.env.SELLER_CENTRAL_NAVIGATION_TIMEOUT_MS || 60000),
-    });
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-
-    if (selectors.authCheck) {
-      const authHandle = await page.$(selectors.authCheck);
-      if (!authHandle) {
-        return {
-          downstream_submission_attempted: false,
-          downstream_submission_confirmed: false,
-          pre_submit_path_completed: false,
-          external_case_id: null,
-          status: "failed",
-          raw_response_or_trace: {
-            url: page.url(),
-            title: await page.title(),
-            screenshot: await maybeScreenshot(page, "auth-failed"),
-          },
-          failure_reason: "Authenticated Seller Central session was not detected.",
-          submission_id: payload.submission_id,
-        };
-      }
-    }
-
-    await fillField(page, selectors.subject, payload.subject);
-    await fillField(page, selectors.body, payload.body);
-    await fillField(page, selectors.orderId, payload.order_id);
-    await fillField(page, selectors.shipmentId, payload.shipment_id);
-    await fillField(page, selectors.asin, payload.asin);
-    await fillField(page, selectors.sku, payload.sku);
-    await fillField(page, selectors.quantity, payload.quantity);
-    await fillField(page, selectors.amountClaimed, payload.amount_claimed);
-    await fillField(page, selectors.claimType, payload.claim_type);
-
-    const uploadHandle = await page.waitForSelector(selectors.attachmentInput, { timeout: 15000 });
-    const attachmentPaths = payload.attachments.map((attachment) => attachment.path);
-    await uploadHandle.uploadFile(...attachmentPaths);
-    const uploadedCount = await page.$eval(selectors.attachmentInput, (element) => {
-      if (!("files" in element) || !element.files) return 0;
-      return element.files.length;
-    });
-
-    if (uploadedCount !== payload.attachments.length) {
-      return {
-        downstream_submission_attempted: false,
-        downstream_submission_confirmed: false,
-        pre_submit_path_completed: false,
-        external_case_id: null,
-        status: "failed",
-        raw_response_or_trace: {
-          url: page.url(),
-          title: await page.title(),
-          uploadedCount,
-          expectedCount: payload.attachments.length,
-          screenshot: await maybeScreenshot(page, "upload-mismatch"),
-        },
-        failure_reason: "Seller Central did not retain all uploaded attachments before submit.",
-        submission_id: payload.submission_id,
-      };
-    }
-
-    const submitState = await inspectSubmitButton(page, selectors.submit);
-    const dryRunPreSubmit = truthy(process.env.SELLER_CENTRAL_DRY_RUN_PRE_SUBMIT);
-    if (dryRunPreSubmit) {
-      return {
-        downstream_submission_attempted: false,
-        downstream_submission_confirmed: false,
-        pre_submit_path_completed: true,
-        external_case_id: null,
-        status: "packaged_for_submission",
-        raw_response_or_trace: {
-          url: page.url(),
-          title: await page.title(),
-          attachmentCount: uploadedCount,
-          submitButton: submitState,
-          screenshot: await maybeScreenshot(page, "pre-submit"),
-        },
-        failure_reason: null,
-        submission_id: payload.submission_id,
-      };
-    }
-
-    await page.click(selectors.submit);
-    submissionAttempted = true;
-
-    let confirmationText = null;
-    let externalCaseId = null;
-    let confirmed = false;
-
-    if (selectors.confirmation) {
-      try {
-        await page.waitForSelector(selectors.confirmation, {
-          timeout: Number(process.env.SELLER_CENTRAL_CONFIRM_TIMEOUT_MS || 30000),
-        });
-        confirmationText = await extractText(page, selectors.confirmation);
-        confirmed = true;
-      } catch (_err) {
-        confirmed = false;
-      }
-    }
-
-    if (selectors.externalCaseId) {
-      externalCaseId = await extractText(page, selectors.externalCaseId);
-      if (externalCaseId) {
-        confirmed = true;
-      }
-    }
-
+  const fnsku = String(payload.fnsku || "").trim();
+  if (!fnsku) {
     return {
-      downstream_submission_attempted: submissionAttempted,
-      downstream_submission_confirmed: confirmed,
-      pre_submit_path_completed: false,
-      external_case_id: externalCaseId,
-      status: confirmed ? "submission_confirmed" : "submission_attempted",
-      raw_response_or_trace: {
-        url: page.url(),
-        title: await page.title(),
-        confirmationText,
-        attachmentCount: uploadedCount,
-        submitButton: submitState,
-        screenshot: await maybeScreenshot(page, confirmed ? "confirmed" : "attempted"),
-      },
-      failure_reason: confirmed ? null : "Seller Central submit was attempted but no visible confirmation was captured.",
-      submission_id: payload.submission_id,
-    };
-  } catch (error) {
-    return {
-      downstream_submission_attempted: submissionAttempted,
+      downstream_submission_attempted: false,
       downstream_submission_confirmed: false,
       pre_submit_path_completed: false,
       external_case_id: null,
-      status: submissionAttempted ? "submission_attempted" : "failed",
+      status: "failed",
+      raw_response_or_trace: {
+        readiness,
+      },
+      failure_reason: "Seller Central chat initiation requires a real FNSKU.",
+      submission_id: payload.submission_id,
+    };
+  }
+
+  const intakeDetails = String(payload.body || payload.subject || "").trim();
+  if (!intakeDetails) {
+    return {
+      downstream_submission_attempted: false,
+      downstream_submission_confirmed: false,
+      pre_submit_path_completed: false,
+      external_case_id: null,
+      status: "failed",
+      raw_response_or_trace: {
+        readiness,
+      },
+      failure_reason: "Seller Central chat initiation requires intake details.",
+      submission_id: payload.submission_id,
+    };
+  }
+
+  const probeScriptPath = path.resolve(__dirname, "probeSellerCentralChat.js");
+  const probeEnv = {
+    ...process.env,
+    SELLER_CENTRAL_PROBE_URL: String(process.env.SELLER_CENTRAL_CASE_URL || "https://sellercentral.amazon.com/help/center?redirectSource=HelpHub"),
+    SELLER_CENTRAL_CLICK_TEXTS: JSON.stringify(["Create new issue", "Inventory lost in FBA warehouse"]),
+    SELLER_CENTRAL_FIRST_TEXT_INPUT_VALUE: fnsku,
+    SELLER_CENTRAL_POST_FILL_CLICK_TEXTS: JSON.stringify(["Continue", "Contact an associate"]),
+    SELLER_CENTRAL_INTAKE_DETAILS_VALUE: intakeDetails,
+    SELLER_CENTRAL_FINAL_EXPECTED_TEXTS: JSON.stringify([
+      "chat now",
+      "type your message",
+      "contact associates",
+      "provide additional details about your issue",
+    ]),
+    SELLER_CENTRAL_FINAL_EXPECTED_TIMEOUT_MS: String(process.env.SELLER_CENTRAL_FINAL_EXPECTED_TIMEOUT_MS || "25000"),
+    SELLER_CENTRAL_CHAT_OBSERVE_TIMEOUT_MS: String(process.env.SELLER_CENTRAL_CHAT_OBSERVE_TIMEOUT_MS || "20000"),
+    SELLER_CENTRAL_STEP_WAIT_MS: String(process.env.SELLER_CENTRAL_STEP_WAIT_MS || "5000"),
+  };
+
+  try {
+    const { stdout, stderr } = await execFileAsync(process.execPath, [probeScriptPath], {
+      cwd: process.cwd(),
+      env: probeEnv,
+      timeout: Number(process.env.SELLER_CENTRAL_EXEC_TIMEOUT_MS || 180000),
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    const probeResult = JSON.parse(String(stdout || "{}"));
+    const popupUrl =
+      probeResult.finalUrl ||
+      probeResult.chatUi?.pageUrl ||
+      probeResult.chatSurface?.openSurface?.pageUrl ||
+      null;
+    const { caseId, contactRequestId } = extractQueryParams(popupUrl);
+    const chatState = probeResult.chatUi?.opened
+      ? probeResult.chatUi
+      : probeResult.chatSurface?.openSurface || { opened: false };
+    const composerDetected = Array.isArray(chatState.inputs) && chatState.inputs.length > 0;
+    const transcriptSnapshot = buildTranscriptSnapshot(chatState);
+    const visibleInitialMessage = /me sent at|hello,|margin analytics has joined the chat/i.test(transcriptSnapshot || "");
+    const supportHeader = /chat with amazon support/i.test(transcriptSnapshot || "") ? "Chat with Amazon Support" : null;
+    const chatOpened = Boolean(chatState.opened && popupUrl);
+    const authoritativeProof = Boolean(chatOpened && composerDetected && caseId && (visibleInitialMessage || supportHeader));
+
+    return {
+      downstream_submission_attempted: Boolean(chatOpened || probeResult.chatTransition),
+      downstream_submission_confirmed: authoritativeProof,
+      pre_submit_path_completed: true,
+      external_case_id: caseId,
+      case_id: caseId,
+      contact_request_id: contactRequestId,
+      submission_channel: "seller_central_chat",
+      status: authoritativeProof ? "submission_confirmed" : "failed",
+      raw_response_or_trace: {
+        popup_url: popupUrl,
+        case_id: caseId,
+        contactRequestId,
+        support_header: supportHeader,
+        transcript_snapshot: transcriptSnapshot,
+        screenshot: probeResult.screenshotPath || null,
+        chat_surface: chatOpened,
+        composer_detected: composerDetected,
+        attachment_count: Array.isArray(payload.attachments) ? payload.attachments.length : 0,
+        probe_result: {
+          finalUrl: probeResult.finalUrl || null,
+          activePageContext: probeResult.activePageContext || null,
+          chatTransition: probeResult.chatTransition || null,
+        },
+        stderr: String(stderr || "").trim() || null,
+      },
+      failure_reason: authoritativeProof
+        ? null
+        : "Seller Central chat popup did not return authoritative case proof.",
+      submission_id: payload.submission_id || caseId || null,
+    };
+  } catch (error) {
+    return {
+      downstream_submission_attempted: false,
+      downstream_submission_confirmed: false,
+      pre_submit_path_completed: false,
+      external_case_id: null,
+      status: "failed",
       raw_response_or_trace: {
         errorName: error.name,
         stack: error.stack,
@@ -354,8 +349,6 @@ async function run() {
       failure_reason: error.message || "Seller Central browser automation failed.",
       submission_id: payload.submission_id,
     };
-  } finally {
-    await browser.close();
   }
 }
 

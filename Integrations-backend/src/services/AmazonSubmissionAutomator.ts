@@ -11,6 +11,11 @@ function parseJsonObject(value: any): Record<string, any> {
     }
     return typeof value === 'object' ? value : {};
 }
+
+function parseStringOrNull(value: any): string | null {
+    const normalized = String(value || '').trim();
+    return normalized || null;
+}
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import refundFilingService from './refundFilingService';
@@ -230,6 +235,14 @@ export class AmazonSubmissionAutomator {
             const filingStrategy = decisionIntelligence?.filing_strategy || 'AUTO';
             const adaptiveStrategyHints = decisionIntelligence?.adaptive_strategy_hints || {};
             const explanationPayload = decisionIntelligence?.explanation_payload || proofSnapshot?.explanationPayload || null;
+            const fnskuCandidates = [
+                detectionEvidence.fnsku,
+                evidenceAttachments?.fnsku,
+                ...(Array.isArray(proofSnapshot?.matchedIdentifiers?.productIds) ? proofSnapshot.matchedIdentifiers.productIds : [])
+            ]
+                .map((value: any) => String(value || '').trim())
+                .filter(Boolean);
+            const fnsku = fnskuCandidates.find((value) => /^[XB][A-Z0-9]{9,}$/i.test(value)) || fnskuCandidates[0] || undefined;
 
             if (!proofSnapshot) {
                 await supabaseAdmin
@@ -270,6 +283,7 @@ export class AmazonSubmissionAutomator {
                 shipment_id: detectionEvidence.shipment_id || detectionEvidence.fba_shipment_id || undefined,
                 asin: detectionEvidence.asin || undefined,
                 sku: detectionEvidence.sku || undefined,
+                fnsku,
                 claim_type: activeCase.case_type || eligibilitySnapshot.claimType || 'inventory_loss',
                 amount_claimed: parseFloat((activeCase.estimated_recovery_amount ?? activeCase.claim_amount ?? 0).toString()),
                 currency: activeCase.currency || 'USD',
@@ -282,6 +296,7 @@ export class AmazonSubmissionAutomator {
                     success_probability: decisionIntelligence?.success_probability ?? null,
                     priority_score: decisionIntelligence?.priority_score ?? null,
                     adaptive_confidence_threshold: decisionIntelligence?.adaptive_confidence_threshold ?? null,
+                    fnsku: fnsku || null,
                     proof_snapshot: proofSnapshot,
                     explanation_payload: explanationPayload,
                     strategy_hints: [
@@ -342,6 +357,47 @@ export class AmazonSubmissionAutomator {
         const amazonCaseId = result.amazon_case_id || null;
         const externalReference = result.external_reference || amazonCaseId || null;
         const submissionId = result.submission_id || externalReference;
+        const requestSummary = parseJsonObject(result.request_summary);
+        const responseSummary = parseJsonObject(result.response_summary);
+        const rawTrace = parseJsonObject(responseSummary.raw_response_or_trace);
+        const transcriptSnapshot =
+            parseStringOrNull(responseSummary.transcript_snapshot) ||
+            parseStringOrNull(rawTrace.transcript_snapshot);
+        const popupUrl =
+            parseStringOrNull(responseSummary.popup_url) ||
+            parseStringOrNull(rawTrace.popup_url) ||
+            parseStringOrNull(rawTrace.popupUrl);
+        const contactRequestId =
+            parseStringOrNull(responseSummary.contact_request_id) ||
+            parseStringOrNull(rawTrace.contact_request_id) ||
+            parseStringOrNull(rawTrace.contactRequestId);
+        const supportHeader =
+            parseStringOrNull(responseSummary.support_header) ||
+            parseStringOrNull(rawTrace.support_header);
+        const screenshotPath =
+            parseStringOrNull(responseSummary.screenshot_path) ||
+            parseStringOrNull(rawTrace.screenshot_path) ||
+            parseStringOrNull(rawTrace.screenshot);
+        const chatSurface = Boolean(
+            responseSummary.chat_surface ??
+            rawTrace.chat_surface
+        );
+        const composerDetected = Boolean(
+            responseSummary.composer_detected ??
+            rawTrace.composer_detected
+        );
+        const submissionMetadata = {
+            popup_url: popupUrl,
+            case_id: externalReference,
+            contact_request_id: contactRequestId,
+            support_header: supportHeader,
+            transcript_snapshot: transcriptSnapshot,
+            screenshot_path: screenshotPath,
+            chat_surface: chatSurface,
+            composer_detected: composerDetected,
+            initial_message_visible: transcriptSnapshot ? /me sent at|hello,|margin analytics has joined the chat/i.test(transcriptSnapshot) : false,
+            source_surface: 'seller_central_chat_popup'
+        };
 
         if (!result.authoritative_proof || !externalReference) {
             throw new Error('Agent 7 refused to mark the claim filed because no authoritative external submission proof was returned.');
@@ -358,15 +414,16 @@ export class AmazonSubmissionAutomator {
             idempotency_key: result.idempotency_key || null,
             request_started_at: result.request_started_at || timestamp,
             response_received_at: result.response_received_at || timestamp,
-            submission_channel: result.submission_channel || 'seller_central_browser',
-            request_summary: result.request_summary || {},
-            response_summary: result.response_summary || {},
+            submission_channel: result.submission_channel || 'seller_central_chat',
+            request_summary: requestSummary,
+            response_summary: responseSummary,
             attachment_manifest: result.attachment_manifest || [],
             outcome: result.outcome || result.status || 'submitted',
             status: result.status,
             last_error: null,
             attempt_number: submissionAttempts,
             submission_timestamp: timestamp,
+            metadata: submissionMetadata,
             created_at: timestamp,
             updated_at: timestamp
         };
@@ -520,7 +577,7 @@ export class AmazonSubmissionAutomator {
                     external_reference: amazonCase.id,
                     authoritative_proof: true,
                     outcome: 'submitted',
-                    submission_channel: 'seller_central_browser',
+                    submission_channel: 'seller_central_chat',
                     idempotency_key: idempotencyKey
                 },
                 await this.resolveSubmissionAttemptNumber(caseId)
