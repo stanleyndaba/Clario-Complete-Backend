@@ -560,9 +560,10 @@ class AmazonSPAPIService:
         # Prepare supporting documents
         supporting_docs = []
         for doc in evidence_documents:
+            document_url = self._resolve_evidence_download_url(doc)
             supporting_docs.append({
                 "document_type": "invoice",
-                "document_url": doc["download_url"],
+                "document_url": document_url,
                 "document_name": doc["filename"],
                 "document_size": doc["size_bytes"],
                 "content_type": doc["content_type"]
@@ -586,6 +587,38 @@ class AmazonSPAPIService:
                 "submission_timestamp": datetime.utcnow().isoformat() + "Z"
             }
         }
+
+    def _resolve_evidence_download_url(self, doc: Dict[str, Any]) -> str:
+        """Resolve a truthful downloadable URL for a submission evidence document."""
+        direct_url = doc.get("download_url") or doc.get("file_url")
+        if direct_url:
+            return direct_url
+
+        document_id = doc.get("id")
+        if document_id:
+            query = """
+                SELECT file_url
+                FROM evidence_documents
+                WHERE id = %s
+                LIMIT 1
+            """ if self.db.is_postgresql else """
+                SELECT file_url
+                FROM evidence_documents
+                WHERE id = ?
+                LIMIT 1
+            """
+            result = self.db._execute_query(query, (document_id,), fetch=True, fetch_one=True)
+            if result and result.get("file_url"):
+                logger.info(
+                    "Resolved missing evidence download_url from stored file_url",
+                    extra={"document_id": document_id, "filename": doc.get("filename")}
+                )
+                return result["file_url"]
+
+        raise RuntimeError(
+            f"Evidence document {doc.get('filename') or document_id or 'unknown'} "
+            "is not downloadable because download_url/file_url is missing"
+        )
     
     async def _submit_to_spapi(
         self, 
