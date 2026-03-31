@@ -1,11 +1,10 @@
 /**
  * Refund Filing Service
- * Wraps Python SP-API service for filing disputes
- * Handles retry logic, evidence collection, and status polling
- * 
- * TRANSPORT BOUNDARY:
- * Internal Node -> Python service calls must stay direct.
- * Seller-specific proxying belongs on external seller-facing hops, not internal service-to-service HTTPS.
+ * Handles dispute submission transport, evidence collection, and status polling.
+ *
+ * SUBMISSION AUTHORITY:
+ * Canonical filing now uses the Seller Central browser submission channel.
+ * The old Python SP-API submission hop is not authoritative for live filing.
  */
 
 import axios from 'axios';
@@ -16,6 +15,11 @@ import { briefGeneratorService } from './briefGeneratorService';
 import * as fs from 'fs';
 import * as path from 'path';
 import crypto from 'crypto';
+import * as os from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
 
 export interface FilingRequest {
     dispute_id: string;
@@ -136,16 +140,12 @@ class RefundFilingService {
     }
 
     private assertRealFilingConfig(): void {
-        if (!this.pythonApiUrl || !String(this.pythonApiUrl).trim()) {
-            throw new Error('Python filing service is not configured (PYTHON_API_URL missing)');
-        }
-
-        if (!isPythonServiceAuthConfigured()) {
-            throw new Error('Python filing auth is not configured (PYTHON_API_JWT_SECRET missing)');
-        }
-
         if (this.isProduction() && (process.env.DRY_RUN === 'true' || (global as any).DRY_RUN === true)) {
             throw new Error('Production filing is blocked because DRY_RUN is enabled');
+        }
+
+        if (this.isProduction() && String(process.env.SELLER_CENTRAL_DRY_RUN_PRE_SUBMIT || '').trim().toLowerCase() === 'true') {
+            throw new Error('Production filing is blocked because SELLER_CENTRAL_DRY_RUN_PRE_SUBMIT is enabled');
         }
     }
 
@@ -226,6 +226,220 @@ class RefundFilingService {
                 metadata: { source: `refund-filing:${context}` }
             })
         };
+    }
+
+    private getSellerCentralReadiness(): {
+        ready: boolean;
+        missing: string[];
+        warnings: string[];
+        sessionSourcePresent: boolean;
+        sessionSourceType: string | null;
+        caseUrlPresent: boolean;
+        selectorConfigPresent: boolean;
+        dryRunEnabled: boolean;
+        selectorMap: Record<string, any>;
+    } {
+        const configModulePath = path.resolve(process.cwd(), 'src', 'scripts', 'sellerCentralConfig.js');
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { getSellerCentralReadiness } = require(configModulePath);
+        return getSellerCentralReadiness(process.env);
+    }
+
+    private resolveSellerCentralScriptPath(): string {
+        const scriptPath = path.resolve(process.cwd(), 'src', 'scripts', 'sellerCentralSubmit.js');
+        if (!fs.existsSync(scriptPath)) {
+            throw new Error(`Seller Central submitter script not found at ${scriptPath}`);
+        }
+        return scriptPath;
+    }
+
+    private async submitViaSellerCentral(
+        payload: Record<string, any>,
+        attachmentPack: AttachmentPack,
+        request: FilingRequest,
+        sellerId: string,
+        idempotencyKey: string,
+        requestStartedAt: string
+    ): Promise<FilingResult> {
+        const readiness = this.getSellerCentralReadiness();
+        if (!readiness.ready) {
+            const message = `Seller Central submission channel is not configured: ${readiness.missing.join('; ')}`;
+            return {
+                success: false,
+                status: 'blocked',
+                error_message: message,
+                submission_channel: 'seller_central_browser',
+                authoritative_proof: false,
+                idempotency_key: idempotencyKey,
+                request_started_at: requestStartedAt,
+                response_received_at: new Date().toISOString(),
+                request_summary: {
+                    channel: 'seller_central_browser',
+                    dispute_id: request.dispute_id,
+                    order_id: request.order_id || null,
+                    shipment_id: request.shipment_id || null,
+                    attachment_count: attachmentPack.attachments.length,
+                    readiness_warnings: readiness.warnings
+                },
+                response_summary: {
+                    readiness
+                },
+                attachment_manifest: attachmentPack.manifest,
+                outcome: 'blocked',
+                last_error: message
+            };
+        }
+
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent7-seller-central-'));
+        const responseReceivedAtFallback = new Date().toISOString();
+
+        try {
+            const attachments = attachmentPack.attachments.map((attachment, index) => {
+                const safeFilename = attachment.filename.replace(/[^a-zA-Z0-9._-]+/g, '_') || `attachment-${index + 1}.bin`;
+                const filePath = path.join(tempDir, `${index + 1}-${safeFilename}`);
+                fs.writeFileSync(filePath, attachment.bytes);
+
+                return {
+                    id: attachment.id,
+                    filename: attachment.filename,
+                    path: filePath,
+                    content_type: attachment.contentType,
+                    size_bytes: attachment.sizeBytes,
+                    categories: attachment.categories,
+                    sha256: attachment.sha256,
+                    download_url: attachment.downloadUrl || null
+                };
+            });
+
+            const inputPayloadPath = path.join(tempDir, 'submission-payload.json');
+            const scriptInput = {
+                submission_id: idempotencyKey,
+                dispute_id: request.dispute_id,
+                seller_id: sellerId,
+                order_id: request.order_id,
+                shipment_id: request.shipment_id || null,
+                asin: request.asin || null,
+                sku: request.sku || null,
+                quantity: Number(request.metadata?.quantity || 1),
+                amount_claimed: request.amount_claimed,
+                claim_type: request.claim_type,
+                subject: payload.subject,
+                body: payload.body,
+                attachments
+            };
+            fs.writeFileSync(inputPayloadPath, JSON.stringify(scriptInput, null, 2), 'utf8');
+
+            const { stdout, stderr } = await execFileAsync(
+                process.execPath,
+                [this.resolveSellerCentralScriptPath(), inputPayloadPath],
+                {
+                    cwd: process.cwd(),
+                    env: process.env,
+                    timeout: Number(process.env.SELLER_CENTRAL_EXEC_TIMEOUT_MS || 180000),
+                    maxBuffer: 10 * 1024 * 1024
+                }
+            );
+
+            const rawResponse = JSON.parse(String(stdout || '{}'));
+            const responseReceivedAt = new Date().toISOString();
+            const externalReference = rawResponse.external_case_id || null;
+            const authoritativeProof = Boolean(rawResponse.downstream_submission_confirmed && externalReference);
+            const requestSummary = {
+                channel: 'seller_central_browser',
+                dispute_id: request.dispute_id,
+                order_id: request.order_id || null,
+                shipment_id: request.shipment_id || null,
+                claim_type: request.claim_type,
+                amount_claimed: request.amount_claimed,
+                attachment_count: attachmentPack.attachments.length,
+                case_url_host: (() => {
+                    try {
+                        return new URL(String(process.env.SELLER_CENTRAL_CASE_URL || '')).host || null;
+                    } catch (_err) {
+                        return null;
+                    }
+                })()
+            };
+            const responseSummary = {
+                ...rawResponse,
+                stderr: String(stderr || '').trim() || null
+            };
+
+            if (!authoritativeProof) {
+                const failureReason = rawResponse.failure_reason || 'Seller Central submission did not return authoritative confirmation';
+                return {
+                    success: false,
+                    status: rawResponse.downstream_submission_attempted ? 'failed' : 'blocked',
+                    error_message: failureReason,
+                    submission_channel: 'seller_central_browser',
+                    authoritative_proof: false,
+                    idempotency_key: idempotencyKey,
+                    request_started_at: requestStartedAt,
+                    response_received_at: responseReceivedAt,
+                    request_summary: requestSummary,
+                    response_summary: responseSummary,
+                    attachment_manifest: attachmentPack.manifest,
+                    outcome: rawResponse.status || 'failed',
+                    last_error: failureReason
+                };
+            }
+
+            return {
+                success: true,
+                submission_id: rawResponse.submission_id || externalReference,
+                amazon_case_id: externalReference,
+                external_reference: externalReference,
+                status: 'submitted',
+                submission_channel: 'seller_central_browser',
+                authoritative_proof: true,
+                idempotency_key: idempotencyKey,
+                request_started_at: requestStartedAt,
+                response_received_at: responseReceivedAt,
+                request_summary: requestSummary,
+                response_summary: responseSummary,
+                attachment_manifest: attachmentPack.manifest,
+                outcome: 'submitted'
+            };
+        } catch (error: any) {
+            const message = error?.message || 'Seller Central submission failed';
+            logger.error('[REFUND FILING] Seller Central submission failed', {
+                disputeId: request.dispute_id,
+                sellerId,
+                error: message
+            });
+
+            return {
+                success: false,
+                status: 'failed',
+                error_message: message,
+                submission_channel: 'seller_central_browser',
+                authoritative_proof: false,
+                idempotency_key: idempotencyKey,
+                request_started_at: requestStartedAt,
+                response_received_at: responseReceivedAtFallback,
+                request_summary: {
+                    channel: 'seller_central_browser',
+                    dispute_id: request.dispute_id,
+                    attachment_count: attachmentPack.attachments.length
+                },
+                response_summary: {
+                    error: message
+                },
+                attachment_manifest: attachmentPack.manifest,
+                outcome: 'failed',
+                last_error: message
+            };
+        } finally {
+            try {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            } catch (cleanupError: any) {
+                logger.warn('[REFUND FILING] Failed to clean temporary Seller Central workspace', {
+                    sellerId,
+                    disputeId: request.dispute_id,
+                    error: cleanupError?.message || String(cleanupError)
+                });
+            }
+        }
     }
 
     private resolveClaimAttachmentProfile(claimType: string): ClaimAttachmentProfile {
@@ -763,87 +977,14 @@ class RefundFilingService {
             }
             // -------------------------------
 
-            let response;
-            try {
-                response = await this.postMultipartSubmission(payload, attachmentPack, internalUserId, sellerId, idempotencyKey);
-            } catch (multipartError: any) {
-                logger.warn('[REFUND FILING] Multipart submission failed, retrying with JSON attachment bytes', {
-                    disputeId: request.dispute_id,
-                    error: multipartError.message
-                });
-                response = await this.postJsonSubmission(payload, attachmentPack, internalUserId, sellerId, idempotencyKey);
-            }
-
-            logger.debug('[REFUND FILING] Internal Python submission uses direct HTTPS transport', {
-                disputeId: request.dispute_id,
+            return await this.submitViaSellerCentral(
+                payload,
+                attachmentPack,
+                request,
                 sellerId,
-                pythonApiUrl: this.pythonApiUrl
-            });
-
-
-            if (response.data?.ok && response.data?.data) {
-                const data = response.data.data;
-                const responseReceivedAt = new Date().toISOString();
-                const externalReference = data.external_reference || data.amazon_case_id || data.submission_id || null;
-                const authoritativeProof = data.accepted === true && Boolean(externalReference);
-
-                if (!authoritativeProof) {
-                    return {
-                        success: false,
-                        status: 'failed',
-                        error_message: 'Amazon submission returned no authoritative external reference',
-                        idempotency_key: idempotencyKey,
-                        request_started_at: requestStartedAt,
-                        response_received_at: responseReceivedAt,
-                        request_summary: {
-                            dispute_id: request.dispute_id,
-                            claim_type: request.claim_type,
-                            amount_claimed: request.amount_claimed,
-                            currency: request.currency,
-                            seller_id: sellerId,
-                            order_id: request.order_id || null,
-                            shipment_id: request.shipment_id || null,
-                            asin: request.asin || null,
-                            sku: request.sku || null
-                        },
-                        response_summary: data.response_summary || data,
-                        attachment_manifest: attachmentPack.manifest,
-                        submission_channel: data.submission_channel || 'amazon_spapi',
-                        outcome: 'failed',
-                        last_error: 'missing_external_submission_reference'
-                    };
-                }
-
-                return {
-                    success: true,
-                    submission_id: data.submission_id,
-                    amazon_case_id: data.amazon_case_id,
-                    external_reference: externalReference,
-                    status: this.mapStatus(data.status),
-                    error_message: undefined,
-                    submission_channel: data.submission_channel || 'amazon_spapi',
-                    authoritative_proof: authoritativeProof,
-                    idempotency_key: idempotencyKey,
-                    request_started_at: requestStartedAt,
-                    response_received_at: responseReceivedAt,
-                    request_summary: {
-                        dispute_id: request.dispute_id,
-                        claim_type: request.claim_type,
-                        amount_claimed: request.amount_claimed,
-                        currency: request.currency,
-                        seller_id: sellerId,
-                        order_id: request.order_id || null,
-                        shipment_id: request.shipment_id || null,
-                        asin: request.asin || null,
-                        sku: request.sku || null
-                    },
-                    response_summary: data.response_summary || data,
-                    attachment_manifest: attachmentPack.manifest,
-                    outcome: 'submitted'
-                };
-            } else {
-                throw new Error(`Python API returned unexpected response: ${JSON.stringify(response.data)}`);
-            }
+                idempotencyKey,
+                requestStartedAt
+            );
 
         } catch (error: any) {
             const backendMessage = error?.response?.data?.detail

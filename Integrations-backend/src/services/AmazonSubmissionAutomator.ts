@@ -216,8 +216,8 @@ export class AmazonSubmissionAutomator {
                 throw new Error(`[AGENT 7 FATAL] Harvesting Failed: No evidence linked to Case ${caseId}`);
             }
 
-            // 4. Open case via SP-API Implementation
-            logger.info(`✍️ [AGENT 7] Opening Amazon Seller Central case via SP-API`);
+            // 4. Open case via the real Seller Central submission channel
+            logger.info(`✍️ [AGENT 7] Opening Amazon Seller Central case via browser submission channel`);
 
             const evidenceDocumentIds = evidence
                 .map((link: any) => link.evidence_documents?.id)
@@ -358,7 +358,7 @@ export class AmazonSubmissionAutomator {
             idempotency_key: result.idempotency_key || null,
             request_started_at: result.request_started_at || timestamp,
             response_received_at: result.response_received_at || timestamp,
-            submission_channel: result.submission_channel || 'amazon_spapi',
+            submission_channel: result.submission_channel || 'seller_central_browser',
             request_summary: result.request_summary || {},
             response_summary: result.response_summary || {},
             attachment_manifest: result.attachment_manifest || [],
@@ -520,7 +520,7 @@ export class AmazonSubmissionAutomator {
                     external_reference: amazonCase.id,
                     authoritative_proof: true,
                     outcome: 'submitted',
-                    submission_channel: 'amazon_spapi',
+                    submission_channel: 'seller_central_browser',
                     idempotency_key: idempotencyKey
                 },
                 await this.resolveSubmissionAttemptNumber(caseId)

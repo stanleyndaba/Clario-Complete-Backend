@@ -97,10 +97,6 @@ function getSellerCentralReadiness(env = process.env) {
     missing.push("SELLER_CENTRAL_CASE_URL");
   }
 
-  if (!dryRunEnabled) {
-    missing.push("SELLER_CENTRAL_DRY_RUN_PRE_SUBMIT=true");
-  }
-
   const requiredSelectorKeys = ["subject", "body", "attachmentInput", "submit"];
   for (const key of requiredSelectorKeys) {
     if (!selectorMap[key]) {
@@ -109,7 +105,11 @@ function getSellerCentralReadiness(env = process.env) {
   }
 
   if (!Array.isArray(selectorMap.continueButtons) || selectorMap.continueButtons.length === 0) {
-    missing.push("selector:continueButtons");
+    warnings.push("selector:continueButtons is not configured; submit flow will rely on direct form completion.");
+  }
+
+  if (dryRunEnabled) {
+    warnings.push("SELLER_CENTRAL_DRY_RUN_PRE_SUBMIT=true is enabled; submissions will stop before the final click.");
   }
 
   const selectorConfigPresent = missing.every((entry) => !entry.startsWith("selector:"));
