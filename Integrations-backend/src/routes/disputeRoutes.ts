@@ -241,6 +241,11 @@ function classifyProxyEnvVar(name: string, value?: string | null): {
   };
 }
 
+function countOccurrences(value: string, token: string): number {
+  if (!value || !token) return 0;
+  return value.split(token).length - 1;
+}
+
 router.get('/proxy-runtime-check', async (req, res) => {
   try {
     if (!hasTrustedInternalApiKey(req)) {
@@ -276,9 +281,22 @@ router.get('/proxy-runtime-check', async (req, res) => {
       .limit(1)
       .maybeSingle();
 
+    const envUsername = String(process.env.PROXY_USERNAME || '').trim();
     let proxyResolution: Record<string, any>;
+    let usernameShape: Record<string, any> = {
+      envHasSessionToken: envUsername.includes('-session-'),
+      envHasCountryToken: envUsername.includes('-country-'),
+      resolvedSessionTokenCount: 0,
+      resolvedCountryTokenCount: 0
+    };
     try {
       const resolvedProxy = await proxyAssignmentService.getProxyForSeller(sellerId);
+      const resolvedUsername = String(resolvedProxy?.username || '');
+      usernameShape = {
+        ...usernameShape,
+        resolvedSessionTokenCount: countOccurrences(resolvedUsername, '-session-'),
+        resolvedCountryTokenCount: countOccurrences(resolvedUsername, '-country-')
+      };
       proxyResolution = {
         ok: true,
         config: resolvedProxy
@@ -318,6 +336,7 @@ router.get('/proxy-runtime-check', async (req, res) => {
       seller_id: sellerId,
       runtime_config: proxyAssignmentService.getConfigSummary(),
       env_audit: proxyEnvAudit,
+      username_shape: usernameShape,
       assignment: assignment || null,
       proxy_resolution: proxyResolution,
       client_initialization: clientInitialization
