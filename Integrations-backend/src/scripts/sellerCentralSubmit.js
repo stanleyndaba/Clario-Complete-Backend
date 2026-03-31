@@ -5,8 +5,85 @@ const path = require("path");
 const puppeteer = require("puppeteer");
 const { getSellerCentralReadiness, truthy } = require("./sellerCentralConfig");
 
+function resolveBrowserExecutable() {
+  const explicit = String(process.env.PUPPETEER_EXECUTABLE_PATH || process.env.SELLER_CENTRAL_BROWSER_PATH || "").trim();
+  if (explicit && fs.existsSync(explicit)) {
+    return explicit;
+  }
+
+  const candidates = [
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
 function readJsonFile(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function normalizeSameSite(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === "strict") return "Strict";
+  if (normalized === "lax") return "Lax";
+  if (normalized === "none" || normalized === "no_restriction" || normalized === "no restriction") {
+    return "None";
+  }
+  return undefined;
+}
+
+function normalizeCookie(rawCookie) {
+  if (!rawCookie || typeof rawCookie !== "object") {
+    return null;
+  }
+
+  const name = String(rawCookie.name || "").trim();
+  if (!name) {
+    return null;
+  }
+
+  const normalized = {
+    name,
+    value: String(rawCookie.value || ""),
+  };
+
+  const domain = String(rawCookie.domain || "").trim();
+  const pathValue = String(rawCookie.path || "").trim();
+  if (domain) {
+    normalized.domain = domain;
+  }
+  if (pathValue) {
+    normalized.path = pathValue;
+  }
+
+  if (typeof rawCookie.secure === "boolean") {
+    normalized.secure = rawCookie.secure;
+  }
+  if (typeof rawCookie.httpOnly === "boolean") {
+    normalized.httpOnly = rawCookie.httpOnly;
+  }
+
+  const sameSite = normalizeSameSite(rawCookie.sameSite);
+  if (sameSite) {
+    normalized.sameSite = sameSite;
+  }
+
+  const expires =
+    typeof rawCookie.expires === "number"
+      ? rawCookie.expires
+      : typeof rawCookie.expirationDate === "number"
+        ? rawCookie.expirationDate
+        : null;
+
+  if (Number.isFinite(expires) && expires > 0) {
+    normalized.expires = expires;
+  }
+
+  return normalized;
 }
 
 async function applySession(page) {
@@ -24,7 +101,12 @@ async function applySession(page) {
 
   const cookies = Array.isArray(sessionData) ? sessionData : sessionData.cookies || [];
   if (cookies.length > 0) {
-    await page.setCookie(...cookies);
+    const normalizedCookies = cookies
+      .map((cookie) => normalizeCookie(cookie))
+      .filter(Boolean);
+    if (normalizedCookies.length > 0) {
+      await page.setCookie(...normalizedCookies);
+    }
   }
 
   const origins = Array.isArray(sessionData.origins) ? sessionData.origins : [];
@@ -123,6 +205,7 @@ async function run() {
   const browser = await puppeteer.launch({
     headless: !truthy(process.env.SELLER_CENTRAL_HEADFUL),
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    executablePath: resolveBrowserExecutable() || undefined,
   });
 
   let submissionAttempted = false;
@@ -131,9 +214,10 @@ async function run() {
     const page = await browser.newPage();
     await applySession(page);
     await page.goto(process.env.SELLER_CENTRAL_CASE_URL, {
-      waitUntil: "networkidle2",
+      waitUntil: "domcontentloaded",
       timeout: Number(process.env.SELLER_CENTRAL_NAVIGATION_TIMEOUT_MS || 60000),
     });
+    await new Promise((resolve) => setTimeout(resolve, 5000));
 
     if (selectors.authCheck) {
       const authHandle = await page.$(selectors.authCheck);
