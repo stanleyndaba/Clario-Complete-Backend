@@ -922,6 +922,305 @@ async function inspectChatUi(page) {
   };
 }
 
+function pushLimited(list, item, limit = 80) {
+  list.push(item);
+  if (list.length > limit) {
+    list.splice(0, list.length - limit);
+  }
+}
+
+function createRuntimeRecorder(browser) {
+  const events = {
+    targets: [],
+    popups: [],
+    console: [],
+    pageErrors: [],
+    requests: [],
+    responses: [],
+    requestFailures: [],
+  };
+  const trackedPages = new WeakSet();
+
+  function looksRelevantUrl(url) {
+    return /(chat|contact|support|hill|meld|amazonconnect|connect|messages?)/i.test(String(url || ""));
+  }
+
+  function attachPage(page, label = "page") {
+    if (!page || trackedPages.has(page)) {
+      return;
+    }
+    trackedPages.add(page);
+
+    page.on("popup", (popup) => {
+      pushLimited(events.popups, {
+        sourcePageUrl: page.url(),
+        popupUrl: popup.url(),
+        label,
+      });
+      attachPage(popup, "popup");
+    });
+
+    page.on("console", (msg) => {
+      pushLimited(events.console, {
+        pageUrl: page.url(),
+        type: msg.type(),
+        text: String(msg.text() || "").slice(0, 500),
+      });
+    });
+
+    page.on("pageerror", (error) => {
+      pushLimited(events.pageErrors, {
+        pageUrl: page.url(),
+        message: String(error?.message || error || "").slice(0, 500),
+      });
+    });
+
+    page.on("request", (request) => {
+      const url = request.url();
+      if (!looksRelevantUrl(url) && !["document", "xhr", "fetch", "websocket"].includes(request.resourceType())) {
+        return;
+      }
+      pushLimited(events.requests, {
+        pageUrl: page.url(),
+        resourceType: request.resourceType(),
+        method: request.method(),
+        url,
+      });
+    });
+
+    page.on("response", (response) => {
+      const url = response.url();
+      if (!looksRelevantUrl(url) && !["document", "xhr", "fetch"].includes(response.request().resourceType())) {
+        return;
+      }
+      pushLimited(events.responses, {
+        pageUrl: page.url(),
+        resourceType: response.request().resourceType(),
+        status: response.status(),
+        url,
+      });
+    });
+
+    page.on("requestfailed", (request) => {
+      const url = request.url();
+      if (!looksRelevantUrl(url) && !["document", "xhr", "fetch", "websocket"].includes(request.resourceType())) {
+        return;
+      }
+      pushLimited(events.requestFailures, {
+        pageUrl: page.url(),
+        resourceType: request.resourceType(),
+        url,
+        errorText: request.failure()?.errorText || null,
+      });
+    });
+  }
+
+  browser.on("targetcreated", (target) => {
+    pushLimited(events.targets, {
+      event: "created",
+      type: target.type(),
+      url: target.url(),
+    });
+    target.page().then((page) => attachPage(page, "targetcreated")).catch(() => {});
+  });
+  browser.on("targetchanged", (target) => {
+    pushLimited(events.targets, {
+      event: "changed",
+      type: target.type(),
+      url: target.url(),
+    });
+  });
+  browser.on("targetdestroyed", (target) => {
+    pushLimited(events.targets, {
+      event: "destroyed",
+      type: target.type(),
+      url: target.url(),
+    });
+  });
+
+  return {
+    events,
+    attachPage,
+  };
+}
+
+async function collectPageSurfaceState(page) {
+  const frames = page.frames();
+  const pageSummary = {
+    pageUrl: page.url(),
+    title: null,
+    frameCount: frames.length,
+    frames: [],
+  };
+
+  try {
+    pageSummary.title = await page.title();
+  } catch (_error) {
+    pageSummary.title = null;
+  }
+
+  for (const frame of frames) {
+    try {
+      const summary = await frame.evaluate(() => {
+        function isVisible(node) {
+          if (!node || !node.getBoundingClientRect) return false;
+          const rect = node.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) return false;
+          const style = window.getComputedStyle(node);
+          return style.display !== "none" && style.visibility !== "hidden";
+        }
+
+        function textOf(node) {
+          return String(node?.innerText || node?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 240);
+        }
+
+        function collect(selector, mapper, max = 10) {
+          const items = [];
+          const nodes = document.querySelectorAll(selector);
+          for (const node of nodes) {
+            if (!isVisible(node)) continue;
+            items.push(mapper(node));
+            if (items.length >= max) break;
+          }
+          return items;
+        }
+
+        const bodyText = String(document.body?.innerText || "").replace(/\s+/g, " ").trim();
+        return {
+          frameUrl: window.location.href,
+          bodySample: bodyText.slice(0, 1500),
+          iframes: collect("iframe", (node) => ({
+            id: node.id || null,
+            name: node.name || null,
+            src: node.getAttribute("src") || null,
+          }), 12),
+          dialogs: collect("dialog,[role='dialog'],[aria-modal='true']", (node) => ({
+            tag: String(node.tagName || "").toLowerCase(),
+            id: node.id || null,
+            role: node.getAttribute?.("role") || null,
+            text: textOf(node),
+          }), 12),
+          ariaLives: collect("[aria-live]", (node) => ({
+            tag: String(node.tagName || "").toLowerCase(),
+            ariaLive: node.getAttribute("aria-live") || null,
+            text: textOf(node),
+          }), 12),
+          composers: collect(
+            "textarea,[contenteditable='true'],input:not([type='hidden']):not([type='checkbox']):not([type='radio']):not([type='file'])",
+            (node) => ({
+              tag: String(node.tagName || "").toLowerCase(),
+              id: node.id || null,
+              placeholder: node.getAttribute?.("placeholder") || null,
+              ariaLabel: node.getAttribute?.("aria-label") || null,
+              writable: !(node.disabled || node.readOnly || node.getAttribute?.("aria-disabled") === "true"),
+              text: textOf(node),
+            }),
+            16,
+          ),
+          buttons: collect(
+            "button,a,[role='button'],input[type='button'],input[type='submit'],kat-button",
+            (node) => ({
+              tag: String(node.tagName || "").toLowerCase(),
+              id: node.id || null,
+              role: node.getAttribute?.("role") || null,
+              text: textOf(node),
+            }),
+            24,
+          ).filter((item) => /(send|chat|message|start|launch|support)/i.test(item.text || item.id || "")),
+          customComponents: collect(
+            "kat-box,kat-button,kat-tab,kat-modal,kat-alert,kat-banner,kat-card",
+            (node) => ({
+              tag: String(node.tagName || "").toLowerCase(),
+              id: node.id || null,
+              text: textOf(node),
+            }),
+            24,
+          ),
+        };
+      });
+
+      pageSummary.frames.push({
+        name: frame.name() || null,
+        url: frame.url(),
+        ...summary,
+      });
+    } catch (error) {
+      pageSummary.frames.push({
+        name: frame.name() || null,
+        url: frame.url(),
+        error: error.message || String(error),
+      });
+    }
+  }
+
+  return pageSummary;
+}
+
+async function inspectChatUiAcrossPages(browser) {
+  const pages = await browser.pages();
+  const pageStates = [];
+
+  for (const page of pages) {
+    let pageUrl = null;
+    try {
+      pageUrl = page.url();
+    } catch (_error) {
+      pageUrl = null;
+    }
+
+    const chatState = await inspectChatUi(page);
+    pageStates.push({
+      pageUrl,
+      chatOpened: chatState.opened,
+      chatState,
+    });
+
+    if (chatState.opened) {
+      return {
+        opened: true,
+        pageCount: pages.length,
+        openSurface: {
+          pageUrl,
+          ...chatState,
+        },
+        pages: pageStates,
+      };
+    }
+  }
+
+  return {
+    opened: false,
+    pageCount: pages.length,
+    openSurface: null,
+    pages: pageStates,
+  };
+}
+
+async function observeChatTransition(browser, page, clickAction, timeoutMs = 20000) {
+  const pagesBefore = await browser.pages();
+  const beforeState = await Promise.all(pagesBefore.map((candidate) => collectPageSurfaceState(candidate)));
+
+  await clickAction();
+
+  const startedAt = Date.now();
+  let chatSurface = await inspectChatUiAcrossPages(browser);
+  while (!chatSurface.opened && Date.now() - startedAt < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    chatSurface = await inspectChatUiAcrossPages(browser);
+  }
+
+  const pagesAfter = await browser.pages();
+  const afterState = await Promise.all(pagesAfter.map((candidate) => collectPageSurfaceState(candidate)));
+
+  return {
+    pageCountBefore: pagesBefore.length,
+    pageCountAfter: pagesAfter.length,
+    beforeState,
+    afterState,
+    chatSurface,
+  };
+}
+
 async function inspectSupportState(page) {
   const frames = page.frames();
   for (const frame of frames) {
@@ -1340,6 +1639,8 @@ async function main() {
 
   try {
     const page = await browser.newPage();
+    const runtime = createRuntimeRecorder(browser);
+    runtime.attachPage(page, "root");
     const cookieCount = await applyCookies(page);
     await page.goto(targetUrl, {
       waitUntil: "domcontentloaded",
@@ -1436,6 +1737,7 @@ async function main() {
 
     let intakeForm = null;
     let intakeDetailsField = null;
+    let chatTransition = null;
     if (intakeDetailsValue) {
       const intakeFrame = await waitForBestContentFrame(
         page,
@@ -1463,19 +1765,33 @@ async function main() {
 
       const chatNowLocated = await waitForElementAcrossFrames(page, "Chat now", 12000);
       if (chatNowLocated.element) {
-        const chatNowClick = await clickElementWithStrategies(page, chatNowLocated.element);
-        await new Promise((resolve) => setTimeout(resolve, stepWaitMs));
+        chatTransition = await observeChatTransition(
+          browser,
+          page,
+          async () => {
+            const chatNowClick = await clickElementWithStrategies(page, chatNowLocated.element);
+            steps.push({
+              clickTarget: "Chat now",
+              clicked: chatNowClick.clicked,
+              clickedElement: chatNowClick.clickedElement,
+              clickStrategies: chatNowClick.strategies,
+              phase: "chat_launch",
+              url: page.url(),
+              title: await page.title(),
+              frameUrl: chatNowLocated.frame?.url?.() || null,
+              frameName: chatNowLocated.frame?.name?.() || null,
+              frameDiagnostics: chatNowLocated.frameDiagnostics,
+            });
+          },
+          Number(process.env.SELLER_CENTRAL_CHAT_OBSERVE_TIMEOUT_MS || 20000),
+        );
         steps.push({
-          clickTarget: "Chat now",
-          clicked: chatNowClick.clicked,
-          clickedElement: chatNowClick.clickedElement,
-          clickStrategies: chatNowClick.strategies,
-          phase: "chat_launch",
+          clickTarget: "Chat transition observation",
+          clicked: Boolean(chatTransition.chatSurface?.opened),
+          phase: "chat_observation",
           url: page.url(),
           title: await page.title(),
-          frameUrl: chatNowLocated.frame?.url?.() || null,
-          frameName: chatNowLocated.frame?.name?.() || null,
-          frameDiagnostics: chatNowLocated.frameDiagnostics,
+          transition: chatTransition,
         });
       }
     }
@@ -1485,10 +1801,21 @@ async function main() {
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
 
-    const chatUi = await inspectChatUi(page);
+    const chatSurface = await inspectChatUiAcrossPages(browser);
+
+    let resultPage = page;
+    if (chatSurface.opened && chatSurface.openSurface?.pageUrl) {
+      const browserPages = await browser.pages();
+      const matchedPage = browserPages.find((candidate) => candidate.url() === chatSurface.openSurface.pageUrl);
+      if (matchedPage) {
+        resultPage = matchedPage;
+      }
+    }
+
+    const chatUi = chatSurface.opened ? chatSurface.openSurface : await inspectChatUi(resultPage);
     const supportState = await inspectSupportState(page);
 
-    const frames = page.frames();
+    const frames = resultPage.frames();
     const snapshots = [];
     for (const frame of frames) {
       snapshots.push({
@@ -1498,12 +1825,14 @@ async function main() {
       });
     }
 
-    const loginRedirected = /signin|ap\/signin|login/i.test(page.url());
+    const resultUrl = resultPage.url();
+    const resultTitle = await resultPage.title();
+    const loginRedirected = /signin|ap\/signin|login/i.test(resultUrl);
     let screenshotPath = null;
     if (process.env.SELLER_CENTRAL_TRACE_DIR) {
       fs.mkdirSync(process.env.SELLER_CENTRAL_TRACE_DIR, { recursive: true });
       screenshotPath = path.join(process.env.SELLER_CENTRAL_TRACE_DIR, `probe-${Date.now()}.png`);
-      await page.screenshot({ path: screenshotPath, fullPage: true });
+      await resultPage.screenshot({ path: screenshotPath, fullPage: true });
     }
 
     process.stdout.write(
@@ -1512,11 +1841,18 @@ async function main() {
           cookiesLoaded: cookieCount > 0,
           cookieCount,
           authenticated: !loginRedirected,
-          finalUrl: page.url(),
-          title: await page.title(),
+          finalUrl: resultUrl,
+          title: resultTitle,
           loginRedirected,
           chatUi,
+          chatSurface,
+          chatTransition,
           supportState,
+          activePageContext: {
+            pageUrl: resultUrl,
+            pageCount: (await browser.pages()).length,
+          },
+          runtimeEvents: runtime.events,
           screenshotPath,
           firstTextInput,
           intakeForm,
