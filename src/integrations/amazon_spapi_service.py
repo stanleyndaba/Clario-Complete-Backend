@@ -102,6 +102,10 @@ class AmazonSPAPIService:
             token = self.db.get_oauth_token(user_id, "amazon")
             if token:
                 return token
+            token = self.db.get_modern_token_refresh_token(user_id, "amazon")
+            if token:
+                logger.info("Resolved Amazon OAuth refresh token from modern tokens store", extra={"user_id": user_id})
+                return token
             raise RuntimeError(f"Amazon OAuth refresh token missing for user {user_id}")
 
         if settings.is_production:

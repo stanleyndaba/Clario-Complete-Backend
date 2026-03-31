@@ -154,17 +154,43 @@ class RefundFilingService {
             throw new Error('Missing filing user identity');
         }
 
+        const looksLikeUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate);
+
+        let directUserQuery = supabaseAdmin
+            .from('users')
+            .select('id')
+            .limit(1);
+
+        if (looksLikeUuid) {
+            directUserQuery = directUserQuery.or(`id.eq.${candidate},amazon_seller_id.eq.${candidate},seller_id.eq.${candidate}`);
+        } else {
+            directUserQuery = directUserQuery.or(`amazon_seller_id.eq.${candidate},seller_id.eq.${candidate}`);
+        }
+
+        const { data: directUser } = await directUserQuery.maybeSingle();
+
         const { data: mapping } = await supabaseAdmin
             .from('v1_seller_identity_map')
             .select('user_id')
             .eq('merchant_token', candidate)
             .maybeSingle();
 
+        if (directUser?.id) {
+            if (mapping?.user_id && mapping.user_id !== directUser.id) {
+                logger.warn('[REFUND FILING] Seller identity map diverges from live user binding; preferring direct user match', {
+                    candidate,
+                    mappedUserId: mapping.user_id,
+                    directUserId: directUser.id
+                });
+            }
+
+            return directUser.id;
+        }
+
         if (mapping?.user_id) {
             return mapping.user_id;
         }
 
-        const looksLikeUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate);
         let userQuery = supabaseAdmin
             .from('users')
             .select('id')

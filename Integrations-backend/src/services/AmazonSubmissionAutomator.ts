@@ -76,11 +76,30 @@ export class AmazonSubmissionAutomator {
     }
 
     private async resolveInternalUserIdForSeller(sellerId: string): Promise<string> {
+        const { data: directUser } = await supabaseAdmin
+            .from('users')
+            .select('id')
+            .or(`id.eq.${sellerId},amazon_seller_id.eq.${sellerId},seller_id.eq.${sellerId}`)
+            .limit(1)
+            .maybeSingle();
+
         const { data: mapping } = await supabaseAdmin
             .from('v1_seller_identity_map')
             .select('user_id')
             .eq('merchant_token', sellerId)
             .maybeSingle();
+
+        if (directUser?.id) {
+            if (mapping?.user_id && mapping.user_id !== directUser.id) {
+                logger.warn('[AGENT 7] Seller identity map diverges from live seller binding; preferring direct user match', {
+                    sellerId,
+                    mappedUserId: mapping.user_id,
+                    directUserId: directUser.id
+                });
+            }
+
+            return directUser.id;
+        }
 
         if (mapping?.user_id) {
             return mapping.user_id;

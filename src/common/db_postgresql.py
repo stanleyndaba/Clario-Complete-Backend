@@ -6,6 +6,8 @@ Supports both PostgreSQL and SQLite with automatic fallback
 import json
 import asyncio
 import re
+import base64
+import hashlib
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from src.common.schemas import ClaimDetection, ValidationResult, FilingResult, ClaimPacket
@@ -15,6 +17,9 @@ import tempfile
 from cryptography.fernet import Fernet
 from contextlib import contextmanager
 from glob import glob
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 # Database connection imports
 try:
@@ -499,6 +504,58 @@ class DatabaseManager:
             encrypted_token = result['encrypted_refresh_token'] if self.is_postgresql else result[0]
             return _fernet.decrypt(encrypted_token.encode('utf-8')).decode('utf-8')
         return None
+
+    def _get_node_token_manager_key(self) -> bytes:
+        key_hex = os.getenv("ENCRYPTION_KEY", "")
+        if key_hex and len(key_hex) >= 64:
+            try:
+                return bytes.fromhex(key_hex[:64])
+            except ValueError:
+                pass
+
+        jwt_secret = os.getenv("JWT_SECRET", "fallback-secret-please-set").encode("utf-8")
+        return hashlib.pbkdf2_hmac("sha256", jwt_secret, b"clario-salt", 100000, dklen=32)
+
+    def _decrypt_node_token_blob(self, iv_base64: str, data_base64: str) -> str:
+        key = self._get_node_token_manager_key()
+        iv = base64.b64decode(iv_base64)
+        ciphertext = base64.b64decode(data_base64)
+
+        cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+        decryptor = cipher.decryptor()
+        padded_plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+
+        unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+        plaintext = unpadder.update(padded_plaintext) + unpadder.finalize()
+        return plaintext.decode("utf-8")
+
+    def get_modern_token_refresh_token(self, user_id: str, provider: str) -> Optional[str]:
+        """Retrieve and decrypt refresh token from the modern tokens table used by Agent 1."""
+        query = """
+            SELECT refresh_token_iv, refresh_token_data
+            FROM tokens
+            WHERE user_id = %s AND provider = %s
+            ORDER BY updated_at DESC
+            LIMIT 1
+        """ if self.is_postgresql else """
+            SELECT refresh_token_iv, refresh_token_data
+            FROM tokens
+            WHERE user_id = ? AND provider = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+        """
+
+        result = self._execute_query(query, (user_id, provider), fetch=True, fetch_one=True)
+        if not result:
+            return None
+
+        refresh_token_iv = result["refresh_token_iv"] if self.is_postgresql else result[0]
+        refresh_token_data = result["refresh_token_data"] if self.is_postgresql else result[1]
+
+        if not refresh_token_iv or not refresh_token_data:
+            return None
+
+        return self._decrypt_node_token_blob(refresh_token_iv, refresh_token_data)
     
     def save_stripe_customer_id(self, user_id: str, customer_id: str):
         """Save Stripe customer ID to user profile"""
