@@ -3,16 +3,15 @@
  * Wraps Python SP-API service for filing disputes
  * Handles retry logic, evidence collection, and status polling
  * 
- * IP CONTAMINATION PREVENTION:
- * Uses SellerHttpClient to route all API calls through seller-specific proxies.
- * Each seller has a dedicated IP to prevent chain bans.
+ * TRANSPORT BOUNDARY:
+ * Internal Node -> Python service calls must stay direct.
+ * Seller-specific proxying belongs on external seller-facing hops, not internal service-to-service HTTPS.
  */
 
 import axios from 'axios';
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import { buildPythonServiceAuthHeader, isPythonServiceAuthConfigured } from '../utils/pythonServiceAuth';
-import { createSellerHttpClient } from './sellerHttpClient';
 import { briefGeneratorService } from './briefGeneratorService';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -473,8 +472,7 @@ class RefundFilingService {
         attachmentPack: AttachmentPack,
         internalUserId: string,
         sellerId: string,
-        idempotencyKey: string,
-        httpClient: ReturnType<typeof createSellerHttpClient>
+        idempotencyKey: string
     ) {
         const FormDataCtor = (globalThis as any).FormData;
         const BlobCtor = (globalThis as any).Blob;
@@ -500,7 +498,7 @@ class RefundFilingService {
             form.append('attachments', blob, attachment.filename);
         }
 
-        return httpClient.post(
+        return axios.post(
             `${this.pythonApiUrl}/api/v1/disputes/submit`,
             form,
             {
@@ -519,8 +517,7 @@ class RefundFilingService {
         attachmentPack: AttachmentPack,
         internalUserId: string,
         sellerId: string,
-        idempotencyKey: string,
-        httpClient: ReturnType<typeof createSellerHttpClient>
+        idempotencyKey: string
     ) {
         const evidenceDocuments = attachmentPack.attachments.map((attachment) => ({
             id: attachment.id,
@@ -539,7 +536,7 @@ class RefundFilingService {
             file_bytes_base64: attachment.bytes.toString('base64')
         }));
 
-        return httpClient.post(
+        return axios.post(
             `${this.pythonApiUrl}/api/v1/disputes/submit`,
             {
                 ...payload,
@@ -729,9 +726,6 @@ class RefundFilingService {
                 throw new Error(`DRY_RUN is enabled. Submission payload was captured at ${filePath}, but no real Amazon filing occurred.`);
             }
 
-            // Use seller-specific HTTP client for IP isolation
-            const httpClient = createSellerHttpClient(sellerId);
-
             // --- CHAOS HOOK: TOKEN DECAY ---
             if (process.env.SIMULATE_TOKEN_EXPIRE === 'true') {
                 logger.warn('[CHAOS] SIMULATE_TOKEN_EXPIRE active. Simulating stale token.');
@@ -742,20 +736,19 @@ class RefundFilingService {
 
             let response;
             try {
-                response = await this.postMultipartSubmission(payload, attachmentPack, internalUserId, sellerId, idempotencyKey, httpClient);
+                response = await this.postMultipartSubmission(payload, attachmentPack, internalUserId, sellerId, idempotencyKey);
             } catch (multipartError: any) {
                 logger.warn('[REFUND FILING] Multipart submission failed, retrying with JSON attachment bytes', {
                     disputeId: request.dispute_id,
                     error: multipartError.message
                 });
-                response = await this.postJsonSubmission(payload, attachmentPack, internalUserId, sellerId, idempotencyKey, httpClient);
+                response = await this.postJsonSubmission(payload, attachmentPack, internalUserId, sellerId, idempotencyKey);
             }
 
-            // Log proxy info for audit
-            logger.debug('[REFUND FILING] Request routed through proxy', {
+            logger.debug('[REFUND FILING] Internal Python submission uses direct HTTPS transport', {
                 disputeId: request.dispute_id,
-                usingProxy: httpClient.isUsingProxy(),
-                proxyInfo: httpClient.getProxyInfo()
+                sellerId,
+                pythonApiUrl: this.pythonApiUrl
             });
 
 
