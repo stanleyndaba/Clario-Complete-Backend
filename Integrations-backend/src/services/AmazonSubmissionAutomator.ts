@@ -242,7 +242,7 @@ export class AmazonSubmissionAutomator {
             ]
                 .map((value: any) => String(value || '').trim())
                 .filter(Boolean);
-            const fnsku = fnskuCandidates.find((value) => /^[XB][A-Z0-9]{9,}$/i.test(value)) || fnskuCandidates[0] || undefined;
+            const fnsku = fnskuCandidates.find((value) => /^[XB][A-Z0-9]{9}$/i.test(value)) || undefined;
 
             if (!proofSnapshot) {
                 await supabaseAdmin

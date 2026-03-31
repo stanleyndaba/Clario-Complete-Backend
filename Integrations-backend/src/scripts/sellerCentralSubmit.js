@@ -207,6 +207,10 @@ function buildTranscriptSnapshot(chatState) {
   return sample.slice(0, 4000);
 }
 
+function isRealFnsku(value) {
+  return /^[XB][A-Z0-9]{9}$/i.test(String(value || "").trim());
+}
+
 async function run() {
   const inputPath = process.argv[2];
   if (!inputPath) {
@@ -229,7 +233,7 @@ async function run() {
   }
 
   const fnsku = String(payload.fnsku || "").trim();
-  if (!fnsku) {
+  if (!fnsku || !isRealFnsku(fnsku)) {
     return {
       downstream_submission_attempted: false,
       downstream_submission_confirmed: false,
@@ -238,8 +242,9 @@ async function run() {
       status: "failed",
       raw_response_or_trace: {
         readiness,
+        fnsku: fnsku || null,
       },
-      failure_reason: "Seller Central chat initiation requires a real FNSKU.",
+      failure_reason: "Seller Central chat initiation requires a real 10-character FNSKU.",
       submission_id: payload.submission_id,
     };
   }
@@ -336,6 +341,17 @@ async function run() {
       submission_id: payload.submission_id || caseId || null,
     };
   } catch (error) {
+    const stdout = String(error?.stdout || "").trim();
+    const stderr = String(error?.stderr || "").trim();
+    let probeFailure = null;
+    if (stdout) {
+      try {
+        probeFailure = JSON.parse(stdout);
+      } catch (_parseError) {
+        probeFailure = null;
+      }
+    }
+
     return {
       downstream_submission_attempted: false,
       downstream_submission_confirmed: false,
@@ -345,8 +361,16 @@ async function run() {
       raw_response_or_trace: {
         errorName: error.name,
         stack: error.stack,
+        stdout: stdout || null,
+        stderr: stderr || null,
+        probe_failure: probeFailure,
       },
-      failure_reason: error.message || "Seller Central browser automation failed.",
+      failure_reason:
+        probeFailure?.error ||
+        probeFailure?.failure_reason ||
+        stderr ||
+        error.message ||
+        "Seller Central browser automation failed.",
       submission_id: payload.submission_id,
     };
   }

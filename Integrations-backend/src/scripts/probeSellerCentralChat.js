@@ -1879,6 +1879,8 @@ main().catch((error) => {
         title: null,
         loginRedirected: false,
         error: error.message || String(error),
+        errorName: error.name || null,
+        stack: error.stack || null,
       },
       null,
       2,
