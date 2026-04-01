@@ -289,6 +289,24 @@ export interface BatchIngestionResult {
     syncId: string;
 }
 
+export interface CsvUploadDetectionSnapshot {
+    status: DetectionQueueStatus | 'completed' | null;
+    processedAt: string | null;
+    errorMessage: string | null;
+    resultsTotal: number;
+}
+
+export interface CsvUploadRunSnapshot {
+    syncId: string;
+    source: 'persisted_run' | 'detection_queue_fallback' | 'detection_results_fallback';
+    uploadSummaryAvailable: boolean;
+    recoveryNotice: string | null;
+    createdAt: string | null;
+    updatedAt: string | null;
+    batchResult: BatchIngestionResult | null;
+    detection: CsvUploadDetectionSnapshot | null;
+}
+
 const DISABLED_TYPES = new Set<CSVType>([]);
 
 type DetectionQueueStatus = 'pending' | 'processing' | 'completed' | 'failed';
@@ -400,6 +418,17 @@ export class CSVIngestionService {
             syncId,
         };
 
+        try {
+            await this.persistCsvUploadRun(options.tenantId, batchResult);
+        } catch (error: any) {
+            logger.warn('⚠️ [CSV INGESTION] Failed to persist CSV upload run record', {
+                tenantId: options.tenantId,
+                userId,
+                syncId,
+                error: error?.message || 'Unknown error',
+            });
+        }
+
         logger.info('📂 [CSV INGESTION] Batch ingestion complete', {
             userId,
             syncId,
@@ -412,8 +441,194 @@ export class CSVIngestionService {
         return batchResult;
     }
 
+    async getLatestCsvUploadRun(userId: string, tenantId: string): Promise<CsvUploadRunSnapshot | null> {
+        try {
+            const { data, error } = await supabaseAdmin
+                .from('csv_upload_runs')
+                .select('sync_id, success, total_files, detection_triggered, detection_job_id, ingestion_results, created_at, updated_at')
+                .eq('tenant_id', tenantId)
+                .eq('user_id', userId)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+
+            if (error?.code === '42P01') {
+                logger.warn('CSV upload run table is not deployed; falling back to detection truth for refresh recovery', {
+                    table: 'csv_upload_runs',
+                    tenantId,
+                    userId,
+                });
+                return this.getLatestCsvUploadFallback(userId, tenantId);
+            }
+
+            if (error && error.code !== 'PGRST116') {
+                throw new Error(`Failed to load latest CSV upload run: ${error.message}`);
+            }
+
+            if (data?.sync_id) {
+                return {
+                    syncId: data.sync_id,
+                    source: 'persisted_run',
+                    uploadSummaryAvailable: true,
+                    recoveryNotice: null,
+                    createdAt: data.created_at || null,
+                    updatedAt: data.updated_at || data.created_at || null,
+                    batchResult: {
+                        success: !!data.success,
+                        userId,
+                        totalFiles: Number(data.total_files || 0),
+                        results: Array.isArray(data.ingestion_results) ? data.ingestion_results as IngestionResult[] : [],
+                        detectionTriggered: !!data.detection_triggered,
+                        detectionJobId: data.detection_job_id || undefined,
+                        syncId: data.sync_id,
+                    },
+                    detection: await this.getCsvDetectionSnapshot(userId, tenantId, data.sync_id),
+                };
+            }
+        } catch (error: any) {
+            logger.warn('⚠️ [CSV INGESTION] Failed to load persisted CSV upload run; falling back to detection truth', {
+                tenantId,
+                userId,
+                error: error?.message || 'Unknown error',
+            });
+        }
+
+        return this.getLatestCsvUploadFallback(userId, tenantId);
+    }
+
     private normalizeHeader(value: string): string {
         return value.toLowerCase().replace(/[_\- ]/g, '');
+    }
+
+    private async persistCsvUploadRun(tenantId: string, batchResult: BatchIngestionResult): Promise<void> {
+        const nowIso = new Date().toISOString();
+        const { error } = await supabaseAdmin
+            .from('csv_upload_runs')
+            .upsert({
+                tenant_id: tenantId,
+                user_id: batchResult.userId,
+                sync_id: batchResult.syncId,
+                success: batchResult.success,
+                total_files: batchResult.totalFiles,
+                detection_triggered: batchResult.detectionTriggered,
+                detection_job_id: batchResult.detectionJobId || null,
+                ingestion_results: batchResult.results,
+                updated_at: nowIso,
+            }, {
+                onConflict: 'sync_id',
+            });
+
+        if (error?.code === '42P01') {
+            logger.warn('CSV upload run table is not deployed; refresh-safe CSV run persistence skipped', {
+                table: 'csv_upload_runs',
+                tenantId,
+                syncId: batchResult.syncId,
+            });
+            return;
+        }
+
+        if (error) {
+            throw new Error(`Failed to persist CSV upload run: ${error.message}`);
+        }
+    }
+
+    private async getCsvDetectionSnapshot(userId: string, tenantId: string, syncId: string): Promise<CsvUploadDetectionSnapshot | null> {
+        const [{ data: queueRows, error: queueError }, { count: resultsTotal, error: resultsError }] = await Promise.all([
+            supabaseAdmin
+                .from('detection_queue')
+                .select('status, processed_at, error_message, created_at, updated_at')
+                .eq('tenant_id', tenantId)
+                .eq('seller_id', userId)
+                .eq('sync_id', syncId)
+                .order('updated_at', { ascending: false })
+                .limit(1),
+            supabaseAdmin
+                .from('detection_results')
+                .select('id', { count: 'exact', head: true })
+                .eq('tenant_id', tenantId)
+                .eq('seller_id', userId)
+                .eq('sync_id', syncId),
+        ]);
+
+        if (queueError) {
+            throw new Error(`Failed to load detection queue snapshot: ${queueError.message}`);
+        }
+
+        if (resultsError) {
+            throw new Error(`Failed to load detection results count: ${resultsError.message}`);
+        }
+
+        const queueRow = Array.isArray(queueRows) && queueRows.length > 0 ? queueRows[0] : null;
+        const total = Number(resultsTotal || 0);
+
+        if (!queueRow && total === 0) {
+            return null;
+        }
+
+        return {
+            status: (queueRow?.status as DetectionQueueStatus | undefined) || (total > 0 ? 'completed' : null),
+            processedAt: queueRow?.processed_at || null,
+            errorMessage: queueRow?.error_message || null,
+            resultsTotal: total,
+        };
+    }
+
+    private async getLatestCsvUploadFallback(userId: string, tenantId: string): Promise<CsvUploadRunSnapshot | null> {
+        const { data: latestQueueRows, error: queueError } = await supabaseAdmin
+            .from('detection_queue')
+            .select('sync_id, created_at, updated_at')
+            .eq('tenant_id', tenantId)
+            .eq('seller_id', userId)
+            .like('sync_id', 'csv_%')
+            .order('updated_at', { ascending: false })
+            .limit(1);
+
+        if (queueError) {
+            throw new Error(`Failed to load latest CSV detection queue fallback: ${queueError.message}`);
+        }
+
+        const latestQueueRow = Array.isArray(latestQueueRows) && latestQueueRows.length > 0 ? latestQueueRows[0] : null;
+        if (latestQueueRow?.sync_id) {
+            return {
+                syncId: latestQueueRow.sync_id,
+                source: 'detection_queue_fallback',
+                uploadSummaryAvailable: false,
+                recoveryNotice: 'Per-file upload summary is not persisted for this CSV run yet. Detection truth was restored from the latest CSV detection record only.',
+                createdAt: latestQueueRow.created_at || null,
+                updatedAt: latestQueueRow.updated_at || latestQueueRow.created_at || null,
+                batchResult: null,
+                detection: await this.getCsvDetectionSnapshot(userId, tenantId, latestQueueRow.sync_id),
+            };
+        }
+
+        const { data: latestResultRows, error: resultsError } = await supabaseAdmin
+            .from('detection_results')
+            .select('sync_id, created_at')
+            .eq('tenant_id', tenantId)
+            .eq('seller_id', userId)
+            .like('sync_id', 'csv_%')
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+        if (resultsError) {
+            throw new Error(`Failed to load latest CSV detection-results fallback: ${resultsError.message}`);
+        }
+
+        const latestResultRow = Array.isArray(latestResultRows) && latestResultRows.length > 0 ? latestResultRows[0] : null;
+        if (!latestResultRow?.sync_id) {
+            return null;
+        }
+
+        return {
+            syncId: latestResultRow.sync_id,
+            source: 'detection_results_fallback',
+            uploadSummaryAvailable: false,
+            recoveryNotice: 'Per-file upload summary is not persisted for this CSV run yet. Detection truth was restored from persisted findings only.',
+            createdAt: latestResultRow.created_at || null,
+            updatedAt: latestResultRow.created_at || null,
+            batchResult: null,
+            detection: await this.getCsvDetectionSnapshot(userId, tenantId, latestResultRow.sync_id),
+        };
     }
 
     private hasRequiredHeaders(csvType: CSVType, headers: string[]): { ok: boolean; missing: string[] } {

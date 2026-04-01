@@ -237,6 +237,54 @@ router.post('/ingest/:type', requireActiveTenant, upload.array('files', 10), asy
 });
 
 // ============================================================================
+// GET /api/csv-upload/latest-run — Restore the latest CSV run for this tenant/user
+// ============================================================================
+
+router.get('/latest-run', requireActiveTenant, async (req: Request, res: Response) => {
+    try {
+        if (!isRealDatabaseConfigured) {
+            return res.status(503).json({
+                success: false,
+                error: 'CSV upload refresh recovery is disabled: real database is not configured.',
+            });
+        }
+
+        const userId = (req as any).userId;
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                error: 'Authenticated app user is required for CSV refresh recovery.',
+            });
+        }
+
+        const tenantId = (req as any).tenant?.tenantId as string | undefined;
+        if (!tenantId) {
+            return res.status(400).json({
+                success: false,
+                error: 'Tenant context is required for CSV refresh recovery.',
+            });
+        }
+
+        const run = await csvIngestionService.getLatestCsvUploadRun(userId, tenantId);
+
+        return res.json({
+            success: true,
+            run,
+        });
+    } catch (error: any) {
+        logger.error('❌ [CSV UPLOAD] Failed to restore latest CSV run', {
+            error: error.message,
+        });
+
+        return res.status(500).json({
+            success: false,
+            error: 'CSV refresh recovery failed',
+            details: error.message,
+        });
+    }
+});
+
+// ============================================================================
 // GET /api/csv-upload/supported-types — List supported CSV formats
 // ============================================================================
 
