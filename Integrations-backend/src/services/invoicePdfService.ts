@@ -10,15 +10,15 @@ import recoveryFinancialTruthService from './recoveryFinancialTruthService';
 
 interface InvoiceData {
     id: string;
-    dateIssued: string;
-    periodStart?: string;
-    periodEnd?: string;
-    status: 'paid' | 'due' | 'overdue' | 'pending' | 'sent' | 'credited' | 'failed' | 'charged';
-    totalRecovered: number;
-    commission: number;
-    creditApplied?: number;
-    creditBalanceRemaining?: number;
-    amountCharged: number;
+    dateIssued: string | null;
+    periodStart?: string | null;
+    periodEnd?: string | null;
+    status: 'due' | 'pending' | 'sent' | 'credited' | 'failed' | 'charged' | 'refunded' | null;
+    totalRecovered: number | null;
+    commission: number | null;
+    creditApplied?: number | null;
+    creditBalanceRemaining?: number | null;
+    amountCharged: number | null;
     recoveryClaimIds?: string[];
     disputeCaseIds?: string[];
     tenantId?: string;
@@ -35,6 +35,8 @@ interface RecoveryItem {
     eventType: string;
     eventDate: string;
 }
+
+const NOT_AVAILABLE = 'Not Available';
 
 class InvoicePdfService {
     private readonly COMMISSION_RATE = 0.20; // 20%
@@ -110,15 +112,15 @@ class InvoicePdfService {
     private mapTransactionData(data: any): InvoiceData {
         return {
             id: data.id,
-            dateIssued: data.created_at || new Date().toISOString(),
-            periodStart: data.created_at,
-            periodEnd: data.created_at,
-            status: (data.billing_status || 'pending').toLowerCase(),
-            totalRecovered: (data.amount_recovered_cents || 0) / 100,
-            commission: (data.platform_fee_cents || 0) / 100,
-            creditApplied: (data.credit_applied_cents || 0) / 100,
-            creditBalanceRemaining: (data.credit_balance_after_cents || 0) / 100,
-            amountCharged: (data.amount_due_cents || 0) / 100,
+            dateIssued: data.created_at || null,
+            periodStart: null,
+            periodEnd: null,
+            status: this.normalizeInvoiceStatus(data.billing_status),
+            totalRecovered: this.toOptionalMoney(data.amount_recovered_cents),
+            commission: this.toOptionalMoney(data.platform_fee_cents),
+            creditApplied: this.toOptionalMoney(data.credit_applied_cents),
+            creditBalanceRemaining: this.toOptionalMoney(data.credit_balance_after_cents),
+            amountCharged: this.deriveChargedAmount(data.billing_status, data.amount_due_cents),
             recoveryClaimIds: data.recovery_id ? [data.recovery_id] : [],
             disputeCaseIds: data.dispute_id ? [data.dispute_id] : [],
             tenantId: data.tenant_id,
@@ -130,15 +132,15 @@ class InvoicePdfService {
     private mapInvoiceData(data: any): InvoiceData {
         return {
             id: data.invoice_id || data.id,
-            dateIssued: data.period_end || data.created_at || new Date().toISOString(),
-            periodStart: data.period_start,
-            periodEnd: data.period_end,
-            status: data.status?.toLowerCase() || 'paid',
-            totalRecovered: data.total_amount || 0,
-            commission: data.platform_fee || 0,
-            creditApplied: data.credit_applied || 0,
-            creditBalanceRemaining: data.available_credit_balance || 0,
-            amountCharged: data.platform_fee || 0,
+            dateIssued: data.created_at || data.period_end || null,
+            periodStart: data.period_start || null,
+            periodEnd: data.period_end || null,
+            status: this.normalizeInvoiceStatus(data.status),
+            totalRecovered: this.toOptionalAmount(data.total_amount),
+            commission: this.toOptionalAmount(data.platform_fee),
+            creditApplied: this.toOptionalAmount(data.credit_applied),
+            creditBalanceRemaining: this.toOptionalAmount(data.available_credit_balance),
+            amountCharged: this.toOptionalAmount(data.amount_charged),
             recoveryClaimIds: data.recovery_ids || [],
             disputeCaseIds: data.dispute_ids || [],
             tenantId: data.tenant_id,
@@ -235,14 +237,17 @@ class InvoicePdfService {
 
         // Status Badge
         const statusColors: Record<string, string> = {
-            paid: '#059669',
             due: '#D97706',
-            overdue: '#DC2626',
             pending: '#6B7280',
+            sent: '#0284C7',
+            charged: '#059669',
+            credited: '#4F46E5',
+            failed: '#DC2626',
+            refunded: '#78716C',
         };
-        const statusColor = statusColors[invoice.status] || '#6B7280';
+        const statusColor = invoice.status ? (statusColors[invoice.status] || '#6B7280') : '#6B7280';
         doc.fontSize(10).font('Helvetica-Bold').fillColor(statusColor)
-            .text(invoice.status.toUpperCase(), 400, 102, { align: 'right' });
+            .text(invoice.status ? invoice.status.toUpperCase() : NOT_AVAILABLE.toUpperCase(), 400, 102, { align: 'right' });
 
         doc.moveDown(2);
     }
@@ -316,13 +321,13 @@ class InvoicePdfService {
 
         doc.fontSize(10).font('Helvetica').fillColor('#6B7280');
         doc.text('Total Recovered:', 360, summaryY + 15);
-        doc.text('Commission (20%):', 360, summaryY + 35);
+        doc.text('Platform fee:', 360, summaryY + 35);
         doc.text('Credit Applied:', 360, summaryY + 55);
 
         doc.fontSize(10).font('Helvetica').fillColor('#374151');
         doc.text(this.formatCurrency(invoice.totalRecovered), 460, summaryY + 15, { align: 'right', width: 75 });
         doc.text(this.formatCurrency(invoice.commission), 460, summaryY + 35, { align: 'right', width: 75 });
-        doc.text(this.formatCurrency(invoice.creditApplied || 0), 460, summaryY + 55, { align: 'right', width: 75 });
+        doc.text(this.formatCurrency(invoice.creditApplied), 460, summaryY + 55, { align: 'right', width: 75 });
 
         // Divider
         doc.moveTo(360, summaryY + 75).lineTo(535, summaryY + 75).stroke('#E5E7EB');
@@ -333,7 +338,9 @@ class InvoicePdfService {
         doc.text(this.formatCurrency(invoice.amountCharged), 460, summaryY + 90, { align: 'right', width: 75 });
 
         // Net to Seller (info)
-        const netToSeller = invoice.totalRecovered - invoice.commission;
+        const netToSeller = typeof invoice.totalRecovered === 'number' && typeof invoice.commission === 'number'
+            ? invoice.totalRecovered - invoice.commission
+            : null;
         doc.fontSize(9).font('Helvetica').fillColor('#059669');
         doc.text(`Your Net Recovered: ${this.formatCurrency(netToSeller)}`, 50, summaryY + 90);
     }
@@ -347,20 +354,54 @@ class InvoicePdfService {
         doc.text('Margin | AI-Powered Amazon FBA Recovery', 50, footerY + 28, { align: 'center', width: 495 });
     }
 
-    private formatDate(dateStr: string): string {
+    private formatDate(dateStr?: string | null): string {
+        if (!dateStr) return NOT_AVAILABLE;
         try {
-            return new Date(dateStr).toLocaleDateString('en-US', {
+            const parsed = new Date(dateStr);
+            if (Number.isNaN(parsed.getTime())) return NOT_AVAILABLE;
+            return parsed.toLocaleDateString('en-US', {
                 month: 'short',
                 day: 'numeric',
                 year: 'numeric',
             });
         } catch {
-            return dateStr;
+            return NOT_AVAILABLE;
         }
     }
 
-    private formatCurrency(amount: number): string {
+    private formatCurrency(amount?: number | null): string {
+        if (typeof amount !== 'number' || !Number.isFinite(amount)) return NOT_AVAILABLE;
         return `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+
+    private toOptionalMoney(value: unknown): number | null {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? Number((parsed / 100).toFixed(2)) : null;
+    }
+
+    private toOptionalAmount(value: unknown): number | null {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? Number(parsed) : null;
+    }
+
+    private normalizeInvoiceStatus(value: unknown): InvoiceData['status'] {
+        const normalized = String(value || '').trim().toLowerCase();
+        if (!normalized) return null;
+        if (['due', 'pending', 'sent', 'credited', 'failed', 'charged', 'refunded'].includes(normalized)) {
+            return normalized as InvoiceData['status'];
+        }
+        return null;
+    }
+
+    private deriveChargedAmount(status: unknown, amountDueCents: unknown): number | null {
+        const normalizedStatus = this.normalizeInvoiceStatus(status);
+        if (normalizedStatus === 'charged' || normalizedStatus === 'refunded') {
+            return this.toOptionalMoney(amountDueCents);
+        }
+        if (normalizedStatus === 'credited') {
+            return 0;
+        }
+        return null;
     }
 
     private formatDetectionType(type: string): string {

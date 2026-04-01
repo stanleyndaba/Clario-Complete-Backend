@@ -98,7 +98,6 @@ export async function upsertDisputesAndRecoveriesFromDetections(
     const submissionDate = status === 'pending' ? null : detectionIso;
     const isApproved = status === 'approved';
     const resolutionDate = isApproved ? submissionDate : null;
-    const actualPayout = isApproved ? claimAmount : null;
     const expectedPayoutDate = (() => {
       if (isApproved && resolutionDate) return resolutionDate;
       const baseDate = submissionDate || detectionIso;
@@ -119,11 +118,11 @@ export async function upsertDisputesAndRecoveriesFromDetections(
       provider: 'amazon',
       submission_date: submissionDate,
       resolution_date: resolutionDate,
-      resolution_amount: actualPayout,
+      resolution_amount: null,
       expected_payout_date: expectedPayoutDate,
-      recovery_status: isApproved ? 'reconciled' : 'pending',
-      actual_payout_amount: actualPayout,
-      reconciled_at: isApproved ? resolutionDate : null,
+      recovery_status: 'pending',
+      actual_payout_amount: null,
+      reconciled_at: null,
       created_at: detectionIso,
       updated_at: nowIso
     };
@@ -211,14 +210,14 @@ const buildRecoveryPayload = (disputes: DisputeCaseRow[], existingIds: Set<strin
         user_id: dispute.seller_id,
         tenant_id: dispute.tenant_id,
         expected_amount: amount,
-        actual_amount: amount,
+        actual_amount: null,
         discrepancy: 0,
         discrepancy_type: null,
-        reconciliation_status: 'reconciled',
-        payout_date: payoutDate,
+        reconciliation_status: 'pending',
+        payout_date: null,
         amazon_case_id: dispute.case_number,
-        matched_at: payoutDate,
-        reconciled_at: payoutDate,
+        matched_at: null,
+        reconciled_at: null,
         created_at: dispute.created_at || payoutDate,
         updated_at: nowIso
       };

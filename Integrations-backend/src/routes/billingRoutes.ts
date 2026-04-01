@@ -3,7 +3,6 @@ import { supabaseAdmin } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import { invoicePdfService } from '../services/invoicePdfService';
 import recoveryFinancialTruthService from '../services/recoveryFinancialTruthService';
-import financialSummaryService from '../services/financialSummaryService';
 
 const router = Router();
 
@@ -50,6 +49,27 @@ type BillingProof = {
     reference_ids: string[];
     event_ids: string[];
 };
+
+function toOptionalMoney(cents: unknown): number | null {
+    const parsed = Number(cents);
+    return Number.isFinite(parsed) ? Number((parsed / 100).toFixed(2)) : null;
+}
+
+function normalizeBillingStatus(value: unknown): string | null {
+    const normalized = String(value || '').trim().toLowerCase();
+    return normalized || null;
+}
+
+function deriveChargedAmount(status: unknown, amountDueCents: unknown): number | null {
+    const normalizedStatus = normalizeBillingStatus(status);
+    if (normalizedStatus === 'charged' || normalizedStatus === 'refunded') {
+        return toOptionalMoney(amountDueCents);
+    }
+    if (normalizedStatus === 'credited') {
+        return 0;
+    }
+    return null;
+}
 
 async function buildBillingProofMap(rows: Array<{ id: string; dispute_id?: string | null; recovery_id?: string | null }>, tenantId: string): Promise<Map<string, BillingProof>> {
     const proofByRowId = new Map<string, BillingProof>();
@@ -150,19 +170,20 @@ router.get('/transactions', async (req, res) => {
 
         if (error) throw error;
 
-        const proofMap = await buildBillingProofMap(data, tenantId);
+        const rows = data || [];
+        const proofMap = await buildBillingProofMap(rows, tenantId);
 
-        const transactions = data.map(tx => ({
+        const transactions = rows.map(tx => ({
             id: tx.id,
             recovery_id: tx.recovery_id,
-            amount: (tx.amount_recovered_cents || 0) / 100,
-            confirmed_recovered_amount: (tx.amount_recovered_cents || 0) / 100,
-            platform_fee: (tx.platform_fee_cents || 0) / 100,
-            credit_applied: (tx.credit_applied_cents || 0) / 100,
-            amount_due: (tx.amount_due_cents || 0) / 100,
-            credit_balance_remaining: (tx.credit_balance_after_cents || 0) / 100,
-            seller_payout: (tx.seller_payout_cents || 0) / 100,
-            status: tx.billing_status,
+            amount: toOptionalMoney(tx.amount_recovered_cents),
+            confirmed_recovered_amount: toOptionalMoney(tx.amount_recovered_cents),
+            platform_fee: toOptionalMoney(tx.platform_fee_cents),
+            credit_applied: toOptionalMoney(tx.credit_applied_cents),
+            amount_due: toOptionalMoney(tx.amount_due_cents),
+            credit_balance_remaining: toOptionalMoney(tx.credit_balance_after_cents),
+            seller_payout: toOptionalMoney(tx.seller_payout_cents),
+            status: normalizeBillingStatus(tx.billing_status),
             paypal_invoice_id: tx.paypal_invoice_id || tx.metadata?.paypal_invoice_id || null,
             created_at: tx.created_at,
             settlement_id: proofMap.get(tx.id)?.settlement_id || null,
@@ -199,25 +220,26 @@ router.get('/invoices', async (req, res) => {
 
         if (error) throw error;
 
-        const proofMap = await buildBillingProofMap(data, tenantId);
+        const rows = data || [];
+        const proofMap = await buildBillingProofMap(rows, tenantId);
 
         // Map transactions to "invoices" format expected by frontend
-        const invoices = data.map(tx => ({
+        const invoices = rows.map(tx => ({
             id: tx.id,
             invoice_id: tx.id, // Use transaction ID as invoice ID
-            period_start: tx.created_at,
-            period_end: tx.created_at, // Instant transaction
-            total_amount: (tx.amount_recovered_cents || 0) / 100,
-            confirmed_recovered_amount: (tx.amount_recovered_cents || 0) / 100,
-            platform_fee: (tx.platform_fee_cents || 0) / 100,
-            credit_applied: (tx.credit_applied_cents || 0) / 100,
-            commission: (tx.platform_fee_cents || 0) / 100,
-            amount_due: (tx.amount_due_cents || 0) / 100,
-            amount_charged: (tx.amount_due_cents || 0) / 100,
-            available_credit_balance: (tx.credit_balance_after_cents || 0) / 100,
-            status: tx.billing_status,
+            period_start: null,
+            period_end: null,
+            total_amount: toOptionalMoney(tx.amount_recovered_cents),
+            confirmed_recovered_amount: toOptionalMoney(tx.amount_recovered_cents),
+            platform_fee: toOptionalMoney(tx.platform_fee_cents),
+            credit_applied: toOptionalMoney(tx.credit_applied_cents),
+            commission: toOptionalMoney(tx.platform_fee_cents),
+            amount_due: toOptionalMoney(tx.amount_due_cents),
+            amount_charged: deriveChargedAmount(tx.billing_status, tx.amount_due_cents),
+            available_credit_balance: toOptionalMoney(tx.credit_balance_after_cents),
+            status: normalizeBillingStatus(tx.billing_status),
             created_at: tx.created_at,
-            recovery_claim_ids: [tx.recovery_id],
+            recovery_claim_ids: tx.recovery_id ? [tx.recovery_id] : [],
             paypal_invoice_id: tx.paypal_invoice_id || tx.metadata?.paypal_invoice_id || null,
             settlement_id: proofMap.get(tx.id)?.settlement_id || null,
             payout_batch_id: proofMap.get(tx.id)?.payout_batch_id || null,
@@ -250,17 +272,17 @@ router.get('/status', async (req, res) => {
 
         if (error) throw error;
 
-        const financialSummary = await financialSummaryService.getSummary({ tenantId, sellerId: userId });
-        const totalRecovered = financialSummary.total_recovered;
-        const totalFees = data.reduce((sum, tx) => sum + (tx.platform_fee_cents || 0), 0) / 100;
-        const totalCreditApplied = data.reduce((sum, tx) => sum + (tx.credit_applied_cents || 0), 0) / 100;
+        const rows = data || [];
+        const totalRecovered = Number((rows.reduce((sum, tx) => sum + Number(tx.amount_recovered_cents || 0), 0) / 100).toFixed(2));
+        const totalFees = Number((rows.reduce((sum, tx) => sum + Number(tx.platform_fee_cents || 0), 0) / 100).toFixed(2));
+        const totalCreditApplied = Number((rows.reduce((sum, tx) => sum + Number(tx.credit_applied_cents || 0), 0) / 100).toFixed(2));
         const outstandingStatuses = ['pending', 'sent', 'due', 'overdue'];
-        const totalAmountDue = data
-            .filter(tx => outstandingStatuses.includes(tx.billing_status))
-            .reduce((sum, tx) => sum + (tx.amount_due_cents || 0), 0) / 100;
-        const pendingBilling = data
-            .filter(tx => outstandingStatuses.includes(tx.billing_status))
-            .reduce((sum, tx) => sum + (tx.amount_due_cents || 0), 0) / 100;
+        const totalAmountDue = Number((rows
+            .filter(tx => outstandingStatuses.includes(String(tx.billing_status || '').toLowerCase()))
+            .reduce((sum, tx) => sum + Number(tx.amount_due_cents || 0), 0) / 100).toFixed(2));
+        const pendingBilling = Number((rows
+            .filter(tx => outstandingStatuses.includes(String(tx.billing_status || '').toLowerCase()))
+            .reduce((sum, tx) => sum + Number(tx.amount_due_cents || 0), 0) / 100).toFixed(2));
         const { data: creditLedger } = await supabaseAdmin
             .from('billing_credit_ledger')
             .select('transaction_type, amount_cents')
@@ -282,7 +304,7 @@ router.get('/status', async (req, res) => {
             if (row.transaction_type === 'credit_applied') return Math.max(0, balance - (row.amount_cents || 0));
             return balance;
         }, 0)) / 100;
-        const lastBillingDate = data
+        const lastBillingDate = rows
             .map(tx => tx.created_at)
             .filter(Boolean)
             .sort()
@@ -298,8 +320,8 @@ router.get('/status', async (req, res) => {
                 pending_billing: pendingBilling,
                 available_credit_balance: availableCreditBalance,
                 last_billing_date: lastBillingDate,
-                last_payout_date: financialSummary.last_payout_date,
-                payout_count: financialSummary.payout_count,
+                last_payout_date: null,
+                payout_count: null,
                 current_recovery_cycle_id: currentCycle?.id || null,
                 current_recovery_cycle_type: currentCycle?.cycle_type || null,
                 current_recovery_cycle_started_at: currentCycle?.created_at || null

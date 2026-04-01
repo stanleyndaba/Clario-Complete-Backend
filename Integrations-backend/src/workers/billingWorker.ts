@@ -16,6 +16,13 @@ import workerContinuationService from '../services/workerContinuationService';
 import runtimeCapacityService from '../services/runtimeCapacityService';
 import operationalControlService from '../services/operationalControlService';
 import financialWorkItemService from '../services/financialWorkItemService';
+import {
+  buildStableBillingIdempotencyKey,
+  resolveCanonicalBillingEligibility,
+  resolveCanonicalBillingEligibilityMap,
+  shouldEnqueueBackstopBilling,
+  type CanonicalBillingEligibility,
+} from '../services/billingCanonicalTruth';
 import { resolveTenantSlug } from '../utils/tenantEventRouting';
 
 export interface BillingStats {
@@ -420,19 +427,23 @@ class BillingWorker {
           continue;
         }
 
-        // Bill only on confirmed payout truth.
-        const amountRecovered = disputeCase.actual_payout_amount;
-        if (!amountRecovered || amountRecovered <= 0) {
+        const canonicalEligibility = await resolveCanonicalBillingEligibility({
+          tenantId,
+          disputeCaseId: disputeCase.id,
+        });
+
+        if (!canonicalEligibility.charge_eligible || !canonicalEligibility.verified_paid_amount || canonicalEligibility.verified_paid_amount <= 0) {
           stats.skipped++;
-          logger.warn('⏭️ [BILLING] Invalid amount, skipping', {
+          logger.warn('⏭️ [BILLING] Canonical payout truth not ready, skipping', {
             disputeId: disputeCase.id,
-            amountRecovered
+            payoutStatus: canonicalEligibility.payout_status,
+            eligibilityReason: canonicalEligibility.eligibility_reason
           });
           continue;
         }
 
         // Convert to cents
-        const amountRecoveredCents = Math.round(amountRecovered * 100);
+        const amountRecoveredCents = Math.round(canonicalEligibility.verified_paid_amount * 100);
 
         // Get recovery ID if exists (tenant-scoped)
         const recoveryQuery = createTenantScopedQueryById(tenantId, 'recoveries');
@@ -442,9 +453,18 @@ class BillingWorker {
           .limit(1)
           .single();
 
-        const stableIdempotencyKey = recovery?.id
-          ? `billing-recovery-${recovery.id}`
-          : `billing-dispute-${disputeCase.id}`;
+        const stableIdempotencyKey = buildStableBillingIdempotencyKey({
+          recoveryId: recovery?.id || null,
+          disputeCaseId: disputeCase.id,
+        });
+        const billingCurrency = String(disputeCase.currency || '').trim();
+        if (!billingCurrency) {
+          stats.skipped++;
+          logger.warn('⏭️ [BILLING] Billing currency unavailable, skipping', {
+            disputeId: disputeCase.id,
+          });
+          continue;
+        }
 
         // Process billing
         const result = await this.processBillingForRecovery(
@@ -454,9 +474,10 @@ class BillingWorker {
           disputeCase.seller_id,
           tenantId,
           amountRecoveredCents,
-          disputeCase.currency || 'usd',
+          billingCurrency,
           disputeCase.billing_retry_count || 0,
-          stableIdempotencyKey
+          stableIdempotencyKey,
+          canonicalEligibility
         );
 
         if (result.success) {
@@ -511,7 +532,8 @@ class BillingWorker {
     amountRecoveredCents: number,
     currency: string,
     currentRetryCount: number,
-    stableIdempotencyKey: string
+    stableIdempotencyKey: string,
+    canonicalEligibility: CanonicalBillingEligibility
   ): Promise<BillingResult> {
     let billingTransactionId: string | null = null;
     try {
@@ -521,7 +543,9 @@ class BillingWorker {
         userId,
         tenantId,
         amountRecoveredCents,
-        currency
+        currency,
+        payoutStatus: canonicalEligibility.payout_status,
+        chargeEligibilitySource: canonicalEligibility.eligibility_source
       });
 
       const { data: existingTransaction, error: existingError } = await supabaseAdmin
@@ -624,7 +648,17 @@ class BillingWorker {
             processed_at: new Date().toISOString(),
             credit_applied_cents: creditPreview.creditAppliedCents,
             amount_due_cents: creditPreview.amountDueCents,
-            credit_balance_after_cents: creditPreview.balanceAfterCents
+            credit_balance_after_cents: creditPreview.balanceAfterCents,
+            charge_eligible: canonicalEligibility.charge_eligible,
+            charge_eligibility_reason: canonicalEligibility.eligibility_reason,
+            charge_eligibility_source: canonicalEligibility.eligibility_source,
+            payout_status: canonicalEligibility.payout_status,
+            verified_paid_amount: canonicalEligibility.verified_paid_amount,
+            outstanding_amount: canonicalEligibility.outstanding_amount,
+            variance_amount: canonicalEligibility.variance_amount,
+            proof_event_date: canonicalEligibility.proof_of_payment?.event_date || null,
+            settlement_id: canonicalEligibility.proof_of_payment?.settlement_id || null,
+            payout_batch_id: canonicalEligibility.proof_of_payment?.payout_batch_id || null
           }
         };
 
@@ -964,7 +998,7 @@ class BillingWorker {
     try {
       const { data: disputeCase, error } = await supabaseAdmin
         .from('dispute_cases')
-        .select('seller_id, actual_payout_amount, currency, billing_retry_count, billing_status, recovery_status')
+        .select('seller_id, currency, billing_retry_count, billing_status')
         .eq('id', item.dispute_case_id)
         .single();
 
@@ -972,33 +1006,79 @@ class BillingWorker {
         throw new Error(error?.message || `Dispute case ${item.dispute_case_id} not found`);
       }
 
-      if (String(disputeCase.recovery_status || '').toLowerCase() !== 'reconciled') {
+      const canonicalEligibility = await resolveCanonicalBillingEligibility({
+        tenantId: item.tenant_id,
+        disputeCaseId: item.dispute_case_id,
+      });
+
+      if (!canonicalEligibility.charge_eligible || !canonicalEligibility.verified_paid_amount || canonicalEligibility.verified_paid_amount <= 0) {
         const nextAttemptAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
         await financialWorkItemService.defer(
           'billing',
           item.id,
-          'recovery_not_reconciled_yet',
+          'payout_not_canonically_confirmed',
           15 * 60 * 1000,
           this.buildExecutionMetadata(item, {
             lifecycle_state: 'deferred',
             defer_count: Number(item?.payload?.defer_count || 0) + 1,
-            deferred_reason: 'recovery_not_reconciled_yet',
-            last_deferred_reason: 'recovery_not_reconciled_yet',
-            next_attempt_at: nextAttemptAt
+            deferred_reason: 'payout_not_canonically_confirmed',
+            last_deferred_reason: 'payout_not_canonically_confirmed',
+            next_attempt_at: nextAttemptAt,
+            charge_eligible: canonicalEligibility.charge_eligible,
+            charge_eligibility_reason: canonicalEligibility.eligibility_reason,
+            charge_eligibility_source: canonicalEligibility.eligibility_source,
+            payout_status: canonicalEligibility.payout_status,
+            verified_paid_amount: canonicalEligibility.verified_paid_amount,
+            outstanding_amount: canonicalEligibility.outstanding_amount,
+            variance_amount: canonicalEligibility.variance_amount,
+            proof_event_date: canonicalEligibility.proof_of_payment?.event_date || null,
+            settlement_id: canonicalEligibility.proof_of_payment?.settlement_id || null,
+            payout_batch_id: canonicalEligibility.proof_of_payment?.payout_batch_id || null
           })
         );
         await this.emitBillingEvent('billing.work_deferred', item, {
           status: 'pending',
-          reason: 'recovery_not_reconciled_yet',
+          reason: 'payout_not_canonically_confirmed',
           defer_count: Number(item?.payload?.defer_count || 0) + 1,
-          next_attempt_at: nextAttemptAt
+          next_attempt_at: nextAttemptAt,
+          charge_eligible: canonicalEligibility.charge_eligible,
+          charge_eligibility_reason: canonicalEligibility.eligibility_reason,
+          charge_eligibility_source: canonicalEligibility.eligibility_source,
+          payout_status: canonicalEligibility.payout_status,
+          verified_paid_amount: canonicalEligibility.verified_paid_amount
         });
         return 'deferred';
       }
 
-      const stableIdempotencyKey = item.recovery_id
-        ? `billing-recovery-${item.recovery_id}`
-        : `billing-dispute-${item.dispute_case_id}`;
+      const billingCurrency = String(disputeCase.currency || '').trim();
+      if (!billingCurrency) {
+        const nextAttemptAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+        await financialWorkItemService.defer(
+          'billing',
+          item.id,
+          'billing_currency_unavailable',
+          15 * 60 * 1000,
+          this.buildExecutionMetadata(item, {
+            lifecycle_state: 'deferred',
+            defer_count: Number(item?.payload?.defer_count || 0) + 1,
+            deferred_reason: 'billing_currency_unavailable',
+            last_deferred_reason: 'billing_currency_unavailable',
+            next_attempt_at: nextAttemptAt,
+          })
+        );
+        await this.emitBillingEvent('billing.work_deferred', item, {
+          status: 'pending',
+          reason: 'billing_currency_unavailable',
+          defer_count: Number(item?.payload?.defer_count || 0) + 1,
+          next_attempt_at: nextAttemptAt,
+        });
+        return 'deferred';
+      }
+
+      const stableIdempotencyKey = buildStableBillingIdempotencyKey({
+        recoveryId: item.recovery_id || null,
+        disputeCaseId: item.dispute_case_id,
+      });
 
       const result = await this.processBillingForRecovery(
         item.dispute_case_id,
@@ -1006,10 +1086,11 @@ class BillingWorker {
         item.payload?.recovery_cycle_id || null,
         disputeCase.seller_id,
         item.tenant_id,
-        Math.round(Number(disputeCase.actual_payout_amount || 0) * 100),
-        disputeCase.currency || 'usd',
+        Math.round(Number(canonicalEligibility.verified_paid_amount || 0) * 100),
+        billingCurrency,
         disputeCase.billing_retry_count || 0,
-        stableIdempotencyKey
+        stableIdempotencyKey,
+        canonicalEligibility
       );
 
       if (result.success) {
@@ -1104,8 +1185,7 @@ class BillingWorker {
   private async enqueueMissingBillingWorkItemsForTenant(tenantId: string): Promise<number> {
     const cursor = await workerContinuationService.getCursor(`${this.workerName}-backstop`, tenantId);
     let query = createTenantScopedQueryById(tenantId, 'dispute_cases')
-      .select('id, seller_id, tenant_id, recovery_status, billing_status, billing_transaction_id')
-      .eq('recovery_status', 'reconciled')
+      .select('id, seller_id, tenant_id, billing_status, billing_transaction_id')
       .or('billing_status.is.null,billing_status.eq.pending,billing_status.eq.failed')
       .order('id', { ascending: true })
       .limit(BillingWorker.BATCH_SIZE);
@@ -1117,8 +1197,7 @@ class BillingWorker {
     let { data: casesNeedingBilling, error } = await query;
     if ((!casesNeedingBilling || casesNeedingBilling.length === 0) && cursor) {
       const wrapped = await createTenantScopedQueryById(tenantId, 'dispute_cases')
-        .select('id, seller_id, tenant_id, recovery_status, billing_status, billing_transaction_id')
-        .eq('recovery_status', 'reconciled')
+        .select('id, seller_id, tenant_id, billing_status, billing_transaction_id')
         .or('billing_status.is.null,billing_status.eq.pending,billing_status.eq.failed')
         .order('id', { ascending: true })
         .limit(BillingWorker.BATCH_SIZE);
@@ -1132,9 +1211,22 @@ class BillingWorker {
     }
 
     const tenantSlug = await resolveTenantSlug(tenantId);
+    const eligibilityByDisputeId = await resolveCanonicalBillingEligibilityMap({
+      tenantId,
+      disputeCaseIds: (casesNeedingBilling || []).map((row: any) => String(row.id || '')).filter(Boolean),
+    });
     let created = 0;
 
     for (const disputeCase of casesNeedingBilling) {
+      const canonicalEligibility = eligibilityByDisputeId[String(disputeCase.id)] || null;
+      if (!canonicalEligibility || !shouldEnqueueBackstopBilling({
+        billingStatus: disputeCase.billing_status,
+        billingTransactionId: disputeCase.billing_transaction_id,
+        chargeEligible: canonicalEligibility.charge_eligible,
+      })) {
+        continue;
+      }
+
       const { data: recovery } = await createTenantScopedQueryById(tenantId, 'recoveries')
         .select('id')
         .eq('dispute_id', disputeCase.id)
@@ -1154,7 +1246,17 @@ class BillingWorker {
         payload: {
           dispute_case_id: disputeCase.id,
           recovery_id: recovery?.id || null,
-          sweep: true
+          sweep: true,
+          charge_eligible: canonicalEligibility.charge_eligible,
+          charge_eligibility_reason: canonicalEligibility.eligibility_reason,
+          charge_eligibility_source: canonicalEligibility.eligibility_source,
+          payout_status: canonicalEligibility.payout_status,
+          verified_paid_amount: canonicalEligibility.verified_paid_amount,
+          outstanding_amount: canonicalEligibility.outstanding_amount,
+          variance_amount: canonicalEligibility.variance_amount,
+          proof_event_date: canonicalEligibility.proof_of_payment?.event_date || null,
+          settlement_id: canonicalEligibility.proof_of_payment?.settlement_id || null,
+          payout_batch_id: canonicalEligibility.proof_of_payment?.payout_batch_id || null
         }
       });
 
