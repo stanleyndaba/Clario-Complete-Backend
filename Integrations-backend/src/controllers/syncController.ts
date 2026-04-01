@@ -179,9 +179,16 @@ export const getSyncStatus = async (req: Request, res: Response) => {
     res.json({
       syncId: syncStatus.syncId,
       status: syncStatus.status,
+      runState: syncStatus.runState || syncStatus.status,
       progress: syncStatus.progress,
       message: syncStatus.message,
+      sourceType: syncStatus.sourceType || 'amazon_sp_api',
+      sourceLabel: syncStatus.sourceLabel || 'Amazon SP-API Sync',
+      tenantSlug: (req as any).tenant?.tenantSlug || syncStatus.tenantSlug || null,
+      storeId: syncStatus.storeId || null,
+      partialSuccess: Boolean(syncStatus.partialSuccess),
       startedAt: syncStatus.startedAt,
+      lastEventAt: syncStatus.lastEventAt || syncStatus.completedAt || syncStatus.startedAt,
       estimatedCompletion: syncStatus.estimatedCompletion,
       ordersProcessed: syncStatus.ordersProcessed,
       totalOrders: syncStatus.totalOrders,
@@ -191,7 +198,9 @@ export const getSyncStatus = async (req: Request, res: Response) => {
       settlementsCount: syncStatus.settlementsCount,
       feesCount: syncStatus.feesCount,
       claimsDetected: syncStatus.claimsDetected,
-      completedAt: syncStatus.completedAt,
+      completedAt: syncStatus.completedAt || null,
+      reportIdentifiers: syncStatus.reportIdentifiers || [],
+      requestIdentifiers: syncStatus.requestIdentifiers || [],
       error: syncStatus.error
     });
   } catch (error: any) {

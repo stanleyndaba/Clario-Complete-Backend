@@ -25,11 +25,16 @@ export interface SyncJobStatus {
   tenantId?: string;
   tenantSlug?: string;
   storeId?: string; // Track which store this sync belongs to
+  sourceType?: 'amazon_sp_api';
+  sourceLabel?: string;
   status: SyncStatus;
+  runState?: SyncStatus;
   progress: number;
   message: string;
   startedAt: string;
+  lastEventAt?: string;
   completedAt?: string;
+  partialSuccess?: boolean;
   estimatedCompletion?: string;
   ordersProcessed?: number;
   totalOrders?: number;
@@ -49,6 +54,8 @@ export interface SyncJobStatus {
   // Coverage tracking (Pillar 3: Completeness)
   coverage?: SyncCoverage[];
   coverageComplete?: boolean;
+  reportIdentifiers?: string[];
+  requestIdentifiers?: string[];
   // Fingerprint for idempotency (Pillar 1: Reliability)
   syncFingerprint?: string;
   lastSuccessfulSyncAt?: string;
@@ -253,11 +260,18 @@ class SyncJobManager {
       userId: row.user_id,
       tenantId: row.tenant_id || undefined,
       storeId: row.store_id || undefined,
+      sourceType: 'amazon_sp_api',
+      sourceLabel: 'Amazon SP-API Sync',
       status: normalizedStatus,
+      runState: normalizedStatus,
       progress: row.progress || 0,
       message: row.current_step || 'Unknown',
       startedAt: row.created_at,
-      completedAt: row.updated_at,
+      lastEventAt: row.updated_at,
+      completedAt: normalizedStatus === 'completed' || normalizedStatus === 'failed' || normalizedStatus === 'cancelled'
+        ? row.updated_at
+        : undefined,
+      partialSuccess: Boolean(metadata.partialSuccess),
       ordersProcessed: counts.ordersProcessed,
       totalOrders: counts.totalOrders,
       inventoryCount: counts.inventoryCount,
@@ -266,6 +280,12 @@ class SyncJobManager {
       settlementsCount: counts.settlementsCount,
       feesCount: counts.feesCount,
       claimsDetected: counts.claimsDetected,
+      reportIdentifiers: Array.isArray(metadata.reportIdentifiers)
+        ? metadata.reportIdentifiers.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
+        : [],
+      requestIdentifiers: Array.isArray(metadata.requestIdentifiers)
+        ? metadata.requestIdentifiers.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
+        : [],
       error: metadata.error
     };
   }
@@ -350,7 +370,7 @@ class SyncJobManager {
         .from('sync_progress')
         .select('sync_id, status, updated_at')
         .eq('user_id', userId)
-        .eq('status', 'running')
+        .in('status', ['running', 'detecting', 'in_progress'])
         .order('created_at', { ascending: false })
         .limit(1),
       tenantContext.tenantId,
@@ -358,7 +378,7 @@ class SyncJobManager {
     );
     const { data: dbActiveSync } = await dbActiveSyncQuery.maybeSingle();
 
-    if (dbActiveSync && dbActiveSync.status === 'running') {
+    if (dbActiveSync && (dbActiveSync.status === 'running' || dbActiveSync.status === 'detecting' || dbActiveSync.status === 'in_progress')) {
       // Double-check it's not stale (should have been cleaned above, but check again)
       const updatedAt = new Date(dbActiveSync.updated_at).getTime();
       const isStale = Date.now() - updatedAt > STALE_SYNC_THRESHOLD_MINUTES * 60 * 1000;
@@ -452,13 +472,20 @@ class SyncJobManager {
       tenantId: tenantContext.tenantId,
       tenantSlug: tenantContext.tenantSlug,
       storeId: scopedStoreId,
+      sourceType: 'amazon_sp_api',
+      sourceLabel: 'Amazon SP-API Sync',
       status: 'running',
+      runState: 'running',
       progress: 0,
       message: 'Sync starting...',
       startedAt: new Date().toISOString(),
+      lastEventAt: new Date().toISOString(),
+      partialSuccess: false,
       ordersProcessed: 0,
       totalOrders: 0,
       claimsDetected: 0,
+      reportIdentifiers: [],
+      requestIdentifiers: [],
       syncFingerprint, // Store fingerprint for idempotency (Pillar 1)
       retryCount: 0
     };
@@ -706,6 +733,7 @@ class SyncJobManager {
           syncStatus.message = partialItemsPersisted > 0
             ? 'We synced part of your Amazon data, but this run did not finish cleanly.'
             : 'We hit a temporary issue while updating your Amazon records.';
+          syncStatus.partialSuccess = partialItemsPersisted > 0;
           syncStatus.error = syncResult.errors.join(', ') || 'Unknown Agent 2 sync error';
 
           throw new Error(
@@ -1193,6 +1221,7 @@ class SyncJobManager {
         syncStatus.message = partialItemsPersisted > 0
           ? 'We synced part of your Amazon data, but this run did not finish cleanly.'
           : 'We hit a temporary issue while updating your Amazon records.';
+        syncStatus.partialSuccess = partialItemsPersisted > 0;
         syncStatus.completedAt = new Date().toISOString();
 
         // Log structured error with next action
@@ -1539,7 +1568,11 @@ class SyncJobManager {
   }> {
     // Check running jobs first
     for (const job of this.runningJobs.values()) {
-      if (job.status.userId === userId && job.status.status === 'running' && this.matchesScope(job.status, tenantId, storeId)) {
+      if (
+        job.status.userId === userId &&
+        (job.status.status === 'running' || job.status.status === 'detecting') &&
+        this.matchesScope(job.status, tenantId, storeId)
+      ) {
         return {
           hasActiveSync: true,
           lastSync: {
@@ -1569,7 +1602,7 @@ class SyncJobManager {
           .from('sync_progress')
           .select('*')
           .eq('user_id', userId)
-          .eq('status', 'running')
+          .in('status', ['running', 'detecting', 'in_progress'])
           .order('created_at', { ascending: false })
           .limit(1),
         tenantId,
@@ -1664,7 +1697,11 @@ class SyncJobManager {
   private async getActiveSync(userId: string, tenantId?: string, storeId?: string): Promise<SyncJobStatus | null> {
     // Check running jobs first
     for (const job of this.runningJobs.values()) {
-      if (job.status.userId === userId && job.status.status === 'running' && this.matchesScope(job.status, tenantId, storeId)) {
+      if (
+        job.status.userId === userId &&
+        (job.status.status === 'running' || job.status.status === 'detecting') &&
+        this.matchesScope(job.status, tenantId, storeId)
+      ) {
         return job.status;
       }
     }
@@ -1676,7 +1713,7 @@ class SyncJobManager {
           .from('sync_progress')
           .select('*')
           .eq('user_id', userId)
-          .eq('status', 'running')
+          .in('status', ['running', 'detecting', 'in_progress'])
           .order('created_at', { ascending: false })
           .limit(1),
         tenantId,
@@ -1727,7 +1764,10 @@ class SyncJobManager {
         retryCount: syncStatus.retryCount || 0,
         // Pillar 3: Coverage tracking
         coverage: syncStatus.coverage,
-        coverageComplete: syncStatus.coverageComplete
+        coverageComplete: syncStatus.coverageComplete,
+        partialSuccess: syncStatus.partialSuccess || false,
+        reportIdentifiers: syncStatus.reportIdentifiers || [],
+        requestIdentifiers: syncStatus.requestIdentifiers || []
       };
 
       logger.info('💾 [SYNC JOB MANAGER] Saving sync to database', {
@@ -1816,6 +1856,9 @@ class SyncJobManager {
    * Update sync status
    */
   private async updateSyncStatus(syncStatus: SyncJobStatus): Promise<void> {
+    syncStatus.runState = syncStatus.status;
+    syncStatus.lastEventAt = new Date().toISOString();
+
     // Update in-memory
     const job = this.runningJobs.get(syncStatus.syncId);
     if (job) {
