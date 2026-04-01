@@ -17,7 +17,6 @@ const router = Router();
 const logger = getLogger('RecoveryRoutes');
 
 const APPROVED_CASE_STATUSES = new Set(['approved', 'won']);
-const RECOVERY_RECONCILED_STATUSES = new Set(['reconciled']);
 const BILLING_COMPLETE_STATUSES = new Set(['paid', 'charged', 'credited', 'completed']);
 
 function normalize(value: unknown): string {
@@ -32,6 +31,11 @@ function toNumber(value: unknown): number {
 function toOptionalAmount(value: unknown): number | null {
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function toNullableFiniteAmount(value: unknown): number | null {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
 }
 
 async function resolveRecoveriesScope(req: Request): Promise<{ tenantId: string; tenantSlug: string | null }> {
@@ -124,33 +128,88 @@ function deriveApprovedAmount(record: any): number | null {
     return null;
 }
 
-function deriveReconciliationStatus(record: any, approvedAmount: number | null, actualPayoutAmount: number | null): string {
-    const recoveryStatus = normalize(record?.recovery_status);
+type LedgerReconciliationTruth = {
+    reconciliation_status: 'pending_payout' | 'partial_recovery' | 'reconciled' | null;
+    reconciliation_source: 'canonical_financial_truth' | 'projected_legacy_case_field' | 'detection_estimate' | 'unavailable';
+    payout_status: 'not_paid' | 'partially_paid' | 'paid' | null;
+    outstanding_amount: number | null;
+    variance_amount: number | null;
+};
 
-    if (actualPayoutAmount !== null && approvedAmount !== null && actualPayoutAmount < approvedAmount) {
-        return 'partial_recovery';
+function deriveLedgerReconciliationTruth(params: {
+    entityType: 'dispute_case' | 'detection';
+    approvedAmount: number | null;
+    actualPayoutAmount: number | null;
+    expectedPayoutAmount: number | null;
+    financialSummary?: any | null;
+}): LedgerReconciliationTruth {
+    const payoutStatus = String(params.financialSummary?.payout_status || '').trim().toLowerCase();
+    const canonicalPayoutStatus =
+        payoutStatus === 'paid' || payoutStatus === 'partially_paid' || payoutStatus === 'not_paid'
+            ? payoutStatus as LedgerReconciliationTruth['payout_status']
+            : null;
+    const canonicalOutstanding = toNullableFiniteAmount(params.financialSummary?.outstanding_amount);
+    const canonicalVariance = toNullableFiniteAmount(params.financialSummary?.variance_amount);
+    const hasCanonicalFinancialTruth = Boolean(
+        params.financialSummary &&
+        (
+            canonicalPayoutStatus ||
+            params.financialSummary?.approved_amount != null ||
+            params.financialSummary?.requested_amount != null ||
+            params.financialSummary?.verified_paid_amount != null ||
+            params.financialSummary?.financial_event_count > 0
+        )
+    );
+
+    if (hasCanonicalFinancialTruth) {
+        let reconciliationStatus: LedgerReconciliationTruth['reconciliation_status'] = null;
+        if (canonicalPayoutStatus === 'paid') {
+            reconciliationStatus = 'reconciled';
+        } else if (canonicalPayoutStatus === 'partially_paid') {
+            reconciliationStatus = 'partial_recovery';
+        } else if (canonicalPayoutStatus === 'not_paid' && (params.financialSummary?.approved_amount != null || params.financialSummary?.requested_amount != null)) {
+            reconciliationStatus = 'pending_payout';
+        }
+
+        return {
+            reconciliation_status: reconciliationStatus,
+            reconciliation_source: 'canonical_financial_truth',
+            payout_status: canonicalPayoutStatus,
+            outstanding_amount: canonicalOutstanding,
+            variance_amount: canonicalVariance
+        };
     }
 
-    if (RECOVERY_RECONCILED_STATUSES.has(recoveryStatus)) {
-        return 'reconciled';
+    if (params.entityType === 'dispute_case' && params.actualPayoutAmount !== null) {
+        return {
+            reconciliation_status: null,
+            reconciliation_source: 'projected_legacy_case_field',
+            payout_status: null,
+            outstanding_amount: null,
+            variance_amount: null
+        };
     }
 
-    if (actualPayoutAmount !== null) {
-        return 'payout_detected';
+    if (params.entityType === 'detection' && params.expectedPayoutAmount !== null) {
+        return {
+            reconciliation_status: null,
+            reconciliation_source: 'detection_estimate',
+            payout_status: null,
+            outstanding_amount: null,
+            variance_amount: null
+        };
     }
 
-    if (isApprovedCase(record)) {
-        return 'pending_payout';
-    }
-
-    if (recoveryStatus) {
-        return recoveryStatus.replace(/\s+/g, '_');
-    }
-
-    return 'unknown';
+    return {
+        reconciliation_status: null,
+        reconciliation_source: 'unavailable',
+        payout_status: null,
+        outstanding_amount: null,
+        variance_amount: null
+    };
 }
 
-function deriveOperatorState(record: any, reconciliationStatus: string, billingStatus: string, recoveryWorkStatus?: string | null, billingWorkStatus?: string | null): string {
+function deriveOperatorState(record: any, reconciliationStatus: string | null, billingStatus: string, recoveryWorkStatus?: string | null, billingWorkStatus?: string | null): string {
     const normalizedRecoveryWork = normalize(recoveryWorkStatus);
     const normalizedBillingWork = normalize(billingWorkStatus);
 
@@ -690,15 +749,21 @@ router.get('/ledger', async (req: Request, res: Response) => {
             const latestBillingWork = latestBillingWorkByDisputeId.get(record.id);
             const recoveryWorkPayload = latestRecoveryWork?.payload || null;
             const billingStatus = normalize(latestBilling?.billing_status || record.billing_status) || null;
-            const reconciliationStatus = deriveReconciliationStatus(record, approvedAmount, actualPayoutAmount);
+            const expectedPayoutAmount = actualPayoutAmount === null && record.expected_payout_date ? approvedAmount : null;
+            const reconciliationTruth = deriveLedgerReconciliationTruth({
+                entityType: 'dispute_case',
+                approvedAmount,
+                actualPayoutAmount,
+                expectedPayoutAmount,
+                financialSummary
+            });
             const operatorState = deriveOperatorState(
                 record,
-                reconciliationStatus,
+                reconciliationTruth.reconciliation_status,
                 billingStatus || '',
                 latestRecoveryWork?.status || null,
                 latestBillingWork?.status || null
             );
-            const expectedPayoutAmount = actualPayoutAmount === null && record.expected_payout_date ? approvedAmount : null;
             const billingRevenueAmount = latestBilling?.platform_fee_cents != null
                 ? Number((toNumber(latestBilling.platform_fee_cents) / 100).toFixed(2))
                 : toOptionalAmount(record.billed_amount);
@@ -769,14 +834,18 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 expected_payout_source: expectedPayoutSource,
                 actual_payout_source: actualPayoutSource,
                 billed_revenue_amount: billingRevenueAmount,
-                reconciliation_status: reconciliationStatus,
+                reconciliation_status: reconciliationTruth.reconciliation_status,
+                reconciliation_source: reconciliationTruth.reconciliation_source,
+                payout_status: reconciliationTruth.payout_status,
+                outstanding_amount: reconciliationTruth.outstanding_amount,
+                variance_amount: reconciliationTruth.variance_amount,
                 reconciliation_strategy: recoveryWorkPayload?.reconciliation_strategy || null,
                 match_explanation: recoveryWorkPayload?.match_explanation || null,
                 operator_state: operatorState,
-                investigation_required: operatorState === 'investigation_required' || reconciliationStatus === 'partial_recovery',
+                investigation_required: operatorState === 'investigation_required' || reconciliationTruth.reconciliation_status === 'partial_recovery',
                 currency: record.currency || 'USD',
                 expected_payout_date: record.expected_payout_date || null,
-                recovered_at: actualPayoutAmount !== null && reconciliationStatus === 'reconciled'
+                recovered_at: actualPayoutAmount !== null && reconciliationTruth.reconciliation_status === 'reconciled'
                     ? (record.updated_at || record.created_at || null)
                     : null,
                 detected_at: record.created_at || null,
@@ -791,6 +860,13 @@ router.get('/ledger', async (req: Request, res: Response) => {
                     : (Array.isArray(record?.matched_document_ids) ? record.matched_document_ids.length : 0);
             const expectedPayoutAmount = toOptionalAmount(record.estimated_value);
             const financialSummary = financialSummaryById.get(record.id) || null;
+            const reconciliationTruth = deriveLedgerReconciliationTruth({
+                entityType: 'detection',
+                approvedAmount: null,
+                actualPayoutAmount: null,
+                expectedPayoutAmount,
+                financialSummary
+            });
             const operatorState = matchedDocumentCount > 0 ? 'opportunity_detected' : 'investigation_required';
             const actualPayoutSource = toNumber(financialSummary?.verified_paid_amount) > 0
                 ? 'verified_financial_event'
@@ -857,7 +933,11 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 expected_payout_source: expectedPayoutSource,
                 actual_payout_source: actualPayoutSource,
                 billed_revenue_amount: null,
-                reconciliation_status: 'unknown',
+                reconciliation_status: reconciliationTruth.reconciliation_status,
+                reconciliation_source: reconciliationTruth.reconciliation_source,
+                payout_status: reconciliationTruth.payout_status,
+                outstanding_amount: reconciliationTruth.outstanding_amount,
+                variance_amount: reconciliationTruth.variance_amount,
                 reconciliation_strategy: null,
                 match_explanation: null,
                 operator_state: operatorState,
