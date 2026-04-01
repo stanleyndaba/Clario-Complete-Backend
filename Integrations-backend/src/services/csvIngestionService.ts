@@ -289,11 +289,28 @@ export interface BatchIngestionResult {
     syncId: string;
 }
 
+export type CsvUploadRunStatus = 'started' | 'detection_processing' | 'completed' | 'partial' | 'failed';
+
+export interface CsvUploadRunFileSummary {
+    fileName: string;
+    mimeType?: string;
+    status: 'accepted' | 'ingested' | 'duplicate' | 'failed';
+    csvType?: CSVType;
+    rowsProcessed?: number;
+    rowsInserted?: number;
+    rowsSkipped?: number;
+    rowsFailed?: number;
+    errors?: string[];
+    detectionTriggered?: boolean;
+    detectionJobId?: string;
+}
+
 export interface CsvUploadDetectionSnapshot {
     status: DetectionQueueStatus | 'completed' | null;
     processedAt: string | null;
     errorMessage: string | null;
     resultsTotal: number;
+    isSandbox: boolean;
 }
 
 export interface CsvUploadRunSnapshot {
@@ -303,6 +320,15 @@ export interface CsvUploadRunSnapshot {
     recoveryNotice: string | null;
     createdAt: string | null;
     updatedAt: string | null;
+    startedAt: string | null;
+    completedAt: string | null;
+    status: CsvUploadRunStatus | null;
+    fileCount: number;
+    filesSummary: CsvUploadRunFileSummary[];
+    detectionTriggered: boolean;
+    detectionJobId?: string;
+    error: string | null;
+    isSandbox: boolean;
     batchResult: BatchIngestionResult | null;
     detection: CsvUploadDetectionSnapshot | null;
 }
@@ -310,6 +336,24 @@ export interface CsvUploadRunSnapshot {
 const DISABLED_TYPES = new Set<CSVType>([]);
 
 type DetectionQueueStatus = 'pending' | 'processing' | 'completed' | 'failed';
+type CsvUploadRunSource = CsvUploadRunSnapshot['source'];
+type CsvUploadRunRow = {
+    sync_id: string;
+    success: boolean | null;
+    total_files: number | null;
+    file_count: number | null;
+    detection_triggered: boolean | null;
+    detection_job_id: string | null;
+    ingestion_results: unknown;
+    files_summary: unknown;
+    created_at: string | null;
+    updated_at: string | null;
+    started_at: string | null;
+    completed_at: string | null;
+    status: CsvUploadRunStatus | null;
+    error: string | null;
+    is_sandbox: boolean | null;
+};
 
 // ============================================================================
 // CSV Ingestion Service
@@ -334,9 +378,12 @@ export class CSVIngestionService {
             throw new Error('tenantId is required for CSV ingestion');
         }
 
+        const tenantId = options.tenantId;
         const syncId = `csv_${Date.now()}`;
         const results: IngestionResult[] = [];
         const triggerDetection = options.triggerDetection !== false;
+        const runStartedAt = new Date().toISOString();
+        const isSandbox = this.getCsvUploadSandboxFlag();
 
         logger.info('📂 [CSV INGESTION] Starting batch ingestion', {
             userId,
@@ -346,12 +393,32 @@ export class CSVIngestionService {
             explicitType: options.explicitType || 'auto-detect',
         });
 
+        try {
+            await this.persistCsvUploadRunRecord(tenantId, userId, syncId, {
+                fileCount: files.length,
+                filesSummary: this.buildAcceptedCsvRunFilesSummary(files),
+                startedAt: runStartedAt,
+                status: 'started',
+                detectionTriggered: false,
+                detectionJobId: null,
+                error: null,
+                isSandbox,
+            });
+        } catch (error: any) {
+            logger.warn('⚠️ [CSV INGESTION] Failed to create authoritative CSV run record at batch start', {
+                tenantId,
+                userId,
+                syncId,
+                error: error?.message || 'Unknown error',
+            });
+        }
+
         for (const file of files) {
             try {
                 const result = await this.ingestSingleFile(userId, file, syncId, {
                     explicitType: options.explicitType,
                     storeId: options.storeId,
-                    tenantId: options.tenantId,
+                    tenantId,
                 });
                 results.push(result);
             } catch (error: any) {
@@ -371,18 +438,41 @@ export class CSVIngestionService {
 
         // Trigger detection after all files are imported
         let detectionJobId: string | undefined;
+        let detectionError: string | null = null;
         const anySuccess = results.some(r => r.success && r.rowsInserted > 0);
         const allSucceeded = results.length > 0 && results.every(r => r.success);
 
         if (triggerDetection && anySuccess) {
             try {
-                detectionJobId = await this.triggerDetection(userId, syncId, options.tenantId);
+                await this.persistCsvUploadRunRecord(tenantId, userId, syncId, {
+                    success: allSucceeded,
+                    fileCount: files.length,
+                    filesSummary: this.buildCsvRunFilesSummary(results),
+                    startedAt: runStartedAt,
+                    status: 'detection_processing',
+                    detectionTriggered: true,
+                    detectionJobId: null,
+                    error: this.buildCsvUploadRunError(results),
+                    isSandbox,
+                });
+            } catch (error: any) {
+                logger.warn('⚠️ [CSV INGESTION] Failed to update authoritative CSV run before detection', {
+                    tenantId,
+                    userId,
+                    syncId,
+                    error: error?.message || 'Unknown error',
+                });
+            }
+
+            try {
+                detectionJobId = await this.triggerDetection(userId, syncId, tenantId);
                 logger.info('🔍 [CSV INGESTION] Detection triggered after CSV import', {
                     userId,
                     syncId,
                     detectionJobId,
                 });
             } catch (error: any) {
+                detectionError = error.message || 'Detection trigger failed.';
                 logger.error('❌ [CSV INGESTION] Failed to trigger detection', {
                     userId,
                     syncId,
@@ -408,6 +498,27 @@ export class CSVIngestionService {
             };
         });
 
+        let detectionSnapshot: CsvUploadDetectionSnapshot | null = null;
+        if (triggerDetection && anySuccess) {
+            try {
+                detectionSnapshot = await this.getCsvDetectionSnapshot(userId, tenantId, syncId);
+            } catch (error: any) {
+                logger.warn('⚠️ [CSV INGESTION] Failed to refresh detection snapshot for CSV run record', {
+                    tenantId,
+                    userId,
+                    syncId,
+                    error: error?.message || 'Unknown error',
+                });
+            }
+        }
+
+        const batchError = this.buildCsvUploadRunError(unifiedResults, detectionError);
+        const runStatus = this.deriveCsvUploadRunStatus(unifiedResults, {
+            detectionTriggered: triggerDetection && anySuccess,
+            detectionStatus: detectionSnapshot?.status || (detectionTriggered ? 'processing' : null),
+            batchError,
+        });
+
         const batchResult: BatchIngestionResult = {
             success: allSucceeded && anySuccess,
             userId,
@@ -419,10 +530,21 @@ export class CSVIngestionService {
         };
 
         try {
-            await this.persistCsvUploadRun(options.tenantId, batchResult);
+            await this.persistCsvUploadRunRecord(tenantId, userId, syncId, {
+                success: batchResult.success,
+                fileCount: files.length,
+                filesSummary: this.buildCsvRunFilesSummary(unifiedResults),
+                startedAt: runStartedAt,
+                completedAt: this.isTerminalCsvUploadRunStatus(runStatus) ? new Date().toISOString() : null,
+                status: runStatus,
+                detectionTriggered: triggerDetection && anySuccess,
+                detectionJobId: detectionJobId || null,
+                error: batchError,
+                isSandbox: detectionSnapshot?.isSandbox ?? isSandbox,
+            });
         } catch (error: any) {
             logger.warn('⚠️ [CSV INGESTION] Failed to persist CSV upload run record', {
-                tenantId: options.tenantId,
+                tenantId,
                 userId,
                 syncId,
                 error: error?.message || 'Unknown error',
@@ -445,10 +567,10 @@ export class CSVIngestionService {
         try {
             const { data, error } = await supabaseAdmin
                 .from('csv_upload_runs')
-                .select('sync_id, success, total_files, detection_triggered, detection_job_id, ingestion_results, created_at, updated_at')
+                .select('sync_id, success, total_files, file_count, detection_triggered, detection_job_id, ingestion_results, files_summary, created_at, updated_at, started_at, completed_at, status, error, is_sandbox')
                 .eq('tenant_id', tenantId)
-                .eq('user_id', userId)
-                .order('created_at', { ascending: false })
+                .eq('seller_id', userId)
+                .order('started_at', { ascending: false })
                 .limit(1)
                 .maybeSingle();
 
@@ -466,24 +588,8 @@ export class CSVIngestionService {
             }
 
             if (data?.sync_id) {
-                return {
-                    syncId: data.sync_id,
-                    source: 'persisted_run',
-                    uploadSummaryAvailable: true,
-                    recoveryNotice: null,
-                    createdAt: data.created_at || null,
-                    updatedAt: data.updated_at || data.created_at || null,
-                    batchResult: {
-                        success: !!data.success,
-                        userId,
-                        totalFiles: Number(data.total_files || 0),
-                        results: Array.isArray(data.ingestion_results) ? data.ingestion_results as IngestionResult[] : [],
-                        detectionTriggered: !!data.detection_triggered,
-                        detectionJobId: data.detection_job_id || undefined,
-                        syncId: data.sync_id,
-                    },
-                    detection: await this.getCsvDetectionSnapshot(userId, tenantId, data.sync_id),
-                };
+                const detection = await this.getCsvDetectionSnapshot(userId, tenantId, data.sync_id);
+                return this.mapCsvUploadRunSnapshot(userId, data as CsvUploadRunRow, 'persisted_run', detection, null);
             }
         } catch (error: any) {
             logger.warn('⚠️ [CSV INGESTION] Failed to load persisted CSV upload run; falling back to detection truth', {
@@ -500,35 +606,323 @@ export class CSVIngestionService {
         return value.toLowerCase().replace(/[_\- ]/g, '');
     }
 
-    private async persistCsvUploadRun(tenantId: string, batchResult: BatchIngestionResult): Promise<void> {
-        const nowIso = new Date().toISOString();
-        const { error } = await supabaseAdmin
-            .from('csv_upload_runs')
-            .upsert({
-                tenant_id: tenantId,
-                user_id: batchResult.userId,
-                sync_id: batchResult.syncId,
-                success: batchResult.success,
-                total_files: batchResult.totalFiles,
-                detection_triggered: batchResult.detectionTriggered,
-                detection_job_id: batchResult.detectionJobId || null,
-                ingestion_results: batchResult.results,
-                updated_at: nowIso,
-            }, {
-                onConflict: 'sync_id',
-            });
+    private getCsvUploadSandboxFlag(): boolean {
+        return process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox')
+            || process.env.NODE_ENV === 'development';
+    }
 
-        if (error?.code === '42P01') {
-            logger.warn('CSV upload run table is not deployed; refresh-safe CSV run persistence skipped', {
+    private buildAcceptedCsvRunFilesSummary(
+        files: { originalname: string; mimetype: string }[]
+    ): CsvUploadRunFileSummary[] {
+        return files.map((file) => ({
+            fileName: file.originalname,
+            mimeType: file.mimetype,
+            status: 'accepted',
+            errors: [],
+        }));
+    }
+
+    private buildCsvRunFilesSummary(results: IngestionResult[]): CsvUploadRunFileSummary[] {
+        return results.map((result) => ({
+            fileName: result.fileName,
+            status: !result.success
+                ? 'failed'
+                : result.rowsInserted > 0
+                    ? 'ingested'
+                    : 'duplicate',
+            csvType: result.csvType,
+            rowsProcessed: result.rowsProcessed,
+            rowsInserted: result.rowsInserted,
+            rowsSkipped: result.rowsSkipped,
+            rowsFailed: result.rowsFailed,
+            errors: result.errors || [],
+            detectionTriggered: result.detectionTriggered,
+            detectionJobId: result.detectionJobId,
+        }));
+    }
+
+    private normalizeCsvRunFilesSummary(
+        filesSummaryRaw: unknown,
+        ingestionResultsRaw: unknown
+    ): CsvUploadRunFileSummary[] {
+        const preferred = Array.isArray(filesSummaryRaw) && filesSummaryRaw.length > 0
+            ? filesSummaryRaw
+            : Array.isArray(ingestionResultsRaw)
+                ? ingestionResultsRaw
+                : [];
+
+        return preferred.map((raw): CsvUploadRunFileSummary => {
+            const entry = raw && typeof raw === 'object' ? raw as Record<string, any> : {};
+            const rowsInserted = Number(entry.rowsInserted || 0);
+            const rowsSkipped = Number(entry.rowsSkipped || 0);
+            const rowsFailed = Number(entry.rowsFailed || 0);
+            const success = entry.success !== undefined ? !!entry.success : rowsFailed === 0;
+
+            let status: CsvUploadRunFileSummary['status'] = 'accepted';
+            if (typeof entry.status === 'string' && ['accepted', 'ingested', 'duplicate', 'failed'].includes(entry.status)) {
+                status = entry.status as CsvUploadRunFileSummary['status'];
+            } else if (!success) {
+                status = 'failed';
+            } else if (rowsInserted > 0) {
+                status = 'ingested';
+            } else if (rowsSkipped > 0) {
+                status = 'duplicate';
+            }
+
+            return {
+                fileName: String(entry.fileName || entry.originalname || 'Unknown file'),
+                mimeType: typeof entry.mimeType === 'string' ? entry.mimeType : undefined,
+                status,
+                csvType: typeof entry.csvType === 'string' ? entry.csvType as CSVType : undefined,
+                rowsProcessed: Number(entry.rowsProcessed || 0),
+                rowsInserted,
+                rowsSkipped,
+                rowsFailed,
+                errors: Array.isArray(entry.errors) ? entry.errors.map((value: unknown) => String(value)) : [],
+                detectionTriggered: !!entry.detectionTriggered,
+                detectionJobId: typeof entry.detectionJobId === 'string' ? entry.detectionJobId : undefined,
+            };
+        });
+    }
+
+    private buildBatchResultFromCsvUploadRun(
+        userId: string,
+        row: CsvUploadRunRow,
+        filesSummary: CsvUploadRunFileSummary[]
+    ): BatchIngestionResult {
+        const results: IngestionResult[] = filesSummary.map((entry) => ({
+            success: entry.status !== 'failed',
+            csvType: entry.csvType || 'unknown',
+            fileName: entry.fileName,
+            rowsProcessed: Number(entry.rowsProcessed || 0),
+            rowsInserted: Number(entry.rowsInserted || 0),
+            rowsSkipped: Number(entry.rowsSkipped || 0),
+            rowsFailed: Number(entry.rowsFailed || 0),
+            errors: entry.errors || [],
+            detectionTriggered: !!entry.detectionTriggered,
+            detectionJobId: entry.detectionJobId,
+        }));
+
+        return {
+            success: !!row.success,
+            userId,
+            totalFiles: Number(row.file_count ?? row.total_files ?? filesSummary.length ?? 0),
+            results,
+            detectionTriggered: !!row.detection_triggered,
+            detectionJobId: row.detection_job_id || undefined,
+            syncId: row.sync_id,
+        };
+    }
+
+    private buildCsvUploadRunError(results: IngestionResult[], batchError?: string | null): string | null {
+        const messages = new Set<string>();
+
+        if (batchError) {
+            messages.add(batchError);
+        }
+
+        results.forEach((result) => {
+            (result.errors || []).forEach((message) => {
+                const normalized = typeof message === 'string' ? message.trim() : '';
+                if (normalized) {
+                    messages.add(normalized);
+                }
+            });
+        });
+
+        if (messages.size === 0) {
+            return null;
+        }
+
+        return Array.from(messages).slice(0, 5).join(' | ');
+    }
+
+    private deriveCsvUploadRunStatus(
+        results: IngestionResult[],
+        options: {
+            detectionTriggered?: boolean;
+            detectionStatus?: DetectionQueueStatus | 'completed' | null;
+            batchError?: string | null;
+        } = {}
+    ): CsvUploadRunStatus {
+        const hasInserted = results.some((result) => result.rowsInserted > 0);
+        const hasFailures = results.some((result) => !result.success || result.rowsFailed > 0);
+        const hasSkippedOnly = !hasInserted && results.some((result) => result.rowsSkipped > 0) && !hasFailures;
+
+        if (options.detectionStatus === 'processing' || options.detectionStatus === 'pending') {
+            return 'detection_processing';
+        }
+
+        if (options.detectionStatus === 'failed') {
+            return hasInserted ? 'partial' : 'failed';
+        }
+
+        if (options.batchError) {
+            return hasInserted ? 'partial' : 'failed';
+        }
+
+        if (options.detectionTriggered && options.detectionStatus !== 'completed') {
+            return 'detection_processing';
+        }
+
+        if (hasInserted) {
+            return hasFailures ? 'partial' : 'completed';
+        }
+
+        if (hasSkippedOnly) {
+            return 'completed';
+        }
+
+        if (hasFailures) {
+            return 'failed';
+        }
+
+        return 'completed';
+    }
+
+    private isTerminalCsvUploadRunStatus(status: CsvUploadRunStatus): boolean {
+        return status === 'completed' || status === 'partial' || status === 'failed';
+    }
+
+    private mapCsvUploadRunSnapshot(
+        userId: string,
+        row: CsvUploadRunRow,
+        source: CsvUploadRunSource,
+        detection: CsvUploadDetectionSnapshot | null,
+        recoveryNotice: string | null
+    ): CsvUploadRunSnapshot {
+        const filesSummary = this.normalizeCsvRunFilesSummary(row.files_summary, row.ingestion_results);
+        const status = row.status || this.deriveCsvUploadRunStatus(
+            this.buildBatchResultFromCsvUploadRun(userId, row, filesSummary).results,
+            {
+                detectionTriggered: !!row.detection_triggered,
+                detectionStatus: detection?.status || null,
+                batchError: row.error,
+            }
+        );
+        const uploadSummaryAvailable = status !== 'started' && filesSummary.length > 0;
+
+        return {
+            syncId: row.sync_id,
+            source,
+            uploadSummaryAvailable,
+            recoveryNotice,
+            createdAt: row.created_at || null,
+            updatedAt: row.updated_at || row.created_at || null,
+            startedAt: row.started_at || row.created_at || null,
+            completedAt: row.completed_at || null,
+            status,
+            fileCount: Number(row.file_count ?? row.total_files ?? filesSummary.length ?? 0),
+            filesSummary,
+            detectionTriggered: !!row.detection_triggered,
+            detectionJobId: row.detection_job_id || undefined,
+            error: row.error || null,
+            isSandbox: !!row.is_sandbox,
+            batchResult: uploadSummaryAvailable
+                ? this.buildBatchResultFromCsvUploadRun(userId, row, filesSummary)
+                : null,
+            detection,
+        };
+    }
+
+    private async persistCsvUploadRunRecord(
+        tenantId: string,
+        userId: string,
+        syncId: string,
+        patch: {
+            success?: boolean;
+            fileCount?: number;
+            filesSummary?: CsvUploadRunFileSummary[];
+            detectionTriggered?: boolean;
+            detectionJobId?: string | null;
+            startedAt?: string;
+            completedAt?: string | null;
+            status?: CsvUploadRunStatus;
+            error?: string | null;
+            isSandbox?: boolean;
+        }
+    ): Promise<void> {
+        const nowIso = new Date().toISOString();
+        const updatePayload: Record<string, unknown> = {
+            updated_at: nowIso,
+        };
+
+        if (patch.success !== undefined) updatePayload.success = patch.success;
+        if (patch.fileCount !== undefined) {
+            updatePayload.total_files = patch.fileCount;
+            updatePayload.file_count = patch.fileCount;
+        }
+        if (patch.filesSummary !== undefined) {
+            updatePayload.files_summary = patch.filesSummary;
+            updatePayload.ingestion_results = patch.filesSummary;
+        }
+        if (patch.detectionTriggered !== undefined) updatePayload.detection_triggered = patch.detectionTriggered;
+        if (patch.detectionJobId !== undefined) updatePayload.detection_job_id = patch.detectionJobId;
+        if (patch.startedAt !== undefined) updatePayload.started_at = patch.startedAt;
+        if (patch.completedAt !== undefined) updatePayload.completed_at = patch.completedAt;
+        if (patch.status !== undefined) updatePayload.status = patch.status;
+        if (patch.error !== undefined) updatePayload.error = patch.error;
+        if (patch.isSandbox !== undefined) updatePayload.is_sandbox = patch.isSandbox;
+
+        const { data: updatedRows, error: updateError } = await supabaseAdmin
+            .from('csv_upload_runs')
+            .update(updatePayload)
+            .eq('tenant_id', tenantId)
+            .eq('seller_id', userId)
+            .eq('sync_id', syncId)
+            .select('sync_id');
+
+        if (updateError?.code === '42P01') {
+            logger.warn('CSV upload run table is not deployed; authoritative CSV run persistence skipped', {
                 table: 'csv_upload_runs',
                 tenantId,
-                syncId: batchResult.syncId,
+                syncId,
             });
             return;
         }
 
-        if (error) {
-            throw new Error(`Failed to persist CSV upload run: ${error.message}`);
+        if (updateError) {
+            throw new Error(`Failed to update CSV upload run: ${updateError.message}`);
+        }
+
+        if ((updatedRows || []).length > 0) {
+            return;
+        }
+
+        const insertPayload = {
+            tenant_id: tenantId,
+            user_id: userId,
+            seller_id: userId,
+            sync_id: syncId,
+            success: patch.success ?? false,
+            total_files: patch.fileCount ?? 0,
+            file_count: patch.fileCount ?? 0,
+            detection_triggered: patch.detectionTriggered ?? false,
+            detection_job_id: patch.detectionJobId ?? null,
+            ingestion_results: patch.filesSummary ?? [],
+            files_summary: patch.filesSummary ?? [],
+            started_at: patch.startedAt || nowIso,
+            completed_at: patch.completedAt ?? null,
+            status: patch.status || 'started',
+            error: patch.error ?? null,
+            is_sandbox: patch.isSandbox ?? false,
+        };
+
+        const { error: insertError } = await supabaseAdmin
+            .from('csv_upload_runs')
+            .insert(insertPayload);
+
+        if (insertError?.code === '42P01') {
+            logger.warn('CSV upload run table is not deployed; authoritative CSV run insert skipped', {
+                table: 'csv_upload_runs',
+                tenantId,
+                syncId,
+            });
+            return;
+        }
+
+        if (insertError) {
+            throw new Error(`Failed to persist CSV upload run: ${insertError.message}`);
         }
     }
 
@@ -536,7 +930,7 @@ export class CSVIngestionService {
         const [{ data: queueRows, error: queueError }, { count: resultsTotal, error: resultsError }] = await Promise.all([
             supabaseAdmin
                 .from('detection_queue')
-                .select('status, processed_at, error_message, created_at, updated_at')
+                .select('status, processed_at, error_message, created_at, updated_at, is_sandbox')
                 .eq('tenant_id', tenantId)
                 .eq('seller_id', userId)
                 .eq('sync_id', syncId)
@@ -570,13 +964,14 @@ export class CSVIngestionService {
             processedAt: queueRow?.processed_at || null,
             errorMessage: queueRow?.error_message || null,
             resultsTotal: total,
+            isSandbox: !!queueRow?.is_sandbox,
         };
     }
 
     private async getLatestCsvUploadFallback(userId: string, tenantId: string): Promise<CsvUploadRunSnapshot | null> {
         const { data: latestQueueRows, error: queueError } = await supabaseAdmin
             .from('detection_queue')
-            .select('sync_id, created_at, updated_at')
+            .select('sync_id, created_at, updated_at, status, processed_at, error_message, is_sandbox')
             .eq('tenant_id', tenantId)
             .eq('seller_id', userId)
             .like('sync_id', 'csv_%')
@@ -589,6 +984,7 @@ export class CSVIngestionService {
 
         const latestQueueRow = Array.isArray(latestQueueRows) && latestQueueRows.length > 0 ? latestQueueRows[0] : null;
         if (latestQueueRow?.sync_id) {
+            const detection = await this.getCsvDetectionSnapshot(userId, tenantId, latestQueueRow.sync_id);
             return {
                 syncId: latestQueueRow.sync_id,
                 source: 'detection_queue_fallback',
@@ -596,8 +992,23 @@ export class CSVIngestionService {
                 recoveryNotice: 'Per-file upload summary is not persisted for this CSV run yet. Detection truth was restored from the latest CSV detection record only.',
                 createdAt: latestQueueRow.created_at || null,
                 updatedAt: latestQueueRow.updated_at || latestQueueRow.created_at || null,
+                startedAt: latestQueueRow.created_at || null,
+                completedAt: latestQueueRow.processed_at || null,
+                status: detection?.status === 'failed'
+                    ? 'failed'
+                    : detection?.status === 'completed'
+                        ? 'completed'
+                        : detection?.status === 'processing' || detection?.status === 'pending'
+                            ? 'detection_processing'
+                            : null,
+                fileCount: 0,
+                filesSummary: [],
+                detectionTriggered: true,
+                detectionJobId: undefined,
+                error: latestQueueRow.error_message || null,
+                isSandbox: !!latestQueueRow.is_sandbox,
                 batchResult: null,
-                detection: await this.getCsvDetectionSnapshot(userId, tenantId, latestQueueRow.sync_id),
+                detection,
             };
         }
 
@@ -619,6 +1030,8 @@ export class CSVIngestionService {
             return null;
         }
 
+        const detection = await this.getCsvDetectionSnapshot(userId, tenantId, latestResultRow.sync_id);
+
         return {
             syncId: latestResultRow.sync_id,
             source: 'detection_results_fallback',
@@ -626,8 +1039,21 @@ export class CSVIngestionService {
             recoveryNotice: 'Per-file upload summary is not persisted for this CSV run yet. Detection truth was restored from persisted findings only.',
             createdAt: latestResultRow.created_at || null,
             updatedAt: latestResultRow.created_at || null,
+            startedAt: latestResultRow.created_at || null,
+            completedAt: detection?.processedAt || latestResultRow.created_at || null,
+            status: detection?.status === 'failed'
+                ? 'failed'
+                : detection?.status === 'processing' || detection?.status === 'pending'
+                    ? 'detection_processing'
+                    : 'completed',
+            fileCount: 0,
+            filesSummary: [],
+            detectionTriggered: true,
+            detectionJobId: undefined,
+            error: detection?.errorMessage || null,
+            isSandbox: detection?.isSandbox || false,
             batchResult: null,
-            detection: await this.getCsvDetectionSnapshot(userId, tenantId, latestResultRow.sync_id),
+            detection,
         };
     }
 
@@ -1653,9 +2079,7 @@ export class CSVIngestionService {
      */
     private async triggerDetection(userId: string, syncId: string, tenantId: string): Promise<string> {
         const jobId = `csv_detection_${userId}_${Date.now()}`;
-        const isSandbox =
-            process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') ||
-            process.env.NODE_ENV === 'development';
+        const isSandbox = this.getCsvUploadSandboxFlag();
 
         try {
             await this.recordDetectionQueueStatus(userId, tenantId, syncId, 'processing', {
@@ -1664,7 +2088,7 @@ export class CSVIngestionService {
                 payload: { source: 'csv_upload', engine: 'enhanced' },
             });
 
-            // Try EnhancedDetectionService first (runs all 26 algorithms)
+            // Try EnhancedDetectionService first (production flagship detector set)
             const { EnhancedDetectionService } = await import('./enhancedDetectionService');
             const enhancedService = new EnhancedDetectionService();
 
@@ -1860,6 +2284,71 @@ export class CSVIngestionService {
         return [];
     }
 
+    private async syncCsvUploadRunFromDetectionState(
+        userId: string,
+        tenantId: string,
+        syncId: string,
+        status: DetectionQueueStatus,
+        options: {
+            jobId?: string;
+            isSandbox?: boolean;
+            errorMessage?: string;
+        } = {}
+    ): Promise<void> {
+        try {
+            const { data, error } = await supabaseAdmin
+                .from('csv_upload_runs')
+                .select('sync_id, success, total_files, file_count, detection_triggered, detection_job_id, ingestion_results, files_summary, created_at, updated_at, started_at, completed_at, status, error, is_sandbox')
+                .eq('tenant_id', tenantId)
+                .eq('seller_id', userId)
+                .eq('sync_id', syncId)
+                .maybeSingle();
+
+            if (error?.code === '42P01') {
+                return;
+            }
+
+            if (error && error.code !== 'PGRST116') {
+                throw new Error(`Failed to load CSV upload run for detection sync: ${error.message}`);
+            }
+
+            const row = data as CsvUploadRunRow | null;
+            const filesSummary = row
+                ? this.normalizeCsvRunFilesSummary(row.files_summary, row.ingestion_results)
+                : [];
+            const results = row
+                ? this.buildBatchResultFromCsvUploadRun(userId, row, filesSummary).results
+                : [];
+            const batchError = this.buildCsvUploadRunError(results, options.errorMessage || row?.error || null);
+            const runStatus = this.deriveCsvUploadRunStatus(results, {
+                detectionTriggered: true,
+                detectionStatus: status,
+                batchError: status === 'failed' ? batchError : null,
+            });
+
+            await this.persistCsvUploadRunRecord(tenantId, userId, syncId, {
+                success: row?.success ?? false,
+                fileCount: Number(row?.file_count ?? row?.total_files ?? filesSummary.length ?? 0),
+                filesSummary,
+                startedAt: row?.started_at || row?.created_at || new Date().toISOString(),
+                completedAt: this.isTerminalCsvUploadRunStatus(runStatus) ? new Date().toISOString() : null,
+                status: runStatus,
+                detectionTriggered: true,
+                detectionJobId: options.jobId ?? row?.detection_job_id ?? null,
+                error: status === 'failed' ? batchError : null,
+                isSandbox: options.isSandbox ?? row?.is_sandbox ?? false,
+            });
+        } catch (error: any) {
+            logger.warn('⚠️ [CSV INGESTION] Failed to sync authoritative CSV run from detection state', {
+                tenantId,
+                userId,
+                syncId,
+                status,
+                error: error?.message || 'Unknown error',
+            });
+        }
+    }
+
     private async recordDetectionQueueStatus(
         userId: string,
         tenantId: string,
@@ -1885,6 +2374,7 @@ export class CSVIngestionService {
             status,
             priority: 1,
             payload,
+            is_sandbox: options.isSandbox ?? false,
             processed_at: status === 'completed' || status === 'failed' ? nowIso : null,
             error_message: status === 'failed' ? options.errorMessage || 'Detection failed' : null,
             updated_at: nowIso,
@@ -1902,23 +2392,27 @@ export class CSVIngestionService {
             throw new Error(`Failed to update detection queue status: ${updateError.message}`);
         }
 
-        if ((updatedRows || []).length > 0) {
-            return;
+        if ((updatedRows || []).length === 0) {
+            const { error: insertError } = await supabaseAdmin
+                .from('detection_queue')
+                .insert({
+                    tenant_id: tenantId,
+                    seller_id: userId,
+                    sync_id: syncId,
+                    created_at: nowIso,
+                    ...nextValues,
+                });
+
+            if (insertError) {
+                throw new Error(`Failed to persist detection queue status: ${insertError.message}`);
+            }
         }
 
-        const { error: insertError } = await supabaseAdmin
-            .from('detection_queue')
-            .insert({
-                tenant_id: tenantId,
-                seller_id: userId,
-                sync_id: syncId,
-                created_at: nowIso,
-                ...nextValues,
-            });
-
-        if (insertError) {
-            throw new Error(`Failed to persist detection queue status: ${insertError.message}`);
-        }
+        await this.syncCsvUploadRunFromDetectionState(userId, tenantId, syncId, status, {
+            jobId: options.jobId,
+            isSandbox: options.isSandbox,
+            errorMessage: options.errorMessage,
+        });
     }
 
     // ============================================================================
