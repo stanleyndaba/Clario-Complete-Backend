@@ -8,6 +8,7 @@ import logger from '../utils/logger';
 export const startEnhancedSync = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const tenantId = (req as any).tenant?.tenantId;
     
     if (!userId) {
       return res.status(401).json({
@@ -16,9 +17,16 @@ export const startEnhancedSync = async (req: Request, res: Response) => {
       });
     }
 
-    logger.info('Starting enhanced sync', { userId });
+    if (!tenantId) {
+      return res.status(400).json({
+        success: false,
+        error: 'No active workspace selected'
+      });
+    }
+
+    logger.info('Starting enhanced sync', { userId, tenantId });
     
-    const result = await syncJobManager.startSync(userId);
+    const result = await syncJobManager.startSync(userId, tenantId);
 
     res.json({
       success: true,

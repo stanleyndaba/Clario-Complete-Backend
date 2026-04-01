@@ -2,7 +2,6 @@ import logger from '../utils/logger';
 import agent2DataSyncService from './agent2DataSyncService';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import sseHub from '../utils/sseHub';
-import tokenManager from '../utils/tokenManager';
 import config from '../config/env';
 import { withRetry, toSyncError, SyncError, SyncErrorCode, SyncNextAction } from '../utils/retryUtils';
 import {
@@ -12,7 +11,7 @@ import {
   SyncCoverage,
   SyncCoverageReport
 } from '../utils/syncFingerprint';
-import { resolveTenantContextForUser } from '../utils/tenantEventRouting';
+import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import capacityGovernanceService from './capacityGovernanceService';
 import operationalControlService from './operationalControlService';
 import runtimeCapacityService from './runtimeCapacityService';
@@ -100,6 +99,113 @@ class SyncJobManager {
     return scopedQuery;
   }
 
+  private async resolveRequiredTenantContext(userId: string, tenantId?: string): Promise<{ tenantId: string; tenantSlug?: string }> {
+    const normalizedTenantId = String(tenantId || '').trim();
+    if (!normalizedTenantId) {
+      throw new Error('An active workspace is required to run a sync.');
+    }
+
+    const { data: membership, error } = await supabaseAdmin
+      .from('tenant_memberships')
+      .select('tenant_id')
+      .eq('user_id', userId)
+      .eq('tenant_id', normalizedTenantId)
+      .eq('is_active', true)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to validate workspace access: ${error.message}`);
+    }
+
+    if (!membership?.tenant_id) {
+      throw new Error('You do not belong to the active workspace.');
+    }
+
+    return {
+      tenantId: normalizedTenantId,
+      tenantSlug: await resolveTenantSlug(normalizedTenantId)
+    };
+  }
+
+  private async validateStoreForTenant(userId: string, tenantId: string, storeId?: string): Promise<string | undefined> {
+    const normalizedStoreId = String(storeId || '').trim();
+    if (!normalizedStoreId) {
+      return undefined;
+    }
+
+    const { data: store, error: storeError } = await supabaseAdmin
+      .from('stores')
+      .select('id')
+      .eq('id', normalizedStoreId)
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (storeError) {
+      throw new Error(`Failed to validate store scope: ${storeError.message}`);
+    }
+
+    if (store?.id) {
+      return normalizedStoreId;
+    }
+
+    const { data: tokenRow, error: tokenError } = await supabaseAdmin
+      .from('tokens')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('tenant_id', tenantId)
+      .eq('provider', 'amazon')
+      .eq('store_id', normalizedStoreId)
+      .limit(1)
+      .maybeSingle();
+
+    if (tokenError) {
+      throw new Error(`Failed to validate store token scope: ${tokenError.message}`);
+    }
+
+    if (!tokenRow?.id) {
+      throw new Error('The selected Amazon store does not belong to the active workspace.');
+    }
+
+    return normalizedStoreId;
+  }
+
+  private async assertTenantScopedAmazonConnection(userId: string, tenantId: string, storeId?: string): Promise<void> {
+    let query = supabaseAdmin
+      .from('tokens')
+      .select('id, expires_at, refresh_token_iv, refresh_token_data')
+      .eq('user_id', userId)
+      .eq('tenant_id', tenantId)
+      .eq('provider', 'amazon')
+      .order('expires_at', { ascending: false })
+      .limit(10);
+
+    if (storeId) {
+      query = query.eq('store_id', storeId);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      throw new Error(`Failed to validate Amazon connection scope: ${error.message}`);
+    }
+
+    const usableRows = (data || []).filter((row: any) => {
+      const hasRefreshToken = !!row?.refresh_token_iv && !!row?.refresh_token_data;
+      const hasLiveAccessToken = !!row?.expires_at && new Date(row.expires_at).getTime() > Date.now();
+      return hasLiveAccessToken || hasRefreshToken;
+    });
+
+    if (!usableRows.length) {
+      throw new Error(
+        storeId
+          ? 'Amazon connection not found for the active workspace and selected store.'
+          : 'Amazon connection not found for the active workspace. Please connect your Amazon account first.'
+      );
+    }
+  }
+
   private toPersistedSyncResults(metadata: any): PersistedSyncResults {
     const ordersProcessed = metadata.ordersProcessed || 0;
     const inventoryCount = metadata.inventoryCount || 0;
@@ -167,9 +273,10 @@ class SyncJobManager {
   /**
    * Start a new sync job asynchronously
    */
-  async startSync(userId: string, storeId?: string): Promise<{ syncId: string; status: string }> {
+  async startSync(userId: string, tenantId?: string, storeId?: string): Promise<{ syncId: string; status: string }> {
     const syncId = `sync_${userId}_${Date.now()}`;
-    const tenantContext = await resolveTenantContextForUser(userId);
+    const tenantContext = await this.resolveRequiredTenantContext(userId, tenantId);
+    const scopedStoreId = await this.validateStoreForTenant(userId, tenantContext.tenantId, storeId);
 
     if (!(await operationalControlService.isEnabled('new_ingestion', true))) {
       runtimeCapacityService.setCircuitBreaker('new-ingestion', 'open', 'operator_disabled');
@@ -178,30 +285,22 @@ class SyncJobManager {
     runtimeCapacityService.setCircuitBreaker('new-ingestion', 'closed', null);
 
     // Strict truth: sync is allowed only with a valid DB-backed Amazon token.
-    const isConnected = await tokenManager.isTokenValid(userId, 'amazon', storeId);
-    if (!isConnected) {
-      logger.warn('Amazon connection not found in database token store', {
-        userId,
-        syncId
-      });
-      throw new Error('Amazon connection not found. Please connect your Amazon account first.');
-    }
+    await this.assertTenantScopedAmazonConnection(userId, tenantContext.tenantId, scopedStoreId);
 
-    if (tenantContext.tenantId) {
-      const intakeDecision = await capacityGovernanceService.getIntakeAdmissionDecision(tenantContext.tenantId);
-      if (!intakeDecision.allowed) {
-        runtimeCapacityService.setCircuitBreaker('new-ingestion', 'open', intakeDecision.reason || 'capacity_blocked');
-        logger.warn('🚦 [SYNC JOB MANAGER] Sync admission blocked by downstream backlog', {
-          userId,
-          syncId,
-          tenantId: tenantContext.tenantId,
-          reason: intakeDecision.reason,
-          metrics: intakeDecision.metrics
-        });
-        throw new Error(`Sync temporarily paused due to downstream backlog (${intakeDecision.reason}).`);
-      }
-      runtimeCapacityService.setCircuitBreaker('new-ingestion', 'closed', null);
+    const intakeDecision = await capacityGovernanceService.getIntakeAdmissionDecision(tenantContext.tenantId);
+    if (!intakeDecision.allowed) {
+      runtimeCapacityService.setCircuitBreaker('new-ingestion', 'open', intakeDecision.reason || 'capacity_blocked');
+      logger.warn('🚦 [SYNC JOB MANAGER] Sync admission blocked by downstream backlog', {
+        userId,
+        syncId,
+        tenantId: tenantContext.tenantId,
+        storeId: scopedStoreId,
+        reason: intakeDecision.reason,
+        metrics: intakeDecision.metrics
+      });
+      throw new Error(`Sync temporarily paused due to downstream backlog (${intakeDecision.reason}).`);
     }
+    runtimeCapacityService.setCircuitBreaker('new-ingestion', 'closed', null);
 
     // 🧹 AUTO-CLEANUP: Clear stale syncs stuck in 'running' for 2+ minutes
     // This prevents orphaned syncs from blocking new sync requests
@@ -220,7 +319,7 @@ class SyncJobManager {
           .eq('status', 'running')
           .lt('updated_at', new Date(Date.now() - STALE_SYNC_THRESHOLD_MINUTES * 60 * 1000).toISOString()),
         tenantContext.tenantId,
-        storeId
+        scopedStoreId
       );
       const { data: staleSyncs, error: staleError } = await staleSyncQuery.select('sync_id');
 
@@ -240,7 +339,7 @@ class SyncJobManager {
     }
 
     // Check if there's already a running sync (both in-memory and database)
-    const existingSync = await this.getActiveSync(userId, tenantContext.tenantId, storeId);
+    const existingSync = await this.getActiveSync(userId, tenantContext.tenantId, scopedStoreId);
     if (existingSync && existingSync.status === 'running') {
       throw new Error(`Sync already in progress (${existingSync.syncId}). Please wait for it to complete or cancel it first.`);
     }
@@ -255,7 +354,7 @@ class SyncJobManager {
         .order('created_at', { ascending: false })
         .limit(1),
       tenantContext.tenantId,
-      storeId
+      scopedStoreId
     );
     const { data: dbActiveSync } = await dbActiveSyncQuery.maybeSingle();
 
@@ -277,7 +376,7 @@ class SyncJobManager {
             })
             .eq('sync_id', dbActiveSync.sync_id),
           tenantContext.tenantId,
-          storeId
+          scopedStoreId
         );
 
         logger.info('🧹 [SYNC JOB MANAGER] Force-cleared stale sync', {
@@ -296,17 +395,21 @@ class SyncJobManager {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - defaultSyncDays);
     const endDate = new Date();
-    const syncFingerprint = createSyncFingerprint(userId, startDate, endDate, 5, storeId);
+    const syncFingerprint = createSyncFingerprint(userId, startDate, endDate, 5, scopedStoreId);
 
-    const { data: recentSync } = await supabase
-      .from('sync_progress')
-      .select('sync_id, status, updated_at, sync_fingerprint')
-      .eq('user_id', userId)
-      .eq('sync_fingerprint', syncFingerprint)
-      .eq('status', 'completed')
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const recentSyncQuery = this.applySyncProgressScope(
+      supabase
+        .from('sync_progress')
+        .select('sync_id, status, updated_at, sync_fingerprint')
+        .eq('user_id', userId)
+        .eq('sync_fingerprint', syncFingerprint)
+        .eq('status', 'completed')
+        .order('updated_at', { ascending: false })
+        .limit(1),
+      tenantContext.tenantId,
+      scopedStoreId
+    );
+    const { data: recentSync } = await recentSyncQuery.maybeSingle();
 
     if (recentSync && recentSync.updated_at) {
       const completedAt = new Date(recentSync.updated_at);
@@ -348,7 +451,7 @@ class SyncJobManager {
       userId,
       tenantId: tenantContext.tenantId,
       tenantSlug: tenantContext.tenantSlug,
-      storeId,
+      storeId: scopedStoreId,
       status: 'running',
       progress: 0,
       message: 'Sync starting...',
@@ -439,7 +542,7 @@ class SyncJobManager {
     this.sendProgressUpdate(userId, syncStatus);
 
     // Start async sync (don't await)
-    this.runSync(syncId, userId, () => cancelled, storeId).catch((error) => {
+    this.runSync(syncId, userId, () => cancelled, scopedStoreId, tenantContext.tenantId).catch((error) => {
       logger.error(`Sync job ${syncId} failed:`, error);
       syncStatus.status = 'failed';
       syncStatus.error = error.message;
@@ -484,7 +587,13 @@ class SyncJobManager {
   /**
    * Run the actual sync job asynchronously with timeout protection
    */
-  private async runSync(syncId: string, userId: string, isCancelled: () => boolean, storeId?: string): Promise<void> {
+  private async runSync(
+    syncId: string,
+    userId: string,
+    isCancelled: () => boolean,
+    storeId?: string,
+    tenantId?: string
+  ): Promise<void> {
     // Set timeout for sync operation (configurable, default 300 seconds - allows ML detection to complete)
     // Can be overridden via SYNC_TIMEOUT_MS environment variable
     const SYNC_TIMEOUT_MS = config.SYNC_TIMEOUT_MS; // Default: 300 seconds (5 minutes)
@@ -556,9 +665,9 @@ class SyncJobManager {
 
         // Run Agent 2 Data Sync Service (comprehensive data sync with normalization)
         // CRITICAL: This must complete quickly to meet 30s timeout
-        logger.info('🔄 [SYNC JOB MANAGER] Starting Agent 2 data sync', { userId, syncId, storeId });
+        logger.info('🔄 [SYNC JOB MANAGER] Starting Agent 2 data sync', { userId, syncId, tenantId, storeId });
         const agent2StartTime = Date.now();
-        syncResult = await agent2DataSyncService.syncUserData(userId, storeId, undefined, undefined, syncId);
+        syncResult = await agent2DataSyncService.syncUserData(userId, storeId, undefined, undefined, syncId, tenantId);
         const agent2Duration = Date.now() - agent2StartTime;
         logger.info('⏱️ [SYNC JOB MANAGER] Agent 2 sync duration', {
           userId,
@@ -1259,13 +1368,13 @@ class SyncJobManager {
   /**
    * Cancel a sync job (both in-memory and database)
    */
-  async cancelSync(syncId: string, userId: string): Promise<boolean> {
+  async cancelSync(syncId: string, userId: string, tenantId: string, storeId?: string): Promise<boolean> {
     const job = this.runningJobs.get(syncId);
 
     // Check if job exists in memory
     if (job) {
-      // Verify it belongs to the user
-      if (job.status.userId !== userId) {
+      // Verify it belongs to the user and current scope
+      if (job.status.userId !== userId || !this.matchesScope(job.status, tenantId, storeId)) {
         return false;
       }
 
@@ -1277,19 +1386,23 @@ class SyncJobManager {
         status: 'cancelled',
         message: 'Sync cancelled by user',
         completedAt: new Date().toISOString()
-      });
+      }, tenantId, storeId);
 
       return true;
     }
 
     // If not in memory, check database and cancel there
     try {
-      const { data, error } = await supabase
-        .from('sync_progress')
-        .select('*')
-        .eq('sync_id', syncId)
-        .eq('user_id', userId)
-        .single();
+      const scopedQuery = this.applySyncProgressScope(
+        supabase
+          .from('sync_progress')
+          .select('*')
+          .eq('sync_id', syncId)
+          .eq('user_id', userId),
+        tenantId,
+        storeId
+      );
+      const { data, error } = await scopedQuery.single();
 
       if (error || !data) {
         return false;
@@ -1301,7 +1414,7 @@ class SyncJobManager {
           status: 'cancelled',
           message: 'Sync cancelled by user',
           completedAt: new Date().toISOString()
-        });
+        }, tenantId, storeId);
         return true;
       }
 
@@ -1318,35 +1431,42 @@ class SyncJobManager {
   private async updateSyncStatusInDatabase(
     syncId: string,
     userId: string,
-    updates: Partial<SyncJobStatus>
+    updates: Partial<SyncJobStatus>,
+    tenantId?: string,
+    storeId?: string
   ): Promise<void> {
     try {
-      const { error } = await supabase
-        .from('sync_progress')
-        .update({
-          status: updates.status === 'running' ? 'running' :
-            updates.status === 'detecting' ? 'detecting' :
-              updates.status === 'completed' ? 'completed' :
-                updates.status === 'failed' ? 'failed' :
-                  updates.status === 'cancelled' ? 'cancelled' : 'running',
-          current_step: updates.message,
-          progress: updates.progress,
-          updated_at: new Date().toISOString(),
-          metadata: {
-            ...(updates.ordersProcessed !== undefined && { ordersProcessed: updates.ordersProcessed }),
-            ...(updates.totalOrders !== undefined && { totalOrders: updates.totalOrders }),
-            ...(updates.inventoryCount !== undefined && { inventoryCount: updates.inventoryCount }),
-            ...(updates.shipmentsCount !== undefined && { shipmentsCount: updates.shipmentsCount }),
-            ...(updates.returnsCount !== undefined && { returnsCount: updates.returnsCount }),
-            ...(updates.settlementsCount !== undefined && { settlementsCount: updates.settlementsCount }),
-            ...(updates.feesCount !== undefined && { feesCount: updates.feesCount }),
-            ...(updates.claimsDetected !== undefined && { claimsDetected: updates.claimsDetected }),
-            ...(updates.error && { error: updates.error }),
-            ...(updates.completedAt && { completedAt: updates.completedAt })
-          }
-        })
-        .eq('sync_id', syncId)
-        .eq('user_id', userId);
+      const scopedUpdate = this.applySyncProgressScope(
+        supabase
+          .from('sync_progress')
+          .update({
+            status: updates.status === 'running' ? 'running' :
+              updates.status === 'detecting' ? 'detecting' :
+                updates.status === 'completed' ? 'completed' :
+                  updates.status === 'failed' ? 'failed' :
+                    updates.status === 'cancelled' ? 'cancelled' : 'running',
+            current_step: updates.message,
+            progress: updates.progress,
+            updated_at: new Date().toISOString(),
+            metadata: {
+              ...(updates.ordersProcessed !== undefined && { ordersProcessed: updates.ordersProcessed }),
+              ...(updates.totalOrders !== undefined && { totalOrders: updates.totalOrders }),
+              ...(updates.inventoryCount !== undefined && { inventoryCount: updates.inventoryCount }),
+              ...(updates.shipmentsCount !== undefined && { shipmentsCount: updates.shipmentsCount }),
+              ...(updates.returnsCount !== undefined && { returnsCount: updates.returnsCount }),
+              ...(updates.settlementsCount !== undefined && { settlementsCount: updates.settlementsCount }),
+              ...(updates.feesCount !== undefined && { feesCount: updates.feesCount }),
+              ...(updates.claimsDetected !== undefined && { claimsDetected: updates.claimsDetected }),
+              ...(updates.error && { error: updates.error }),
+              ...(updates.completedAt && { completedAt: updates.completedAt })
+            }
+          })
+          .eq('sync_id', syncId)
+          .eq('user_id', userId),
+        tenantId,
+        storeId
+      );
+      const { error } = await scopedUpdate;
 
       if (error) {
         logger.error(`Error updating sync status in database:`, error);
@@ -1663,6 +1783,10 @@ class SyncJobManager {
           .eq('sync_id', syncStatus.syncId);
         if (updateErr) throw updateErr;
       } else {
+        if (!syncStatus.tenantId) {
+          throw new Error('Cannot create sync_progress row without an active tenant.');
+        }
+
         // Insert new record
         const { error: insertErr } = await supabase
           .from('sync_progress')
@@ -1890,16 +2014,21 @@ class SyncJobManager {
    * Force-clear all stuck syncs for a user
    * Used when user gets "Sync already in progress" but no sync is actually running
    */
-  async forceClearSyncs(userId: string): Promise<number> {
-    logger.info(`🔓 [SYNC JOB MANAGER] Force-clearing stuck syncs for user: ${userId}`);
+  async forceClearSyncs(userId: string, tenantId: string, storeId?: string): Promise<number> {
+    logger.info(`🔓 [SYNC JOB MANAGER] Force-clearing stuck syncs for user: ${userId}`, { tenantId, storeId });
 
     try {
       // Find all running syncs for this user
-      const { data: runningSyncs, error: findError } = await supabase
-        .from('sync_progress')
-        .select('sync_id')
-        .eq('user_id', userId)
-        .eq('status', 'running');
+      const scopedFind = this.applySyncProgressScope(
+        supabase
+          .from('sync_progress')
+          .select('sync_id, tenant_id, store_id')
+          .eq('user_id', userId)
+          .eq('status', 'running'),
+        tenantId,
+        storeId
+      );
+      const { data: runningSyncs, error: findError } = await scopedFind;
 
       if (findError) {
         logger.error('Failed to find running syncs:', findError);
@@ -1912,16 +2041,21 @@ class SyncJobManager {
       }
 
       // Clear all running syncs
-      const { error: updateError } = await supabase
-        .from('sync_progress')
-        .update({
-          status: 'failed',
-          current_step: 'Force-cleared by user',
-          error_code: 'USER_CLEARED',
-          updated_at: new Date().toISOString()
-        })
-        .eq('user_id', userId)
-        .eq('status', 'running');
+      const scopedUpdate = this.applySyncProgressScope(
+        supabase
+          .from('sync_progress')
+          .update({
+            status: 'failed',
+            current_step: 'Force-cleared by user',
+            error_code: 'USER_CLEARED',
+            updated_at: new Date().toISOString()
+          })
+          .eq('user_id', userId)
+          .eq('status', 'running'),
+        tenantId,
+        storeId
+      );
+      const { error: updateError } = await scopedUpdate;
 
       if (updateError) {
         logger.error('Failed to clear syncs:', updateError);
@@ -1930,7 +2064,10 @@ class SyncJobManager {
 
       // Also clear from in-memory cache
       for (const sync of runningSyncs) {
-        this.runningJobs.delete(sync.sync_id);
+        const runningJob = this.runningJobs.get(sync.sync_id);
+        if (runningJob && this.matchesScope(runningJob.status, tenantId, storeId)) {
+          this.runningJobs.delete(sync.sync_id);
+        }
       }
 
       logger.info(`✅ [SYNC JOB MANAGER] Cleared ${runningSyncs.length} stuck sync(s) for user: ${userId}`);

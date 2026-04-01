@@ -68,52 +68,13 @@ export async function resolveTenantContextForUser(userId: string, tenantId?: str
     return { tenantId, tenantSlug: getCachedTenantSlug(tenantId) };
   }
 
-  if (tenantId) {
-    return {
-      tenantId,
-      tenantSlug: await resolveTenantSlug(tenantId)
-    };
-  }
-
-  try {
-    const { data: user } = await supabaseAdmin
-      .from('users')
-      .select('last_active_tenant_id')
-      .eq('id', userId)
-      .single();
-
-    const preferredTenantId = String(user?.last_active_tenant_id || '').trim() || undefined;
-    if (preferredTenantId) {
-      return {
-        tenantId: preferredTenantId,
-        tenantSlug: await resolveTenantSlug(preferredTenantId)
-      };
-    }
-
-    const { data: membership, error } = await supabaseAdmin
-      .from('tenant_memberships')
-      .select('tenant_id')
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .is('deleted_at', null)
-      .order('created_at', { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (error || !membership?.tenant_id) {
-      return {};
-    }
-
-    const resolvedTenantId = String(membership.tenant_id);
-    return {
-      tenantId: resolvedTenantId,
-      tenantSlug: await resolveTenantSlug(resolvedTenantId)
-    };
-  } catch (error: any) {
-    logger.warn('Failed to resolve tenant context for event routing', {
-      userId,
-      error: error?.message || error
-    });
+  if (!tenantId) {
+    logger.warn('Tenant event routing requested without explicit tenant scope', { userId });
     return {};
   }
+
+  return {
+    tenantId,
+    tenantSlug: await resolveTenantSlug(tenantId)
+  };
 }

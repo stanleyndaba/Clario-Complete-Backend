@@ -496,7 +496,7 @@ class AmazonNotificationService {
     }
 
     try {
-      const sync = await syncJobManager.startSync(ownership.userId!, ownership.storeId!);
+      const sync = await syncJobManager.startSync(ownership.userId!, ownership.tenantId!, ownership.storeId!);
       await this.updateProcessingState(notificationId, 'triggered', {
         triggered_agent: 'agent2.sync',
         triggered_sync_id: sync.syncId,

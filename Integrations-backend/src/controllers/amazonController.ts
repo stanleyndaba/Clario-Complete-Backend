@@ -271,12 +271,33 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
           note: 'Connection validated successfully'
         });
 
-        syncJobManager.startSync(userId).catch((syncError: any) => {
-          logger.warn('Failed to trigger automatic sync after bypass', {
+        const { data: bypassTenantRecord, error: bypassTenantError } = await supabaseAdmin
+          .from('tenants')
+          .select('id')
+          .eq('slug', tenantSlug)
+          .is('deleted_at', null)
+          .maybeSingle();
+
+        if (bypassTenantError) {
+          logger.warn('Failed to resolve tenant during Amazon bypass sync trigger', {
             userId,
-            error: syncError.message,
+            tenantSlug,
+            error: bypassTenantError.message
           });
-        });
+        } else if (bypassTenantRecord?.id) {
+          syncJobManager.startSync(userId, bypassTenantRecord.id).catch((syncError: any) => {
+            logger.warn('Failed to trigger automatic sync after bypass', {
+              userId,
+              tenantId: bypassTenantRecord.id,
+              error: syncError.message,
+            });
+          });
+        } else {
+          logger.warn('Skipping automatic sync after bypass because tenant could not be resolved', {
+            userId,
+            tenantSlug
+          });
+        }
 
         let redirectUrl: string;
         try {
@@ -1035,7 +1056,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           });
 
           try {
-            const directSync = await syncJobManager.startSync(userId, storeId || undefined);
+            const directSync = await syncJobManager.startSync(userId, tenantIdToUse || undefined, storeId || undefined);
             syncStartMode = 'direct';
             syncIdForResponse = directSync.syncId;
             syncStartMessage = 'Agent 2 sync started directly because the queue was unavailable.';
@@ -1337,13 +1358,21 @@ export const syncAmazonData = async (req: Request, res: Response) => {
   try {
     // Get user ID from request (set by auth middleware if available)
     const userId = (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+    const tenantId = (req as any).tenant?.tenantId as string | undefined;
     const storeId = req.query.storeId as string || req.body.storeId as string;
 
-    logger.info(`🔄 Starting Amazon data sync for user: ${userId}`);
+    if (!tenantId) {
+      return res.status(400).json({
+        success: false,
+        error: 'No active workspace selected'
+      });
+    }
+
+    logger.info(`🔄 Starting Amazon data sync for user: ${userId}`, { tenantId, storeId });
     logger.info(`📡 This will fetch data from SP-API sandbox (if connected)`);
 
     // Use syncJobManager for async processing - returns immediately with syncId
-    const syncResult = await syncJobManager.startSync(userId, storeId);
+    const syncResult = await syncJobManager.startSync(userId, tenantId, storeId);
 
     logger.info(`✅ Sync job started for user ${userId}:`, {
       syncId: syncResult.syncId,

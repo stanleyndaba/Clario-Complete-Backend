@@ -10,6 +10,7 @@ export const startSync = async (req: Request, res: Response) => {
   try {
     // Extract user ID from middleware (set by userIdMiddleware)
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const tenantId = (req as any).tenant?.tenantId;
 
     if (!userId) {
       logger.warn('Start sync called without user ID');
@@ -19,7 +20,15 @@ export const startSync = async (req: Request, res: Response) => {
       });
     }
 
-    logger.info(`Starting sync for user: ${userId}`);
+    if (!tenantId) {
+      logger.warn('Start sync called without tenant context', { userId });
+      return res.status(400).json({
+        success: false,
+        error: 'No active workspace selected'
+      });
+    }
+
+    logger.info(`Starting sync for user: ${userId}`, { tenantId });
 
     const storeId =
       (req.body?.storeId as string | undefined) ||
@@ -27,7 +36,7 @@ export const startSync = async (req: Request, res: Response) => {
       (req.headers['x-store-id'] as string | undefined);
 
     // Start sync job (async, returns immediately)
-    const result = await syncJobManager.startSync(userId, storeId);
+    const result = await syncJobManager.startSync(userId, tenantId, storeId);
 
     res.json({
       syncId: result.syncId,
@@ -262,11 +271,19 @@ export const cancelSync = async (req: Request, res: Response) => {
     const { syncId } = req.params;
     // Extract user ID from middleware (set by userIdMiddleware)
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const tenantId = (req as any).tenant?.tenantId;
 
     if (!userId) {
       return res.status(401).json({
         success: false,
         error: 'Unauthorized'
+      });
+    }
+
+    if (!tenantId) {
+      return res.status(400).json({
+        success: false,
+        error: 'No active workspace selected'
       });
     }
 
@@ -277,9 +294,13 @@ export const cancelSync = async (req: Request, res: Response) => {
       });
     }
 
-    logger.info(`Cancelling sync for syncId: ${syncId}, userId: ${userId}`);
+    const storeId =
+      (req.query.storeId as string | undefined) ||
+      (req.headers['x-store-id'] as string | undefined);
 
-    const cancelled = await syncJobManager.cancelSync(syncId, userId);
+    logger.info(`Cancelling sync for syncId: ${syncId}, userId: ${userId}`, { tenantId, storeId });
+
+    const cancelled = await syncJobManager.cancelSync(syncId, userId, tenantId, storeId);
 
     if (!cancelled) {
       return res.status(404).json({
@@ -322,6 +343,7 @@ export const forceClearSync = async (req: Request, res: Response) => {
   try {
     // Extract user ID from middleware
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+    const tenantId = (req as any).tenant?.tenantId;
 
     if (!userId) {
       return res.status(401).json({
@@ -330,9 +352,20 @@ export const forceClearSync = async (req: Request, res: Response) => {
       });
     }
 
-    logger.info(`Force-clearing stuck syncs for user: ${userId}`);
+    if (!tenantId) {
+      return res.status(400).json({
+        success: false,
+        error: 'No active workspace selected'
+      });
+    }
 
-    const clearedCount = await syncJobManager.forceClearSyncs(userId);
+    const storeId =
+      (req.query.storeId as string | undefined) ||
+      (req.headers['x-store-id'] as string | undefined);
+
+    logger.info(`Force-clearing stuck syncs for user: ${userId}`, { tenantId, storeId });
+
+    const clearedCount = await syncJobManager.forceClearSyncs(userId, tenantId, storeId);
 
     res.json({
       success: true,

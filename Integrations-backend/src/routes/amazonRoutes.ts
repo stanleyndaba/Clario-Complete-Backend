@@ -537,22 +537,29 @@ router.get('/recoveries', wrap(async (req: Request, res: Response) => {
 
     // Trigger sync in the background if no data was returned
     try {
-      logger.info('No recoveries found - attempting to trigger automatic sync', { userId });
-      syncJobManager.startSync(userId).then((result) => {
-        logger.info('Successfully triggered automatic sync from recoveries endpoint', {
-          userId,
-          syncId: result.syncId
-        });
-      }).catch((syncError: any) => {
-        if (syncError.message && syncError.message.includes('already in progress')) {
-          logger.info('Sync already in progress, skipping automatic trigger', { userId });
-        } else {
-          logger.warn('Failed to trigger automatic sync from recoveries endpoint', {
+      const tenantId = (req as any).tenant?.tenantId as string | undefined;
+      if (!tenantId) {
+        logger.warn('Skipping automatic sync from recoveries endpoint due to missing tenant context', { userId });
+      } else {
+        logger.info('No recoveries found - attempting to trigger automatic sync', { userId, tenantId });
+        syncJobManager.startSync(userId, tenantId).then((result) => {
+          logger.info('Successfully triggered automatic sync from recoveries endpoint', {
             userId,
-            error: syncError.message
+            tenantId,
+            syncId: result.syncId
           });
-        }
-      });
+        }).catch((syncError: any) => {
+          if (syncError.message && syncError.message.includes('already in progress')) {
+            logger.info('Sync already in progress, skipping automatic trigger', { userId, tenantId });
+          } else {
+            logger.warn('Failed to trigger automatic sync from recoveries endpoint', {
+              userId,
+              tenantId,
+              error: syncError.message
+            });
+          }
+        });
+      }
     } catch (syncTriggerError: any) {
       logger.warn('Error triggering sync from recoveries endpoint', {
         userId,
