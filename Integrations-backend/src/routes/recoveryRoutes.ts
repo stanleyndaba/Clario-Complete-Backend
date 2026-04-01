@@ -268,7 +268,28 @@ function buildRecoveriesBlockers(rows: any[]) {
     ].filter(Boolean);
 }
 
-function buildRecoveriesSummary(rows: any[]) {
+function getLedgerFinancialSummary(row: any, summaryById: Map<string, any>) {
+    const disputeCaseId = String(row?.dispute_case_id || '').trim();
+    const detectionResultId = String(row?.detection_result_id || '').trim();
+    if (disputeCaseId && summaryById.has(disputeCaseId)) {
+        return summaryById.get(disputeCaseId) || null;
+    }
+    if (detectionResultId && summaryById.has(detectionResultId)) {
+        return summaryById.get(detectionResultId) || null;
+    }
+    return null;
+}
+
+function deriveSummaryCurrency(rows: any[]): string | null {
+    const currencies = Array.from(new Set(
+        rows
+            .map((row: any) => String(row?.currency || '').trim())
+            .filter(Boolean)
+    ));
+    return currencies.length === 1 ? currencies[0] : null;
+}
+
+function buildRecoveriesSummary(rows: any[], financialSummaryById: Map<string, any>) {
     const approvedRows = rows.filter((row: any) => isApprovedCase({ status: row.status }));
     const pendingPayoutRows = rows.filter((row: any) => row.reconciliation_status === 'pending_payout');
     const reconciledRows = rows.filter((row: any) => row.reconciliation_status === 'reconciled');
@@ -277,6 +298,17 @@ function buildRecoveriesSummary(rows: any[]) {
     const billedRows = rows.filter((row: any) => BILLING_COMPLETE_STATUSES.has(normalize(row.billing_status)));
     const investigationRows = rows.filter((row: any) => row.investigation_required);
     const billingPendingRows = rows.filter((row: any) => row.operator_state === 'billing_pending');
+    const verifiedPaidRows = rows.filter((row: any) => row.payout_status === 'paid');
+    const awaitingPayoutRows = rows.filter((row: any) => row.reconciliation_status === 'pending_payout' && row.reconciliation_source === 'canonical_financial_truth');
+    const canonicalFinancialRows = rows.filter((row: any) => row.reconciliation_source === 'canonical_financial_truth');
+    const summaryCurrency = deriveSummaryCurrency(rows);
+    const verifiedPaidTotal = canonicalFinancialRows.reduce((sum: number, row: any) => {
+        const financialSummary = getLedgerFinancialSummary(row, financialSummaryById);
+        return sum + toNumber(financialSummary?.verified_paid_amount);
+    }, 0);
+    const awaitingPayoutTotal = awaitingPayoutRows.reduce((sum: number, row: any) => sum + toNumber(row.outstanding_amount), 0);
+    const approvedTotal = rows.reduce((sum: number, row: any) => sum + toNumber(row.approved_amount), 0);
+    const outstandingTotal = canonicalFinancialRows.reduce((sum: number, row: any) => sum + toNumber(row.outstanding_amount), 0);
 
     return {
         approved_count: approvedRows.length,
@@ -286,6 +318,14 @@ function buildRecoveriesSummary(rows: any[]) {
         unreconciled_count: unreconciledRows.length,
         investigation_required_count: investigationRows.length,
         billing_pending_count: billingPendingRows.length,
+        verified_paid_count: verifiedPaidRows.length,
+        partial_paid_count: partialRows.length,
+        awaiting_payout_queue_count: awaitingPayoutRows.length,
+        verified_paid_total: Number(verifiedPaidTotal.toFixed(2)),
+        awaiting_payout_total: Number(awaitingPayoutTotal.toFixed(2)),
+        approved_total: Number(approvedTotal.toFixed(2)),
+        outstanding_total: Number(outstandingTotal.toFixed(2)),
+        summary_currency: summaryCurrency,
         recovered_cash_total: Number(rows.reduce((sum: number, row: any) => sum + toNumber(row.actual_payout_amount), 0).toFixed(2)),
         approved_value_total: Number(rows.reduce((sum: number, row: any) => sum + toNumber(row.approved_amount), 0).toFixed(2)),
         pending_payout_total: Number(pendingPayoutRows.reduce((sum: number, row: any) => sum + toNumber(row.approved_amount), 0).toFixed(2)),
@@ -952,7 +992,7 @@ router.get('/ledger', async (req: Request, res: Response) => {
 
         const ledgerRows = [...caseLedgerRows, ...detectionLedgerRows];
 
-        const summary = buildRecoveriesSummary(ledgerRows);
+        const summary = buildRecoveriesSummary(ledgerRows, financialSummaryById);
 
         const filteredRows = ledgerRows.filter((row: any) => {
             const haystack = [
