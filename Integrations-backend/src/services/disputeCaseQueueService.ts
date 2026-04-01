@@ -1,4 +1,5 @@
 import { supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
+import recoveryFinancialTruthService from './recoveryFinancialTruthService';
 
 export interface DisputeCaseQueueFilters {
   tenantSlug?: string;
@@ -546,6 +547,52 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
 
   const pagedRows = sortedRows.slice((page - 1) * pageSize, page * pageSize);
 
+  const summaryInputIds = Array.from(
+    new Set(
+      filteredRows
+        .map((row) => String(row.dispute_case_id || row.detection_result_id || '').trim())
+        .filter(Boolean)
+    )
+  );
+
+  const financialTruth = summaryInputIds.length
+    ? await recoveryFinancialTruthService.getFinancialTruth({
+        tenantId: scope.tenantId,
+        caseIds: summaryInputIds
+      })
+    : null;
+
+  const verifiedPaidCount = financialTruth
+    ? financialTruth.summaries.filter((summary) => summary.payout_status === 'paid').length
+    : null;
+
+  const supportableRows = filteredRows.filter((row) => {
+    const filingStatus = normalize(row.filing_status);
+    return row.has_real_dispute_case === true
+      && typeof row.requested_amount === 'number'
+      && row.requested_amount > 0
+      && ['pending', 'retrying', 'pending_approval'].includes(filingStatus);
+  });
+
+  const supportableCurrencies = Array.from(
+    new Set(
+      supportableRows
+        .map((row) => String(row.currency || '').trim().toUpperCase())
+        .filter(Boolean)
+    )
+  );
+
+  const supportableClaimCount = supportableRows.length;
+  const supportableReadyToFileCount = supportableRows.filter((row) => row.can_file || row.can_retry || row.can_approve).length;
+  const supportableCurrency = supportableCurrencies.length === 1 ? supportableCurrencies[0] : null;
+  const supportableClaimValue = supportableCurrency
+    ? Number(
+        supportableRows
+          .reduce((sum, row) => sum + Number(row.requested_amount || 0), 0)
+          .toFixed(2)
+      )
+    : null;
+
   const blockedCount = filteredRows.filter((row) => ['Waiting for evidence', 'Needs review', 'Review rejection'].includes(row.next_action)).length;
   const readyToFileCount = filteredRows.filter((row) => row.next_action === 'Ready to file').length;
   const filedCount = filteredRows.filter((row) => row.next_action === 'Filed / awaiting Amazon').length;
@@ -571,7 +618,12 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     rejected_count: rejectedCount,
     approved_pending_payout_count: approvedPendingPayoutCount,
     recovered_count: recoveredCount,
+    verified_paid_count: verifiedPaidCount,
     billing_pending_count: billingPendingCount,
+    supportable_claim_count: supportableClaimCount,
+    supportable_claim_value: supportableClaimValue,
+    supportable_ready_to_file_count: supportableReadyToFileCount,
+    supportable_currency: supportableCurrency,
     last_updated_at: lastUpdatedAt,
     page,
     page_size: pageSize,
