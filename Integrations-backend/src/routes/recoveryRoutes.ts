@@ -240,6 +240,25 @@ function buildRecoveriesSummary(rows: any[]) {
     };
 }
 
+function buildFinancialSummaryMap(summaries: any[] = []) {
+    const summaryById = new Map<string, any>();
+    summaries.forEach((summary: any) => {
+        const inputId = String(summary?.input_id || '').trim();
+        const disputeCaseId = String(summary?.dispute_case_id || '').trim();
+        const detectionResultId = String(summary?.detection_result_id || '').trim();
+        if (inputId) {
+            summaryById.set(inputId, summary);
+        }
+        if (disputeCaseId) {
+            summaryById.set(disputeCaseId, summary);
+        }
+        if (detectionResultId) {
+            summaryById.set(detectionResultId, summary);
+        }
+    });
+    return summaryById;
+}
+
 function getEvidenceDocumentCount(record: any, documents: any[]): number {
     if (Array.isArray(documents) && documents.length > 0) {
         return documents.length;
@@ -573,16 +592,32 @@ router.get('/ledger', async (req: Request, res: Response) => {
             });
         }
 
+        const financialTruthIds = Array.from(new Set([
+            ...disputeIds,
+            ...orphanDetections.map((row: any) => row.id).filter(Boolean)
+        ]));
+        const financialTruthResult = financialTruthIds.length > 0
+            ? await recoveryFinancialTruthService.getFinancialTruth({ tenantId, caseIds: financialTruthIds })
+            : { summaries: [], eventsByInputId: {} };
+        const financialSummaryById = buildFinancialSummaryMap(financialTruthResult.summaries || []);
+
         let latestBillingByDisputeId = new Map<string, any>();
+        let latestRecoveryRecordByDisputeId = new Map<string, any>();
         let latestRecoveryWorkByDisputeId = new Map<string, any>();
         let latestBillingWorkByDisputeId = new Map<string, any>();
         if (disputeIds.length > 0) {
-            const [billingResult, recoveryWorkResult, billingWorkResult] = await Promise.all([
+            const [billingResult, recoveryRecordResult, recoveryWorkResult, billingWorkResult] = await Promise.all([
                 supabaseAdmin
                     .from('billing_transactions')
                     .select('id, dispute_id, billing_status, platform_fee_cents, created_at, updated_at')
                     .eq('tenant_id', tenantId)
                     .in('dispute_id', disputeIds),
+                supabaseAdmin
+                    .from('recoveries')
+                    .select('id, dispute_id, created_at, updated_at')
+                    .eq('tenant_id', tenantId)
+                    .in('dispute_id', disputeIds)
+                    .is('deleted_at', null),
                  supabaseAdmin
                      .from('recovery_work_items')
                     .select('id, dispute_case_id, status, attempts, max_attempts, next_attempt_at, locked_by, payload, updated_at, created_at, last_error')
@@ -598,6 +633,9 @@ router.get('/ledger', async (req: Request, res: Response) => {
             if (billingResult.error) {
                 throw billingResult.error;
             }
+            if (recoveryRecordResult.error) {
+                throw recoveryRecordResult.error;
+            }
             if (recoveryWorkResult.error) {
                 throw recoveryWorkResult.error;
             }
@@ -611,6 +649,15 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 const candidateTime = new Date(transaction.updated_at || transaction.created_at || 0).getTime();
                 if (!existing || candidateTime >= existingTime) {
                     latestBillingByDisputeId.set(transaction.dispute_id, transaction);
+                }
+            });
+
+            (recoveryRecordResult.data || []).forEach((record: any) => {
+                const existing = latestRecoveryRecordByDisputeId.get(record.dispute_id);
+                const existingTime = existing ? new Date(existing.updated_at || existing.created_at || 0).getTime() : 0;
+                const candidateTime = new Date(record.updated_at || record.created_at || 0).getTime();
+                if (!existing || candidateTime >= existingTime) {
+                    latestRecoveryRecordByDisputeId.set(record.dispute_id, record);
                 }
             });
 
@@ -636,7 +683,9 @@ router.get('/ledger', async (req: Request, res: Response) => {
         const caseLedgerRows = recoveryRelevantCases.map((record: any) => {
             const approvedAmount = deriveApprovedAmount(record);
             const actualPayoutAmount = toOptionalAmount(record.recovered_amount ?? record.actual_payout_amount);
+            const financialSummary = financialSummaryById.get(record.id) || (record.detection_result_id ? financialSummaryById.get(record.detection_result_id) : null);
             const latestBilling = latestBillingByDisputeId.get(record.id);
+            const latestRecoveryRecord = latestRecoveryRecordByDisputeId.get(record.id);
             const latestRecoveryWork = latestRecoveryWorkByDisputeId.get(record.id);
             const latestBillingWork = latestBillingWorkByDisputeId.get(record.id);
             const recoveryWorkPayload = latestRecoveryWork?.payload || null;
@@ -653,11 +702,21 @@ router.get('/ledger', async (req: Request, res: Response) => {
             const billingRevenueAmount = latestBilling?.platform_fee_cents != null
                 ? Number((toNumber(latestBilling.platform_fee_cents) / 100).toFixed(2))
                 : toOptionalAmount(record.billed_amount);
+            const actualPayoutSource = toNumber(financialSummary?.verified_paid_amount) > 0
+                ? 'verified_financial_event'
+                : actualPayoutAmount !== null
+                    ? 'legacy_case_field'
+                    : 'unavailable';
+            const expectedPayoutSource = expectedPayoutAmount !== null ? 'approved_pending' : 'unavailable';
 
             return {
-                recovery_id: record.id,
-                dispute_case_id: record.id,
+                row_type: 'dispute_case_projection',
+                entity_type: 'dispute_case',
+                has_real_dispute_case: true,
                 linked_dispute_case_id: record.id,
+                has_real_recovery_record: Boolean(latestRecoveryRecord?.id),
+                recovery_record_id: latestRecoveryRecord?.id || null,
+                dispute_case_id: record.id,
                 detection_result_id: record.detection_result_id || null,
                 case_number: record.case_number || record.claim_number || record.amazon_case_id || record.id.slice(0, 8),
                 provider_case_id: record.provider_case_id || record.amazon_case_id || null,
@@ -707,6 +766,8 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 approved_amount: approvedAmount,
                 actual_payout_amount: actualPayoutAmount,
                 expected_payout_amount: expectedPayoutAmount,
+                expected_payout_source: expectedPayoutSource,
+                actual_payout_source: actualPayoutSource,
                 billed_revenue_amount: billingRevenueAmount,
                 reconciliation_status: reconciliationStatus,
                 reconciliation_strategy: recoveryWorkPayload?.reconciliation_strategy || null,
@@ -729,12 +790,21 @@ router.get('/ledger', async (req: Request, res: Response) => {
                     ? Number(record.matched_document_count)
                     : (Array.isArray(record?.matched_document_ids) ? record.matched_document_ids.length : 0);
             const expectedPayoutAmount = toOptionalAmount(record.estimated_value);
+            const financialSummary = financialSummaryById.get(record.id) || null;
             const operatorState = matchedDocumentCount > 0 ? 'opportunity_detected' : 'investigation_required';
+            const actualPayoutSource = toNumber(financialSummary?.verified_paid_amount) > 0
+                ? 'verified_financial_event'
+                : 'unavailable';
+            const expectedPayoutSource = expectedPayoutAmount !== null ? 'detection_estimate' : 'unavailable';
 
             return {
-                recovery_id: record.id,
-                dispute_case_id: null,
+                row_type: 'detection_projection',
+                entity_type: 'detection',
+                has_real_dispute_case: false,
                 linked_dispute_case_id: null,
+                has_real_recovery_record: false,
+                recovery_record_id: null,
+                dispute_case_id: null,
                 detection_result_id: record.id,
                 case_number: `OPP-${String(record.id || '').replace(/-/g, '').slice(0, 8).toUpperCase() || 'UNFILED'}`,
                 provider_case_id: null,
@@ -784,6 +854,8 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 approved_amount: null,
                 actual_payout_amount: null,
                 expected_payout_amount: expectedPayoutAmount,
+                expected_payout_source: expectedPayoutSource,
+                actual_payout_source: actualPayoutSource,
                 billed_revenue_amount: null,
                 reconciliation_status: 'unknown',
                 reconciliation_strategy: null,
