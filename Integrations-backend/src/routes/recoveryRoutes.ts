@@ -362,7 +362,18 @@ function buildGeneratedContext(record: any) {
     };
 }
 
-function buildCaseResponse(record: any, documents: any[], events: any[], objectType: 'case' | 'detection') {
+function buildCaseResponse(
+    record: any,
+    documents: any[],
+    events: any[],
+    entityTruth: {
+        entity_type: 'dispute_case' | 'detection';
+        has_linked_dispute_case: boolean;
+        linked_dispute_case_id: string | null;
+        has_submission: boolean;
+        has_payout: boolean;
+    }
+) {
     const requestedAmount = typeof record?.claim_amount === 'number'
         ? record.claim_amount
         : (typeof record?.estimated_recovery_amount === 'number'
@@ -385,10 +396,14 @@ function buildCaseResponse(record: any, documents: any[], events: any[], objectT
 
     return {
         id: record.id,
-        object_type: objectType,
-        dispute_case_id: objectType === 'case' ? record.id : null,
-        linked_dispute_case_id: objectType === 'case' ? record.id : null,
-        detection_result_id: objectType === 'case' ? (record.detection_result_id || null) : record.id,
+        object_type: entityTruth.entity_type === 'dispute_case' ? 'case' : 'detection',
+        entity_type: entityTruth.entity_type,
+        has_linked_dispute_case: entityTruth.has_linked_dispute_case,
+        linked_dispute_case_id: entityTruth.linked_dispute_case_id,
+        has_submission: entityTruth.has_submission,
+        has_payout: entityTruth.has_payout,
+        dispute_case_id: entityTruth.entity_type === 'dispute_case' ? record.id : null,
+        detection_result_id: entityTruth.entity_type === 'dispute_case' ? (record.detection_result_id || null) : record.id,
         title: record.case_type || record.anomaly_type || 'Claim Details',
         status: record.status || null,
         filing_status: record.filing_status || null,
@@ -417,7 +432,7 @@ function buildCaseResponse(record: any, documents: any[], events: any[], objectT
         unit_cost: record.unit_cost ?? null,
         confidence_score: typeof record.confidence_score === 'number' ? record.confidence_score : null,
         anomaly_type: record.anomaly_type || record.case_type || null,
-        estimated_claim_value: objectType === 'detection'
+        estimated_claim_value: entityTruth.entity_type === 'detection'
             ? (typeof record.estimated_recovery_amount === 'number'
                 ? record.estimated_recovery_amount
                 : (typeof record.estimated_value === 'number' ? record.estimated_value : requestedAmount))
@@ -1035,11 +1050,37 @@ router.get('/:id', async (req: Request, res: Response) => {
                 }
             }
 
+            const { data: latestSubmission } = await supabaseAdmin
+                .from('dispute_submissions')
+                .select('id, submission_id, amazon_case_id, created_at')
+                .eq('dispute_id', disputeCase.id)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+
+            const actualPayoutAmount = typeof disputeCase?.recovered_amount === 'number'
+                ? disputeCase.recovered_amount
+                : (typeof disputeCase?.actual_payout_amount === 'number'
+                    ? disputeCase.actual_payout_amount
+                    : null);
+
             return res.json(buildCaseResponse(
                 disputeCase,
                 documents,
                 await fetchEventsForRecovery(disputeCase.id, userId, tenantId),
-                'case'
+                {
+                    entity_type: 'dispute_case',
+                    has_linked_dispute_case: true,
+                    linked_dispute_case_id: disputeCase.id,
+                    has_submission: Boolean(
+                        latestSubmission?.id ||
+                        latestSubmission?.submission_id ||
+                        latestSubmission?.amazon_case_id ||
+                        disputeCase.amazon_case_id ||
+                        disputeCase.provider_case_id
+                    ),
+                    has_payout: actualPayoutAmount !== null
+                }
             ));
         }
 
@@ -1068,7 +1109,13 @@ router.get('/:id', async (req: Request, res: Response) => {
                 detectionResult,
                 documents,
                 await fetchEventsForRecovery(detectionResult.id, userId, tenantId),
-                'detection'
+                {
+                    entity_type: 'detection',
+                    has_linked_dispute_case: false,
+                    linked_dispute_case_id: null,
+                    has_submission: false,
+                    has_payout: false
+                }
             ));
         }
 
