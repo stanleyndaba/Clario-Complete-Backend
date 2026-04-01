@@ -58,6 +58,44 @@ function buildOpportunityCaseNumber(id: string | null | undefined) {
   return `OPP-${compact.slice(0, 8) || 'UNFILED'}`;
 }
 
+function deriveRowIdentityTruth(entityType: 'dispute_case' | 'detection', linkedDisputeCaseId: string | null) {
+  const hasRealDisputeCase = entityType === 'dispute_case' && Boolean(linkedDisputeCaseId);
+  return {
+    row_type: hasRealDisputeCase ? 'dispute_case' : 'orphan_detection',
+    entity_type: entityType,
+    has_real_dispute_case: hasRealDisputeCase,
+    linked_dispute_case_id: hasRealDisputeCase ? linkedDisputeCaseId : null,
+    brief_available: hasRealDisputeCase
+  } as const;
+}
+
+function deriveQueueActionTruth(row: {
+  entity_type: 'dispute_case' | 'detection';
+  has_real_dispute_case: boolean;
+  linked_dispute_case_id: string | null;
+  filing_status: string | null;
+  eligible_to_file: boolean | null;
+}) {
+  const filingStatus = normalize(row.filing_status);
+  const hasLinkedDisputeCase = row.has_real_dispute_case === true && Boolean(row.linked_dispute_case_id);
+  const canApprove = hasLinkedDisputeCase && filingStatus === 'pending_approval';
+  const canRetry = hasLinkedDisputeCase && filingStatus === 'failed';
+  const canFile = hasLinkedDisputeCase && row.eligible_to_file === true && ['pending', 'retrying'].includes(filingStatus);
+  const canOpenBrief = hasLinkedDisputeCase;
+  const canOpenCaseDetail =
+    row.entity_type === 'dispute_case'
+      ? hasLinkedDisputeCase
+      : row.entity_type === 'detection';
+
+  return {
+    can_file: canFile,
+    can_retry: canRetry,
+    can_approve: canApprove,
+    can_open_brief: canOpenBrief,
+    can_open_case_detail: canOpenCaseDetail
+  } as const;
+}
+
 function compareValues(left: unknown, right: unknown) {
   if (left == null && right == null) return 0;
   if (left == null) return 1;
@@ -337,10 +375,12 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     const rejectionCategory = record?.evidence_attachments?.rejection_category || null;
     const rejectionReason = record?.rejection_reason || null;
     const evidenceState = deriveEvidenceState(record, matchedDocumentCount);
+    const identityTruth = deriveRowIdentityTruth('dispute_case', record.id || null);
 
     const row = {
       dispute_case_id: record.id,
       detection_result_id: record.detection_result_id || null,
+      ...identityTruth,
       case_number: record.case_number || null,
       claim_number: record.claim_id || record.case_number || null,
       case_type: record.case_type || detection?.anomaly_type || null,
@@ -394,6 +434,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
 
     return {
       ...row,
+      ...deriveQueueActionTruth(row),
       next_action: deriveNextAction(row)
     };
   });
@@ -403,9 +444,11 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     const confidenceScore = toNumber(record.confidence_score) ?? 0;
     const eligibleToFile = matchedDocumentCount > 0 && confidenceScore >= DETECTED_FILING_READY_THRESHOLD;
     const filingStatus = eligibleToFile ? 'pending' : 'blocked';
+    const identityTruth = deriveRowIdentityTruth('detection', null);
     const row = {
       dispute_case_id: record.id,
       detection_result_id: record.id,
+      ...identityTruth,
       case_number: buildOpportunityCaseNumber(record.id),
       claim_number: buildOpportunityCaseNumber(record.id),
       case_type: record.case_type || record.anomaly_type || null,
@@ -456,6 +499,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
 
     return {
       ...row,
+      ...deriveQueueActionTruth(row),
       next_action: deriveNextAction(row)
     };
   });
