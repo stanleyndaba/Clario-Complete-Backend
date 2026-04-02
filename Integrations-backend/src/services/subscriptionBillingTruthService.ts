@@ -10,6 +10,7 @@ export type SubscriptionInvoiceStatus = 'draft' | 'pending' | 'scheduled' | 'pen
 export type InvoiceModel = 'subscription' | 'legacy_recovery_fee';
 export type BillingModel = 'flat_subscription' | 'legacy_recovery_fee';
 export type InvoiceType = 'subscription_invoice' | 'legacy_recovery_fee_invoice';
+export type PaymentConfirmationSource = 'manual_dashboard' | 'manual_api' | 'legacy_status_backfill';
 
 export type BillingSubscriptionRow = {
   id: string;
@@ -56,6 +57,7 @@ export type BillingInvoiceRow = {
   billing_period_end: string | null;
   invoice_date: string;
   due_date: string | null;
+  paid_at: string | null;
   subscription_status_snapshot: string | null;
   promo_type: PromoType | null;
   promo_note: string | null;
@@ -65,6 +67,9 @@ export type BillingInvoiceRow = {
   payment_provider: 'yoco' | null;
   payment_link_key: string | null;
   payment_link_url: string | null;
+  payment_confirmation_source: PaymentConfirmationSource | null;
+  payment_confirmed_by_user_id: string | null;
+  payment_confirmation_note: string | null;
   status: SubscriptionInvoiceStatus;
   legacy_source_transaction_id: string | null;
   metadata: Record<string, any> | null;
@@ -382,6 +387,7 @@ export function buildSubscriptionInvoicePayload(params: {
     due_date: ['pending', 'pending_payment_method', 'sent', 'scheduled'].includes(params.status)
       ? periodEnd
       : null,
+    paid_at: params.status === 'paid' ? invoiceDateIso : null,
     subscription_status_snapshot: params.subscription.subscription_status,
     promo_type: params.subscription.promo_type,
     promo_note: buildPromoNote(params.subscription, invoiceDateIso),
@@ -391,6 +397,9 @@ export function buildSubscriptionInvoicePayload(params: {
     payment_provider: params.paymentProvider || null,
     payment_link_key: params.paymentLinkKey || null,
     payment_link_url: params.paymentLinkUrl || null,
+    payment_confirmation_source: params.status === 'paid' ? 'legacy_status_backfill' : null,
+    payment_confirmed_by_user_id: null,
+    payment_confirmation_note: null,
     status: params.status,
     legacy_source_transaction_id: null,
     metadata: {
@@ -481,7 +490,7 @@ export async function advanceSubscriptionBillingWindow(subscription: BillingSubs
   }
 }
 
-export function summarizeSubscriptionInvoices(rows: Array<Pick<BillingInvoiceRow, 'billing_amount_cents' | 'amount_charged_cents' | 'status' | 'invoice_date'>>): SubscriptionInvoiceSummary {
+export function summarizeSubscriptionInvoices(rows: Array<Pick<BillingInvoiceRow, 'billing_amount_cents' | 'amount_charged_cents' | 'status' | 'invoice_date' | 'paid_at'>>): SubscriptionInvoiceSummary {
   const pendingStatuses = new Set(['draft', 'pending', 'scheduled', 'pending_payment_method', 'sent']);
   const paidStatuses = new Set(['paid']);
   const normalizedRows = rows || [];
@@ -503,7 +512,7 @@ export function summarizeSubscriptionInvoices(rows: Array<Pick<BillingInvoiceRow
       .reverse()[0] || null,
     lastPaidInvoiceDate: normalizedRows
       .filter((row) => paidStatuses.has(String(row.status || '').toLowerCase()))
-      .map((row) => row.invoice_date)
+      .map((row) => row.paid_at || row.invoice_date)
       .filter(Boolean)
       .sort()
       .reverse()[0] || null,

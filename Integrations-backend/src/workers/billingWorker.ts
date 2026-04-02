@@ -330,6 +330,8 @@ class BillingWorker {
     const chargeResult = await billingService.chargeSubscriptionWithRetry(billingRequest, 2);
     const status = chargeResult.status === 'disabled'
       ? 'failed'
+      : chargeResult.status === 'paid'
+        ? 'pending'
       : (chargeResult.status || 'failed');
     const provider = chargeResult.paymentProvider || subscription.billing_provider || null;
     const invoicePayload = buildSubscriptionInvoicePayload({
@@ -342,11 +344,14 @@ class BillingWorker {
       paymentProvider: chargeResult.paymentProvider || null,
       paymentLinkKey: chargeResult.paymentLinkKey || null,
       paymentLinkUrl: chargeResult.paymentLinkUrl || null,
-      amountChargedCents: status === 'paid' ? subscription.billing_amount_cents : null,
+      // YOCO checkout links require explicit backend confirmation before invoice truth becomes paid.
+      amountChargedCents: null,
       userId: billingOwnerUserId,
       metadata: {
         charge_success: chargeResult.success,
+        charge_status: chargeResult.status || null,
         charge_error: chargeResult.error || null,
+        explicit_payment_confirmation_required: true,
       },
     });
 

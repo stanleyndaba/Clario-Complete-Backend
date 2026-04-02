@@ -33,6 +33,7 @@ interface InvoiceData {
   billingModel: 'flat_subscription' | 'legacy_recovery_fee';
   legacyLabel: string | null;
   dateIssued: string | null;
+  paidAt?: string | null;
   periodStart?: string | null;
   periodEnd?: string | null;
   status: InvoiceStatus;
@@ -45,6 +46,8 @@ interface InvoiceData {
   paymentProvider?: 'yoco' | null;
   paymentLinkKey?: string | null;
   paymentLinkUrl?: string | null;
+  paymentConfirmationSource?: 'manual_dashboard' | 'manual_api' | 'legacy_status_backfill' | null;
+  paymentConfirmationNote?: string | null;
   providerInvoiceId?: string | null;
   providerChargeId?: string | null;
   companyName?: string | null;
@@ -130,6 +133,7 @@ class InvoicePdfService {
       billingModel: data.billing_model === 'legacy_recovery_fee' ? 'legacy_recovery_fee' : 'flat_subscription',
       legacyLabel: data.invoice_model === 'legacy_recovery_fee' ? 'Legacy Recovery Fee' : null,
       dateIssued: data.invoice_date || data.created_at || null,
+      paidAt: data.paid_at || null,
       periodStart: data.billing_period_start || null,
       periodEnd: data.billing_period_end || null,
       status: this.normalizeInvoiceStatus(data.status),
@@ -142,6 +146,8 @@ class InvoicePdfService {
       paymentProvider: data.payment_provider || null,
       paymentLinkKey: data.payment_link_key || null,
       paymentLinkUrl: data.payment_link_url || null,
+      paymentConfirmationSource: data.payment_confirmation_source || null,
+      paymentConfirmationNote: data.payment_confirmation_note || null,
       providerInvoiceId: data.provider_invoice_id || null,
       providerChargeId: data.provider_charge_id || null,
       companyName: data.company_name || null,
@@ -285,6 +291,10 @@ class InvoicePdfService {
     doc.text(`Invoice Type: ${invoice.invoiceType === 'subscription_invoice' ? 'Subscription Invoice' : 'Legacy Recovery Fee Invoice'}`, 330, y + 50);
     if (invoice.periodStart && invoice.periodEnd) {
       doc.text(`Period: ${this.formatDate(invoice.periodStart)} - ${this.formatDate(invoice.periodEnd)}`, 330, y + 66);
+    }
+    if (invoice.invoiceModel === 'subscription') {
+      doc.text(`Paid At: ${this.formatDate(invoice.paidAt || null)}`, 330, y + 82);
+      doc.text(`Confirmation: ${invoice.paymentConfirmationSource || NOT_AVAILABLE}`, 330, y + 98);
     }
   }
 

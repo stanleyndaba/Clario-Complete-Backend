@@ -4,6 +4,10 @@ import logger from '../utils/logger';
 import { invoicePdfService } from '../services/invoicePdfService';
 import recoveryFinancialTruthService from '../services/recoveryFinancialTruthService';
 import {
+  canConfirmSubscriptionInvoicePayment,
+  confirmSubscriptionInvoicePayment,
+} from '../services/billingInvoiceConfirmationService';
+import {
   BillingInvoiceRow,
   BillingSubscriptionRow,
   billingIntervalLabel,
@@ -14,6 +18,7 @@ import {
   summarizeLegacyRecoveryFees,
   summarizeSubscriptionInvoices,
 } from '../services/subscriptionBillingTruthService';
+import { hasRole, requireRole } from '../middleware/tenantMiddleware';
 import { resolveYocoCheckoutLink } from '../services/yocoCheckoutLinkService';
 
 const router = Router();
@@ -49,6 +54,7 @@ type BillingRouteInvoice = {
   status: string | null;
   created_at: string | null;
   due_date: string | null;
+  paid_at: string | null;
   promo_type: string | null;
   promo_note: string | null;
   provider_invoice_id: string | null;
@@ -56,6 +62,10 @@ type BillingRouteInvoice = {
   payment_provider: 'yoco' | null;
   payment_link_key: string | null;
   payment_link_url: string | null;
+  payment_confirmation_source: 'manual_dashboard' | 'manual_api' | 'legacy_status_backfill' | null;
+  payment_confirmed_by_user_id: string | null;
+  payment_confirmation_note: string | null;
+  can_confirm_payment: boolean;
   summary_label: string | null;
   legacy_source_transaction_id: string | null;
   settlement_id?: string | null;
@@ -234,7 +244,8 @@ async function buildBillingProofMap(
 
 function toSubscriptionInvoiceRouteRow(
   invoice: BillingInvoiceRow,
-  subscription: BillingSubscriptionRow | null
+  subscription: BillingSubscriptionRow | null,
+  canCurrentUserConfirmPayment: boolean
 ): BillingRouteInvoice {
   const yocoResolution = resolveYocoCheckoutLink({
     planTier: invoice.plan_tier,
@@ -267,6 +278,7 @@ function toSubscriptionInvoiceRouteRow(
     status: normalizeInvoiceStatus(invoice.status),
     created_at: invoice.invoice_date || invoice.created_at,
     due_date: invoice.due_date,
+    paid_at: invoice.paid_at,
     promo_type: invoice.promo_type,
     promo_note: invoice.promo_note || null,
     provider_invoice_id: invoice.provider_invoice_id || null,
@@ -274,6 +286,10 @@ function toSubscriptionInvoiceRouteRow(
     payment_provider: paymentProvider,
     payment_link_key: paymentLinkKey,
     payment_link_url: paymentLinkUrl,
+    payment_confirmation_source: invoice.payment_confirmation_source || null,
+    payment_confirmed_by_user_id: invoice.payment_confirmed_by_user_id || null,
+    payment_confirmation_note: invoice.payment_confirmation_note || null,
+    can_confirm_payment: canCurrentUserConfirmPayment && canConfirmSubscriptionInvoicePayment(invoice),
     summary_label: planLabel && intervalLabel
       ? `${planLabel} ${intervalLabel} subscription invoice`
       : 'Subscription invoice',
@@ -306,6 +322,7 @@ function toLegacyInvoiceRouteRow(
     status: normalizeInvoiceStatus(tx.billing_status),
     created_at: tx.created_at || null,
     due_date: null,
+    paid_at: null,
     promo_type: null,
     promo_note: null,
     provider_invoice_id: tx.paypal_invoice_id || tx.metadata?.paypal_invoice_id || null,
@@ -313,6 +330,10 @@ function toLegacyInvoiceRouteRow(
     payment_provider: null,
     payment_link_key: null,
     payment_link_url: null,
+    payment_confirmation_source: null,
+    payment_confirmed_by_user_id: null,
+    payment_confirmation_note: null,
+    can_confirm_payment: false,
     summary_label: 'Historical legacy recovery-fee record',
     legacy_source_transaction_id: tx.id,
     settlement_id: proof?.settlement_id || null,
@@ -402,9 +423,10 @@ router.get('/invoices', async (req, res) => {
 
     const typedInvoices = (invoiceRows || []) as BillingInvoiceRow[];
     const proofMap = await buildBillingProofMap(legacyRows || [], tenantId);
+    const canCurrentUserConfirmPayment = hasRole(req, ['owner', 'admin']);
 
     const combined = [
-      ...typedInvoices.map((invoice) => toSubscriptionInvoiceRouteRow(invoice, subscription)),
+      ...typedInvoices.map((invoice) => toSubscriptionInvoiceRouteRow(invoice, subscription, canCurrentUserConfirmPayment)),
       ...(legacyRows || []).map((tx) => toLegacyInvoiceRouteRow(tx, proofMap.get(tx.id), subscription)),
     ].sort((left, right) => dateSortValue(right.created_at) - dateSortValue(left.created_at));
 
@@ -437,7 +459,7 @@ router.get('/status', async (req, res) => {
     const [{ data: invoiceRows, error: invoiceError }, { data: legacyRows, error: legacyError }] = await Promise.all([
       supabaseAdmin
         .from('billing_invoices')
-        .select('billing_amount_cents, amount_charged_cents, status, invoice_date')
+        .select('billing_amount_cents, amount_charged_cents, status, invoice_date, paid_at')
         .eq('tenant_id', tenantId)
         .eq('invoice_model', 'subscription'),
       supabaseAdmin
@@ -449,7 +471,7 @@ router.get('/status', async (req, res) => {
     if (invoiceError) throw invoiceError;
     if (legacyError) throw legacyError;
 
-    const invoiceSummary = summarizeSubscriptionInvoices((invoiceRows || []) as Array<Pick<BillingInvoiceRow, 'billing_amount_cents' | 'amount_charged_cents' | 'status' | 'invoice_date'>>);
+    const invoiceSummary = summarizeSubscriptionInvoices((invoiceRows || []) as Array<Pick<BillingInvoiceRow, 'billing_amount_cents' | 'amount_charged_cents' | 'status' | 'invoice_date' | 'paid_at'>>);
     const legacySummary = summarizeLegacyRecoveryFees(legacyRows || []);
 
     res.json({
@@ -491,6 +513,49 @@ router.get('/status', async (req, res) => {
   } catch (error: any) {
     logger.error('Failed to fetch billing status', { error: error.message });
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/invoices/:invoiceId/confirm-payment', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const { invoiceId } = req.params;
+    const { userId, tenantId } = await resolveBillingScope(req);
+
+    if (!invoiceId) {
+      return res.status(400).json({ success: false, error: 'Invoice ID required' });
+    }
+
+    const confirmationSource = req.body?.confirmation_source === 'manual_api'
+      ? 'manual_api'
+      : 'manual_dashboard';
+    const confirmationNote = typeof req.body?.confirmation_note === 'string'
+      ? req.body.confirmation_note
+      : null;
+
+    const result = await confirmSubscriptionInvoicePayment({
+      tenantId,
+      invoiceId,
+      confirmedByUserId: userId,
+      confirmationSource,
+      confirmationNote,
+    });
+
+    const subscription = await ensureTenantBillingSubscription(tenantId);
+    const invoice = toSubscriptionInvoiceRouteRow(result.invoice, subscription, hasRole(req, ['owner', 'admin']));
+
+    res.json({
+      success: true,
+      already_confirmed: result.alreadyConfirmed,
+      invoice,
+    });
+  } catch (error: any) {
+    const message = error?.message || 'Failed to confirm invoice payment';
+    const status = /not found/i.test(message) ? 404 : 400;
+    logger.error('Failed to confirm billing invoice payment', {
+      error: message,
+      invoiceId: req.params.invoiceId,
+    });
+    res.status(status).json({ success: false, error: message });
   }
 });
 

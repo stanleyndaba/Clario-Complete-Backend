@@ -52,11 +52,12 @@ class BillingService {
       if (request.amountDueCents <= 0) {
         return {
           success: true,
-          amountDueCents: 0,
-          status: 'paid',
+          amountDueCents: request.amountDueCents,
+          status: 'pending',
           paymentProvider: null,
           paymentLinkKey: null,
           paymentLinkUrl: null,
+          error: 'Subscription amount is not positive. Explicit backend confirmation is required before any invoice can be marked paid.',
         };
       }
 

@@ -118,12 +118,14 @@ describe('subscriptionBillingTruthService', () => {
         amount_charged_cents: 9900,
         status: 'paid',
         invoice_date: '2026-04-01T00:00:00.000Z',
+        paid_at: '2026-04-03T00:00:00.000Z',
       },
       {
         billing_amount_cents: 9900,
         amount_charged_cents: null,
         status: 'sent',
         invoice_date: '2026-05-01T00:00:00.000Z',
+        paid_at: null,
       },
     ]);
     const legacySummary = summarizeLegacyRecoveryFees([
@@ -136,6 +138,7 @@ describe('subscriptionBillingTruthService', () => {
     expect(currentSummary.pendingInvoiceTotalCents).toBe(9900);
     expect(currentSummary.paidInvoiceCount).toBe(1);
     expect(currentSummary.pendingInvoiceCount).toBe(1);
+    expect(currentSummary.lastPaidInvoiceDate).toBe('2026-04-03T00:00:00.000Z');
     expect(legacySummary.legacyRecoveryFeeCount).toBe(2);
     expect(legacySummary.legacyRecoveryFeeTotalCents).toBe(4200);
   });
