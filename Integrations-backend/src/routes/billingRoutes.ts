@@ -14,12 +14,15 @@ import {
   buildPromoNote,
   ensureTenantBillingSubscription,
   isPromoActive,
+  normalizeBillingInterval,
+  normalizePlanTier,
   planTierLabel,
   summarizeLegacyRecoveryFees,
   summarizeSubscriptionInvoices,
 } from '../services/subscriptionBillingTruthService';
 import { hasRole, requireRole } from '../middleware/tenantMiddleware';
 import { resolveYocoCheckoutLink } from '../services/yocoCheckoutLinkService';
+import { createSubscriptionSubscribeIntent } from '../services/billingSubscribeIntentService';
 
 const router = Router();
 
@@ -394,6 +397,51 @@ router.get('/transactions', async (req, res) => {
   } catch (error: any) {
     logger.error('Failed to fetch billing transactions', { error: error.message });
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/subscribe-intent', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const { userId, tenantId } = await resolveBillingScope(req);
+    const planTier = normalizePlanTier(req.body?.plan_tier);
+    const billingInterval = normalizeBillingInterval(req.body?.billing_interval);
+
+    if (!planTier) {
+      return res.status(400).json({ success: false, error: 'Valid plan_tier is required' });
+    }
+
+    if (!billingInterval) {
+      return res.status(400).json({ success: false, error: 'Valid billing_interval is required' });
+    }
+
+    const result = await createSubscriptionSubscribeIntent({
+      tenantId,
+      userId,
+      planTier,
+      billingInterval,
+    });
+
+    const canCurrentUserConfirmPayment = hasRole(req, ['owner', 'admin']);
+    const invoice = toSubscriptionInvoiceRouteRow(result.invoice, result.subscription, canCurrentUserConfirmPayment);
+
+    res.json({
+      success: true,
+      intent_status: result.intentStatus,
+      tenant_id: tenantId,
+      user_id: userId,
+      plan_tier: result.subscription.plan_tier,
+      billing_interval: result.subscription.billing_interval,
+      invoice_id: invoice.invoice_id,
+      invoice,
+    });
+  } catch (error: any) {
+    logger.error('Failed to create billing subscribe intent', {
+      error: error.message,
+      tenantId: (req as any).tenant?.tenantId,
+      userId: (req as any).userId,
+    });
+    const status = /required|valid/i.test(error?.message || '') ? 400 : 500;
+    res.status(status).json({ success: false, error: error.message || 'Failed to create subscription intent' });
   }
 });
 
