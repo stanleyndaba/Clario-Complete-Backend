@@ -1260,8 +1260,6 @@ class RecoveriesService {
           approved_amount: match.expectedAmount,
           actual_payout_amount: match.actualAmount,
           recovered_amount: match.actualAmount,
-          // 🎯 AGENT 9 INTEGRATION: Set billing_status = 'pending' when reconciled
-          billing_status: status === 'reconciled' ? 'pending' : null,
           evidence_attachments: {
             ...evidenceAttachments,
             decision_intelligence: {
@@ -1405,53 +1403,6 @@ class RecoveriesService {
       // 🎯 AGENT 10 INTEGRATION: Notify when funds are deposited (reconciled)
       if (status === 'reconciled') {
         try {
-          const tenantSlug = await resolveTenantSlug(tenantId);
-          const { item: billingItem, created } = await financialWorkItemService.enqueueBillingWork({
-            tenantId: tenantId || '',
-            tenantSlug,
-            userId,
-            disputeCaseId: match.disputeId,
-            recoveryId: recovery.id,
-            sourceEventType: 'payout.detected',
-            sourceEventId: recovery.id,
-            payload: {
-              recovery_id: recovery.id,
-              dispute_case_id: match.disputeId,
-              amount_recovered: match.actualAmount,
-              expected_amount: match.expectedAmount,
-              currency: 'USD'
-            }
-          });
-
-          try {
-            const sseHub = (await import('../utils/sseHub')).default;
-            await sseHub.sendTenantEvent('billing.work_created', {
-              tenant_id: tenantId,
-              tenant_slug: tenantSlug,
-              seller_id: userId,
-              dispute_case_id: match.disputeId,
-              recovery_id: recovery.id,
-              billing_work_item_id: billingItem.id,
-              message: created
-                ? `Billing work created for recovery ${recovery.id}`
-                : `Billing work already exists for recovery ${recovery.id}`
-            }, tenantSlug, tenantId);
-          } catch (eventError: any) {
-            logger.warn('⚠️ [RECOVERIES] Failed to emit billing.work_created event', {
-              recoveryId: recovery.id,
-              error: eventError.message
-            });
-          }
-
-        } catch (billingWorkError: any) {
-          logger.warn('⚠️ [RECOVERIES] Failed to enqueue billing work', {
-            recoveryId: recovery.id,
-            disputeId: match.disputeId,
-            error: billingWorkError.message
-          });
-        }
-
-        try {
           const notificationHelper = (await import('../services/notificationHelper')).default;
           await notificationHelper.notifyFundsDeposited(userId, {
             tenantId,
@@ -1459,7 +1410,7 @@ class RecoveriesService {
             recoveryId: recovery.id,
             amount: match.actualAmount,
             currency: 'usd',
-            billingStatus: 'pending' // Will be updated by Agent 9
+            billingStatus: null
           });
         } catch (notifError: any) {
           logger.warn('⚠️ [RECOVERIES] Failed to send notification', {
@@ -1480,7 +1431,7 @@ class RecoveriesService {
         match_explanation: match.match_explanation,
         ...buildOperationalDecision('READY', {
           reason: 'Recovery reconciliation completed successfully.',
-          next_action: status === 'reconciled' ? 'await_billing_lane' : 'review_discrepancy'
+          next_action: status === 'reconciled' ? 'record_subscription_value_only' : 'review_discrepancy'
         })
       };
 

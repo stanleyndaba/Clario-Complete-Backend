@@ -932,26 +932,8 @@ export class OrchestrationJobManager {
       const amount = metadata?.amount || 0;
       const amazonCaseId = metadata?.amazon_case_id || metadata?.case_id;
 
-      // Calculate fees (20% platform fee)
-      const platformFee = amount * 0.20;
-      const sellerPayout = amount - platformFee;
-
-      // Process Stripe fee (call Stripe service)
-      const integrationsUrl = process.env.INTEGRATIONS_URL || 'http://localhost:3001';
-      try {
-        await axios.post(
-          `${integrationsUrl}/api/v1/stripe/process-fee`,
-          {
-            user_id: userId,
-            claim_id: claimId,
-            amount_recovered: amount,
-            platform_fee: platformFee
-          },
-          { timeout: 30000, headers: { 'Content-Type': 'application/json' } }
-        );
-      } catch (error: any) {
-        logger.warn('Stripe fee processing failed (non-critical)', { error: error.message });
-      }
+      // Margin now uses flat subscription pricing. Payouts never trigger fee processing.
+      const sellerPayout = amount;
 
       // Generate proof packet (call Python API)
       const pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-6ca7.onrender.com';
@@ -984,8 +966,8 @@ export class OrchestrationJobManager {
           claim_id: claimId,
           amazon_case_id: amazonCaseId,
           amount_recovered: amount,
-          platform_fee: platformFee,
           seller_payout: sellerPayout,
+          billing_model: 'flat_subscription',
           proof_packet_id: proofPacketId
         }
       });
@@ -996,8 +978,8 @@ export class OrchestrationJobManager {
         message: 'Phase 7: Payout processed - proof packet generated',
         data: {
           amount_recovered: amount,
-          platform_fee: platformFee,
           seller_payout: sellerPayout,
+          billing_model: 'flat_subscription',
           proof_packet_id: proofPacketId
         }
       };

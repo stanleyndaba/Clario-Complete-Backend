@@ -1,12 +1,12 @@
 /**
  * Revenue Routes
  * 
- * API endpoints for the reimbursement-based revenue system:
+ * Legacy revenue routes retained for historical reimbursement data only.
  *  - Scan Gmail for reimbursement emails
  *  - View / confirm / dispute reimbursement matches
- *  - Generate and manage commission invoices
+ *  - View historical legacy commission invoices
  *  - Payment method CRUD (card on file)
- *  - Revenue dashboard metrics
+ *  - Legacy revenue dashboard metrics
  */
 
 import { Router, Request, Response } from 'express';
@@ -154,25 +154,10 @@ router.post('/reimbursement-matches/manual', async (req: Request, res: Response)
  * Body: { periodStart, periodEnd, commissionRate? }
  */
 router.post('/invoices/generate', async (req: Request, res: Response) => {
-    try {
-        const sellerId = getSellerId(req);
-        const { periodStart, periodEnd, commissionRate } = req.body;
-
-        if (!periodStart || !periodEnd) {
-            return res.status(400).json({ success: false, error: 'periodStart and periodEnd are required' });
-        }
-
-        const result = await commissionInvoiceService.generateInvoice(
-            sellerId,
-            periodStart,
-            periodEnd,
-            { commissionRate }
-        );
-
-        res.json(result);
-    } catch (error: any) {
-        res.status(500).json({ success: false, error: error?.message });
-    }
+    res.status(410).json({
+        success: false,
+        error: 'Legacy commission invoice generation is disabled. Margin now uses flat subscription billing only.'
+    });
 });
 
 /**
@@ -186,7 +171,13 @@ router.get('/invoices', async (req: Request, res: Response) => {
         const offset = parseInt(req.query.offset as string) || 0;
 
         const result = await commissionInvoiceService.getInvoicesForSeller(sellerId, { status, limit, offset });
-        res.json({ success: true, data: result });
+        res.json({
+            success: true,
+            data: result,
+            legacy: true,
+            billing_model: 'flat_subscription',
+            note: 'These invoices are historical legacy recovery-fee records only.'
+        });
     } catch (error: any) {
         res.status(500).json({ success: false, error: error?.message });
     }
@@ -204,7 +195,13 @@ router.get('/invoices/:id', async (req: Request, res: Response) => {
             return res.status(404).json({ success: false, error: 'Invoice not found' });
         }
 
-        res.json({ success: true, data: invoice });
+        res.json({
+            success: true,
+            data: invoice,
+            legacy: true,
+            billing_model: 'flat_subscription',
+            note: 'This invoice is a historical legacy recovery-fee record.'
+        });
     } catch (error: any) {
         res.status(500).json({ success: false, error: error?.message });
     }
@@ -214,13 +211,10 @@ router.get('/invoices/:id', async (req: Request, res: Response) => {
  * POST /api/revenue/invoices/:id/finalize
  */
 router.post('/invoices/:id/finalize', async (req: Request, res: Response) => {
-    try {
-        const sellerId = getSellerId(req);
-        const result = await commissionInvoiceService.finalizeInvoice(req.params.id, sellerId);
-        res.json(result);
-    } catch (error: any) {
-        res.status(500).json({ success: false, error: error?.message });
-    }
+    res.status(410).json({
+        success: false,
+        error: 'Legacy commission invoice finalization is disabled. Margin now uses flat subscription billing only.'
+    });
 });
 
 /**
@@ -228,25 +222,10 @@ router.post('/invoices/:id/finalize', async (req: Request, res: Response) => {
  * Body: { reimbursementMatchId, reason }
  */
 router.post('/invoices/:id/dispute', async (req: Request, res: Response) => {
-    try {
-        const sellerId = getSellerId(req);
-        const { reimbursementMatchId, reason } = req.body;
-
-        if (!reimbursementMatchId || !reason) {
-            return res.status(400).json({ success: false, error: 'reimbursementMatchId and reason are required' });
-        }
-
-        const result = await commissionInvoiceService.disputeLineItem(
-            req.params.id,
-            reimbursementMatchId,
-            sellerId,
-            reason
-        );
-
-        res.json(result);
-    } catch (error: any) {
-        res.status(500).json({ success: false, error: error?.message });
-    }
+    res.status(410).json({
+        success: false,
+        error: 'Legacy commission invoice disputes are disabled. Margin now uses flat subscription billing only.'
+    });
 });
 
 
@@ -258,13 +237,13 @@ router.post('/invoices/:id/dispute', async (req: Request, res: Response) => {
  * GET /api/revenue/metrics
  */
 router.get('/metrics', async (req: Request, res: Response) => {
-    try {
-        const sellerId = getSellerId(req);
-        const metrics = await commissionInvoiceService.getRevenueMetrics(sellerId);
-        res.json({ success: true, data: metrics });
-    } catch (error: any) {
-        res.status(500).json({ success: false, error: error?.message });
-    }
+    res.json({
+        success: true,
+        data: null,
+        legacy: true,
+        billing_model: 'flat_subscription',
+        note: 'Legacy commission metrics are no longer active billing truth under the subscription model.'
+    });
 });
 
 // ════════════════════════════════════════════════════════════════════

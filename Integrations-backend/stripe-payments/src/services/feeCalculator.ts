@@ -1,5 +1,6 @@
-import { calculateFees, validateAmount, formatCurrency, SupportedCurrency } from '@/utils/currencyUtils';
-import { FEE_CONFIG } from '@/config/stripeConfig';
+import { SupportedCurrency } from '@/utils/currencyUtils';
+
+const LEGACY_RECOVERY_FEE_DISABLED = 'Recovery-based fee calculation is disabled. Margin now uses flat subscription billing only.';
 
 export interface FeeCalculationRequest {
   amountRecoveredCents: number;
@@ -40,58 +41,23 @@ export class FeeCalculatorService {
    * Calculate platform fee and seller payout
    */
   static calculateFees(request: FeeCalculationRequest): FeeCalculationResponse {
-    try {
-      const { amountRecoveredCents, currency, userId, claimId } = request;
-
-      // Validate input
-      if (!validateAmount(amountRecoveredCents, currency)) {
-        return {
-          success: false,
-          error: 'Invalid amount or currency',
-        };
-      }
-
-      // Calculate fees
-      const feeCalculation = calculateFees(amountRecoveredCents, currency);
-
-      // Format amounts for display
-      const formattedAmount = formatCurrency(feeCalculation.originalAmount, currency);
-      const formattedPlatformFee = formatCurrency(feeCalculation.platformFee, currency);
-      const formattedSellerPayout = formatCurrency(feeCalculation.sellerPayout, currency);
-
-      return {
-        success: true,
-        data: {
-          originalAmount: feeCalculation.originalAmount,
-          platformFee: feeCalculation.platformFee,
-          sellerPayout: feeCalculation.sellerPayout,
-          currency: feeCalculation.currency,
-          formattedAmount,
-          formattedPlatformFee,
-          formattedSellerPayout,
-        },
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred',
-      };
-    }
+    return {
+      success: false,
+      error: LEGACY_RECOVERY_FEE_DISABLED,
+    };
   }
 
   /**
    * Get fee breakdown for a given amount
    */
   static getFeeBreakdown(amountCents: number, currency: SupportedCurrency = 'usd'): FeeBreakdown {
-    const feeCalculation = calculateFees(amountCents, currency);
-
     return {
-      amountRecoveredCents: feeCalculation.originalAmount,
-      platformFeeCents: feeCalculation.platformFee,
-      sellerPayoutCents: feeCalculation.sellerPayout,
-      currency: feeCalculation.currency,
-      platformFeePercentage: FEE_CONFIG.PLATFORM_FEE_PERCENTAGE,
-      sellerPayoutPercentage: FEE_CONFIG.SELLER_PAYOUT_PERCENTAGE,
+      amountRecoveredCents: amountCents,
+      platformFeeCents: 0,
+      sellerPayoutCents: amountCents,
+      currency,
+      platformFeePercentage: 0,
+      sellerPayoutPercentage: 100,
     };
   }
 
@@ -104,69 +70,39 @@ export class FeeCalculatorService {
     sellerPayoutCents: number,
     currency: SupportedCurrency = 'usd'
   ): boolean {
-    try {
-      const expectedCalculation = calculateFees(amountCents, currency);
-
-      // Allow for small rounding differences (1 cent tolerance)
-      const tolerance = 1;
-      const platformFeeDiff = Math.abs(expectedCalculation.platformFee - platformFeeCents);
-      const sellerPayoutDiff = Math.abs(expectedCalculation.sellerPayout - sellerPayoutCents);
-
-      return platformFeeDiff <= tolerance && sellerPayoutDiff <= tolerance;
-    } catch (error) {
-      return false;
-    }
+    return false;
   }
 
   /**
    * Get minimum fee for a currency
    */
   static getMinimumFee(currency: SupportedCurrency = 'usd'): number {
-    // In a real implementation, you might have different minimum fees per currency
-    return FEE_CONFIG.MINIMUM_FEE_CENTS;
+    return 0;
   }
 
   /**
    * Calculate fee percentage for a given amount
    */
   static calculateEffectiveFeePercentage(amountCents: number, platformFeeCents: number): number {
-    if (amountCents <= 0) return 0;
-    return (platformFeeCents / amountCents) * 100;
+    return 0;
   }
 
   /**
    * Check if fee calculation meets minimum requirements
    */
   static meetsMinimumFeeRequirements(platformFeeCents: number): boolean {
-    return platformFeeCents >= FEE_CONFIG.MINIMUM_FEE_CENTS;
+    return false;
   }
 
   /**
    * Get fee calculation summary for reporting
    */
   static getFeeSummary(transactions: Array<{ platformFeeCents: number; currency: SupportedCurrency }>) {
-    const summary = {
+    return {
       totalPlatformFees: 0,
       totalTransactions: transactions.length,
       averageFeePercentage: 0,
       currencyBreakdown: {} as Record<SupportedCurrency, number>,
     };
-
-    let totalAmount = 0;
-
-    transactions.forEach(({ platformFeeCents, currency }) => {
-      summary.totalPlatformFees += platformFeeCents;
-      
-      if (!summary.currencyBreakdown[currency]) {
-        summary.currencyBreakdown[currency] = 0;
-      }
-      summary.currencyBreakdown[currency] += platformFeeCents;
-    });
-
-    if (summary.totalTransactions > 0) {
-      summary.averageFeePercentage = (summary.totalPlatformFees / summary.totalTransactions) / 100;
-    }
-
-    return summary;
   }
 } 

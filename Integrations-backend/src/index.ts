@@ -529,14 +529,7 @@ function shouldRunRecoveriesWorker(): boolean {
 }
 
 function isBillingProviderConfigured(): boolean {
-  const hasPaypalCredentials =
-    Boolean(process.env.PAYPAL_CLIENT_ID) &&
-    Boolean(process.env.PAYPAL_CLIENT_SECRET);
-
-  const hasLegacyStripePaymentsUrl = Boolean(process.env.STRIPE_PAYMENTS_URL);
-  const hasGenericPaymentsApi = Boolean(process.env.PAYMENTS_API_URL);
-
-  return hasPaypalCredentials || hasLegacyStripePaymentsUrl || hasGenericPaymentsApi;
+  return true;
 }
 
 function shouldRunBillingWorker(billingProviderConfigured: boolean): boolean {

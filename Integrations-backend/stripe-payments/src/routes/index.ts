@@ -1,10 +1,9 @@
 import { Router } from 'express';
-import { CheckoutController, connectAccountValidation, chargeCommissionValidation } from '@/controllers/checkoutController';
+import { CheckoutController, connectAccountValidation } from '@/controllers/checkoutController';
 import { WebhookController } from '@/controllers/webhookController';
 import { PayoutController, reconcileTransactionValidation, handleClawbackValidation, retryFailedTransactionValidation, cleanupOldDataValidation } from '@/controllers/payoutController';
 import { CustomerController } from '@/controllers/customerController';
 import { verifyStripeWebhook, checkWebhookIdempotency, logWebhookEvent, validateWebhookEventType, stripeRawBody } from '@/middlewares/verifyStripeWebhook';
-import { validateIdempotencyKeyMiddleware } from '@/utils/idempotency';
 import { authenticateJWT, requireAdmin } from '@/middlewares/auth';
 import { WEBHOOK_EVENTS } from '@/config/stripeConfig';
 
@@ -41,8 +40,8 @@ apiV1Router.post('/stripe/create-subscription', authenticateJWT, CheckoutControl
 apiV1Router.post('/stripe/cancel-subscription', authenticateJWT, CheckoutController.cancelSubscription);
 apiV1Router.post('/stripe/customer-map', authenticateJWT, CustomerController.mapCustomer);
 
-// Commission charging (called by refund-engine)
-apiV1Router.post('/stripe/charge-commission', authenticateJWT, validateIdempotencyKeyMiddleware, chargeCommissionValidation, CheckoutController.chargeCommission);
+// Legacy commission charging endpoint kept only to fail closed after the subscription billing migration
+apiV1Router.post('/stripe/charge-commission', authenticateJWT, CheckoutController.chargeCommission);
 
 // Transaction routes
 apiV1Router.get('/stripe/transactions/:userId', authenticateJWT, CheckoutController.listTransactions);

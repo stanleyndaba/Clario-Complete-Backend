@@ -2,10 +2,6 @@ import { Request, Response } from 'express';
 import { body, validationResult } from 'express-validator';
 import { prisma } from '@/prisma/client';
 import { StripeService } from '@/services/stripeService';
-import { FeeCalculatorService } from '@/services/feeCalculator';
-import { PayoutJobQueue } from '@/jobs/payoutJob';
-import { processIdempotency, storeIdempotencyKey } from '@/utils/idempotency';
-import { TRANSACTION_STATUS } from '@/config/stripeConfig';
 import { STRIPE_CONFIG } from '@/config/stripeConfig';
 
 export interface ChargeCommissionRequest {
@@ -17,6 +13,8 @@ export interface ChargeCommissionRequest {
   paymentMethodId?: string;
   customerId?: string;
 }
+
+const LEGACY_COMMISSION_DISABLED_MESSAGE = 'Recovery-based commission charging is disabled. Margin now uses flat subscription billing only.';
 
 export interface ConnectAccountRequest {
   userId: number;
@@ -175,124 +173,16 @@ export class CheckoutController {
    */
   static async chargeCommission(req: Request, res: Response) {
     try {
-      // Validate request
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({
-          error: 'Validation failed',
-          details: errors.array(),
-        });
-      }
-
-      const {
-        userId,
-        claimId,
-        amountRecoveredCents,
-        currency,
-        idempotencyKey,
-        paymentMethodId,
-        customerId,
-      }: ChargeCommissionRequest = req.body;
-
-      // Check idempotency
-      const idempotencyResult = await processIdempotency(req, userId, '/api/v1/stripe/charge-commission');
-      
-      if (idempotencyResult.isDuplicate && idempotencyResult.cachedResponse) {
-        return res.json(idempotencyResult.cachedResponse);
-      }
-
-      // Calculate fees
-      const feeCalculation = FeeCalculatorService.calculateFees({
-        amountRecoveredCents,
-        currency: currency as any,
-        userId,
-        claimId,
+      return res.status(410).json({
+        success: false,
+        error: 'Legacy commission billing disabled',
+        message: LEGACY_COMMISSION_DISABLED_MESSAGE,
       });
-
-      if (!feeCalculation.success || !feeCalculation.data) {
-        return res.status(400).json({
-          error: 'Fee calculation failed',
-          message: feeCalculation.error || 'Failed to calculate fees',
-        });
-      }
-
-      // Check if transaction already exists for this claim
-      if (claimId) {
-        const existingTransaction = await prisma.stripeTransaction.findFirst({
-          where: { claimId },
-        });
-
-        if (existingTransaction) {
-          const response = {
-            success: true,
-            data: {
-              transactionId: existingTransaction.id,
-              status: existingTransaction.status,
-              message: 'Transaction already exists for this claim',
-            },
-          };
-
-          // Store idempotency response
-          if (idempotencyKey) {
-            await storeIdempotencyKey(idempotencyKey, userId, '/api/v1/stripe/charge-commission', response);
-          }
-
-          return res.json(response);
-        }
-      }
-
-      // Create transaction record
-      const transaction = await prisma.stripeTransaction.create({
-        data: {
-          userId,
-          claimId,
-          amountRecoveredCents,
-          platformFeeCents: feeCalculation.data.platformFee,
-          sellerPayoutCents: feeCalculation.data.sellerPayout,
-          currency: feeCalculation.data.currency,
-          status: TRANSACTION_STATUS.PENDING,
-          idempotencyKey,
-          metadata: {
-            paymentMethodId,
-            customerId,
-          },
-        },
-      });
-
-      // Add payment job to queue
-      await PayoutJobQueue.addPaymentJob({
-        transactionId: transaction.id,
-        userId,
-        claimId,
-        amountRecoveredCents,
-        currency,
-        paymentMethodId,
-        customerId,
-      });
-
-      const response = {
-        success: true,
-        data: {
-          transactionId: transaction.id,
-          status: transaction.status,
-          platformFeeCents: transaction.platformFeeCents,
-          sellerPayoutCents: transaction.sellerPayoutCents,
-          currency: transaction.currency,
-          message: 'Commission charge initiated',
-        },
-      };
-
-      // Store idempotency response
-      if (idempotencyKey) {
-        await storeIdempotencyKey(idempotencyKey, userId, '/api/v1/stripe/charge-commission', response);
-      }
-
-      res.json(response);
     } catch (error) {
       console.error('Error in chargeCommission:', error);
       res.status(500).json({
         error: 'Internal server error',
-        message: error instanceof Error ? error.message : 'Failed to charge commission',
+        message: error instanceof Error ? error.message : LEGACY_COMMISSION_DISABLED_MESSAGE,
       });
     }
   }

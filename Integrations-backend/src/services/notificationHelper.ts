@@ -361,10 +361,8 @@ class NotificationHelper {
       const formattedAmount = `${currencySymbol}${data.amount.toFixed(2)}`;
       let message = `Funds have been cleared and deposited to your account.`;
 
-      if (data.billingStatus === 'charged') {
-        const platformFee = data.platformFee || (data.amount * 0.20);
-        const sellerPayout = data.sellerPayout || (data.amount * 0.80);
-        message += `. Platform fee (20%): ${data.currency || '$'}${platformFee.toFixed(2)}, Your payout: ${data.currency || '$'}${sellerPayout.toFixed(2)}`;
+      if (typeof data.amount === 'number' && Number.isFinite(data.amount)) {
+        message += ` You keep ${currencySymbol}${data.amount.toFixed(2)}. Margin billing stays on flat subscription pricing and never deducts a recovery commission.`;
       }
 
       const event: Omit<NotificationEvent, 'user_id'> = {
@@ -379,8 +377,7 @@ class NotificationHelper {
           recoveryId: data.recoveryId,
           amount: data.amount,
           currency: data.currency || 'usd',
-          platformFee: data.platformFee,
-          sellerPayout: data.sellerPayout,
+          sellerPayout: data.sellerPayout ?? data.amount,
           billingStatus: data.billingStatus
         }, {
           tenantId: data.tenantId,

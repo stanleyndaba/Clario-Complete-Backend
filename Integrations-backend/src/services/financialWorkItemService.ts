@@ -18,9 +18,26 @@ type BaseWorkCreate = {
 
 type RecoveryWorkCreate = BaseWorkCreate;
 
-type BillingWorkCreate = BaseWorkCreate & {
+export type BillingWorkCreate = BaseWorkCreate & {
   recoveryId?: string | null;
 };
+
+export function buildLegacyRecoveryBillingDisabledResult(params: BillingWorkCreate): { item: any; created: boolean } {
+  return {
+    item: {
+      id: null,
+      status: 'quarantined',
+      dispute_case_id: params.disputeCaseId,
+      recovery_id: params.recoveryId || null,
+      payload: {
+        ...(params.payload || {}),
+        legacy_recovery_billing_disabled: true,
+        disabled_reason: 'flat_subscription_billing_model',
+      },
+    },
+    created: false,
+  };
+}
 
 const TABLES: Record<WorkKind, string> = {
   recovery: 'recovery_work_items',
@@ -61,7 +78,13 @@ class FinancialWorkItemService {
   }
 
   async enqueueBillingWork(params: BillingWorkCreate): Promise<{ item: any; created: boolean }> {
-    return this.enqueue('billing', params);
+    logger.warn('[FINANCIAL WORK] Recovery-triggered billing enqueue ignored under flat subscription billing model', {
+      tenantId: params.tenantId,
+      disputeCaseId: params.disputeCaseId,
+      recoveryId: params.recoveryId || null,
+      sourceEventType: params.sourceEventType,
+    });
+    return buildLegacyRecoveryBillingDisabledResult(params);
   }
 
   private async enqueue(kind: WorkKind, params: RecoveryWorkCreate | BillingWorkCreate): Promise<{ item: any; created: boolean }> {

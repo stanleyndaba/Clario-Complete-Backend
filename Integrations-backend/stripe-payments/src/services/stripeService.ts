@@ -1,9 +1,10 @@
 import Stripe from 'stripe';
 import { stripe, STRIPE_CONFIG, TRANSACTION_STATUS, ACCOUNT_STATUS } from '@/config/stripeConfig';
 import { prisma } from '@/prisma/client';
-import { FeeCalculatorService } from './feeCalculator';
 import { TransactionLogger } from './transactionLogger';
 import { SupportedCurrency } from '@/config/stripeConfig';
+
+const LEGACY_COMMISSION_DISABLED_MESSAGE = 'Recovery-based commission charging is disabled. Margin now uses flat subscription billing only.';
 
 export interface CreatePaymentIntentRequest {
   userId: number;
@@ -66,86 +67,15 @@ export class StripeService {
    */
   static async createPaymentIntent(request: CreatePaymentIntentRequest): Promise<CreatePaymentIntentResponse> {
     try {
-      const { userId, claimId, amountRecoveredCents, currency, paymentMethodId, customerId, metadata } = request;
-
-      // Calculate fees
-      const feeCalculation = FeeCalculatorService.calculateFees({
-        amountRecoveredCents,
-        currency,
-        userId,
-        claimId,
-      });
-
-      if (!feeCalculation.success || !feeCalculation.data) {
-        return {
-          success: false,
-          error: feeCalculation.error || 'Failed to calculate fees',
-        };
-      }
-
-      const { platformFee } = feeCalculation.data;
-
-      // Create PaymentIntent
-      const paymentIntentData: Stripe.PaymentIntentCreateParams = {
-        amount: platformFee,
-        currency,
-        automatic_payment_methods: {
-          enabled: true,
-        },
-        metadata: {
-          userId: userId.toString(),
-          claimId: claimId?.toString() || '',
-          amountRecoveredCents: amountRecoveredCents.toString(),
-          platformFeeCents: platformFee.toString(),
-          sellerPayoutCents: feeCalculation.data.sellerPayout.toString(),
-          ...metadata,
-        },
-      };
-
-      // Add payment method if provided
-      if (paymentMethodId) {
-        paymentIntentData.payment_method = paymentMethodId;
-        paymentIntentData.confirm = true;
-      }
-
-      // Add customer if provided
-      if (customerId) {
-        paymentIntentData.customer = customerId;
-      }
-
-      const paymentIntent = await stripe.paymentIntents.create(paymentIntentData, {
-        idempotencyKey: metadata?.idempotencyKey,
-      });
-
-      // Log the transaction creation
-      await TransactionLogger.logTransaction({
-        action: 'payment_intent_created',
-        transactionId: 0, // Will be updated when transaction is created
-        userId,
-        status: 'success',
-        stripeEventId: paymentIntent.id,
-        metadata: {
-          amount: platformFee,
-          currency,
-          paymentIntentId: paymentIntent.id,
-        },
-      });
-
       return {
-        success: true,
-        data: {
-          paymentIntentId: paymentIntent.id,
-          clientSecret: paymentIntent.client_secret!,
-          amount: platformFee,
-          currency,
-          status: paymentIntent.status,
-        },
+        success: false,
+        error: LEGACY_COMMISSION_DISABLED_MESSAGE,
       };
     } catch (error) {
       console.error('Error creating PaymentIntent:', error);
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Failed to create PaymentIntent',
+        error: error instanceof Error ? error.message : LEGACY_COMMISSION_DISABLED_MESSAGE,
       };
     }
   }

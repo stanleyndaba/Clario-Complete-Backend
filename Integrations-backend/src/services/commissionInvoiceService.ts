@@ -51,6 +51,7 @@ export interface RevenueMetrics {
 
 const DEFAULT_COMMISSION_RATE = 0.20; // 20%
 const DISPUTE_WINDOW_HOURS = 24;
+const LEGACY_DISABLED_MESSAGE = 'Legacy commission invoicing is disabled. Margin now uses flat subscription billing only.';
 
 // ── Service ────────────────────────────────────────────────────────
 
@@ -64,6 +65,8 @@ export class CommissionInvoiceService {
         periodEnd: string,
         options: { commissionRate?: number } = {}
     ): Promise<{ success: boolean; invoiceId?: string; invoice?: any; error?: string }> {
+        return { success: false, error: LEGACY_DISABLED_MESSAGE };
+        /*
         try {
             const rate = options.commissionRate || DEFAULT_COMMISSION_RATE;
 
@@ -152,6 +155,7 @@ export class CommissionInvoiceService {
             logger.error('[INVOICE] Error generating invoice', { error: error?.message, sellerId });
             return { success: false, error: error?.message || 'Unknown error' };
         }
+        */
     }
 
     // ─── 2. Get Invoices ────────────────────────────────────────────
@@ -205,7 +209,8 @@ export class CommissionInvoiceService {
         sellerId: string,
         reason: string
     ): Promise<{ success: boolean; error?: string }> {
-        try {
+        return { success: false, error: LEGACY_DISABLED_MESSAGE };
+        /*try {
             // Get invoice
             const invoice = await this.getInvoiceDetail(invoiceId, sellerId);
             if (!invoice) return { success: false, error: 'Invoice not found' };
@@ -251,13 +256,14 @@ export class CommissionInvoiceService {
             return { success: true };
         } catch (error: any) {
             return { success: false, error: error?.message };
-        }
+        }*/
     }
 
     // ─── 5. Finalize Invoice ────────────────────────────────────────
 
     async finalizeInvoice(invoiceId: string, sellerId: string): Promise<{ success: boolean; error?: string }> {
-        try {
+        return { success: false, error: LEGACY_DISABLED_MESSAGE };
+        /*try {
             const invoice = await this.getInvoiceDetail(invoiceId, sellerId);
             if (!invoice) return { success: false, error: 'Invoice not found' };
             if (invoice.status !== 'draft') return { success: false, error: `Cannot finalize invoice in '${invoice.status}' status` };
@@ -274,7 +280,7 @@ export class CommissionInvoiceService {
             return { success: true };
         } catch (error: any) {
             return { success: false, error: error?.message };
-        }
+        }*/
     }
 
     // ─── 6. Revenue Metrics ─────────────────────────────────────────
