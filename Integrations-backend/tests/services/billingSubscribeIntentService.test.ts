@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, test, jest } from '@jest/globals';
 type Row = Record<string, any>;
 
 const state = {
+  tenants: [] as Row[],
+  tenant_memberships: [] as Row[],
   tenant_billing_subscriptions: [] as Row[],
   billing_invoices: [] as Row[],
 };
@@ -41,6 +43,34 @@ function buildSubscription(overrides: Partial<Row> = {}): Row {
   };
 }
 
+function buildTenant(overrides: Partial<Row> = {}): Row {
+  return {
+    id: 'tenant-1',
+    name: 'Workspace',
+    slug: 'workspace',
+    plan: 'free',
+    status: 'active',
+    settings: {},
+    metadata: {},
+    updated_at: '2026-04-01T00:00:00.000Z',
+    deleted_at: null,
+    ...overrides,
+  };
+}
+
+function buildTenantMembership(overrides: Partial<Row> = {}): Row {
+  return {
+    id: 'membership-1',
+    tenant_id: 'tenant-1',
+    user_id: 'owner-1',
+    role: 'owner',
+    is_active: true,
+    deleted_at: null,
+    created_at: '2026-04-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
 function createQueryBuilder(table: keyof typeof state) {
   const filters: Array<(row: Row) => boolean> = [];
   let pendingUpdate: Row | null = null;
@@ -58,6 +88,11 @@ function createQueryBuilder(table: keyof typeof state) {
       filters.push((row) => row[field] === value);
       return builder;
     },
+    is: (field: string, value: any) => {
+      filters.push((row) => row[field] === value);
+      return builder;
+    },
+    order: () => builder,
     update: (data: Row) => {
       pendingUpdate = data;
       return builder;
@@ -152,6 +187,8 @@ describe('billingSubscribeIntentService', () => {
   beforeEach(() => {
     process.env.YOCO_STARTER_MONTHLY_URL = 'https://pay.yoco.com/r/7XalBE';
     process.env.YOCO_PRO_ANNUAL_URL = 'https://pay.yoco.com/r/mozkwy';
+    state.tenants = [buildTenant()];
+    state.tenant_memberships = [buildTenantMembership()];
     state.tenant_billing_subscriptions = [buildSubscription()];
     state.billing_invoices = [];
   });
@@ -175,6 +212,25 @@ describe('billingSubscribeIntentService', () => {
     expect(result.invoice.payment_link_key).toBe('starter_monthly');
     expect(result.invoice.payment_link_url).toBe('https://pay.yoco.com/r/7XalBE');
     expect(result.invoice.status).toBe('pending');
+  });
+
+  test('promotes a free tenant into the selected paid plan before billing bootstrap', async () => {
+    state.tenant_billing_subscriptions = [];
+
+    const result = await createSubscriptionSubscribeIntent({
+      tenantId: 'tenant-1',
+      userId: 'owner-1',
+      planTier: 'pro',
+      billingInterval: 'annual',
+    });
+
+    expect(state.tenants[0].plan).toBe('professional');
+    expect(state.tenants[0].metadata.selected_plan_tier).toBe('pro');
+    expect(state.tenants[0].metadata.billing_interval).toBe('annual');
+    expect(result.subscription.plan_tier).toBe('pro');
+    expect(result.subscription.billing_interval).toBe('annual');
+    expect(result.invoice.payment_link_key).toBe('pro_annual');
+    expect(result.invoice.payment_link_url).toBe('https://pay.yoco.com/r/mozkwy');
   });
 
   test('reuses the same invoice intent on repeated selection instead of creating duplicates', async () => {

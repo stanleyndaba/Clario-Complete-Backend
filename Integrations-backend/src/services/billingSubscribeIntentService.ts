@@ -22,6 +22,85 @@ type SubscribeIntentResult = {
 
 const PAYABLE_INVOICE_STATUSES = new Set(['draft', 'pending', 'scheduled', 'pending_payment_method', 'sent', 'failed']);
 
+function mapPlanTierToTenantPlan(planTier: PlanTier): 'starter' | 'professional' | 'enterprise' {
+  if (planTier === 'pro') return 'professional';
+  return planTier;
+}
+
+function parseJsonObject(value: unknown): Record<string, any> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, any>;
+  }
+
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, any>;
+      }
+    } catch {
+      return {};
+    }
+  }
+
+  return {};
+}
+
+async function alignTenantPlanSelection(params: {
+  tenantId: string;
+  planTier: PlanTier;
+  billingInterval: BillingInterval;
+  userId: string;
+  nowIso: string;
+}): Promise<void> {
+  const { data: tenant, error: tenantError } = await supabaseAdmin
+    .from('tenants')
+    .select('id, plan, status, settings, metadata')
+    .eq('id', params.tenantId)
+    .is('deleted_at', null)
+    .maybeSingle();
+
+  if (tenantError) {
+    throw new Error(tenantError.message);
+  }
+
+  if (!tenant?.id) {
+    throw new Error('Workspace not found');
+  }
+
+  const selectedTenantPlan = mapPlanTierToTenantPlan(params.planTier);
+  const metadata = parseJsonObject(tenant.metadata);
+  const settings = parseJsonObject(tenant.settings);
+
+  const nextMetadata = {
+    ...metadata,
+    billing_interval: params.billingInterval,
+    selected_plan_tier: params.planTier,
+    billing_entrypoint: 'pricing_subscribe_intent',
+    billing_plan_selected_at: params.nowIso,
+    billing_plan_selected_by_user_id: params.userId,
+  };
+
+  const nextSettings = {
+    ...settings,
+    billing_interval: params.billingInterval,
+  };
+
+  const { error: updateError } = await supabaseAdmin
+    .from('tenants')
+    .update({
+      plan: selectedTenantPlan,
+      metadata: nextMetadata,
+      settings: nextSettings,
+      updated_at: params.nowIso,
+    })
+    .eq('id', params.tenantId);
+
+  if (updateError) {
+    throw new Error(updateError.message);
+  }
+}
+
 function buildPeriodAnchor(subscription: BillingSubscriptionRow, billingInterval: BillingInterval, nowIso: string) {
   const periodStart = subscription.current_period_start_at || subscription.next_billing_date || nowIso;
   const periodEnd = subscription.current_period_end_at || addBillingInterval(periodStart, billingInterval);
@@ -96,6 +175,13 @@ export async function createSubscriptionSubscribeIntent(params: {
   billingInterval: BillingInterval;
 }): Promise<SubscribeIntentResult> {
   const nowIso = new Date().toISOString();
+  await alignTenantPlanSelection({
+    tenantId: params.tenantId,
+    userId: params.userId,
+    planTier: params.planTier,
+    billingInterval: params.billingInterval,
+    nowIso,
+  });
   const existingSubscription = await ensureTenantBillingSubscription(params.tenantId);
 
   if (!existingSubscription) {
