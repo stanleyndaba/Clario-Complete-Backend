@@ -41,6 +41,9 @@ type BillingScope = {
 type BillingRouteInvoice = {
   id: string;
   invoice_id: string;
+  payment_reference: string | null;
+  payment_reference_status: 'available' | 'missing' | 'not_applicable';
+  confirmation_requires_reference: boolean;
   invoice_type: 'subscription_invoice' | 'legacy_recovery_fee_invoice';
   invoice_model: 'subscription' | 'legacy_recovery_fee';
   billing_model: 'flat_subscription' | 'legacy_recovery_fee';
@@ -140,6 +143,18 @@ function normalizeInvoiceStatus(value: unknown): string | null {
     return normalized;
   }
   return null;
+}
+
+function normalizePaymentReference(value: unknown): string | null {
+  const normalized = String(value || '').trim();
+  return normalized || null;
+}
+
+function getPaymentReferenceStatus(invoice: Pick<BillingInvoiceRow, 'invoice_model' | 'invoice_type' | 'payment_reference'>): 'available' | 'missing' | 'not_applicable' {
+  if (invoice.invoice_model !== 'subscription' || invoice.invoice_type !== 'subscription_invoice') {
+    return 'not_applicable';
+  }
+  return normalizePaymentReference(invoice.payment_reference) ? 'available' : 'missing';
 }
 
 function deriveLegacyChargedAmount(status: unknown, amountDueCents: unknown): number | null {
@@ -261,10 +276,16 @@ function toSubscriptionInvoiceRouteRow(
   const paymentProvider = invoice.payment_provider || (paymentLinkKey ? yocoResolution.paymentProvider : null);
   const planLabel = planTierLabel(invoice.plan_tier);
   const intervalLabel = billingIntervalLabel(invoice.billing_interval);
+  const paymentReference = normalizePaymentReference(invoice.payment_reference);
+  const paymentReferenceStatus = getPaymentReferenceStatus(invoice);
+  const confirmationRequiresReference = invoice.invoice_model === 'subscription' && invoice.invoice_type === 'subscription_invoice';
 
   return {
     id: invoice.id,
     invoice_id: invoice.invoice_id,
+    payment_reference: paymentReference,
+    payment_reference_status: paymentReferenceStatus,
+    confirmation_requires_reference: confirmationRequiresReference,
     invoice_type: invoice.invoice_type || 'subscription_invoice',
     invoice_model: invoice.invoice_model === 'legacy_recovery_fee' ? 'legacy_recovery_fee' : 'subscription',
     billing_model: invoice.billing_model === 'legacy_recovery_fee' ? 'legacy_recovery_fee' : 'flat_subscription',
@@ -292,7 +313,7 @@ function toSubscriptionInvoiceRouteRow(
     payment_confirmation_source: invoice.payment_confirmation_source || null,
     payment_confirmed_by_user_id: invoice.payment_confirmed_by_user_id || null,
     payment_confirmation_note: invoice.payment_confirmation_note || null,
-    can_confirm_payment: canCurrentUserConfirmPayment && canConfirmSubscriptionInvoicePayment(invoice),
+    can_confirm_payment: canCurrentUserConfirmPayment && canConfirmSubscriptionInvoicePayment(invoice) && paymentReferenceStatus === 'available',
     summary_label: planLabel && intervalLabel
       ? `${planLabel} ${intervalLabel} subscription invoice`
       : 'Subscription invoice',
@@ -309,6 +330,9 @@ function toLegacyInvoiceRouteRow(
   return {
     id: tx.id,
     invoice_id: tx.id,
+    payment_reference: null,
+    payment_reference_status: 'not_applicable',
+    confirmation_requires_reference: false,
     invoice_type: 'legacy_recovery_fee_invoice',
     invoice_model: 'legacy_recovery_fee',
     billing_model: 'legacy_recovery_fee',
@@ -579,6 +603,9 @@ router.post('/invoices/:invoiceId/confirm-payment', requireRole('owner', 'admin'
     const confirmationNote = typeof req.body?.confirmation_note === 'string'
       ? req.body.confirmation_note
       : null;
+    const paymentReference = typeof req.body?.payment_reference === 'string'
+      ? req.body.payment_reference
+      : '';
 
     const result = await confirmSubscriptionInvoicePayment({
       tenantId,
@@ -586,6 +613,7 @@ router.post('/invoices/:invoiceId/confirm-payment', requireRole('owner', 'admin'
       confirmedByUserId: userId,
       confirmationSource,
       confirmationNote,
+      paymentReference,
     });
 
     const subscription = await ensureTenantBillingSubscription(tenantId);

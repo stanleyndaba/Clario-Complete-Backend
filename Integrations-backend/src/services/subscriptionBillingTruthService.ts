@@ -42,6 +42,7 @@ export type BillingSubscriptionRow = {
 export type BillingInvoiceRow = {
   id: string;
   invoice_id: string;
+  payment_reference: string | null;
   tenant_id: string;
   user_id: string | null;
   subscription_id: string | null;
@@ -209,6 +210,11 @@ export function buildSubscriptionInvoiceId(subscription: Pick<BillingSubscriptio
   return `SUB-${planTierLabel(subscription.plan_tier)?.toUpperCase() || 'PLAN'}-${format(safeDate, 'yyyyMMdd')}-${subscription.id.slice(0, 8).toUpperCase()}`;
 }
 
+export function buildSubscriptionPaymentReference(invoiceId: string): string | null {
+  const normalized = String(invoiceId || '').trim();
+  return normalized || null;
+}
+
 export function deriveSubscriptionStatusFromTenantStatus(value: unknown): SubscriptionStatus {
   const normalized = String(value || '').trim().toLowerCase();
   if (normalized === 'trialing') return 'trialing';
@@ -367,9 +373,11 @@ export function buildSubscriptionInvoicePayload(params: {
   const invoiceDateIso = params.invoiceDateIso || new Date().toISOString();
   const periodStart = params.subscription.current_period_start_at || params.subscription.next_billing_date || invoiceDateIso;
   const periodEnd = params.subscription.current_period_end_at || addBillingInterval(periodStart, params.subscription.billing_interval);
+  const invoiceId = buildSubscriptionInvoiceId(params.subscription, invoiceDateIso);
 
   return {
-    invoice_id: buildSubscriptionInvoiceId(params.subscription, invoiceDateIso),
+    invoice_id: invoiceId,
+    payment_reference: buildSubscriptionPaymentReference(invoiceId),
     tenant_id: params.subscription.tenant_id,
     user_id: params.userId ?? params.subscription.user_id,
     subscription_id: params.subscription.id,
@@ -429,6 +437,8 @@ export async function upsertSubscriptionInvoice(payload: Omit<BillingInvoiceRow,
       .from('billing_invoices')
       .update({
         ...payload,
+        invoice_id: existing.invoice_id || payload.invoice_id,
+        payment_reference: existing.payment_reference || payload.payment_reference,
         updated_at: new Date().toISOString(),
       })
       .eq('id', existing.id)

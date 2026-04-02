@@ -18,6 +18,7 @@ function buildInvoice(overrides: Partial<Row> = {}): Row {
   return {
     id: 'invoice-row-1',
     invoice_id: 'SUB-STARTER-20260402-ABC12345',
+    payment_reference: 'SUB-STARTER-20260402-ABC12345',
     tenant_id: 'tenant-1',
     user_id: 'owner-1',
     subscription_id: 'sub-1',
@@ -154,6 +155,7 @@ describe('billingInvoiceConfirmationService', () => {
       tenantId: 'tenant-1',
       invoiceId: 'SUB-STARTER-20260402-ABC12345',
       confirmedByUserId: 'owner-1',
+      paymentReference: 'SUB-STARTER-20260402-ABC12345',
       confirmationSource: 'manual_dashboard',
       confirmationNote: 'YOCO payment received and verified manually.',
     });
@@ -166,9 +168,26 @@ describe('billingInvoiceConfirmationService', () => {
     expect(result.invoice.payment_confirmed_by_user_id).toBe('owner-1');
     expect(result.invoice.payment_confirmation_note).toBe('YOCO payment received and verified manually.');
     expect(result.invoice.metadata.payment_confirmation.source).toBe('manual_dashboard');
+    expect(result.invoice.metadata.payment_confirmation.entered_payment_reference).toBe('SUB-STARTER-20260402-ABC12345');
+    expect(result.invoice.metadata.payment_confirmation.matched_payment_reference).toBe('SUB-STARTER-20260402-ABC12345');
     expect(result.invoice.metadata.payment_confirmation_history).toHaveLength(1);
     expect(canConfirmSubscriptionInvoicePayment(result.invoice)).toBe(false);
     expect(metrics.invoiceUpdates).toBe(1);
+  });
+
+  test('rejects confirmation when the entered payment reference does not match the invoice', async () => {
+    await expect(confirmSubscriptionInvoicePayment({
+      tenantId: 'tenant-1',
+      invoiceId: 'invoice-row-1',
+      confirmedByUserId: 'owner-1',
+      paymentReference: 'WRONG-REFERENCE',
+      confirmationSource: 'manual_dashboard',
+    })).rejects.toThrow('Payment reference does not match this invoice');
+
+    expect(state.billing_invoices[0].status).toBe('pending');
+    expect(state.billing_invoices[0].paid_at).toBeNull();
+    expect(state.billing_invoices[0].metadata.payment_confirmation_history).toBeUndefined();
+    expect(metrics.invoiceUpdates).toBe(0);
   });
 
   test('repeated confirmation is idempotent and does not append duplicate state history', async () => {
@@ -176,6 +195,7 @@ describe('billingInvoiceConfirmationService', () => {
       tenantId: 'tenant-1',
       invoiceId: 'invoice-row-1',
       confirmedByUserId: 'owner-1',
+      paymentReference: 'SUB-STARTER-20260402-ABC12345',
       confirmationSource: 'manual_api',
       confirmationNote: 'First explicit confirmation.',
     });
@@ -187,6 +207,7 @@ describe('billingInvoiceConfirmationService', () => {
       tenantId: 'tenant-1',
       invoiceId: 'invoice-row-1',
       confirmedByUserId: 'owner-2',
+      paymentReference: 'SUB-STARTER-20260402-ABC12345',
       confirmationSource: 'manual_dashboard',
       confirmationNote: 'Second confirmation should be ignored.',
     });
@@ -200,6 +221,17 @@ describe('billingInvoiceConfirmationService', () => {
     expect(second.invoice.metadata.payment_confirmation_history).toEqual(firstHistory);
     expect(second.invoice.metadata.payment_confirmation_history).toHaveLength(1);
     expect(metrics.invoiceUpdates).toBe(1);
+  });
+
+  test('fails closed for tenant mismatch', async () => {
+    await expect(confirmSubscriptionInvoicePayment({
+      tenantId: 'tenant-2',
+      invoiceId: 'invoice-row-1',
+      confirmedByUserId: 'owner-1',
+      paymentReference: 'SUB-STARTER-20260402-ABC12345',
+    })).rejects.toThrow('Subscription invoice not found');
+
+    expect(metrics.invoiceUpdates).toBe(0);
   });
 
   test('fails closed for non-subscription or non-confirmable invoices', async () => {
@@ -216,8 +248,45 @@ describe('billingInvoiceConfirmationService', () => {
       tenantId: 'tenant-1',
       invoiceId: 'invoice-row-1',
       confirmedByUserId: 'owner-1',
+      paymentReference: 'SUB-STARTER-20260402-ABC12345',
     })).rejects.toThrow('Only active subscription invoices can be manually confirmed');
 
+    expect(metrics.invoiceUpdates).toBe(0);
+  });
+
+  test('fails closed when a subscription invoice has no stored payment reference', async () => {
+    state.billing_invoices = [
+      buildInvoice({
+        payment_reference: null,
+      }),
+    ];
+
+    await expect(confirmSubscriptionInvoicePayment({
+      tenantId: 'tenant-1',
+      invoiceId: 'invoice-row-1',
+      confirmedByUserId: 'owner-1',
+      paymentReference: 'SUB-STARTER-20260402-ABC12345',
+    })).rejects.toThrow('Invoice payment reference is not available for confirmation');
+
+    expect(state.billing_invoices[0].status).toBe('pending');
+    expect(metrics.invoiceUpdates).toBe(0);
+  });
+
+  test('fails closed when invoice amount does not match canonical plan pricing', async () => {
+    state.billing_invoices = [
+      buildInvoice({
+        billing_amount_cents: 9999,
+      }),
+    ];
+
+    await expect(confirmSubscriptionInvoicePayment({
+      tenantId: 'tenant-1',
+      invoiceId: 'invoice-row-1',
+      confirmedByUserId: 'owner-1',
+      paymentReference: 'SUB-STARTER-20260402-ABC12345',
+    })).rejects.toThrow('Invoice amount does not match canonical plan pricing');
+
+    expect(state.billing_invoices[0].status).toBe('pending');
     expect(metrics.invoiceUpdates).toBe(0);
   });
 });

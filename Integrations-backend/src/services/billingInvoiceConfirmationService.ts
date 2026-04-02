@@ -3,6 +3,9 @@ import logger from '../utils/logger';
 import {
   BillingInvoiceRow,
   PaymentConfirmationSource,
+  getPlanPricingCents,
+  normalizeBillingInterval,
+  normalizePlanTier,
 } from './subscriptionBillingTruthService';
 
 const CONFIRMABLE_SUBSCRIPTION_STATUSES = new Set([
@@ -17,6 +20,7 @@ export type ConfirmSubscriptionInvoicePaymentParams = {
   tenantId: string;
   invoiceId: string;
   confirmedByUserId: string;
+  paymentReference: string;
   confirmationSource?: Extract<PaymentConfirmationSource, 'manual_dashboard' | 'manual_api'>;
   confirmationNote?: string | null;
 };
@@ -29,6 +33,11 @@ export type ConfirmSubscriptionInvoicePaymentResult = {
 function normalizeConfirmationNote(value: unknown): string | null {
   const normalized = String(value || '').trim();
   return normalized ? normalized.slice(0, 1000) : null;
+}
+
+function normalizePaymentReference(value: unknown): string | null {
+  const normalized = String(value || '').trim();
+  return normalized || null;
 }
 
 function parseMetadata(value: unknown): Record<string, any> {
@@ -108,6 +117,36 @@ export async function confirmSubscriptionInvoicePayment(
     throw new Error(`Invoice status ${invoice.status || 'unknown'} cannot be confirmed as paid`);
   }
 
+  const persistedPaymentReference = normalizePaymentReference(invoice.payment_reference);
+  const enteredPaymentReference = normalizePaymentReference(params.paymentReference);
+
+  if (!persistedPaymentReference) {
+    throw new Error('Invoice payment reference is not available for confirmation');
+  }
+
+  if (!enteredPaymentReference) {
+    throw new Error('Payment reference is required to confirm this invoice');
+  }
+
+  if (enteredPaymentReference !== persistedPaymentReference) {
+    throw new Error('Payment reference does not match this invoice');
+  }
+
+  const planTier = normalizePlanTier(invoice.plan_tier);
+  if (!planTier) {
+    throw new Error('Invoice plan tier is invalid for payment confirmation');
+  }
+
+  const billingInterval = normalizeBillingInterval(invoice.billing_interval);
+  if (!billingInterval) {
+    throw new Error('Invoice billing interval is invalid for payment confirmation');
+  }
+
+  const canonicalPricing = getPlanPricingCents(planTier, billingInterval);
+  if (Number(invoice.billing_amount_cents) !== canonicalPricing.billingAmountCents) {
+    throw new Error('Invoice amount does not match canonical plan pricing');
+  }
+
   const confirmedAt = new Date().toISOString();
   const metadata = parseMetadata(invoice.metadata);
   const nextConfirmation = {
@@ -115,6 +154,8 @@ export async function confirmSubscriptionInvoicePayment(
     source: confirmationSource,
     confirmed_by_user_id: params.confirmedByUserId,
     note: confirmationNote,
+    entered_payment_reference: enteredPaymentReference,
+    matched_payment_reference: persistedPaymentReference,
   };
   const existingHistory = Array.isArray(metadata.payment_confirmation_history)
     ? metadata.payment_confirmation_history
@@ -149,6 +190,7 @@ export async function confirmSubscriptionInvoicePayment(
     tenantId: params.tenantId,
     confirmedByUserId: params.confirmedByUserId,
     confirmationSource,
+    paymentReference: persistedPaymentReference,
   });
 
   return {
