@@ -389,7 +389,7 @@ export class EvidenceIngestionWorker {
       }
 
       try {
-        const userStats = await this.ingestForUser(userId);
+        const userStats = await this.ingestForUser(userId, tenantId);
         stats.ingested += userStats.ingested;
         stats.skipped += userStats.skipped;
         stats.failed += userStats.failed;
@@ -504,7 +504,7 @@ export class EvidenceIngestionWorker {
   /**
    * Ingest evidence for a specific user
    */
-  private async ingestForUser(userId: string): Promise<IngestionStats> {
+  private async ingestForUser(userId: string, tenantId: string): Promise<IngestionStats> {
     const stats: IngestionStats = {
       ingested: 0,
       skipped: 0,
@@ -513,116 +513,60 @@ export class EvidenceIngestionWorker {
     };
 
     try {
-      logger.info(`👤 [EVIDENCE WORKER] Processing user: ${userId}`);
-
-      // Use admin client to bypass RLS for source queries
-      const client = supabaseAdmin || supabase;
-
-      // Convert prefixed user IDs (e.g. "stress-test-user-UUID") to valid UUID
-      // before querying tables that require UUID format
-      const dbUserId = convertUserIdToUuid(userId);
-
-      // Get connected sources for this user (try seller_id first, fallback to user_id)
-      let { data: sources, error } = await client
-        .from('evidence_sources')
-        .select('id, provider, last_synced_at, metadata')
-        .eq('seller_id', dbUserId)
-        .eq('status', 'connected')
-        .in('provider', [...SUPPORTED_INGESTION_PROVIDERS]);
-
-      // If seller_id column doesn't exist or no results, try user_id
-      if ((error && error.message?.includes('column') && error.message?.includes('seller_id')) || (!error && (!sources || sources.length === 0))) {
-        const retry = await client
-          .from('evidence_sources')
-          .select('id, provider, last_synced_at, metadata')
-          .eq('user_id', dbUserId)
-          .eq('status', 'connected')
-          .in('provider', [...SUPPORTED_INGESTION_PROVIDERS]);
-        if (retry.data && retry.data.length > 0) {
-          sources = retry.data;
-          error = retry.error;
-        }
-      }
-
-      if (error) {
-        logger.warn(`⚠️ [EVIDENCE WORKER] Error fetching sources for user ${userId}`, {
-          error: error.message,
-          errorCode: error.code
-        });
-        return stats;
-      }
-
-      if (!sources || sources.length === 0) {
-        logger.debug(`ℹ️ [EVIDENCE WORKER] No connected sources for user ${userId}`);
-        return stats;
-      }
-
-      logger.info(`📦 [EVIDENCE WORKER] Found ${sources.length} connected sources for user ${userId}`, {
-        providers: sources.map(s => s.provider),
-        sourceIds: sources.map(s => s.id)
+      logger.info('👤 [EVIDENCE WORKER] Processing user through unified ingestion service', {
+        userId,
+        tenantId
       });
 
-      // Process each source
-      for (const source of sources) {
-        try {
-          // Refresh token if needed
-          await this.refreshTokenIfNeeded(userId, source.provider);
+      const result = await retryWithBackoff(async () => {
+        return unifiedIngestionService.ingestFromAllSources(userId, {
+          maxResults: 50,
+          autoParse: true
+        }, tenantId);
+      }, 3, 1000);
 
-          // Wait for rate limit
-          await this.rateLimiter.waitForRateLimit(source.provider);
+      stats.ingested = result.totalDocumentsIngested;
+      stats.skipped = Math.max(0, result.totalItemsProcessed - result.totalDocumentsIngested);
+      stats.failed = result.errors.length;
+      stats.errors = result.errors;
 
-          // Ingest from this source with retry (max 3 retries = 4 total attempts)
-          let sourceStats: IngestionStats;
-
-          try {
-            sourceStats = await retryWithBackoff(async () => {
-              return await this.ingestFromSource(userId, source);
-            }, 3, 1000);
-
-            stats.ingested += sourceStats.ingested;
-            stats.skipped += sourceStats.skipped;
-            stats.failed += sourceStats.failed;
-            stats.errors.push(...sourceStats.errors);
-
-            // Update last_synced_at after successful ingestion
-            await this.updateLastSyncedAt(source.id);
-          } catch (error: any) {
-            // Retry exhausted - log error
-            stats.failed++;
-            const errorMsg = `[${source.provider}] ${error.message}`;
-            stats.errors.push(errorMsg);
-
-            // Log error with retry count (retryWithBackoff will have attempted 4 times, 3 retries)
-            await this.logError(userId, source.provider, source.id, error, 3);
-
-            logger.error(`❌ [EVIDENCE WORKER] Failed to ingest from ${source.provider} for user ${userId} after retries`, {
-              error: error.message,
-              provider: source.provider,
-              userId,
-              retries: 3
-            });
-
-            // Still update last_synced_at even on failure (to track last attempt)
-            await this.updateLastSyncedAt(source.id);
-          }
-        } catch (error: any) {
-          // Outer catch for unexpected errors
-          stats.failed++;
-          const errorMsg = `[${source.provider}] ${error.message}`;
-          stats.errors.push(errorMsg);
-          logger.error(`❌ [EVIDENCE WORKER] Unexpected error processing source ${source.provider}`, {
-            error: error.message,
-            provider: source.provider,
-            userId
-          });
-        }
+      try {
+        const agentEventLogger = (await import('../services/agentEventLogger')).default;
+        const ingestionStartTime = Date.now();
+        await agentEventLogger.logEvidenceIngestion({
+          userId,
+          success: result.success,
+          documentsIngested: stats.ingested,
+          documentsSkipped: stats.skipped,
+          documentsFailed: stats.failed,
+          duration: Date.now() - ingestionStartTime,
+          provider: 'all',
+          errors: stats.errors
+        });
+      } catch (logError: any) {
+        logger.warn('⚠️ [EVIDENCE WORKER] Failed to log unified ingestion event', {
+          error: logError.message,
+          userId,
+          tenantId
+        });
       }
+
+      logger.info('✅ [EVIDENCE WORKER] Unified ingestion finished for user', {
+        userId,
+        tenantId,
+        sourcesResolved: result.sourcesResolved,
+        providersAttempted: result.providersAttempted,
+        ingested: stats.ingested,
+        skipped: stats.skipped,
+        failed: stats.failed
+      });
 
       return stats;
     } catch (error: any) {
       logger.error(`❌ [EVIDENCE WORKER] Error ingesting for user ${userId}`, {
         error: error.message,
-        userId
+        userId,
+        tenantId
       });
       stats.failed++;
       stats.errors.push(error.message);
@@ -1144,7 +1088,28 @@ export class EvidenceIngestionWorker {
    */
   async triggerManualIngestion(userId: string): Promise<IngestionStats> {
     logger.info(`🔧 [EVIDENCE WORKER] Manual ingestion triggered for user: ${userId}`);
-    return await this.ingestForUser(userId);
+    const client = supabaseAdmin || supabase;
+    const safeUserId = convertUserIdToUuid(userId);
+    const { data: sourceRow } = await client
+      .from('evidence_sources')
+      .select('tenant_id')
+      .or(`user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`)
+      .eq('status', 'connected')
+      .not('tenant_id', 'is', null)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!sourceRow?.tenant_id) {
+      return {
+        ingested: 0,
+        skipped: 0,
+        failed: 1,
+        errors: ['No tenant-bound evidence source found for manual ingestion']
+      };
+    }
+
+    return await this.ingestForUser(userId, sourceRow.tenant_id);
   }
 }
 

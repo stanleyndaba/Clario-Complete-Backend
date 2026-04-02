@@ -13,6 +13,7 @@ import { oneDriveIngestionService } from '../services/oneDriveIngestionService';
 import { adobeSignIngestionService } from '../services/adobeSignIngestionService';
 import { slackIngestionService } from '../services/slackIngestionService';
 import { unifiedIngestionService } from '../services/unifiedIngestionService';
+import { resolveEvidenceSourcesForIngestion } from '../services/evidenceSourceTruthService';
 import { evidenceMatchingService } from '../services/evidenceMatchingService';
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
@@ -147,6 +148,147 @@ function getTenantIdOrReject(req: Request, res: Response): string | null {
   return tenantId;
 }
 
+function getEvidenceRequestContext(req: Request, res: Response): { userId: string; tenantId: string } | null {
+  const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
+  if (!userId) {
+    res.status(401).json({
+      success: false,
+      error: 'Unauthorized'
+    });
+    return null;
+  }
+
+  const tenantId = getTenantIdOrReject(req, res);
+  if (!tenantId) {
+    return null;
+  }
+
+  return { userId, tenantId };
+}
+
+function normalizeEvidenceProvider(provider: string | null | undefined): string {
+  const normalized = String(provider || '').trim().toLowerCase();
+  if (normalized === 'google_drive') return 'gdrive';
+  return normalized;
+}
+
+async function getAuthoritativeEvidenceSourcesForUser(userId: string, tenantId: string) {
+  const adminClient = supabaseAdmin || supabase;
+  const { data: sourceRows, error: sourcesError } = await adminClient
+    .from('evidence_sources')
+    .select('id, provider, account_email, status, last_ingested_at, created_at, metadata')
+    .eq('tenant_id', tenantId)
+    .or(buildUserFilter(userId))
+    .order('created_at', { ascending: false });
+
+  if (sourcesError) {
+    throw sourcesError;
+  }
+
+  const { data: documentRows, error: documentsError } = await adminClient
+    .from('evidence_documents')
+    .select('provider, ingested_at, created_at, parser_status, parsed_metadata, metadata')
+    .eq('tenant_id', tenantId)
+    .or(buildUserFilter(userId));
+
+  if (documentsError) {
+    throw documentsError;
+  }
+
+  const resolution = await resolveEvidenceSourcesForIngestion(userId, tenantId);
+  const resolvedByProvider = new Map(
+    resolution.resolvedSources.map(source => [normalizeEvidenceProvider(source.provider), source])
+  );
+  const skippedReasonByProvider = new Map(
+    resolution.skippedSources.map(source => [normalizeEvidenceProvider(source.provider), source.reason])
+  );
+
+  const documentStats = new Map<string, {
+    count: number;
+    lastIngestedAt?: string;
+    parsedCount: number;
+    matchReadyCount: number;
+  }>();
+
+  for (const document of (documentRows || []).filter((row: any) => isProductEvidenceDocument(row))) {
+    const provider = normalizeEvidenceProvider(document.provider);
+    if (!provider) continue;
+    const current = documentStats.get(provider) || {
+      count: 0,
+      lastIngestedAt: undefined,
+      parsedCount: 0,
+      matchReadyCount: 0
+    };
+    current.count += 1;
+    const effectiveIngestedAt = document.ingested_at || document.created_at || undefined;
+    if (effectiveIngestedAt && (!current.lastIngestedAt || effectiveIngestedAt > current.lastIngestedAt)) {
+      current.lastIngestedAt = effectiveIngestedAt;
+    }
+    if (document.parser_status === 'completed') {
+      current.parsedCount += 1;
+      if (document.parsed_metadata) {
+        current.matchReadyCount += 1;
+      }
+    }
+    documentStats.set(provider, current);
+  }
+
+  const productSources = (sourceRows || []).filter((source: any) => isProductEvidenceSource(source));
+  const rows = productSources.map((source: any) => {
+    const provider = normalizeEvidenceProvider(source.provider);
+    const resolvedSource = resolvedByProvider.get(provider);
+    const stats = documentStats.get(provider);
+    return {
+      id: source.id,
+      provider,
+      account_email: source.account_email || `${provider}@connected.local`,
+      status: source.status || 'connected',
+      connected: source.status === 'connected',
+      ingestable: !!resolvedSource,
+      ingestable_reason: resolvedSource ? null : (skippedReasonByProvider.get(provider) || 'no_usable_auth_for_provider'),
+      last_ingested_at: source.last_ingested_at || source.metadata?.last_ingested_at || stats?.lastIngestedAt || null,
+      created_at: source.created_at || null,
+      documents_count: stats?.count || 0,
+      parsed_count: stats?.parsedCount || 0,
+      match_ready_count: stats?.matchReadyCount || 0,
+      metadata: source.metadata || {}
+    };
+  });
+
+  for (const resolvedSource of resolution.resolvedSources) {
+    const provider = normalizeEvidenceProvider(resolvedSource.provider);
+    if (rows.some(row => normalizeEvidenceProvider(row.provider) === provider)) {
+      continue;
+    }
+
+    const stats = documentStats.get(provider);
+    rows.push({
+      id: resolvedSource.id,
+      provider,
+      account_email: resolvedSource.accountEmail || `${provider}@connected.local`,
+      status: 'connected',
+      connected: true,
+      ingestable: true,
+      ingestable_reason: null,
+      last_ingested_at: resolvedSource.lastIngestedAt || stats?.lastIngestedAt || null,
+      created_at: null,
+      documents_count: stats?.count || 0,
+      parsed_count: stats?.parsedCount || 0,
+      match_ready_count: stats?.matchReadyCount || 0,
+      metadata: resolvedSource.metadata || {}
+    });
+  }
+
+  rows.sort((a, b) => a.provider.localeCompare(b.provider));
+
+  return {
+    sources: rows,
+    connectedCount: rows.filter(source => source.connected).length,
+    ingestableCount: rows.filter(source => source.ingestable).length,
+    skippedProviders: resolution.skippedSources
+  };
+}
+
 async function loadTenantEvidenceSettings(tenantId: string) {
   const { data: tenant, error } = await supabaseAdmin
     .from('tenants')
@@ -222,141 +364,19 @@ async function syncTenantEvidenceSourceMetadata(tenantId: string, userId: string
  */
 router.get('/sources', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    const tenantId = (req as any).tenant?.tenantId;
-    const adminClient = supabaseAdmin || supabase;
+    const context = getEvidenceRequestContext(req, res);
+    if (!context) return;
 
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
-
-    logger.info('📋 [EVIDENCE] Fetching evidence sources', { userId });
-
-    // Try to get sources from evidence_sources table
-    let sourcesQuery = adminClient
-      .from('evidence_sources')
-      .select('id, provider, account_email, status, last_sync_at, created_at, metadata')
-      .or(buildUserFilter(userId))
-      .order('created_at', { ascending: false });
-
-    if (tenantId) {
-      sourcesQuery = sourcesQuery.eq('tenant_id', tenantId);
-    }
-
-    const { data: sources, error } = await sourcesQuery;
-
-    if (error) {
-      logger.warn('⚠️ [EVIDENCE] Error fetching evidence sources, checking integrations table', { error: error.message });
-
-      // Fallback: Check evidence_sources table for connected OAuth integrations
-      try {
-        let integrationsQuery = supabaseAdmin
-          .from('evidence_sources')
-          .select('*')
-          .or(buildUserFilter(userId))
-          .eq('status', 'connected');
-
-        if (tenantId) {
-          integrationsQuery = integrationsQuery.eq('tenant_id', tenantId);
-        }
-
-        const { data: integrations, error: intError } = await integrationsQuery;
-
-        if (intError || !integrations || integrations.length === 0) {
-          // No connected integrations found - return empty sources
-          return res.json({
-            success: true,
-            sources: [],
-            count: 0
-          });
-        }
-
-        // Map integrations to sources format
-        const mappedSources = integrations
-          .filter((int: any) => isProductEvidenceSource(int))
-          .map((int: any) => ({
-          id: int.id,
-          provider: int.provider,
-          account_email: int.email || int.account_email || `${int.provider}@connected.local`,
-          status: int.status || 'connected',
-          last_sync_at: int.last_sync_at || int.updated_at
-        }));
-
-        return res.json({
-          success: true,
-          sources: mappedSources,
-          count: mappedSources.length
-        });
-      } catch (fallbackError: any) {
-        // Fallback table also failed - return empty
-        return res.json({
-          success: true,
-          sources: [],
-          count: 0
-        });
-      }
-    }
-
-    // Filter to connected sources only
-    const connectedSources = (sources || [])
-      .filter((s: any) => isProductEvidenceSource(s))
-      .filter((s: any) => s.status === 'connected' || s.is_active);
-
-    // If no sources found, check integrations table as fallback
-    if (connectedSources.length === 0) {
-      try {
-        let integrationsQuery = supabaseAdmin
-          .from('evidence_sources')
-          .select('*')
-          .or(buildUserFilter(userId))
-          .eq('status', 'connected');
-
-        if (tenantId) {
-          integrationsQuery = integrationsQuery.eq('tenant_id', tenantId);
-        }
-
-        const { data: integrations } = await integrationsQuery;
-
-        const productIntegrations = (integrations || []).filter((int: any) => isProductEvidenceSource(int));
-
-        if (productIntegrations.length > 0) {
-          return res.json({
-            success: true,
-            sources: productIntegrations.map((int: any) => ({
-              id: int.id,
-              provider: int.provider,
-              account_email: int.email || int.account_email || int.metadata?.email || `${int.provider}@connected.local`,
-              status: int.status || 'connected',
-              last_sync_at: int.last_sync_at || int.updated_at
-            })),
-            count: productIntegrations.length
-          });
-        }
-      } catch (fallbackError: any) {
-        // Fallback failed - continue to return empty
-      }
-
-      // No connected sources at all
-      return res.json({
-        success: true,
-        sources: [],
-        count: 0
-      });
-    }
+    logger.info('📋 [EVIDENCE] Fetching authoritative evidence source truth', context);
+    const sourceTruth = await getAuthoritativeEvidenceSourcesForUser(context.userId, context.tenantId);
 
     res.json({
       success: true,
-      sources: connectedSources.map((s: any) => ({
-        id: s.id,
-        provider: s.provider,
-        account_email: s.account_email || s.email || `${s.provider}@connected.local`,
-        status: s.status || 'connected',
-        last_sync_at: s.last_sync_at || s.updated_at
-      })),
-      count: connectedSources.length
+      sources: sourceTruth.sources,
+      count: sourceTruth.sources.length,
+      connectedCount: sourceTruth.connectedCount,
+      ingestableCount: sourceTruth.ingestableCount,
+      skippedProviders: sourceTruth.skippedProviders
     });
   } catch (error: any) {
     logger.error('❌ [EVIDENCE] Error fetching evidence sources', {
@@ -378,14 +398,9 @@ router.get('/sources', async (req: Request, res: Response) => {
  */
 router.post('/ingest/outlook', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
+    const context = getEvidenceRequestContext(req, res);
+    if (!context) return;
+    const { userId, tenantId } = context;
 
     const { query, maxResults, autoParse } = req.body;
 
@@ -411,7 +426,8 @@ router.post('/ingest/outlook', async (req: Request, res: Response) => {
     const result = await outlookIngestionService.ingestEvidenceFromOutlook(userId, {
       query,
       maxResults: maxResults || 50,
-      autoParse: autoParse !== false
+      autoParse: autoParse !== false,
+      tenantId
     });
 
     // Send SSE event for ingestion completion
@@ -456,14 +472,9 @@ router.post('/ingest/outlook', async (req: Request, res: Response) => {
  */
 router.post('/ingest/gdrive', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
+    const context = getEvidenceRequestContext(req, res);
+    if (!context) return;
+    const { userId, tenantId } = context;
 
     const { query, maxResults, autoParse, folderId } = req.body;
 
@@ -491,7 +502,8 @@ router.post('/ingest/gdrive', async (req: Request, res: Response) => {
       query,
       maxResults: maxResults || 50,
       autoParse: autoParse !== false,
-      folderId
+      folderId,
+      tenantId
     });
 
     // Send SSE event for ingestion completion
@@ -536,14 +548,9 @@ router.post('/ingest/gdrive', async (req: Request, res: Response) => {
  */
 router.post('/ingest/dropbox', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
+    const context = getEvidenceRequestContext(req, res);
+    if (!context) return;
+    const { userId, tenantId } = context;
 
     const { query, maxResults, autoParse, folderPath } = req.body;
 
@@ -571,7 +578,8 @@ router.post('/ingest/dropbox', async (req: Request, res: Response) => {
       query,
       maxResults: maxResults || 50,
       autoParse: autoParse !== false,
-      folderPath
+      folderPath,
+      tenantId
     });
 
     // Send SSE event for ingestion completion
@@ -616,14 +624,9 @@ router.post('/ingest/dropbox', async (req: Request, res: Response) => {
  */
 router.post('/ingest/onedrive', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
+    const context = getEvidenceRequestContext(req, res);
+    if (!context) return;
+    const { userId, tenantId } = context;
 
     const { query, maxResults, autoParse, folderId } = req.body;
 
@@ -650,7 +653,8 @@ router.post('/ingest/onedrive', async (req: Request, res: Response) => {
       query,
       maxResults: maxResults || 50,
       autoParse: autoParse !== false,
-      folderId
+      folderId,
+      tenantId
     });
 
     try {
@@ -694,14 +698,9 @@ router.post('/ingest/onedrive', async (req: Request, res: Response) => {
  */
 router.post('/ingest/adobe_sign', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
+    const context = getEvidenceRequestContext(req, res);
+    if (!context) return;
+    const { userId, tenantId } = context;
 
     const { query, maxResults, autoParse } = req.body;
 
@@ -726,7 +725,8 @@ router.post('/ingest/adobe_sign', async (req: Request, res: Response) => {
     const result = await adobeSignIngestionService.ingestEvidenceFromAdobeSign(userId, {
       query,
       maxResults: maxResults || 50,
-      autoParse: autoParse !== false
+      autoParse: autoParse !== false,
+      tenantId
     });
 
     try {
@@ -770,14 +770,9 @@ router.post('/ingest/adobe_sign', async (req: Request, res: Response) => {
  */
 router.post('/ingest/slack', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
+    const context = getEvidenceRequestContext(req, res);
+    if (!context) return;
+    const { userId, tenantId } = context;
 
     const { query, maxResults, autoParse, channelId } = req.body;
 
@@ -804,7 +799,8 @@ router.post('/ingest/slack', async (req: Request, res: Response) => {
       query,
       maxResults: maxResults || 50,
       autoParse: autoParse !== false,
-      channelId
+      channelId,
+      tenantId
     });
 
     try {
@@ -848,16 +844,9 @@ router.post('/ingest/slack', async (req: Request, res: Response) => {
  */
 router.post('/ingest/all', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    const tenantId = getTenantIdOrReject(req, res);
-
-    if (!tenantId) return;
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
+    const context = getEvidenceRequestContext(req, res);
+    if (!context) return;
+    const { userId, tenantId } = context;
 
     const { providers, query, maxResults, autoParse, folderId, folderPath } = req.body;
 
@@ -906,14 +895,38 @@ router.post('/ingest/all', async (req: Request, res: Response) => {
       logger.debug('Failed to send SSE event for ingestion completion', { error: sseError });
     }
 
-    res.json({
+    const responseBody = {
       success: result.success,
       totalDocumentsIngested: result.totalDocumentsIngested,
       totalItemsProcessed: result.totalItemsProcessed,
+      documentsInserted: result.totalDocumentsIngested,
+      sourcesResolved: result.sourcesResolved,
+      providersAttempted: result.providersAttempted,
+      skippedProviders: result.skippedProviders,
       errors: result.errors,
       results: result.results,
-      message: `Ingested ${result.totalDocumentsIngested} documents from ${result.totalItemsProcessed} items across all sources`
-    });
+      message: result.totalDocumentsIngested > 0
+        ? `Ingested ${result.totalDocumentsIngested} documents from ${result.totalItemsProcessed} items across all sources`
+        : 'No documents were ingested from resolved sources'
+    };
+
+    if (result.sourcesResolved === 0) {
+      return res.status(422).json({
+        ...responseBody,
+        success: false,
+        error: 'No ingestable evidence sources were resolved for this tenant'
+      });
+    }
+
+    if (result.totalDocumentsIngested === 0) {
+      return res.status(422).json({
+        ...responseBody,
+        success: false,
+        error: 'No documents were ingested from the resolved evidence sources'
+      });
+    }
+
+    res.json(responseBody);
   } catch (error: any) {
     logger.error('❌ [EVIDENCE] Error in unified ingestion endpoint', {
       error: error?.message || String(error),
@@ -934,14 +947,9 @@ router.post('/ingest/all', async (req: Request, res: Response) => {
  */
 router.post('/ingest/gmail', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
+    const context = getEvidenceRequestContext(req, res);
+    if (!context) return;
+    const { userId, tenantId } = context;
 
     const { query, maxResults, autoParse } = req.body;
 
@@ -966,7 +974,8 @@ router.post('/ingest/gmail', async (req: Request, res: Response) => {
     const result = await gmailIngestionService.ingestEvidenceFromGmail(userId, {
       query,
       maxResults: maxResults || 50,
-      autoParse: autoParse !== false // Default to true
+      autoParse: autoParse !== false, // Default to true
+      tenantId
     });
 
     // Send SSE event for ingestion completion
@@ -1025,38 +1034,19 @@ router.post('/ingest/gmail', async (req: Request, res: Response) => {
  */
 router.get('/status', async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    const tenantId = (req as any).tenant?.tenantId;
+    const context = getEvidenceRequestContext(req, res);
+    if (!context) return;
+    const { userId, tenantId } = context;
 
-    if (!userId || !tenantId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
-
+    const sourceTruth = await getAuthoritativeEvidenceSourcesForUser(userId, tenantId);
     const safeUserId = convertUserIdToUuid(userId);
     const userFilter = isValidUUID(userId)
       ? `user_id.eq.${userId},seller_id.eq.${userId}`
       : `user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`;
 
-    const { data: sources, error: sourcesError } = await supabaseAdmin
-      .from('evidence_sources')
-      .select('status, last_sync_at, metadata, account_email')
-      .eq('tenant_id', tenantId)
-      .or(userFilter);
-
-    if (sourcesError) {
-      throw sourcesError;
-    }
-
-    const connectedSources = (sources || [])
-      .filter((source: any) => isProductEvidenceSource(source))
-      .filter((source: any) => source.status === 'connected');
-
     const { data: documents, error: documentsError } = await supabaseAdmin
       .from('evidence_documents')
-      .select('id, metadata, processing_status')
+      .select('id, metadata, processing_status, parser_status, parsed_metadata, ingested_at, created_at')
       .eq('tenant_id', tenantId)
       .or(userFilter);
 
@@ -1066,18 +1056,29 @@ router.get('/status', async (req: Request, res: Response) => {
 
     const productDocuments = (documents || []).filter((document: any) => isProductEvidenceDocument(document));
     const processingCount = productDocuments.filter((document: any) => document.processing_status === 'processing').length;
-    const lastIngestion = connectedSources
-      .map((source: any) => source.last_sync_at)
+    const parsedCount = productDocuments.filter((document: any) => document.parser_status === 'completed').length;
+    const matchReadyCount = productDocuments.filter((document: any) => document.parser_status === 'completed' && document.parsed_metadata).length;
+    const lastIngestion = productDocuments
+      .map((document: any) => document.ingested_at || document.created_at)
+      .filter(Boolean)
+      .sort()
+      .reverse()[0] || sourceTruth.sources
+      .map((source: any) => source.last_ingested_at)
       .filter(Boolean)
       .sort()
       .reverse()[0];
 
     res.json({
       success: true,
-      hasConnectedSource: connectedSources.length > 0,
+      hasConnectedSource: sourceTruth.connectedCount > 0,
+      hasIngestableSource: sourceTruth.ingestableCount > 0,
       lastIngestion: lastIngestion || undefined,
       documentsCount: productDocuments.length,
-      processingCount
+      processingCount,
+      parsedCount,
+      matchReadyCount,
+      sourcesResolved: sourceTruth.ingestableCount,
+      skippedProviders: sourceTruth.skippedProviders
     });
   } catch (error: any) {
     logger.error('❌ [EVIDENCE] Error getting ingestion status', {
@@ -1843,83 +1844,6 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
 });
 
 /**
- * GET /api/evidence/sources
- * List all connected evidence sources
- */
-router.get('/sources', async (req: Request, res: Response) => {
-  try {
-    const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id;
-    const tenantId = (req as any).tenant?.tenantId;
-    const adminClient = supabaseAdmin || supabase;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized'
-      });
-    }
-
-    // Try user_id first, fallback to seller_id if needed
-    let sourcesQuery = adminClient
-      .from('evidence_sources')
-      .select('id, provider, account_email, status, last_sync_at, created_at, metadata')
-      .or(buildUserFilter(userId))
-      .order('created_at', { ascending: false });
-
-    if (tenantId) {
-      sourcesQuery = sourcesQuery.eq('tenant_id', tenantId);
-    }
-
-    let { data: sources, error } = await sourcesQuery;
-
-    // If user_id doesn't exist, try seller_id
-    if (error && error.message?.includes('column') && error.message?.includes('user_id')) {
-      let retryQuery = supabase
-        .from('evidence_sources')
-        .select('id, provider, account_email, status, last_sync_at, created_at, metadata')
-        .eq('seller_id', userId)
-        .order('created_at', { ascending: false });
-      if (tenantId) {
-        retryQuery = retryQuery.eq('tenant_id', tenantId);
-      }
-      const retry = await retryQuery;
-      sources = retry.data;
-      error = retry.error;
-    }
-
-    if (error) {
-      logger.error('❌ [EVIDENCE] Error fetching evidence sources', {
-        error: error.message,
-        userId
-      });
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to fetch evidence sources',
-        message: error.message
-      });
-    }
-
-    const productSources = (sources || []).filter((source: any) => isProductEvidenceSource(source));
-
-    res.json({
-      success: true,
-      sources: productSources,
-      count: productSources.length
-    });
-  } catch (error: any) {
-    logger.error('❌ [EVIDENCE] Error in sources endpoint', {
-      error: error?.message || String(error)
-    });
-
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get evidence sources',
-      message: error?.message || String(error)
-    });
-  }
-});
-
-/**
  * GET /api/evidence/sources/:id
  * Get specific evidence source details
  */
@@ -2018,7 +1942,7 @@ router.get('/sources/:id/status', async (req: Request, res: Response) => {
     // Try user_id first, fallback to seller_id if needed
     let { data: source, error } = await supabase
       .from('evidence_sources')
-      .select('id, provider, status, last_sync_at, metadata')
+      .select('id, provider, status, last_ingested_at, metadata')
       .eq('id', id)
       .eq('tenant_id', tenantId)
       .eq('user_id', userId)
@@ -2028,7 +1952,7 @@ router.get('/sources/:id/status', async (req: Request, res: Response) => {
     if (error && error.message?.includes('column') && error.message?.includes('user_id')) {
       const retry = await supabase
         .from('evidence_sources')
-        .select('id, provider, status, last_sync_at, metadata')
+        .select('id, provider, status, last_ingested_at, metadata')
         .eq('id', id)
         .eq('tenant_id', tenantId)
         .eq('seller_id', userId)
@@ -2060,7 +1984,7 @@ router.get('/sources/:id/status', async (req: Request, res: Response) => {
       status: {
         connected: isConnected,
         status: source.status,
-        lastSync: source.last_sync_at,
+        lastSync: source.last_ingested_at,
         hasToken: hasToken,
         provider: source.provider
       }

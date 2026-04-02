@@ -101,20 +101,12 @@ function parseExpiry(source: any): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-function computeIngestionState(connected: boolean, authValid: boolean, hasData: boolean, lastIngestAt?: string, sourceStatus?: string, errorMessage?: string): ProviderStatus['ingestion_state'] {
+function computeIngestionState(connected: boolean, authValid: boolean, hasData: boolean, _lastIngestAt?: string, sourceStatus?: string, errorMessage?: string): ProviderStatus['ingestion_state'] {
   if (!connected) return 'disconnected';
   if (sourceStatus === 'error' || errorMessage) return 'failed';
   if (!authValid) return 'unverified';
-  if (!lastIngestAt && !hasData) return 'unverified';
   if (!hasData) return 'no_data';
-  if (!lastIngestAt) return 'current';
-
-  const lastIngest = new Date(lastIngestAt);
-  if (Number.isNaN(lastIngest.getTime())) return 'current';
-
-  const ageMs = Date.now() - lastIngest.getTime();
-  const staleThresholdMs = 7 * 24 * 60 * 60 * 1000;
-  return ageMs > staleThresholdMs ? 'stale' : 'current';
+  return 'current';
 }
 
 function isProductEvidenceSource(source: {
@@ -370,7 +362,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       id: string;
       provider: string;
       status: string;
-      last_sync_at?: string;
+      last_ingested_at?: string;
       account_email?: string | null;
       permissions?: any;
       seller_id?: string;
@@ -398,7 +390,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
 
       const { data: evidenceSourceRows, error: sourcesError } = await adminClient
         .from('evidence_sources')
-        .select('id, provider, status, last_sync_at, account_email, permissions, seller_id, display_name, metadata')
+        .select('id, provider, status, last_ingested_at, account_email, permissions, seller_id, display_name, metadata')
         .eq('tenant_id', tenant.id)
         .eq('user_id', safeUserId);
 
@@ -442,7 +434,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         const connectedSources = productEvidenceSources.filter(source => source.provider !== 'amazon' && source.status === 'connected');
         if (connectedSources.length > 0) {
           const lastIngest = connectedSources
-            .map(source => source.last_sync_at)
+            .map(source => source.last_ingested_at)
             .filter(Boolean)
             .sort()
             .reverse()[0];
@@ -461,12 +453,12 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
           const authValid = source.status === 'connected' && (!expiry || expiry > new Date());
           const errorMessage = source.metadata?.last_error || source.metadata?.error || undefined;
           const hasData = (documentStats.count || 0) > 0;
-          const lastSuccessAt = documentStats.lastDocumentAt || source.last_sync_at || undefined;
+          const lastSuccessAt = documentStats.lastDocumentAt || source.last_ingested_at || undefined;
           const ingestionState = computeIngestionState(
             source.status === 'connected',
             authValid,
             hasData,
-            source.last_sync_at || undefined,
+            source.last_ingested_at || undefined,
             source.status,
             errorMessage
           );
@@ -478,7 +470,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
               connected: source.status === 'connected',
               auth_valid: authValid,
               needs_reconnect: source.status === 'connected' ? !authValid : source.status === 'error',
-              last_ingest_at: source.last_sync_at || undefined,
+              last_ingest_at: source.last_ingested_at || undefined,
               last_success_at: lastSuccessAt,
               error_state: source.status === 'error' ? 'provider_error' : (!authValid && source.status === 'connected' ? 'auth_invalid' : undefined),
               error_message: errorMessage,
@@ -494,7 +486,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
             
             response.providerIngest[provider] = {
               connected: source.status === 'connected',
-              lastIngest: source.last_sync_at || undefined,
+              lastIngest: source.last_ingested_at || undefined,
               scopes: scopes,
               email: source.account_email || undefined,
               error: errorMessage
@@ -543,7 +535,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
           const existingSource = evidenceSources.find(source => source.provider === providerKey);
           const documentStats = providerDocumentStats.get(providerKey) || { count: 0 };
           const hasData = (documentStats.count || 0) > 0;
-          const lastIngestAt = existingSource?.last_sync_at || tokenRow.updated_at || undefined;
+          const lastIngestAt = existingSource?.last_ingested_at || undefined;
           const lastSuccessAt = documentStats.lastDocumentAt || lastIngestAt;
           const accountEmail = existingSource?.account_email && existingSource.account_email !== 'unknown'
             ? existingSource.account_email
@@ -561,7 +553,6 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
                   provider: providerKey,
                   account_email: accountEmail || 'unknown',
                   status: 'connected',
-                  last_sync_at: lastIngestAt || new Date().toISOString(),
                   permissions: [],
                   metadata: {
                     source: 'token_recovery',
@@ -570,7 +561,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
                   },
                   tenant_id: tenant.id
                 })
-                .select('id, account_email, last_sync_at')
+                .select('id, account_email, last_ingested_at')
                 .maybeSingle();
 
               if (insertError) {
@@ -586,7 +577,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
                   id: insertedSource.id,
                   provider: providerKey,
                   status: 'connected',
-                  last_sync_at: insertedSource.last_sync_at || lastIngestAt,
+                  last_ingested_at: insertedSource.last_ingested_at || lastIngestAt,
                   account_email: insertedSource.account_email || accountEmail || 'unknown',
                   permissions: [],
                   seller_id: safeUserId,

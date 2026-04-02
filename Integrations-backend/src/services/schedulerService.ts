@@ -6,11 +6,12 @@
 
 import cron from 'node-cron';
 import logger from '../utils/logger';
-import { supabase } from '../database/supabaseClient';
-import { gmailIngestionService } from './gmailIngestionService';
+import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
+import { unifiedIngestionService } from './unifiedIngestionService';
 
 interface ScheduledUser {
     userId: string;
+    tenantId: string;
     schedule: string;
     autoCollect: boolean;
     lastRun?: Date;
@@ -137,7 +138,7 @@ class SchedulerService {
             // Query evidence_sources for users with auto-collect enabled
             let query = supabase
                 .from('evidence_sources')
-                .select('user_id, metadata, last_sync_at')
+                .select('tenant_id, user_id, seller_id, metadata, last_ingested_at')
                 .eq('status', 'connected');
 
             const { data: sources, error } = await query;
@@ -156,14 +157,23 @@ class SchedulerService {
             const seenUserIds = new Set<string>();
 
             for (const source of sources) {
-                if (!source.user_id || typeof source.user_id !== 'string' || source.user_id.trim() === '') {
-                    logger.warn('[SCHEDULER] Skipping evidence source with invalid user_id', {
-                        userId: source.user_id
+                const sourceUserId = source.user_id || source.seller_id;
+                if (!source.tenant_id || typeof source.tenant_id !== 'string' || source.tenant_id.trim() === '') {
+                    logger.warn('[SCHEDULER] Skipping evidence source with missing tenant_id', {
+                        provider: source.metadata?.provider
                     });
                     continue;
                 }
 
-                if (seenUserIds.has(source.user_id)) {
+                if (!sourceUserId || typeof sourceUserId !== 'string' || sourceUserId.trim() === '') {
+                    logger.warn('[SCHEDULER] Skipping evidence source with invalid user_id', {
+                        userId: sourceUserId
+                    });
+                    continue;
+                }
+
+                const scopeKey = `${source.tenant_id}:${sourceUserId}`;
+                if (seenUserIds.has(scopeKey)) {
                     continue; // Skip duplicate user entries
                 }
 
@@ -181,12 +191,13 @@ class SchedulerService {
                     continue;
                 }
 
-                seenUserIds.add(source.user_id);
+                seenUserIds.add(scopeKey);
                 users.push({
-                    userId: source.user_id,
+                    userId: sourceUserId,
+                    tenantId: source.tenant_id,
                     schedule: userSchedule,
                     autoCollect: true,
-                    lastRun: source.last_sync_at ? new Date(source.last_sync_at) : undefined
+                    lastRun: source.last_ingested_at ? new Date(source.last_ingested_at) : undefined
                 });
             }
 
@@ -217,49 +228,32 @@ class SchedulerService {
         try {
             logger.info('[SCHEDULER] Starting scheduled ingestion for user', {
                 userId: user.userId,
+                tenantId: user.tenantId,
                 schedule: user.schedule,
                 lastRun: user.lastRun?.toISOString()
             });
-
-            // Load user's filters from metadata
-            const { data: sourceData } = await supabase
-                .from('evidence_sources')
-                .select('metadata')
-                .eq('user_id', user.userId)
-                .maybeSingle();
-
-            const filters = sourceData?.metadata || {};
-
-            // Run Gmail ingestion with user's filters
-            // Note: skipDuplicates and skipExisting are handled in storeEvidenceDocument
-            const result = await gmailIngestionService.ingestEvidenceFromGmail(user.userId, {
+            const result = await unifiedIngestionService.ingestFromAllSources(user.userId, {
                 maxResults: 50,
-                autoParse: true,
-                filters: filters
-            });
-
-            // Update last_sync_at
-            await supabase
-                .from('evidence_sources')
-                .update({
-                    last_sync_at: new Date().toISOString()
-                })
-                .eq('user_id', user.userId);
+                autoParse: true
+            }, user.tenantId);
 
             logger.info('[SCHEDULER] Completed scheduled ingestion for user', {
                 userId: user.userId,
-                documentsIngested: result.documentsIngested,
-                emailsProcessed: result.emailsProcessed,
+                tenantId: user.tenantId,
+                documentsIngested: result.totalDocumentsIngested,
+                itemsProcessed: result.totalItemsProcessed,
+                sourcesResolved: result.sourcesResolved,
                 errors: result.errors.length
             });
 
             // Send SSE notification if any documents were ingested
-            if (result.documentsIngested > 0) {
+            if (result.totalDocumentsIngested > 0) {
                 try {
                     const sseHub = (await import('../utils/sseHub')).default;
                     sseHub.sendEvent(user.userId, 'scheduled_ingestion_complete', {
-                        documentsIngested: result.documentsIngested,
-                        emailsProcessed: result.emailsProcessed,
+                        documentsIngested: result.totalDocumentsIngested,
+                        itemsProcessed: result.totalItemsProcessed,
+                        sourcesResolved: result.sourcesResolved,
                         timestamp: new Date().toISOString()
                     });
                 } catch (sseError) {
@@ -288,8 +282,27 @@ class SchedulerService {
             };
         }
 
+        const safeUserId = convertUserIdToUuid(userId);
+        const { data: sourceRow } = await supabase
+            .from('evidence_sources')
+            .select('tenant_id')
+            .or(`user_id.eq.${safeUserId},seller_id.eq.${safeUserId},seller_id.eq.${userId}`)
+            .eq('status', 'connected')
+            .not('tenant_id', 'is', null)
+            .order('updated_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+        if (!sourceRow?.tenant_id) {
+            return {
+                success: false,
+                message: 'No tenant-bound evidence source found for manual ingestion'
+            };
+        }
+
         await this.ingestForUser({
             userId,
+            tenantId: sourceRow.tenant_id,
             schedule: 'manual',
             autoCollect: true
         });

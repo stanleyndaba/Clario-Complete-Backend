@@ -7,6 +7,7 @@
 import logger from '../utils/logger';
 import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
 import axios from 'axios';
+import tokenManager from '../utils/tokenManager';
 import {
   buildIngestionMetadata,
   buildParsedMetadataForIngestion,
@@ -14,6 +15,7 @@ import {
   extractEvidenceLinkHints,
   IngestionStrategy
 } from './evidenceIngestionDecisionUtils';
+import { resolveEvidenceSourceContext } from './evidenceSourceTruthService';
 
 export interface DropboxIngestionResult {
   success: boolean;
@@ -39,39 +41,50 @@ export class DropboxIngestionService {
   /**
    * Get access token for Dropbox from evidence_sources table
    */
-  private async getAccessToken(userId: string): Promise<string | null> {
+  private async getAccessToken(userId: string, tenantId?: string): Promise<string | null> {
     try {
-      const dbUserId = convertUserIdToUuid(userId);
-      // Get evidence source for Dropbox
-      const { data: source, error } = await supabase
-        .from('evidence_sources')
-        .select('metadata, permissions')
-        .eq('user_id', dbUserId)
-        .eq('provider', 'dropbox')
-        .eq('status', 'connected')
-        .maybeSingle();
-
-      if (error || !source) {
-        logger.warn('⚠️ [DROPBOX INGESTION] No connected Dropbox account found', {
+      if (!tenantId) {
+        logger.warn('⚠️ [DROPBOX INGESTION] Missing tenant context for token lookup', {
           userId,
-          error: error?.message
         });
         return null;
       }
 
-      // Token should be stored in metadata
-      const metadata = source.metadata || {};
+      const sourceContext = await resolveEvidenceSourceContext(userId, 'dropbox', tenantId);
+      if (!sourceContext) {
+        logger.warn('⚠️ [DROPBOX INGESTION] No ingestable Dropbox source found for tenant', {
+          userId,
+          tenantId
+        });
+        return null;
+      }
+
+      const metadata = sourceContext.metadata || {};
       const accessToken = metadata.access_token;
 
-      if (!accessToken) {
-        logger.warn('⚠️ [DROPBOX INGESTION] No access token found in evidence source', {
-          userId
-        });
-        return null;
+      if (accessToken) {
+        return accessToken;
       }
 
-      // TODO: Check token expiry and refresh if needed
-      return accessToken;
+      try {
+        const tokenData = await tokenManager.getRefreshableToken(userId, 'dropbox');
+        if (tokenData?.accessToken) {
+          return tokenData.accessToken;
+        }
+      } catch (tokenError: any) {
+        logger.debug('Dropbox token manager fallback unavailable during ingestion', {
+          userId,
+          tenantId,
+          error: tokenError?.message || String(tokenError)
+        });
+      }
+
+      logger.warn('⚠️ [DROPBOX INGESTION] No Dropbox access token found for resolved source', {
+        userId,
+        tenantId,
+        sourceId: sourceContext.id
+      });
+      return null;
     } catch (error: any) {
       logger.error('❌ [DROPBOX INGESTION] Error getting access token', {
         error: error?.message || String(error),
@@ -92,6 +105,7 @@ export class DropboxIngestionService {
       maxResults?: number;
       autoParse?: boolean;
       folderPath?: string;
+      tenantId?: string;
     } = {}
   ): Promise<DropboxIngestionResult> {
     const startTime = Date.now();
@@ -100,14 +114,25 @@ export class DropboxIngestionService {
     let filesProcessed = 0;
 
     try {
+      const tenantId = options.tenantId;
       logger.info('🔍 [DROPBOX INGESTION] Starting evidence ingestion from Dropbox', {
         userId,
+        tenantId,
         query: options.query,
         maxResults: options.maxResults || 50,
         folderPath: options.folderPath
       });
 
-      const accessToken = await this.getAccessToken(userId);
+      if (!tenantId) {
+        return {
+          success: false,
+          documentsIngested: 0,
+          filesProcessed: 0,
+          errors: ['Tenant context is required for Dropbox evidence ingestion']
+        };
+      }
+
+      const accessToken = await this.getAccessToken(userId, tenantId);
       if (!accessToken) {
         return {
           success: false,
@@ -144,7 +169,7 @@ export class DropboxIngestionService {
               reason: 'metadata_relevance_threshold_not_met',
               missingFields: ['relevance_match'],
               preservedFields: ['file_id', 'file_name', 'file_path', 'mime_type', 'timestamps']
-            });
+            }, tenantId);
 
             if (degradedDocumentId) {
               documentsIngested++;
@@ -166,7 +191,7 @@ export class DropboxIngestionService {
           }
 
           // Store document (with or without content)
-          const documentId = await this.storeEvidenceDocument(userId, file, fileContent);
+          const documentId = await this.storeEvidenceDocument(userId, file, fileContent, undefined, tenantId);
 
           if (documentId) {
             documentsIngested++;
@@ -377,14 +402,34 @@ export class DropboxIngestionService {
       preservedFields?: string[];
       missingFields?: string[];
       metadata?: Record<string, any>;
-    }
+    },
+    tenantId?: string
   ): Promise<string | null> {
     try {
       const dbUserId = convertUserIdToUuid(userId);
+      if (!tenantId) {
+        logger.warn('⚠️ [DROPBOX INGESTION] Cannot store document without tenant context', {
+          userId,
+          filename: file.name
+        });
+        return null;
+      }
+
+      const sourceContext = await resolveEvidenceSourceContext(userId, 'dropbox', tenantId);
+      if (!sourceContext) {
+        logger.warn('⚠️ [DROPBOX INGESTION] No ingestable Dropbox source resolved while storing document', {
+          userId,
+          tenantId,
+          filename: file.name
+        });
+        return null;
+      }
+
       // Check if document already exists
       const { data: existingDoc } = await supabase
         .from('evidence_documents')
         .select('id')
+        .eq('tenant_id', tenantId)
         .eq('user_id', dbUserId)
         .eq('external_id', file.id)
         .eq('filename', file.name)
@@ -396,46 +441,6 @@ export class DropboxIngestionService {
           filename: file.name
         });
         return existingDoc.id;
-      }
-
-      // Get or create evidence source (Dropbox)
-      let sourceId: string;
-      const { data: existingSource } = await supabase
-        .from('evidence_sources')
-        .select('id')
-        .eq('user_id', dbUserId)
-        .eq('provider', 'dropbox')
-        .maybeSingle();
-
-      if (existingSource) {
-        sourceId = existingSource.id;
-      } else {
-        // Create evidence source
-        const { data: newSource, error: sourceError } = await supabase
-          .from('evidence_sources')
-          .insert({
-            user_id: dbUserId,
-            seller_id: dbUserId,
-            provider: 'dropbox',
-            account_email: dbUserId, // Will be updated when we have email
-            status: 'connected',
-            metadata: {
-              connected_at: new Date().toISOString(),
-              source: 'dropbox_api'
-            }
-          })
-          .select('id')
-          .single();
-
-        if (sourceError || !newSource) {
-          logger.error('❌ [DROPBOX INGESTION] Failed to create evidence source', {
-            error: sourceError,
-            userId
-          });
-          return null;
-        }
-
-        sourceId = newSource.id;
       }
 
       const ingestionStrategy: IngestionStrategy = overrides?.strategy || (content ? 'FULL' : 'DEGRADED');
@@ -453,7 +458,8 @@ export class DropboxIngestionService {
 
       // Store document metadata (metadata-first ingestion)
       const documentData = {
-        source_id: sourceId,
+        source_id: sourceContext.id,
+        tenant_id: tenantId,
         user_id: dbUserId,
         seller_id: dbUserId,
         provider: 'dropbox',

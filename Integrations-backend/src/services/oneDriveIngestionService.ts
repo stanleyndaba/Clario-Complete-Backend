@@ -14,6 +14,7 @@ import {
     extractEvidenceLinkHints,
     IngestionStrategy
 } from './evidenceIngestionDecisionUtils';
+import { resolveEvidenceSourceContext } from './evidenceSourceTruthService';
 
 export interface OneDriveIngestionResult {
     success: boolean;
@@ -40,31 +41,32 @@ export class OneDriveIngestionService {
     /**
      * Get access token for OneDrive from evidence_sources table
      */
-    private async getAccessToken(userId: string): Promise<string | null> {
+    private async getAccessToken(userId: string, tenantId?: string): Promise<string | null> {
         try {
-            const dbUserId = convertUserIdToUuid(userId);
-            const { data: source, error } = await supabase
-                .from('evidence_sources')
-                .select('metadata, permissions')
-                .eq('user_id', dbUserId)
-                .eq('provider', 'onedrive')
-                .eq('status', 'connected')
-                .maybeSingle();
-
-            if (error || !source) {
-                logger.warn('⚠️ [ONEDRIVE INGESTION] No connected OneDrive account found', {
+            if (!tenantId) {
+                logger.warn('⚠️ [ONEDRIVE INGESTION] Missing tenant context for token lookup', {
                     userId,
-                    error: error?.message
                 });
                 return null;
             }
 
-            const metadata = source.metadata || {};
+            const sourceContext = await resolveEvidenceSourceContext(userId, 'onedrive', tenantId);
+            if (!sourceContext) {
+                logger.warn('⚠️ [ONEDRIVE INGESTION] No ingestable OneDrive source found for tenant', {
+                    userId,
+                    tenantId
+                });
+                return null;
+            }
+
+            const metadata = sourceContext.metadata || {};
             const accessToken = metadata.access_token;
 
             if (!accessToken) {
                 logger.warn('⚠️ [ONEDRIVE INGESTION] No access token found in evidence source', {
-                    userId
+                    userId,
+                    tenantId,
+                    sourceId: sourceContext.id
                 });
                 return null;
             }
@@ -90,6 +92,7 @@ export class OneDriveIngestionService {
             maxResults?: number;
             autoParse?: boolean;
             folderId?: string;
+            tenantId?: string;
         } = {}
     ): Promise<OneDriveIngestionResult> {
         const startTime = Date.now();
@@ -98,14 +101,25 @@ export class OneDriveIngestionService {
         let filesProcessed = 0;
 
         try {
+            const tenantId = options.tenantId;
             logger.info('🔍 [ONEDRIVE INGESTION] Starting evidence ingestion from OneDrive', {
                 userId,
+                tenantId,
                 query: options.query,
                 maxResults: options.maxResults || 50,
                 folderId: options.folderId
             });
 
-            const accessToken = await this.getAccessToken(userId);
+            if (!tenantId) {
+                return {
+                    success: false,
+                    documentsIngested: 0,
+                    filesProcessed: 0,
+                    errors: ['Tenant context is required for OneDrive evidence ingestion']
+                };
+            }
+
+            const accessToken = await this.getAccessToken(userId, tenantId);
             if (!accessToken) {
                 return {
                     success: false,
@@ -138,7 +152,7 @@ export class OneDriveIngestionService {
                             reason: 'metadata_relevance_threshold_not_met',
                             missingFields: ['relevance_match'],
                             preservedFields: ['file_id', 'file_name', 'file_path', 'mime_type', 'timestamps']
-                        });
+                        }, tenantId);
 
                         if (degradedDocumentId) {
                             documentsIngested++;
@@ -158,7 +172,7 @@ export class OneDriveIngestionService {
                         });
                     }
 
-                    const documentId = await this.storeEvidenceDocument(userId, file, fileContent);
+                    const documentId = await this.storeEvidenceDocument(userId, file, fileContent, undefined, tenantId);
 
                     if (documentId) {
                         documentsIngested++;
@@ -372,14 +386,33 @@ export class OneDriveIngestionService {
             preservedFields?: string[];
             missingFields?: string[];
             metadata?: Record<string, any>;
-        }
+        },
+        tenantId?: string
     ): Promise<string | null> {
         try {
             const dbUserId = convertUserIdToUuid(userId);
+            if (!tenantId) {
+                logger.warn('⚠️ [ONEDRIVE INGESTION] Cannot store document without tenant context', {
+                    userId,
+                    filename: file.name
+                });
+                return null;
+            }
+
+            const sourceContext = await resolveEvidenceSourceContext(userId, 'onedrive', tenantId);
+            if (!sourceContext) {
+                logger.warn('⚠️ [ONEDRIVE INGESTION] No ingestable OneDrive source resolved while storing document', {
+                    userId,
+                    tenantId,
+                    filename: file.name
+                });
+                return null;
+            }
             // Check if document already exists
             const { data: existingDoc } = await supabase
                 .from('evidence_documents')
                 .select('id')
+                .eq('tenant_id', tenantId)
                 .eq('user_id', dbUserId)
                 .eq('external_id', file.id)
                 .eq('filename', file.name)
@@ -391,45 +424,6 @@ export class OneDriveIngestionService {
                     filename: file.name
                 });
                 return existingDoc.id;
-            }
-
-            // Get or create evidence source
-            let sourceId: string;
-            const { data: existingSource } = await supabase
-                .from('evidence_sources')
-                .select('id')
-                .eq('user_id', dbUserId)
-                .eq('provider', 'onedrive')
-                .maybeSingle();
-
-            if (existingSource) {
-                sourceId = existingSource.id;
-            } else {
-                const { data: newSource, error: sourceError } = await supabase
-                    .from('evidence_sources')
-                    .insert({
-                        user_id: dbUserId,
-                        seller_id: dbUserId,
-                        provider: 'onedrive',
-                        account_email: dbUserId,
-                        status: 'connected',
-                        metadata: {
-                            connected_at: new Date().toISOString(),
-                            source: 'onedrive_graph_api'
-                        }
-                    })
-                    .select('id')
-                    .single();
-
-                if (sourceError || !newSource) {
-                    logger.error('❌ [ONEDRIVE INGESTION] Failed to create evidence source', {
-                        error: sourceError,
-                        userId
-                    });
-                    return null;
-                }
-
-                sourceId = newSource.id;
             }
 
             const ingestionStrategy: IngestionStrategy = overrides?.strategy || (content ? 'FULL' : 'DEGRADED');
@@ -447,7 +441,8 @@ export class OneDriveIngestionService {
 
             // Store document metadata
             const documentData = {
-                source_id: sourceId,
+                source_id: sourceContext.id,
+                tenant_id: tenantId,
                 user_id: dbUserId,
                 seller_id: dbUserId,
                 provider: 'onedrive',

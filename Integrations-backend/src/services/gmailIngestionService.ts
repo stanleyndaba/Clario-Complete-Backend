@@ -16,6 +16,7 @@ import {
   extractEvidenceLinkHints,
   IngestionStrategy
 } from './evidenceIngestionDecisionUtils';
+import { resolveEvidenceSourceContext } from './evidenceSourceTruthService';
 
 export interface GmailIngestionResult {
   success: boolean;
@@ -184,6 +185,7 @@ export class GmailIngestionService {
       maxResults?: number;
       autoParse?: boolean;
       filters?: any; // Optional inline filters
+      tenantId?: string;
     } = {}
   ): Promise<GmailIngestionResult> {
     const startTime = Date.now();
@@ -191,10 +193,31 @@ export class GmailIngestionService {
     let documentsIngested = 0;
     let emailsProcessed = 0;
     const dbUserId = convertUserIdToUuid(userId);
+    const tenantId = options.tenantId;
 
     try {
+      if (!tenantId) {
+        return {
+          success: false,
+          documentsIngested: 0,
+          emailsProcessed: 0,
+          errors: ['Tenant context is required for Gmail ingestion']
+        };
+      }
+
+      const sourceContext = await resolveEvidenceSourceContext(userId, 'gmail', tenantId);
+      if (!sourceContext) {
+        return {
+          success: false,
+          documentsIngested: 0,
+          emailsProcessed: 0,
+          errors: ['No ingestable Gmail source was resolved for this tenant']
+        };
+      }
+
       logger.info('🔍 [GMAIL INGESTION] Starting evidence ingestion from Gmail', {
         userId,
+        tenantId,
         query: options.query,
         maxResults: options.maxResults || 50
       });
@@ -203,15 +226,8 @@ export class GmailIngestionService {
       let filters = options.filters;
       if (!filters) {
         try {
-          const { data: sourceData } = await supabase
-            .from('evidence_sources')
-            .select('metadata')
-            .eq('user_id', dbUserId)
-            .eq('provider', 'gmail')
-            .maybeSingle();
-
-          if (sourceData?.metadata) {
-            filters = sourceData.metadata;
+          if (sourceContext.metadata) {
+            filters = sourceContext.metadata;
             logger.info('📋 [GMAIL INGESTION] Loaded saved filters', { userId, filterKeys: Object.keys(filters) });
           }
         } catch (e) {
@@ -258,7 +274,8 @@ export class GmailIngestionService {
               userId,
               email,
               'email_has_no_attachments',
-              ['attachment_content', 'attachment_id', 'filename']
+              ['attachment_content', 'attachment_id', 'filename'],
+              tenantId
             );
 
             if (documentId) {
@@ -280,7 +297,8 @@ export class GmailIngestionService {
               userId,
               email,
               'attachment_metadata_unavailable',
-              ['attachment_content', 'attachment_id', 'filename']
+              ['attachment_content', 'attachment_id', 'filename'],
+              tenantId
             );
 
             if (documentId) {
@@ -326,7 +344,7 @@ export class GmailIngestionService {
                       filename_filter_patterns: this.fileNamePatterns,
                       filename_filter_matched: false
                     }
-                  });
+                  }, tenantId);
 
                   if (degradedDocumentId) {
                     documentsIngested++;
@@ -338,7 +356,7 @@ export class GmailIngestionService {
                 }
               }
 
-              const documentId = await this.storeEvidenceDocument(userId, email, attachment);
+              const documentId = await this.storeEvidenceDocument(userId, email, attachment, undefined, tenantId);
 
               if (documentId) {
                 documentsIngested++;
@@ -502,15 +520,34 @@ export class GmailIngestionService {
       preservedFields?: string[];
       missingFields?: string[];
       metadata?: Record<string, any>;
-    }
+    },
+    tenantId?: string
   ): Promise<string | null> {
     try {
+      if (!tenantId) {
+        logger.error('❌ [GMAIL INGESTION] Cannot store document without tenant context', {
+          userId,
+          filename: attachment.filename
+        });
+        return null;
+      }
+
       const dbUserId = convertUserIdToUuid(userId);
+      const sourceContext = await resolveEvidenceSourceContext(userId, 'gmail', tenantId);
+      if (!sourceContext) {
+        logger.error('❌ [GMAIL INGESTION] No tenant-bound Gmail source available for document persistence', {
+          userId,
+          tenantId,
+          filename: attachment.filename
+        });
+        return null;
+      }
 
       // Check if document already exists (by user_id + external_id + filename)
       const { data: existingDoc } = await supabase
         .from('evidence_documents')
         .select('id')
+        .eq('tenant_id', tenantId)
         .eq('user_id', dbUserId)
         .eq('external_id', `${email.id}_${attachment.id}`)
         .eq('filename', attachment.filename)
@@ -528,51 +565,10 @@ export class GmailIngestionService {
       const { data: existingByFilename } = await supabase
         .from('evidence_documents')
         .select('id')
+        .eq('tenant_id', tenantId)
         .eq('seller_id', dbUserId)
         .eq('filename', attachment.filename)
         .maybeSingle();
-
-      // Get or create evidence source (Gmail)
-      let sourceId: string;
-      const { data: existingSource } = await supabase
-        .from('evidence_sources')
-        .select('id')
-        .eq('user_id', dbUserId)
-        .eq('provider', 'gmail')
-        .maybeSingle();
-
-      if (existingSource) {
-        sourceId = existingSource.id;
-      } else {
-        // Create evidence source
-        const { data: newSource, error: sourceError } = await supabase
-          .from('evidence_sources')
-          .insert({
-            user_id: dbUserId,
-            seller_id: dbUserId,
-            provider: 'gmail',
-            account_email: email.from,
-            status: 'connected',
-            encrypted_access_token: 'mock-encrypted-access-token',
-            encrypted_refresh_token: 'mock-encrypted-refresh-token',
-            metadata: {
-              connected_at: new Date().toISOString(),
-              source: 'gmail_api'
-            }
-          })
-          .select('id')
-          .single();
-
-        if (sourceError || !newSource) {
-          logger.error('❌ [GMAIL INGESTION] Failed to create evidence source', {
-            error: sourceError,
-            userId
-          });
-          return null;
-        }
-
-        sourceId = newSource.id;
-      }
 
       const ingestionStrategy: IngestionStrategy = overrides?.strategy || (attachment.content ? 'FULL' : 'DEGRADED');
       const ingestionExplanation = createIngestionExplanation(
@@ -608,7 +604,8 @@ export class GmailIngestionService {
 
       // Store document metadata (metadata-first ingestion)
       const documentData = {
-        source_id: sourceId,
+        source_id: sourceContext.id,
+        tenant_id: tenantId,
         user_id: dbUserId,
         seller_id: dbUserId,
         provider: 'gmail',
@@ -800,60 +797,40 @@ export class GmailIngestionService {
     userId: string,
     email: any,
     reason: string,
-    missingFields: string[]
+    missingFields: string[],
+    tenantId?: string
   ): Promise<string | null> {
     try {
+      if (!tenantId) {
+        logger.error('❌ [GMAIL INGESTION] Cannot store metadata candidate without tenant context', {
+          userId,
+          emailId: email?.id
+        });
+        return null;
+      }
+
       const dbUserId = convertUserIdToUuid(userId);
       const externalId = `${email.id}__message_metadata`;
+      const sourceContext = await resolveEvidenceSourceContext(userId, 'gmail', tenantId);
+      if (!sourceContext) {
+        logger.error('❌ [GMAIL INGESTION] No tenant-bound Gmail source available for metadata candidate', {
+          userId,
+          tenantId,
+          emailId: email.id
+        });
+        return null;
+      }
+
       const { data: existingDoc } = await supabase
         .from('evidence_documents')
         .select('id')
+        .eq('tenant_id', tenantId)
         .eq('user_id', dbUserId)
         .eq('external_id', externalId)
         .maybeSingle();
 
       if (existingDoc) {
         return existingDoc.id;
-      }
-
-      let sourceId: string;
-      const { data: existingSource } = await supabase
-        .from('evidence_sources')
-        .select('id')
-        .eq('user_id', dbUserId)
-        .eq('provider', 'gmail')
-        .maybeSingle();
-
-      if (existingSource) {
-        sourceId = existingSource.id;
-      } else {
-        const { data: newSource, error: sourceError } = await supabase
-          .from('evidence_sources')
-          .insert({
-            user_id: dbUserId,
-            seller_id: dbUserId,
-            provider: 'gmail',
-            account_email: email.from,
-            status: 'connected',
-            encrypted_access_token: 'mock-encrypted-access-token',
-            encrypted_refresh_token: 'mock-encrypted-refresh-token',
-            metadata: {
-              connected_at: new Date().toISOString(),
-              source: 'gmail_api'
-            }
-          })
-          .select('id')
-          .single();
-
-        if (sourceError || !newSource) {
-          logger.error('❌ [GMAIL INGESTION] Failed to create evidence source for metadata candidate', {
-            error: sourceError,
-            userId
-          });
-          return null;
-        }
-
-        sourceId = newSource.id;
       }
 
       const explanation = createIngestionExplanation(
@@ -869,7 +846,8 @@ export class GmailIngestionService {
       const { data: document, error: docError } = await supabase
         .from('evidence_documents')
         .insert({
-          source_id: sourceId,
+          source_id: sourceContext.id,
+          tenant_id: tenantId,
           user_id: dbUserId,
           seller_id: dbUserId,
           provider: 'gmail',

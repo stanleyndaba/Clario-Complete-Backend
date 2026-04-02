@@ -14,6 +14,7 @@ import {
   extractEvidenceLinkHints,
   IngestionStrategy
 } from './evidenceIngestionDecisionUtils';
+import { resolveEvidenceSourceContext } from './evidenceSourceTruthService';
 
 export interface OutlookIngestionResult {
   success: boolean;
@@ -42,22 +43,20 @@ export class OutlookIngestionService {
   /**
    * Get access token for Outlook from evidence_sources table
    */
-  private async getAccessToken(userId: string): Promise<string | null> {
+  private async getAccessToken(userId: string, tenantId?: string): Promise<string | null> {
     try {
-      const dbUserId = convertUserIdToUuid(userId);
-      // Get evidence source for Outlook
-      const { data: source, error } = await supabase
-        .from('evidence_sources')
-        .select('metadata, permissions')
-        .eq('user_id', dbUserId)
-        .eq('provider', 'outlook')
-        .eq('status', 'connected')
-        .maybeSingle();
+      if (!tenantId) {
+        logger.warn('⚠️ [OUTLOOK INGESTION] Missing tenant context for token lookup', {
+          userId
+        });
+        return null;
+      }
 
-      if (error || !source) {
+      const source = await resolveEvidenceSourceContext(userId, 'outlook', tenantId);
+      if (!source) {
         logger.warn('⚠️ [OUTLOOK INGESTION] No connected Outlook account found', {
           userId,
-          error: error?.message
+          tenantId
         });
         return null;
       }
@@ -95,21 +94,33 @@ export class OutlookIngestionService {
       query?: string;
       maxResults?: number;
       autoParse?: boolean;
+      tenantId?: string;
     } = {}
   ): Promise<OutlookIngestionResult> {
     const startTime = Date.now();
     const errors: string[] = [];
     let documentsIngested = 0;
     let emailsProcessed = 0;
+    const tenantId = options.tenantId;
 
     try {
+      if (!tenantId) {
+        return {
+          success: false,
+          documentsIngested: 0,
+          emailsProcessed: 0,
+          errors: ['Tenant context is required for Outlook ingestion']
+        };
+      }
+
       logger.info('🔍 [OUTLOOK INGESTION] Starting evidence ingestion from Outlook', {
         userId,
+        tenantId,
         query: options.query,
         maxResults: options.maxResults || 50
       });
 
-      const accessToken = await this.getAccessToken(userId);
+      const accessToken = await this.getAccessToken(userId, tenantId);
       if (!accessToken) {
         return {
           success: false,
@@ -146,7 +157,8 @@ export class OutlookIngestionService {
               userId,
               email,
               'email_has_no_attachments',
-              ['attachment_content', 'attachment_id', 'filename']
+              ['attachment_content', 'attachment_id', 'filename'],
+              tenantId
             );
 
             if (documentId) {
@@ -168,7 +180,8 @@ export class OutlookIngestionService {
               userId,
               email,
               'attachment_metadata_unavailable',
-              ['attachment_content', 'attachment_id', 'filename']
+              ['attachment_content', 'attachment_id', 'filename'],
+              tenantId
             );
 
             if (documentId) {
@@ -186,7 +199,7 @@ export class OutlookIngestionService {
           // Store each attachment as evidence document
           for (const attachment of attachments) {
             try {
-              const documentId = await this.storeEvidenceDocument(userId, email, attachment);
+              const documentId = await this.storeEvidenceDocument(userId, email, attachment, undefined, tenantId);
 
               if (documentId) {
                 documentsIngested++;
@@ -443,15 +456,34 @@ export class OutlookIngestionService {
       preservedFields?: string[];
       missingFields?: string[];
       metadata?: Record<string, any>;
-    }
+    },
+    tenantId?: string
   ): Promise<string | null> {
     try {
+      if (!tenantId) {
+        logger.error('❌ [OUTLOOK INGESTION] Cannot store document without tenant context', {
+          userId,
+          filename: attachment.filename
+        });
+        return null;
+      }
+
       const dbUserId = convertUserIdToUuid(userId);
+      const sourceContext = await resolveEvidenceSourceContext(userId, 'outlook', tenantId);
+      if (!sourceContext) {
+        logger.error('❌ [OUTLOOK INGESTION] No tenant-bound Outlook source available for document persistence', {
+          userId,
+          tenantId,
+          filename: attachment.filename
+        });
+        return null;
+      }
 
       // Check if document already exists
       const { data: existingDoc } = await supabase
         .from('evidence_documents')
         .select('id')
+        .eq('tenant_id', tenantId)
         .eq('user_id', dbUserId)
         .eq('external_id', `${email.id}_${attachment.id}`)
         .eq('filename', attachment.filename)
@@ -468,49 +500,10 @@ export class OutlookIngestionService {
       const { data: existingByFilename } = await supabase
         .from('evidence_documents')
         .select('id')
+        .eq('tenant_id', tenantId)
         .eq('seller_id', dbUserId)
         .eq('filename', attachment.filename)
         .maybeSingle();
-
-      // Get or create evidence source (Outlook)
-      let sourceId: string;
-      const { data: existingSource } = await supabase
-        .from('evidence_sources')
-        .select('id')
-        .eq('user_id', dbUserId)
-        .eq('provider', 'outlook')
-        .maybeSingle();
-
-      if (existingSource) {
-        sourceId = existingSource.id;
-      } else {
-        // Create evidence source
-        const { data: newSource, error: sourceError } = await supabase
-          .from('evidence_sources')
-          .insert({
-            user_id: dbUserId,
-            seller_id: dbUserId,
-            provider: 'outlook',
-            account_email: email.from,
-            status: 'connected',
-            metadata: {
-              connected_at: new Date().toISOString(),
-              source: 'microsoft_graph_api'
-            }
-          })
-          .select('id')
-          .single();
-
-        if (sourceError || !newSource) {
-          logger.error('❌ [OUTLOOK INGESTION] Failed to create evidence source', {
-            error: sourceError,
-            userId
-          });
-          return null;
-        }
-
-        sourceId = newSource.id;
-      }
 
       const ingestionStrategy: IngestionStrategy = overrides?.strategy || (attachment.content ? 'FULL' : 'DEGRADED');
       const ingestionExplanation = createIngestionExplanation(
@@ -543,7 +536,8 @@ export class OutlookIngestionService {
 
       // Store document metadata (metadata-first ingestion)
       const documentData = {
-        source_id: sourceId,
+        source_id: sourceContext.id,
+        tenant_id: tenantId,
         user_id: dbUserId,
         seller_id: dbUserId,
         provider: 'outlook',
@@ -667,58 +661,40 @@ export class OutlookIngestionService {
     userId: string,
     email: any,
     reason: string,
-    missingFields: string[]
+    missingFields: string[],
+    tenantId?: string
   ): Promise<string | null> {
     try {
+      if (!tenantId) {
+        logger.error('❌ [OUTLOOK INGESTION] Cannot store metadata candidate without tenant context', {
+          userId,
+          emailId: email?.id
+        });
+        return null;
+      }
+
       const dbUserId = convertUserIdToUuid(userId);
       const externalId = `${email.id}__message_metadata`;
+      const sourceContext = await resolveEvidenceSourceContext(userId, 'outlook', tenantId);
+      if (!sourceContext) {
+        logger.error('❌ [OUTLOOK INGESTION] No tenant-bound Outlook source available for metadata candidate', {
+          userId,
+          tenantId,
+          emailId: email.id
+        });
+        return null;
+      }
+
       const { data: existingDoc } = await supabase
         .from('evidence_documents')
         .select('id')
+        .eq('tenant_id', tenantId)
         .eq('user_id', dbUserId)
         .eq('external_id', externalId)
         .maybeSingle();
 
       if (existingDoc) {
         return existingDoc.id;
-      }
-
-      let sourceId: string;
-      const { data: existingSource } = await supabase
-        .from('evidence_sources')
-        .select('id')
-        .eq('user_id', dbUserId)
-        .eq('provider', 'outlook')
-        .maybeSingle();
-
-      if (existingSource) {
-        sourceId = existingSource.id;
-      } else {
-        const { data: newSource, error: sourceError } = await supabase
-          .from('evidence_sources')
-          .insert({
-            user_id: dbUserId,
-            seller_id: dbUserId,
-            provider: 'outlook',
-            account_email: email.from,
-            status: 'connected',
-            metadata: {
-              connected_at: new Date().toISOString(),
-              source: 'microsoft_graph_api'
-            }
-          })
-          .select('id')
-          .single();
-
-        if (sourceError || !newSource) {
-          logger.error('❌ [OUTLOOK INGESTION] Failed to create evidence source for metadata candidate', {
-            error: sourceError,
-            userId
-          });
-          return null;
-        }
-
-        sourceId = newSource.id;
       }
 
       const explanation = createIngestionExplanation(
@@ -734,7 +710,8 @@ export class OutlookIngestionService {
       const { data: document, error: docError } = await supabase
         .from('evidence_documents')
         .insert({
-          source_id: sourceId,
+          source_id: sourceContext.id,
+          tenant_id: tenantId,
           user_id: dbUserId,
           seller_id: dbUserId,
           provider: 'outlook',

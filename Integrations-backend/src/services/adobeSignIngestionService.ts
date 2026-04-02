@@ -5,8 +5,9 @@
  */
 
 import logger from '../utils/logger';
-import { supabase } from '../database/supabaseClient';
+import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
 import axios from 'axios';
+import { resolveEvidenceSourceContext } from './evidenceSourceTruthService';
 
 export interface AdobeSignIngestionResult {
     success: boolean;
@@ -33,25 +34,25 @@ export class AdobeSignIngestionService {
     /**
      * Get access token for Adobe Sign from evidence_sources table
      */
-    private async getAccessToken(userId: string): Promise<string | null> {
+    private async getAccessToken(userId: string, tenantId?: string): Promise<string | null> {
         try {
-            const { data: source, error } = await supabase
-                .from('evidence_sources')
-                .select('metadata, permissions')
-                .eq('user_id', userId)
-                .eq('provider', 'adobe_sign')
-                .eq('status', 'connected')
-                .maybeSingle();
-
-            if (error || !source) {
-                logger.warn('⚠️ [ADOBESIGN INGESTION] No connected Adobe Sign account found', {
+            if (!tenantId) {
+                logger.warn('⚠️ [ADOBESIGN INGESTION] Missing tenant context for token lookup', {
                     userId,
-                    error: error?.message
                 });
                 return null;
             }
 
-            const metadata = source.metadata || {};
+            const sourceContext = await resolveEvidenceSourceContext(userId, 'adobe_sign', tenantId);
+            if (!sourceContext) {
+                logger.warn('⚠️ [ADOBESIGN INGESTION] No ingestable Adobe Sign source found for tenant', {
+                    userId,
+                    tenantId
+                });
+                return null;
+            }
+
+            const metadata = sourceContext.metadata || {};
             const accessToken = metadata.access_token;
 
             // Check for custom API base URL (different data centers)
@@ -86,6 +87,7 @@ export class AdobeSignIngestionService {
             query?: string;
             maxResults?: number;
             autoParse?: boolean;
+            tenantId?: string;
         } = {}
     ): Promise<AdobeSignIngestionResult> {
         const startTime = Date.now();
@@ -94,12 +96,23 @@ export class AdobeSignIngestionService {
         let agreementsProcessed = 0;
 
         try {
+            const tenantId = options.tenantId;
             logger.info('🔍 [ADOBESIGN INGESTION] Starting evidence ingestion from Adobe Sign', {
                 userId,
+                tenantId,
                 maxResults: options.maxResults || 50
             });
 
-            const accessToken = await this.getAccessToken(userId);
+            if (!tenantId) {
+                return {
+                    success: false,
+                    documentsIngested: 0,
+                    agreementsProcessed: 0,
+                    errors: ['Tenant context is required for Adobe Sign evidence ingestion']
+                };
+            }
+
+            const accessToken = await this.getAccessToken(userId, tenantId);
             if (!accessToken) {
                 return {
                     success: false,
@@ -143,7 +156,7 @@ export class AdobeSignIngestionService {
                         });
                     }
 
-                    const documentId = await this.storeEvidenceDocument(userId, agreement, pdfContent);
+                    const documentId = await this.storeEvidenceDocument(userId, agreement, pdfContent, tenantId);
 
                     if (documentId) {
                         documentsIngested++;
@@ -301,14 +314,34 @@ export class AdobeSignIngestionService {
     private async storeEvidenceDocument(
         userId: string,
         agreement: AdobeSignAgreement,
-        content?: Buffer
+        content?: Buffer,
+        tenantId?: string
     ): Promise<string | null> {
         try {
+            const dbUserId = convertUserIdToUuid(userId);
+            if (!tenantId) {
+                logger.warn('⚠️ [ADOBESIGN INGESTION] Cannot store document without tenant context', {
+                    userId,
+                    agreementId: agreement.id
+                });
+                return null;
+            }
+
+            const sourceContext = await resolveEvidenceSourceContext(userId, 'adobe_sign', tenantId);
+            if (!sourceContext) {
+                logger.warn('⚠️ [ADOBESIGN INGESTION] No ingestable Adobe Sign source resolved while storing document', {
+                    userId,
+                    tenantId,
+                    agreementId: agreement.id
+                });
+                return null;
+            }
             // Check if document already exists
             const { data: existingDoc } = await supabase
                 .from('evidence_documents')
                 .select('id')
-                .eq('user_id', userId)
+                .eq('tenant_id', tenantId)
+                .eq('user_id', dbUserId)
                 .eq('external_id', agreement.id)
                 .maybeSingle();
 
@@ -320,49 +353,13 @@ export class AdobeSignIngestionService {
                 return existingDoc.id;
             }
 
-            // Get or create evidence source
-            let sourceId: string;
-            const { data: existingSource } = await supabase
-                .from('evidence_sources')
-                .select('id')
-                .eq('user_id', userId)
-                .eq('provider', 'adobe_sign')
-                .maybeSingle();
-
-            if (existingSource) {
-                sourceId = existingSource.id;
-            } else {
-                const { data: newSource, error: sourceError } = await supabase
-                    .from('evidence_sources')
-                    .insert({
-                        user_id: userId,
-                        provider: 'adobe_sign',
-                        account_email: userId,
-                        status: 'connected',
-                        metadata: {
-                            connected_at: new Date().toISOString(),
-                            source: 'adobe_sign_api'
-                        }
-                    })
-                    .select('id')
-                    .single();
-
-                if (sourceError || !newSource) {
-                    logger.error('❌ [ADOBESIGN INGESTION] Failed to create evidence source', {
-                        error: sourceError,
-                        userId
-                    });
-                    return null;
-                }
-
-                sourceId = newSource.id;
-            }
-
             const filename = `${agreement.name}.pdf`;
 
             const documentData = {
-                source_id: sourceId,
-                user_id: userId,
+                source_id: sourceContext.id,
+                tenant_id: tenantId,
+                user_id: dbUserId,
+                seller_id: dbUserId,
                 provider: 'adobe_sign',
                 external_id: agreement.id,
                 filename: filename,
@@ -401,7 +398,7 @@ export class AdobeSignIngestionService {
             if (content) {
                 try {
                     const bucketName = 'evidence-documents';
-                    const filePath = `${userId}/${document.id}/${filename}`;
+                    const filePath = `${dbUserId}/${document.id}/${filename}`;
 
                     const { data: uploadData, error: uploadError } = await supabase.storage
                         .from(bucketName)

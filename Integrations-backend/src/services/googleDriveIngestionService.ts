@@ -14,6 +14,8 @@ import {
   extractEvidenceLinkHints,
   IngestionStrategy
 } from './evidenceIngestionDecisionUtils';
+import { resolveEvidenceSourceContext } from './evidenceSourceTruthService';
+import tokenManager from '../utils/tokenManager';
 
 export interface GoogleDriveIngestionResult {
   success: boolean;
@@ -41,22 +43,20 @@ export class GoogleDriveIngestionService {
   /**
    * Get access token for Google Drive from evidence_sources table
    */
-  private async getAccessToken(userId: string): Promise<string | null> {
+  private async getAccessToken(userId: string, tenantId?: string): Promise<string | null> {
     try {
-      const dbUserId = convertUserIdToUuid(userId);
-      // Get evidence source for Google Drive
-      const { data: source, error } = await supabase
-        .from('evidence_sources')
-        .select('metadata, permissions')
-        .eq('user_id', dbUserId)
-        .eq('provider', 'gdrive')
-        .eq('status', 'connected')
-        .maybeSingle();
+      if (!tenantId) {
+        logger.warn('⚠️ [GDRIVE INGESTION] Missing tenant context for token lookup', {
+          userId
+        });
+        return null;
+      }
 
-      if (error || !source) {
+      const source = await resolveEvidenceSourceContext(userId, 'gdrive', tenantId);
+      if (!source) {
         logger.warn('⚠️ [GDRIVE INGESTION] No connected Google Drive account found', {
           userId,
-          error: error?.message
+          tenantId
         });
         return null;
       }
@@ -68,13 +68,18 @@ export class GoogleDriveIngestionService {
       // If no token in metadata, try to get from Gmail tokenManager (same Google account)
       if (!accessToken) {
         try {
-          const { tokenManager } = await import('../utils/tokenManager');
-          const gmailToken = await tokenManager.getToken(userId, 'gmail');
-          if (gmailToken) {
-            accessToken = gmailToken.accessToken;
-            logger.info('✅ [GDRIVE INGESTION] Using Gmail token for Google Drive (same account)', {
-              userId
-            });
+          const driveToken = await tokenManager.getRefreshableToken(userId, 'gdrive');
+          if (driveToken) {
+            accessToken = driveToken.accessToken;
+          }
+          if (!accessToken) {
+            const gmailToken = await tokenManager.getRefreshableToken(userId, 'gmail');
+            if (gmailToken) {
+              accessToken = gmailToken.accessToken;
+              logger.info('✅ [GDRIVE INGESTION] Using Gmail token for Google Drive (same account)', {
+                userId
+              });
+            }
           }
         } catch (tokenError) {
           logger.debug('Could not get Gmail token for Google Drive', { error: tokenError });
@@ -109,22 +114,34 @@ export class GoogleDriveIngestionService {
       maxResults?: number;
       autoParse?: boolean;
       folderId?: string;
+      tenantId?: string;
     } = {}
   ): Promise<GoogleDriveIngestionResult> {
     const startTime = Date.now();
     const errors: string[] = [];
     let documentsIngested = 0;
     let filesProcessed = 0;
+    const tenantId = options.tenantId;
 
     try {
+      if (!tenantId) {
+        return {
+          success: false,
+          documentsIngested: 0,
+          filesProcessed: 0,
+          errors: ['Tenant context is required for Google Drive ingestion']
+        };
+      }
+
       logger.info('🔍 [GDRIVE INGESTION] Starting evidence ingestion from Google Drive', {
         userId,
+        tenantId,
         query: options.query,
         maxResults: options.maxResults || 50,
         folderId: options.folderId
       });
 
-      const accessToken = await this.getAccessToken(userId);
+      const accessToken = await this.getAccessToken(userId, tenantId);
       if (!accessToken) {
         return {
           success: false,
@@ -166,7 +183,7 @@ export class GoogleDriveIngestionService {
               reason: 'metadata_relevance_threshold_not_met',
               missingFields: ['relevance_match'],
               preservedFields: ['file_id', 'file_name', 'mime_type', 'web_view_link', 'timestamps']
-            });
+            }, tenantId);
 
             if (degradedDocumentId) {
               documentsIngested++;
@@ -188,7 +205,7 @@ export class GoogleDriveIngestionService {
           }
 
           // Store document (with or without content)
-          const documentId = await this.storeEvidenceDocument(userId, file, fileContent);
+          const documentId = await this.storeEvidenceDocument(userId, file, fileContent, undefined, tenantId);
 
           if (documentId) {
             documentsIngested++;
@@ -380,14 +397,33 @@ export class GoogleDriveIngestionService {
       preservedFields?: string[];
       missingFields?: string[];
       metadata?: Record<string, any>;
-    }
+    },
+    tenantId?: string
   ): Promise<string | null> {
     try {
+      if (!tenantId) {
+        logger.error('❌ [GDRIVE INGESTION] Cannot store document without tenant context', {
+          userId,
+          filename: file.name
+        });
+        return null;
+      }
+
       const dbUserId = convertUserIdToUuid(userId);
+      const sourceContext = await resolveEvidenceSourceContext(userId, 'gdrive', tenantId);
+      if (!sourceContext) {
+        logger.error('❌ [GDRIVE INGESTION] No tenant-bound Google Drive source available for document persistence', {
+          userId,
+          tenantId,
+          filename: file.name
+        });
+        return null;
+      }
       // Check if document already exists
       const { data: existingDoc } = await supabase
         .from('evidence_documents')
         .select('id')
+        .eq('tenant_id', tenantId)
         .eq('user_id', dbUserId)
         .eq('external_id', file.id)
         .eq('filename', file.name)
@@ -399,46 +435,6 @@ export class GoogleDriveIngestionService {
           filename: file.name
         });
         return existingDoc.id;
-      }
-
-      // Get or create evidence source (Google Drive)
-      let sourceId: string;
-      const { data: existingSource } = await supabase
-        .from('evidence_sources')
-        .select('id')
-        .eq('user_id', dbUserId)
-        .eq('provider', 'gdrive')
-        .maybeSingle();
-
-      if (existingSource) {
-        sourceId = existingSource.id;
-      } else {
-        // Create evidence source
-        const { data: newSource, error: sourceError } = await supabase
-          .from('evidence_sources')
-          .insert({
-            user_id: dbUserId,
-            seller_id: dbUserId,
-            provider: 'gdrive',
-            account_email: dbUserId, // Will be updated when we have email
-            status: 'connected',
-            metadata: {
-              connected_at: new Date().toISOString(),
-              source: 'google_drive_api'
-            }
-          })
-          .select('id')
-          .single();
-
-        if (sourceError || !newSource) {
-          logger.error('❌ [GDRIVE INGESTION] Failed to create evidence source', {
-            error: sourceError,
-            userId
-          });
-          return null;
-        }
-
-        sourceId = newSource.id;
       }
 
       const ingestionStrategy: IngestionStrategy = overrides?.strategy || (content ? 'FULL' : 'DEGRADED');
@@ -456,7 +452,8 @@ export class GoogleDriveIngestionService {
 
       // Store document metadata (metadata-first ingestion)
       const documentData = {
-        source_id: sourceId,
+        source_id: sourceContext.id,
+        tenant_id: tenantId,
         user_id: dbUserId,
         seller_id: dbUserId,
         provider: 'gdrive',

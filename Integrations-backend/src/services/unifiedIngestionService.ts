@@ -5,7 +5,6 @@
  */
 
 import logger from '../utils/logger';
-import { supabase } from '../database/supabaseClient';
 import { gmailIngestionService } from './gmailIngestionService';
 import { outlookIngestionService } from './outlookIngestionService';
 import { googleDriveIngestionService } from './googleDriveIngestionService';
@@ -13,12 +12,20 @@ import { dropboxIngestionService } from './dropboxIngestionService';
 import { oneDriveIngestionService } from './oneDriveIngestionService';
 import { adobeSignIngestionService } from './adobeSignIngestionService';
 import { slackIngestionService } from './slackIngestionService';
+import {
+  EvidenceSourceContext,
+  resolveEvidenceSourcesForIngestion,
+  markEvidenceSourceIngested
+} from './evidenceSourceTruthService';
 
 export interface UnifiedIngestionResult {
   success: boolean;
   totalDocumentsIngested: number;
   totalItemsProcessed: number;
   errors: string[];
+  sourcesResolved: number;
+  providersAttempted: string[];
+  skippedProviders: Array<{ provider: string; reason: string }>;
   results: {
     gmail?: {
       success: boolean;
@@ -90,45 +97,78 @@ export class UnifiedIngestionService {
     let totalDocumentsIngested = 0;
     let totalItemsProcessed = 0;
     const results: UnifiedIngestionResult['results'] = {};
+    let sourcesResolved = 0;
+    const providersAttempted: string[] = [];
+    let skippedProviders: UnifiedIngestionResult['skippedProviders'] = [];
 
     try {
       logger.info('🔍 [UNIFIED INGESTION] Starting unified evidence ingestion', {
         userId,
+        tenantId,
         providers: options.providers,
         maxResults: options.maxResults || 50
       });
 
-      // Get connected sources
-      const connectedSources = await this.getConnectedSources(userId, options.providers, tenantId);
+      if (!tenantId) {
+        return {
+          success: false,
+          totalDocumentsIngested: 0,
+          totalItemsProcessed: 0,
+          errors: ['Tenant context is required for evidence ingestion'],
+          sourcesResolved: 0,
+          providersAttempted: [],
+          skippedProviders: [{ provider: 'all', reason: 'tenant_context_missing' }],
+          results: {}
+        };
+      }
+
+      const resolution = await resolveEvidenceSourcesForIngestion(userId, tenantId, options.providers);
+      const connectedSources = resolution.resolvedSources;
+      skippedProviders = resolution.skippedSources;
+      sourcesResolved = connectedSources.length;
 
       if (connectedSources.length === 0) {
         logger.warn('⚠️ [UNIFIED INGESTION] No connected evidence sources found', {
-          userId
+          userId,
+          tenantId,
+          skippedProviders
         });
         return {
           success: false,
           totalDocumentsIngested: 0,
           totalItemsProcessed: 0,
-          errors: ['No connected evidence sources found'],
+          errors: ['No ingestable evidence sources found for this tenant'],
+          sourcesResolved: 0,
+          providersAttempted: [],
+          skippedProviders,
           results: {}
         };
       }
 
-      logger.info(`✅ [UNIFIED INGESTION] Found ${connectedSources.length} connected sources`, {
+      logger.info(`✅ [UNIFIED INGESTION] Resolved ${connectedSources.length} ingestable sources`, {
         userId,
-        sources: connectedSources.map(s => s.provider)
+        tenantId,
+        sources: connectedSources.map(s => s.provider),
+        skippedProviders
       });
 
       // Process all sources in parallel
-      const ingestionPromises = connectedSources.map(source =>
-        this.ingestFromSource(userId, source.provider, options)
+      const ingestionPromises = connectedSources.map(source => {
+        providersAttempted.push(source.provider);
+        return this.ingestFromSource(userId, source, {
+          ...options,
+          tenantId
+        });
+      }
       );
 
       const ingestionResults = await Promise.allSettled(ingestionPromises);
 
       // Aggregate results
-      ingestionResults.forEach((result, index) => {
-        const provider = connectedSources[index].provider;
+      for (let index = 0; index < ingestionResults.length; index += 1) {
+        const result = ingestionResults[index];
+        const source = connectedSources[index];
+        const provider = source.provider;
 
         if (result.status === 'fulfilled') {
           const providerResult = result.value;
@@ -136,6 +176,10 @@ export class UnifiedIngestionService {
 
           totalDocumentsIngested += providerResult.documentsIngested || 0;
           totalItemsProcessed += providerResult.itemsProcessed || 0;
+
+          if ((providerResult.documentsIngested || 0) > 0) {
+            await markEvidenceSourceIngested(source.id);
+          }
 
           if (providerResult.errors && providerResult.errors.length > 0) {
             errors.push(...providerResult.errors.map(e => `[${provider}] ${e}`));
@@ -148,9 +192,13 @@ export class UnifiedIngestionService {
             userId
           });
         }
-      });
+      }
 
       const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
+      const noDocumentsIngested = totalDocumentsIngested === 0;
+      if (noDocumentsIngested && errors.length === 0) {
+        errors.push('No documents were ingested from the resolved evidence sources');
+      }
 
       logger.info('✅ [UNIFIED INGESTION] Unified evidence ingestion completed', {
         userId,
@@ -162,10 +210,13 @@ export class UnifiedIngestionService {
       });
 
       return {
-        success: errors.length === 0,
+        success: !noDocumentsIngested && errors.length === 0,
         totalDocumentsIngested,
         totalItemsProcessed,
         errors,
+        sourcesResolved,
+        providersAttempted,
+        skippedProviders,
         results
       };
     } catch (error: any) {
@@ -180,54 +231,11 @@ export class UnifiedIngestionService {
         totalDocumentsIngested,
         totalItemsProcessed,
         errors: [error?.message || String(error)],
+        sourcesResolved,
+        providersAttempted,
+        skippedProviders,
         results
       };
-    }
-  }
-
-  /**
-   * Get connected evidence sources for user
-   */
-  private async getConnectedSources(
-    userId: string,
-    providerFilter?: string[],
-    tenantId?: string
-  ): Promise<Array<{ provider: string; accountEmail?: string }>> {
-    try {
-      let query = supabase
-        .from('evidence_sources')
-        .select('provider, account_email')
-        .eq('user_id', userId)
-        .eq('status', 'connected');
-
-      if (tenantId) {
-        query = query.eq('tenant_id', tenantId);
-      }
-
-      if (providerFilter && providerFilter.length > 0) {
-        query = query.in('provider', providerFilter);
-      }
-
-      const { data: sources, error } = await query;
-
-      if (error) {
-        logger.error('❌ [UNIFIED INGESTION] Error fetching connected sources', {
-          error: error.message,
-          userId
-        });
-        return [];
-      }
-
-      return (sources || []).map((s: any) => ({
-        provider: s.provider,
-        accountEmail: s.account_email
-      }));
-    } catch (error: any) {
-      logger.error('❌ [UNIFIED INGESTION] Error getting connected sources', {
-        error: error?.message || String(error),
-        userId
-      });
-      return [];
     }
   }
 
@@ -236,18 +244,21 @@ export class UnifiedIngestionService {
    */
   private async ingestFromSource(
     userId: string,
-    provider: string,
-    options: IngestionOptions
+    source: EvidenceSourceContext,
+    options: IngestionOptions & { tenantId: string }
   ): Promise<{
     success: boolean;
     documentsIngested: number;
     itemsProcessed: number;
     errors: string[];
   }> {
+    const provider = source.provider;
     try {
       logger.info(`🔍 [UNIFIED INGESTION] Ingesting from ${provider}`, {
         userId,
-        provider
+        provider,
+        tenantId: options.tenantId,
+        sourceId: source.id
       });
 
       switch (provider) {
@@ -255,7 +266,8 @@ export class UnifiedIngestionService {
           const gmailResult = await gmailIngestionService.ingestEvidenceFromGmail(userId, {
             query: options.query,
             maxResults: options.maxResults,
-            autoParse: options.autoParse
+            autoParse: options.autoParse,
+            tenantId: options.tenantId
           });
           return {
             success: gmailResult.success,
@@ -268,7 +280,8 @@ export class UnifiedIngestionService {
           const outlookResult = await outlookIngestionService.ingestEvidenceFromOutlook(userId, {
             query: options.query,
             maxResults: options.maxResults,
-            autoParse: options.autoParse
+            autoParse: options.autoParse,
+            tenantId: options.tenantId
           });
           return {
             success: outlookResult.success,
@@ -282,7 +295,8 @@ export class UnifiedIngestionService {
             query: options.query,
             maxResults: options.maxResults,
             autoParse: options.autoParse,
-            folderId: options.folderId
+            folderId: options.folderId,
+            tenantId: options.tenantId
           });
           return {
             success: gdriveResult.success,
@@ -296,7 +310,8 @@ export class UnifiedIngestionService {
             query: options.query,
             maxResults: options.maxResults,
             autoParse: options.autoParse,
-            folderPath: options.folderPath
+            folderPath: options.folderPath,
+            tenantId: options.tenantId
           });
           return {
             success: dropboxResult.success,
@@ -310,7 +325,8 @@ export class UnifiedIngestionService {
             query: options.query,
             maxResults: options.maxResults,
             autoParse: options.autoParse,
-            folderId: options.folderId
+            folderId: options.folderId,
+            tenantId: options.tenantId
           });
           return {
             success: onedriveResult.success,
@@ -323,7 +339,8 @@ export class UnifiedIngestionService {
           const adobeSignResult = await adobeSignIngestionService.ingestEvidenceFromAdobeSign(userId, {
             query: options.query,
             maxResults: options.maxResults,
-            autoParse: options.autoParse
+            autoParse: options.autoParse,
+            tenantId: options.tenantId
           });
           return {
             success: adobeSignResult.success,
@@ -336,7 +353,8 @@ export class UnifiedIngestionService {
           const slackResult = await slackIngestionService.ingestEvidenceFromSlack(userId, {
             query: options.query,
             maxResults: options.maxResults,
-            autoParse: options.autoParse
+            autoParse: options.autoParse,
+            tenantId: options.tenantId
           });
           return {
             success: slackResult.success,

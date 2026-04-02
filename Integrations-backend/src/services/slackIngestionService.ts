@@ -5,8 +5,9 @@
  */
 
 import logger from '../utils/logger';
-import { supabase } from '../database/supabaseClient';
+import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
 import axios from 'axios';
+import { resolveEvidenceSourceContext } from './evidenceSourceTruthService';
 
 export interface SlackIngestionResult {
     success: boolean;
@@ -36,25 +37,25 @@ export class SlackIngestionService {
     /**
      * Get access token for Slack from evidence_sources table
      */
-    private async getAccessToken(userId: string): Promise<string | null> {
+    private async getAccessToken(userId: string, tenantId?: string): Promise<string | null> {
         try {
-            const { data: source, error } = await supabase
-                .from('evidence_sources')
-                .select('metadata, permissions')
-                .eq('user_id', userId)
-                .eq('provider', 'slack')
-                .eq('status', 'connected')
-                .maybeSingle();
-
-            if (error || !source) {
-                logger.warn('⚠️ [SLACK INGESTION] No connected Slack account found', {
+            if (!tenantId) {
+                logger.warn('⚠️ [SLACK INGESTION] Missing tenant context for token lookup', {
                     userId,
-                    error: error?.message
                 });
                 return null;
             }
 
-            const metadata = source.metadata || {};
+            const sourceContext = await resolveEvidenceSourceContext(userId, 'slack', tenantId);
+            if (!sourceContext) {
+                logger.warn('⚠️ [SLACK INGESTION] No ingestable Slack source found for tenant', {
+                    userId,
+                    tenantId
+                });
+                return null;
+            }
+
+            const metadata = sourceContext.metadata || {};
             const accessToken = metadata.access_token;
 
             if (!accessToken) {
@@ -85,6 +86,7 @@ export class SlackIngestionService {
             maxResults?: number;
             autoParse?: boolean;
             channelId?: string;
+            tenantId?: string;
         } = {}
     ): Promise<SlackIngestionResult> {
         const startTime = Date.now();
@@ -93,14 +95,25 @@ export class SlackIngestionService {
         let messagesProcessed = 0;
 
         try {
+            const tenantId = options.tenantId;
             logger.info('🔍 [SLACK INGESTION] Starting evidence ingestion from Slack', {
                 userId,
+                tenantId,
                 query: options.query,
                 maxResults: options.maxResults || 50,
                 channelId: options.channelId
             });
 
-            const accessToken = await this.getAccessToken(userId);
+            if (!tenantId) {
+                return {
+                    success: false,
+                    documentsIngested: 0,
+                    messagesProcessed: 0,
+                    errors: ['Tenant context is required for Slack evidence ingestion']
+                };
+            }
+
+            const accessToken = await this.getAccessToken(userId, tenantId);
             if (!accessToken) {
                 return {
                     success: false,
@@ -143,7 +156,7 @@ export class SlackIngestionService {
                         });
                     }
 
-                    const documentId = await this.storeEvidenceDocument(userId, file, fileContent);
+                    const documentId = await this.storeEvidenceDocument(userId, file, fileContent, tenantId);
 
                     if (documentId) {
                         documentsIngested++;
@@ -334,14 +347,34 @@ export class SlackIngestionService {
     private async storeEvidenceDocument(
         userId: string,
         file: SlackFile,
-        content?: Buffer
+        content?: Buffer,
+        tenantId?: string
     ): Promise<string | null> {
         try {
+            const dbUserId = convertUserIdToUuid(userId);
+            if (!tenantId) {
+                logger.warn('⚠️ [SLACK INGESTION] Cannot store document without tenant context', {
+                    userId,
+                    fileId: file.id
+                });
+                return null;
+            }
+
+            const sourceContext = await resolveEvidenceSourceContext(userId, 'slack', tenantId);
+            if (!sourceContext) {
+                logger.warn('⚠️ [SLACK INGESTION] No ingestable Slack source resolved while storing document', {
+                    userId,
+                    tenantId,
+                    fileId: file.id
+                });
+                return null;
+            }
             // Check if document already exists
             const { data: existingDoc } = await supabase
                 .from('evidence_documents')
                 .select('id')
-                .eq('user_id', userId)
+                .eq('tenant_id', tenantId)
+                .eq('user_id', dbUserId)
                 .eq('external_id', file.id)
                 .eq('filename', file.name)
                 .maybeSingle();
@@ -354,47 +387,11 @@ export class SlackIngestionService {
                 return existingDoc.id;
             }
 
-            // Get or create evidence source
-            let sourceId: string;
-            const { data: existingSource } = await supabase
-                .from('evidence_sources')
-                .select('id')
-                .eq('user_id', userId)
-                .eq('provider', 'slack')
-                .maybeSingle();
-
-            if (existingSource) {
-                sourceId = existingSource.id;
-            } else {
-                const { data: newSource, error: sourceError } = await supabase
-                    .from('evidence_sources')
-                    .insert({
-                        user_id: userId,
-                        provider: 'slack',
-                        account_email: userId,
-                        status: 'connected',
-                        metadata: {
-                            connected_at: new Date().toISOString(),
-                            source: 'slack_web_api'
-                        }
-                    })
-                    .select('id')
-                    .single();
-
-                if (sourceError || !newSource) {
-                    logger.error('❌ [SLACK INGESTION] Failed to create evidence source', {
-                        error: sourceError,
-                        userId
-                    });
-                    return null;
-                }
-
-                sourceId = newSource.id;
-            }
-
             const documentData = {
-                source_id: sourceId,
-                user_id: userId,
+                source_id: sourceContext.id,
+                tenant_id: tenantId,
+                user_id: dbUserId,
+                seller_id: dbUserId,
                 provider: 'slack',
                 external_id: file.id,
                 filename: file.name,
@@ -437,7 +434,7 @@ export class SlackIngestionService {
             if (content) {
                 try {
                     const bucketName = 'evidence-documents';
-                    const filePath = `${userId}/${document.id}/${file.name}`;
+                    const filePath = `${dbUserId}/${document.id}/${file.name}`;
 
                     const { data: uploadData, error: uploadError } = await supabase.storage
                         .from(bucketName)

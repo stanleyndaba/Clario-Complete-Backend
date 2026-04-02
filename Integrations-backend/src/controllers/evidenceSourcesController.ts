@@ -515,7 +515,6 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
             .update({
               status: 'connected',
               account_email: accountEmail || null,
-              last_sync_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
               permissions: scopes,
               metadata: sourceMetadata,
@@ -535,7 +534,6 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
               provider: provider,
               account_email: accountEmail || 'unknown',
               status: 'connected',
-              last_sync_at: new Date().toISOString(),
               permissions: scopes,
               metadata: sourceMetadata,
               tenant_id: tenantId || null,
