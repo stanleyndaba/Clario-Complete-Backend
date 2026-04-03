@@ -5,7 +5,7 @@
  */
 
 import logger from '../utils/logger';
-import { GmailService } from './gmailService';
+import { GmailMessageResponse, GmailService } from './gmailService';
 import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
 import axios from 'axios';
 import { extractTextFromPdf, extractKeyFieldsFromText, isPdfBuffer } from '../utils/pdfExtractor';
@@ -17,6 +17,7 @@ import {
   IngestionStrategy
 } from './evidenceIngestionDecisionUtils';
 import { resolveEvidenceSourceContext } from './evidenceSourceTruthService';
+import amazonCaseThreadService from './amazonCaseThreadService';
 
 export interface GmailIngestionResult {
   success: boolean;
@@ -264,6 +265,8 @@ export class GmailIngestionService {
       // Process each email
       for (const email of emails) {
         try {
+          const fullMessage = await this.gmailService.fetchMessage(userId, email.id, 'full');
+
           if (!email.hasAttachments) {
             logger.debug('📝 [GMAIL INGESTION] Email has no attachments, preserving degraded metadata candidate', {
               emailId: email.id,
@@ -281,11 +284,25 @@ export class GmailIngestionService {
             if (documentId) {
               documentsIngested++;
             }
+
+            try {
+              await amazonCaseThreadService.ingestInboundGmailMessage({
+                tenantId,
+                userId,
+                email,
+                message: fullMessage
+              });
+            } catch (threadError: any) {
+              logger.warn('⚠️ [GMAIL INGESTION] Failed to capture Amazon thread state from metadata-only email', {
+                emailId: email.id,
+                error: threadError?.message || String(threadError)
+              });
+            }
             continue;
           }
 
           // Extract attachments from email
-          const attachments = await this.extractAttachmentsFromEmail(userId, email.id);
+          const attachments = await this.extractAttachmentsFromEmail(userId, email.id, fullMessage);
 
           if (attachments.length === 0) {
             logger.debug('📝 [GMAIL INGESTION] No attachment records found, preserving degraded email metadata candidate', {
@@ -304,6 +321,20 @@ export class GmailIngestionService {
             if (documentId) {
               documentsIngested++;
             }
+
+            try {
+              await amazonCaseThreadService.ingestInboundGmailMessage({
+                tenantId,
+                userId,
+                email,
+                message: fullMessage
+              });
+            } catch (threadError: any) {
+              logger.warn('⚠️ [GMAIL INGESTION] Failed to capture Amazon thread state after degraded attachment lookup', {
+                emailId: email.id,
+                error: threadError?.message || String(threadError)
+              });
+            }
             continue;
           }
 
@@ -312,6 +343,13 @@ export class GmailIngestionService {
             subject: email.subject,
             attachmentCount: attachments.length
           });
+
+          const storedThreadAttachments: Array<{
+            filename: string;
+            contentType?: string | null;
+            size?: number | null;
+            evidenceDocumentId?: string | null;
+          }> = [];
 
           // Store each attachment as evidence document (with filename filtering)
           for (const attachment of attachments) {
@@ -348,6 +386,12 @@ export class GmailIngestionService {
 
                   if (degradedDocumentId) {
                     documentsIngested++;
+                    storedThreadAttachments.push({
+                      filename: attachment.filename,
+                      contentType: attachment.contentType,
+                      size: attachment.size,
+                      evidenceDocumentId: degradedDocumentId
+                    });
                     if (options.autoParse && attachment.content) {
                       await this.triggerParsingPipeline(degradedDocumentId, userId);
                     }
@@ -360,6 +404,12 @@ export class GmailIngestionService {
 
               if (documentId) {
                 documentsIngested++;
+                storedThreadAttachments.push({
+                  filename: attachment.filename,
+                  contentType: attachment.contentType,
+                  size: attachment.size,
+                  evidenceDocumentId: documentId
+                });
                 logger.info('✅ [GMAIL INGESTION] Stored evidence document', {
                   documentId,
                   emailId: email.id,
@@ -382,6 +432,21 @@ export class GmailIngestionService {
                 userId
               });
             }
+          }
+
+          try {
+            await amazonCaseThreadService.ingestInboundGmailMessage({
+              tenantId,
+              userId,
+              email,
+              message: fullMessage,
+              storedAttachments: storedThreadAttachments
+            });
+          } catch (threadError: any) {
+            logger.warn('⚠️ [GMAIL INGESTION] Failed to capture Amazon thread state from attachment email', {
+              emailId: email.id,
+              error: threadError?.message || String(threadError)
+            });
           }
         } catch (error: any) {
           const errorMsg = `Failed to process email ${email.id}: ${error?.message || String(error)}`;
@@ -431,10 +496,11 @@ export class GmailIngestionService {
    */
   private async extractAttachmentsFromEmail(
     userId: string,
-    emailId: string
+    emailId: string,
+    message?: GmailMessageResponse
   ): Promise<GmailDocument[]> {
     try {
-      const message = await this.gmailService.fetchMessage(userId, emailId, 'full');
+      const gmailMessage = message || await this.gmailService.fetchMessage(userId, emailId, 'full');
       const attachments: GmailDocument[] = [];
 
       // Recursively extract attachments from message parts
@@ -459,19 +525,19 @@ export class GmailIngestionService {
         }
       };
 
-      if (message.payload?.parts) {
-        extractParts(message.payload.parts, message);
-      } else if (message.payload?.filename && message.payload?.body?.attachmentId) {
+      if (gmailMessage.payload?.parts) {
+        extractParts(gmailMessage.payload.parts, gmailMessage);
+      } else if (gmailMessage.payload?.filename && gmailMessage.payload?.body?.attachmentId) {
         // Single attachment
         attachments.push({
-          id: message.payload.body.attachmentId,
+          id: gmailMessage.payload.body.attachmentId,
           emailId: emailId,
-          subject: message.payload?.headers?.find((h: any) => h.name === 'Subject')?.value || 'No Subject',
-          from: message.payload?.headers?.find((h: any) => h.name === 'From')?.value || 'Unknown',
-          date: new Date(parseInt(message.internalDate)).toISOString(),
-          filename: message.payload.filename,
-          contentType: message.payload.mimeType || 'application/octet-stream',
-          size: message.payload.body.size || 0
+          subject: gmailMessage.payload?.headers?.find((h: any) => h.name === 'Subject')?.value || 'No Subject',
+          from: gmailMessage.payload?.headers?.find((h: any) => h.name === 'From')?.value || 'Unknown',
+          date: new Date(parseInt(gmailMessage.internalDate)).toISOString(),
+          filename: gmailMessage.payload.filename,
+          contentType: gmailMessage.payload.mimeType || 'application/octet-stream',
+          size: gmailMessage.payload.body.size || 0
         });
       }
 

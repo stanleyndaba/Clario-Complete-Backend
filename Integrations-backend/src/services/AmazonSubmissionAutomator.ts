@@ -453,6 +453,7 @@ export class AmazonSubmissionAutomator {
             .update({
                 amazon_case_id: amazonCaseId,
                 provider_case_id: externalReference,
+                case_state: amazonCaseId ? 'pending' : 'unlinked',
                 filing_status: 'filed',
                 status: 'submitted',
                 submission_date: timestamp,

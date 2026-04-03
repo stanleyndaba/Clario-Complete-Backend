@@ -10,6 +10,7 @@ import { convertUserIdToUuid } from '../database/supabaseClient';
 import financialWorkItemService from '../services/financialWorkItemService';
 import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import recoveryFinancialTruthService from '../services/recoveryFinancialTruthService';
+import amazonCaseThreadService from '../services/amazonCaseThreadService';
 
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -490,6 +491,12 @@ function buildCaseResponse(
         linked_dispute_case_id: string | null;
         has_submission: boolean;
         has_payout: boolean;
+    },
+    threadTruth?: {
+        case_state: string | null;
+        amazon_thread_linked: boolean;
+        can_reply_to_thread: boolean;
+        case_messages: any[];
     }
 ) {
     const requestedAmount = typeof record?.claim_amount === 'number'
@@ -534,6 +541,13 @@ function buildCaseResponse(
         asin: record.asin || record.evidence?.asin || null,
         productName: record.case_type || record.anomaly_type || 'Unknown Product',
         amazonCaseId: record.amazon_case_id || record.provider_case_id || null,
+        case_state: threadTruth?.case_state || record.case_state || (record.amazon_case_id ? 'pending' : 'unlinked'),
+        amazon_thread_linked: typeof threadTruth?.amazon_thread_linked === 'boolean'
+            ? threadTruth.amazon_thread_linked
+            : Boolean(record.amazon_case_id),
+        can_reply_to_thread: typeof threadTruth?.can_reply_to_thread === 'boolean'
+            ? threadTruth.can_reply_to_thread
+            : false,
         provider_case_id: record.provider_case_id || record.amazon_case_id || null,
         currency: record.currency || 'USD',
         case_number: record.case_number || null,
@@ -563,6 +577,7 @@ function buildCaseResponse(
         evidence_attachments: record.evidence_attachments || null,
         evidence: record.evidence || {},
         evidence_summary: evidenceSummary,
+        case_messages: Array.isArray(threadTruth?.case_messages) ? threadTruth?.case_messages : [],
         rejection_category: record?.evidence_attachments?.rejection_category || null,
         rejection_reason: record?.rejection_reason || null,
         block_reasons: Array.isArray(record?.block_reasons) ? record.block_reasons : [],
@@ -1250,6 +1265,10 @@ router.get('/:id', async (req: Request, res: Response) => {
                 .limit(1)
                 .maybeSingle();
 
+            const caseMessages = await amazonCaseThreadService.listCaseMessages(tenantId, disputeCase.id);
+            const threadLinked = Boolean(disputeCase.amazon_case_id);
+            const canReplyToThread = threadLinked && caseMessages.length > 0;
+
             const actualPayoutAmount = typeof disputeCase?.recovered_amount === 'number'
                 ? disputeCase.recovered_amount
                 : (typeof disputeCase?.actual_payout_amount === 'number'
@@ -1272,6 +1291,12 @@ router.get('/:id', async (req: Request, res: Response) => {
                         disputeCase.provider_case_id
                     ),
                     has_payout: actualPayoutAmount !== null
+                },
+                {
+                    case_state: disputeCase.case_state || (disputeCase.amazon_case_id ? 'pending' : 'unlinked'),
+                    amazon_thread_linked: threadLinked,
+                    can_reply_to_thread: canReplyToThread,
+                    case_messages: caseMessages
                 }
             ));
         }

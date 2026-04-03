@@ -56,9 +56,93 @@ export interface GmailMessageResponse {
   };
 }
 
+export interface GmailSendAttachment {
+  filename: string;
+  contentType: string;
+  data: Buffer;
+}
+
+export interface GmailSendReplyOptions {
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  bodyText: string;
+  threadId?: string | null;
+  inReplyTo?: string | null;
+  references?: string[];
+  attachments?: GmailSendAttachment[];
+}
+
 export class GmailService {
   private baseUrl = 'https://gmail.googleapis.com/gmail/v1/users/me';
   private authUrl = 'https://oauth2.googleapis.com/token';
+
+  private encodeBase64Url(input: Buffer | string): string {
+    return Buffer.from(input)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '');
+  }
+
+  private buildRawMessage(options: GmailSendReplyOptions): string {
+    const to = options.to.join(', ');
+    const cc = (options.cc || []).join(', ');
+    const bcc = (options.bcc || []).join(', ');
+    const subject = options.subject;
+    const references = (options.references || []).filter(Boolean).join(' ');
+    const attachments = options.attachments || [];
+
+    const baseHeaders = [
+      `To: ${to}`,
+      cc ? `Cc: ${cc}` : null,
+      bcc ? `Bcc: ${bcc}` : null,
+      `Subject: ${subject}`,
+      'MIME-Version: 1.0',
+      options.inReplyTo ? `In-Reply-To: <${String(options.inReplyTo).replace(/[<>]/g, '')}>` : null,
+      references ? `References: ${references.split(/\s+/).map((value) => `<${String(value).replace(/[<>]/g, '')}>`).join(' ')}` : null
+    ].filter(Boolean) as string[];
+
+    if (!attachments.length) {
+      const raw = [
+        ...baseHeaders,
+        'Content-Type: text/plain; charset="UTF-8"',
+        'Content-Transfer-Encoding: 7bit',
+        '',
+        options.bodyText
+      ].join('\r\n');
+
+      return this.encodeBase64Url(raw);
+    }
+
+    const boundary = `margin-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const parts: string[] = [
+      ...baseHeaders,
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/plain; charset="UTF-8"',
+      'Content-Transfer-Encoding: 7bit',
+      '',
+      options.bodyText
+    ];
+
+    for (const attachment of attachments) {
+      parts.push(
+        `--${boundary}`,
+        `Content-Type: ${attachment.contentType}; name="${attachment.filename}"`,
+        'Content-Transfer-Encoding: base64',
+        `Content-Disposition: attachment; filename="${attachment.filename}"`,
+        '',
+        attachment.data.toString('base64').replace(/(.{76})/g, '$1\r\n').trim()
+      );
+    }
+
+    parts.push(`--${boundary}--`, '');
+
+    return this.encodeBase64Url(parts.join('\r\n'));
+  }
 
   private async getSourceTokenData(userId: string): Promise<TokenData | null> {
     try {
@@ -139,7 +223,10 @@ export class GmailService {
       authUrl.searchParams.set('client_id', config.GMAIL_CLIENT_ID!);
       authUrl.searchParams.set('response_type', 'code');
       authUrl.searchParams.set('redirect_uri', config.GMAIL_REDIRECT_URI!);
-      authUrl.searchParams.set('scope', 'https://www.googleapis.com/auth/gmail.readonly');
+      authUrl.searchParams.set(
+        'scope',
+        'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send'
+      );
       authUrl.searchParams.set('access_type', 'offline');
       authUrl.searchParams.set('prompt', 'consent');
       authUrl.searchParams.set('state', userId);
@@ -385,6 +472,45 @@ export class GmailService {
       })
     );
     return response.data;
+  }
+
+  async sendReply(
+    userId: string,
+    options: GmailSendReplyOptions
+  ): Promise<{ id: string; threadId?: string }> {
+    try {
+      const raw = this.buildRawMessage(options);
+      const response = await this.requestWithToken(userId, (accessToken) =>
+        axios.post(`${this.baseUrl}/messages/send`, {
+          raw,
+          threadId: options.threadId || undefined
+        }, {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        })
+      );
+
+      logger.info('Gmail reply sent successfully', {
+        userId,
+        threadId: options.threadId || null,
+        to: options.to
+      });
+
+      return response.data;
+    } catch (error: any) {
+      const status = error?.response?.status;
+      const reason = error?.response?.data?.error?.message || error?.message || 'Failed to send Gmail reply';
+      logger.error('Error sending Gmail reply', {
+        userId,
+        status,
+        error: reason
+      });
+
+      if (status === 403 && /scope|permission|insufficient/i.test(String(reason))) {
+        throw createError('Gmail reply permission is not available. Reconnect Gmail to grant send access.', 403);
+      }
+
+      throw createError(reason, status || 500);
+    }
   }
 
   // STUB FUNCTION: Search emails by criteria

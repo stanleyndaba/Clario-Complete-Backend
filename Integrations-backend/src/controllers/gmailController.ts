@@ -81,7 +81,7 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
 
     if (!clientId || !config.GMAIL_CLIENT_SECRET) {
       logger.warn('Gmail credentials not configured, returning sandbox mock URL');
-      const mockAuthUrl = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=mock-client-id&redirect_uri=' + encodeURIComponent(redirectUri) + '&response_type=code&scope=https://www.googleapis.com/auth/gmail.readonly';
+      const mockAuthUrl = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=mock-client-id&redirect_uri=' + encodeURIComponent(redirectUri) + '&response_type=code&scope=https://www.googleapis.com/auth/gmail.readonly%20https://www.googleapis.com/auth/gmail.modify%20https://www.googleapis.com/auth/gmail.send';
 
       return res.json({
         success: true,
@@ -98,7 +98,8 @@ export const initiateGmailOAuth = async (req: Request, res: Response) => {
     // Gmail OAuth scopes
     const scopes = [
       'https://www.googleapis.com/auth/gmail.readonly',
-      'https://www.googleapis.com/auth/gmail.modify'
+      'https://www.googleapis.com/auth/gmail.modify',
+      'https://www.googleapis.com/auth/gmail.send'
     ].join(' ');
 
     // Build OAuth URL
@@ -310,7 +311,8 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
       const nowIso = new Date().toISOString();
       const scopes = [
         'https://www.googleapis.com/auth/gmail.readonly',
-        'https://www.googleapis.com/auth/gmail.modify'
+        'https://www.googleapis.com/auth/gmail.modify',
+        'https://www.googleapis.com/auth/gmail.send'
       ];
       const sourceMetadata = {
         access_token,

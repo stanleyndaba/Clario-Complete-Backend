@@ -6,6 +6,7 @@ import refundFilingWorker from '../workers/refundFilingWorker';
 import { evaluateAndPersistCaseEligibility } from '../services/agent7EligibilityService';
 import { createSellerHttpClient } from '../services/sellerHttpClient';
 import proxyAssignmentService from '../services/proxyAssignmentService';
+import amazonCaseThreadService from '../services/amazonCaseThreadService';
 import {
   isAgent7UnpaidFilingOverrideEnabled,
   recordAgent7UnpaidFilingOverride
@@ -909,6 +910,63 @@ router.post('/:id/submit', async (_req, res) => {
     success: false,
     message: 'Legacy direct submit is disabled. Use the real Agent 7 filing queue instead.'
   });
+});
+
+router.post('/:id/reply', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { tenantId, userId } = await resolveDisputeScope(req as any);
+    const message = String(req.body?.message || '').trim();
+    const attachmentDocumentIds = Array.isArray(req.body?.attachment_document_ids)
+      ? req.body.attachment_document_ids
+      : (Array.isArray(req.body?.attachmentDocumentIds) ? req.body.attachmentDocumentIds : []);
+
+    if (!message) {
+      return res.status(400).json({
+        success: false,
+        message: 'Reply message is required'
+      });
+    }
+
+    const result = await amazonCaseThreadService.sendCaseReply({
+      tenantId,
+      userId,
+      disputeCaseId: id,
+      message,
+      attachmentDocumentIds
+    });
+
+    return res.json({
+      success: true,
+      message: 'Reply sent successfully',
+      provider_message_id: result.messageId,
+      provider_thread_id: result.threadId,
+      case_message_id: result.caseMessageId
+    });
+  } catch (error: any) {
+    const message = String(error?.message || 'Failed to send case reply');
+    const statusCode =
+      message.includes('required')
+        ? 400
+        : (
+            message.includes('permission') ||
+            message.includes('Reconnect Gmail')
+          )
+            ? 403
+            : (
+            message.includes('linked') ||
+            message.includes('existing Amazon thread message') ||
+            message.includes('could not be resolved') ||
+            message.includes('must be linked')
+          )
+            ? 409
+            : getDisputeRouteStatusCode(error);
+
+    return res.status(statusCode).json({
+      success: false,
+      message
+    });
+  }
 });
 
 router.get('/:id/audit-log', async (req, res) => {
