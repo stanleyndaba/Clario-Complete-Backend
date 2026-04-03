@@ -218,6 +218,16 @@ function isTrustworthyShipmentIdentifier(value: unknown): boolean {
   return hasIdentifierCharacters(candidate, 6);
 }
 
+function isTrustworthyFnsku(value: unknown): boolean {
+  const candidate = String(value || '').trim();
+  if (!candidate || isPlaceholderIdentifier(candidate)) return false;
+
+  const compact = compactIdentifier(candidate).toUpperCase();
+  if (/^X[A-Z0-9]{9,}$/.test(compact)) return true;
+
+  return hasIdentifierCharacters(candidate, 6);
+}
+
 function isPositiveQuantity(value: unknown): boolean {
   const parsed = toNumber(value);
   return parsed !== null && parsed > 0;
