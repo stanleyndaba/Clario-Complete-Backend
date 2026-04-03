@@ -71,7 +71,11 @@ function isTrustworthyFnsku(candidate: string): boolean {
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import refundFilingService from './refundFilingService';
-import { evaluateAndPersistCaseEligibility, isIdentifierSafetyReason } from './agent7EligibilityService';
+import {
+    EligibilityStatus,
+    evaluateAndPersistCaseEligibility,
+    isIdentifierSafetyReason
+} from './agent7EligibilityService';
 import {
     isAgent7UnpaidFilingOverrideEnabled,
     recordAgent7UnpaidFilingOverride
@@ -82,6 +86,12 @@ import {
  * Manages the full lifecycle of a claim submission from validation to handoff.
  */
 export class AmazonSubmissionAutomator {
+    private mapEligibilityStatusToFilingStatus(status: EligibilityStatus): 'pending_safety_verification' | 'duplicate_blocked' | 'blocked' {
+        if (status === 'INSUFFICIENT_DATA') return 'pending_safety_verification';
+        if (status === 'DUPLICATE_BLOCKED') return 'duplicate_blocked';
+        return 'blocked';
+    }
+
     private async markCasePendingSafetyVerification(
         caseId: string,
         tenantId: string,
@@ -282,14 +292,26 @@ export class AmazonSubmissionAutomator {
             const internalUserId = await this.enforcePaywall(caseId, sellerId, caseInfo.tenant_id);
 
             const eligibilitySnapshot = await evaluateAndPersistCaseEligibility(caseId, caseInfo.tenant_id);
-            if (!eligibilitySnapshot.eligible) {
+            if (eligibilitySnapshot.eligibilityStatus !== 'READY') {
                 const safetyReasons = eligibilitySnapshot.reasons.filter((reason) => isIdentifierSafetyReason(reason));
                 if (safetyReasons.length > 0) {
                     const message = eligibilitySnapshot.proofSnapshot?.explanationPayload?.justification ||
                         'Agent 7 is waiting for seller-verified identifiers before filing this case with Amazon.';
                     await this.markCasePendingSafetyVerification(caseId, caseInfo.tenant_id, safetyReasons, message);
+                } else {
+                    await supabaseAdmin
+                        .from('dispute_cases')
+                        .update({
+                            filing_status: this.mapEligibilityStatusToFilingStatus(eligibilitySnapshot.eligibilityStatus),
+                            eligible_to_file: false,
+                            block_reasons: eligibilitySnapshot.reasons,
+                            last_error: eligibilitySnapshot.proofSnapshot?.explanationPayload?.justification || 'Case is not eligible for Amazon submission.',
+                            updated_at: new Date().toISOString()
+                        })
+                        .eq('id', caseId)
+                        .eq('tenant_id', caseInfo.tenant_id);
                 }
-                throw new Error(`[AGENT 7 BLOCKED] Case ${caseId} is not eligible to file: ${eligibilitySnapshot.reasons.join(', ')}`);
+                throw new Error(`NOT_ELIGIBLE_FOR_SUBMISSION: ${eligibilitySnapshot.eligibilityStatus}: ${eligibilitySnapshot.reasons.join(', ')}`);
             }
 
             const submissionAttempts = await this.resolveSubmissionAttemptNumber(caseId);

@@ -380,10 +380,42 @@ function deriveNextStepContext(record: any, documents: any[]) {
     const filingStatus = String(record?.filing_status || '').toLowerCase();
     const recoveryStatus = String(record?.recovery_status || '').toLowerCase();
     const billingStatus = String(record?.billing_status || '').toLowerCase();
+    const eligibilityStatus = String(
+        record?.eligibility_status ||
+        record?.evidence_attachments?.decision_intelligence?.eligibility_status ||
+        ''
+    ).trim().toUpperCase();
     const rejectionCategory = record?.evidence_attachments?.rejection_category || null;
     const rejectionReason = record?.rejection_reason || null;
     const evidenceCount = getEvidenceDocumentCount(record, documents);
     const hasEvidence = evidenceCount > 0;
+
+    if (eligibilityStatus === 'THREAD_ONLY') {
+        return {
+            key: 'amazon_thread_detected',
+            title: 'Amazon thread detected',
+            description: 'A real Amazon support thread exists, but Margin will not file again until verified identifiers clearly support a fresh filing path.',
+            generated: false
+        };
+    }
+
+    if (eligibilityStatus === 'DUPLICATE_BLOCKED') {
+        return {
+            key: 'duplicate_detected',
+            title: 'Duplicate detected - not filed',
+            description: 'Margin found an existing case, filing, or claim signature that makes a new Amazon submission unsafe.',
+            generated: false
+        };
+    }
+
+    if (eligibilityStatus === 'INSUFFICIENT_DATA') {
+        return {
+            key: 'awaiting_verified_identifiers',
+            title: 'Awaiting verified identifiers',
+            description: 'Required seller-verified identifiers are still missing or contradictory, so filing remains paused.',
+            generated: false
+        };
+    }
 
     if (billingStatus === 'completed') {
         return {
@@ -541,6 +573,7 @@ function buildCaseResponse(
         filing_status: record.filing_status || null,
         recovery_status: record.recovery_status || null,
         billing_status: record.billing_status || null,
+        eligibility_status: record.eligibility_status || record?.evidence_attachments?.decision_intelligence?.eligibility_status || null,
         case_origin: record.case_origin || 'detection_pipeline',
         origin_metadata: originMetadata,
         thread_backfilled_at: record.thread_backfilled_at || null,
@@ -1279,7 +1312,12 @@ router.get('/:id', async (req: Request, res: Response) => {
 
             const caseMessages = await amazonCaseThreadService.listCaseMessages(tenantId, disputeCase.id);
             const threadLinked = Boolean(disputeCase.amazon_case_id);
-            const canReplyToThread = threadLinked && caseMessages.length > 0;
+            const eligibilityStatus = String(
+                disputeCase.eligibility_status ||
+                disputeCase?.evidence_attachments?.decision_intelligence?.eligibility_status ||
+                ''
+            ).trim().toUpperCase();
+            const canReplyToThread = threadLinked && caseMessages.length > 0 && eligibilityStatus === 'READY';
             const hasRecordedSubmission = Boolean(
                 latestSubmission?.id ||
                 latestSubmission?.submission_id ||

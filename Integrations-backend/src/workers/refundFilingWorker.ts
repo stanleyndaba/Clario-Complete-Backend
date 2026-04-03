@@ -456,9 +456,30 @@ class RefundFilingWorker {
       decision.filingStrategy,
       decision.explanationPayload
     );
+    const eligibilityStatus =
+      decision.filingStrategy !== 'BLOCKED'
+        ? 'READY'
+        : filingStatus === 'duplicate_blocked'
+          ? 'DUPLICATE_BLOCKED'
+          : decision.blockReasons.some((reason) => [
+              'missing_required_identifiers',
+              'awaiting_verified_identifiers',
+              'missing_trustworthy_product_identifier',
+              'missing_trustworthy_order_identifier',
+              'missing_trustworthy_shipment_identifier',
+              'missing_quantity_value',
+              'invalid_quantity_value',
+              'contradictory_order_identifiers',
+              'contradictory_shipment_identifiers',
+              'contradictory_product_identifiers',
+              'contradictory_quantity_values'
+            ].includes(String(reason)))
+            ? 'INSUFFICIENT_DATA'
+            : 'SAFETY_HOLD';
 
     const updatePayload: Record<string, any> = {
       eligible_to_file: decision.filingStrategy !== 'BLOCKED',
+      eligibility_status: eligibilityStatus,
       block_reasons: decision.blockReasons,
       estimated_recovery_amount: Number(decision.amountToFile || disputeCase.claim_amount || 0),
       last_error: lastError ?? (decision.filingStrategy === 'BLOCKED' ? decision.explanationPayload.justification : null),
@@ -467,6 +488,7 @@ class RefundFilingWorker {
         decision_intelligence: {
           ...decisionIntelligence,
           filing_strategy: decision.filingStrategy,
+          eligibility_status: eligibilityStatus,
           explanation_payload: decision.explanationPayload,
           proof_snapshot: updatedProofSnapshot,
           final_supported_amount: Number(decision.amountToFile || disputeCase.claim_amount || 0),
@@ -833,12 +855,13 @@ class RefundFilingWorker {
     }
   }
 
-  private async isAutoFileEnabledForUser(userId: string): Promise<boolean> {
+  private async isAutoFileEnabledForUser(userId: string, tenantId: string): Promise<boolean> {
     try {
       const { data, error } = await supabaseAdmin
         .from('user_notification_preferences')
         .select('preferences')
         .eq('user_id', userId)
+        .eq('tenant_id', tenantId)
         .maybeSingle();
 
       if (error) {
@@ -2361,10 +2384,11 @@ class RefundFilingWorker {
           };
         }
 
-        let autoFileEnabled = autoFilePreferenceCache.get(disputeCase.seller_id);
+        const autoFilePreferenceCacheKey = `${tenantId}:${disputeCase.seller_id}`;
+        let autoFileEnabled = autoFilePreferenceCache.get(autoFilePreferenceCacheKey);
         if (typeof autoFileEnabled !== 'boolean') {
-          autoFileEnabled = await this.isAutoFileEnabledForUser(disputeCase.seller_id);
-          autoFilePreferenceCache.set(disputeCase.seller_id, autoFileEnabled);
+          autoFileEnabled = await this.isAutoFileEnabledForUser(disputeCase.seller_id, tenantId);
+          autoFilePreferenceCache.set(autoFilePreferenceCacheKey, autoFileEnabled);
         }
 
         if (!autoFileEnabled) {

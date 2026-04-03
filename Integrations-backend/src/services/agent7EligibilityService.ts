@@ -7,10 +7,12 @@ import {
 
 export interface FilingEligibilityResult {
   eligible: boolean;
+  eligibilityStatus: EligibilityStatus;
   reasons: string[];
   confidenceScore: number | null;
   claimType: string;
   proofSnapshot?: ProofSnapshot;
+  claimSignature?: ClaimSignatureSnapshot | null;
   successProbability?: number | null;
   priorityScore?: number | null;
   evidenceStrength?: number | null;
@@ -19,6 +21,12 @@ export interface FilingEligibilityResult {
 }
 
 export type FilingStrategy = 'AUTO' | 'SMART' | 'BLOCKED';
+export type EligibilityStatus =
+  | 'READY'
+  | 'DUPLICATE_BLOCKED'
+  | 'INSUFFICIENT_DATA'
+  | 'THREAD_ONLY'
+  | 'SAFETY_HOLD';
 
 export interface ExplanationPayload {
   missing_fields: string[];
@@ -45,6 +53,21 @@ export interface ProofSnapshot {
   linkedEvidenceCount: number;
 }
 
+export interface ClaimSignatureSnapshot {
+  tenant_id: string;
+  amazon_case_id: string | null;
+  issue_type: string;
+  asin: string | null;
+  fnsku: string | null;
+  shipment_id: string | null;
+  order_id: string | null;
+  quantity: number | null;
+  approx_date_window: {
+    start: string | null;
+    end: string | null;
+  };
+}
+
 interface EligibilityContext {
   disputeCase: any;
   detectionResult: any | null;
@@ -69,6 +92,8 @@ const CLAIM_WINDOWS_DAYS: Record<string, number> = {
   refund_return: 45,
   generic: 90
 };
+
+const APPROX_DUPLICATE_WINDOW_DAYS = 45;
 
 const IDENTIFIER_PLACEHOLDER_TOKENS = new Set([
   'n/a',
@@ -97,7 +122,30 @@ const IDENTIFIER_SAFETY_REASONS = new Set([
   'missing_trustworthy_order_identifier',
   'missing_trustworthy_shipment_identifier',
   'missing_required_identifiers',
-  'awaiting_verified_identifiers'
+  'awaiting_verified_identifiers',
+  'missing_quantity_value',
+  'invalid_quantity_value',
+  'contradictory_order_identifiers',
+  'contradictory_shipment_identifiers',
+  'contradictory_product_identifiers',
+  'contradictory_quantity_values'
+]);
+
+const DUPLICATE_BLOCK_REASONS = new Set([
+  'duplicate_exact_amazon_case_id',
+  'duplicate_claim_signature',
+  'existing_submission_already_recorded',
+  'existing_amazon_thread_active'
+]);
+
+const THREAD_ONLY_REASONS = new Set([
+  'thread_continuation_detected',
+  'amazon_thread_backfill_placeholder'
+]);
+
+const QUALITY_GATE_REASONS = new Set([
+  'submission_explanation_too_short',
+  'submission_explanation_repetitive'
 ]);
 
 function normalize(value: unknown): string {
@@ -109,8 +157,23 @@ function toNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function trimOrNull(value: unknown): string | null {
+  const normalized = String(value || '').trim();
+  return normalized || null;
+}
+
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
+}
+
+function uniqueNumbers(values: Array<number | string | null | undefined>): number[] {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => toNumber(value))
+        .filter((value): value is number => value !== null)
+    )
+  );
 }
 
 function compactIdentifier(value: unknown): string {
@@ -153,6 +216,11 @@ function isTrustworthyShipmentIdentifier(value: unknown): boolean {
   const candidate = String(value || '').trim();
   if (!candidate || isPlaceholderIdentifier(candidate)) return false;
   return hasIdentifierCharacters(candidate, 6);
+}
+
+function isPositiveQuantity(value: unknown): boolean {
+  const parsed = toNumber(value);
+  return parsed !== null && parsed > 0;
 }
 
 export function isIdentifierSafetyReason(reason: string): boolean {
@@ -338,20 +406,65 @@ function collectIdentifiers(context: EligibilityContext) {
     caseEvidence.order_id
   ]);
 
-  const productIds = uniqueStrings([
-    disputeCase.sku,
+  const asinIds = uniqueStrings([
     disputeCase.asin,
-    detectionResult.sku,
     detectionResult.asin,
-    detectionEvidence.sku,
     detectionEvidence.asin,
+    caseEvidence.asin
+  ]);
+
+  const skuIds = uniqueStrings([
+    disputeCase.sku,
+    detectionResult.sku,
+    detectionEvidence.sku,
+    caseEvidence.sku
+  ]);
+
+  const fnskuIds = uniqueStrings([
     detectionEvidence.fnsku,
-    caseEvidence.sku,
-    caseEvidence.asin,
     caseEvidence.fnsku
   ]);
 
-  return { shipmentIds, orderIds, productIds };
+  const productIds = uniqueStrings([
+    ...skuIds,
+    ...asinIds,
+    ...fnskuIds
+  ]);
+
+  return { shipmentIds, orderIds, productIds, asinIds, skuIds, fnskuIds };
+}
+
+function collectQuantityCandidates(context: EligibilityContext): number[] {
+  const disputeCase = context.disputeCase || {};
+  const detectionResult = context.detectionResult || {};
+  const caseEvidence = parseJsonObject(disputeCase.evidence_attachments);
+  const detectionEvidence = parseJsonObject(detectionResult.evidence);
+
+  return uniqueNumbers([
+    disputeCase.quantity,
+    disputeCase.units_lost,
+    disputeCase.units,
+    disputeCase.unit_count,
+    detectionResult.quantity,
+    detectionResult.units,
+    detectionEvidence.quantity,
+    detectionEvidence.units,
+    detectionEvidence.unit_count,
+    detectionEvidence.quantity_sent,
+    detectionEvidence.units_lost,
+    caseEvidence.quantity,
+    caseEvidence.units,
+    caseEvidence.unit_count
+  ]).filter((value) => value > 0);
+}
+
+function hasConflictingIdentifiers(values: string[]): boolean {
+  return new Set(values.map((value) => normalize(value))).size > 1;
+}
+
+function intersects(left: string[], right: string[]): boolean {
+  const rightSet = new Set(right.map((value) => normalize(value)));
+  return left.some((value) => rightSet.has(normalize(value)));
 }
 
 function resolveReferenceDate(context: EligibilityContext, claimType: string): Date | null {
@@ -392,6 +505,354 @@ function resolveReferenceDate(context: EligibilityContext, claimType: string): D
   return null;
 }
 
+function buildClaimSignature(
+  context: EligibilityContext,
+  tenantId: string,
+  claimType: string,
+  referenceDate: Date | null
+): ClaimSignatureSnapshot {
+  const disputeCase = context.disputeCase || {};
+  const identifiers = collectIdentifiers(context);
+  const trustworthyShipmentIds = identifiers.shipmentIds.filter((value) => isTrustworthyShipmentIdentifier(value));
+  const trustworthyOrderIds = identifiers.orderIds.filter((value) => isTrustworthyOrderIdentifier(value));
+  const trustworthyAsins = identifiers.asinIds.filter((value) => isTrustworthyProductIdentifier(value));
+  const trustworthyFnskus = identifiers.fnskuIds.filter((value) => isTrustworthyFnsku(value));
+  const quantityValues = collectQuantityCandidates(context);
+
+  const start = referenceDate ? new Date(referenceDate) : null;
+  const end = referenceDate ? new Date(referenceDate) : null;
+  if (start) start.setDate(start.getDate() - APPROX_DUPLICATE_WINDOW_DAYS);
+  if (end) end.setDate(end.getDate() + APPROX_DUPLICATE_WINDOW_DAYS);
+
+  return {
+    tenant_id: tenantId,
+    amazon_case_id: trimOrNull(disputeCase.amazon_case_id),
+    issue_type: claimType,
+    asin: trustworthyAsins[0] || null,
+    fnsku: trustworthyFnskus[0] || null,
+    shipment_id: trustworthyShipmentIds[0] || null,
+    order_id: trustworthyOrderIds[0] || null,
+    quantity: quantityValues[0] ?? null,
+    approx_date_window: {
+      start: start ? start.toISOString() : null,
+      end: end ? end.toISOString() : null
+    }
+  };
+}
+
+function extractNarrativeText(context: EligibilityContext, explanationPayload?: ExplanationPayload | null): string {
+  const disputeCase = context.disputeCase || {};
+  const detectionResult = context.detectionResult || {};
+  const caseEvidence = parseJsonObject(disputeCase.evidence_attachments);
+
+  return [
+    explanationPayload?.justification,
+    disputeCase.details,
+    disputeCase.description,
+    disputeCase.notes,
+    detectionResult.description,
+    detectionResult.notes,
+    caseEvidence.summary,
+    caseEvidence.claim_context
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function getNarrativeQualityReasons(context: EligibilityContext, explanationPayload?: ExplanationPayload | null): string[] {
+  const narrative = extractNarrativeText(context, explanationPayload)
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!narrative) {
+    return ['submission_explanation_too_short'];
+  }
+
+  const reasons: string[] = [];
+  if (narrative.length < 40) {
+    reasons.push('submission_explanation_too_short');
+  }
+
+  const sentences = narrative
+    .split(/[.!?]+/)
+    .map((sentence) => sentence.trim().toLowerCase())
+    .filter(Boolean);
+  const sentenceCounts = new Map<string, number>();
+  for (const sentence of sentences) {
+    sentenceCounts.set(sentence, (sentenceCounts.get(sentence) || 0) + 1);
+  }
+  if (Array.from(sentenceCounts.values()).some((count) => count >= 3)) {
+    reasons.push('submission_explanation_repetitive');
+  }
+
+  return Array.from(new Set(reasons));
+}
+
+interface DuplicateSignal {
+  source: 'dispute_case' | 'dispute_submission' | 'case_message' | 'unmatched_case_message';
+  reason: string;
+  related_id: string | null;
+  amazon_case_id: string | null;
+}
+
+interface DuplicateSafetySummary {
+  signals: DuplicateSignal[];
+  currentCaseHasSubmission: boolean;
+  threadOnly: boolean;
+  hasExactAmazonCaseConflict: boolean;
+  hasClaimSignatureConflict: boolean;
+  hasExistingThreadActivity: boolean;
+}
+
+async function loadDuplicateSafetySummary(
+  tenantId: string,
+  context: EligibilityContext,
+  claimType: string,
+  referenceDate: Date | null
+): Promise<DuplicateSafetySummary> {
+  const disputeCase = context.disputeCase || {};
+  const identifiers = collectIdentifiers(context);
+  const trustworthyOrderIds = identifiers.orderIds.filter((value) => isTrustworthyOrderIdentifier(value));
+  const trustworthyShipmentIds = identifiers.shipmentIds.filter((value) => isTrustworthyShipmentIdentifier(value));
+  const trustworthyAsins = identifiers.asinIds.filter((value) => isTrustworthyProductIdentifier(value));
+  const trustworthyFnskus = identifiers.fnskuIds.filter((value) => isTrustworthyFnsku(value));
+  const amazonCaseId = trimOrNull(disputeCase.amazon_case_id);
+  const caseId = String(disputeCase.id || '').trim();
+  const signals: DuplicateSignal[] = [];
+  const seenSignalKeys = new Set<string>();
+  const trackSignal = (signal: DuplicateSignal) => {
+    const key = `${signal.source}:${signal.reason}:${signal.related_id || ''}:${signal.amazon_case_id || ''}`;
+    if (seenSignalKeys.has(key)) return;
+    seenSignalKeys.add(key);
+    signals.push(signal);
+  };
+
+  const [
+    exactCaseMatchesResult,
+    exactSubmissionMatchesResult,
+    caseMessageMatchesResult,
+    unmatchedMatchesResult,
+    currentSubmissionResult,
+    orderMatchesResult,
+    shipmentMatchesResult
+  ] = await Promise.all([
+    amazonCaseId
+      ? supabaseAdmin
+          .from('dispute_cases')
+          .select('id, amazon_case_id')
+          .eq('tenant_id', tenantId)
+          .eq('amazon_case_id', amazonCaseId)
+          .neq('id', caseId)
+      : Promise.resolve({ data: [] as any[] }),
+    amazonCaseId
+      ? supabaseAdmin
+          .from('dispute_submissions')
+          .select('id, dispute_id, amazon_case_id')
+          .eq('tenant_id', tenantId)
+          .eq('amazon_case_id', amazonCaseId)
+          .neq('dispute_id', caseId)
+      : Promise.resolve({ data: [] as any[] }),
+    amazonCaseId
+      ? supabaseAdmin
+          .from('case_messages')
+          .select('id, dispute_case_id, amazon_case_id')
+          .eq('tenant_id', tenantId)
+          .eq('amazon_case_id', amazonCaseId)
+      : Promise.resolve({ data: [] as any[] }),
+    amazonCaseId
+      ? supabaseAdmin
+          .from('unmatched_case_messages')
+          .select('id, linked_dispute_case_id, amazon_case_id')
+          .eq('tenant_id', tenantId)
+          .eq('amazon_case_id', amazonCaseId)
+      : Promise.resolve({ data: [] as any[] }),
+    supabaseAdmin
+      .from('dispute_submissions')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('dispute_id', caseId)
+      .limit(1),
+    trustworthyOrderIds.length
+      ? supabaseAdmin
+          .from('dispute_cases')
+          .select('id, amazon_case_id, order_id, shipment_id, asin, case_type, created_at, submission_date, status, filing_status, evidence_attachments')
+          .eq('tenant_id', tenantId)
+          .in('order_id', trustworthyOrderIds)
+          .neq('id', caseId)
+      : Promise.resolve({ data: [] as any[] }),
+    trustworthyShipmentIds.length
+      ? supabaseAdmin
+          .from('dispute_cases')
+          .select('id, amazon_case_id, order_id, shipment_id, asin, case_type, created_at, submission_date, status, filing_status, evidence_attachments')
+          .eq('tenant_id', tenantId)
+          .in('shipment_id', trustworthyShipmentIds)
+          .neq('id', caseId)
+      : Promise.resolve({ data: [] as any[] })
+  ]);
+
+  for (const match of exactCaseMatchesResult.data || []) {
+    trackSignal({
+      source: 'dispute_case',
+      reason: 'duplicate_exact_amazon_case_id',
+      related_id: match.id,
+      amazon_case_id: trimOrNull(match.amazon_case_id)
+    });
+  }
+
+  for (const match of exactSubmissionMatchesResult.data || []) {
+    trackSignal({
+      source: 'dispute_submission',
+      reason: 'duplicate_exact_amazon_case_id',
+      related_id: match.dispute_id || match.id,
+      amazon_case_id: trimOrNull(match.amazon_case_id)
+    });
+  }
+
+  const existingThreadActivity = [
+    ...(caseMessageMatchesResult.data || []),
+    ...(unmatchedMatchesResult.data || [])
+  ];
+  for (const match of caseMessageMatchesResult.data || []) {
+    if (String(match.dispute_case_id || '') !== caseId) {
+      trackSignal({
+        source: 'case_message',
+        reason: 'existing_amazon_thread_active',
+        related_id: match.dispute_case_id || match.id,
+        amazon_case_id: trimOrNull(match.amazon_case_id)
+      });
+    }
+  }
+  for (const match of unmatchedMatchesResult.data || []) {
+    if (String(match.linked_dispute_case_id || '') !== caseId) {
+      trackSignal({
+        source: 'unmatched_case_message',
+        reason: 'existing_amazon_thread_active',
+        related_id: match.linked_dispute_case_id || match.id,
+        amazon_case_id: trimOrNull(match.amazon_case_id)
+      });
+    }
+  }
+
+  const currentSignatureWindowStart = referenceDate
+    ? new Date(referenceDate.getTime() - APPROX_DUPLICATE_WINDOW_DAYS * 24 * 60 * 60 * 1000)
+    : null;
+  const currentSignatureWindowEnd = referenceDate
+    ? new Date(referenceDate.getTime() + APPROX_DUPLICATE_WINDOW_DAYS * 24 * 60 * 60 * 1000)
+    : null;
+
+  const signatureCandidates = [...(orderMatchesResult.data || []), ...(shipmentMatchesResult.data || [])];
+  const seenCandidateIds = new Set<string>();
+  for (const candidate of signatureCandidates) {
+    if (!candidate?.id || seenCandidateIds.has(candidate.id)) continue;
+    seenCandidateIds.add(candidate.id);
+
+    const candidateEvidence = parseJsonObject(candidate.evidence_attachments);
+    const candidateOrderId = trimOrNull(candidate.order_id);
+    const candidateShipmentId = trimOrNull(candidate.shipment_id || candidateEvidence.shipment_id || candidateEvidence.fba_shipment_id);
+    const candidateAsin = trimOrNull(candidate.asin || candidateEvidence.asin);
+    const candidateFnsku = trimOrNull(candidateEvidence.fnsku);
+    const candidateIssueType = normalize(candidate.case_type || 'generic');
+    const sameIssueType = candidateIssueType === normalize(claimType);
+    const sameOrder = candidateOrderId ? trustworthyOrderIds.some((value) => normalize(value) === normalize(candidateOrderId)) : false;
+    const sameShipment = candidateShipmentId ? trustworthyShipmentIds.some((value) => normalize(value) === normalize(candidateShipmentId)) : false;
+    const sameProduct = intersects([...trustworthyAsins, ...trustworthyFnskus], [candidateAsin || '', candidateFnsku || ''].filter(Boolean));
+    const candidateDate = candidate.submission_date || candidate.created_at || null;
+    const parsedCandidateDate = candidateDate ? new Date(String(candidateDate)) : null;
+    const withinWindow =
+      !currentSignatureWindowStart ||
+      !currentSignatureWindowEnd ||
+      !parsedCandidateDate ||
+      Number.isNaN(parsedCandidateDate.getTime()) ||
+      (parsedCandidateDate >= currentSignatureWindowStart && parsedCandidateDate <= currentSignatureWindowEnd);
+
+    if (sameIssueType && withinWindow && ((sameOrder && sameProduct) || (sameShipment && sameProduct))) {
+      trackSignal({
+        source: 'dispute_case',
+        reason: 'duplicate_claim_signature',
+        related_id: candidate.id,
+        amazon_case_id: trimOrNull(candidate.amazon_case_id)
+      });
+    }
+  }
+
+  const currentCaseHasSubmission = Boolean((currentSubmissionResult.data || []).length > 0);
+  const threadOnly =
+    normalize(disputeCase.case_origin) === 'amazon_thread_backfill' ||
+    (
+      Boolean(amazonCaseId) &&
+      !currentCaseHasSubmission &&
+      existingThreadActivity.some((row: any) => {
+        const linkedDisputeCaseId = String((row as any).dispute_case_id || (row as any).linked_dispute_case_id || '').trim();
+        return !linkedDisputeCaseId || linkedDisputeCaseId === caseId;
+      })
+    );
+
+  return {
+    signals,
+    currentCaseHasSubmission,
+    threadOnly,
+    hasExactAmazonCaseConflict: signals.some((signal) => signal.reason === 'duplicate_exact_amazon_case_id'),
+    hasClaimSignatureConflict: signals.some((signal) => signal.reason === 'duplicate_claim_signature'),
+    hasExistingThreadActivity: signals.some((signal) => signal.reason === 'existing_amazon_thread_active') || threadOnly
+  };
+}
+
+function isInsufficientDataReason(reason: string): boolean {
+  const normalized = normalize(reason);
+  return isIdentifierSafetyReason(normalized) || normalized === 'missing_evidence_links';
+}
+
+function resolveEligibilityStatus(params: {
+  context: EligibilityContext;
+  reasons: string[];
+  duplicateSummary?: DuplicateSafetySummary | null;
+}): EligibilityStatus {
+  const { context, reasons, duplicateSummary } = params;
+  const disputeCase = context.disputeCase || {};
+  const identifiers = collectIdentifiers(context);
+  const trustworthyOrderIds = identifiers.orderIds.filter((value) => isTrustworthyOrderIdentifier(value));
+  const trustworthyShipmentIds = identifiers.shipmentIds.filter((value) => isTrustworthyShipmentIdentifier(value));
+  const trustworthyAsins = identifiers.asinIds.filter((value) => isTrustworthyProductIdentifier(value));
+  const trustworthyFnskus = identifiers.fnskuIds.filter((value) => isTrustworthyFnsku(value));
+  const quantityValues = collectQuantityCandidates(context);
+
+  const hasOrderProductPath = trustworthyOrderIds.length > 0 && trustworthyAsins.length > 0;
+  const hasShipmentProductQuantityPath =
+    trustworthyShipmentIds.length > 0 &&
+    (trustworthyFnskus.length > 0 || trustworthyAsins.length > 0) &&
+    quantityValues.length > 0;
+
+  if (
+    duplicateSummary?.hasExactAmazonCaseConflict ||
+    duplicateSummary?.hasClaimSignatureConflict ||
+    reasons.some((reason) => DUPLICATE_BLOCK_REASONS.has(normalize(reason)))
+  ) {
+    return 'DUPLICATE_BLOCKED';
+  }
+
+  if (
+    duplicateSummary?.threadOnly ||
+    reasons.some((reason) => THREAD_ONLY_REASONS.has(normalize(reason))) ||
+    normalize(disputeCase.case_origin) === 'amazon_thread_backfill'
+  ) {
+    return 'THREAD_ONLY';
+  }
+
+  if (
+    reasons.some((reason) => isInsufficientDataReason(reason)) ||
+    (!hasOrderProductPath && !hasShipmentProductQuantityPath)
+  ) {
+    return 'INSUFFICIENT_DATA';
+  }
+
+  if (reasons.some((reason) => QUALITY_GATE_REASONS.has(normalize(reason)) || isHardBlockReason(reason))) {
+    return 'SAFETY_HOLD';
+  }
+
+  return 'READY';
+}
+
 function classifyMissingRequirement(reason: string): string | null {
   if (!reason) return null;
   if (reason === 'missing_evidence_links') return 'evidence_links';
@@ -402,6 +863,7 @@ function classifyMissingRequirement(reason: string): string | null {
   if (reason === 'missing_trustworthy_order_identifier') return 'order_identifier';
   if (reason === 'missing_shipment_identifier') return 'shipment_identifier';
   if (reason === 'missing_trustworthy_shipment_identifier') return 'shipment_identifier';
+  if (reason === 'missing_quantity_value' || reason === 'invalid_quantity_value') return 'quantity';
   if (reason.startsWith('missing_required_document_type:')) return `document_type:${reason.split(':')[1]}`;
   if (reason.startsWith('missing_required_document_family:')) return `document_family:${reason.split(':')[1]}`;
   if (reason === 'missing_unit_cost_proof') return 'unit_cost_proof';
@@ -413,19 +875,23 @@ function classifyMissingRequirement(reason: string): string | null {
 }
 
 function isHardBlockReason(reason: string): boolean {
+  const normalized = normalize(reason);
   return (
-    isIdentifierSafetyReason(reason) ||
-    reason === 'missing_evidence_links' ||
-    reason === 'dangerous_or_prohibited_document_detected' ||
-    reason === 'already_recovered_or_reconciled' ||
-    reason === 'evidence_identity_mismatch' ||
-    reason.startsWith('outside_policy_window:') ||
-    reason.startsWith('filing_conflict:duplicate_blocked') ||
-    reason.startsWith('filing_conflict:already_reimbursed') ||
-    reason.startsWith('filing_conflict:quarantined_dangerous_doc') ||
-    reason.startsWith('filing_conflict:payment_required') ||
-    reason.startsWith('case_not_ready_for_filing_status:') ||
-    reason.startsWith('case_status_not_fileable:')
+    isIdentifierSafetyReason(normalized) ||
+    DUPLICATE_BLOCK_REASONS.has(normalized) ||
+    THREAD_ONLY_REASONS.has(normalized) ||
+    QUALITY_GATE_REASONS.has(normalized) ||
+    normalized === 'missing_evidence_links' ||
+    normalized === 'dangerous_or_prohibited_document_detected' ||
+    normalized === 'already_recovered_or_reconciled' ||
+    normalized === 'evidence_identity_mismatch' ||
+    normalized.startsWith('outside_policy_window:') ||
+    normalized.startsWith('filing_conflict:duplicate_blocked') ||
+    normalized.startsWith('filing_conflict:already_reimbursed') ||
+    normalized.startsWith('filing_conflict:quarantined_dangerous_doc') ||
+    normalized.startsWith('filing_conflict:payment_required') ||
+    normalized.startsWith('case_not_ready_for_filing_status:') ||
+    normalized.startsWith('case_status_not_fileable:')
   );
 }
 
@@ -668,6 +1134,19 @@ function isAutoClearableStoredReason(reason: string): boolean {
     normalized === 'missing_trustworthy_shipment_identifier' ||
     normalized === 'missing_required_identifiers' ||
     normalized === 'awaiting_verified_identifiers' ||
+    normalized === 'missing_quantity_value' ||
+    normalized === 'invalid_quantity_value' ||
+    normalized === 'contradictory_order_identifiers' ||
+    normalized === 'contradictory_shipment_identifiers' ||
+    normalized === 'contradictory_product_identifiers' ||
+    normalized === 'contradictory_quantity_values' ||
+    normalized === 'submission_explanation_too_short' ||
+    normalized === 'submission_explanation_repetitive' ||
+    normalized === 'duplicate_exact_amazon_case_id' ||
+    normalized === 'duplicate_claim_signature' ||
+    normalized === 'existing_submission_already_recorded' ||
+    normalized === 'existing_amazon_thread_active' ||
+    normalized === 'thread_continuation_detected' ||
     normalized === 'missing_required_document_family' ||
     normalized.startsWith('insufficient_evidence_documents:') ||
     normalized.startsWith('historical_') ||
@@ -694,6 +1173,9 @@ export function evaluateCaseEligibility(
   const trustworthyProductIds = identifiers.productIds.filter((value) => isTrustworthyProductIdentifier(value));
   const trustworthyOrderIds = identifiers.orderIds.filter((value) => isTrustworthyOrderIdentifier(value));
   const trustworthyShipmentIds = identifiers.shipmentIds.filter((value) => isTrustworthyShipmentIdentifier(value));
+  const trustworthyAsins = identifiers.asinIds.filter((value) => isTrustworthyProductIdentifier(value));
+  const trustworthyFnskus = identifiers.fnskuIds.filter((value) => isTrustworthyFnsku(value));
+  const quantityValues = collectQuantityCandidates(context);
   const confidenceScore = getConfidenceScore(context);
   const reasons = new Set<string>();
   const evidenceDocuments = context.evidenceDocuments || [];
@@ -743,6 +1225,34 @@ export function evaluateCaseEligibility(
   ) {
     reasons.add('missing_required_identifiers');
     reasons.add('awaiting_verified_identifiers');
+  }
+
+  if (hasConflictingIdentifiers(trustworthyOrderIds)) {
+    reasons.add('contradictory_order_identifiers');
+  }
+
+  if (hasConflictingIdentifiers(trustworthyShipmentIds)) {
+    reasons.add('contradictory_shipment_identifiers');
+  }
+
+  if (hasConflictingIdentifiers([...trustworthyAsins, ...trustworthyFnskus])) {
+    reasons.add('contradictory_product_identifiers');
+  }
+
+  if (quantityValues.length > 1) {
+    reasons.add('contradictory_quantity_values');
+  }
+
+  const hasOrderProductPath = trustworthyOrderIds.length > 0 && trustworthyAsins.length > 0;
+  const hasShipmentProductPath = trustworthyShipmentIds.length > 0 && (trustworthyFnskus.length > 0 || trustworthyAsins.length > 0);
+  const hasThreadContinuation = Boolean(trimOrNull(disputeCase.amazon_case_id));
+
+  if (!hasOrderProductPath && hasShipmentProductPath) {
+    if (quantityValues.length === 0) {
+      reasons.add('missing_quantity_value');
+    }
+  } else if (!hasOrderProductPath && !hasShipmentProductPath && !hasThreadContinuation) {
+    reasons.add('missing_quantity_value');
   }
 
   if (!['pending', 'retrying', 'pending_approval', 'pending_safety_verification', 'blocked', 'failed'].includes(filingStatus)) {
@@ -826,9 +1336,14 @@ export function evaluateCaseEligibility(
     evidenceDocuments,
     linkedEvidenceCount: context.linkedEvidenceCount
   });
+  const eligibilityStatus = resolveEligibilityStatus({
+    context,
+    reasons: finalReasons
+  });
 
   return {
-    eligible: proofSnapshot.filingStrategy !== 'BLOCKED',
+    eligible: eligibilityStatus === 'READY',
+    eligibilityStatus,
     reasons: finalReasons,
     confidenceScore,
     claimType: profile.key,
@@ -933,7 +1448,24 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
     reasons.add('historical_insufficient_evidence_risk');
   }
 
+  const narrativeQualityReasons = getNarrativeQualityReasons(context, result.proofSnapshot?.explanationPayload || null);
+  for (const reason of narrativeQualityReasons) {
+    reasons.add(reason);
+  }
+
+  const duplicateSummary = await loadDuplicateSafetySummary(tenantId, context, claimType, referenceDate);
+  for (const signal of duplicateSummary.signals) {
+    reasons.add(signal.reason);
+  }
+  if (duplicateSummary.threadOnly) {
+    reasons.add('thread_continuation_detected');
+  }
+  if (duplicateSummary.currentCaseHasSubmission) {
+    reasons.add('existing_submission_already_recorded');
+  }
+
   const finalReasons = Array.from(reasons);
+  const claimSignature = buildClaimSignature(context, tenantId, claimType, referenceDate);
   const finalProofSnapshot = buildProofSnapshot({
     profile,
     identifiers: collectIdentifiers(context),
@@ -941,11 +1473,18 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
     evidenceDocuments: context.evidenceDocuments,
     linkedEvidenceCount: context.linkedEvidenceCount
   });
+  const finalEligibilityStatus = resolveEligibilityStatus({
+    context,
+    reasons: finalReasons,
+    duplicateSummary
+  });
   const evidenceAttachment = parseJsonObject(disputeCase.evidence_attachments);
   const finalFilingStrategy = finalProofSnapshot.filingStrategy;
+  const evaluatedAt = new Date().toISOString();
 
   const updates: Record<string, any> = {
-    eligible_to_file: finalFilingStrategy !== 'BLOCKED',
+    eligible_to_file: finalEligibilityStatus === 'READY',
+    eligibility_status: finalEligibilityStatus,
     block_reasons: finalReasons,
     estimated_recovery_amount: toNumber(disputeCase.estimated_recovery_amount) ?? toNumber(disputeCase.claim_amount) ?? 0,
     evidence_attachments: {
@@ -960,34 +1499,41 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
         evidence_strength_label: evidenceSnapshot.label,
         dominant_rejection_category: decisionProfile.dominantRejectionCategory,
         filing_strategy: finalFilingStrategy,
+        eligibility_status: finalEligibilityStatus,
         adaptive_strategy_hints: decisionProfile.filingStrategy,
         explanation_payload: finalProofSnapshot.explanationPayload,
         days_until_expiry: daysUntilExpiry,
         adjustments: decisionProfile.adjustments,
         signals: evidenceSnapshot.signals,
+        claim_signature: claimSignature,
+        duplicate_signals: duplicateSummary.signals,
         proof_snapshot: finalProofSnapshot,
         filing_recommendation: finalProofSnapshot.filingRecommendation,
-        evaluated_at: new Date().toISOString()
+        evaluated_at: evaluatedAt
       }
     },
-    updated_at: new Date().toISOString()
+    updated_at: evaluatedAt
   };
 
-  if (finalFilingStrategy === 'BLOCKED') {
+  if (finalEligibilityStatus !== 'READY') {
     updates.last_error = finalProofSnapshot.explanationPayload.justification;
-    if (['pending', 'retrying', 'blocked', 'failed', 'pending_approval', 'pending_safety_verification', ''].includes(currentFilingStatus)) {
-      updates.filing_status = finalReasons.some((reason) => isIdentifierSafetyReason(reason))
-        ? 'pending_safety_verification'
-        : 'blocked';
+    if (['pending', 'retrying', 'blocked', 'failed', 'pending_approval', 'pending_safety_verification', 'duplicate_blocked', ''].includes(currentFilingStatus)) {
+      if (finalEligibilityStatus === 'DUPLICATE_BLOCKED') {
+        updates.filing_status = 'duplicate_blocked';
+      } else if (finalEligibilityStatus === 'INSUFFICIENT_DATA') {
+        updates.filing_status = 'pending_safety_verification';
+      } else {
+        updates.filing_status = 'blocked';
+      }
     }
   } else {
     updates.last_error = finalFilingStrategy === 'SMART'
       ? finalProofSnapshot.explanationPayload.justification
       : null;
-    if (['blocked', 'pending_approval', 'pending_safety_verification', 'failed', ''].includes(currentFilingStatus)) {
+    if (['blocked', 'pending_approval', 'pending_safety_verification', 'failed', 'duplicate_blocked', ''].includes(currentFilingStatus)) {
       updates.filing_status = 'pending';
     } else if (
-      ['blocked', 'pending_approval', 'pending_safety_verification'].includes(currentFilingStatus) &&
+      ['blocked', 'pending_approval', 'pending_safety_verification', 'duplicate_blocked'].includes(currentFilingStatus) &&
       storedReasons.every(isAutoClearableStoredReason)
     ) {
       updates.filing_status = 'pending';
@@ -1007,16 +1553,19 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
   }
 
   return {
-    eligible: finalFilingStrategy !== 'BLOCKED',
+    eligible: finalEligibilityStatus === 'READY',
+    eligibilityStatus: finalEligibilityStatus,
     reasons: finalReasons,
     confidenceScore: result.confidenceScore,
     claimType: result.claimType,
     proofSnapshot: finalProofSnapshot,
+    claimSignature,
     successProbability: decisionProfile.successProbability,
     priorityScore: decisionProfile.priorityScore,
     evidenceStrength: evidenceSnapshot.score,
     adaptiveConfidenceThreshold: decisionProfile.adaptiveConfidenceThreshold,
     decisionProfile,
+    duplicateSummary,
     disputeCase: updatedCase,
     detectionResult: context.detectionResult,
     evidenceDocuments: context.evidenceDocuments

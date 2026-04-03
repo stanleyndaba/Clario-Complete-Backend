@@ -484,6 +484,7 @@ router.post('/unlock-and-file', async (req, res) => {
         .from('dispute_cases')
         .update({
           filing_status: 'pending',
+          eligibility_status: 'READY',
           eligible_to_file: true,
           block_reasons: [],
           last_error: null,
@@ -1254,11 +1255,12 @@ router.post('/file-now', async (req, res) => {
       });
     }
 
-    const { eligible, reasons, disputeCase } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
+    const { eligible, reasons, disputeCase, eligibilityStatus } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
     if (!eligible) {
       return res.status(409).json({
         success: false,
         message: 'Case is blocked and cannot be filed',
+        eligibility_status: eligibilityStatus,
         filing_status: disputeCase?.filing_status || 'blocked',
         block_reasons: reasons
       });
@@ -1275,6 +1277,7 @@ router.post('/file-now', async (req, res) => {
       .from('dispute_cases')
       .update({
         filing_status: 'pending',
+        eligibility_status: 'READY',
         eligible_to_file: true,
         block_reasons: [],
         last_error: null,
@@ -1361,11 +1364,12 @@ router.post('/retry-filing', async (req, res) => {
       });
     }
 
-    const { eligible, reasons, disputeCase } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
+    const { eligible, reasons, disputeCase, eligibilityStatus } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
     if (!eligible) {
       return res.status(409).json({
         success: false,
         message: 'Case is blocked and cannot be retried',
+        eligibility_status: eligibilityStatus,
         filing_status: disputeCase?.filing_status || 'blocked',
         block_reasons: reasons
       });
@@ -1376,6 +1380,7 @@ router.post('/retry-filing', async (req, res) => {
       .from('dispute_cases')
       .update({
         filing_status: 'retrying',
+        eligibility_status: 'READY',
         retry_count: newRetryCount,
         last_error: null,
         eligible_to_file: true,
@@ -1473,11 +1478,12 @@ router.post('/approve-filing', async (req, res) => {
       });
     }
 
-    const { eligible, reasons } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
+    const { eligible, reasons, eligibilityStatus } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
     if (!eligible) {
       return res.status(409).json({
         success: false,
         message: 'Case remains blocked after approval review',
+        eligibility_status: eligibilityStatus,
         filing_status: 'blocked',
         block_reasons: reasons
       });
@@ -1487,6 +1493,7 @@ router.post('/approve-filing', async (req, res) => {
       .from('dispute_cases')
       .update({
         filing_status: 'pending',
+        eligibility_status: 'READY',
         eligible_to_file: true,
         block_reasons: [],
         last_error: null,

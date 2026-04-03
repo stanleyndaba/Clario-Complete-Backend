@@ -25,6 +25,13 @@ interface ResolvedScope {
   tenantSlug: string | null;
 }
 
+type EligibilityStatus =
+  | 'READY'
+  | 'DUPLICATE_BLOCKED'
+  | 'INSUFFICIENT_DATA'
+  | 'THREAD_ONLY'
+  | 'SAFETY_HOLD';
+
 const BILLING_COMPLETE_STATUSES = new Set(['paid', 'charged', 'credited', 'completed']);
 const REJECTED_STATUSES = new Set(['rejected', 'denied']);
 const APPROVED_STATUSES = new Set(['approved', 'won']);
@@ -77,12 +84,14 @@ function deriveQueueActionTruth(row: {
   linked_dispute_case_id: string | null;
   filing_status: string | null;
   eligible_to_file: boolean | null;
+  eligibility_status?: EligibilityStatus | null;
 }) {
   const filingStatus = normalize(row.filing_status);
   const hasLinkedDisputeCase = row.has_real_dispute_case === true && Boolean(row.linked_dispute_case_id);
-  const canApprove = hasLinkedDisputeCase && filingStatus === 'pending_approval';
-  const canRetry = hasLinkedDisputeCase && filingStatus === 'failed';
-  const canFile = hasLinkedDisputeCase && row.eligible_to_file === true && ['pending', 'retrying'].includes(filingStatus);
+  const isReady = row.eligibility_status === 'READY' && row.eligible_to_file === true;
+  const canApprove = hasLinkedDisputeCase && isReady && filingStatus === 'pending_approval';
+  const canRetry = hasLinkedDisputeCase && isReady && filingStatus === 'failed';
+  const canFile = hasLinkedDisputeCase && isReady && ['pending', 'retrying'].includes(filingStatus);
   const canOpenBrief = hasLinkedDisputeCase;
   const canOpenCaseDetail =
     row.entity_type === 'dispute_case'
@@ -96,6 +105,25 @@ function deriveQueueActionTruth(row: {
     can_open_brief: canOpenBrief,
     can_open_case_detail: canOpenCaseDetail
   } as const;
+}
+
+function deriveEligibilityStatus(record: any, fallback?: EligibilityStatus): EligibilityStatus {
+  const explicit = String(
+    record?.eligibility_status ||
+    record?.evidence_attachments?.decision_intelligence?.eligibility_status ||
+    ''
+  ).trim().toUpperCase();
+
+  if (['READY', 'DUPLICATE_BLOCKED', 'INSUFFICIENT_DATA', 'THREAD_ONLY', 'SAFETY_HOLD'].includes(explicit)) {
+    return explicit as EligibilityStatus;
+  }
+
+  if (fallback) return fallback;
+  if (record?.case_origin === 'amazon_thread_backfill') return 'THREAD_ONLY';
+  if (normalize(record?.filing_status) === 'duplicate_blocked') return 'DUPLICATE_BLOCKED';
+  if (normalize(record?.filing_status) === 'pending_safety_verification') return 'INSUFFICIENT_DATA';
+  if (record?.eligible_to_file === true && ['pending', 'retrying'].includes(normalize(record?.filing_status))) return 'READY';
+  return 'SAFETY_HOLD';
 }
 
 function compareValues(left: unknown, right: unknown) {
@@ -219,10 +247,19 @@ function deriveNextAction(row: any) {
   const recoveryStatus = normalize(row.recovery_status);
   const billingStatus = normalize(row.billing_status);
   const operationalState = normalize(row.operational_state);
+  const eligibilityStatus = deriveEligibilityStatus(row);
 
   if (BILLING_COMPLETE_STATUSES.has(billingStatus)) return 'Billing complete';
   if (recoveryStatus === 'reconciled' && billingStatus === 'pending') return 'Billing pending';
   if (recoveryStatus === 'reconciled') return 'Recovered';
+  if (eligibilityStatus === 'DUPLICATE_BLOCKED') return 'Duplicate detected - not filed';
+  if (eligibilityStatus === 'THREAD_ONLY') {
+    return row.case_origin === 'amazon_thread_backfill' || row.amazon_case_id
+      ? 'Amazon thread detected'
+      : 'Existing case already linked';
+  }
+  if (eligibilityStatus === 'INSUFFICIENT_DATA') return 'Awaiting verified identifiers';
+  if (eligibilityStatus === 'SAFETY_HOLD' && filingStatus === 'blocked') return 'Safety hold';
   if (operationalState === 'retry_scheduled') return 'Retry scheduled';
   if (operationalState === 'deferred_explicit') return 'Deferred operationally';
   if (operationalState === 'blocked_operational') return 'Dispatch blocked';
@@ -367,6 +404,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       ? decisionIntelligence.operational_state
       : null;
     const operationalExplanation = decisionIntelligence?.operational_explanation || null;
+    const eligibilityStatus = deriveEligibilityStatus(record);
     const matchedDocumentCount = getMatchedDocumentCount(record, evidenceCountByCase.get(record.id) || 0);
     const requestedAmount = toMoney(record.claim_amount);
     const approvedAmount = deriveApprovedAmount(record);
@@ -388,11 +426,13 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       claim_number: record.claim_id || record.case_number || null,
       case_type: record.case_type || detection?.anomaly_type || null,
       anomaly_type: detection?.anomaly_type || record.case_type || null,
+      case_origin: record.case_origin || 'detection_pipeline',
       status: record.status || null,
       filing_status: record.filing_status || null,
       recovery_status: record.recovery_status || null,
       billing_status: billingStatus,
-      eligible_to_file: record.eligible_to_file === true,
+      eligibility_status: eligibilityStatus,
+      eligible_to_file: eligibilityStatus === 'READY' && record.eligible_to_file === true,
       block_reasons: Array.isArray(record.block_reasons) ? record.block_reasons : [],
       last_error: record.last_error || null,
       requested_amount: requestedAmount,
@@ -447,6 +487,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     const confidenceScore = toNumber(record.confidence_score) ?? 0;
     const eligibleToFile = matchedDocumentCount > 0 && confidenceScore >= DETECTED_FILING_READY_THRESHOLD;
     const filingStatus = eligibleToFile ? 'pending' : 'blocked';
+    const eligibilityStatus: EligibilityStatus = eligibleToFile ? 'READY' : (matchedDocumentCount > 0 ? 'SAFETY_HOLD' : 'INSUFFICIENT_DATA');
     const identityTruth = deriveRowIdentityTruth('detection', null);
     const row = {
       dispute_case_id: record.id,
@@ -456,11 +497,13 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       claim_number: buildOpportunityCaseNumber(record.id),
       case_type: record.case_type || record.anomaly_type || null,
       anomaly_type: record.anomaly_type || record.case_type || null,
+      case_origin: 'detection_pipeline',
       status: record.status || 'detected',
       filing_status: filingStatus,
       recovery_status: null,
       billing_status: null,
-      eligible_to_file: eligibleToFile,
+      eligibility_status: eligibilityStatus,
+      eligible_to_file: eligibleToFile && eligibilityStatus === 'READY',
       block_reasons: eligibleToFile ? [] : (matchedDocumentCount === 0 ? ['missing_evidence'] : ['manual_review']),
       requested_amount: toMoney(record.estimated_value),
       approved_amount: null,

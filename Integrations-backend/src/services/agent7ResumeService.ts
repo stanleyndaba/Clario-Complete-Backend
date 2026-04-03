@@ -50,13 +50,14 @@ function isDynamicProofReason(reason: string): boolean {
   );
 }
 
-async function isAutoFileEnabledForUser(userId: string): Promise<boolean> {
+async function isAutoFileEnabledForUser(userId: string, tenantId: string): Promise<boolean> {
   try {
     const client = supabaseAdmin || supabase;
     const { data, error } = await client
       .from('user_notification_preferences')
       .select('preferences')
       .eq('user_id', userId)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
 
     if (error) {
@@ -189,7 +190,7 @@ class Agent7ResumeService {
     }
 
     if (mode === 'auto_file') {
-      const enabled = await isAutoFileEnabledForUser(disputeCase.seller_id);
+      const enabled = await isAutoFileEnabledForUser(disputeCase.seller_id, disputeCase.tenant_id);
       if (!enabled) {
         return { resumed: false, mode, archivedCount: 0, reason: 'auto_file_still_disabled' };
       }
@@ -247,7 +248,7 @@ class Agent7ResumeService {
       .from('dispute_cases')
       .select('id, seller_id, tenant_id, filing_status, status, block_reasons, last_error')
       .eq('tenant_id', tenantId)
-      .in('filing_status', ['pending_approval', 'blocked'])
+      .in('filing_status', ['pending_approval', 'blocked', 'pending_safety_verification', 'duplicate_blocked'])
       .in('status', ['pending', 'submitted'])
       .order('updated_at', { ascending: false })
       .limit(limit);
@@ -292,7 +293,7 @@ class Agent7ResumeService {
       .from('dispute_cases')
       .select('id, seller_id, tenant_id, filing_status, status, block_reasons, last_error')
       .eq('seller_id', userId)
-      .in('filing_status', ['pending_approval', 'blocked'])
+      .in('filing_status', ['pending_approval', 'blocked', 'pending_safety_verification', 'duplicate_blocked'])
       .in('status', ['pending', 'submitted'])
       .order('updated_at', { ascending: false })
       .limit(limit);
