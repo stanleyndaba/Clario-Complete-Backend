@@ -547,7 +547,8 @@ class SyncJobManager {
         'We\'re pulling your latest Amazon records, including recent FBA activity.',
         NotificationPriority.LOW,
         NotificationChannel.IN_APP,
-        { syncId }
+        { syncId },
+        syncStatus.tenantId
       );
     } catch (notifErr: any) {
       logger.debug('Failed to persist sync.started notification', { error: notifErr.message });
@@ -1170,7 +1171,8 @@ class SyncJobManager {
               ordersProcessed: syncStatus.ordersProcessed || 0,
               claimsDetected: syncStatus.claimsDetected || 0,
               totalRecoverableValue: syncStatus.totalRecoverableValue || 0
-            }
+            },
+            syncStatus.tenantId
           );
         } catch (notifErr: any) {
           logger.debug('Failed to persist sync.completed notification', { error: notifErr.message });
@@ -1285,7 +1287,8 @@ class SyncJobManager {
             'We hit a temporary issue while updating your Amazon records. We\'ll retry automatically.',
             NotificationPriority.HIGH,
             NotificationChannel.IN_APP,
-            { syncId, errorCode: structuredError.code, error: error.message }
+            { syncId, errorCode: structuredError.code, error: error.message },
+            syncStatus.tenantId
           );
         } catch (notifErr: any) {
           logger.debug('Failed to persist sync.failed notification', { error: notifErr.message });

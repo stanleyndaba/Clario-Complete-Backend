@@ -11,7 +11,7 @@ import { supabaseAdmin } from '../database/supabaseClient';
 import { normalizeAgent10EventPayload } from '../utils/agent10Event';
 
 export interface ClaimDetectedData {
-  tenantId?: string;
+  tenantId: string;
   claimId?: string;
   amount?: number;
   count?: number;        // For bulk detections
@@ -25,7 +25,7 @@ export interface ClaimDetectedData {
 }
 
 export interface EvidenceFoundData {
-  tenantId?: string;
+  tenantId: string;
   documentId: string;
   source: 'gmail' | 'outlook' | 'drive' | 'dropbox';
   fileName: string;
@@ -35,7 +35,7 @@ export interface EvidenceFoundData {
 }
 
 export interface CaseFiledData {
-  tenantId?: string;
+  tenantId: string;
   disputeId: string;
   caseId?: string;
   amazonCaseId?: string;
@@ -45,7 +45,7 @@ export interface CaseFiledData {
 }
 
 export interface RefundApprovedData {
-  tenantId?: string;
+  tenantId: string;
   disputeId: string;
   amazonCaseId?: string;
   claimAmount: number;
@@ -54,7 +54,7 @@ export interface RefundApprovedData {
 }
 
 export interface FundsDepositedData {
-  tenantId?: string;
+  tenantId: string;
   disputeId: string;
   recoveryId?: string;
   amount: number;
@@ -65,29 +65,38 @@ export interface FundsDepositedData {
 }
 
 class NotificationHelper {
-  private async resolveRecipients(targetId: string, explicitTenantId?: string): Promise<{ tenantId?: string; userIds: string[] }> {
-    let query = supabaseAdmin
+  private async resolveRecipients(targetId: string, tenantId: string): Promise<string[]> {
+    const { data: candidateUsers, error: userError } = await supabaseAdmin
       .from('users')
-      .select('id, tenant_id')
+      .select('id')
       .or(`id.eq.${targetId},seller_id.eq.${targetId}`);
 
-    if (explicitTenantId) {
-      query = query.eq('tenant_id', explicitTenantId);
+    if (userError) {
+      throw new Error(`RECIPIENT_LOOKUP_FAILED:${userError.message}`);
     }
 
-    const { data, error } = await query;
-    if (error) {
-      logger.warn('Failed to resolve notification recipients', {
-        targetId,
-        explicitTenantId,
-        error: error.message
-      });
-      return { tenantId: explicitTenantId, userIds: [] };
+    const candidateUserIds = Array.from(
+      new Set((candidateUsers || []).map((row: any) => String(row.id || '').trim()).filter(Boolean))
+    );
+
+    if (candidateUserIds.length === 0) {
+      return [];
     }
 
-    const userIds = Array.from(new Set((data || []).map((row: any) => row.id).filter(Boolean))) as string[];
-    const tenantId = explicitTenantId || data?.[0]?.tenant_id;
-    return { tenantId, userIds };
+    const { data: memberships, error: membershipError } = await supabaseAdmin
+      .from('tenant_memberships')
+      .select('user_id')
+      .eq('tenant_id', tenantId)
+      .eq('is_active', true)
+      .in('user_id', candidateUserIds);
+
+    if (membershipError) {
+      throw new Error(`TENANT_MEMBERSHIP_LOOKUP_FAILED:${membershipError.message}`);
+    }
+
+    return Array.from(
+      new Set((memberships || []).map((row: any) => String(row.user_id || '').trim()).filter(Boolean))
+    );
   }
 
   private async dispatchNotification(
@@ -95,24 +104,31 @@ class NotificationHelper {
     event: Omit<NotificationEvent, 'user_id'>,
     trackingType: string
   ): Promise<void> {
-    const { tenantId, userIds } = await this.resolveRecipients(targetId, event.tenant_id);
+    if (!event.tenant_id) {
+      throw new Error('TENANT_REQUIRED');
+    }
 
-    if (!tenantId || userIds.length === 0) {
+    const userIds = await this.resolveRecipients(targetId, event.tenant_id);
+
+    if (userIds.length === 0) {
       logger.warn('Skipping notification - no valid recipient context', {
         targetId,
-        tenantId,
+        tenantId: event.tenant_id,
         trackingType
       });
-      return;
+      throw new Error('RECIPIENT_NOT_FOUND_FOR_TENANT');
     }
 
     for (const userId of userIds) {
-      await notificationService.createNotification({
+      const notification = await notificationService.createNotification({
         ...event,
         user_id: userId,
-        tenant_id: tenantId
+        tenant_id: event.tenant_id
       });
-      this._logDelivery(userId, trackingType, true);
+
+      if (notification) {
+        this._logDelivery(userId, trackingType, true);
+      }
     }
   }
 
@@ -412,6 +428,10 @@ class NotificationHelper {
     tenantId?: string
   ): Promise<void> {
     try {
+      if (!tenantId) {
+        throw new Error('TENANT_REQUIRED');
+      }
+
       const event: Omit<NotificationEvent, 'user_id'> = {
         type: eventType,
         tenant_id: tenantId,
@@ -436,7 +456,7 @@ class NotificationHelper {
   /**
    * Notify when Amazon challenges a claim (Realism Log)
    */
-  async notifyAmazonChallenge(userId: string, data: { count?: number; disputeIds?: string[] }): Promise<void> {
+  async notifyAmazonChallenge(userId: string, data: { tenantId: string; count?: number; disputeIds?: string[] }): Promise<void> {
     try {
       const count = data.count || (data.disputeIds ? data.disputeIds.length : 1);
       const title = count > 1 ? `Amazon Challenged ${count} Claims — Escalating` : `Amazon Challenged Claim — Escalating`;
@@ -444,7 +464,7 @@ class NotificationHelper {
 
       const event: Omit<NotificationEvent, 'user_id'> = {
         type: NotificationType.AMAZON_CHALLENGE,
-        tenant_id: undefined,
+        tenant_id: data.tenantId,
         title,
         message,
         priority: NotificationPriority.HIGH,
@@ -452,6 +472,8 @@ class NotificationHelper {
         payload: normalizeAgent10EventPayload(NotificationType.AMAZON_CHALLENGE, {
           count,
           disputeIds: data.disputeIds
+        }, {
+          tenantId: data.tenantId
         }),
         immediate: true
       };

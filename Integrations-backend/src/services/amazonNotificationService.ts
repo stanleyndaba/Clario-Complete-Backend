@@ -4,13 +4,15 @@ import { supabaseAdmin } from '../database/supabaseClient';
 import sseHub from '../utils/sseHub';
 import { AmazonSnsEnvelope, confirmAmazonSnsSubscription, verifyAmazonSnsEnvelope } from '../utils/amazonSnsVerifier';
 import {
-  AMAZON_NOTIFICATION_SUPPORT_MATRIX,
   NotificationClassificationResult,
   classifyAmazonNotification,
   NormalizedAmazonNotification
 } from './amazonNotificationClassifier';
 import amazonNotificationOwnershipService, { NotificationOwnershipContext } from './amazonNotificationOwnershipService';
 import { syncJobManager } from './syncJobManager';
+import notificationHelper from './notificationHelper';
+import { NotificationChannel, NotificationPriority, NotificationType } from '../notifications/models/notification';
+import { normalizeAgent10EventPayload } from '../utils/agent10Event';
 
 interface ParsedAmazonNotification extends NormalizedAmazonNotification {
   amazonNotificationId?: string | null;
@@ -160,6 +162,98 @@ function normalizeAmazonNotification(
 }
 
 class AmazonNotificationService {
+  private findNumericValue(source: any, keyPatterns: RegExp[]): number | null {
+    if (!source || typeof source !== 'object') {
+      return null;
+    }
+
+    for (const [key, value] of Object.entries(source)) {
+      if (keyPatterns.some((pattern) => pattern.test(key))) {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          return parsed;
+        }
+      }
+
+      if (value && typeof value === 'object') {
+        const nested = this.findNumericValue(value, keyPatterns);
+        if (nested && nested > 0) {
+          return nested;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private async emitUserNotificationIfNeeded(
+    notificationId: string,
+    parsed: ParsedAmazonNotification,
+    classification: NotificationClassificationResult,
+    ownership: NotificationOwnershipContext
+  ): Promise<void> {
+    if (!ownership.tenantId || !ownership.userId) {
+      return;
+    }
+
+    let type: NotificationType | null = null;
+    let title = '';
+    let message = '';
+    let priority = NotificationPriority.NORMAL;
+
+    switch (classification.classification) {
+      case 'inventory_changed':
+        type = NotificationType.CLAIM_DETECTED;
+        title = 'Amazon Inventory Signal Detected';
+        message = 'Amazon reported inventory movement that may create recovery opportunities. Margin is refreshing the recovery lane now.';
+        priority = NotificationPriority.HIGH;
+        break;
+      case 'return_signal':
+        type = NotificationType.USER_ACTION_REQUIRED;
+        title = 'Amazon Return Issue Detected';
+        message = 'Amazon reported a return-related issue that may need review. Margin is refreshing the case data now.';
+        priority = NotificationPriority.HIGH;
+        break;
+      case 'refund_signal':
+      case 'settlement_ready':
+      case 'financial_report_ready': {
+        const amount = this.findNumericValue(parsed.payload, [/reimburse/i, /refund/i, /amount/i, /deposit/i, /total/i]);
+        if (!amount) {
+          return;
+        }
+        type = NotificationType.FUNDS_DEPOSITED;
+        title = `Amazon Posted ${new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount)}`;
+        message = 'Amazon reported a reimbursement-related financial event. Margin is reconciling the payout now.';
+        priority = NotificationPriority.URGENT;
+        break;
+      }
+      default:
+        return;
+    }
+
+    await notificationHelper.notifyUser(
+      ownership.userId,
+      type,
+      title,
+      message,
+      priority,
+      NotificationChannel.BOTH,
+      normalizeAgent10EventPayload(type, {
+        amazon_notification_id: parsed.amazonNotificationId || notificationId,
+        amazon_notification_type: parsed.notificationType,
+        amazon_notification_subtype: parsed.notificationSubtype,
+        amazon_event_classification: classification.classification,
+        seller_id: ownership.sellerId,
+        store_id: ownership.storeId
+      }, {
+        tenantId: ownership.tenantId,
+        entityType: 'notification',
+        entityId: notificationId
+      }),
+      ownership.tenantId
+    );
+  }
+
   async receiveTrustedEnvelopeForTest(envelope: AmazonSnsEnvelope): Promise<{ statusCode: number; response: Record<string, any> }> {
     const parsed = normalizeAmazonNotification(envelope, 'replay');
     const ownership = await amazonNotificationOwnershipService.resolveOwnership({
@@ -396,6 +490,16 @@ class AmazonNotificationService {
           quarantined: true
         }
       };
+    }
+
+    try {
+      await this.emitUserNotificationIfNeeded(notificationId, parsed, classification, ownership);
+    } catch (notificationError: any) {
+      logger.warn('[AMAZON NOTIFICATIONS] Failed to emit user notification for Amazon event', {
+        notificationId,
+        classification: classification.classification,
+        error: notificationError?.message || 'notification_emit_failed'
+      });
     }
 
     if (classification.classification === 'unhandled_notification_type' || actionPlan.type === 'signal_only') {

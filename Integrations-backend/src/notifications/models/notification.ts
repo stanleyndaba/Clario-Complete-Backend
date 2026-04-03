@@ -1,4 +1,3 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { supabase, supabaseAdmin } from '../../database/supabaseClient';
 import { getLogger } from '../../utils/logger';
 
@@ -16,6 +15,9 @@ export interface NotificationData {
   priority: NotificationPriority;
   channel: NotificationChannel;
   payload?: Record<string, any>;
+  dedupe_key?: string | null;
+  delivery_state?: Record<string, any>;
+  last_delivery_error?: string | null;
   read_at?: Date;
   delivered_at?: Date;
   expires_at?: Date;
@@ -42,13 +44,18 @@ export enum NotificationType {
   CLAIM_DENIED = 'claim_denied',
   CLAIM_EXPIRING = 'claim_expiring',
   LEARNING_INSIGHT = 'learning_insight',
-  WEEKLY_SUMMARY = 'weekly_summary'
+  WEEKLY_SUMMARY = 'weekly_summary',
+  NEEDS_EVIDENCE = 'needs_evidence',
+  APPROVED = 'approved',
+  REJECTED = 'rejected',
+  PAID = 'paid'
 }
 
 export enum NotificationStatus {
   PENDING = 'pending',
   SENT = 'sent',
   DELIVERED = 'delivered',
+  PARTIAL = 'partial',
   READ = 'read',
   FAILED = 'failed',
   EXPIRED = 'expired'
@@ -77,6 +84,7 @@ export interface CreateNotificationRequest {
   priority?: NotificationPriority;
   channel?: NotificationChannel;
   payload?: Record<string, any>;
+  dedupe_key?: string;
   expires_at?: Date;
 }
 
@@ -85,6 +93,8 @@ export interface UpdateNotificationRequest {
   read_at?: Date;
   delivered_at?: Date;
   payload?: Record<string, any>;
+  delivery_state?: Record<string, any>;
+  last_delivery_error?: string | null;
 }
 
 export interface NotificationFilters {
@@ -110,6 +120,9 @@ export class Notification {
   priority: NotificationPriority;
   channel: NotificationChannel;
   payload?: Record<string, any>;
+  dedupe_key?: string | null;
+  delivery_state?: Record<string, any>;
+  last_delivery_error?: string | null;
   read_at?: Date;
   delivered_at?: Date;
   expires_at?: Date;
@@ -127,6 +140,9 @@ export class Notification {
     this.priority = data.priority;
     this.channel = data.channel;
     this.payload = data.payload;
+    this.dedupe_key = data.dedupe_key;
+    this.delivery_state = data.delivery_state;
+    this.last_delivery_error = data.last_delivery_error;
     this.read_at = data.read_at;
     this.delivered_at = data.delivered_at;
     this.expires_at = data.expires_at;
@@ -142,48 +158,25 @@ export class Notification {
       // Use admin client to bypass RLS (backend services need to create notifications)
       const client = supabaseAdmin || supabase;
 
-      // Resolve tenant_id from user's membership (notifications table requires tenant_id NOT NULL)
-      let tenantId: string | null = data.tenant_id || null;
-      const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
-
-      try {
-        const { data: membership } = await client
-          .from('tenant_memberships')
-          .select('tenant_id')
-          .eq('user_id', data.user_id)
-          .eq('is_active', true)
-          .limit(1)
-          .maybeSingle();
-
-        tenantId = membership?.tenant_id || DEFAULT_TENANT_ID;
-      } catch (tenantErr: any) {
-        // Fallback to default tenant on any error
-        tenantId = DEFAULT_TENANT_ID;
-        logger.debug('Using default tenant_id for notification', { user_id: data.user_id });
+      if (!data.tenant_id) {
+        throw new Error('TENANT_REQUIRED');
       }
 
-      // DB-allowed notification types (from notifications_type_check constraint)
-      // If code sends a type not in this set, map it to 'system_alert' to prevent constraint violation
-      const DB_ALLOWED_TYPES = new Set([
-        'claim_detected', 'evidence_found', 'case_filed',
-        'refund_approved', 'funds_deposited', 'integration_completed',
-        'payment_processed', 'discrepancy_found', 'system_alert',
-        'user_action_required', 'amazon_challenge', 'claim_denied',
-        'claim_expiring', 'learning_insight', 'weekly_summary'
-      ]);
-
-      const sanitizedType = DB_ALLOWED_TYPES.has(data.type) ? data.type : 'system_alert';
-      if (sanitizedType !== data.type) {
-        logger.debug('Mapped unsupported notification type to system_alert', { original: data.type });
+      if (!Object.values(NotificationType).includes(data.type)) {
+        throw new Error(`INVALID_NOTIFICATION_TYPE:${data.type}`);
       }
 
       const notificationData = {
         ...data,
-        type: sanitizedType,
-        tenant_id: tenantId,
+        tenant_id: data.tenant_id,
         status: NotificationStatus.PENDING,
-        priority: data.priority || NotificationPriority.NORMAL,
-        channel: data.channel || NotificationChannel.IN_APP,
+        priority: Object.values(NotificationPriority).includes(data.priority as NotificationPriority)
+          ? data.priority
+          : NotificationPriority.NORMAL,
+        channel: Object.values(NotificationChannel).includes(data.channel as NotificationChannel)
+          ? data.channel
+          : NotificationChannel.IN_APP,
+        delivery_state: {},
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       };
@@ -195,6 +188,12 @@ export class Notification {
         .single();
 
       if (error) {
+        if (error.code === '23505' && data.dedupe_key) {
+          const existing = await Notification.findByDedupeKey(data.user_id, data.tenant_id, data.dedupe_key);
+          if (existing) {
+            return existing;
+          }
+        }
         logger.error('Error creating notification:', error);
         throw new Error(`Failed to create notification: ${error.message}`);
       }
@@ -265,7 +264,11 @@ export class Notification {
         query = query.eq('channel', filters.channel);
       }
       if (filters.unread_only) {
-        query = query.eq('status', NotificationStatus.PENDING);
+        query = query.in('status', [
+          NotificationStatus.PENDING,
+          NotificationStatus.DELIVERED,
+          NotificationStatus.PARTIAL
+        ]);
       }
 
       // Apply pagination
@@ -289,6 +292,32 @@ export class Notification {
       return data.map(item => new Notification(item));
     } catch (error) {
       logger.error('Error in Notification.findMany:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Find notification by dedupe key
+   */
+  static async findByDedupeKey(userId: string, tenantId: string, dedupeKey: string): Promise<Notification | null> {
+    try {
+      const client = supabaseAdmin || supabase;
+      const { data, error } = await client
+        .from('notifications')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('tenant_id', tenantId)
+        .eq('dedupe_key', dedupeKey)
+        .maybeSingle();
+
+      if (error) {
+        logger.error('Error finding notification by dedupe key:', error);
+        throw new Error(`Failed to find notification by dedupe key: ${error.message}`);
+      }
+
+      return data ? new Notification(data) : null;
+    } catch (error) {
+      logger.error('Error in Notification.findByDedupeKey:', error);
       throw error;
     }
   }
@@ -395,7 +424,11 @@ export class Notification {
    * Check if notification is unread
    */
   isUnread(): boolean {
-    return this.status === NotificationStatus.PENDING;
+    return [
+      NotificationStatus.PENDING,
+      NotificationStatus.DELIVERED,
+      NotificationStatus.PARTIAL
+    ].includes(this.status);
   }
 
   /**
@@ -423,7 +456,11 @@ export class Notification {
           updated_at: new Date().toISOString()
         })
         .eq('user_id', userId)
-        .eq('status', NotificationStatus.PENDING);
+        .in('status', [
+          NotificationStatus.PENDING,
+          NotificationStatus.DELIVERED,
+          NotificationStatus.PARTIAL
+        ]);
 
       if (tenantId) {
         query = query.eq('tenant_id', tenantId);

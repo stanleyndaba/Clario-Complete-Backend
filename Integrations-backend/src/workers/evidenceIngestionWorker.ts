@@ -746,6 +746,16 @@ export class EvidenceIngestionWorker {
           // Get recently ingested documents to notify about
           const dbUserIdForDocs = convertUserIdToUuid(userId);
           const client = supabaseAdmin || supabase;
+          const { data: sourceContext } = await client
+            .from('evidence_sources')
+            .select('tenant_id')
+            .eq('id', source.id)
+            .maybeSingle();
+
+          if (!sourceContext?.tenant_id) {
+            throw new Error('TENANT_REQUIRED');
+          }
+
           const { data: recentDocs } = await client
             .from('evidence_documents')
             .select('id, filename, provider')
@@ -760,6 +770,7 @@ export class EvidenceIngestionWorker {
                 ? 'drive'
                 : source.provider;
               await notificationHelper.notifyEvidenceFound(userId, {
+                tenantId: sourceContext.tenant_id,
                 documentId: doc.id,
                 source: notificationSource as 'gmail' | 'outlook' | 'drive' | 'dropbox',
                 fileName: doc.filename || 'Unknown',

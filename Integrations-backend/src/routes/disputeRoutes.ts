@@ -1098,7 +1098,7 @@ router.post('/:id/deny', async (req, res) => {
 
     // 3. Send "Realism" notification (Amazon Challenge)
     const notificationHelper = (await import('../services/notificationHelper')).default;
-    notificationHelper.notifyAmazonChallenge(userId, { disputeIds: [id] }).catch((err: any) => {
+    notificationHelper.notifyAmazonChallenge(userId, { tenantId, disputeIds: [id] }).catch((err: any) => {
       console.error('Failed to notify Amazon challenge:', err);
     });
 

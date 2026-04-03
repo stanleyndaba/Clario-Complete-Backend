@@ -1,6 +1,5 @@
 import { getLogger } from '../../utils/logger';
 import Notification, {
-  CreateNotificationRequest,
   UpdateNotificationRequest,
   NotificationFilters,
   NotificationType,
@@ -13,12 +12,7 @@ import websocketService from '../../services/websocketService';
 import sseHub from '../../utils/sseHub';
 import { supabaseAdmin } from '../../database/supabaseClient';
 import { normalizeAgent10EventPayload } from '../../utils/agent10Event';
-// Disable BullMQ worker for demo stability (avoid QueueScheduler import issues)
-class NoopNotificationWorker {
-  async initialize(): Promise<void> { return; }
-  async queueNotification(_id: string, _options?: any): Promise<void> { return; }
-  async shutdown(): Promise<void> { return; }
-}
+import { DEFAULT_NOTIFICATION_PREFERENCES, normalizeNotificationPreferences } from '../preferencesConfig';
 
 const logger = getLogger('NotificationService');
 
@@ -32,7 +26,7 @@ export interface NotificationEvent {
   channel?: NotificationChannel;
   payload?: Record<string, any>;
   expires_at?: Date;
-  immediate?: boolean; // If true, send immediately without queuing
+  immediate?: boolean;
 }
 
 export interface NotificationStats {
@@ -45,29 +39,11 @@ export interface NotificationStats {
   by_priority: Record<string, number>;
 }
 
-type NotificationPreferenceId =
-  | 'recovery-guaranteed'
-  | 'payout-confirmed'
-  | 'invoice-issued'
-  | 'document-processed'
-  | 'weekly-summary';
-
-const NOTIFICATION_TYPE_TO_PREFERENCE: Partial<Record<NotificationType, NotificationPreferenceId>> = {
-  [NotificationType.CASE_FILED]: 'recovery-guaranteed',
-  [NotificationType.REFUND_APPROVED]: 'recovery-guaranteed',
-  [NotificationType.FUNDS_DEPOSITED]: 'payout-confirmed',
-  [NotificationType.EVIDENCE_FOUND]: 'document-processed',
-  [NotificationType.WEEKLY_SUMMARY]: 'weekly-summary'
-};
-
 export class NotificationService {
   private emailService: EmailService;
-  private worker: NoopNotificationWorker;
 
   constructor() {
     this.emailService = new EmailService();
-    // Demo mode: disable BullMQ worker to avoid QueueScheduler runtime issues
-    this.worker = new NoopNotificationWorker();
   }
 
   /**
@@ -75,7 +51,6 @@ export class NotificationService {
    */
   async initialize(): Promise<void> {
     try {
-      await this.worker.initialize();
       logger.info('Notification service initialized successfully');
     } catch (error) {
       logger.error('Failed to initialize notification service:', error);
@@ -97,7 +72,7 @@ export class NotificationService {
   }
 
   /**
-   * Create and queue a notification
+   * Create and immediately deliver a notification.
    */
   async createNotification(event: NotificationEvent): Promise<Notification | null> {
     try {
@@ -109,6 +84,7 @@ export class NotificationService {
 
       const effectiveChannel = await this.resolveEffectiveChannel(
         event.user_id,
+        event.tenant_id,
         event.type,
         event.channel || NotificationChannel.IN_APP
       );
@@ -124,6 +100,20 @@ export class NotificationService {
       const normalizedPayload = normalizeAgent10EventPayload(event.type, event.payload, {
         tenantId: event.tenant_id
       });
+      const dedupeKey = this.buildDedupeKey(event, normalizedPayload);
+
+      if (dedupeKey) {
+        const existing = await Notification.findByDedupeKey(event.user_id, event.tenant_id!, dedupeKey);
+        if (existing) {
+          logger.info('Notification deduped', {
+            id: existing.id,
+            dedupeKey,
+            type: event.type,
+            user_id: event.user_id
+          });
+          return existing;
+        }
+      }
 
       // Create the notification in the database
       const notification = await Notification.create({
@@ -136,20 +126,20 @@ export class NotificationService {
         channel: effectiveChannel,
         payload: {
           ...normalizedPayload,
-          preference_toggle_id: this.mapNotificationTypeToPreferenceId(event.type)
+          preference_toggle_id: event.type,
+          dedupe_key: dedupeKey || null
         },
+        dedupe_key: dedupeKey,
         expires_at: event.expires_at
       });
 
-      // If immediate delivery is requested, send right away
-      if (event.immediate) {
-        await this.deliverNotification(notification);
-      } else {
-        // Queue the notification for background processing
-        await this.worker.queueNotification(notification.id);
-      }
+      // Immediate delivery is the single authoritative execution path.
+      await this.deliverNotification(notification);
 
-      logger.info('Notification created and queued successfully', { id: notification.id, channel: notification.channel });
+      logger.info('Notification created and delivered through authoritative path', {
+        id: notification.id,
+        channel: notification.channel
+      });
       return notification;
     } catch (error) {
       logger.error('Error creating notification:', error);
@@ -417,6 +407,7 @@ export class NotificationService {
 
       const effectiveChannel = await this.resolveEffectiveChannel(
         notification.user_id,
+        notification.tenant_id,
         notification.type,
         notification.channel
       );
@@ -433,34 +424,64 @@ export class NotificationService {
         return;
       }
 
-      const deliveryPromises: Promise<void>[] = [];
+      const inAppRequested = effectiveChannel === NotificationChannel.IN_APP || effectiveChannel === NotificationChannel.BOTH;
+      const emailRequested = effectiveChannel === NotificationChannel.EMAIL || effectiveChannel === NotificationChannel.BOTH;
+      const deliveryState = {
+        in_app_requested: inAppRequested,
+        email_requested: emailRequested,
+        realtime_requested: inAppRequested,
+        in_app_success: inAppRequested,
+        email_success: false,
+        realtime_success: false,
+        attempted_at: new Date().toISOString()
+      } as Record<string, any>;
+      const errors: string[] = [];
 
-      // Deliver via WebSocket if in-app or both
-      if (effectiveChannel === NotificationChannel.IN_APP ||
-        effectiveChannel === NotificationChannel.BOTH) {
-        deliveryPromises.push(
-          this.deliverViaWebSocket(notification)
-        );
+      if (inAppRequested) {
+        deliveryState.realtime_success = await this.deliverViaWebSocket(notification);
       }
 
-      // Deliver via email if email or both
-      if (effectiveChannel === NotificationChannel.EMAIL ||
-        effectiveChannel === NotificationChannel.BOTH) {
-        deliveryPromises.push(
-          this.emailService.sendNotification(notification)
-        );
+      if (emailRequested) {
+        const emailResult = await this.deliverViaEmail(notification);
+        deliveryState.email_success = emailResult.success;
+        if (emailResult.error) {
+          errors.push(emailResult.error);
+        }
       }
 
-      // Wait for all delivery attempts
-      await Promise.allSettled(deliveryPromises);
+      const successfulChannels = [
+        inAppRequested ? deliveryState.in_app_success : false,
+        emailRequested ? deliveryState.email_success : false
+      ].filter(Boolean).length;
+      const requestedChannels = [inAppRequested, emailRequested].filter(Boolean).length;
 
-      // Mark as delivered
-      await notification.markAsDelivered();
+      let nextStatus = NotificationStatus.FAILED;
+      if (successfulChannels === 0) {
+        nextStatus = NotificationStatus.FAILED;
+      } else if (successfulChannels === requestedChannels) {
+        nextStatus = NotificationStatus.DELIVERED;
+      } else {
+        nextStatus = NotificationStatus.PARTIAL;
+      }
 
-      logger.info('Notification delivered successfully', { id: notification.id });
+      await notification.update({
+        status: nextStatus,
+        delivered_at: successfulChannels > 0 ? new Date() : undefined,
+        delivery_state: deliveryState,
+        last_delivery_error: errors.length ? errors.join(' | ') : null
+      });
+
+      logger.info('Notification delivery completed', {
+        id: notification.id,
+        status: nextStatus,
+        deliveryState
+      });
     } catch (error) {
       logger.error('Error delivering notification:', error);
-      await notification.markAsFailed();
+      await notification.update({
+        status: NotificationStatus.FAILED,
+        last_delivery_error: error instanceof Error ? error.message : 'notification_delivery_failed'
+      });
       throw error;
     }
   }
@@ -468,7 +489,7 @@ export class NotificationService {
   /**
    * Deliver notification via WebSocket and SSE
    */
-  private async deliverViaWebSocket(notification: Notification): Promise<void> {
+  private async deliverViaWebSocket(notification: Notification): Promise<boolean> {
     try {
       const tenantSlug = await this.resolveTenantSlug(notification.tenant_id);
       const websocketPayload = {
@@ -506,10 +527,11 @@ export class NotificationService {
         id: notification.id,
         userId: notification.user_id
       });
+      return true;
 
     } catch (error) {
       logger.error('Error sending notification via Realtime:', error);
-      // Don't throw, as this is best-effort delivery
+      return false;
     }
   }
 
@@ -530,47 +552,113 @@ export class NotificationService {
     }
   }
 
-  private mapNotificationTypeToPreferenceId(type: NotificationType): NotificationPreferenceId | undefined {
-    return NOTIFICATION_TYPE_TO_PREFERENCE[type];
+  private buildDedupeKey(
+    event: NotificationEvent,
+    normalizedPayload: Record<string, any>
+  ): string | undefined {
+    const explicit = [
+      normalizedPayload.dedupe_key,
+      normalizedPayload.event_id,
+      normalizedPayload.provider_message_id,
+      normalizedPayload.amazon_notification_id,
+      normalizedPayload.payload?.dedupe_key
+    ]
+      .map((value) => String(value || '').trim())
+      .find(Boolean);
+
+    if (explicit) {
+      return explicit;
+    }
+
+    const baseParts = [
+      event.type,
+      event.tenant_id,
+      event.user_id,
+      normalizedPayload.entity_type,
+      normalizedPayload.entity_id
+    ].map((value) => String(value || '').trim()).filter(Boolean);
+
+    switch (event.type) {
+      case NotificationType.EVIDENCE_FOUND:
+        baseParts.push(
+          normalizedPayload.matchFound ? 'match_ready' : normalizedPayload.parsed ? 'parsed' : 'ingested'
+        );
+        break;
+      case NotificationType.SYNC_STARTED:
+      case NotificationType.SYNC_COMPLETED:
+      case NotificationType.SYNC_FAILED:
+        if (normalizedPayload.sync_id) {
+          baseParts.push(String(normalizedPayload.sync_id));
+        }
+        break;
+      case NotificationType.NEEDS_EVIDENCE:
+      case NotificationType.APPROVED:
+      case NotificationType.REJECTED:
+      case NotificationType.PAID:
+        if (normalizedPayload.amazon_case_id) {
+          baseParts.push(String(normalizedPayload.amazon_case_id));
+        }
+        if (normalizedPayload.provider_message_id) {
+          baseParts.push(String(normalizedPayload.provider_message_id));
+        }
+        break;
+      default:
+        break;
+    }
+
+    return baseParts.length >= 4 ? baseParts.join(':') : undefined;
   }
 
-  private async getUserNotificationPreferences(userId: string): Promise<Record<string, { email?: boolean; inApp?: boolean }>> {
+  private async deliverViaEmail(notification: Notification): Promise<{ success: boolean; error?: string }> {
+    try {
+      await this.emailService.sendNotification(notification);
+      return { success: true };
+    } catch (error: any) {
+      logger.error('Error sending notification via email:', error);
+      return {
+        success: false,
+        error: error?.message || 'email_delivery_failed'
+      };
+    }
+  }
+
+  private async getUserNotificationPreferences(
+    userId: string,
+    tenantId: string
+  ): Promise<Record<string, { email?: boolean; inApp?: boolean }>> {
     const { data, error } = await supabaseAdmin
       .from('user_notification_preferences')
       .select('preferences')
       .eq('user_id', userId)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
 
     if (error) {
       logger.warn('Failed to load user notification preferences', {
         userId,
+        tenantId,
         error: error.message
       });
-      return {};
+      return { ...DEFAULT_NOTIFICATION_PREFERENCES };
     }
 
-    const preferences = { ...((data?.preferences || {}) as Record<string, { email?: boolean; inApp?: boolean }>) };
-    if (preferences['monthly-summary'] && !preferences['weekly-summary']) {
-      preferences['weekly-summary'] = preferences['monthly-summary'];
-    }
-    return preferences;
+    return normalizeNotificationPreferences((data?.preferences || {}) as Record<string, { email?: boolean; inApp?: boolean }>);
   }
 
   private async resolveEffectiveChannel(
     userId: string,
+    tenantId: string | undefined,
     type: NotificationType,
     requestedChannel: NotificationChannel
   ): Promise<NotificationChannel | null> {
-    const preferenceId = this.mapNotificationTypeToPreferenceId(type);
-    if (!preferenceId) {
-      return requestedChannel;
+    if (!tenantId) {
+      throw new Error('TENANT_REQUIRED');
     }
 
-    const preferences = await this.getUserNotificationPreferences(userId);
-    const savedPreference = preferences[preferenceId];
-
+    const preferences = await this.getUserNotificationPreferences(userId, tenantId);
+    const savedPreference = preferences[type] || DEFAULT_NOTIFICATION_PREFERENCES[type];
     if (!savedPreference) {
-      return requestedChannel;
+      throw new Error(`UNMAPPED_NOTIFICATION_TYPE:${type}`);
     }
 
     const emailAllowed = savedPreference.email !== false;
@@ -615,7 +703,6 @@ export class NotificationService {
    */
   async shutdown(): Promise<void> {
     try {
-      await this.worker.shutdown();
       logger.info('Notification service shutdown completed');
     } catch (error) {
       logger.error('Error during notification service shutdown:', error);

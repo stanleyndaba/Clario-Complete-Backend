@@ -214,7 +214,8 @@ class LearningWorker {
                 `Agent 11 optimized ${patterns.thresholdRecommendations.length} detection threshold${patterns.thresholdRecommendations.length > 1 ? 's' : ''} based on recent claim outcomes. Your recovery accuracy is improving.`,
                 NotificationPriority.LOW,
                 NotificationChannel.IN_APP,
-                { thresholdsUpdated: patterns.thresholdRecommendations.length, tenantId }
+                { thresholdsUpdated: patterns.thresholdRecommendations.length, tenantId },
+                tenantId
               );
             } catch (notifErr: any) {
               logger.debug('[LEARNING] Failed to send threshold notification', { error: notifErr.message });
@@ -267,7 +268,8 @@ class LearningWorker {
                 `Agent 11 identified ${significantPatterns.length} recurring micro-overcharge pattern${significantPatterns.length > 1 ? 's' : ''} worth ${formatted}. These have been added to your detection pipeline.`,
                 NotificationPriority.NORMAL,
                 NotificationChannel.IN_APP,
-                { patternsFound: significantPatterns.length, totalValue: totalLTValue, tenantId }
+                { patternsFound: significantPatterns.length, totalValue: totalLTValue, tenantId },
+                tenantId
               );
             } catch (notifErr: any) {
               logger.debug('[LEARNING] Failed to send pattern notification', { error: notifErr.message });
@@ -310,7 +312,8 @@ class LearningWorker {
                   `Agent 11 retrained your detection model (v${result.modelVersion || 'latest'}). Estimated accuracy improvement: ${improvementPct}.`,
                   NotificationPriority.LOW,
                   NotificationChannel.IN_APP,
-                  { modelVersion: result.modelVersion, improvement: result.improvement, tenantId }
+                  { modelVersion: result.modelVersion, improvement: result.improvement, tenantId },
+                  tenantId
                 );
               } catch (notifErr: any) {
                 logger.debug('[LEARNING] Failed to send retraining notification', { error: notifErr.message });

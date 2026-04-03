@@ -625,6 +625,7 @@ export class Agent2DataSyncService {
               // Only notify if amount is positive
               if (settlement.amount > 0) {
                 await notificationHelper.notifyFundsDeposited(userId, {
+                  tenantId,
                   disputeId: settlement.settlement_id || `settlement_${Date.now()}`,
                   amount: settlement.amount,
                   currency: settlement.currency || 'USD',
@@ -2829,6 +2830,7 @@ export class Agent2DataSyncService {
             try {
               // Notify about claims detected (Agent 1 event)
               await notificationHelper.notifyClaimDetected(userId, {
+                tenantId,
                 count: detectionResults.length,
                 totalValue: totalRecoverableValue,
                 currency: 'USD',

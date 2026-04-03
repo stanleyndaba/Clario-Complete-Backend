@@ -1,43 +1,40 @@
 import { Router } from 'express';
 import NotificationController from '../controllers/notification_controller';
+import { normalizeNotificationPreferences } from '../preferencesConfig';
 
 const router = Router();
 const notificationController = new NotificationController();
 
-const DEFAULT_NOTIFICATION_PREFERENCES = {
-    'recovery-guaranteed': { email: true, inApp: true },
-    'payout-confirmed': { email: true, inApp: true },
-    'invoice-issued': { email: true, inApp: true },
-    'team-member-joins': { email: true, inApp: true },
-    'document-processed': { email: false, inApp: true },
-    'device-login': { email: true, inApp: true },
-    'weekly-summary': { email: true, inApp: false },
-    'product-updates': { email: false, inApp: true }
-};
-
 function getPreferenceUserId(req: any): string {
-    return req.userId || req.user?.id || req.headers['x-user-id'] || 'demo-user';
+    const userId = req.userId || req.user?.id || req.headers['x-user-id'];
+    if (!userId) {
+        throw new Error('USER_REQUIRED');
+    }
+    return String(userId);
 }
 
-async function getStoredUserPreferences(userId: string): Promise<Record<string, any>> {
+function getPreferenceTenantId(req: any): string {
+    const tenantId = req.tenant?.tenantId || req.tenantId || req.user?.tenant_id || req.headers['x-tenant-id'];
+    if (!tenantId) {
+        throw new Error('TENANT_REQUIRED');
+    }
+    return String(tenantId);
+}
+
+async function getStoredUserPreferences(userId: string, tenantId: string): Promise<Record<string, any>> {
     const { supabaseAdmin } = await import('../../database/supabaseClient');
     const { data, error } = await supabaseAdmin
         .from('user_notification_preferences')
         .select('preferences')
         .eq('user_id', userId)
+        .eq('tenant_id', tenantId)
         .maybeSingle();
 
     if (error) {
         throw error;
     }
 
-    const preferences = { ...((data?.preferences || {}) as Record<string, any>) };
-    if (preferences['monthly-summary'] && !preferences['weekly-summary']) {
-        preferences['weekly-summary'] = preferences['monthly-summary'];
-    }
-    delete preferences['monthly-summary'];
-
-    return preferences;
+    return normalizeNotificationPreferences((data?.preferences || {}) as Record<string, any>);
 }
 
 function getAutoFilePreferenceValue(preferences: Record<string, any>): boolean {
@@ -413,11 +410,12 @@ router.post('/', notificationController.createNotification.bind(notificationCont
 router.get('/preferences', async (req: any, res) => {
     try {
         const userId = getPreferenceUserId(req);
-        const preferences = await getStoredUserPreferences(userId);
+        const tenantId = getPreferenceTenantId(req);
+        const preferences = await getStoredUserPreferences(userId, tenantId);
 
         res.json({
             success: true,
-            data: Object.keys(preferences).length > 0 ? preferences : DEFAULT_NOTIFICATION_PREFERENCES
+            data: preferences
         });
     } catch (error: any) {
         console.error('Error fetching notification preferences:', error);
@@ -428,7 +426,8 @@ router.get('/preferences', async (req: any, res) => {
 router.get('/preferences/filing', async (req: any, res) => {
     try {
         const userId = getPreferenceUserId(req);
-        const preferences = await getStoredUserPreferences(userId);
+        const tenantId = getPreferenceTenantId(req);
+        const preferences = await getStoredUserPreferences(userId, tenantId);
 
         res.json({
             success: true,
@@ -463,11 +462,8 @@ router.get('/preferences/filing', async (req: any, res) => {
 router.put('/preferences', async (req: any, res) => {
     try {
         const userId = getPreferenceUserId(req);
-        const preferences = { ...(req.body || {}) };
-        if (preferences['monthly-summary'] && !preferences['weekly-summary']) {
-            preferences['weekly-summary'] = preferences['monthly-summary'];
-        }
-        delete preferences['monthly-summary'];
+        const tenantId = getPreferenceTenantId(req);
+        const preferences = normalizeNotificationPreferences({ ...(req.body || {}) });
 
         const { supabaseAdmin } = await import('../../database/supabaseClient');
 
@@ -475,9 +471,10 @@ router.put('/preferences', async (req: any, res) => {
             .from('user_notification_preferences')
             .upsert({
                 user_id: userId,
+                tenant_id: tenantId,
                 preferences,
                 updated_at: new Date().toISOString()
-            }, { onConflict: 'user_id' });
+            }, { onConflict: 'user_id,tenant_id' });
 
         if (error) {
             return res.status(500).json({ success: false, error: 'Failed to save preferences' });
@@ -496,19 +493,21 @@ router.put('/preferences', async (req: any, res) => {
 router.put('/preferences/filing', async (req: any, res) => {
     try {
         const userId = getPreferenceUserId(req);
+        const tenantId = getPreferenceTenantId(req);
         const enabled = req.body?.enabled;
 
         if (typeof enabled !== 'boolean') {
             return res.status(400).json({ success: false, error: 'enabled must be a boolean' });
         }
 
-        const preferences = await getStoredUserPreferences(userId);
+        const preferences = await getStoredUserPreferences(userId, tenantId);
         const { supabaseAdmin } = await import('../../database/supabaseClient');
 
         const { error } = await supabaseAdmin
             .from('user_notification_preferences')
             .upsert({
                 user_id: userId,
+                tenant_id: tenantId,
                 preferences: {
                     ...preferences,
                     auto_file_cases: {
@@ -516,7 +515,7 @@ router.put('/preferences/filing', async (req: any, res) => {
                     }
                 },
                 updated_at: new Date().toISOString()
-            }, { onConflict: 'user_id' });
+            }, { onConflict: 'user_id,tenant_id' });
 
         if (error) {
             return res.status(500).json({ success: false, error: 'Failed to save filing preferences' });
@@ -826,103 +825,5 @@ router.get('/health', notificationController.healthCheck.bind(notificationContro
  *       200:
  *         description: Preferences retrieved successfully
  */
-router.get('/preferences', async (req: any, res) => {
-    try {
-        const userId = req.userId || req.user?.id || req.headers['x-user-id'] || 'demo-user';
-
-        // Preferences are user-global, not tenant-scoped
-        const { supabaseAdmin } = await import('../../database/supabaseClient');
-        const { data, error } = await supabaseAdmin
-            .from('user_notification_preferences')
-            .select('*')
-            .eq('user_id', userId)
-            .maybeSingle();
-
-        if (error) {
-            return res.status(500).json({ success: false, error: 'Failed to fetch preferences' });
-        }
-
-        if (data) {
-            const preferences = { ...(data.preferences || {}) };
-            if (preferences['monthly-summary'] && !preferences['weekly-summary']) {
-                preferences['weekly-summary'] = preferences['monthly-summary'];
-            }
-            return res.json({
-                success: true,
-                data: preferences
-            });
-        }
-
-        // Return default preferences if none exist
-        res.json({
-            success: true,
-            data: {
-                'recovery-guaranteed': { email: true, inApp: true },
-                'payout-confirmed': { email: true, inApp: true },
-                'invoice-issued': { email: true, inApp: true },
-                'team-member-joins': { email: true, inApp: true },
-                'document-processed': { email: false, inApp: true },
-                'device-login': { email: true, inApp: true },
-                'weekly-summary': { email: true, inApp: false },
-                'product-updates': { email: false, inApp: true }
-            }
-        });
-    } catch (error: any) {
-        console.error('Error fetching notification preferences:', error);
-        res.status(500).json({ success: false, error: 'Failed to fetch preferences' });
-    }
-});
-
-/**
- * @swagger
- * /notifications/preferences:
- *   put:
- *     summary: Update notification preferences for the authenticated user
- *     tags: [Notifications]
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *     responses:
- *       200:
- *         description: Preferences updated successfully
- */
-router.put('/preferences', async (req: any, res) => {
-    try {
-        const userId = req.userId || req.user?.id || req.headers['x-user-id'] || 'demo-user';
-        const preferences = { ...(req.body || {}) };
-        if (preferences['monthly-summary'] && !preferences['weekly-summary']) {
-            preferences['weekly-summary'] = preferences['monthly-summary'];
-        }
-        delete preferences['monthly-summary'];
-
-        const { supabaseAdmin } = await import('../../database/supabaseClient');
-
-        const { error } = await supabaseAdmin
-            .from('user_notification_preferences')
-            .upsert({
-                user_id: userId,
-                preferences,
-                updated_at: new Date().toISOString()
-            }, { onConflict: 'user_id' });
-
-        if (error) {
-            return res.status(500).json({ success: false, error: 'Failed to save preferences' });
-        }
-
-        res.json({
-            success: true,
-            message: 'Preferences saved successfully'
-        });
-    } catch (error: any) {
-        console.error('Error saving notification preferences:', error);
-        res.status(500).json({ success: false, error: 'Failed to save preferences' });
-    }
-});
-
 export default router;
 

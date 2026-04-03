@@ -127,6 +127,21 @@ class WeeklySummaryWorker {
      */
     private async generateSummaryForUser(userId: string): Promise<void> {
         const dbClient = supabaseAdmin || supabase;
+        const { data: userRow, error: userError } = await dbClient
+            .from('users')
+            .select('tenant_id')
+            .eq('id', userId)
+            .maybeSingle();
+
+        if (userError) {
+            throw new Error(`Failed to resolve tenant for weekly summary: ${userError.message}`);
+        }
+
+        if (!userRow?.tenant_id) {
+            throw new Error('TENANT_REQUIRED');
+        }
+
+        const tenantId = userRow.tenant_id;
         const sevenDaysAgo = new Date();
         sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
         const since = sevenDaysAgo.toISOString();
@@ -244,7 +259,8 @@ class WeeklySummaryWorker {
                 ...summary,
                 periodStart: since,
                 periodEnd: new Date().toISOString()
-            }
+            },
+            tenantId
         );
 
         logger.info('[WEEKLY SUMMARY] Summary sent to user', { userId, summary });

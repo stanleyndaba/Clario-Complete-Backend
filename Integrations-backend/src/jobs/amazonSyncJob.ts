@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import logger from '../utils/logger';
 import amazonService from '../services/amazonService';
 import { notificationService } from '../notifications/services/notification_service';
+import { NotificationChannel, NotificationPriority, NotificationType } from '../notifications/models/notification';
 import tokenManager from '../utils/tokenManager';
 import { supabase } from '../database/supabaseClient';
 import financialEventsService from '../services/financialEventsService';
@@ -28,10 +29,11 @@ export class AmazonSyncJob {
 
   async syncUserData(userId: string): Promise<{ syncId: string; summary: { ordersCount: number; claimsCount: number; feesCount: number; inventoryCount: number; shipmentsCount: number; returnsCount: number; settlementsCount: number } }> {
     const syncId = `sync_${userId}_${Date.now()}`;
+    let tenantId: string | null = null;
     
     try {
       logger.info('Starting Amazon sync for user', { userId, syncId });
-      const tenantId = await this.resolveTenantId(userId);
+      tenantId = await this.resolveTenantId(userId);
 
       // Strict truth: sync is allowed only with a valid DB-backed Amazon token.
       const isConnected = await tokenManager.isTokenValid(userId, 'amazon');
@@ -281,12 +283,13 @@ export class AmazonSyncJob {
       // Send notification that Phase 1 is complete (raw data synced)
       try {
         await notificationService.createNotification({
-          type: 'sync_complete' as any,
+          type: NotificationType.SYNC_COMPLETED,
           user_id: userId,
+          tenant_id: tenantId,
           title: 'Phase 1: Data Sync Complete',
           message: `Synced ${orders.length} orders, ${Array.isArray(claims) ? claims.length : 0} claims, ${Array.isArray(fees) ? fees.length : 0} fees, ${inventory.length} inventory items from last 18 months`,
-          priority: 'medium' as any,
-          channel: 'in_app' as any,
+          priority: NotificationPriority.NORMAL,
+          channel: NotificationChannel.IN_APP,
           payload: { 
             syncId,
             phase: 1,
@@ -304,12 +307,13 @@ export class AmazonSyncJob {
       logger.error('Error during Amazon sync', { userId, syncId, error: error?.message });
       if (error.status === 401) {
         await notificationService.createNotification({
-          type: 'integration_warning' as any,
+          type: NotificationType.SYSTEM_ALERT,
           user_id: userId,
+          tenant_id: tenantId || undefined,
           title: 'Amazon connection needs attention',
           message: 'Your Amazon connection appears to be revoked or expired. Please reconnect to continue syncing.',
-          priority: 'high' as any,
-          channel: 'in_app' as any,
+          priority: NotificationPriority.HIGH,
+          channel: NotificationChannel.IN_APP,
           payload: { provider: 'amazon' },
           immediate: true,
         });

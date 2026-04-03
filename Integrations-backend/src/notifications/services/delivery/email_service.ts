@@ -2,6 +2,7 @@ import { getLogger } from '../../../utils/logger';
 import Notification from '../../models/notification';
 import sgMail from '@sendgrid/mail';
 import { Resend } from 'resend';
+import { supabaseAdmin } from '../../../database/supabaseClient';
 
 const logger = getLogger('EmailService');
 
@@ -89,7 +90,7 @@ export class EmailService {
       });
 
       const emailTemplate = this.generateEmailTemplate(notification);
-      const recipientEmail = await this.getUserEmail(notification.user_id);
+      const recipientEmail = await this.getUserEmail(notification.user_id, notification.tenant_id);
 
       if (!recipientEmail) {
         throw new Error(`No email found for user: ${notification.user_id}`);
@@ -352,21 +353,43 @@ If you have any questions, please contact our support team.
    * Get user email address from user ID
    * This would typically query your user management system
    */
-  private async getUserEmail(userId: string): Promise<string | null> {
+  private async getUserEmail(userId: string, tenantId: string): Promise<string> {
     try {
-      // TODO: Implement user email lookup
-      // This would typically query your user table or user service
-      // For now, return a mock email for testing
-      
-      // Example implementation:
-      // const user = await userService.findById(userId);
-      // return user?.email || null;
-      
-      logger.warn('User email lookup not implemented, using mock email', { userId });
-      return 'user@example.com'; // Mock email for testing
+      const { data: membership, error: membershipError } = await supabaseAdmin
+        .from('tenant_memberships')
+        .select('tenant_id')
+        .eq('user_id', userId)
+        .eq('tenant_id', tenantId)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (membershipError) {
+        throw new Error(`EMAIL_RESOLUTION_FAILED:${membershipError.message}`);
+      }
+
+      if (!membership?.tenant_id) {
+        throw new Error('EMAIL_RESOLUTION_FAILED');
+      }
+
+      const { data: user, error: userError } = await supabaseAdmin
+        .from('users')
+        .select('email')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (userError) {
+        throw new Error(`EMAIL_RESOLUTION_FAILED:${userError.message}`);
+      }
+
+      const email = String(user?.email || '').trim();
+      if (!email) {
+        throw new Error('EMAIL_RESOLUTION_FAILED');
+      }
+
+      return email;
     } catch (error) {
       logger.error('Error getting user email:', error);
-      return null;
+      throw error instanceof Error ? error : new Error('EMAIL_RESOLUTION_FAILED');
     }
   }
 

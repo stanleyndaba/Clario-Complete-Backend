@@ -2,6 +2,9 @@ import axios from 'axios';
 import logger from '../utils/logger';
 import { convertUserIdToUuid, supabaseAdmin } from '../database/supabaseClient';
 import gmailService, { GmailEmail, GmailMessageResponse } from './gmailService';
+import notificationHelper from './notificationHelper';
+import { NotificationChannel, NotificationPriority, NotificationType } from '../notifications/models/notification';
+import { normalizeAgent10EventPayload } from '../utils/agent10Event';
 
 type CaseThreadState = 'unlinked' | 'pending' | 'needs_evidence' | 'approved' | 'rejected' | 'paid';
 
@@ -342,7 +345,7 @@ class AmazonCaseThreadService {
   ): Promise<any | null> {
     const { data: directCase, error: directError } = await supabaseAdmin
       .from('dispute_cases')
-      .select('id, tenant_id, amazon_case_id, case_state, status, case_number, case_type, evidence_attachments')
+      .select('id, tenant_id, seller_id, amazon_case_id, case_state, status, case_number, case_type, evidence_attachments')
       .eq('tenant_id', tenantId)
       .eq('amazon_case_id', amazonCaseId)
       .maybeSingle();
@@ -372,7 +375,7 @@ class AmazonCaseThreadService {
 
     const { data: linkedCase, error: linkedCaseError } = await supabaseAdmin
       .from('dispute_cases')
-      .select('id, tenant_id, amazon_case_id, case_state, status, case_number, case_type, evidence_attachments')
+      .select('id, tenant_id, seller_id, amazon_case_id, case_state, status, case_number, case_type, evidence_attachments')
       .eq('tenant_id', tenantId)
       .eq('id', submissionMatches[0].dispute_id)
       .maybeSingle();
@@ -450,7 +453,7 @@ class AmazonCaseThreadService {
     bodyText: string | null;
     subject: string;
     timestamp: string;
-  }): Promise<void> {
+  }): Promise<CaseThreadState> {
     const nextState = this.caseStateRank(params.stateSignal.caseState) >= this.caseStateRank(params.disputeCase?.case_state)
       ? params.stateSignal.caseState
       : params.disputeCase.case_state;
@@ -476,6 +479,87 @@ class AmazonCaseThreadService {
       .update(updates)
       .eq('id', params.disputeCase.id)
       .eq('tenant_id', params.tenantId);
+
+    return nextState as CaseThreadState;
+  }
+
+  private async emitCaseStateNotification(params: {
+    tenantId: string;
+    disputeCase: any;
+    amazonCaseId: string;
+    providerMessageId: string;
+    nextState: CaseThreadState;
+    subject: string;
+    bodyText: string | null;
+  }): Promise<void> {
+    const targetId = trimOrNull(params.disputeCase?.seller_id);
+    if (!targetId) {
+      logger.warn('[AGENT 7 THREAD] Skipping notification for case state update without seller_id', {
+        disputeCaseId: params.disputeCase?.id,
+        amazonCaseId: params.amazonCaseId,
+        nextState: params.nextState
+      });
+      return;
+    }
+
+    const notificationMap: Record<string, {
+      type: NotificationType;
+      title: string;
+      message: string;
+      priority: NotificationPriority;
+    }> = {
+      needs_evidence: {
+        type: NotificationType.NEEDS_EVIDENCE,
+        title: 'Amazon Needs More Evidence',
+        message: `Amazon requested additional information for Case ${params.amazonCaseId}. Margin linked the thread and is ready for your next response.`,
+        priority: NotificationPriority.URGENT
+      },
+      approved: {
+        type: NotificationType.APPROVED,
+        title: 'Amazon Approved Your Case',
+        message: `Amazon resolved Case ${params.amazonCaseId} in your favor.`,
+        priority: NotificationPriority.HIGH
+      },
+      rejected: {
+        type: NotificationType.REJECTED,
+        title: 'Amazon Rejected Your Case',
+        message: `Amazon resolved Case ${params.amazonCaseId} without reimbursement. Review the thread for the denial details.`,
+        priority: NotificationPriority.HIGH
+      },
+      paid: {
+        type: NotificationType.PAID,
+        title: 'Amazon Issued Reimbursement',
+        message: `Amazon confirmed reimbursement on Case ${params.amazonCaseId}.`,
+        priority: NotificationPriority.URGENT
+      }
+    };
+
+    const descriptor = notificationMap[params.nextState];
+    if (!descriptor) {
+      return;
+    }
+
+    await notificationHelper.notifyUser(
+      targetId,
+      descriptor.type,
+      descriptor.title,
+      descriptor.message,
+      descriptor.priority,
+      NotificationChannel.BOTH,
+      normalizeAgent10EventPayload(descriptor.type, {
+        disputeId: params.disputeCase.id,
+        amazon_case_id: params.amazonCaseId,
+        case_state: params.nextState,
+        provider_message_id: params.providerMessageId,
+        subject: params.subject,
+        body_preview: trimOrNull(params.bodyText)?.slice(0, 500) || null
+      }, {
+        tenantId: params.tenantId,
+        entityType: 'dispute_case',
+        entityId: params.disputeCase.id
+      }),
+      params.tenantId
+    );
   }
 
   async ingestInboundGmailMessage(params: {
@@ -619,7 +703,7 @@ class AmazonCaseThreadService {
         onConflict: 'tenant_id,provider,provider_message_id'
       });
 
-    await this.applyInboundCaseState({
+    const nextState = await this.applyInboundCaseState({
       tenantId: params.tenantId,
       disputeCase,
       amazonCaseId,
@@ -629,12 +713,22 @@ class AmazonCaseThreadService {
       timestamp
     });
 
+    await this.emitCaseStateNotification({
+      tenantId: params.tenantId,
+      disputeCase,
+      amazonCaseId,
+      providerMessageId: params.message.id,
+      nextState,
+      subject,
+      bodyText: parsedMessage.bodyText
+    });
+
     return {
       handled: true,
       linked: true,
       amazonCaseId,
       disputeCaseId: disputeCase.id,
-      stateSignal: stateSignal.caseState
+      stateSignal: nextState === 'unlinked' ? null : nextState
     };
   }
 

@@ -2718,7 +2718,8 @@ class RefundFilingWorker {
                     `Amazon is requesting additional information for your claim${statusResult.amazon_case_id ? ` (Case ${statusResult.amazon_case_id})` : ''}: "${statusResult.resolution}". We are auto-supplementing evidence and resubmitting.`,
                     NotificationPriority.URGENT,
                     NotificationChannel.IN_APP,
-                    { disputeId: disputeCase.id, amazonCaseId: statusResult.amazon_case_id }
+                    { disputeId: disputeCase.id, amazonCaseId: statusResult.amazon_case_id },
+                    (disputeCase as any).tenant_id
                   );
                 } catch (notifErr: any) {
                   logger.warn(' [REFUND FILING] Failed to send pending-action notification', { error: notifErr.message });
@@ -2850,7 +2851,8 @@ class RefundFilingWorker {
                     amazonCaseId: statusResult.amazon_case_id,
                     rejectionReason,
                     action: 'retry_with_stronger_evidence'
-                  }
+                  },
+                  (disputeCase as any).tenant_id
                 );
               } catch (notifError: any) {
                 logger.warn('⚠️ [REFUND FILING] Failed to send rejection notification', {

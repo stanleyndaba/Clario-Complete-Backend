@@ -10,8 +10,8 @@ import cron from 'node-cron';
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import { createTenantScopedQueryById } from '../database/tenantScopedClient';
-import { notificationService } from '../notifications/services/notification_service';
 import Notification, { NotificationStatus } from '../notifications/models/notification';
+import { EmailService } from '../notifications/services/delivery/email_service';
 
 export interface NotificationStats {
   processed: number;
@@ -26,6 +26,7 @@ class NotificationsWorker {
   private cronJob: cron.ScheduledTask | null = null;
   private isRunning: boolean = false;
   private maxRetries: number = 3;
+  private emailService = new EmailService();
 
   /**
    * Start the worker
@@ -337,17 +338,7 @@ class NotificationsWorker {
    */
   private async deliverViaEmail(notification: Notification): Promise<void> {
     try {
-      // Use notification service's email delivery
-      await notificationService.createNotification({
-        type: notification.type as any,
-        user_id: notification.user_id,
-        title: notification.title,
-        message: notification.message,
-        priority: notification.priority as any,
-        channel: 'email' as any,
-        payload: notification.payload,
-        immediate: true
-      });
+      await this.emailService.sendNotification(notification);
 
       logger.debug('📧 [NOTIFICATIONS] Notification sent via Email', {
         id: notification.id,

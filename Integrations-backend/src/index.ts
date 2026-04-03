@@ -88,7 +88,6 @@ import evidenceMatchingWorker from './workers/evidenceMatchingWorker';
 import refundFilingWorker from './workers/refundFilingWorker';
 import recoveriesWorker from './workers/recoveriesWorker';
 import billingWorker from './workers/billingWorker';
-import notificationsWorker from './workers/notificationsWorker';
 import learningWorker from './workers/learningWorker';
 import weeklySummaryWorker from './workers/weeklySummaryWorker';
 import scheduledSyncJob from './jobs/scheduledSyncJob';
@@ -671,13 +670,7 @@ if (process.env.NODE_ENV !== 'test') {
           });
         }
 
-        // Start Notifications Worker (if enabled)
-        if (process.env.ENABLE_NOTIFICATIONS_WORKER !== 'false') {
-          notificationsWorker.start();
-          logger.info('Notifications worker initialized');
-        } else {
-          logger.info('Notifications worker disabled (ENABLE_NOTIFICATIONS_WORKER=false)');
-        }
+        logger.info('Notifications worker disabled - immediate notification delivery is the authoritative execution path');
 
         // Start Learning Worker (Agent 11)
         if (process.env.ENABLE_LEARNING_WORKER !== 'false') {
