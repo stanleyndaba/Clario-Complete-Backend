@@ -66,10 +66,23 @@ export interface FundsDepositedData {
 
 class NotificationHelper {
   private async resolveRecipients(targetId: string, tenantId: string): Promise<string[]> {
-    const { data: candidateUsers, error: userError } = await supabaseAdmin
+    const normalizedTargetId = String(targetId || '').trim();
+    if (!normalizedTargetId) {
+      return [];
+    }
+
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(normalizedTargetId);
+    let userQuery = supabaseAdmin
       .from('users')
-      .select('id')
-      .or(`id.eq.${targetId},seller_id.eq.${targetId}`);
+      .select('id');
+
+    if (isUuid) {
+      userQuery = userQuery.or(`id.eq.${normalizedTargetId},amazon_seller_id.eq.${normalizedTargetId}`);
+    } else {
+      userQuery = userQuery.eq('amazon_seller_id', normalizedTargetId);
+    }
+
+    const { data: candidateUsers, error: userError } = await userQuery;
 
     if (userError) {
       throw new Error(`RECIPIENT_LOOKUP_FAILED:${userError.message}`);

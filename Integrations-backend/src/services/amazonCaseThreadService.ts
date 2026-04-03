@@ -48,6 +48,31 @@ type StoredCaseMessage = {
   updated_at: string;
 };
 
+type StoredUnmatchedCaseMessage = {
+  id: string;
+  tenant_id: string | null;
+  user_id: string | null;
+  amazon_case_id: string | null;
+  provider: string;
+  provider_message_id: string;
+  provider_thread_id: string | null;
+  subject: string;
+  body_text: string | null;
+  body_html: string | null;
+  attachments: any;
+  sender: string | null;
+  recipients: any;
+  received_at: string | null;
+  failure_reason: string;
+  metadata: any;
+  link_status: 'unmatched' | 'linked_existing_case' | 'linked_placeholder_case';
+  linked_dispute_case_id: string | null;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  resolution_metadata: any;
+  created_at: string;
+};
+
 const AMAZON_CASE_ID_PATTERNS = [
   /\[(?:case(?:\s+id)?)[\s:]*([0-9]{6,})\]/i,
   /\bcase(?:\s+id)?[\s:#]*([0-9]{6,})\b/i,
@@ -94,6 +119,13 @@ const CASE_RESOLVED_PATTERNS = [
   /case resolved/i,
   /resolution for case/i,
   /your case resolved/i
+];
+
+const CASE_CLOSED_WITHOUT_RESPONSE_PATTERNS = [
+  /closed this case/i,
+  /we haven['’]t received a response from you/i,
+  /assume that your issue is resolved/i,
+  /not able to obtain enough information/i
 ];
 
 function trimOrNull(value: unknown): string | null {
@@ -204,6 +236,37 @@ function toIsoTimestamp(value?: string | null): string {
   return Number.isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
 }
 
+function extractPrimaryThreadBody(bodyText?: string | null): string {
+  const normalized = trimOrNull(bodyText);
+  if (!normalized) return '';
+
+  const splitMarkers = [
+    /\n--\s*Original Message\s*--/i,
+    /\nOn .+ wrote:/i,
+    /\nFrom:\s/i
+  ];
+
+  for (const marker of splitMarkers) {
+    const parts = normalized.split(marker);
+    if (parts[0]) {
+      return parts[0].trim();
+    }
+  }
+
+  return normalized;
+}
+
+function asObject(value: unknown): Record<string, any> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? { ...(value as Record<string, any>) }
+    : {};
+}
+
+function buildThreadBackfillCaseNumber(tenantId: string, amazonCaseId: string): string {
+  const tenantSuffix = tenantId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'tenant';
+  return `AMZ-THREAD-${amazonCaseId}-${tenantSuffix}`.slice(0, 120);
+}
+
 class AmazonCaseThreadService {
   private caseStateRank(state?: string | null): number {
     switch (String(state || '').trim().toLowerCase()) {
@@ -303,33 +366,49 @@ class AmazonCaseThreadService {
     caseState: Exclude<CaseThreadState, 'unlinked'>;
     evidence: string;
   } {
-    const combined = `${subject}\n${bodyText || ''}`;
+    const primaryBody = extractPrimaryThreadBody(bodyText);
+    const primaryCombined = `${subject}\n${primaryBody}`;
+    const fullCombined = `${subject}\n${bodyText || ''}`;
+    const subjectImpliesResolved = CASE_RESOLVED_PATTERNS.some((pattern) => pattern.test(subject));
+    const resolvedInPrimary = CASE_RESOLVED_PATTERNS.some((pattern) => pattern.test(primaryCombined));
+    const reimbursementInPrimary = REIMBURSEMENT_PATTERNS.some((pattern) => pattern.test(primaryCombined));
+    const denialInPrimary = DENIAL_PATTERNS.some((pattern) => pattern.test(primaryCombined));
+    const closedWithoutResponse = CASE_CLOSED_WITHOUT_RESPONSE_PATTERNS.some((pattern) => pattern.test(primaryCombined));
 
-    if (NEEDS_EVIDENCE_PATTERNS.some((pattern) => pattern.test(combined))) {
-      return {
-        caseState: 'needs_evidence',
-        evidence: 'amazon_help_needed_email'
-      };
-    }
-
-    if (REIMBURSEMENT_PATTERNS.some((pattern) => pattern.test(combined)) && /issued reimbursement/i.test(combined)) {
+    if (reimbursementInPrimary && /issued reimbursement/i.test(primaryCombined)) {
       return {
         caseState: 'paid',
         evidence: 'amazon_reimbursement_issued_email'
       };
     }
 
-    if (CASE_RESOLVED_PATTERNS.some((pattern) => pattern.test(combined)) && DENIAL_PATTERNS.some((pattern) => pattern.test(combined))) {
+    if ((subjectImpliesResolved || resolvedInPrimary) && (denialInPrimary || closedWithoutResponse)) {
       return {
         caseState: 'rejected',
-        evidence: 'amazon_case_resolved_denial_email'
+        evidence: closedWithoutResponse
+          ? 'amazon_case_resolved_closed_without_response'
+          : 'amazon_case_resolved_denial_email'
       };
     }
 
-    if (CASE_RESOLVED_PATTERNS.some((pattern) => pattern.test(combined)) && REIMBURSEMENT_PATTERNS.some((pattern) => pattern.test(combined))) {
+    if ((subjectImpliesResolved || resolvedInPrimary) && reimbursementInPrimary) {
       return {
         caseState: 'approved',
         evidence: 'amazon_case_resolved_reimbursement_email'
+      };
+    }
+
+    if (NEEDS_EVIDENCE_PATTERNS.some((pattern) => pattern.test(primaryCombined))) {
+      return {
+        caseState: 'needs_evidence',
+        evidence: 'amazon_help_needed_email'
+      };
+    }
+
+    if ((subjectImpliesResolved || resolvedInPrimary) && DENIAL_PATTERNS.some((pattern) => pattern.test(fullCombined))) {
+      return {
+        caseState: 'rejected',
+        evidence: 'amazon_case_resolved_denial_email'
       };
     }
 
@@ -345,7 +424,7 @@ class AmazonCaseThreadService {
   ): Promise<any | null> {
     const { data: directCase, error: directError } = await supabaseAdmin
       .from('dispute_cases')
-      .select('id, tenant_id, seller_id, amazon_case_id, case_state, status, case_number, case_type, evidence_attachments')
+      .select('id, tenant_id, seller_id, amazon_case_id, case_state, status, case_number, case_type, evidence_attachments, filing_status, block_reasons, case_origin, origin_metadata, thread_backfilled_at, resolution_date, rejected_at, rejection_reason')
       .eq('tenant_id', tenantId)
       .eq('amazon_case_id', amazonCaseId)
       .maybeSingle();
@@ -375,7 +454,7 @@ class AmazonCaseThreadService {
 
     const { data: linkedCase, error: linkedCaseError } = await supabaseAdmin
       .from('dispute_cases')
-      .select('id, tenant_id, seller_id, amazon_case_id, case_state, status, case_number, case_type, evidence_attachments')
+      .select('id, tenant_id, seller_id, amazon_case_id, case_state, status, case_number, case_type, evidence_attachments, filing_status, block_reasons, case_origin, origin_metadata, thread_backfilled_at, resolution_date, rejected_at, rejection_reason')
       .eq('tenant_id', tenantId)
       .eq('id', submissionMatches[0].dispute_id)
       .maybeSingle();
@@ -408,6 +487,7 @@ class AmazonCaseThreadService {
 
   private async logUnmatchedInboundMessage(params: {
     tenantId: string;
+    userId: string;
     amazonCaseId: string | null;
     message: GmailMessageResponse;
     subject: string;
@@ -419,11 +499,18 @@ class AmazonCaseThreadService {
     failureReason: string;
   }): Promise<void> {
     const receivedAt = toIsoTimestamp(this.getHeaderValue(params.message, 'Date') || new Date(Number(params.message.internalDate || Date.now())).toISOString());
+    const messageIdentifier = trimOrNull(this.getHeaderValue(params.message, 'Message-ID'))?.replace(/[<>]/g, '') || null;
+    const inReplyTo = trimOrNull(this.getHeaderValue(params.message, 'In-Reply-To'))?.replace(/[<>]/g, '') || null;
+    const referenceHeaders = uniqueStrings([
+      ...splitReferenceHeader(this.getHeaderValue(params.message, 'References')),
+      inReplyTo
+    ]);
 
     await supabaseAdmin
       .from('unmatched_case_messages')
       .upsert({
         tenant_id: params.tenantId,
+        user_id: convertUserIdToUuid(params.userId),
         amazon_case_id: params.amazonCaseId,
         provider: 'gmail',
         provider_message_id: params.message.id,
@@ -438,7 +525,10 @@ class AmazonCaseThreadService {
         failure_reason: params.failureReason,
         metadata: {
           gmail_labels: params.message.labelIds || [],
-          message_identifier: this.getHeaderValue(params.message, 'Message-ID')
+          message_identifier: messageIdentifier,
+          in_reply_to: inReplyTo,
+          reference_headers: referenceHeaders,
+          snippet: trimOrNull(params.message.snippet)
         }
       }, {
         onConflict: 'tenant_id,provider,provider_message_id'
@@ -465,13 +555,17 @@ class AmazonCaseThreadService {
 
     if (nextState === 'approved') {
       updates.status = 'approved';
+      updates.resolution_date = params.timestamp;
     } else if (nextState === 'rejected') {
       updates.status = 'rejected';
+      updates.rejected_at = params.timestamp;
+      updates.resolution_date = params.timestamp;
       if (!trimOrNull(params.disputeCase?.rejection_reason)) {
         updates.rejection_reason = trimOrNull(params.bodyText) || params.subject;
       }
     } else if (nextState === 'paid') {
-      updates.status = 'paid';
+      updates.status = 'approved';
+      updates.resolution_date = params.timestamp;
     }
 
     await supabaseAdmin
@@ -612,6 +706,7 @@ class AmazonCaseThreadService {
     if (!amazonCaseId) {
       await this.logUnmatchedInboundMessage({
         tenantId: params.tenantId,
+        userId: params.userId,
         amazonCaseId: null,
         message: params.message,
         subject,
@@ -637,6 +732,7 @@ class AmazonCaseThreadService {
     if (!disputeCase) {
       await this.logUnmatchedInboundMessage({
         tenantId: params.tenantId,
+        userId: params.userId,
         amazonCaseId,
         message: params.message,
         subject,
@@ -729,6 +825,466 @@ class AmazonCaseThreadService {
       amazonCaseId,
       disputeCaseId: disputeCase.id,
       stateSignal: nextState === 'unlinked' ? null : nextState
+    };
+  }
+
+  private async getUnmatchedCaseMessage(tenantId: string, unmatchedMessageId: string): Promise<StoredUnmatchedCaseMessage | null> {
+    const { data, error } = await supabaseAdmin
+      .from('unmatched_case_messages')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .eq('id', unmatchedMessageId)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    return (data as StoredUnmatchedCaseMessage | null) || null;
+  }
+
+  private async getDisputeCaseById(tenantId: string, disputeCaseId: string): Promise<any | null> {
+    const { data, error } = await supabaseAdmin
+      .from('dispute_cases')
+      .select('id, tenant_id, seller_id, amazon_case_id, case_state, status, case_number, case_type, evidence_attachments, filing_status, block_reasons, case_origin, origin_metadata, thread_backfilled_at, resolution_date, rejected_at, rejection_reason')
+      .eq('tenant_id', tenantId)
+      .eq('id', disputeCaseId)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    return data || null;
+  }
+
+  private async resolvePlaceholderOwner(params: {
+    tenantId: string;
+    preferredUserId: string;
+  }): Promise<{
+    userId: string;
+    sellerId: string;
+  }> {
+    const safeUserId = convertUserIdToUuid(params.preferredUserId);
+    const { data: membership, error: membershipError } = await supabaseAdmin
+      .from('tenant_memberships')
+      .select('user_id')
+      .eq('tenant_id', params.tenantId)
+      .eq('user_id', safeUserId)
+      .eq('is_active', true)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (membershipError) {
+      throw membershipError;
+    }
+
+    if (!membership) {
+      throw new Error('Target user does not belong to this tenant');
+    }
+
+    const { data: user, error: userError } = await supabaseAdmin
+      .from('users')
+      .select('id, amazon_seller_id')
+      .eq('id', safeUserId)
+      .maybeSingle();
+
+    if (userError) {
+      throw userError;
+    }
+
+    if (!user) {
+      throw new Error('Target user not found');
+    }
+
+    return {
+      userId: String(user.id),
+      sellerId: trimOrNull(user.amazon_seller_id) || safeUserId
+    };
+  }
+
+  private async ensureThreadLinkedDisputeCase(params: {
+    tenantId: string;
+    disputeCase: any;
+    amazonCaseId: string;
+    timestamp: string;
+    resolutionSource: 'linked_existing_case' | 'linked_placeholder_case';
+    unmatchedMessageId: string;
+    providerMessageId: string;
+  }): Promise<any> {
+    const existingAmazonCaseId = trimOrNull(params.disputeCase?.amazon_case_id);
+    const existingOriginMetadata = asObject(params.disputeCase?.origin_metadata);
+    const threadBackfillEntries = Array.isArray(existingOriginMetadata.thread_backfill_events)
+      ? existingOriginMetadata.thread_backfill_events
+      : [];
+
+    const nextOriginMetadata = {
+      ...existingOriginMetadata,
+      latest_thread_backfill: {
+        unmatched_case_message_id: params.unmatchedMessageId,
+        provider_message_id: params.providerMessageId,
+        linked_at: params.timestamp,
+        link_status: params.resolutionSource
+      },
+      thread_backfill_events: threadBackfillEntries.some((entry: any) => String(entry?.provider_message_id || '') === params.providerMessageId)
+        ? threadBackfillEntries
+        : [
+            ...threadBackfillEntries,
+            {
+              unmatched_case_message_id: params.unmatchedMessageId,
+              provider_message_id: params.providerMessageId,
+              linked_at: params.timestamp,
+              link_status: params.resolutionSource
+            }
+          ]
+    };
+
+    const updates: Record<string, any> = {
+      updated_at: params.timestamp,
+      thread_backfilled_at: params.disputeCase?.thread_backfilled_at || params.timestamp,
+      origin_metadata: nextOriginMetadata
+    };
+
+    if (!existingAmazonCaseId) {
+      updates.amazon_case_id = params.amazonCaseId;
+      if (params.disputeCase?.case_state === 'unlinked' || !trimOrNull(params.disputeCase?.case_state)) {
+        updates.case_state = 'pending';
+      }
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('dispute_cases')
+      .update(updates)
+      .eq('tenant_id', params.tenantId)
+      .eq('id', params.disputeCase.id)
+      .select('id, tenant_id, seller_id, amazon_case_id, case_state, status, case_number, case_type, evidence_attachments, filing_status, block_reasons, case_origin, origin_metadata, thread_backfilled_at, resolution_date, rejected_at, rejection_reason')
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return data;
+  }
+
+  private async createPlaceholderDisputeCase(params: {
+    tenantId: string;
+    unmatchedMessage: StoredUnmatchedCaseMessage;
+    amazonCaseId: string;
+    ownerUserId: string;
+    actorUserId: string;
+    timestamp: string;
+  }): Promise<{
+    disputeCase: any;
+    created: boolean;
+  }> {
+    const existingCase = await this.resolveDisputeCaseByAmazonCaseId(params.tenantId, params.amazonCaseId);
+    if (existingCase) {
+      return {
+        disputeCase: existingCase,
+        created: false
+      };
+    }
+
+    const owner = await this.resolvePlaceholderOwner({
+      tenantId: params.tenantId,
+      preferredUserId: params.ownerUserId
+    });
+
+    const { data, error } = await supabaseAdmin
+      .from('dispute_cases')
+      .insert({
+        tenant_id: params.tenantId,
+        seller_id: owner.sellerId,
+        detection_result_id: null,
+        case_number: buildThreadBackfillCaseNumber(params.tenantId, params.amazonCaseId),
+        status: 'pending',
+        claim_amount: 0,
+        currency: 'USD',
+        case_type: 'amazon_fba',
+        provider: 'amazon',
+        amazon_case_id: params.amazonCaseId,
+        case_state: 'pending',
+        filing_status: 'blocked',
+        eligible_to_file: false,
+        block_reasons: ['amazon_thread_backfill_placeholder'],
+        case_origin: 'amazon_thread_backfill',
+        origin_metadata: {
+          source: 'amazon_thread_backfill',
+          margin_filed_originally: false,
+          claim_amount_unknown: true,
+          backfilled_from_unmatched_message_id: params.unmatchedMessage.id,
+          provider_message_id: params.unmatchedMessage.provider_message_id,
+          actor_user_id: params.actorUserId,
+          linked_user_id: owner.userId,
+          placeholder_created_at: params.timestamp,
+          initial_failure_reason: params.unmatchedMessage.failure_reason
+        },
+        evidence_attachments: {
+          source: 'amazon_thread_backfill',
+          margin_filed_originally: false
+        },
+        thread_backfilled_at: params.timestamp,
+        updated_at: params.timestamp
+      })
+      .select('id, tenant_id, seller_id, amazon_case_id, case_state, status, case_number, case_type, evidence_attachments, filing_status, block_reasons, case_origin, origin_metadata, thread_backfilled_at, resolution_date, rejected_at, rejection_reason')
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return {
+      disputeCase: data,
+      created: true
+    };
+  }
+
+  private async upsertLinkedCaseMessageFromUnmatched(params: {
+    tenantId: string;
+    disputeCaseId: string;
+    amazonCaseId: string;
+    unmatchedMessage: StoredUnmatchedCaseMessage;
+    stateSignal: ReturnType<AmazonCaseThreadService['deriveStateSignal']>;
+  }): Promise<string> {
+    const { data: existingMessage, error: existingMessageError } = await supabaseAdmin
+      .from('case_messages')
+      .select('id, dispute_case_id')
+      .eq('tenant_id', params.tenantId)
+      .eq('provider', params.unmatchedMessage.provider)
+      .eq('provider_message_id', params.unmatchedMessage.provider_message_id)
+      .maybeSingle();
+
+    if (existingMessageError) {
+      throw existingMessageError;
+    }
+
+    if (existingMessage && existingMessage.dispute_case_id !== params.disputeCaseId) {
+      throw new Error('Amazon email is already linked to a different dispute case');
+    }
+
+    const metadata = asObject(params.unmatchedMessage.metadata);
+    const referenceHeaders = Array.isArray(metadata.reference_headers)
+      ? metadata.reference_headers.map((entry: any) => String(entry || '').trim()).filter(Boolean)
+      : [];
+    const { data, error } = await supabaseAdmin
+      .from('case_messages')
+      .upsert({
+        tenant_id: params.tenantId,
+        dispute_case_id: params.disputeCaseId,
+        amazon_case_id: params.amazonCaseId,
+        provider: params.unmatchedMessage.provider,
+        provider_message_id: params.unmatchedMessage.provider_message_id,
+        provider_thread_id: trimOrNull(params.unmatchedMessage.provider_thread_id),
+        message_identifier: trimOrNull(metadata.message_identifier),
+        in_reply_to: trimOrNull(metadata.in_reply_to),
+        reference_headers: referenceHeaders,
+        direction: 'inbound',
+        subject: trimOrNull(params.unmatchedMessage.subject) || 'Amazon support update',
+        body_text: params.unmatchedMessage.body_text,
+        body_html: params.unmatchedMessage.body_html,
+        attachments: Array.isArray(params.unmatchedMessage.attachments) ? params.unmatchedMessage.attachments : [],
+        sender: params.unmatchedMessage.sender,
+        recipients: Array.isArray(params.unmatchedMessage.recipients) ? params.unmatchedMessage.recipients : [],
+        received_at: params.unmatchedMessage.received_at,
+        state_signal: params.stateSignal.caseState,
+        metadata: {
+          ...metadata,
+          linked_from_unmatched_case_message_id: params.unmatchedMessage.id,
+          original_failure_reason: params.unmatchedMessage.failure_reason,
+          original_link_status: params.unmatchedMessage.link_status
+        }
+      }, {
+        onConflict: 'tenant_id,provider,provider_message_id'
+      })
+      .select('id')
+      .single();
+
+    if (error || !data) {
+      throw error || new Error('Failed to create case message from unmatched Amazon email');
+    }
+
+    return data.id;
+  }
+
+  private async markUnmatchedMessageLinked(params: {
+    tenantId: string;
+    unmatchedMessage: StoredUnmatchedCaseMessage;
+    disputeCaseId: string;
+    actorUserId: string;
+    linkStatus: StoredUnmatchedCaseMessage['link_status'];
+    caseMessageId: string;
+    placeholderCreated: boolean;
+    stateSignal: CaseThreadState;
+    timestamp: string;
+  }): Promise<void> {
+    const existingResolutionMetadata = asObject(params.unmatchedMessage.resolution_metadata);
+    const actorUserUuid = convertUserIdToUuid(params.actorUserId);
+
+    await supabaseAdmin
+      .from('unmatched_case_messages')
+      .update({
+        linked_dispute_case_id: params.disputeCaseId,
+        link_status: params.linkStatus,
+        resolved_at: params.timestamp,
+        resolved_by: actorUserUuid,
+        resolution_metadata: {
+          ...existingResolutionMetadata,
+          linked_case_message_id: params.caseMessageId,
+          placeholder_created: params.placeholderCreated,
+          linked_case_state: params.stateSignal,
+          linked_at: params.timestamp
+        }
+      })
+      .eq('tenant_id', params.tenantId)
+      .eq('id', params.unmatchedMessage.id);
+  }
+
+  async backfillAmazonThreadLink(params: {
+    tenantId: string;
+    actorUserId: string;
+    unmatchedCaseMessageId: string;
+    targetDisputeCaseId?: string | null;
+    createPlaceholder?: boolean;
+    targetUserId?: string | null;
+  }): Promise<{
+    disputeCaseId: string;
+    caseMessageId: string;
+    amazonCaseId: string;
+    placeholderCreated: boolean;
+    linkStatus: StoredUnmatchedCaseMessage['link_status'];
+    caseState: CaseThreadState;
+  }> {
+    const unmatchedMessage = await this.getUnmatchedCaseMessage(params.tenantId, params.unmatchedCaseMessageId);
+    if (!unmatchedMessage) {
+      throw new Error('Unmatched Amazon email not found');
+    }
+
+    const amazonCaseId = trimOrNull(unmatchedMessage.amazon_case_id);
+    if (!amazonCaseId) {
+      throw new Error('Unmatched Amazon email does not contain a usable amazon_case_id');
+    }
+
+    const targetDisputeCaseId = trimOrNull(params.targetDisputeCaseId);
+    const createPlaceholder = params.createPlaceholder === true;
+    if (!targetDisputeCaseId && !createPlaceholder) {
+      throw new Error('Provide a target dispute case or request placeholder creation');
+    }
+    if (targetDisputeCaseId && createPlaceholder) {
+      throw new Error('Choose either target dispute case linking or placeholder creation, not both');
+    }
+    if (trimOrNull(unmatchedMessage.linked_dispute_case_id) && trimOrNull(unmatchedMessage.linked_dispute_case_id) !== targetDisputeCaseId && !createPlaceholder) {
+      throw new Error('This Amazon email is already linked to another dispute case');
+    }
+
+    const timestamp = toIsoTimestamp(unmatchedMessage.received_at || unmatchedMessage.created_at);
+    const stateSignal = this.deriveStateSignal(
+      trimOrNull(unmatchedMessage.subject) || 'Amazon support update',
+      unmatchedMessage.body_text
+    );
+
+    let disputeCase: any | null = null;
+    let placeholderCreated = false;
+    let linkStatus: StoredUnmatchedCaseMessage['link_status'] = 'linked_existing_case';
+
+    if (targetDisputeCaseId) {
+      disputeCase = await this.getDisputeCaseById(params.tenantId, targetDisputeCaseId);
+      if (!disputeCase) {
+        throw new Error('Target dispute case not found');
+      }
+
+      const targetAmazonCaseId = trimOrNull(disputeCase.amazon_case_id);
+      if (targetAmazonCaseId && targetAmazonCaseId !== amazonCaseId) {
+        throw new Error('Target dispute case is already bound to a different amazon_case_id');
+      }
+    } else {
+      const preferredOwnerUserId = trimOrNull(params.targetUserId) || trimOrNull(unmatchedMessage.user_id);
+      if (!preferredOwnerUserId) {
+        throw new Error('Placeholder creation requires a tenant user to own the backfilled thread');
+      }
+
+      const placeholderCase = await this.createPlaceholderDisputeCase({
+        tenantId: params.tenantId,
+        unmatchedMessage,
+        amazonCaseId,
+        ownerUserId: preferredOwnerUserId,
+        actorUserId: params.actorUserId,
+        timestamp
+      });
+      disputeCase = placeholderCase.disputeCase;
+      placeholderCreated = placeholderCase.created;
+      linkStatus = disputeCase.case_origin === 'amazon_thread_backfill'
+        ? 'linked_placeholder_case'
+        : 'linked_existing_case';
+    }
+
+    disputeCase = await this.ensureThreadLinkedDisputeCase({
+      tenantId: params.tenantId,
+      disputeCase,
+      amazonCaseId,
+      timestamp,
+      resolutionSource: linkStatus,
+      unmatchedMessageId: unmatchedMessage.id,
+      providerMessageId: unmatchedMessage.provider_message_id
+    });
+
+    const caseMessageId = await this.upsertLinkedCaseMessageFromUnmatched({
+      tenantId: params.tenantId,
+      disputeCaseId: disputeCase.id,
+      amazonCaseId,
+      unmatchedMessage,
+      stateSignal
+    });
+
+    const nextState = await this.applyInboundCaseState({
+      tenantId: params.tenantId,
+      disputeCase,
+      amazonCaseId,
+      stateSignal,
+      bodyText: unmatchedMessage.body_text,
+      subject: trimOrNull(unmatchedMessage.subject) || 'Amazon support update',
+      timestamp
+    });
+
+    try {
+      await this.emitCaseStateNotification({
+        tenantId: params.tenantId,
+        disputeCase,
+        amazonCaseId,
+        providerMessageId: unmatchedMessage.provider_message_id,
+        nextState,
+        subject: trimOrNull(unmatchedMessage.subject) || 'Amazon support update',
+        bodyText: unmatchedMessage.body_text
+      });
+    } catch (error: any) {
+      logger.error('[AGENT 7 THREAD] Failed to emit notification after unmatched backfill link', {
+        tenantId: params.tenantId,
+        disputeCaseId: disputeCase.id,
+        amazonCaseId,
+        unmatchedCaseMessageId: unmatchedMessage.id,
+        error: error?.message || error
+      });
+    }
+
+    await this.markUnmatchedMessageLinked({
+      tenantId: params.tenantId,
+      unmatchedMessage,
+      disputeCaseId: disputeCase.id,
+      actorUserId: params.actorUserId,
+      linkStatus,
+      caseMessageId,
+      placeholderCreated,
+      stateSignal: nextState,
+      timestamp
+    });
+
+    return {
+      disputeCaseId: disputeCase.id,
+      caseMessageId,
+      amazonCaseId,
+      placeholderCreated,
+      linkStatus,
+      caseState: nextState
     };
   }
 

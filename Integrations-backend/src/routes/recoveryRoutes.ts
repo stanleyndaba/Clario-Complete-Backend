@@ -499,11 +499,18 @@ function buildCaseResponse(
         case_messages: any[];
     }
 ) {
-    const requestedAmount = typeof record?.claim_amount === 'number'
+    const isAmazonThreadBackfill = record?.case_origin === 'amazon_thread_backfill';
+    const originMetadata = record?.origin_metadata && typeof record.origin_metadata === 'object'
+        ? record.origin_metadata
+        : {};
+    const claimAmountUnknown = isAmazonThreadBackfill && originMetadata?.claim_amount_unknown === true;
+    const requestedAmount = claimAmountUnknown
+        ? null
+        : (typeof record?.claim_amount === 'number'
         ? record.claim_amount
         : (typeof record?.estimated_recovery_amount === 'number'
             ? record.estimated_recovery_amount
-            : (typeof record?.estimated_value === 'number' ? record.estimated_value : 0));
+            : (typeof record?.estimated_value === 'number' ? record.estimated_value : 0)));
     const approvedAmount = typeof record?.approved_amount === 'number'
         ? record.approved_amount
         : null;
@@ -534,6 +541,9 @@ function buildCaseResponse(
         filing_status: record.filing_status || null,
         recovery_status: record.recovery_status || null,
         billing_status: record.billing_status || null,
+        case_origin: record.case_origin || 'detection_pipeline',
+        origin_metadata: originMetadata,
+        thread_backfilled_at: record.thread_backfilled_at || null,
         updated_at: record.updated_at || record.created_at || null,
         createdDate: record.created_at || record.discovery_date || null,
         expectedPayoutDate: record.expected_payout_date || null,
@@ -564,11 +574,13 @@ function buildCaseResponse(
         unit_cost: record.unit_cost ?? null,
         confidence_score: typeof record.confidence_score === 'number' ? record.confidence_score : null,
         anomaly_type: record.anomaly_type || record.case_type || null,
-        estimated_claim_value: entityTruth.entity_type === 'detection'
+        estimated_claim_value: claimAmountUnknown
+            ? null
+            : (entityTruth.entity_type === 'detection'
             ? (typeof record.estimated_recovery_amount === 'number'
                 ? record.estimated_recovery_amount
                 : (typeof record.estimated_value === 'number' ? record.estimated_value : requestedAmount))
-            : requestedAmount,
+            : requestedAmount),
         requested_amount: requestedAmount,
         approved_amount: approvedAmount,
         actual_payout_amount: actualPayoutAmount,
@@ -1268,6 +1280,13 @@ router.get('/:id', async (req: Request, res: Response) => {
             const caseMessages = await amazonCaseThreadService.listCaseMessages(tenantId, disputeCase.id);
             const threadLinked = Boolean(disputeCase.amazon_case_id);
             const canReplyToThread = threadLinked && caseMessages.length > 0;
+            const hasRecordedSubmission = Boolean(
+                latestSubmission?.id ||
+                latestSubmission?.submission_id ||
+                latestSubmission?.amazon_case_id ||
+                disputeCase.filing_status === 'filed' ||
+                disputeCase.status === 'submitted'
+            );
 
             const actualPayoutAmount = typeof disputeCase?.recovered_amount === 'number'
                 ? disputeCase.recovered_amount
@@ -1283,13 +1302,7 @@ router.get('/:id', async (req: Request, res: Response) => {
                     entity_type: 'dispute_case',
                     has_linked_dispute_case: true,
                     linked_dispute_case_id: disputeCase.id,
-                    has_submission: Boolean(
-                        latestSubmission?.id ||
-                        latestSubmission?.submission_id ||
-                        latestSubmission?.amazon_case_id ||
-                        disputeCase.amazon_case_id ||
-                        disputeCase.provider_case_id
-                    ),
+                    has_submission: hasRecordedSubmission,
                     has_payout: actualPayoutAmount !== null
                 },
                 {

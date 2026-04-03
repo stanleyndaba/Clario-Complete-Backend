@@ -17,17 +17,33 @@ const router = Router();
 // Routes still use optional auth at the router level, but dispute access itself is strict.
 router.use(optionalAuth);
 
-async function resolveDisputeScope(req: any) {
+async function resolveDisputeScope(
+  req: any,
+  options?: {
+    requiredRoles?: Array<'owner' | 'admin' | 'member' | 'viewer'>;
+  }
+) {
   const tenantSlug = String(req.query.tenantSlug || req.query.tenant_slug || '').trim() || null;
   const requestTenantId = String(req.tenant?.tenantId || '').trim() || null;
   const requestTenantSlug = String(req.tenant?.tenantSlug || '').trim() || null;
+  const requestTenantRole = String(req.tenant?.userRole || '').trim() || null;
   const userId = String(req.userId || req.user?.id || '').trim() || null;
+  const requiredRoles = Array.isArray(options?.requiredRoles) ? options!.requiredRoles : [];
+
+  const assertRole = (role: string | null) => {
+    if (!requiredRoles.length) return;
+    if (!role || !requiredRoles.includes(role as 'owner' | 'admin' | 'member' | 'viewer')) {
+      throw new Error('Owner or admin access required');
+    }
+  };
 
   if (requestTenantId && userId) {
+    assertRole(requestTenantRole);
     return {
       tenantId: requestTenantId,
       tenantSlug: requestTenantSlug || tenantSlug,
-      userId
+      userId,
+      userRole: requestTenantRole
     };
   }
 
@@ -57,7 +73,7 @@ async function resolveDisputeScope(req: any) {
   const safeUserId = convertUserIdToUuid(userId);
   const { data: membership, error: membershipError } = await supabaseAdmin
     .from('tenant_memberships')
-    .select('id')
+    .select('id, role')
     .eq('tenant_id', tenant.id)
     .eq('user_id', safeUserId)
     .eq('is_active', true)
@@ -72,10 +88,13 @@ async function resolveDisputeScope(req: any) {
     throw new Error('You do not have access to this tenant');
   }
 
+  assertRole(String((membership as any).role || '').trim() || null);
+
   return {
     tenantId: tenant.id,
     tenantSlug: tenant.slug || tenantSlug,
-    userId
+    userId,
+    userRole: (membership as any).role || null
   };
 }
 
@@ -894,6 +913,96 @@ router.get('/:id', async (req, res) => {
     res.status(statusCode).json({
       success: false,
       message: message || 'Internal server error'
+    });
+  }
+});
+
+router.post('/backfill-amazon-thread-link', async (req, res) => {
+  try {
+    const { tenantId, userId } = await resolveDisputeScope(req as any, {
+      requiredRoles: ['owner', 'admin']
+    });
+
+    const unmatchedCaseMessageId = String(
+      req.body?.unmatched_case_message_id ||
+      req.body?.unmatchedCaseMessageId ||
+      ''
+    ).trim();
+    const targetDisputeCaseId = String(
+      req.body?.target_dispute_case_id ||
+      req.body?.targetDisputeCaseId ||
+      ''
+    ).trim() || null;
+    const createPlaceholder = req.body?.create_placeholder === true || req.body?.createPlaceholder === true;
+    const targetUserId = String(req.body?.target_user_id || req.body?.targetUserId || '').trim() || null;
+
+    if (!unmatchedCaseMessageId) {
+      return res.status(400).json({
+        success: false,
+        message: 'unmatched_case_message_id is required'
+      });
+    }
+
+    if (!targetDisputeCaseId && !createPlaceholder) {
+      return res.status(400).json({
+        success: false,
+        message: 'Provide target_dispute_case_id or set create_placeholder=true'
+      });
+    }
+
+    if (targetDisputeCaseId && createPlaceholder) {
+      return res.status(400).json({
+        success: false,
+        message: 'Choose either target_dispute_case_id or create_placeholder=true'
+      });
+    }
+
+    const result = await amazonCaseThreadService.backfillAmazonThreadLink({
+      tenantId,
+      actorUserId: userId,
+      unmatchedCaseMessageId,
+      targetDisputeCaseId,
+      createPlaceholder,
+      targetUserId
+    });
+
+    return res.json({
+      success: true,
+      message: result.placeholderCreated
+        ? 'Amazon thread linked through placeholder dispute case'
+        : 'Amazon thread linked to dispute case',
+      dispute_case_id: result.disputeCaseId,
+      case_message_id: result.caseMessageId,
+      amazon_case_id: result.amazonCaseId,
+      placeholder_created: result.placeholderCreated,
+      link_status: result.linkStatus,
+      case_state: result.caseState
+    });
+  } catch (error: any) {
+    const message = String(error?.message || 'Failed to backfill Amazon thread link');
+    const statusCode =
+      message.includes('required') || message.includes('Provide') || message.includes('Choose either')
+        ? 400
+        : (
+            message.includes('not found')
+          )
+            ? 404
+            : (
+                message.includes('access') ||
+                message.includes('belong to this tenant')
+              )
+                ? 403
+                : (
+                    message.includes('already linked') ||
+                    message.includes('different amazon_case_id') ||
+                    message.includes('linked to a different dispute case')
+                  )
+                    ? 409
+                    : getDisputeRouteStatusCode(error);
+
+    return res.status(statusCode).json({
+      success: false,
+      message
     });
   }
 });
