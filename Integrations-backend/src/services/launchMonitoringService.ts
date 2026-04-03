@@ -94,6 +94,7 @@ type UnmatchedMessageMonitorRow = {
   failure_reason?: string | null;
   link_status?: string | null;
   linked_dispute_case_id?: string | null;
+  received_at?: string | null;
   resolved_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
@@ -279,7 +280,7 @@ export function buildThreadLinkedEvents(messages: UnmatchedMessageMonitorRow[]):
         ? `Amazon case ${record.amazon_case_id || 'unknown'} was linked by creating a placeholder dispute case.`
         : `Amazon case ${record.amazon_case_id || 'unknown'} was linked to an existing dispute case.`,
       severity: 'medium',
-      timestamp: asIsoTimestamp(record.resolved_at || record.updated_at || record.created_at) || new Date(0).toISOString(),
+      timestamp: asIsoTimestamp(record.resolved_at || record.received_at || record.created_at) || new Date(0).toISOString(),
       dispute_case_id: record.linked_dispute_case_id || null,
       amazon_case_id: record.amazon_case_id || null,
       notification_id: null,
@@ -300,7 +301,7 @@ export function buildUnmatchedEmailEvents(messages: UnmatchedMessageMonitorRow[]
         ? `${record.subject} remains unmatched${record.failure_reason ? ` (${record.failure_reason.replace(/_/g, ' ')})` : ''}.`
         : `Amazon case ${record.amazon_case_id || 'unknown'} remains unmatched.`,
       severity: 'high',
-      timestamp: asIsoTimestamp(record.created_at || record.updated_at) || new Date(0).toISOString(),
+      timestamp: asIsoTimestamp(record.received_at || record.created_at) || new Date(0).toISOString(),
       dispute_case_id: null,
       amazon_case_id: record.amazon_case_id || null,
       notification_id: null,
@@ -454,7 +455,7 @@ export async function getLaunchMonitor(tenantId: string, limit: number = 20): Pr
       .limit(Math.max(eventLimit, RECENT_EVENT_SOURCE_LIMIT)),
     client
       .from('unmatched_case_messages')
-      .select('id, amazon_case_id, subject, failure_reason, link_status, linked_dispute_case_id, resolved_at, created_at, updated_at')
+      .select('id, amazon_case_id, subject, failure_reason, link_status, linked_dispute_case_id, received_at, resolved_at, created_at')
       .eq('tenant_id', tenantId)
       .order('created_at', { ascending: false })
       .limit(Math.max(eventLimit, RECENT_EVENT_SOURCE_LIMIT)),
@@ -552,7 +553,7 @@ export async function getLaunchMonitor(tenantId: string, limit: number = 20): Pr
   const lastUpdatedAt = pickLatestTimestamp(
     ...(disputeCases || []).flatMap((record) => [record.updated_at || null, record.created_at || null]),
     ...(recentSubmissions || []).flatMap((record) => [record.created_at || null, record.updated_at || null]),
-    ...(recentUnmatchedMessages || []).flatMap((record) => [record.resolved_at || null, record.updated_at || null, record.created_at || null]),
+    ...(recentUnmatchedMessages || []).flatMap((record) => [record.resolved_at || null, record.received_at || null, record.created_at || null]),
     ...(recentNotifications || []).flatMap((record) => [record.updated_at || null, record.created_at || null])
   );
 
