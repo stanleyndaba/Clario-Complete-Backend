@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { RedisClientType } from 'redis';
 import logger from '../utils/logger';
+import { handleRedisRuntimeError, isRedisAvailable } from '../utils/redisClient';
 
 export interface RateLimitOptions {
   keyPrefix: string;
@@ -29,7 +30,7 @@ export function rateLimit(options: RateLimitOptions) {
     try {
       // EMERGENCY BYPASS (GUARD MODE)
       // If Redis is not open or not ready, bypass rate limiting to preserve API health.
-      if (!redisClient.isOpen || !redisClient.isReady) {
+      if (!isRedisAvailable() || !redisClient.isOpen || !redisClient.isReady) {
         logger.debug('Redis client not ready, bypassing rate limit');
         return next();
       }
@@ -106,6 +107,11 @@ export function rateLimit(options: RateLimitOptions) {
 
       next();
     } catch (error) {
+      if (handleRedisRuntimeError(error, `rate_limit:${keyPrefix}`)) {
+        next();
+        return;
+      }
+
       logger.error('Rate limit middleware error', {
         error: error instanceof Error ? error.message : 'Unknown error',
         keyPrefix,

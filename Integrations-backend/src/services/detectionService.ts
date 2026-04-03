@@ -1,6 +1,6 @@
 import { supabase } from '../database/supabaseClient';
 import logger from '../utils/logger';
-import { getRedisClient } from '../utils/redisClient';
+import { getRedisClient, handleRedisRuntimeError, isRedisAvailable } from '../utils/redisClient';
 import axios from 'axios';
 
 export interface DetectionJob {
@@ -441,7 +441,6 @@ export class DetectionService {
   async processDetectionJobs(): Promise<void> {
     try {
       // Check if Redis is available before attempting to process jobs
-      const { isRedisAvailable } = await import('../utils/redisClient');
       if (!isRedisAvailable()) {
         // Redis is not available - skip processing silently
         // This prevents log spam when Redis is not configured
@@ -578,6 +577,10 @@ export class DetectionService {
         await this.updateJobStatus(job.seller_id, job.sync_id, 'failed', error instanceof Error ? error.message : 'Unknown error');
       }
     } catch (error: any) {
+      if (handleRedisRuntimeError(error, 'detection_jobs')) {
+        return;
+      }
+
       // Only log Redis connection errors once, then suppress
       // This prevents log spam when Redis is not available
       if (error?.message?.includes('ECONNREFUSED') || error?.message?.includes('Redis')) {

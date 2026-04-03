@@ -11,6 +11,7 @@ let redisLastError: string | null = null;
 let redisFailureCount = 0;
 let nextReconnectAllowedAt = 0;
 const REDIS_RETRY_COOLDOWN_MS = Number(process.env.REDIS_RETRY_COOLDOWN_MS || '15000');
+const REDIS_QUOTA_RETRY_COOLDOWN_MS = Number(process.env.REDIS_QUOTA_RETRY_COOLDOWN_MS || '900000');
 
 // Create a mock Redis client that does nothing (for when Redis is unavailable)
 const createMockRedisClient = (): RedisClientType => {
@@ -148,6 +149,59 @@ export async function getRedisClient(): Promise<RedisClientType> {
     return await createRedisClient();
   }
   return redisClient;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error || '');
+}
+
+export function isRedisQuotaExceededError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return message.includes('max requests limit exceeded') || message.includes('upstash');
+}
+
+export function handleRedisRuntimeError(error: unknown, context?: string): boolean {
+  const message = getErrorMessage(error);
+  const normalized = message.toLowerCase();
+  const looksRedisRelated =
+    normalized.includes('redis') ||
+    normalized.includes('econnrefused') ||
+    normalized.includes('connection') ||
+    normalized.includes('socket closed') ||
+    normalized.includes('max requests limit exceeded') ||
+    normalized.includes('upstash');
+
+  if (!looksRedisRelated) {
+    return false;
+  }
+
+  const previousError = redisLastError;
+  const quotaExceeded = isRedisQuotaExceededError(error);
+  redisAvailable = false;
+  redisLastError = message;
+  redisFailureCount += 1;
+  nextReconnectAllowedAt = Date.now() + (quotaExceeded ? REDIS_QUOTA_RETRY_COOLDOWN_MS : REDIS_RETRY_COOLDOWN_MS);
+  runtimeCapacityService.updateRedisHealth(false, message);
+
+  if (!redisErrorLogged || previousError !== message) {
+    const logPayload = {
+      error: message,
+      context: context || 'runtime',
+      failureCount: redisFailureCount,
+      retryCooldownMs: quotaExceeded ? REDIS_QUOTA_RETRY_COOLDOWN_MS : REDIS_RETRY_COOLDOWN_MS
+    };
+    if (quotaExceeded) {
+      logger.warn('Redis request quota exhausted - entering degraded mode', logPayload);
+    } else {
+      logger.error('Redis runtime operation failed', logPayload);
+    }
+    redisErrorLogged = true;
+  }
+
+  return true;
 }
 
 // Check if Redis is available

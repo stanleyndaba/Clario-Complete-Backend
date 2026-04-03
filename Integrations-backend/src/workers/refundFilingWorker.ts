@@ -38,6 +38,7 @@ import {
   type OperationalState,
   buildOperationalDecision
 } from '../utils/operationalContinuity';
+import { getRedisClient, handleRedisRuntimeError, isRedisQuotaExceededError } from '../utils/redisClient';
 
 
 /**
@@ -202,10 +203,18 @@ class RefundFilingWorker {
         
         // 1. REDIS-NATIVE TENANT GUARD
         // Check if this seller is currently throttled/paused
-        const { getRedisClient } = await import('../utils/redisClient');
-        const redis = await getRedisClient();
+        let redis: Awaited<ReturnType<typeof getRedisClient>> | null = null;
+        let pausedUntil: string | null = null;
         const pauseKey = `seller_pause:${sellerId}`;
-        const pausedUntil = await redis.get(pauseKey);
+        try {
+          redis = await getRedisClient();
+          pausedUntil = await redis.get(pauseKey);
+        } catch (error: any) {
+          if (handleRedisRuntimeError(error, 'refund_filing_pause_guard')) {
+            await this.disableQueueInfrastructure(`redis_unavailable:${error.message}`);
+          }
+          throw error;
+        }
         
         if (pausedUntil && token) {
             const resumeAt = parseInt(pausedUntil);
@@ -227,7 +236,9 @@ class RefundFilingWorker {
                 // REDIS-NATIVE LOCK (30-minute window)
                 const lockDuration = 30 * 60 * 1000;
                 const resumeAt = Date.now() + lockDuration;
-                await redis.set(pauseKey, resumeAt.toString(), { PX: lockDuration } as any);
+                if (redis) {
+                  await redis.set(pauseKey, resumeAt.toString(), { PX: lockDuration } as any);
+                }
                 
                 // Move current job to delayed state (30m)
                 await job.moveToDelayed(resumeAt, token);
@@ -244,9 +255,58 @@ class RefundFilingWorker {
         }
     });
 
+    this.submissionWorker.on('error', (error) => {
+      if (handleRedisRuntimeError(error, 'refund_filing_submission_worker')) {
+        if (isRedisQuotaExceededError(error)) {
+          logger.warn('[AGENT 7] Submission queue disabled after Redis quota exhaustion', {
+            error: error.message
+          });
+          void this.disableQueueInfrastructure(`redis_quota_exceeded:${error.message}`);
+        }
+        return;
+      }
+
+      logger.error('[AGENT 7] Submission worker error', {
+        error: error.message
+      });
+    });
+
     // OSS Tier doesn't need a control queue for unpausing (handled by Redis TTL)
     this.controlQueue = undefined as any;
     this.controlWorker = undefined as any;
+  }
+
+  private async disableQueueInfrastructure(reason: string): Promise<void> {
+    if (!this.queueInfrastructureAvailable && this.queueInfrastructureReason === reason) {
+      return;
+    }
+
+    this.queueInfrastructureAvailable = false;
+    this.queueInfrastructureReason = reason;
+    runtimeCapacityService.setCircuitBreaker('filing-auto-dispatch', 'open', reason);
+
+    if (this.submissionWorker) {
+      try {
+        await this.submissionWorker.close();
+      } catch (error: any) {
+        logger.warn('[AGENT 7] Failed to close submission worker during queue disable', {
+          error: error?.message || String(error)
+        });
+      }
+    }
+
+    if (this.submissionQueue) {
+      try {
+        await this.submissionQueue.close();
+      } catch (error: any) {
+        logger.warn('[AGENT 7] Failed to close submission queue during queue disable', {
+          error: error?.message || String(error)
+        });
+      }
+    }
+
+    this.submissionWorker = undefined as any;
+    this.submissionQueue = undefined as any;
   }
 
   /**
@@ -279,6 +339,9 @@ class RefundFilingWorker {
       );
       return { id: String(job.id), mode: 'queued' };
     } catch (error: any) {
+      if (handleRedisRuntimeError(error, 'refund_filing_manual_enqueue')) {
+        await this.disableQueueInfrastructure(`redis_unavailable:${error.message}`);
+      }
       logger.warn('[AGENT 7] Queue add failed for manual filing trigger - using governed DB fallback', {
         caseId,
         sellerId,
@@ -2484,6 +2547,9 @@ class RefundFilingWorker {
           });
           stats.filed++;
         } catch (queueError: any) {
+          if (handleRedisRuntimeError(queueError, 'refund_filing_scheduled_enqueue')) {
+            await this.disableQueueInfrastructure(`redis_unavailable:${queueError.message}`);
+          }
           runtimeCapacityService.setCircuitBreaker('filing-auto-dispatch', 'open', `queue_enqueue_failed:${queueError.message}`);
           logger.error(`❌ [AGENT 7] Queue enqueue failed for case ${disputeCase.id}; auto filing held`, {
             error: queueError.message

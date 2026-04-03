@@ -10,6 +10,7 @@
 import { Worker, Job } from 'bullmq';
 import logger from '../utils/logger';
 import { InitialSyncJobData } from '../queues/ingestionQueue';
+import { handleRedisRuntimeError, isRedisQuotaExceededError } from '../utils/redisClient';
 
 // Worker instance (singleton)
 let worker: Worker<InitialSyncJobData> | null = null;
@@ -176,6 +177,13 @@ export function startOnboardingWorker(): Worker<InitialSyncJobData> | null {
         });
 
         worker.on('error', (error) => {
+            if (handleRedisRuntimeError(error, 'onboarding_worker')) {
+                if (isRedisQuotaExceededError(error)) {
+                    logger.warn('[WORKER] Redis quota exhausted, stopping onboarding worker', { error: error.message });
+                    void stopOnboardingWorker();
+                }
+                return;
+            }
             logger.error('[WORKER] Worker error', { error: error.message });
         });
 

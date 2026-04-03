@@ -13,6 +13,7 @@
 
 import { Queue, QueueEvents } from 'bullmq';
 import logger from '../utils/logger';
+import { handleRedisRuntimeError } from '../utils/redisClient';
 
 const QUEUE_NAME = 'onboarding-sync';
 
@@ -146,6 +147,9 @@ export async function isQueueHealthy(): Promise<boolean> {
         const ping = await client.ping();
         return ping === 'PONG';
     } catch (error: any) {
+        if (handleRedisRuntimeError(error, 'onboarding_queue_health')) {
+            return false;
+        }
         logger.error('🔥 [QUEUE] Redis health check failed', { error: error.message });
         return false;
     }
@@ -203,6 +207,9 @@ export async function addSyncJob(
 
         return job.id || null;
     } catch (error: any) {
+        if (handleRedisRuntimeError(error, 'onboarding_queue_add')) {
+            return null;
+        }
         if (error.message?.includes('Job already exists')) {
             logger.info('🔄 [QUEUE] Duplicate job rejected', { userId, sellerId });
             return null;
