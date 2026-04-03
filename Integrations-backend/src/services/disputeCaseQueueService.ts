@@ -32,6 +32,7 @@ const FILED_STATUSES = new Set(['filed', 'submitted', 'resubmitted', 'filing', '
 const DETECTED_FILING_READY_THRESHOLD = 0.6;
 const REVIEW_FILINGS = new Set([
   'pending_approval',
+  'pending_safety_verification',
   'quarantined_dangerous_doc',
   'blocked_invalid_date',
   'duplicate_blocked',
@@ -230,6 +231,7 @@ function deriveNextAction(row: any) {
   if (REJECTED_STATUSES.has(status) || row.rejection_reason || row.rejection_category) return 'Review rejection';
   if (APPROVED_STATUSES.has(status)) return 'Waiting for payout';
   if (FILED_STATUSES.has(filingStatus)) return 'Filed / awaiting Amazon';
+  if (filingStatus === 'pending_safety_verification') return 'Awaiting identifiers';
   if (filingStatus === 'blocked' || row.eligible_to_file === false) return 'Blocked';
   if (row.evidence_state === 'Missing Evidence') return 'Waiting for evidence';
   if (row.evidence_state === 'Weak Evidence' || row.evidence_state === 'Needs Review') return 'Needs review';

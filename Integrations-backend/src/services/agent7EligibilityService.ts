@@ -70,6 +70,36 @@ const CLAIM_WINDOWS_DAYS: Record<string, number> = {
   generic: 90
 };
 
+const IDENTIFIER_PLACEHOLDER_TOKENS = new Set([
+  'n/a',
+  'na',
+  'none',
+  'null',
+  'undefined',
+  'unknown',
+  'missing',
+  'placeholder',
+  'sample',
+  'demo',
+  'test',
+  'todo',
+  'tbd',
+  'fake',
+  '-',
+  '--'
+]);
+
+const IDENTIFIER_SAFETY_REASONS = new Set([
+  'missing_product_identifier',
+  'missing_order_identifier',
+  'missing_shipment_identifier',
+  'missing_trustworthy_product_identifier',
+  'missing_trustworthy_order_identifier',
+  'missing_trustworthy_shipment_identifier',
+  'missing_required_identifiers',
+  'awaiting_verified_identifiers'
+]);
+
 function normalize(value: unknown): string {
   return String(value || '').trim().toLowerCase();
 }
@@ -81,6 +111,52 @@ function toNumber(value: unknown): number | null {
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
+}
+
+function compactIdentifier(value: unknown): string {
+  return String(value || '').trim().replace(/\s+/g, '');
+}
+
+function isPlaceholderIdentifier(value: unknown): boolean {
+  const raw = String(value || '').trim();
+  const normalized = normalize(raw);
+  if (!raw) return true;
+  if (IDENTIFIER_PLACEHOLDER_TOKENS.has(normalized)) return true;
+  if (/\b(test|demo|sample|placeholder|unknown|missing|fake|dummy|todo|tbd)\b/i.test(raw)) return true;
+
+  const compact = compactIdentifier(raw).toLowerCase();
+  if (/^(.)\1{4,}$/.test(compact)) return true;
+  if (/^(12345|123456|1234567|12345678|abcdef|abc123)$/i.test(compact)) return true;
+  return false;
+}
+
+function hasIdentifierCharacters(value: unknown, minimumLength: number): boolean {
+  const compact = compactIdentifier(value);
+  return compact.length >= minimumLength && /[a-z0-9]/i.test(compact);
+}
+
+function isTrustworthyProductIdentifier(value: unknown): boolean {
+  const candidate = String(value || '').trim();
+  if (!candidate || isPlaceholderIdentifier(candidate)) return false;
+  if (/^[A-Z0-9]{10}$/i.test(compactIdentifier(candidate))) return true;
+  return hasIdentifierCharacters(candidate, 3);
+}
+
+function isTrustworthyOrderIdentifier(value: unknown): boolean {
+  const candidate = String(value || '').trim();
+  if (!candidate || isPlaceholderIdentifier(candidate)) return false;
+  if (/^\d{3}-\d{7}-\d{7}$/.test(candidate)) return true;
+  return hasIdentifierCharacters(candidate, 8);
+}
+
+function isTrustworthyShipmentIdentifier(value: unknown): boolean {
+  const candidate = String(value || '').trim();
+  if (!candidate || isPlaceholderIdentifier(candidate)) return false;
+  return hasIdentifierCharacters(candidate, 6);
+}
+
+export function isIdentifierSafetyReason(reason: string): boolean {
+  return IDENTIFIER_SAFETY_REASONS.has(normalize(reason));
 }
 
 function parseJsonObject(value: any) {
@@ -321,8 +397,11 @@ function classifyMissingRequirement(reason: string): string | null {
   if (reason === 'missing_evidence_links') return 'evidence_links';
   if (reason.startsWith('insufficient_evidence_documents:')) return 'minimum_evidence_documents';
   if (reason === 'missing_product_identifier') return 'product_identifier';
+  if (reason === 'missing_trustworthy_product_identifier') return 'product_identifier';
   if (reason === 'missing_order_identifier') return 'order_identifier';
+  if (reason === 'missing_trustworthy_order_identifier') return 'order_identifier';
   if (reason === 'missing_shipment_identifier') return 'shipment_identifier';
+  if (reason === 'missing_trustworthy_shipment_identifier') return 'shipment_identifier';
   if (reason.startsWith('missing_required_document_type:')) return `document_type:${reason.split(':')[1]}`;
   if (reason.startsWith('missing_required_document_family:')) return `document_family:${reason.split(':')[1]}`;
   if (reason === 'missing_unit_cost_proof') return 'unit_cost_proof';
@@ -335,6 +414,7 @@ function classifyMissingRequirement(reason: string): string | null {
 
 function isHardBlockReason(reason: string): boolean {
   return (
+    isIdentifierSafetyReason(reason) ||
     reason === 'missing_evidence_links' ||
     reason === 'dangerous_or_prohibited_document_detected' ||
     reason === 'already_recovered_or_reconciled' ||
@@ -346,6 +426,21 @@ function isHardBlockReason(reason: string): boolean {
     reason.startsWith('filing_conflict:payment_required') ||
     reason.startsWith('case_not_ready_for_filing_status:') ||
     reason.startsWith('case_status_not_fileable:')
+  );
+}
+
+function finalRequiredIdentifierMissing(
+  profile: ReturnType<typeof resolveClaimProfile>,
+  trustworthyIdentifiers: {
+    trustworthyProductIds: string[];
+    trustworthyOrderIds: string[];
+    trustworthyShipmentIds: string[];
+  }
+): boolean {
+  return (
+    (profile.requiresProductId && trustworthyIdentifiers.trustworthyProductIds.length === 0) ||
+    (profile.requiresOrderId && trustworthyIdentifiers.trustworthyOrderIds.length === 0) ||
+    (profile.requiresShipmentId && trustworthyIdentifiers.trustworthyShipmentIds.length === 0)
   );
 }
 
@@ -381,6 +476,7 @@ function buildExplanationPayload(params: {
 }): ExplanationPayload {
   const { profile, reasons, missingRequirements, filingStrategy } = params;
   const assumptions = new Set<string>();
+  const identifierSafetyBlocked = reasons.some((reason) => isIdentifierSafetyReason(reason));
 
   for (const reason of reasons) {
     if (reason.startsWith('missing_required_document_family:') || reason.startsWith('missing_required_document_type:')) {
@@ -406,13 +502,19 @@ function buildExplanationPayload(params: {
     if (reason === 'missing_policy_window_reference_date') {
       assumptions.add('Reference timing is inferred from the best available case timestamps.');
     }
+
+    if (isIdentifierSafetyReason(reason)) {
+      assumptions.add('Amazon-facing filing must use seller-verified identifiers, not inferred or placeholder values.');
+    }
   }
 
   let justification = `Claim has complete evidence coverage for ${profile.key} and can be filed without scope reduction.`;
   if (filingStrategy === 'SMART') {
     justification = `Claim has enough verified evidence to file conservatively for ${profile.key}. Missing or weak proof is explicitly disclosed and the claim scope should be reduced to supported facts only.`;
   } else if (filingStrategy === 'BLOCKED') {
-    justification = `Claim cannot be filed safely for ${profile.key} because the current evidence indicates fraud risk, contradiction, a policy-window violation, or no usable evidence.`;
+    justification = identifierSafetyBlocked
+      ? `Claim cannot be filed safely for ${profile.key} because required identifiers are missing or not trustworthy enough to send to Amazon.`
+      : `Claim cannot be filed safely for ${profile.key} because the current evidence indicates fraud risk, contradiction, a policy-window violation, or no usable evidence.`;
   }
 
   return {
@@ -559,8 +661,13 @@ function isAutoClearableStoredReason(reason: string): boolean {
   return (
     normalized === 'missing_evidence_links' ||
     normalized === 'missing_product_identifier' ||
+    normalized === 'missing_trustworthy_product_identifier' ||
     normalized === 'missing_order_identifier' ||
+    normalized === 'missing_trustworthy_order_identifier' ||
     normalized === 'missing_shipment_identifier' ||
+    normalized === 'missing_trustworthy_shipment_identifier' ||
+    normalized === 'missing_required_identifiers' ||
+    normalized === 'awaiting_verified_identifiers' ||
     normalized === 'missing_required_document_family' ||
     normalized.startsWith('insufficient_evidence_documents:') ||
     normalized.startsWith('historical_') ||
@@ -584,13 +691,16 @@ export function evaluateCaseEligibility(
   const claimType = normalize(disputeCase.case_type || detectionResult.anomaly_type || 'generic');
   const profile = resolveClaimProfile(claimType);
   const identifiers = collectIdentifiers(context);
+  const trustworthyProductIds = identifiers.productIds.filter((value) => isTrustworthyProductIdentifier(value));
+  const trustworthyOrderIds = identifiers.orderIds.filter((value) => isTrustworthyOrderIdentifier(value));
+  const trustworthyShipmentIds = identifiers.shipmentIds.filter((value) => isTrustworthyShipmentIdentifier(value));
   const confidenceScore = getConfidenceScore(context);
   const reasons = new Set<string>();
   const evidenceDocuments = context.evidenceDocuments || [];
   const storedReasons = normalizeStoredReasons(disputeCase.block_reasons);
 
   for (const reason of storedReasons) {
-    if (reason) reasons.add(reason);
+    if (reason && !isAutoClearableStoredReason(reason)) reasons.add(reason);
   }
 
   const minimumEvidenceDocuments = Math.max(1, Number(options?.minEvidenceDocuments || 1));
@@ -600,19 +710,42 @@ export function evaluateCaseEligibility(
     reasons.add(`insufficient_evidence_documents:${context.linkedEvidenceCount}/${minimumEvidenceDocuments}`);
   }
 
-  if (!identifiers.productIds.length && profile.requiresProductId) {
-    reasons.add('missing_product_identifier');
+  if (profile.requiresProductId) {
+    if (!identifiers.productIds.length) {
+      reasons.add('missing_product_identifier');
+    } else if (!trustworthyProductIds.length) {
+      reasons.add('missing_trustworthy_product_identifier');
+    }
   }
 
-  if (!identifiers.orderIds.length && profile.requiresOrderId) {
-    reasons.add('missing_order_identifier');
+  if (profile.requiresOrderId) {
+    if (!identifiers.orderIds.length) {
+      reasons.add('missing_order_identifier');
+    } else if (!trustworthyOrderIds.length) {
+      reasons.add('missing_trustworthy_order_identifier');
+    }
   }
 
-  if (!identifiers.shipmentIds.length && profile.requiresShipmentId) {
-    reasons.add('missing_shipment_identifier');
+  if (profile.requiresShipmentId) {
+    if (!identifiers.shipmentIds.length) {
+      reasons.add('missing_shipment_identifier');
+    } else if (!trustworthyShipmentIds.length) {
+      reasons.add('missing_trustworthy_shipment_identifier');
+    }
   }
 
-  if (!['pending', 'retrying', 'pending_approval', 'blocked', 'failed'].includes(filingStatus)) {
+  if (
+    finalRequiredIdentifierMissing(profile, {
+      trustworthyProductIds,
+      trustworthyOrderIds,
+      trustworthyShipmentIds
+    })
+  ) {
+    reasons.add('missing_required_identifiers');
+    reasons.add('awaiting_verified_identifiers');
+  }
+
+  if (!['pending', 'retrying', 'pending_approval', 'pending_safety_verification', 'blocked', 'failed'].includes(filingStatus)) {
     reasons.add(`case_not_ready_for_filing_status:${filingStatus || 'unknown'}`);
   }
 
@@ -842,17 +975,19 @@ export async function evaluateAndPersistCaseEligibility(caseId: string, tenantId
 
   if (finalFilingStrategy === 'BLOCKED') {
     updates.last_error = finalProofSnapshot.explanationPayload.justification;
-    if (['pending', 'retrying', 'blocked', 'failed', 'pending_approval', ''].includes(currentFilingStatus)) {
-      updates.filing_status = 'blocked';
+    if (['pending', 'retrying', 'blocked', 'failed', 'pending_approval', 'pending_safety_verification', ''].includes(currentFilingStatus)) {
+      updates.filing_status = finalReasons.some((reason) => isIdentifierSafetyReason(reason))
+        ? 'pending_safety_verification'
+        : 'blocked';
     }
   } else {
     updates.last_error = finalFilingStrategy === 'SMART'
       ? finalProofSnapshot.explanationPayload.justification
       : null;
-    if (['blocked', 'pending_approval', 'failed', ''].includes(currentFilingStatus)) {
+    if (['blocked', 'pending_approval', 'pending_safety_verification', 'failed', ''].includes(currentFilingStatus)) {
       updates.filing_status = 'pending';
     } else if (
-      ['blocked', 'pending_approval'].includes(currentFilingStatus) &&
+      ['blocked', 'pending_approval', 'pending_safety_verification'].includes(currentFilingStatus) &&
       storedReasons.every(isAutoClearableStoredReason)
     ) {
       updates.filing_status = 'pending';

@@ -36,8 +36,13 @@ function isDynamicProofReason(reason: string): boolean {
   return (
     normalized === 'missing_evidence_links' ||
     normalized === 'missing_product_identifier' ||
+    normalized === 'missing_trustworthy_product_identifier' ||
     normalized === 'missing_order_identifier' ||
+    normalized === 'missing_trustworthy_order_identifier' ||
     normalized === 'missing_shipment_identifier' ||
+    normalized === 'missing_trustworthy_shipment_identifier' ||
+    normalized === 'missing_required_identifiers' ||
+    normalized === 'awaiting_verified_identifiers' ||
     normalized === 'missing_required_document_family' ||
     normalized.startsWith('insufficient_evidence_documents:') ||
     normalized.startsWith('historical_') ||

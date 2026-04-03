@@ -16,10 +16,62 @@ function parseStringOrNull(value: any): string | null {
     const normalized = String(value || '').trim();
     return normalized || null;
 }
+
+function normalizeIdentifierCandidate(value: unknown): string | null {
+    const normalized = String(value || '').trim();
+    if (!normalized) return null;
+
+    const compact = normalized.replace(/\s+/g, '');
+    if (!compact) return null;
+
+    const lowered = compact.toLowerCase();
+    if (
+        ['n/a', 'na', 'none', 'null', 'undefined', 'unknown', 'missing', 'placeholder', 'sample', 'demo', 'test', 'todo', 'tbd', 'fake', '-', '--'].includes(lowered) ||
+        /\b(test|demo|sample|placeholder|unknown|missing|fake|dummy|todo|tbd)\b/i.test(normalized) ||
+        /^(.)\1{4,}$/.test(lowered)
+    ) {
+        return null;
+    }
+
+    return normalized;
+}
+
+function pickTrustworthyIdentifier(
+    candidates: unknown[],
+    validator?: (candidate: string) => boolean
+): string | undefined {
+    for (const candidate of candidates) {
+        const normalized = normalizeIdentifierCandidate(candidate);
+        if (!normalized) continue;
+        if (!validator || validator(normalized)) {
+            return normalized;
+        }
+    }
+    return undefined;
+}
+
+function isTrustworthyOrderIdentifier(candidate: string): boolean {
+    const compact = candidate.replace(/\s+/g, '');
+    return /^\d{3}-\d{7}-\d{7}$/.test(candidate) || compact.length >= 8;
+}
+
+function isTrustworthyShipmentIdentifier(candidate: string): boolean {
+    return candidate.replace(/\s+/g, '').length >= 6;
+}
+
+function isTrustworthyProductIdentifier(candidate: string): boolean {
+    const compact = candidate.replace(/\s+/g, '');
+    return /^[A-Z0-9]{10}$/i.test(compact) || compact.length >= 3;
+}
+
+function isTrustworthyFnsku(candidate: string): boolean {
+    return /^[XB][A-Z0-9]{9}$/i.test(candidate.replace(/\s+/g, ''));
+}
+
 import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import refundFilingService from './refundFilingService';
-import { evaluateAndPersistCaseEligibility } from './agent7EligibilityService';
+import { evaluateAndPersistCaseEligibility, isIdentifierSafetyReason } from './agent7EligibilityService';
 import {
     isAgent7UnpaidFilingOverrideEnabled,
     recordAgent7UnpaidFilingOverride
@@ -30,6 +82,88 @@ import {
  * Manages the full lifecycle of a claim submission from validation to handoff.
  */
 export class AmazonSubmissionAutomator {
+    private async markCasePendingSafetyVerification(
+        caseId: string,
+        tenantId: string,
+        reasons: string[],
+        message: string
+    ): Promise<void> {
+        const blockReasons = Array.from(new Set([
+            ...reasons.filter(Boolean).map((reason) => String(reason).trim()),
+            'missing_required_identifiers'
+        ]));
+
+        await supabaseAdmin
+            .from('dispute_cases')
+            .update({
+                filing_status: 'pending_safety_verification',
+                eligible_to_file: false,
+                block_reasons: blockReasons,
+                last_error: message,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', caseId)
+            .eq('tenant_id', tenantId);
+    }
+
+    private resolveSubmissionIdentifiers(
+        eligibilitySnapshot: Awaited<ReturnType<typeof evaluateAndPersistCaseEligibility>>
+    ) {
+        const disputeCase = eligibilitySnapshot.disputeCase || {};
+        const detectionResult = eligibilitySnapshot.detectionResult || {};
+        const detectionEvidence = parseJsonObject(detectionResult?.evidence);
+        const caseEvidence = parseJsonObject(disputeCase?.evidence_attachments);
+        const decisionIntelligence = parseJsonObject(caseEvidence?.decision_intelligence);
+        const proofSnapshot = parseJsonObject(decisionIntelligence?.proof_snapshot);
+        const productIds = Array.isArray(proofSnapshot?.matchedIdentifiers?.productIds)
+            ? proofSnapshot.matchedIdentifiers.productIds
+            : [];
+        const orderIds = Array.isArray(proofSnapshot?.matchedIdentifiers?.orderIds)
+            ? proofSnapshot.matchedIdentifiers.orderIds
+            : [];
+        const shipmentIds = Array.isArray(proofSnapshot?.matchedIdentifiers?.shipmentIds)
+            ? proofSnapshot.matchedIdentifiers.shipmentIds
+            : [];
+
+        return {
+            orderId: pickTrustworthyIdentifier([
+                detectionEvidence.order_id,
+                disputeCase.order_id,
+                detectionResult.order_id,
+                caseEvidence.order_id,
+                ...orderIds
+            ], isTrustworthyOrderIdentifier),
+            shipmentId: pickTrustworthyIdentifier([
+                detectionEvidence.shipment_id,
+                detectionEvidence.fba_shipment_id,
+                disputeCase.shipment_id,
+                disputeCase.fba_shipment_id,
+                caseEvidence.shipment_id,
+                caseEvidence.fba_shipment_id,
+                ...shipmentIds
+            ], isTrustworthyShipmentIdentifier),
+            asin: pickTrustworthyIdentifier([
+                detectionEvidence.asin,
+                detectionResult.asin,
+                disputeCase.asin,
+                caseEvidence.asin,
+                ...productIds
+            ], isTrustworthyProductIdentifier),
+            sku: pickTrustworthyIdentifier([
+                detectionEvidence.sku,
+                detectionResult.sku,
+                disputeCase.sku,
+                caseEvidence.sku,
+                ...productIds
+            ], isTrustworthyProductIdentifier),
+            fnsku: pickTrustworthyIdentifier([
+                detectionEvidence.fnsku,
+                caseEvidence.fnsku,
+                ...productIds
+            ], isTrustworthyFnsku)
+        };
+    }
+
     private async resolveSubmissionAttemptNumber(caseId: string): Promise<number> {
         const { data, error } = await supabaseAdmin
             .from('dispute_submissions')
@@ -149,6 +283,12 @@ export class AmazonSubmissionAutomator {
 
             const eligibilitySnapshot = await evaluateAndPersistCaseEligibility(caseId, caseInfo.tenant_id);
             if (!eligibilitySnapshot.eligible) {
+                const safetyReasons = eligibilitySnapshot.reasons.filter((reason) => isIdentifierSafetyReason(reason));
+                if (safetyReasons.length > 0) {
+                    const message = eligibilitySnapshot.proofSnapshot?.explanationPayload?.justification ||
+                        'Agent 7 is waiting for seller-verified identifiers before filing this case with Amazon.';
+                    await this.markCasePendingSafetyVerification(caseId, caseInfo.tenant_id, safetyReasons, message);
+                }
                 throw new Error(`[AGENT 7 BLOCKED] Case ${caseId} is not eligible to file: ${eligibilitySnapshot.reasons.join(', ')}`);
             }
 
@@ -235,14 +375,7 @@ export class AmazonSubmissionAutomator {
             const filingStrategy = decisionIntelligence?.filing_strategy || 'AUTO';
             const adaptiveStrategyHints = decisionIntelligence?.adaptive_strategy_hints || {};
             const explanationPayload = decisionIntelligence?.explanation_payload || proofSnapshot?.explanationPayload || null;
-            const fnskuCandidates = [
-                detectionEvidence.fnsku,
-                evidenceAttachments?.fnsku,
-                ...(Array.isArray(proofSnapshot?.matchedIdentifiers?.productIds) ? proofSnapshot.matchedIdentifiers.productIds : [])
-            ]
-                .map((value: any) => String(value || '').trim())
-                .filter(Boolean);
-            const fnsku = fnskuCandidates.find((value) => /^[XB][A-Z0-9]{9}$/i.test(value)) || undefined;
+            const resolvedIdentifiers = this.resolveSubmissionIdentifiers(eligibilitySnapshot);
 
             if (!proofSnapshot) {
                 await supabaseAdmin
@@ -274,16 +407,36 @@ export class AmazonSubmissionAutomator {
                 throw new Error(`[AGENT 7 BLOCKED] Proof snapshot is blocked for case ${caseId}`);
             }
 
+            const requiredRequirements = Array.isArray(proofSnapshot?.requiredRequirements)
+                ? proofSnapshot.requiredRequirements
+                : [];
+            const finalSafetyReasons = [
+                ...(resolvedIdentifiers.orderId ? [] : requiredRequirements.includes('order_identifier') ? ['missing_trustworthy_order_identifier'] : []),
+                ...(resolvedIdentifiers.shipmentId ? [] : requiredRequirements.includes('shipment_identifier') ? ['missing_trustworthy_shipment_identifier'] : []),
+                ...((resolvedIdentifiers.asin || resolvedIdentifiers.sku || resolvedIdentifiers.fnsku)
+                    ? []
+                    : requiredRequirements.includes('product_identifier')
+                        ? ['missing_trustworthy_product_identifier']
+                        : [])
+            ];
+
+            if (finalSafetyReasons.length > 0) {
+                const message = explanationPayload?.justification ||
+                    'Agent 7 is waiting for seller-verified identifiers before filing this case with Amazon.';
+                await this.markCasePendingSafetyVerification(caseId, caseInfo.tenant_id, finalSafetyReasons, message);
+                throw new Error(`[AGENT 7 BLOCKED] Submission requires verified identifiers: ${finalSafetyReasons.join(', ')}`);
+            }
+
             const filingResult = await refundFilingService.fileDispute({
                 dispute_id: caseId,
                 user_id: internalUserId,
                 seller_id: sellerId,
                 tenant_id: caseInfo.tenant_id,
-                order_id: detectionEvidence.order_id || '',
-                shipment_id: detectionEvidence.shipment_id || detectionEvidence.fba_shipment_id || undefined,
-                asin: detectionEvidence.asin || undefined,
-                sku: detectionEvidence.sku || undefined,
-                fnsku,
+                order_id: resolvedIdentifiers.orderId || '',
+                shipment_id: resolvedIdentifiers.shipmentId,
+                asin: resolvedIdentifiers.asin,
+                sku: resolvedIdentifiers.sku,
+                fnsku: resolvedIdentifiers.fnsku,
                 claim_type: activeCase.case_type || eligibilitySnapshot.claimType || 'inventory_loss',
                 amount_claimed: parseFloat((activeCase.estimated_recovery_amount ?? activeCase.claim_amount ?? 0).toString()),
                 currency: activeCase.currency || 'USD',
@@ -296,7 +449,7 @@ export class AmazonSubmissionAutomator {
                     success_probability: decisionIntelligence?.success_probability ?? null,
                     priority_score: decisionIntelligence?.priority_score ?? null,
                     adaptive_confidence_threshold: decisionIntelligence?.adaptive_confidence_threshold ?? null,
-                    fnsku: fnsku || null,
+                    fnsku: resolvedIdentifiers.fnsku || null,
                     proof_snapshot: proofSnapshot,
                     explanation_payload: explanationPayload,
                     strategy_hints: [
