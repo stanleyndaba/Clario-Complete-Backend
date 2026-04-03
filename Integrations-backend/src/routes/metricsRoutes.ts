@@ -8,6 +8,7 @@ import { Router, Request, Response } from 'express';
 import { metricsService } from '../services/metricsService';
 import { financialImpactService } from '../services/financialImpactService';
 import financialSummaryService from '../services/financialSummaryService';
+import { getLaunchMonitor } from '../services/launchMonitoringService';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import logger from '../utils/logger';
 
@@ -330,6 +331,25 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
         res.status(500).json({
             success: false,
             error: error.message || 'Failed to fetch dashboard summary'
+        });
+    }
+});
+
+router.get('/launch-monitor', async (req: Request, res: Response) => {
+    try {
+        const { tenantId } = await resolveDashboardScope(req);
+        const limit = Math.max(1, Math.min(parseInt(String(req.query.limit || '20'), 10) || 20, 50));
+        const monitor = await getLaunchMonitor(tenantId, limit);
+
+        res.json({
+            success: true,
+            data: monitor
+        });
+    } catch (error: any) {
+        logger.error('[METRICS] Failed to build launch monitor', { error: error.message });
+        res.status(500).json({
+            success: false,
+            error: error.message || 'Failed to fetch launch monitor'
         });
     }
 });
