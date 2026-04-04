@@ -3,6 +3,7 @@ import Notification from '../../models/notification';
 import sgMail from '@sendgrid/mail';
 import { Resend } from 'resend';
 import { supabaseAdmin } from '../../../database/supabaseClient';
+import { buildNotificationEmailViewModel } from './email_presenter';
 
 const logger = getLogger('EmailService');
 
@@ -230,8 +231,12 @@ export class EmailService {
    * Generate email template based on notification type
    */
   private generateEmailTemplate(notification: Notification): EmailTemplate {
-    const baseSubject = `[${notification.priority.toUpperCase()}] ${notification.title}`;
-    
+    const emailView = buildNotificationEmailViewModel(notification, {
+      frontendUrl: process.env.FRONTEND_URL || 'https://app.margin-finance.com'
+    });
+    const htmlDetails = this.renderDetailLinesHtml(emailView.email_detail_lines);
+    const textDetails = this.renderDetailLinesText(emailView.email_detail_lines);
+
     // Generate HTML content
     const html = `
       <!DOCTYPE html>
@@ -239,7 +244,7 @@ export class EmailService {
       <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>${notification.title}</title>
+        <title>${this.escapeHtml(emailView.email_heading)}</title>
         <style>
           body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
           .container { max-width: 600px; margin: 0 auto; padding: 20px; }
@@ -256,20 +261,28 @@ export class EmailService {
       <body>
         <div class="container">
           <div class="header priority-${notification.priority}">
-            <h2 style="margin: 0; color: #333;">${notification.title}</h2>
-            <p style="margin: 5px 0 0 0; color: #666;">
-              ${new Date(notification.created_at).toLocaleString()}
-            </p>
+            <h2 style="margin: 0; color: #333;">${this.escapeHtml(emailView.email_heading)}</h2>
           </div>
           
           <div class="content">
-            <p>${notification.message}</p>
-            
-            ${notification.payload ? this.generatePayloadHTML(notification.payload) : ''}
+            <p>${this.escapeHtml(emailView.email_summary)}</p>
+
+            ${htmlDetails}
+
+            ${emailView.what_to_do_next ? `
+              <div style="margin-top: 18px; padding: 14px 16px; background: #f8f9fa; border-radius: 6px;">
+                <div style="font-size: 12px; color: #6c757d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em;">
+                  What to do next
+                </div>
+                <p style="margin: 8px 0 0 0; color: #495057;">
+                  ${this.escapeHtml(emailView.what_to_do_next)}
+                </p>
+              </div>
+            ` : ''}
             
             <div style="text-align: center; margin-top: 30px;">
-              <a href="${process.env.FRONTEND_URL || 'https://app.margin-finance.com'}/notifications" class="btn">
-                View in App
+              <a href="${this.escapeHtml(emailView.action_url)}" class="btn">
+                ${this.escapeHtml(emailView.action_label)}
               </a>
             </div>
           </div>
@@ -285,14 +298,14 @@ export class EmailService {
 
     // Generate plain text content
     const text = `
-${notification.title}
-${'='.repeat(notification.title.length)}
+${emailView.email_heading}
+${'='.repeat(emailView.email_heading.length)}
 
-${notification.message}
+${emailView.email_summary}
 
-${notification.payload ? this.generatePayloadText(notification.payload) : ''}
+${textDetails}
 
-View in App: ${process.env.FRONTEND_URL || 'https://app.margin-finance.com'}/notifications
+${emailView.what_to_do_next ? `What to do next:\n${emailView.what_to_do_next}\n\n` : ''}View in App: ${emailView.action_url}
 
 ---
 This is an automated notification from Margin.
@@ -300,178 +313,48 @@ If you have any questions, please contact our support team.
     `;
 
     return {
-      subject: baseSubject,
+      subject: emailView.email_subject,
       html: html.trim(),
       text: text.trim()
     };
   }
 
-  /**
-   * Generate HTML for notification payload
-   */
-  private generatePayloadHTML(payload: Record<string, any>): string {
-    const summary = this.buildPayloadSummary(payload);
-    if (!summary.details.length && !summary.preview) return '';
+  private renderDetailLinesHtml(details: Array<{ label: string; value: string }>): string {
+    if (!details.length) return '';
 
-    let html = '<div style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 5px;">';
-    html += '<h4 style="margin: 0 0 12px 0; color: #495057;">Additional Details:</h4>';
-
-    for (const detail of summary.details) {
-      html += `
-        <div style="margin: 0 0 10px 0;">
-          <div style="font-size: 12px; color: #6c757d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em;">
-            ${this.escapeHtml(detail.label)}
+    const rows = details
+      .map(
+        (detail) => `
+          <div style="margin: 0 0 10px 0;">
+            <div style="font-size: 12px; color: #6c757d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em;">
+              ${this.escapeHtml(detail.label)}
+            </div>
+            <div style="margin-top: 2px; color: #212529;">
+              ${this.escapeHtml(detail.value)}
+            </div>
           </div>
-          <div style="margin-top: 2px; color: #212529;">
-            ${this.escapeHtml(detail.value)}
-          </div>
-        </div>
-      `;
-    }
+        `
+      )
+      .join('');
 
-    if (summary.preview) {
-      html += `
-        <div style="margin-top: 14px; padding: 12px 14px; background: white; border: 1px solid #e9ecef; border-radius: 6px;">
-          <div style="font-size: 12px; color: #6c757d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em;">
-            Amazon message preview
-          </div>
-          <p style="margin: 8px 0 0 0; color: #495057;">
-            ${this.escapeHtml(summary.preview)}
-          </p>
-        </div>
-      `;
-    }
-
-    html += '</div>';
-    return html;
+    return `
+      <div style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 5px;">
+        <h4 style="margin: 0 0 12px 0; color: #495057;">Additional Details:</h4>
+        ${rows}
+      </div>
+    `;
   }
 
-  /**
-   * Generate plain text for notification payload
-   */
-  private generatePayloadText(payload: Record<string, any>): string {
-    const summary = this.buildPayloadSummary(payload);
-    if (!summary.details.length && !summary.preview) return '';
+  private renderDetailLinesText(details: Array<{ label: string; value: string }>): string {
+    if (!details.length) return '';
 
     let text = '\nAdditional Details:\n';
     text += '-'.repeat(20) + '\n';
-
-    for (const detail of summary.details) {
+    for (const detail of details) {
       text += `${detail.label}: ${detail.value}\n`;
     }
 
-    if (summary.preview) {
-      text += `\nAmazon message preview:\n${summary.preview}\n`;
-    }
-
     return text;
-  }
-
-  private buildPayloadSummary(payload: Record<string, any>): {
-    details: Array<{ label: string; value: string }>;
-    preview: string | null;
-  } {
-    const normalized = this.flattenPayload(payload);
-    const details: Array<{ label: string; value: string }> = [];
-
-    const amazonCaseId = this.pickPayloadString(normalized.amazon_case_id, normalized.amazonCaseId);
-    const caseState = this.humanizeValue(this.pickPayloadString(normalized.case_state, normalized.caseState));
-    const subject = this.pickPayloadString(normalized.subject);
-    const disputeCaseId = this.pickPayloadString(normalized.dispute_case_id, normalized.disputeCaseId, normalized.disputeId);
-
-    if (amazonCaseId) details.push({ label: 'Amazon case', value: amazonCaseId });
-    if (caseState) details.push({ label: 'Case state', value: caseState });
-    if (subject) details.push({ label: 'Subject', value: subject });
-    if (disputeCaseId) details.push({ label: 'Margin case', value: disputeCaseId });
-
-    if (!details.length) {
-      const hiddenKeys = new Set([
-        'payload',
-        'metadata',
-        'tenant_id',
-        'tenant_slug',
-        'user_id',
-        'entity_id',
-        'entity_type',
-        'timestamp',
-        'event_type',
-        'preference_toggle_id',
-        'dedupe_key',
-        'provider_message_id'
-      ]);
-
-      for (const [key, value] of Object.entries(normalized)) {
-        if (hiddenKeys.has(key) || value === null || value === undefined || typeof value === 'object') {
-          continue;
-        }
-
-        details.push({
-          label: key.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()),
-          value: String(value)
-        });
-
-        if (details.length >= 4) {
-          break;
-        }
-      }
-    }
-
-    return {
-      details,
-      preview: this.normalizePreview(this.pickPayloadString(normalized.body_preview, normalized.bodyPreview))
-    };
-  }
-
-  private flattenPayload(payload: Record<string, any>): Record<string, any> {
-    const flattened: Record<string, any> = {};
-    let current: any = payload;
-    let depth = 0;
-
-    while (current && typeof current === 'object' && depth < 5) {
-      for (const [key, value] of Object.entries(current)) {
-        if (key === 'payload') {
-          continue;
-        }
-
-        if (
-          !Object.prototype.hasOwnProperty.call(flattened, key) ||
-          flattened[key] === null ||
-          flattened[key] === undefined ||
-          flattened[key] === ''
-        ) {
-          flattened[key] = value;
-        }
-      }
-
-      current = current.payload && typeof current.payload === 'object' ? current.payload : null;
-      depth += 1;
-    }
-
-    return flattened;
-  }
-
-  private pickPayloadString(...values: any[]): string | null {
-    for (const value of values) {
-      if (typeof value === 'string' && value.trim()) {
-        return value.trim();
-      }
-    }
-    return null;
-  }
-
-  private humanizeValue(value: string | null): string | null {
-    if (!value) return null;
-    return value
-      .split('_')
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(' ');
-  }
-
-  private normalizePreview(value: string | null): string | null {
-    if (!value) return null;
-    const normalized = value.replace(/\s+/g, ' ').trim();
-    if (!normalized) return null;
-    return normalized.length > 280 ? `${normalized.slice(0, 277)}...` : normalized;
   }
 
   private escapeHtml(value: string): string {
