@@ -65,8 +65,11 @@ describe('buildNotificationEmailViewModel', () => {
       { label: 'Status', value: 'Closed pending response' },
       { label: 'Updated', value: 'Apr 3, 2026, 11:34 AM UTC' }
     ]);
+    expect(result.why_this_matters).toContain('Amazon may keep this case closed');
+    expect(result.amazon_said_preview).toContain('Because we haven’t received a response from you');
+    expect(result.trust_line).toBe('Margin has linked this case and is tracking it for you.');
     expect(result.what_to_do_next).toContain('reopen only if you can provide the missing information');
-    expect(result.action_url).toBe('https://app.margin-finance.com/app/demo-workspace/recoveries/3f4e475a-99b2-48e2-9155-c5a2216418cc');
+    expect(result.action_url).toBe('https://app.margin-finance.com/app/redirect?target=%2Fcases%2F3f4e475a-99b2-48e2-9155-c5a2216418cc&tenant=demo-workspace');
 
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain('tenant_id');
@@ -82,7 +85,7 @@ describe('buildNotificationEmailViewModel', () => {
         tenant_slug: 'demo-workspace',
         timestamp: '2026-04-03T11:34:37.823Z',
         case_state: 'needs_evidence',
-        body_preview: 'Hello from Amazon Support. Please provide the invoice and proof of shipment so we can continue reviewing your case.',
+        body_preview: '<p>Hello from Amazon Support.</p><p>Please provide the invoice and proof of shipment so we can continue reviewing your case.</p>',
         amazon_case_id: '19824203951',
         dispute_case_id: '3f4e475a-99b2-48e2-9155-c5a2216418cc'
       }
@@ -94,7 +97,11 @@ describe('buildNotificationEmailViewModel', () => {
 
     expect(result.email_subject).toBe('Amazon needs more information for Case 19824203951');
     expect(result.email_summary).toBe('Amazon asked for additional information before it can continue reviewing this case.');
-    expect(result.email_detail_lines[1]).toEqual({ label: 'Status', value: 'Needs more information' });
+    expect(result.email_detail_lines[1]).toEqual({ label: 'Status', value: 'Action required' });
+    expect(result.why_this_matters).toBe('If no action is taken, Amazon may close this case before reimbursement can be approved.');
+    expect(result.amazon_said_preview).toBe('Hello from Amazon Support. Please provide the invoice and proof of shipment so we can continue reviewing your case.');
+    expect(result.what_to_do_next).toBe('Open the case in Margin to review Amazon’s request and respond with the required details or evidence.');
+    expect(result.trust_line).toBe('Margin has linked this case and is tracking it for you.');
   });
 
   it.each([
@@ -189,8 +196,12 @@ describe('EmailService email rendering', () => {
     const template = service.generateEmailTemplate(notification);
 
     expect(template.subject).toBe('Amazon closed Case 19824203951 pending more information');
+    expect(template.html).toContain('Why this matters');
+    expect(template.html).toContain('What Amazon said');
     expect(template.html).toContain('What to do next');
     expect(template.html).toContain('View in App');
+    expect(template.html).toContain('If the button doesn’t work, copy and paste this link:');
+    expect(template.html).toContain('app/redirect?target=%2Fcases%2F3f4e475a-99b2-48e2-9155-c5a2216418cc&tenant=demo-workspace');
     expect(template.html).not.toContain('Payload:');
     expect(template.html).not.toContain('provider_message_id');
     expect(template.html).not.toContain('tenant_id');
@@ -199,6 +210,9 @@ describe('EmailService email rendering', () => {
     expect(template.html).not.toContain('{&quot;');
 
     expect(template.text).toContain('Amazon closed this case after not receiving the requested response.');
+    expect(template.text).toContain('Why this matters:');
+    expect(template.text).toContain('What Amazon said:');
+    expect(template.text).toContain('If the button doesn’t work, copy and paste this link:');
     expect(template.text).not.toContain('Payload:');
     expect(template.text).not.toContain('provider_message_id');
     expect(template.text).not.toContain('tenant_id');

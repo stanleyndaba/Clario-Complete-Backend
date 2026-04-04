@@ -269,6 +269,34 @@ export class EmailService {
 
             ${htmlDetails}
 
+            ${emailView.why_this_matters ? `
+              <div style="margin-top: 18px; padding: 14px 16px; background: #fff8e8; border-radius: 6px; border-left: 3px solid #f59e0b;">
+                <div style="font-size: 12px; color: #92400e; font-weight: 600; letter-spacing: 0.02em;">
+                  Why this matters
+                </div>
+                <p style="margin: 8px 0 0 0; color: #78350f;">
+                  ${this.escapeHtml(emailView.why_this_matters)}
+                </p>
+              </div>
+            ` : ''}
+
+            ${emailView.amazon_said_preview ? `
+              <div style="margin-top: 18px; padding: 14px 16px; background: #f8f9fa; border-radius: 6px;">
+                <div style="font-size: 12px; color: #6c757d; font-weight: 600; letter-spacing: 0.02em;">
+                  What Amazon said
+                </div>
+                <p style="margin: 8px 0 0 0; color: #495057;">
+                  &ldquo;${this.escapeHtml(emailView.amazon_said_preview)}&rdquo;
+                </p>
+              </div>
+            ` : ''}
+
+            ${emailView.trust_line ? `
+              <p style="margin-top: 18px; color: #495057;">
+                ${this.escapeHtml(emailView.trust_line)}
+              </p>
+            ` : ''}
+
             ${emailView.what_to_do_next ? `
               <div style="margin-top: 18px; padding: 14px 16px; background: #f8f9fa; border-radius: 6px;">
                 <div style="font-size: 12px; color: #6c757d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em;">
@@ -285,6 +313,15 @@ export class EmailService {
                 ${this.escapeHtml(emailView.action_label)}
               </a>
             </div>
+
+            <p style="margin: 18px 0 0 0; color: #6c757d; font-size: 13px;">
+              If the button doesn’t work, copy and paste this link:
+            </p>
+            <p style="margin: 8px 0 0 0; word-break: break-all; font-size: 13px;">
+              <a href="${this.escapeHtml(emailView.action_url)}" style="color: #007bff; text-decoration: underline;">
+                ${this.escapeHtml(emailView.action_url)}
+              </a>
+            </p>
           </div>
           
           <div class="footer">
@@ -305,7 +342,10 @@ ${emailView.email_summary}
 
 ${textDetails}
 
-${emailView.what_to_do_next ? `What to do next:\n${emailView.what_to_do_next}\n\n` : ''}View in App: ${emailView.action_url}
+${emailView.why_this_matters ? `Why this matters:\n${emailView.why_this_matters}\n\n` : ''}${emailView.amazon_said_preview ? `What Amazon said:\n"${emailView.amazon_said_preview}"\n\n` : ''}${emailView.trust_line ? `${emailView.trust_line}\n\n` : ''}${emailView.what_to_do_next ? `What to do next:\n${emailView.what_to_do_next}\n\n` : ''}View in App: ${emailView.action_url}
+
+If the button doesn’t work, copy and paste this link:
+${emailView.action_url}
 
 ---
 This is an automated notification from Margin.
