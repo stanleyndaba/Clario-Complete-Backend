@@ -310,20 +310,38 @@ If you have any questions, please contact our support team.
    * Generate HTML for notification payload
    */
   private generatePayloadHTML(payload: Record<string, any>): string {
-    if (!payload || Object.keys(payload).length === 0) return '';
+    const summary = this.buildPayloadSummary(payload);
+    if (!summary.details.length && !summary.preview) return '';
 
     let html = '<div style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 5px;">';
-    html += '<h4 style="margin: 0 0 10px 0; color: #495057;">Additional Details:</h4>';
-    
-    for (const [key, value] of Object.entries(payload)) {
-      if (value !== null && value !== undefined) {
-        const formattedKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-        const formattedValue = typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
-        
-        html += `<p style="margin: 5px 0;"><strong>${formattedKey}:</strong> ${formattedValue}</p>`;
-      }
+    html += '<h4 style="margin: 0 0 12px 0; color: #495057;">Additional Details:</h4>';
+
+    for (const detail of summary.details) {
+      html += `
+        <div style="margin: 0 0 10px 0;">
+          <div style="font-size: 12px; color: #6c757d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em;">
+            ${this.escapeHtml(detail.label)}
+          </div>
+          <div style="margin-top: 2px; color: #212529;">
+            ${this.escapeHtml(detail.value)}
+          </div>
+        </div>
+      `;
     }
-    
+
+    if (summary.preview) {
+      html += `
+        <div style="margin-top: 14px; padding: 12px 14px; background: white; border: 1px solid #e9ecef; border-radius: 6px;">
+          <div style="font-size: 12px; color: #6c757d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em;">
+            Amazon message preview
+          </div>
+          <p style="margin: 8px 0 0 0; color: #495057;">
+            ${this.escapeHtml(summary.preview)}
+          </p>
+        </div>
+      `;
+    }
+
     html += '</div>';
     return html;
   }
@@ -332,21 +350,137 @@ If you have any questions, please contact our support team.
    * Generate plain text for notification payload
    */
   private generatePayloadText(payload: Record<string, any>): string {
-    if (!payload || Object.keys(payload).length === 0) return '';
+    const summary = this.buildPayloadSummary(payload);
+    if (!summary.details.length && !summary.preview) return '';
 
     let text = '\nAdditional Details:\n';
     text += '-'.repeat(20) + '\n';
-    
-    for (const [key, value] of Object.entries(payload)) {
-      if (value !== null && value !== undefined) {
-        const formattedKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-        const formattedValue = typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
-        
-        text += `${formattedKey}: ${formattedValue}\n`;
+
+    for (const detail of summary.details) {
+      text += `${detail.label}: ${detail.value}\n`;
+    }
+
+    if (summary.preview) {
+      text += `\nAmazon message preview:\n${summary.preview}\n`;
+    }
+
+    return text;
+  }
+
+  private buildPayloadSummary(payload: Record<string, any>): {
+    details: Array<{ label: string; value: string }>;
+    preview: string | null;
+  } {
+    const normalized = this.flattenPayload(payload);
+    const details: Array<{ label: string; value: string }> = [];
+
+    const amazonCaseId = this.pickPayloadString(normalized.amazon_case_id, normalized.amazonCaseId);
+    const caseState = this.humanizeValue(this.pickPayloadString(normalized.case_state, normalized.caseState));
+    const subject = this.pickPayloadString(normalized.subject);
+    const disputeCaseId = this.pickPayloadString(normalized.dispute_case_id, normalized.disputeCaseId, normalized.disputeId);
+
+    if (amazonCaseId) details.push({ label: 'Amazon case', value: amazonCaseId });
+    if (caseState) details.push({ label: 'Case state', value: caseState });
+    if (subject) details.push({ label: 'Subject', value: subject });
+    if (disputeCaseId) details.push({ label: 'Margin case', value: disputeCaseId });
+
+    if (!details.length) {
+      const hiddenKeys = new Set([
+        'payload',
+        'metadata',
+        'tenant_id',
+        'tenant_slug',
+        'user_id',
+        'entity_id',
+        'entity_type',
+        'timestamp',
+        'event_type',
+        'preference_toggle_id',
+        'dedupe_key',
+        'provider_message_id'
+      ]);
+
+      for (const [key, value] of Object.entries(normalized)) {
+        if (hiddenKeys.has(key) || value === null || value === undefined || typeof value === 'object') {
+          continue;
+        }
+
+        details.push({
+          label: key.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()),
+          value: String(value)
+        });
+
+        if (details.length >= 4) {
+          break;
+        }
       }
     }
-    
-    return text;
+
+    return {
+      details,
+      preview: this.normalizePreview(this.pickPayloadString(normalized.body_preview, normalized.bodyPreview))
+    };
+  }
+
+  private flattenPayload(payload: Record<string, any>): Record<string, any> {
+    const flattened: Record<string, any> = {};
+    let current: any = payload;
+    let depth = 0;
+
+    while (current && typeof current === 'object' && depth < 5) {
+      for (const [key, value] of Object.entries(current)) {
+        if (key === 'payload') {
+          continue;
+        }
+
+        if (
+          !Object.prototype.hasOwnProperty.call(flattened, key) ||
+          flattened[key] === null ||
+          flattened[key] === undefined ||
+          flattened[key] === ''
+        ) {
+          flattened[key] = value;
+        }
+      }
+
+      current = current.payload && typeof current.payload === 'object' ? current.payload : null;
+      depth += 1;
+    }
+
+    return flattened;
+  }
+
+  private pickPayloadString(...values: any[]): string | null {
+    for (const value of values) {
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+    return null;
+  }
+
+  private humanizeValue(value: string | null): string | null {
+    if (!value) return null;
+    return value
+      .split('_')
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
+  }
+
+  private normalizePreview(value: string | null): string | null {
+    if (!value) return null;
+    const normalized = value.replace(/\s+/g, ' ').trim();
+    if (!normalized) return null;
+    return normalized.length > 280 ? `${normalized.slice(0, 277)}...` : normalized;
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   /**
