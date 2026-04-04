@@ -86,7 +86,9 @@ function formatTimestamp(value?: string | null): string | null {
     day: 'numeric',
     year: 'numeric',
     hour: 'numeric',
-    minute: '2-digit'
+    minute: '2-digit',
+    timeZone: 'UTC',
+    timeZoneName: 'short'
   }).format(date);
 }
 
@@ -107,10 +109,24 @@ function isClosedWithoutResponse(payload: FlattenedPayload): boolean {
   return CASE_CLOSED_WITHOUT_RESPONSE_PATTERNS.some((pattern) => pattern.test(combined));
 }
 
+function sanitizeTenantSlug(value?: string | null): string | null {
+  const normalized = pickFirstString(value);
+  if (!normalized) return null;
+  return /^[a-z0-9-]{1,80}$/i.test(normalized) ? normalized : null;
+}
+
+function sanitizeEntityId(value?: string | null): string | null {
+  const normalized = pickFirstString(value);
+  if (!normalized) return null;
+  return /^[a-z0-9-]{6,120}$/i.test(normalized) ? normalized : null;
+}
+
 function buildActionUrl(frontendUrl: string, payload: FlattenedPayload): string {
   const baseUrl = frontendUrl.replace(/\/+$/, '');
-  const tenantSlug = pickFirstString(payload.tenant_slug, payload.tenantSlug);
-  const disputeCaseId = pickFirstString(payload.dispute_case_id, payload.disputeCaseId, payload.disputeId);
+  const tenantSlug = sanitizeTenantSlug(pickFirstString(payload.tenant_slug, payload.tenantSlug));
+  const disputeCaseId = sanitizeEntityId(
+    pickFirstString(payload.dispute_case_id, payload.disputeCaseId, payload.disputeId)
+  );
 
   if (tenantSlug && disputeCaseId) {
     return `${baseUrl}/app/${tenantSlug}/recoveries/${disputeCaseId}`;
