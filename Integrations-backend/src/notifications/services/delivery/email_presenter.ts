@@ -128,6 +128,11 @@ function buildCaseLabel(amazonCaseId?: string | null): string {
   return normalized ? `Case ${normalized}` : 'your case';
 }
 
+function buildOwnedCaseLabel(amazonCaseId?: string | null): string {
+  const normalized = pickFirstString(amazonCaseId);
+  return normalized ? `your case (${normalized})` : 'your case';
+}
+
 function isClosedWithoutResponse(payload: FlattenedPayload): boolean {
   const combined = [
     pickFirstString(payload.subject),
@@ -201,6 +206,7 @@ function buildAmazonThreadViewModel(
 ): NotificationEmailViewModel {
   const amazonCaseId = pickFirstString(payload.amazon_case_id, payload.amazonCaseId);
   const caseLabel = buildCaseLabel(amazonCaseId);
+  const ownedCaseLabel = buildOwnedCaseLabel(amazonCaseId);
   const action_url = buildActionUrl(frontendUrl, payload);
   const amazon_said_preview = buildAmazonSaidPreview(payload);
 
@@ -208,11 +214,11 @@ function buildAmazonThreadViewModel(
     case NotificationType.NEEDS_EVIDENCE: {
       if (isClosedWithoutResponse(payload)) {
         return {
-          email_subject: `Amazon closed ${caseLabel} pending more information`,
-          email_heading: `Amazon closed ${caseLabel} pending more information`,
+          email_subject: `Amazon closed ${ownedCaseLabel} pending more information`,
+          email_heading: `Amazon closed ${ownedCaseLabel} pending more information`,
           email_summary:
             'Amazon closed this case after not receiving the requested response. Review the thread in Margin before deciding whether to reopen it.',
-          email_detail_lines: buildCommonDetailLines(payload, 'Closed pending response'),
+          email_detail_lines: buildCommonDetailLines(payload, 'Closed - no response received'),
           why_this_matters:
             'If this stays unresolved, Amazon may keep this case closed and the reimbursement will not move forward.',
           amazon_said_preview,
@@ -225,8 +231,8 @@ function buildAmazonThreadViewModel(
       }
 
       return {
-        email_subject: `Amazon needs more information for ${caseLabel}`,
-        email_heading: `Amazon needs more information for ${caseLabel}`,
+        email_subject: `Amazon needs more information for ${ownedCaseLabel}`,
+        email_heading: `Amazon needs more information for ${ownedCaseLabel}`,
         email_summary:
           'Amazon asked for additional information before it can continue reviewing this case.',
         email_detail_lines: buildCommonDetailLines(payload, 'Action required'),
@@ -242,41 +248,41 @@ function buildAmazonThreadViewModel(
     }
     case NotificationType.APPROVED:
       return {
-        email_subject: `Amazon approved ${caseLabel}`,
-        email_heading: `Amazon approved ${caseLabel}`,
+        email_subject: `Amazon approved ${ownedCaseLabel}`,
+        email_heading: `Amazon approved ${ownedCaseLabel}`,
         email_summary: 'Amazon resolved this case in your favor.',
         email_detail_lines: buildCommonDetailLines(payload, 'Approved'),
         why_this_matters:
           'This case has moved out of review and into payout tracking.',
         trust_line: DEFAULT_TRUST_LINE,
-        what_to_do_next: 'Open the case in Margin to review the resolution details.',
+        what_to_do_next: 'Open the case in Margin to review the resolution and next steps.',
         action_label: 'View in App',
         action_url
       };
     case NotificationType.REJECTED:
       return {
-        email_subject: `Amazon rejected ${caseLabel}`,
-        email_heading: `Amazon rejected ${caseLabel}`,
+        email_subject: `Amazon rejected ${ownedCaseLabel}`,
+        email_heading: `Amazon rejected ${ownedCaseLabel}`,
         email_summary: 'Amazon closed this case without reimbursement.',
         email_detail_lines: buildCommonDetailLines(payload, 'Rejected'),
         why_this_matters:
           'If stronger evidence exists, you may still decide whether to reopen or appeal.',
         trust_line: DEFAULT_TRUST_LINE,
         what_to_do_next:
-          'Open the case in Margin to review the denial details and decide whether more evidence is available.',
+          'Open the case in Margin to review the denial details and next steps, including whether more evidence is available.',
         action_label: 'View in App',
         action_url
       };
     case NotificationType.PAID:
       return {
-        email_subject: `Amazon confirmed payment for ${caseLabel}`,
-        email_heading: `Amazon confirmed payment for ${caseLabel}`,
+        email_subject: `Amazon confirmed payment for ${ownedCaseLabel}`,
+        email_heading: `Amazon confirmed payment for ${ownedCaseLabel}`,
         email_summary: 'Amazon confirmed reimbursement for this case.',
         email_detail_lines: buildCommonDetailLines(payload, 'Paid'),
         why_this_matters:
           'This reimbursement should now be ready to reconcile against your records.',
         trust_line: DEFAULT_TRUST_LINE,
-        what_to_do_next: 'Open Margin to confirm the payout status and reconcile it with your records.',
+        what_to_do_next: 'Open Margin to review the payout details and reconcile the reimbursement with your records.',
         action_label: 'View in App',
         action_url
       };

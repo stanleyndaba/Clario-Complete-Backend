@@ -58,11 +58,11 @@ describe('buildNotificationEmailViewModel', () => {
       frontendUrl: 'https://app.margin-finance.com'
     });
 
-    expect(result.email_subject).toBe('Amazon closed Case 19824203951 pending more information');
+    expect(result.email_subject).toBe('Amazon closed your case (19824203951) pending more information');
     expect(result.email_summary).toContain('Amazon closed this case after not receiving the requested response');
     expect(result.email_detail_lines).toEqual([
       { label: 'Amazon case', value: '19824203951' },
-      { label: 'Status', value: 'Closed pending response' },
+      { label: 'Status', value: 'Closed - no response received' },
       { label: 'Updated', value: 'Apr 3, 2026, 11:34 AM UTC' }
     ]);
     expect(result.why_this_matters).toContain('Amazon may keep this case closed');
@@ -95,7 +95,7 @@ describe('buildNotificationEmailViewModel', () => {
       frontendUrl: 'https://app.margin-finance.com'
     });
 
-    expect(result.email_subject).toBe('Amazon needs more information for Case 19824203951');
+    expect(result.email_subject).toBe('Amazon needs more information for your case (19824203951)');
     expect(result.email_summary).toBe('Amazon asked for additional information before it can continue reviewing this case.');
     expect(result.email_detail_lines[1]).toEqual({ label: 'Status', value: 'Action required' });
     expect(result.why_this_matters).toBe('If no action is taken, Amazon may close this case before reimbursement can be approved.');
@@ -105,9 +105,9 @@ describe('buildNotificationEmailViewModel', () => {
   });
 
   it.each([
-    [NotificationType.APPROVED, 'Amazon approved Case 19824203951', 'Approved'],
-    [NotificationType.REJECTED, 'Amazon rejected Case 19824203951', 'Rejected'],
-    [NotificationType.PAID, 'Amazon confirmed payment for Case 19824203951', 'Paid']
+    [NotificationType.APPROVED, 'Amazon approved your case (19824203951)', 'Approved'],
+    [NotificationType.REJECTED, 'Amazon rejected your case (19824203951)', 'Rejected'],
+    [NotificationType.PAID, 'Amazon confirmed payment for your case (19824203951)', 'Paid']
   ])('renders clean wording for %s', (type, subject, statusLabel) => {
     const notification = makeNotification({
       type,
@@ -195,13 +195,13 @@ describe('EmailService email rendering', () => {
 
     const template = service.generateEmailTemplate(notification);
 
-    expect(template.subject).toBe('Amazon closed Case 19824203951 pending more information');
+    expect(template.subject).toBe('Amazon closed your case (19824203951) pending more information');
     expect(template.html).toContain('Why this matters');
     expect(template.html).toContain('What Amazon said');
     expect(template.html).toContain('What to do next');
     expect(template.html).toContain('View in App');
     expect(template.html).toContain('If the button doesn’t work, copy and paste this link:');
-    expect(template.html).toContain('app/redirect?target=%2Fcases%2F3f4e475a-99b2-48e2-9155-c5a2216418cc&tenant=demo-workspace');
+    expect(template.html).toContain('app/redirect?target=%2Fcases%2F3f4e475a-99b2-48e2-9155-c5a2216418cc&amp;tenant=demo-workspace');
     expect(template.html).not.toContain('Payload:');
     expect(template.html).not.toContain('provider_message_id');
     expect(template.html).not.toContain('tenant_id');
