@@ -7,6 +7,10 @@ export type IntakeAdmissionDecision = {
   metrics: Record<string, number>;
 };
 
+export type IntakeAdmissionOptions = {
+  ignoreCircuitBreakers?: string[];
+};
+
 class CapacityGovernanceService {
   private readonly MAX_PARSING_BACKLOG_PER_TENANT = Number(process.env.MAX_PARSING_BACKLOG_PER_TENANT || '400');
   private readonly MAX_MATCHING_BACKLOG_PER_TENANT = Number(process.env.MAX_MATCHING_BACKLOG_PER_TENANT || '400');
@@ -72,15 +76,22 @@ class CapacityGovernanceService {
     };
   }
 
-  async getIntakeAdmissionDecision(tenantId: string): Promise<IntakeAdmissionDecision> {
+  async getIntakeAdmissionDecision(
+    tenantId: string,
+    options: IntakeAdmissionOptions = {}
+  ): Promise<IntakeAdmissionDecision> {
     const metrics = await this.getTenantBacklogMetrics(tenantId);
     const parsingSnapshot = runtimeCapacityService.getWorkerSnapshot(`document-parsing:${tenantId}`);
     const matchingSnapshot = runtimeCapacityService.getWorkerSnapshot(`evidence-matching:${tenantId}`);
     const recoverySnapshot = runtimeCapacityService.getWorkerSnapshot(`recoveries:${tenantId}`);
     const billingSnapshot = runtimeCapacityService.getWorkerSnapshot(`billing:${tenantId}`);
     const runtime = runtimeCapacityService.getSnapshot();
+    const ignoredBreakers = new Set(options.ignoreCircuitBreakers || []);
 
-    if (runtime.circuitBreakers.some((breaker) => breaker.breakerName === 'filing-auto-dispatch' && breaker.state === 'open')) {
+    if (
+      !ignoredBreakers.has('filing-auto-dispatch') &&
+      runtime.circuitBreakers.some((breaker) => breaker.breakerName === 'filing-auto-dispatch' && breaker.state === 'open')
+    ) {
       return {
         allowed: false,
         reason: 'filing_circuit_breaker_open',

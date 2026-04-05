@@ -22,6 +22,7 @@ import operationalControlService from '../services/operationalControlService';
 import runtimeCapacityService from '../services/runtimeCapacityService';
 
 const router = Router();
+const CSV_UPLOAD_BREAKER_BYPASS = ['filing-auto-dispatch'] as const;
 
 // Multer config: memory storage, 50MB limit, CSV files only
 const upload = multer({
@@ -81,7 +82,9 @@ router.post('/ingest', requireActiveTenant, upload.array('files', 10), async (re
             });
         }
 
-        const admissionDecision = await capacityGovernanceService.getIntakeAdmissionDecision(tenantId);
+        const admissionDecision = await capacityGovernanceService.getIntakeAdmissionDecision(tenantId, {
+            ignoreCircuitBreakers: [...CSV_UPLOAD_BREAKER_BYPASS],
+        });
         if (!admissionDecision.allowed) {
             runtimeCapacityService.setCircuitBreaker('new-ingestion', 'open', admissionDecision.reason || 'capacity_blocked');
             return res.status(429).json({
@@ -89,6 +92,13 @@ router.post('/ingest', requireActiveTenant, upload.array('files', 10), async (re
                 error: 'CSV ingestion temporarily paused due to downstream backlog.',
                 reason: admissionDecision.reason,
                 metrics: admissionDecision.metrics,
+            });
+        }
+        if (runtimeCapacityService.getSnapshot().circuitBreakers.some((breaker) => breaker.breakerName === 'filing-auto-dispatch' && breaker.state === 'open')) {
+            logger.warn('⚠️ [CSV UPLOAD] Filing breaker is open, but manual CSV ingestion is proceeding for detection/dashboard proof.', {
+                tenantId,
+                userId,
+                ignoredBreaker: 'filing-auto-dispatch',
             });
         }
         runtimeCapacityService.setCircuitBreaker('new-ingestion', 'closed', null);
@@ -175,7 +185,9 @@ router.post('/ingest/:type', requireActiveTenant, upload.array('files', 10), asy
             });
         }
 
-        const admissionDecision = await capacityGovernanceService.getIntakeAdmissionDecision(tenantId);
+        const admissionDecision = await capacityGovernanceService.getIntakeAdmissionDecision(tenantId, {
+            ignoreCircuitBreakers: [...CSV_UPLOAD_BREAKER_BYPASS],
+        });
         if (!admissionDecision.allowed) {
             runtimeCapacityService.setCircuitBreaker('new-ingestion', 'open', admissionDecision.reason || 'capacity_blocked');
             return res.status(429).json({
@@ -183,6 +195,14 @@ router.post('/ingest/:type', requireActiveTenant, upload.array('files', 10), asy
                 error: 'CSV ingestion temporarily paused due to downstream backlog.',
                 reason: admissionDecision.reason,
                 metrics: admissionDecision.metrics,
+            });
+        }
+        if (runtimeCapacityService.getSnapshot().circuitBreakers.some((breaker) => breaker.breakerName === 'filing-auto-dispatch' && breaker.state === 'open')) {
+            logger.warn('⚠️ [CSV UPLOAD] Filing breaker is open, but typed CSV ingestion is proceeding for detection/dashboard proof.', {
+                tenantId,
+                userId,
+                ignoredBreaker: 'filing-auto-dispatch',
+                csvType: req.params.type,
             });
         }
         runtimeCapacityService.setCircuitBreaker('new-ingestion', 'closed', null);
