@@ -410,11 +410,28 @@ type CsvUploadRunRow = {
     is_sandbox: boolean | null;
 };
 
+type DetectionQueueRow = {
+    sync_id?: string | null;
+    status?: DetectionQueueStatus | null;
+    processed_at?: string | null;
+    error_message?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+    payload?: Record<string, any> | null;
+};
+
 // ============================================================================
 // CSV Ingestion Service
 // ============================================================================
 
 export class CSVIngestionService {
+    private getDetectionQueueSandboxFlag(row: DetectionQueueRow | null | undefined): boolean {
+        if (!row?.payload || typeof row.payload !== 'object') {
+            return false;
+        }
+
+        return !!(row.payload.is_sandbox ?? row.payload.isSandbox);
+    }
 
     /**
      * Ingest multiple CSV files for a user
@@ -1025,7 +1042,7 @@ export class CSVIngestionService {
         const [{ data: queueRows, error: queueError }, { count: resultsTotal, error: resultsError }] = await Promise.all([
             supabaseAdmin
                 .from('detection_queue')
-                .select('status, processed_at, error_message, created_at, updated_at, is_sandbox')
+                .select('status, processed_at, error_message, created_at, updated_at, payload')
                 .eq('tenant_id', tenantId)
                 .eq('seller_id', userId)
                 .eq('sync_id', syncId)
@@ -1047,7 +1064,7 @@ export class CSVIngestionService {
             throw new Error(`Failed to load detection results count: ${resultsError.message}`);
         }
 
-        const queueRow = Array.isArray(queueRows) && queueRows.length > 0 ? queueRows[0] : null;
+        const queueRow = Array.isArray(queueRows) && queueRows.length > 0 ? (queueRows[0] as DetectionQueueRow) : null;
         const total = Number(resultsTotal || 0);
 
         if (!queueRow && total === 0) {
@@ -1059,14 +1076,14 @@ export class CSVIngestionService {
             processedAt: queueRow?.processed_at || null,
             errorMessage: queueRow?.error_message || null,
             resultsTotal: total,
-            isSandbox: !!queueRow?.is_sandbox,
+            isSandbox: this.getDetectionQueueSandboxFlag(queueRow),
         };
     }
 
     private async getLatestCsvUploadFallback(userId: string, tenantId: string): Promise<CsvUploadRunSnapshot | null> {
         const { data: latestQueueRows, error: queueError } = await supabaseAdmin
             .from('detection_queue')
-            .select('sync_id, created_at, updated_at, status, processed_at, error_message, is_sandbox')
+            .select('sync_id, created_at, updated_at, status, processed_at, error_message, payload')
             .eq('tenant_id', tenantId)
             .eq('seller_id', userId)
             .like('sync_id', 'csv_%')
@@ -1077,7 +1094,7 @@ export class CSVIngestionService {
             throw new Error(`Failed to load latest CSV detection queue fallback: ${queueError.message}`);
         }
 
-        const latestQueueRow = Array.isArray(latestQueueRows) && latestQueueRows.length > 0 ? latestQueueRows[0] : null;
+        const latestQueueRow = Array.isArray(latestQueueRows) && latestQueueRows.length > 0 ? (latestQueueRows[0] as DetectionQueueRow) : null;
         if (latestQueueRow?.sync_id) {
             const detection = await this.getCsvDetectionSnapshot(userId, tenantId, latestQueueRow.sync_id);
             return {
@@ -1101,7 +1118,7 @@ export class CSVIngestionService {
                 detectionTriggered: true,
                 detectionJobId: undefined,
                 error: latestQueueRow.error_message || null,
-                isSandbox: !!latestQueueRow.is_sandbox,
+                isSandbox: this.getDetectionQueueSandboxFlag(latestQueueRow),
                 batchResult: null,
                 detection,
             };
@@ -1155,7 +1172,7 @@ export class CSVIngestionService {
     private async getCsvUploadFallbackBySyncId(userId: string, tenantId: string, syncId: string): Promise<CsvUploadRunSnapshot | null> {
         const { data: queueRows, error: queueError } = await supabaseAdmin
             .from('detection_queue')
-            .select('sync_id, created_at, updated_at, status, processed_at, error_message, is_sandbox')
+            .select('sync_id, created_at, updated_at, status, processed_at, error_message, payload')
             .eq('tenant_id', tenantId)
             .eq('seller_id', userId)
             .eq('sync_id', syncId)
@@ -1166,7 +1183,7 @@ export class CSVIngestionService {
             throw new Error(`Failed to load CSV detection queue fallback by sync id: ${queueError.message}`);
         }
 
-        const queueRow = Array.isArray(queueRows) && queueRows.length > 0 ? queueRows[0] : null;
+        const queueRow = Array.isArray(queueRows) && queueRows.length > 0 ? (queueRows[0] as DetectionQueueRow) : null;
         if (queueRow?.sync_id) {
             const detection = await this.getCsvDetectionSnapshot(userId, tenantId, queueRow.sync_id);
             return {
@@ -1190,7 +1207,7 @@ export class CSVIngestionService {
                 detectionTriggered: true,
                 detectionJobId: undefined,
                 error: queueRow.error_message || null,
-                isSandbox: !!queueRow.is_sandbox,
+                isSandbox: this.getDetectionQueueSandboxFlag(queueRow),
                 batchResult: null,
                 detection,
             };
@@ -2580,6 +2597,7 @@ export class CSVIngestionService {
                 seller_id: userId,
             },
             {
+                // Keep optional metadata inside payload so queue persistence depends only on live core columns.
                 ...(options.jobId ? { job_id: options.jobId } : {}),
                 ...(options.isSandbox !== undefined ? { is_sandbox: !!options.isSandbox } : {}),
                 ...(options.payload || {}),
@@ -2590,7 +2608,6 @@ export class CSVIngestionService {
             status,
             priority: 1,
             payload,
-            is_sandbox: options.isSandbox ?? false,
             processed_at: status === 'completed' || status === 'failed' ? nowIso : null,
             error_message: status === 'failed' ? options.errorMessage || 'Detection failed' : null,
             updated_at: nowIso,

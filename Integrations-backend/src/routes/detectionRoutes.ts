@@ -16,7 +16,15 @@ type DetectionQueueStatusRow = {
   processed_at?: string | null;
   created_at?: string | null;
   error_message?: string | null;
-  is_sandbox?: boolean | null;
+  payload?: Record<string, any> | null;
+};
+
+const getDetectionQueueSandboxFlag = (row: DetectionQueueStatusRow | null): boolean => {
+  if (!row?.payload || typeof row.payload !== 'object') {
+    return false;
+  }
+
+  return !!(row.payload.is_sandbox ?? row.payload.isSandbox);
 };
 
 const statusPriority = (status?: string | null): number => {
@@ -237,7 +245,7 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
       const { supabaseAdmin } = await import('../database/supabaseClient');
       const { data: queueRows } = await supabaseAdmin
         .from('detection_queue')
-        .select('id, sync_id, status, processed_at, created_at, error_message, is_sandbox')
+        .select('id, sync_id, status, processed_at, created_at, error_message, payload')
         .eq('seller_id', userId)
         .eq('sync_id', filteredSyncId)
         .order('created_at', { ascending: false })
@@ -255,7 +263,7 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
         status: preferredCsvMeta?.status || queueRow?.status || (total > 0 ? 'completed' : 'pending'),
         processedAt: preferredCsvMeta?.processedAt || queueRow?.processed_at || null,
         errorMessage: preferredCsvMeta?.errorMessage || queueRow?.error_message || null,
-        isSandbox: preferredCsvMeta?.isSandbox || !!queueRow?.is_sandbox,
+        isSandbox: preferredCsvMeta?.isSandbox || getDetectionQueueSandboxFlag(queueRow),
       };
     }
 
@@ -284,7 +292,7 @@ router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
     const { supabaseAdmin } = await import('../database/supabaseClient');
     const { data: queueRows } = await supabaseAdmin
       .from('detection_queue')
-      .select('id, sync_id, status, processed_at, created_at, error_message, is_sandbox')
+      .select('id, sync_id, status, processed_at, created_at, error_message, payload')
       .eq('seller_id', userId)
       .eq('sync_id', syncId)
       .order('created_at', { ascending: false })
@@ -309,7 +317,7 @@ router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
       status: preferredCsvMeta?.status || queueRow?.status || (claimsFound > 0 ? 'completed' : 'pending'),
       processed_at: preferredCsvMeta?.processedAt || queueRow?.processed_at || null,
       error_message: preferredCsvMeta?.errorMessage || queueRow?.error_message || null,
-      is_sandbox: preferredCsvMeta?.isSandbox || !!queueRow?.is_sandbox,
+      is_sandbox: preferredCsvMeta?.isSandbox || getDetectionQueueSandboxFlag(queueRow),
       results: {
         claimsFound,
         estimatedRecovery,
