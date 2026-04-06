@@ -439,14 +439,43 @@ export async function storeDetectionResults(sellerId: string, tenantId: string, 
         existingByFingerprint.set(fingerprint, rows);
     }
 
-    const records = results.map(r => ({
-        ...r,
-        tenant_id: tenantId,
-        source_type: sourceType,
-        status: 'detected',
-        created_at: nowIso,
-        updated_at: nowIso
-    }));
+    const records = results.map((result) => {
+        const whaleHunterMetadata = {
+            fnsku: result.fnsku || null,
+            sku: result.sku || null,
+            asin: result.asin || null,
+            product_name: result.product_name || null,
+            evidence_mode: result.evidence_mode || null,
+        };
+
+        return {
+            seller_id: result.seller_id,
+            sync_id: result.sync_id,
+            anomaly_type: result.anomaly_type,
+            severity: result.severity,
+            estimated_value: result.estimated_value,
+            currency: result.currency,
+            confidence_score: result.confidence_score,
+            evidence: {
+                ...(result.evidence || {}),
+                metadata: {
+                    ...((result.evidence && typeof result.evidence === 'object' && !Array.isArray(result.evidence))
+                        ? (result.evidence as any).metadata || {}
+                        : {}),
+                    whale_hunter: whaleHunterMetadata,
+                },
+            },
+            related_event_ids: result.related_event_ids || [],
+            discovery_date: result.discovery_date.toISOString(),
+            deadline_date: result.deadline_date.toISOString(),
+            days_remaining: result.days_remaining,
+            tenant_id: tenantId,
+            source_type: sourceType,
+            status: 'detected',
+            created_at: nowIso,
+            updated_at: nowIso,
+        };
+    });
 
     const inserts: any[] = [];
     const updates: Array<{ id: string; payload: any }> = [];
@@ -507,12 +536,28 @@ export async function storeDetectionResults(sellerId: string, tenantId: string, 
     }
 
     if (inserts.length > 0) {
-        await supabaseAdmin.from('detection_results').insert(inserts);
+        const { error: insertError } = await supabaseAdmin
+            .from('detection_results')
+            .insert(inserts);
+
+        if (insertError) {
+            logger.error('🐋 [WHALE HUNTER] Error storing detection results', {
+                sellerId,
+                syncId,
+                anomalyTypes: inserts.map((row) => row.anomaly_type),
+                payload: inserts,
+                error: insertError.message,
+            });
+            throw new Error(`Whale Hunter detection insert failed: ${insertError.message}`);
+        }
     }
 
     logger.info('🐋 [WHALE HUNTER] Stored sync-scoped detections without cross-sync rewrite', {
         sellerId,
         syncId,
+        computed: results.length,
+        persisted: inserts.length + updates.length,
+        dropped: Math.max(0, results.length - (inserts.length + updates.length)),
         inserted: inserts.length,
         updated: updates.length,
         deduped: duplicateDeletes.length
