@@ -39,13 +39,13 @@ WITH queue_sources AS (
     seller_id::TEXT AS seller_id,
     sync_id::TEXT AS sync_id,
     CASE
-      WHEN COUNT(DISTINCT payload->>'source') = 1 THEN MIN(payload->>'source')
+      WHEN COUNT(DISTINCT COALESCE(payload->>'source_type', payload->>'source')) = 1 THEN MIN(COALESCE(payload->>'source_type', payload->>'source'))
       ELSE 'unknown'
     END AS resolved_source
   FROM detection_queue
   WHERE sync_id IS NOT NULL
-    AND payload ? 'source'
-    AND payload->>'source' IN ('sp_api', 'csv_upload')
+    AND (payload ? 'source_type' OR payload ? 'source')
+    AND COALESCE(payload->>'source_type', payload->>'source') IN ('sp_api', 'csv_upload')
   GROUP BY tenant_id, seller_id, sync_id
 )
 UPDATE detection_results dr

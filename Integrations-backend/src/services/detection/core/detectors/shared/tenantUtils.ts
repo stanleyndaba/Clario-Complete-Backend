@@ -115,7 +115,7 @@ export async function inferDetectionSourceType(
         if (!error) {
             const queueSources = Array.from(new Set<Exclude<DetectionSourceType, 'unknown'>>(
                 (queueRows || [])
-                    .map((row: any) => row?.payload?.source)
+                    .map((row: any) => row?.payload?.source_type || row?.payload?.source)
                     .filter(isResolvedSource)
             ));
 

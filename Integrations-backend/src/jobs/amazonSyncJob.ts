@@ -747,6 +747,8 @@ export class AmazonSyncJob {
         seller_id: userId,
         sync_id: syncId,
         timestamp: new Date().toISOString(),
+        source_type: 'sp_api' as const,
+        trigger_type: 'sp_api_sync' as const,
         is_sandbox: isSandbox
       };
 

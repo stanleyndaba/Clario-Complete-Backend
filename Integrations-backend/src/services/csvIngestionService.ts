@@ -12,6 +12,7 @@ import logger from '../utils/logger';
 import { supabaseAdmin } from '../database/supabaseClient';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
+import { buildDetectionQueuePayload } from './detectionQueueContract';
 import {
     buildCanonicalFinancialEventRow,
     classifyFinancialEventType,
@@ -2173,7 +2174,11 @@ export class CSVIngestionService {
             await this.recordDetectionQueueStatus(userId, tenantId, syncId, 'processing', {
                 jobId,
                 isSandbox,
-                payload: { source: 'csv_upload', engine: 'enhanced' },
+                payload: {
+                    engine: 'enhanced',
+                    job_id: jobId,
+                    detection_phase: 'triggered',
+                },
             });
 
             // Try EnhancedDetectionService first (production flagship detector set)
@@ -2184,7 +2189,12 @@ export class CSVIngestionService {
                 userId,
                 syncId,
                 'csv_upload',
-                { source: 'csv_upload', syncId }
+                {
+                    tenantId,
+                    syncId,
+                    source_type: 'csv_upload',
+                    trigger_type: 'csv_upload'
+                }
             );
 
             if (!result.success) {
@@ -2193,8 +2203,9 @@ export class CSVIngestionService {
                     isSandbox,
                     errorMessage: result.message || 'Enhanced detection pipeline returned unsuccessful state.',
                     payload: {
-                        source: 'csv_upload',
                         engine: 'enhanced',
+                        job_id: result.jobId || jobId,
+                        detection_phase: 'completed_with_error',
                         detectionsFound: result.detectionsFound || 0,
                         estimatedRecovery: result.estimatedRecovery || 0,
                     },
@@ -2206,8 +2217,9 @@ export class CSVIngestionService {
                 jobId: result.jobId,
                 isSandbox,
                 payload: {
-                    source: 'csv_upload',
                     engine: 'enhanced',
+                    job_id: result.jobId,
+                    detection_phase: 'completed',
                     detectionsFound: result.detectionsFound || 0,
                     estimatedRecovery: result.estimatedRecovery || 0,
                 },
@@ -2225,52 +2237,33 @@ export class CSVIngestionService {
 
             return result.jobId;
         } catch (error: any) {
-            logger.warn('⚠️ [CSV INGESTION] Enhanced detection failed, trying basic detection', {
+            logger.error('❌ [CSV INGESTION] Enhanced detection failed; CSV legacy fallback disabled', {
                 userId,
                 syncId,
                 error: error.message,
             });
-
-            // Fallback: try basic DetectionService
             try {
-                const detectionService = (await import('./detectionService')).default;
-                await detectionService.enqueueDetectionJob({
-                    seller_id: userId,
-                    tenant_id: tenantId,
-                    sync_id: syncId,
-                    timestamp: new Date().toISOString(),
+                await this.recordDetectionQueueStatus(userId, tenantId, syncId, 'failed', {
+                    jobId,
+                    isSandbox,
+                    errorMessage: error.message || 'Enhanced detection pipeline failed.',
+                    payload: {
+                        engine: 'enhanced',
+                        job_id: jobId,
+                        detection_phase: 'failed',
+                        fallback_used: false,
+                        failure_reason: error.message || 'Enhanced detection pipeline failed.',
+                    },
                 });
-
-                return jobId;
-            } catch (fallbackError: any) {
-                try {
-                    await this.recordDetectionQueueStatus(userId, tenantId, syncId, 'failed', {
-                        jobId,
-                        isSandbox,
-                        errorMessage: fallbackError.message,
-                        payload: {
-                            source: 'csv_upload',
-                            engine: 'legacy_fallback',
-                            enhancedError: error.message,
-                            fallbackError: fallbackError.message,
-                        },
-                    });
-                } catch (statusError: any) {
-                    logger.error('❌ [CSV INGESTION] Failed to persist detection failure status', {
-                        userId,
-                        syncId,
-                        error: statusError.message,
-                    });
-                }
-
-                logger.error('❌ [CSV INGESTION] Both detection services failed', {
+            } catch (statusError: any) {
+                logger.error('❌ [CSV INGESTION] Failed to persist detection failure status', {
                     userId,
                     syncId,
-                    enhancedError: error.message,
-                    basicError: fallbackError.message,
+                    error: statusError.message,
                 });
-                throw fallbackError;
             }
+
+            throw new Error(error.message || 'Enhanced detection pipeline failed.');
         }
     }
 
@@ -2450,13 +2443,20 @@ export class CSVIngestionService {
         } = {}
     ): Promise<void> {
         const nowIso = new Date().toISOString();
-        const payload = {
-            source: 'csv_upload',
-            syncId,
-            ...(options.jobId ? { jobId: options.jobId } : {}),
-            ...(options.isSandbox !== undefined ? { isSandbox: !!options.isSandbox } : {}),
-            ...(options.payload || {}),
-        };
+        const payload = buildDetectionQueuePayload(
+            {
+                tenant_id: tenantId,
+                sync_id: syncId,
+                source_type: 'csv_upload',
+                trigger_type: 'csv_upload',
+                seller_id: userId,
+            },
+            {
+                ...(options.jobId ? { job_id: options.jobId } : {}),
+                ...(options.isSandbox !== undefined ? { is_sandbox: !!options.isSandbox } : {}),
+                ...(options.payload || {}),
+            }
+        );
 
         const nextValues = {
             status,

@@ -2,12 +2,20 @@ import { supabase } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import { getRedisClient, handleRedisRuntimeError, isRedisAvailable } from '../utils/redisClient';
 import axios from 'axios';
+import {
+  buildDetectionQueuePayload,
+  DetectionQueueSourceType,
+  DetectionQueueTriggerType
+} from './detectionQueueContract';
 
 export interface DetectionJob {
   seller_id: string;
   tenant_id?: string;
   sync_id: string;
   timestamp: string;
+  source_type: DetectionQueueSourceType;
+  trigger_type: DetectionQueueTriggerType;
+  payload?: Record<string, unknown>;
 }
 
 // All 64+ Amazon Financial Event detection types (expanded for 2025)
@@ -93,34 +101,79 @@ export class DetectionService {
   private readonly queueName = 'detection_queue';
   private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-6ca7.onrender.com';
 
+  private async resolveDetectionQueueTenantId(job: DetectionJob): Promise<string> {
+    if (job.tenant_id) {
+      return job.tenant_id;
+    }
+
+    const { data, error } = await supabase
+      .from('users')
+      .select('tenant_id')
+      .eq('id', job.seller_id)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to resolve detection queue tenant: ${error.message}`);
+    }
+
+    if (!data?.tenant_id) {
+      throw new Error(`Missing tenant_id for detection queue job ${job.sync_id}`);
+    }
+
+    return data.tenant_id;
+  }
+
   /**
    * Enqueue a detection job after sync completion
    * If Redis is not available, processes the job directly from the database
    */
   async enqueueDetectionJob(job: DetectionJob & { is_sandbox?: boolean }): Promise<void> {
     try {
+      const resolvedTenantId = await this.resolveDetectionQueueTenantId(job);
       const isSandbox = job.is_sandbox ||
         process.env.AMAZON_SPAPI_BASE_URL?.includes('sandbox') ||
         process.env.NODE_ENV === 'development';
+      const queuePayload = buildDetectionQueuePayload(
+        {
+          tenant_id: resolvedTenantId,
+          sync_id: job.sync_id,
+          source_type: job.source_type,
+          trigger_type: job.trigger_type,
+          seller_id: job.seller_id
+        },
+        {
+          timestamp: job.timestamp,
+          is_sandbox: isSandbox,
+          ...(job.payload || {})
+        }
+      );
 
       logger.info('Enqueueing detection job (SANDBOX MODE)', {
         seller_id: job.seller_id,
         sync_id: job.sync_id,
+        tenant_id: resolvedTenantId,
+        source_type: job.source_type,
+        trigger_type: job.trigger_type,
         isSandbox,
         mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
       });
 
       // Store in database for persistence (include sandbox flag in payload only)
-      const jobWithSandbox = { ...job, is_sandbox: isSandbox };
+      const jobWithSandbox = {
+        ...job,
+        tenant_id: resolvedTenantId,
+        is_sandbox: isSandbox,
+        payload: queuePayload
+      };
       const { error: dbError } = await supabase
         .from('detection_queue')
         .insert({
-          tenant_id: job.tenant_id,
+          tenant_id: resolvedTenantId,
           seller_id: job.seller_id,
           sync_id: job.sync_id,
           status: 'pending',
           priority: 1,
-          payload: jobWithSandbox
+          payload: queuePayload
         });
 
       if (dbError) {

@@ -38,6 +38,7 @@ import { preventDuplicateClaim } from '../utils/duplicateDetection';
 import { withRetry, toSyncError } from '../utils/retryUtils';
 import { createCoverageReport, SyncCoverageReport } from '../utils/syncFingerprint';
 import { resolveTenantSlug } from '../utils/tenantEventRouting';
+import { buildDetectionQueuePayload } from './detectionQueueContract';
 
 export interface SyncResult {
   success: boolean;
@@ -2245,6 +2246,24 @@ export class Agent2DataSyncService {
 
     // Step 3: Create detection_queue entry BEFORE calling API (so syncJobManager can track it)
     try {
+      // Resolve tenant_id for detection_queue (required NOT NULL)
+      const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+      let queueTenantId = DEFAULT_TENANT_ID;
+      try {
+        const { data: membership } = await supabaseAdmin
+          .from('tenant_memberships')
+          .select('tenant_id')
+          .eq('user_id', userId)
+          .eq('is_active', true)
+          .limit(1)
+          .maybeSingle();
+        if (membership?.tenant_id) {
+          queueTenantId = membership.tenant_id;
+        }
+      } catch (tenantErr: any) {
+        // Use default tenant
+      }
+
       const { data: existingQueue } = await supabaseAdmin
         .from('detection_queue')
         .select('id')
@@ -2252,25 +2271,22 @@ export class Agent2DataSyncService {
         .eq('sync_id', storageSyncId)
         .maybeSingle();
 
-      if (!existingQueue) {
-        // Resolve tenant_id for detection_queue (required NOT NULL)
-        const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
-        let queueTenantId = DEFAULT_TENANT_ID;
-        try {
-          const { data: membership } = await supabaseAdmin
-            .from('tenant_memberships')
-            .select('tenant_id')
-            .eq('user_id', userId)
-            .eq('is_active', true)
-            .limit(1)
-            .maybeSingle();
-          if (membership?.tenant_id) {
-            queueTenantId = membership.tenant_id;
-          }
-        } catch (tenantErr: any) {
-          // Use default tenant
+      const queuePayload = buildDetectionQueuePayload(
+        {
+          tenant_id: queueTenantId,
+          sync_id: storageSyncId,
+          source_type: 'sp_api',
+          trigger_type: 'sp_api_sync',
+          seller_id: userId
+        },
+        {
+          detectionId,
+          claimCount: allClaimsToDetect.length,
+          totalBatches
         }
+      );
 
+      if (!existingQueue) {
         // Create initial detection_queue entry with 'processing' status
         await supabaseAdmin
           .from('detection_queue')
@@ -2280,7 +2296,7 @@ export class Agent2DataSyncService {
             sync_id: storageSyncId,
             status: 'processing',
             priority: 1,
-            payload: { detectionId, claimCount: allClaimsToDetect.length, totalBatches },
+            payload: queuePayload,
             updated_at: new Date().toISOString()
           });
         logger.info('📝 [AGENT 2] Created detection_queue entry', {
@@ -2295,7 +2311,7 @@ export class Agent2DataSyncService {
           .from('detection_queue')
           .update({
             status: 'processing',
-            payload: { detectionId, claimCount: allClaimsToDetect.length, totalBatches },
+            payload: queuePayload,
             updated_at: new Date().toISOString()
           })
           .eq('id', existingQueue.id);
@@ -3760,13 +3776,27 @@ export class Agent2DataSyncService {
         .eq('sync_id', syncId)
         .maybeSingle();
 
+      const queuePayload = buildDetectionQueuePayload(
+        {
+          tenant_id: resolvedTenantId,
+          sync_id: syncId,
+          source_type: 'sp_api',
+          trigger_type: 'sp_api_sync',
+          seller_id: userId
+        },
+        {
+          detectionId,
+          summary
+        }
+      );
+
       if (existingQueue) {
         const { error: updateError } = await supabaseAdmin
           .from('detection_queue')
           .update({
             status: isSuccess ? 'completed' : 'failed',
             processed_at: new Date().toISOString(),
-            payload: { detectionId, summary },
+            payload: queuePayload,
             updated_at: new Date().toISOString()
           })
           .eq('id', existingQueue.id);
@@ -3783,7 +3813,7 @@ export class Agent2DataSyncService {
             sync_id: syncId,
             status: isSuccess ? 'completed' : 'failed',
             processed_at: new Date().toISOString(),
-            payload: { detectionId, summary }
+            payload: queuePayload
           });
 
         if (insertError) {
