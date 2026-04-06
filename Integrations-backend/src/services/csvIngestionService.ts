@@ -554,6 +554,7 @@ export class CSVIngestionService {
         }
 
         const detectionTriggered = !!detectionJobId;
+        const detectionAttempted = triggerDetection && anySuccess;
         const unifiedResults = results.map(result => {
             if (!result.success || result.rowsInserted <= 0) {
                 return {
@@ -565,7 +566,7 @@ export class CSVIngestionService {
 
             return {
                 ...result,
-                detectionTriggered,
+                detectionTriggered: detectionAttempted,
                 detectionJobId: detectionTriggered ? detectionJobId : undefined,
             };
         });
@@ -592,11 +593,11 @@ export class CSVIngestionService {
         });
 
         const batchResult: BatchIngestionResult = {
-            success: allSucceeded && anySuccess,
+            success: allSucceeded && anySuccess && (!detectionAttempted || detectionSnapshot?.status === 'completed'),
             userId,
             totalFiles: files.length,
             results: unifiedResults,
-            detectionTriggered,
+            detectionTriggered: detectionAttempted,
             detectionJobId,
             syncId,
         };
@@ -866,7 +867,11 @@ export class CSVIngestionService {
         }
 
         if (options.detectionStatus === 'failed') {
-            return hasInserted ? 'partial' : 'failed';
+            return 'failed';
+        }
+
+        if (options.batchError && options.detectionTriggered && options.detectionStatus !== 'completed') {
+            return 'failed';
         }
 
         if (options.batchError) {
@@ -2314,6 +2319,7 @@ export class CSVIngestionService {
     private async triggerDetection(userId: string, syncId: string, tenantId: string): Promise<string> {
         const jobId = `csv_detection_${userId}_${Date.now()}`;
         const isSandbox = this.getCsvUploadSandboxFlag();
+        let failureStatusRecorded = false;
 
         try {
             await this.recordDetectionQueueStatus(userId, tenantId, syncId, 'processing', {
@@ -2351,11 +2357,40 @@ export class CSVIngestionService {
                         engine: 'enhanced',
                         job_id: result.jobId || jobId,
                         detection_phase: 'completed_with_error',
+                        failure_stage: 'enhanced_pipeline',
+                        fallback_used: false,
+                        failure_reason: result.message || 'Enhanced detection pipeline returned unsuccessful state.',
                         detectionsFound: result.detectionsFound || 0,
                         estimatedRecovery: result.estimatedRecovery || 0,
                     },
                 });
+                failureStatusRecorded = true;
                 throw new Error(result.message || 'Enhanced detection pipeline returned unsuccessful state.');
+            }
+
+            const persistedResults = await this.loadPersistedDetectionResults(userId, tenantId, syncId);
+            const reportedDetectionsFound = Number(result.detectionsFound || 0);
+            const persistedResultsCount = persistedResults.length;
+
+            if (reportedDetectionsFound > 0 && persistedResultsCount === 0) {
+                const persistenceError = `Enhanced detection reported ${reportedDetectionsFound} findings but persisted 0 detection_results rows.`;
+                await this.recordDetectionQueueStatus(userId, tenantId, syncId, 'failed', {
+                    jobId: result.jobId || jobId,
+                    isSandbox,
+                    errorMessage: persistenceError,
+                    payload: {
+                        engine: 'enhanced',
+                        job_id: result.jobId || jobId,
+                        detection_phase: 'failed',
+                        failure_stage: 'persistence_verification',
+                        fallback_used: false,
+                        detectionsFound: reportedDetectionsFound,
+                        estimatedRecovery: result.estimatedRecovery || 0,
+                        persisted_results_count: persistedResultsCount,
+                    },
+                });
+                failureStatusRecorded = true;
+                throw new Error(persistenceError);
             }
 
             await this.recordDetectionQueueStatus(userId, tenantId, syncId, 'completed', {
@@ -2365,8 +2400,9 @@ export class CSVIngestionService {
                     engine: 'enhanced',
                     job_id: result.jobId,
                     detection_phase: 'completed',
-                    detectionsFound: result.detectionsFound || 0,
+                    detectionsFound: reportedDetectionsFound,
                     estimatedRecovery: result.estimatedRecovery || 0,
+                    persisted_results_count: persistedResultsCount,
                 },
             });
 
@@ -2387,25 +2423,27 @@ export class CSVIngestionService {
                 syncId,
                 error: error.message,
             });
-            try {
-                await this.recordDetectionQueueStatus(userId, tenantId, syncId, 'failed', {
-                    jobId,
-                    isSandbox,
-                    errorMessage: error.message || 'Enhanced detection pipeline failed.',
-                    payload: {
-                        engine: 'enhanced',
-                        job_id: jobId,
-                        detection_phase: 'failed',
-                        fallback_used: false,
-                        failure_reason: error.message || 'Enhanced detection pipeline failed.',
-                    },
-                });
-            } catch (statusError: any) {
-                logger.error('❌ [CSV INGESTION] Failed to persist detection failure status', {
-                    userId,
-                    syncId,
-                    error: statusError.message,
-                });
+            if (!failureStatusRecorded) {
+                try {
+                    await this.recordDetectionQueueStatus(userId, tenantId, syncId, 'failed', {
+                        jobId,
+                        isSandbox,
+                        errorMessage: error.message || 'Enhanced detection pipeline failed.',
+                        payload: {
+                            engine: 'enhanced',
+                            job_id: jobId,
+                            detection_phase: 'failed',
+                            fallback_used: false,
+                            failure_reason: error.message || 'Enhanced detection pipeline failed.',
+                        },
+                    });
+                } catch (statusError: any) {
+                    logger.error('❌ [CSV INGESTION] Failed to persist detection failure status', {
+                        userId,
+                        syncId,
+                        error: statusError.message,
+                    });
+                }
             }
 
             throw new Error(error.message || 'Enhanced detection pipeline failed.');
