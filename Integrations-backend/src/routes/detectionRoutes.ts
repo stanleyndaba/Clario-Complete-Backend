@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticateToken, AuthenticatedRequest } from '../middleware/authMiddleware';
 import enhancedDetectionService from '../services/enhancedDetectionService';
 import detectionService from '../services/detectionService';
+import csvIngestionService, { CsvUploadRunSnapshot } from '../services/csvIngestionService';
 import { timelineService } from '../services/timelineService';
 
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
@@ -62,6 +63,60 @@ const selectAuthoritativeQueueRow = (
     const rightId = right.id || '';
     return rightId.localeCompare(leftId);
   })[0];
+};
+
+const mapCsvRunStatusToDetectionStatus = (
+  status?: CsvUploadRunSnapshot['status']
+): 'pending' | 'processing' | 'completed' | 'failed' => {
+  switch (status) {
+    case 'failed':
+      return 'failed';
+    case 'detection_processing':
+      return 'processing';
+    case 'completed':
+    case 'partial':
+      return 'completed';
+    case 'started':
+    default:
+      return 'pending';
+  }
+};
+
+const buildCsvRunDetectionMeta = (run: CsvUploadRunSnapshot | null) => {
+  if (!run) return null;
+
+  return {
+    status: mapCsvRunStatusToDetectionStatus(run.status),
+    processedAt: run.completedAt || run.detection?.processedAt || null,
+    errorMessage: run.error || run.detection?.errorMessage || null,
+    isSandbox: run.isSandbox || run.detection?.isSandbox || false,
+  };
+};
+
+const shouldPreferCsvRunMeta = (
+  queueRow: DetectionQueueStatusRow | null,
+  csvMeta: ReturnType<typeof buildCsvRunDetectionMeta>
+): boolean => {
+  if (!csvMeta) return false;
+  if (!queueRow) return true;
+
+  if (statusPriority(csvMeta.status) > statusPriority(queueRow.status)) {
+    return true;
+  }
+
+  if ((queueRow.status === 'pending' || queueRow.status === 'processing') && csvMeta.status === 'completed') {
+    return true;
+  }
+
+  if (!queueRow.processed_at && !!csvMeta.processedAt) {
+    return true;
+  }
+
+  if (queueRow.status !== 'failed' && csvMeta.status === 'failed') {
+    return true;
+  }
+
+  return false;
 };
 
 const hasExplicitTenantSignal = (req: AuthenticatedRequest): boolean => {
@@ -182,20 +237,25 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
       const { supabaseAdmin } = await import('../database/supabaseClient');
       const { data: queueRows } = await supabaseAdmin
         .from('detection_queue')
-        .select('id, sync_id, status, processed_at, created_at, error_message')
+        .select('id, sync_id, status, processed_at, created_at, error_message, is_sandbox')
         .eq('seller_id', userId)
         .eq('sync_id', filteredSyncId)
         .order('created_at', { ascending: false })
         .limit(10);
 
       const queueRow = selectAuthoritativeQueueRow(queueRows as DetectionQueueStatusRow[] | null | undefined);
+      const csvRun = filteredSyncId.startsWith('csv_')
+        ? await csvIngestionService.getCsvUploadRunBySyncId(userId, tenantId, filteredSyncId)
+        : null;
+      const csvMeta = buildCsvRunDetectionMeta(csvRun);
+      const preferredCsvMeta = shouldPreferCsvRunMeta(queueRow, csvMeta) ? csvMeta : null;
 
       meta = {
         syncId: filteredSyncId,
-        status: queueRow?.status || (total > 0 ? 'completed' : 'pending'),
-        processedAt: queueRow?.processed_at || null,
-        errorMessage: queueRow?.error_message || null,
-        isSandbox: !!queueRow?.is_sandbox,
+        status: preferredCsvMeta?.status || queueRow?.status || (total > 0 ? 'completed' : 'pending'),
+        processedAt: preferredCsvMeta?.processedAt || queueRow?.processed_at || null,
+        errorMessage: preferredCsvMeta?.errorMessage || queueRow?.error_message || null,
+        isSandbox: preferredCsvMeta?.isSandbox || !!queueRow?.is_sandbox,
       };
     }
 
@@ -224,13 +284,18 @@ router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
     const { supabaseAdmin } = await import('../database/supabaseClient');
     const { data: queueRows } = await supabaseAdmin
       .from('detection_queue')
-      .select('id, sync_id, status, processed_at, created_at, error_message')
+      .select('id, sync_id, status, processed_at, created_at, error_message, is_sandbox')
       .eq('seller_id', userId)
       .eq('sync_id', syncId)
       .order('created_at', { ascending: false })
       .limit(10);
 
     const queueRow = selectAuthoritativeQueueRow(queueRows as DetectionQueueStatusRow[] | null | undefined);
+    const csvRun = syncId.startsWith('csv_')
+      ? await csvIngestionService.getCsvUploadRunBySyncId(userId, tenantId, syncId)
+      : null;
+    const csvMeta = buildCsvRunDetectionMeta(csvRun);
+    const preferredCsvMeta = shouldPreferCsvRunMeta(queueRow, csvMeta) ? csvMeta : null;
 
     const claimsFound = await detectionService.getDetectionResultsTotal(userId, syncId, undefined, undefined, tenantId);
     const results = claimsFound > 0
@@ -241,10 +306,10 @@ router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
     return res.json({
       success: true,
       sync_id: syncId,
-      status: queueRow?.status || (claimsFound > 0 ? 'completed' : 'pending'),
-      processed_at: queueRow?.processed_at || null,
-      error_message: queueRow?.error_message || null,
-      is_sandbox: !!queueRow?.is_sandbox,
+      status: preferredCsvMeta?.status || queueRow?.status || (claimsFound > 0 ? 'completed' : 'pending'),
+      processed_at: preferredCsvMeta?.processedAt || queueRow?.processed_at || null,
+      error_message: preferredCsvMeta?.errorMessage || queueRow?.error_message || null,
+      is_sandbox: preferredCsvMeta?.isSandbox || !!queueRow?.is_sandbox,
       results: {
         claimsFound,
         estimatedRecovery,
