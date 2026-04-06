@@ -13,6 +13,7 @@ router.get('/', async (req: Request, res: Response) => {
       userId: (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || null,
       search: String(req.query.search || '').trim() || undefined,
       status: String(req.query.status || '').trim() || undefined,
+      gate_state: String(req.query.gate_state || '').trim() || undefined,
       filing_status: String(req.query.filing_status || '').trim() || undefined,
       recovery_status: String(req.query.recovery_status || '').trim() || undefined,
       billing_status: String(req.query.billing_status || '').trim() || undefined,

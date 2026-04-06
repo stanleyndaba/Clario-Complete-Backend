@@ -9,6 +9,7 @@ export interface DisputeCaseQueueFilters {
   userId?: string | null;
   search?: string;
   status?: string;
+  gate_state?: string;
   filing_status?: string;
   recovery_status?: string;
   billing_status?: string;
@@ -570,6 +571,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
   const evidenceFilter = normalize(filters.evidence_state);
   const rejectionCategoryFilter = normalize(filters.rejection_category);
   const statusFilter = normalize(filters.status);
+  const gateStateFilter = normalize(filters.gate_state);
   const filingStatusFilter = normalize(filters.filing_status);
   const recoveryStatusFilter = normalize(filters.recovery_status);
   const billingStatusFilter = normalize(filters.billing_status);
@@ -589,12 +591,37 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     ].some((value) => normalize(value).includes(search));
 
     const statusMatch = !statusFilter || statusFilter === 'all' || normalize(row.status) === statusFilter;
+    const gateStateMatch = !gateStateFilter || gateStateFilter === 'all' || (() => {
+      const eligibilityStatus = normalize(deriveEligibilityStatus(row));
+      const filingStatus = normalize(row.filing_status);
+
+      switch (gateStateFilter) {
+        case 'ready':
+          return eligibilityStatus === 'ready';
+        case 'blocked':
+          return filingStatus === 'blocked'
+            || filingStatus === 'pending_safety_verification'
+            || ['duplicate_blocked', 'insufficient_data', 'thread_only', 'safety_hold'].includes(eligibilityStatus);
+        case 'duplicate_blocked':
+          return eligibilityStatus === 'duplicate_blocked';
+        case 'insufficient_data':
+          return eligibilityStatus === 'insufficient_data';
+        case 'thread_only':
+          return eligibilityStatus === 'thread_only';
+        case 'safety_hold':
+          return eligibilityStatus === 'safety_hold';
+        case 'pending_safety_verification':
+          return filingStatus === 'pending_safety_verification';
+        default:
+          return true;
+      }
+    })();
     const filingMatch = !filingStatusFilter || filingStatusFilter === 'all' || normalize(row.filing_status) === filingStatusFilter;
     const recoveryMatch = !recoveryStatusFilter || recoveryStatusFilter === 'all' || normalize(row.recovery_status) === recoveryStatusFilter;
     const billingMatch = !billingStatusFilter || billingStatusFilter === 'all' || normalize(row.billing_status) === billingStatusFilter;
     const evidenceMatch = !evidenceFilter || evidenceFilter === 'all' || normalize(row.evidence_state) === evidenceFilter;
     const rejectionMatch = !rejectionCategoryFilter || rejectionCategoryFilter === 'all' || normalize(row.rejection_category) === rejectionCategoryFilter;
-    return searchMatch && statusMatch && filingMatch && recoveryMatch && billingMatch && evidenceMatch && rejectionMatch;
+    return searchMatch && statusMatch && gateStateMatch && filingMatch && recoveryMatch && billingMatch && evidenceMatch && rejectionMatch;
   });
 
   const sortedRows = [...filteredRows].sort((left, right) => {
