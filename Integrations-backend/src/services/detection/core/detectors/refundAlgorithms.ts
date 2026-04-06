@@ -12,7 +12,7 @@
 
 import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
-import { resolveTenantId } from './shared/tenantUtils';
+import { requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
 
 // ============================================================================
 // Types
@@ -453,12 +453,13 @@ export async function storeRefundDetectionResults(results: RefundDetectionResult
     if (results.length === 0) return;
     const tenantId = await resolveTenantId(results[0].seller_id);
     const syncId = results[0].sync_id;
+    const sourceType = await requireDetectionSourceType(tenantId, results[0].seller_id, syncId);
     const records = results.map(r => ({
         seller_id: r.seller_id, sync_id: r.sync_id, anomaly_type: r.anomaly_type,
         severity: r.severity, estimated_value: r.estimated_value, currency: r.currency,
         confidence_score: r.confidence_score, evidence: r.evidence, related_event_ids: r.related_event_ids,
         discovery_date: r.discovery_date.toISOString(), deadline_date: r.deadline_date.toISOString(),
-        days_remaining: r.days_remaining, tenant_id: tenantId, status: 'detected',
+        days_remaining: r.days_remaining, tenant_id: tenantId, source_type: sourceType, status: 'detected',
         created_at: new Date().toISOString(), updated_at: new Date().toISOString()
     }));
     const { data: existing } = await supabaseAdmin

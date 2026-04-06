@@ -13,7 +13,7 @@
 import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
 
-import { resolveTenantId } from './shared/tenantUtils';
+import { requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
 // ============================================================================
 // Types
 // ============================================================================
@@ -270,6 +270,7 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
     // Resolve tenant_id for multi-tenancy
     const tenantId = await resolveTenantId(results[0].seller_id);
     const syncId = results[0].sync_id;
+    const sourceType = await requireDetectionSourceType(tenantId, results[0].seller_id, syncId);
 
     try {
         const now = new Date();
@@ -282,6 +283,7 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
             seller_id: r.seller_id,
             tenant_id: tenantId,
             sync_id: r.sync_id,
+            source_type: sourceType,
             anomaly_type: 'warehouse_transfer_loss',
             severity: r.severity,
             estimated_value: r.loss_value,
@@ -352,11 +354,12 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
                 severity: record.severity,
                 estimated_value: record.estimated_value,
                 currency: record.currency,
-                confidence_score: record.confidence_score,
-                discovery_date: discoveryIso,
+                    confidence_score: record.confidence_score,
+                    discovery_date: discoveryIso,
                     deadline_date: deadlineIso,
                     days_remaining: remaining,
                     evidence: record.evidence,
+                    source_type: sourceType,
                     status: record.status
                 }
             });

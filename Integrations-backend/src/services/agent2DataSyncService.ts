@@ -3404,6 +3404,7 @@ export class Agent2DataSyncService {
             store_id: storeId || null,
             // claim_id: claimId, // Column does not exist
             sync_id: syncId,
+            source_type: 'sp_api',
             anomaly_type: detection.anomaly_type || 'fee_error',
             severity: detection.severity || 'medium',
             estimated_value: detection.estimated_value || 0,
@@ -3472,6 +3473,7 @@ export class Agent2DataSyncService {
           store_id: storeId || null,
           claim_id: validation.normalized.claim_id!,
           sync_id: syncId,
+          source_type: 'sp_api',
           anomaly_type: detection.anomaly_type,
           severity: detection.severity,
           estimated_value: validation.normalized.amount!,

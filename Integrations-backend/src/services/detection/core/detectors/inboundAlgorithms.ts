@@ -15,7 +15,7 @@
 
 import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
-import { resolveTenantId } from './shared/tenantUtils';
+import { requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
 
 // ============================================================================
 // Types
@@ -986,6 +986,7 @@ export async function storeInboundDetectionResults(results: InboundDetectionResu
     if (!results.length) return;
     const tenantId = await resolveTenantId(results[0].seller_id);
     const syncId = results[0].sync_id;
+    const sourceType = await requireDetectionSourceType(tenantId, results[0].seller_id, syncId);
     const nowIso = new Date().toISOString();
     const records = results.map(r => ({
         seller_id: r.seller_id,
@@ -1007,6 +1008,7 @@ export async function storeInboundDetectionResults(results: InboundDetectionResu
         deadline_date: r.deadline_date.toISOString(),
         days_remaining: r.days_remaining,
         tenant_id: tenantId,
+        source_type: sourceType,
         status: 'detected',
         created_at: nowIso,
         updated_at: nowIso
@@ -1061,6 +1063,7 @@ export async function storeInboundDetectionResults(results: InboundDetectionResu
                 discovery_date: record.discovery_date,
                 deadline_date: record.deadline_date,
                 days_remaining: record.days_remaining,
+                source_type: sourceType,
                 status: record.status,
                 updated_at: nowIso
             }

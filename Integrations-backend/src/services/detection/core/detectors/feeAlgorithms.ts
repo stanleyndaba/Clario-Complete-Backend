@@ -7,7 +7,7 @@
 
 import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
-import { relationExists, resolveTenantId } from './shared/tenantUtils';
+import { relationExists, requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
 
 // ============================================================================
 // Types
@@ -1325,8 +1325,9 @@ export async function runFeeOverchargeDetection(sellerId: string, syncId: string
 export async function storeFeeDetectionResults(results: FeeDetectionResult[]) {
     if (results.length === 0) return;
     const tenantId = await resolveTenantId(results[0].seller_id);
+    const sourceType = await requireDetectionSourceType(tenantId, results[0].seller_id, results[0].sync_id);
     const records = results.map(r => ({
-        ...r, tenant_id: tenantId, status: 'detected', created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+        ...r, tenant_id: tenantId, source_type: sourceType, status: 'detected', created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
         discovery_date: r.discovery_date.toISOString(), deadline_date: r.deadline_date.toISOString()
     }));
     await supabaseAdmin.from('detection_results').upsert(records, { onConflict: 'seller_id,sync_id,anomaly_type' });

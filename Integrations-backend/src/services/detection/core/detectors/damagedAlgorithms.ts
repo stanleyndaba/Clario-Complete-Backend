@@ -14,7 +14,7 @@
 import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
 
-import { resolveTenantId } from './shared/tenantUtils';
+import { requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
 // ============================================================================
 // Types
 // ============================================================================
@@ -702,6 +702,7 @@ export async function storeDamagedDetectionResults(results: DamagedDetectionResu
     // Resolve tenant_id for multi-tenancy
     const tenantId = await resolveTenantId(results[0].seller_id);
     const syncId = results[0].sync_id;
+    const sourceType = await requireDetectionSourceType(tenantId, results[0].seller_id, syncId);
 
     try {
         const nowIso = new Date().toISOString();
@@ -719,6 +720,7 @@ export async function storeDamagedDetectionResults(results: DamagedDetectionResu
             deadline_date: r.deadline_date.toISOString(),
             days_remaining: r.days_remaining,
             tenant_id: tenantId,
+            source_type: sourceType,
 
             status: 'detected',
             created_at: nowIso,
@@ -779,6 +781,7 @@ export async function storeDamagedDetectionResults(results: DamagedDetectionResu
                     discovery_date: record.discovery_date,
                     deadline_date: record.deadline_date,
                     days_remaining: record.days_remaining,
+                    source_type: sourceType,
                     status: record.status,
                     updated_at: nowIso
                 }

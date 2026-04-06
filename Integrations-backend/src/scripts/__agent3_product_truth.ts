@@ -39,7 +39,7 @@ async function main() {
     missingDeadline: rows.filter((row: any) => !row.deadline_date).length,
   };
 
-  const resultsApi = await detectionService.getDetectionResults(userId, undefined, undefined, 1000, 0, tenantId);
+  const resultsApi = await detectionService.getDetectionResults(userId, undefined, undefined, undefined, 1000, 0, tenantId);
   const statsApi = await detectionService.getDetectionStatistics(userId, tenantId);
 
   console.log(JSON.stringify({

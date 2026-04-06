@@ -1,6 +1,6 @@
 import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
-import { relationExists, resolveTenantId } from './shared/tenantUtils';
+import { relationExists, requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
 
 // ============================================================================
 // Types
@@ -689,11 +689,13 @@ function mapEventType(adjustmentType: string): 'lost' | 'damaged' | 'disposed' |
 export async function storeSentinelResults(results: SentinelDetectionResult[]): Promise<void> {
     if (results.length === 0) return;
     const tenantId = await resolveTenantId(results[0].seller_id);
+    const sourceType = await requireDetectionSourceType(tenantId, results[0].seller_id, results[0].sync_id);
     try {
         const records = results.map(r => ({
             seller_id: r.seller_id,
             tenant_id: tenantId,
             sync_id: r.sync_id,
+            source_type: sourceType,
             anomaly_type: 'reimbursement_duplicate_missed',
             severity: r.severity,
             estimated_value: r.detection_type === 'missed_reimbursement' ? r.estimated_recovery : r.clawback_risk_value,

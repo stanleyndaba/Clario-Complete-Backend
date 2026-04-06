@@ -131,12 +131,16 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
     if (!hasExplicitTenantSignal(req)) {
       return res.status(400).json({ success: false, error: { code: 'TENANT_REQUIRED', message: 'Explicit tenant context is required for detection results.' } });
     }
-    const { status, syncId, limit = 100, offset = 0 } = (req as any).query;
+    const { status, syncId, sourceType, limit = 100, offset = 0 } = (req as any).query;
     const filteredSyncId = typeof syncId === 'string' && syncId.trim() ? syncId.trim() : undefined;
+    const filteredSourceType = typeof sourceType === 'string' && ['sp_api', 'csv_upload', 'unknown'].includes(sourceType)
+      ? (sourceType as 'sp_api' | 'csv_upload' | 'unknown')
+      : undefined;
     const results = await detectionService.getDetectionResults(
       userId,
       filteredSyncId,
       status,
+      filteredSourceType,
       parseInt(limit as string, 10),
       parseInt(offset as string, 10),
       tenantId
@@ -145,6 +149,7 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
       userId,
       filteredSyncId,
       status,
+      filteredSourceType,
       tenantId
     );
 
@@ -227,9 +232,9 @@ router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
 
     const queueRow = selectAuthoritativeQueueRow(queueRows as DetectionQueueStatusRow[] | null | undefined);
 
-    const claimsFound = await detectionService.getDetectionResultsTotal(userId, syncId, undefined, tenantId);
+    const claimsFound = await detectionService.getDetectionResultsTotal(userId, syncId, undefined, undefined, tenantId);
     const results = claimsFound > 0
-      ? await detectionService.getDetectionResults(userId, syncId, undefined, 500, 0, tenantId)
+      ? await detectionService.getDetectionResults(userId, syncId, undefined, undefined, 500, 0, tenantId)
       : [];
     const estimatedRecovery = results.reduce((sum: number, row: any) => sum + Number(row?.estimated_value || 0), 0);
 

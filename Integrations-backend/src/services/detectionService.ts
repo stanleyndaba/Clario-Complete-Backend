@@ -54,6 +54,7 @@ export type AnomalyType =
 export interface DetectionResult {
   seller_id: string;
   sync_id: string;
+  source_type?: 'sp_api' | 'csv_upload' | 'unknown';
   anomaly_type: AnomalyType;
   severity: 'low' | 'medium' | 'high' | 'critical';
   estimated_value: number;
@@ -70,6 +71,7 @@ export interface DetectionResultRecord {
   id: string;
   seller_id: string;
   sync_id: string;
+  source_type: 'sp_api' | 'csv_upload' | 'unknown';
   anomaly_type: AnomalyType;
   severity: 'low' | 'medium' | 'high' | 'critical';
   estimated_value: number;
@@ -1609,6 +1611,7 @@ export class DetectionService {
     sellerId: string,
     syncId?: string,
     status?: string,
+    sourceType?: 'sp_api' | 'csv_upload' | 'unknown',
     limit: number = 100,
     offset: number = 0,
     tenantId?: string
@@ -1662,6 +1665,7 @@ export class DetectionService {
     sellerId: string,
     syncId?: string,
     status?: string,
+    sourceType?: 'sp_api' | 'csv_upload' | 'unknown',
     tenantId?: string
   ): Promise<number> {
     try {
@@ -1689,16 +1693,24 @@ export class DetectionService {
         query = query.eq('status', status);
       }
 
+      if (sourceType) {
+        query = query.eq('source_type', sourceType);
+      }
+
+      if (sourceType) {
+        query = query.eq('source_type', sourceType);
+      }
+
       const { count, error } = await query;
 
       if (error) {
-        logger.error('Error fetching detection results total', { error, sellerId, tenantId, syncId, status });
+        logger.error('Error fetching detection results total', { error, sellerId, tenantId, syncId, status, sourceType });
         throw new Error(`Failed to fetch detection results total: ${error.message}`);
       }
 
       return count || 0;
     } catch (error) {
-      logger.error('Error in getDetectionResultsTotal', { error, sellerId, tenantId, syncId, status });
+      logger.error('Error in getDetectionResultsTotal', { error, sellerId, tenantId, syncId, status, sourceType });
       throw error;
     }
   }

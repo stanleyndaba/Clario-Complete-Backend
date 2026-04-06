@@ -48,6 +48,7 @@ export interface DetectionResult {
   id?: string;
   seller_id: string;
   sync_id: string;
+  source_type?: 'sp_api' | 'csv_upload' | 'unknown';
   anomaly_type: string;
   severity: 'low' | 'medium' | 'high' | 'critical';
   estimated_value: number;
