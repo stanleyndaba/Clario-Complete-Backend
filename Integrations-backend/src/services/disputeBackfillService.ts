@@ -108,7 +108,6 @@ export async function upsertDisputesAndRecoveriesFromDetections(
     return {
       seller_id: detection.seller_id,
       tenant_id: detection.tenant_id,
-      store_id: detection.store_id || null,
       detection_result_id: detection.id,
       case_number: deriveCaseNumber(detection, index),
       status,
