@@ -452,6 +452,7 @@ export async function runRefundWithoutReturnDetection(sellerId: string, syncId: 
 export async function storeRefundDetectionResults(results: RefundDetectionResult[]): Promise<void> {
     if (results.length === 0) return;
     const tenantId = await resolveTenantId(results[0].seller_id);
+    const syncId = results[0].sync_id;
     const records = results.map(r => ({
         seller_id: r.seller_id, sync_id: r.sync_id, anomaly_type: r.anomaly_type,
         severity: r.severity, estimated_value: r.estimated_value, currency: r.currency,
@@ -465,6 +466,7 @@ export async function storeRefundDetectionResults(results: RefundDetectionResult
         .select('anomaly_type,evidence,tenant_id,seller_id')
         .eq('tenant_id', tenantId)
         .eq('seller_id', results[0].seller_id)
+        .eq('sync_id', syncId)
         .eq('anomaly_type', 'refund_no_return');
 
     const existingFingerprints = new Set(

@@ -408,54 +408,111 @@ export async function fetchInventoryLedger(sellerId: string, syncId: string): Pr
     };
 }
 export async function storeDetectionResults(sellerId: string, tenantId: string, results: DetectionResult[]) {
-    // PATCH: Safe soft-replacement — never delete existing detections
-    // If this run produced zero results, do NOT touch existing detections
     if (results.length === 0) {
         logger.info('🐋 [WHALE HUNTER] Zero results — preserving existing detections', { sellerId });
         return;
     }
+    const syncId = results[0].sync_id;
+    const nowIso = new Date().toISOString();
 
-    // Step 1: Mark existing detections as superseded (soft-delete, not hard-delete)
-    await supabaseAdmin
+    const { data: existing, error: existingError } = await supabaseAdmin
         .from('detection_results')
-        .update({ status: 'superseded', updated_at: new Date().toISOString() })
-        .match({ seller_id: sellerId })
-        .in('anomaly_type', ['lost_warehouse', 'lost_in_transit'])
-        .in('status', ['detected', 'pending']); // Only supersede active detections, not resolved/disputed ones
-
-    // Step 2: Fingerprint deduplication — don't insert duplicates of existing records
-    const { data: existing } = await supabaseAdmin
-        .from('detection_results')
-        .select('evidence, anomaly_type')
+        .select('id,evidence,anomaly_type,created_at')
+        .eq('tenant_id', tenantId)
         .eq('seller_id', sellerId)
-        .in('anomaly_type', ['lost_warehouse', 'lost_in_transit']);
+        .eq('sync_id', syncId)
+        .in('anomaly_type', ['lost_warehouse', 'lost_in_transit'])
+        .in('status', ['detected', 'pending', 'superseded']);
+    if (existingError) {
+        throw new Error(`Whale Hunter dedupe lookup failed: ${existingError.message}`);
+    }
 
-    const existingFingerprints = new Set(
-        (existing || []).map((row: any) =>
-            `${row.anomaly_type}|${row.evidence?.fnsku || ''}|${row.evidence?.physical_loss_units || ''}`
-        )
-    );
+    const fingerprintFor = (row: any) =>
+        `${row.anomaly_type}|${row.evidence?.fnsku || ''}|${row.evidence?.physical_loss_units || ''}`;
+
+    const existingByFingerprint = new Map<string, any[]>();
+    for (const row of existing || []) {
+        const fingerprint = fingerprintFor(row);
+        const rows = existingByFingerprint.get(fingerprint) || [];
+        rows.push(row);
+        existingByFingerprint.set(fingerprint, rows);
+    }
 
     const records = results.map(r => ({
         ...r,
         tenant_id: tenantId,
         status: 'detected',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        created_at: nowIso,
+        updated_at: nowIso
     }));
 
-    const uniqueRecords = records.filter(r => {
-        const fp = `${r.anomaly_type}|${(r as any).evidence?.fnsku || ''}|${(r as any).evidence?.physical_loss_units || ''}`;
-        if (existingFingerprints.has(fp)) return false;
-        existingFingerprints.add(fp);
-        return true;
-    });
+    const inserts: any[] = [];
+    const updates: Array<{ id: string; payload: any }> = [];
+    const duplicateDeletes: string[] = [];
 
-    if (uniqueRecords.length > 0) {
-        await supabaseAdmin.from('detection_results').insert(uniqueRecords);
-        logger.info('🐋 [WHALE HUNTER] Stored new detections (existing preserved as superseded)', {
-            sellerId, newCount: uniqueRecords.length, totalResults: results.length
+    for (const record of records) {
+        const fingerprint = fingerprintFor(record);
+        const matchingRows = (existingByFingerprint.get(fingerprint) || []).sort((a, b) =>
+            new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+        );
+
+        if (!matchingRows.length) {
+            inserts.push(record);
+            continue;
+        }
+
+        const keeper = matchingRows[0];
+        updates.push({
+            id: keeper.id,
+            payload: {
+                severity: record.severity,
+                estimated_value: record.estimated_value,
+                currency: record.currency,
+                confidence_score: record.confidence_score,
+                evidence: record.evidence,
+                discovery_date: record.discovery_date,
+                deadline_date: record.deadline_date,
+                days_remaining: record.days_remaining,
+                status: record.status,
+                updated_at: nowIso
+            }
         });
+
+        for (const duplicate of matchingRows.slice(1)) {
+            duplicateDeletes.push(duplicate.id);
+        }
     }
+
+    for (const update of updates) {
+        const { error: updateError } = await supabaseAdmin
+            .from('detection_results')
+            .update(update.payload)
+            .eq('id', update.id);
+        if (updateError) {
+            throw new Error(`Whale Hunter detection update failed: ${updateError.message}`);
+        }
+    }
+
+    if (duplicateDeletes.length > 0) {
+        const { error: deleteError } = await supabaseAdmin
+            .from('detection_results')
+            .delete()
+            .in('id', duplicateDeletes);
+        if (deleteError) {
+            throw new Error(`Whale Hunter duplicate cleanup failed: ${deleteError.message}`);
+        }
+    }
+
+    if (inserts.length > 0) {
+        await supabaseAdmin.from('detection_results').insert(inserts);
+    }
+
+    logger.info('🐋 [WHALE HUNTER] Stored sync-scoped detections without cross-sync rewrite', {
+        sellerId,
+        syncId,
+        inserted: inserts.length,
+        updated: updates.length,
+        deduped: duplicateDeletes.length
+    });
 }
 export default { detectLostInventory, fetchInventoryLedger, runLostInventoryDetection, storeDetectionResults };

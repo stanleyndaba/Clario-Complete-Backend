@@ -985,6 +985,7 @@ export async function runInboundDetection(sellerId: string, syncId: string): Pro
 export async function storeInboundDetectionResults(results: InboundDetectionResult[]): Promise<void> {
     if (!results.length) return;
     const tenantId = await resolveTenantId(results[0].seller_id);
+    const syncId = results[0].sync_id;
     const nowIso = new Date().toISOString();
     const records = results.map(r => ({
         seller_id: r.seller_id,
@@ -1014,7 +1015,8 @@ export async function storeInboundDetectionResults(results: InboundDetectionResu
         .from('detection_results')
         .select('id,anomaly_type,evidence,tenant_id,seller_id,created_at')
         .eq('tenant_id', tenantId)
-        .eq('seller_id', results[0].seller_id);
+        .eq('seller_id', results[0].seller_id)
+        .eq('sync_id', syncId);
     if (existingError) {
         logger.error('📦 [INBOUND] Failed to load existing detections for dedupe', {
             sellerId: results[0].seller_id,
@@ -1050,7 +1052,6 @@ export async function storeInboundDetectionResults(results: InboundDetectionResu
         updates.push({
             id: keeper.id,
             payload: {
-                sync_id: record.sync_id,
                 severity: record.severity,
                 estimated_value: record.estimated_value,
                 currency: record.currency,

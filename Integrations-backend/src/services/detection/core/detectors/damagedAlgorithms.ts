@@ -701,6 +701,7 @@ export async function storeDamagedDetectionResults(results: DamagedDetectionResu
 
     // Resolve tenant_id for multi-tenancy
     const tenantId = await resolveTenantId(results[0].seller_id);
+    const syncId = results[0].sync_id;
 
     try {
         const nowIso = new Date().toISOString();
@@ -730,6 +731,7 @@ export async function storeDamagedDetectionResults(results: DamagedDetectionResu
             .select('id,anomaly_type,related_event_ids,evidence,tenant_id,seller_id,created_at')
             .eq('tenant_id', tenantId)
             .eq('seller_id', results[0].seller_id)
+            .eq('sync_id', syncId)
             .in('anomaly_type', damagedTypes as any);
 
         if (existingError) {
@@ -768,7 +770,6 @@ export async function storeDamagedDetectionResults(results: DamagedDetectionResu
             updates.push({
                 id: keeper.id,
                 payload: {
-                    sync_id: record.sync_id,
                     severity: record.severity,
                     estimated_value: record.estimated_value,
                     currency: record.currency,

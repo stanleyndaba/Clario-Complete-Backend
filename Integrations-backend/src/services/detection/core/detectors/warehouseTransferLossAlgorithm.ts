@@ -269,6 +269,7 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
 
     // Resolve tenant_id for multi-tenancy
     const tenantId = await resolveTenantId(results[0].seller_id);
+    const syncId = results[0].sync_id;
 
     try {
         const now = new Date();
@@ -310,6 +311,7 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
             .select('id,created_at,discovery_date,deadline_date,days_remaining,evidence')
             .eq('tenant_id', tenantId)
             .eq('seller_id', results[0].seller_id)
+            .eq('sync_id', syncId)
             .eq('anomaly_type', 'warehouse_transfer_loss');
 
         if (existingError) {
@@ -340,19 +342,18 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
                 continue;
             }
 
-            const keeper = matchingRows[0];
-            const discoveryIso = keeper.discovery_date || keeper.created_at || record.discovery_date;
-            const deadlineIso = keeper.deadline_date || new Date(new Date(discoveryIso).getTime() + 60 * 86400000).toISOString();
-            const remaining = keeper.days_remaining ?? Math.max(0, Math.ceil((new Date(deadlineIso).getTime() - Date.now()) / 86400000));
-            updates.push({
-                id: keeper.id,
-                payload: {
-                    sync_id: record.sync_id,
-                    severity: record.severity,
-                    estimated_value: record.estimated_value,
-                    currency: record.currency,
-                    confidence_score: record.confidence_score,
-                    discovery_date: discoveryIso,
+        const keeper = matchingRows[0];
+        const discoveryIso = keeper.discovery_date || keeper.created_at || record.discovery_date;
+        const deadlineIso = keeper.deadline_date || new Date(new Date(discoveryIso).getTime() + 60 * 86400000).toISOString();
+        const remaining = keeper.days_remaining ?? Math.max(0, Math.ceil((new Date(deadlineIso).getTime() - Date.now()) / 86400000));
+        updates.push({
+            id: keeper.id,
+            payload: {
+                severity: record.severity,
+                estimated_value: record.estimated_value,
+                currency: record.currency,
+                confidence_score: record.confidence_score,
+                discovery_date: discoveryIso,
                     deadline_date: deadlineIso,
                     days_remaining: remaining,
                     evidence: record.evidence,
