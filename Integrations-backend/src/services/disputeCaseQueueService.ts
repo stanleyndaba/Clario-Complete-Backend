@@ -248,6 +248,7 @@ function deriveNextAction(row: any) {
   const billingStatus = normalize(row.billing_status);
   const operationalState = normalize(row.operational_state);
   const eligibilityStatus = deriveEligibilityStatus(row);
+  const hasLinkedDisputeCase = row.has_real_dispute_case === true && Boolean(row.linked_dispute_case_id);
 
   if (BILLING_COMPLETE_STATUSES.has(billingStatus)) return 'Billing complete';
   if (recoveryStatus === 'reconciled' && billingStatus === 'pending') return 'Billing pending';
@@ -272,7 +273,9 @@ function deriveNextAction(row: any) {
   if (filingStatus === 'blocked' || row.eligible_to_file === false) return 'Blocked';
   if (row.evidence_state === 'Missing Evidence') return 'Waiting for evidence';
   if (row.evidence_state === 'Weak Evidence' || row.evidence_state === 'Needs Review') return 'Needs review';
-  if (row.eligible_to_file === true && ['pending', 'retrying'].includes(filingStatus)) return 'Ready to file';
+  if (row.eligible_to_file === true && ['pending', 'retrying'].includes(filingStatus)) {
+    return hasLinkedDisputeCase ? 'Ready to file' : 'Detection only';
+  }
   return 'Manual review';
 }
 
