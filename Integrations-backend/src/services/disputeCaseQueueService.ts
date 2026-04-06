@@ -36,6 +36,17 @@ const BILLING_COMPLETE_STATUSES = new Set(['paid', 'charged', 'credited', 'compl
 const REJECTED_STATUSES = new Set(['rejected', 'denied']);
 const APPROVED_STATUSES = new Set(['approved', 'won']);
 const FILED_STATUSES = new Set(['filed', 'submitted', 'resubmitted', 'filing', 'submitting']);
+const ACTIVE_AMAZON_REVIEW_STATUSES = new Set(['submitted', 'under review', 'in review']);
+const BLOCKED_FILING_STATUSES = new Set([
+  'blocked',
+  'pending_safety_verification',
+  'duplicate_blocked',
+  'already_reimbursed',
+  'quarantined_dangerous_doc',
+  'blocked_invalid_date',
+  'skipped_low_value'
+]);
+const BLOCKED_EVIDENCE_STATES = new Set(['missing evidence', 'weak evidence', 'needs review']);
 const DETECTED_FILING_READY_THRESHOLD = 0.6;
 const REVIEW_FILINGS = new Set([
   'pending_approval',
@@ -613,6 +624,9 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
   const verifiedPaidCount = financialTruth
     ? financialTruth.summaries.filter((summary) => summary.payout_status === 'paid').length
     : null;
+  const financialTruthByInputId = new Map(
+    (financialTruth?.summaries || []).map((summary) => [String(summary.input_id || '').trim(), summary])
+  );
 
   const supportableRows = filteredRows.filter((row) => {
     const filingStatus = normalize(row.filing_status);
@@ -641,13 +655,68 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       )
     : null;
 
-  const blockedCount = filteredRows.filter((row) => ['Waiting for evidence', 'Needs review', 'Review rejection'].includes(row.next_action)).length;
-  const readyToFileCount = filteredRows.filter((row) => row.next_action === 'Ready to file').length;
-  const filedCount = filteredRows.filter((row) => row.next_action === 'Filed / awaiting Amazon').length;
+  const getFinancialSummaryForRow = (row: any) => {
+    const inputId = String(row.dispute_case_id || row.detection_result_id || '').trim();
+    return financialTruthByInputId.get(inputId) || null;
+  };
+
+  const hasLinkedDisputeCase = (row: any) => row.has_real_dispute_case === true && Boolean(row.linked_dispute_case_id);
+
+  const isRejectedRow = (row: any) =>
+    REJECTED_STATUSES.has(normalize(row.status)) || Boolean(row.rejection_reason) || Boolean(row.rejection_category);
+
+  const isRecoveredRow = (row: any) => {
+    const financialSummary = getFinancialSummaryForRow(row);
+    return normalize(row.recovery_status) === 'reconciled'
+      || Boolean(row.actual_payout_amount)
+      || financialSummary?.payout_status === 'paid';
+  };
+
+  const isFiledRow = (row: any) => {
+    const filingStatus = normalize(row.filing_status);
+    const status = normalize(row.status);
+    return hasLinkedDisputeCase(row)
+      && (FILED_STATUSES.has(filingStatus) || ACTIVE_AMAZON_REVIEW_STATUSES.has(status));
+  };
+
+  const isApprovedPendingPayoutRow = (row: any) => {
+    const status = normalize(row.status);
+    return hasLinkedDisputeCase(row)
+      && APPROVED_STATUSES.has(status)
+      && !isRecoveredRow(row);
+  };
+
+  const isBillingPendingRow = (row: any) => {
+    const billingStatus = normalize(row.billing_status);
+    return billingStatus === 'pending' && isRecoveredRow(row);
+  };
+
+  const isBlockedRow = (row: any) => {
+    if (row.can_file === true || row.can_retry === true || row.can_approve === true) {
+      return false;
+    }
+    if (isFiledRow(row) || isApprovedPendingPayoutRow(row) || isRecoveredRow(row) || isRejectedRow(row)) {
+      return false;
+    }
+
+    const eligibilityStatus = normalize(deriveEligibilityStatus(row));
+    const filingStatus = normalize(row.filing_status);
+    const evidenceState = normalize(row.evidence_state);
+    const operationalState = normalize(row.operational_state);
+
+    return ['duplicate_blocked', 'thread_only', 'insufficient_data', 'safety_hold'].includes(eligibilityStatus)
+      || BLOCKED_FILING_STATUSES.has(filingStatus)
+      || BLOCKED_EVIDENCE_STATES.has(evidenceState)
+      || ['blocked_operational', 'failed_durable'].includes(operationalState);
+  };
+
+  const blockedCount = filteredRows.filter(isBlockedRow).length;
+  const readyToFileCount = filteredRows.filter((row) => row.can_file === true).length;
+  const filedCount = filteredRows.filter(isFiledRow).length;
   const rejectedCount = filteredRows.filter((row) => REJECTED_STATUSES.has(normalize(row.status)) || !!row.rejection_reason || !!row.rejection_category).length;
-  const approvedPendingPayoutCount = filteredRows.filter((row) => APPROVED_STATUSES.has(normalize(row.status)) && !row.actual_payout_amount).length;
-  const recoveredCount = filteredRows.filter((row) => normalize(row.recovery_status) === 'reconciled' || !!row.actual_payout_amount).length;
-  const billingPendingCount = filteredRows.filter((row) => row.next_action === 'Billing pending').length;
+  const approvedPendingPayoutCount = filteredRows.filter(isApprovedPendingPayoutRow).length;
+  const recoveredCount = filteredRows.filter(isRecoveredRow).length;
+  const billingPendingCount = filteredRows.filter(isBillingPendingRow).length;
 
   const lastUpdatedAt = filteredRows
     .map((row) => row.updated_at)
