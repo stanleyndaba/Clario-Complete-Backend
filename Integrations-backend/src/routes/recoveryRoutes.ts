@@ -290,24 +290,43 @@ function deriveSummaryCurrency(rows: any[]): string | null {
     return currencies.length === 1 ? currencies[0] : null;
 }
 
+function isCanonicalAwaitingPayoutRow(row: any): boolean {
+    const reconciliationStatus = normalize(row?.reconciliation_status);
+    const reconciliationSource = normalize(row?.reconciliation_source);
+    const payoutStatus = normalize(row?.payout_status);
+    const outstandingAmount = toNullableFiniteAmount(row?.outstanding_amount);
+
+    if (reconciliationStatus !== 'pending_payout') {
+        return false;
+    }
+
+    if (reconciliationSource !== 'canonical_financial_truth') {
+        return false;
+    }
+
+    if (payoutStatus && payoutStatus !== 'not_paid') {
+        return false;
+    }
+
+    return outstandingAmount === null || outstandingAmount > 0;
+}
+
 function buildRecoveriesSummary(rows: any[], financialSummaryById: Map<string, any>) {
     const approvedRows = rows.filter((row: any) => isApprovedCase({ status: row.status }));
-    const pendingPayoutRows = rows.filter((row: any) => row.reconciliation_status === 'pending_payout');
+    const pendingPayoutRows = rows.filter((row: any) => isCanonicalAwaitingPayoutRow(row));
     const reconciledRows = rows.filter((row: any) => row.reconciliation_status === 'reconciled');
     const partialRows = rows.filter((row: any) => row.reconciliation_status === 'partial_recovery');
-    const unreconciledRows = rows.filter((row: any) => ['payout_detected', 'partial_recovery'].includes(row.reconciliation_status));
     const billedRows = rows.filter((row: any) => BILLING_COMPLETE_STATUSES.has(normalize(row.billing_status)));
     const investigationRows = rows.filter((row: any) => row.investigation_required);
     const billingPendingRows = rows.filter((row: any) => row.operator_state === 'billing_pending');
     const verifiedPaidRows = rows.filter((row: any) => row.payout_status === 'paid');
-    const awaitingPayoutRows = rows.filter((row: any) => row.reconciliation_status === 'pending_payout' && row.reconciliation_source === 'canonical_financial_truth');
     const canonicalFinancialRows = rows.filter((row: any) => row.reconciliation_source === 'canonical_financial_truth');
     const summaryCurrency = deriveSummaryCurrency(rows);
     const verifiedPaidTotal = canonicalFinancialRows.reduce((sum: number, row: any) => {
         const financialSummary = getLedgerFinancialSummary(row, financialSummaryById);
         return sum + toNumber(financialSummary?.verified_paid_amount);
     }, 0);
-    const awaitingPayoutTotal = awaitingPayoutRows.reduce((sum: number, row: any) => sum + toNumber(row.outstanding_amount), 0);
+    const awaitingPayoutTotal = pendingPayoutRows.reduce((sum: number, row: any) => sum + toNumber(row.outstanding_amount), 0);
     const approvedTotal = rows.reduce((sum: number, row: any) => sum + toNumber(row.approved_amount), 0);
     const outstandingTotal = canonicalFinancialRows.reduce((sum: number, row: any) => sum + toNumber(row.outstanding_amount), 0);
 
@@ -316,12 +335,12 @@ function buildRecoveriesSummary(rows: any[], financialSummaryById: Map<string, a
         pending_payout_count: pendingPayoutRows.length,
         reconciled_count: reconciledRows.length,
         partial_recovery_count: partialRows.length,
-        unreconciled_count: unreconciledRows.length,
+        unreconciled_count: pendingPayoutRows.length,
         investigation_required_count: investigationRows.length,
         billing_pending_count: billingPendingRows.length,
         verified_paid_count: verifiedPaidRows.length,
         partial_paid_count: partialRows.length,
-        awaiting_payout_queue_count: awaitingPayoutRows.length,
+        awaiting_payout_queue_count: pendingPayoutRows.length,
         verified_paid_total: Number(verifiedPaidTotal.toFixed(2)),
         awaiting_payout_total: Number(awaitingPayoutTotal.toFixed(2)),
         approved_total: Number(approvedTotal.toFixed(2)),
