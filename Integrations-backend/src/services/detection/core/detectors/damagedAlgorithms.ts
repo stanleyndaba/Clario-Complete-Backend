@@ -522,19 +522,29 @@ export function detectDamagedInventory(
  */
 export async function fetchDamagedEvents(
     sellerId: string,
-    options?: { startDate?: string; limit?: number }
+    options?: { startDate?: string; limit?: number; syncId?: string }
 ): Promise<DamagedEvent[]> {
     try {
         const tenantId = await resolveTenantId(sellerId);
         logger.info('💥 [BROKEN GOODS] Fetching damaged events from returns table', { sellerId });
 
         // Get returns with damaged/defective items
-        const { data: returns, error } = await supabaseAdmin
+        let query = supabaseAdmin
             .from('returns')
             .select('*')
             .eq('tenant_id', tenantId)
             .eq('user_id', sellerId)
             .order('returned_date', { ascending: false });
+        if (options?.syncId) {
+            query = query.eq('sync_id', options.syncId);
+        }
+        if (options?.startDate) {
+            query = query.gte('returned_date', options.startDate);
+        }
+        if (options?.limit) {
+            query = query.limit(options.limit);
+        }
+        const { data: returns, error } = await query;
 
         if (error) {
             logger.error('💥 [BROKEN GOODS] Error fetching returns', { sellerId, error: error.message });
@@ -584,19 +594,29 @@ export async function fetchDamagedEvents(
  */
 export async function fetchReimbursementsForDamage(
     sellerId: string,
-    options?: { startDate?: string; limit?: number }
+    options?: { startDate?: string; limit?: number; syncId?: string }
 ): Promise<ReimbursementEvent[]> {
     try {
         const tenantId = await resolveTenantId(sellerId);
         logger.info('💥 [BROKEN GOODS] Fetching reimbursements from settlements', { sellerId });
 
-        const { data, error } = await supabaseAdmin
+        let query = supabaseAdmin
             .from('settlements')
             .select('*')
             .eq('tenant_id', tenantId)
             .eq('user_id', sellerId)
             .eq('transaction_type', 'reimbursement')
             .order('settlement_date', { ascending: false });
+        if (options?.syncId) {
+            query = query.eq('sync_id', options.syncId);
+        }
+        if (options?.startDate) {
+            query = query.gte('settlement_date', options.startDate);
+        }
+        if (options?.limit) {
+            query = query.limit(options.limit);
+        }
+        const { data, error } = await query;
 
         if (error) {
             logger.error('💥 [BROKEN GOODS] Error fetching settlements', { sellerId, error: error.message });
@@ -641,8 +661,8 @@ export async function runDamagedInventoryDetection(
     const lookbackDate = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
 
     const [damagedEvents, reimbursementEvents] = await Promise.all([
-        fetchDamagedEvents(sellerId, { startDate: lookbackDate }),
-        fetchReimbursementsForDamage(sellerId, { startDate: lookbackDate })
+        fetchDamagedEvents(sellerId, { startDate: lookbackDate, syncId }),
+        fetchReimbursementsForDamage(sellerId, { startDate: lookbackDate, syncId })
     ]);
 
     logger.info('💥 [BROKEN GOODS] Data fetched', {

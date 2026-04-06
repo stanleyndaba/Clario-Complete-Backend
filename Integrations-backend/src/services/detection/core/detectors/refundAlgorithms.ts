@@ -348,13 +348,16 @@ export function detectRefundWithoutReturn(
 // Data Fetchers
 // ============================================================================
 
-export async function fetchRefundEvents(sellerId: string, options?: { startDate?: string }): Promise<RefundEvent[]> {
+export async function fetchRefundEvents(sellerId: string, options?: { startDate?: string; syncId?: string }): Promise<RefundEvent[]> {
     const tenantId = await resolveTenantId(sellerId);
     let query = supabaseAdmin.from('settlements')
         .select('*')
         .eq('tenant_id', tenantId)
         .eq('user_id', sellerId)
         .filter('amount', 'lt', 0);
+    if (options?.syncId) {
+        query = query.eq('sync_id', options.syncId);
+    }
     if (options?.startDate) {
         query = query.gte('settlement_date', options.startDate);
     }
@@ -372,12 +375,15 @@ export async function fetchRefundEvents(sellerId: string, options?: { startDate?
     }));
 }
 
-export async function fetchReturnEvents(sellerId: string, options?: { startDate?: string }): Promise<ReturnEvent[]> {
+export async function fetchReturnEvents(sellerId: string, options?: { startDate?: string; syncId?: string }): Promise<ReturnEvent[]> {
     const tenantId = await resolveTenantId(sellerId);
     let query = supabaseAdmin.from('returns')
         .select('*')
         .eq('tenant_id', tenantId)
         .eq('user_id', sellerId);
+    if (options?.syncId) {
+        query = query.eq('sync_id', options.syncId);
+    }
     if (options?.startDate) {
         query = query.gte('returned_date', options.startDate);
     }
@@ -393,13 +399,16 @@ export async function fetchReturnEvents(sellerId: string, options?: { startDate?
     }));
 }
 
-export async function fetchReimbursementEvents(sellerId: string, options?: { startDate?: string }): Promise<ReimbursementEvent[]> {
+export async function fetchReimbursementEvents(sellerId: string, options?: { startDate?: string; syncId?: string }): Promise<ReimbursementEvent[]> {
     const tenantId = await resolveTenantId(sellerId);
     let query = supabaseAdmin.from('settlements')
         .select('*')
         .eq('tenant_id', tenantId)
         .eq('user_id', sellerId)
         .filter('amount', 'gt', 0);
+    if (options?.syncId) {
+        query = query.eq('sync_id', options.syncId);
+    }
     if (options?.startDate) {
         query = query.gte('settlement_date', options.startDate);
     }
@@ -421,9 +430,9 @@ export async function fetchReimbursementEvents(sellerId: string, options?: { sta
 export async function runRefundWithoutReturnDetection(sellerId: string, syncId: string): Promise<RefundDetectionResult[]> {
     const lookback = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
     const [refunds, returns, reimbs] = await Promise.all([
-        fetchRefundEvents(sellerId, { startDate: lookback }),
-        fetchReturnEvents(sellerId, { startDate: lookback }),
-        fetchReimbursementEvents(sellerId, { startDate: lookback })
+        fetchRefundEvents(sellerId, { startDate: lookback, syncId }),
+        fetchReturnEvents(sellerId, { startDate: lookback, syncId }),
+        fetchReimbursementEvents(sellerId, { startDate: lookback, syncId })
     ]);
     const results = await detectRefundWithoutReturn(sellerId, syncId, { 
         seller_id: sellerId, 

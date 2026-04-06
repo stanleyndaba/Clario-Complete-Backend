@@ -305,18 +305,21 @@ export async function fetchInventoryLedger(sellerId: string, syncId: string): Pr
             .select('*')
             .eq('tenant_id', tenantId)
             .eq('user_id', sellerId)
+            .eq('sync_id', syncId)
             .order('event_date', { ascending: true }),
         supabaseAdmin
             .from('inventory_ledger')
             .select('*')
             .eq('tenant_id', tenantId)
             .eq('user_id', sellerId)
+            .eq('sync_id', syncId)
             .order('event_date', { ascending: true }),
         supabaseAdmin
             .from('financial_events')
             .select('*')
             .eq('tenant_id', tenantId)
             .eq('seller_id', sellerId)
+            .eq('sync_id', syncId)
             .order('event_date', { ascending: true }),
         supabaseAdmin
             .from('settlements')
@@ -324,6 +327,7 @@ export async function fetchInventoryLedger(sellerId: string, syncId: string): Pr
             .eq('tenant_id', tenantId)
             .eq('user_id', sellerId)
             .eq('transaction_type', 'reimbursement')
+            .eq('sync_id', syncId)
             .order('settlement_date', { ascending: true }),
     ]);
 

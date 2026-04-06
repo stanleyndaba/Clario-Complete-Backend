@@ -205,7 +205,7 @@ export async function detectWarehouseTransferLoss(
 
 export async function fetchTransferRecords(
     sellerId: string,
-    options: { lookbackDays?: number } = {}
+    options: { lookbackDays?: number; syncId?: string } = {}
 ): Promise<TransferRecord[]> {
     const tenantId = await resolveTenantId(sellerId);
     const lookbackDays = options.lookbackDays || 90;
@@ -215,12 +215,16 @@ export async function fetchTransferRecords(
     const transfers: TransferRecord[] = [];
 
     try {
-        const { data, error } = await supabaseAdmin
+        let query = supabaseAdmin
             .from('inventory_transfers')
             .select('*')
             .eq('tenant_id', tenantId)
             .eq('seller_id', sellerId)
             .gte('transfer_date', cutoffDate.toISOString());
+        if (options.syncId) {
+            query = query.eq('sync_id', options.syncId);
+        }
+        const { data, error } = await query;
 
         if (!error && data) {
             for (const row of data) {
@@ -397,7 +401,7 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
 export async function runTransferLossDetection(sellerId: string, syncId: string): Promise<TransferLossResult[]> {
     logger.info('🏭 [TRANSFER-LOSS] Starting automated run', { sellerId, syncId });
     
-    const transfers = await fetchTransferRecords(sellerId);
+    const transfers = await fetchTransferRecords(sellerId, { syncId });
     const results = await detectWarehouseTransferLoss(sellerId, syncId, transfers);
     
     if (results.length > 0) {

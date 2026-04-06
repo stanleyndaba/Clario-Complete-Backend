@@ -2010,6 +2010,7 @@ export class CSVIngestionService {
                     id: uuidv4(),
                     tenant_id: tenantId,
                     seller_id: userId,
+                    sync_id: syncId,
                     transfer_id: transferId,
                     sku: getField(r, 'sku', 'SKU', 'sellerSku') || null,
                     asin: getField(r, 'asin', 'ASIN') || null,
@@ -2022,6 +2023,8 @@ export class CSVIngestionService {
                     status: 'received',
                     unit_value: Number(getField(r, 'unit_value', 'UnitValue', 'price', 'Price')) || 0,
                     currency: getField(r, 'currency', 'Currency', 'CurrencyCode') || 'USD',
+                    source: 'csv_upload',
+                    raw_payload: r,
                     created_at: new Date().toISOString(),
                     updated_at: new Date().toISOString(),
                 });

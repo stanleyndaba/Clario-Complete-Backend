@@ -863,16 +863,20 @@ export function detectInboundAnomalies(sellerId: string, syncId: string, data: I
 /**
  * Fetch inbound shipment items
  */
-export async function fetchInboundShipmentItems(sellerId: string): Promise<InboundShipmentItem[]> {
+export async function fetchInboundShipmentItems(sellerId: string, syncId?: string): Promise<InboundShipmentItem[]> {
     try {
         const tenantId = await resolveTenantId(sellerId);
-        const { data, error } = await supabaseAdmin
+        let query = supabaseAdmin
             .from('shipments')
             .select('*')
             .eq('tenant_id', tenantId)
             .eq('user_id', sellerId)
             .order('shipped_date', { ascending: false })
             .limit(1000);
+        if (syncId) {
+            query = query.eq('sync_id', syncId);
+        }
+        const { data, error } = await query;
 
         if (error) {
             logger.error('📦 [INBOUND] Error fetching shipments', { sellerId, error: error.message });
@@ -926,16 +930,20 @@ export async function fetchInboundShipmentItems(sellerId: string): Promise<Inbou
 /**
  * Fetch inbound reimbursements
  */
-export async function fetchInboundReimbursements(sellerId: string): Promise<InboundReimbursement[]> {
+export async function fetchInboundReimbursements(sellerId: string, syncId?: string): Promise<InboundReimbursement[]> {
     try {
         const tenantId = await resolveTenantId(sellerId);
-        const { data, error } = await supabaseAdmin
+        let query = supabaseAdmin
             .from('settlements')
             .select('*')
             .eq('tenant_id', tenantId)
             .eq('user_id', sellerId)
             .order('settlement_date', { ascending: false })
             .limit(500);
+        if (syncId) {
+            query = query.eq('sync_id', syncId);
+        }
+        const { data, error } = await query;
 
         if (error) {
             logger.error('📦 [INBOUND] Error fetching settlements', { sellerId, error: error.message });
@@ -964,7 +972,7 @@ export async function fetchInboundReimbursements(sellerId: string): Promise<Inbo
 }
 
 export async function runInboundDetection(sellerId: string, syncId: string): Promise<InboundDetectionResult[]> {
-    const [items, reimbs] = await Promise.all([fetchInboundShipmentItems(sellerId), fetchInboundReimbursements(sellerId)]);
+    const [items, reimbs] = await Promise.all([fetchInboundShipmentItems(sellerId, syncId), fetchInboundReimbursements(sellerId, syncId)]);
     const results = await detectInboundAnomalies(sellerId, syncId, { seller_id: sellerId, sync_id: syncId, inbound_shipment_items: items, reimbursement_events: reimbs });
     
     if (results.length > 0) {

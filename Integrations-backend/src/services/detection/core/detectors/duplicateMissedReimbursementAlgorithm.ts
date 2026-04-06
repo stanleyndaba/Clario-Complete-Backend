@@ -527,7 +527,7 @@ function determineSeverity(value: number, quantity: number, type: 'missed' | 'du
 // Database & Summary Functions
 // ============================================================================
 
-export async function fetchLossEvents(sellerId: string, options: { lookbackDays?: number } = {}): Promise<LossEvent[]> {
+export async function fetchLossEvents(sellerId: string, options: { lookbackDays?: number; syncId?: string } = {}): Promise<LossEvent[]> {
     const tenantId = await resolveTenantId(sellerId);
     const lookbackDays = options.lookbackDays || 180;
     const cutoffDate = new Date();
@@ -535,13 +535,17 @@ export async function fetchLossEvents(sellerId: string, options: { lookbackDays?
     const events: LossEvent[] = [];
     try {
         if (await relationExists('inventory_ledger')) {
-            const { data: ledgerData, error: ledgerError } = await supabaseAdmin
+            let ledgerQuery: any = supabaseAdmin
                 .from('inventory_ledger')
                 .select('*')
                 .eq('tenant_id', tenantId)
                 .eq('user_id', sellerId)
                 .in('adjustment_type', ['Lost', 'Damaged', 'Disposed', 'M', 'P', 'E', 'D', 'Found', 'F'])
                 .gte('event_date', cutoffDate.toISOString());
+            if (options.syncId) {
+                ledgerQuery = ledgerQuery.eq('sync_id', options.syncId);
+            }
+            const { data: ledgerData, error: ledgerError } = await ledgerQuery;
 
             if (!ledgerError && ledgerData) {
                 for (const row of ledgerData) {
@@ -563,12 +567,16 @@ export async function fetchLossEvents(sellerId: string, options: { lookbackDays?
         }
 
         if (events.length === 0 && await relationExists('inventory_ledger_events')) {
-            const { data: ledgerEvents, error: ledgerEventsError } = await supabaseAdmin
+            let ledgerEventsQuery: any = supabaseAdmin
                 .from('inventory_ledger_events')
                 .select('*')
                 .eq('tenant_id', tenantId)
                 .eq('user_id', sellerId)
                 .gte('event_date', cutoffDate.toISOString());
+            if (options.syncId) {
+                ledgerEventsQuery = ledgerEventsQuery.eq('sync_id', options.syncId);
+            }
+            const { data: ledgerEvents, error: ledgerEventsError } = await ledgerEventsQuery;
 
             if (!ledgerEventsError && ledgerEvents) {
                 for (const row of ledgerEvents) {
@@ -594,20 +602,24 @@ export async function fetchLossEvents(sellerId: string, options: { lookbackDays?
     }
 }
 
-export async function fetchReimbursementEventsForSentinel(sellerId: string, options: { lookbackDays?: number } = {}): Promise<ReimbursementEvent[]> {
+export async function fetchReimbursementEventsForSentinel(sellerId: string, options: { lookbackDays?: number; syncId?: string } = {}): Promise<ReimbursementEvent[]> {
     const tenantId = await resolveTenantId(sellerId);
     const lookbackDays = options.lookbackDays || 180;
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - lookbackDays);
     const events: ReimbursementEvent[] = [];
     try {
-        const { data, error } = await supabaseAdmin
+        let settlementsQuery = supabaseAdmin
             .from('settlements')
             .select('*')
             .eq('tenant_id', tenantId)
             .eq('user_id', sellerId)
             .eq('transaction_type', 'reimbursement')
             .gte('settlement_date', cutoffDate.toISOString());
+        if (options.syncId) {
+            settlementsQuery = settlementsQuery.eq('sync_id', options.syncId);
+        }
+        const { data, error } = await settlementsQuery;
 
         if (!error && data) {
             for (const row of data) {
@@ -629,13 +641,17 @@ export async function fetchReimbursementEventsForSentinel(sellerId: string, opti
         }
 
         if (events.length === 0 && await relationExists('financial_events')) {
-            const { data: financialData, error: financialError } = await supabaseAdmin
+            let financialQuery = supabaseAdmin
                 .from('financial_events')
                 .select('*')
                 .eq('tenant_id', tenantId)
                 .eq('seller_id', sellerId)
                 .eq('event_type', 'reimbursement')
                 .gte('event_date', cutoffDate.toISOString());
+            if (options.syncId) {
+                financialQuery = financialQuery.eq('sync_id', options.syncId);
+            }
+            const { data: financialData, error: financialError } = await financialQuery;
 
             if (!financialError && financialData) {
                 for (const row of financialData) {
@@ -753,8 +769,8 @@ export async function runSentinelDetection(sellerId: string, syncId: string): Pr
     logger.info('🔍 [SENTINEL] Starting automated run', { sellerId, syncId });
     
     const [losses, reimbursements] = await Promise.all([
-        fetchLossEvents(sellerId, { lookbackDays: 180 }),
-        fetchReimbursementEventsForSentinel(sellerId, { lookbackDays: 180 })
+        fetchLossEvents(sellerId, { lookbackDays: 180, syncId }),
+        fetchReimbursementEventsForSentinel(sellerId, { lookbackDays: 180, syncId })
     ]);
     
     const results = await detectDuplicateMissedReimbursements(sellerId, syncId, { 

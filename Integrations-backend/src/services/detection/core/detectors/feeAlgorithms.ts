@@ -1217,20 +1217,32 @@ function reconcileValuationOwnership(results: FeeDetectionResult[]): FeeDetectio
     return reconciled;
 }
 
-export async function fetchFeeEvents(sellerId: string, options?: { startDate?: string; limit?: number }) {
+export async function fetchFeeEvents(sellerId: string, options?: { startDate?: string; limit?: number; syncId?: string }) {
     const tenantId = await resolveTenantId(sellerId);
 
     if (await relationExists('fee_events')) {
-        let query = supabaseAdmin
+        let query: any = supabaseAdmin
             .from('fee_events')
             .select('*')
             .eq('tenant_id', tenantId)
             .eq('seller_id', sellerId)
             .order('fee_date', { ascending: false });
+        if (options?.syncId) query = query.eq('sync_id', options.syncId);
         if (options?.startDate) query = query.gte('fee_date', options.startDate);
         if (options?.limit) query = query.limit(options.limit);
-        const { data } = await query;
-        return data || [];
+        const { data, error } = await query;
+        if (!error) {
+            return data || [];
+        }
+        if (options?.syncId) {
+            logger.warn('💰 [FEE] Scoped fee_events read failed, falling back to sync-scoped financial_events only', {
+                sellerId,
+                syncId: options.syncId,
+                error: error.message
+            });
+        } else {
+            return [];
+        }
     }
 
     if (!(await relationExists('financial_events'))) {
@@ -1244,6 +1256,7 @@ export async function fetchFeeEvents(sellerId: string, options?: { startDate?: s
         .eq('seller_id', sellerId)
         .eq('event_type', 'fee')
         .order('event_date', { ascending: false });
+    if (options?.syncId) query = query.eq('sync_id', options.syncId);
     if (options?.startDate) query = query.gte('event_date', options.startDate);
     if (options?.limit) query = query.limit(options.limit);
     const { data } = await query;
@@ -1276,8 +1289,18 @@ export async function fetchFeeEvents(sellerId: string, options?: { startDate?: s
     }));
 }
 
-export async function fetchProductCatalog(sellerId: string) {
+const PRODUCT_CATALOG_SCOPE_POLICY = 'historical_catalog_unavailable_for_sync_scoped_runs';
+
+export async function fetchProductCatalog(sellerId: string, syncId?: string) {
     if (!(await relationExists('product_catalog'))) {
+        return [];
+    }
+    if (syncId) {
+        logger.warn('💰 [FEE] Product catalog is seller-wide only; excluding it from sync-scoped detection input', {
+            sellerId,
+            syncId,
+            scopePolicy: PRODUCT_CATALOG_SCOPE_POLICY
+        });
         return [];
     }
     const { data } = await supabaseAdmin.from('product_catalog').select('*').eq('seller_id', sellerId);
@@ -1286,7 +1309,10 @@ export async function fetchProductCatalog(sellerId: string) {
 
 export async function runFeeOverchargeDetection(sellerId: string, syncId: string) {
     const lookback = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-    const [events, catalog] = await Promise.all([fetchFeeEvents(sellerId, { startDate: lookback }), fetchProductCatalog(sellerId)]);
+    const [events, catalog] = await Promise.all([
+        fetchFeeEvents(sellerId, { startDate: lookback, syncId }),
+        fetchProductCatalog(sellerId, syncId)
+    ]);
     const results = await detectAllFeeOvercharges(sellerId, syncId, { seller_id: sellerId, sync_id: syncId, fee_events: events, product_catalog: catalog });
     
     if (results.length > 0) {
