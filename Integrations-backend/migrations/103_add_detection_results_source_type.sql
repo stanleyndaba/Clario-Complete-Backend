@@ -7,6 +7,19 @@ ALTER TABLE detection_results
 COMMENT ON COLUMN detection_results.source_type IS
   'Explicit ingestion provenance for this detection result: sp_api, csv_upload, or unknown after historical backfill.';
 
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_trigger
+    WHERE tgname = 'enforce_tenant_active_detection_results'
+      AND tgrelid = 'detection_results'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    EXECUTE 'ALTER TABLE detection_results DISABLE TRIGGER enforce_tenant_active_detection_results';
+  END IF;
+END $$;
+
 UPDATE detection_results
 SET source_type = 'csv_upload'
 WHERE source_type IS NULL
@@ -22,9 +35,9 @@ WHERE dr.source_type IS NULL
 
 WITH queue_sources AS (
   SELECT
-    tenant_id,
-    seller_id,
-    sync_id,
+    tenant_id::TEXT AS tenant_id,
+    seller_id::TEXT AS seller_id,
+    sync_id::TEXT AS sync_id,
     CASE
       WHEN COUNT(DISTINCT payload->>'source') = 1 THEN MIN(payload->>'source')
       ELSE 'unknown'
@@ -39,8 +52,8 @@ UPDATE detection_results dr
 SET source_type = queue_sources.resolved_source
 FROM queue_sources
 WHERE dr.source_type IS NULL
-  AND dr.tenant_id = queue_sources.tenant_id
-  AND dr.seller_id = queue_sources.seller_id
+  AND dr.tenant_id::TEXT = queue_sources.tenant_id
+  AND dr.seller_id::TEXT = queue_sources.seller_id
   AND dr.sync_id = queue_sources.sync_id;
 
 WITH sync_sources AS (
@@ -52,19 +65,33 @@ WITH sync_sources AS (
       ELSE 'unknown'
     END AS resolved_source
   FROM (
-    SELECT tenant_id, sync_id, source FROM orders WHERE sync_id IS NOT NULL AND source IN ('sp_api', 'csv_upload')
+    SELECT tenant_id::TEXT AS tenant_id, sync_id::TEXT AS sync_id, source::TEXT AS source
+    FROM orders
+    WHERE sync_id IS NOT NULL AND source IN ('sp_api', 'csv_upload')
     UNION ALL
-    SELECT tenant_id, sync_id, source FROM shipments WHERE sync_id IS NOT NULL AND source IN ('sp_api', 'csv_upload')
+    SELECT tenant_id::TEXT AS tenant_id, sync_id::TEXT AS sync_id, source::TEXT AS source
+    FROM shipments
+    WHERE sync_id IS NOT NULL AND source IN ('sp_api', 'csv_upload')
     UNION ALL
-    SELECT tenant_id, sync_id, source FROM returns WHERE sync_id IS NOT NULL AND source IN ('sp_api', 'csv_upload')
+    SELECT tenant_id::TEXT AS tenant_id, sync_id::TEXT AS sync_id, source::TEXT AS source
+    FROM returns
+    WHERE sync_id IS NOT NULL AND source IN ('sp_api', 'csv_upload')
     UNION ALL
-    SELECT tenant_id, sync_id, source FROM settlements WHERE sync_id IS NOT NULL AND source IN ('sp_api', 'csv_upload')
+    SELECT tenant_id::TEXT AS tenant_id, sync_id::TEXT AS sync_id, source::TEXT AS source
+    FROM settlements
+    WHERE sync_id IS NOT NULL AND source IN ('sp_api', 'csv_upload')
     UNION ALL
-    SELECT tenant_id, sync_id, source FROM financial_events WHERE sync_id IS NOT NULL AND source IN ('sp_api', 'csv_upload')
+    SELECT tenant_id::TEXT AS tenant_id, sync_id::TEXT AS sync_id, source::TEXT AS source
+    FROM financial_events
+    WHERE sync_id IS NOT NULL AND source IN ('sp_api', 'csv_upload')
     UNION ALL
-    SELECT tenant_id, sync_id, source FROM inventory_ledger_events WHERE sync_id IS NOT NULL AND source IN ('sp_api', 'csv_upload')
+    SELECT tenant_id::TEXT AS tenant_id, sync_id::TEXT AS sync_id, source::TEXT AS source
+    FROM inventory_ledger_events
+    WHERE sync_id IS NOT NULL AND source IN ('sp_api', 'csv_upload')
     UNION ALL
-    SELECT tenant_id, sync_id, source FROM inventory_transfers WHERE sync_id IS NOT NULL AND source IN ('sp_api', 'csv_upload')
+    SELECT tenant_id::TEXT AS tenant_id, sync_id::TEXT AS sync_id, source::TEXT AS source
+    FROM inventory_transfers
+    WHERE sync_id IS NOT NULL AND source IN ('sp_api', 'csv_upload')
   ) source_rows
   GROUP BY tenant_id, sync_id
 )
@@ -72,7 +99,7 @@ UPDATE detection_results dr
 SET source_type = sync_sources.resolved_source
 FROM sync_sources
 WHERE dr.source_type IS NULL
-  AND dr.tenant_id = sync_sources.tenant_id
+  AND dr.tenant_id::TEXT = sync_sources.tenant_id
   AND dr.sync_id = sync_sources.sync_id;
 
 UPDATE detection_results
@@ -94,3 +121,16 @@ CREATE INDEX IF NOT EXISTS idx_detection_results_tenant_source_type
 
 CREATE INDEX IF NOT EXISTS idx_detection_results_sync_source_type
   ON detection_results (sync_id, source_type);
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_trigger
+    WHERE tgname = 'enforce_tenant_active_detection_results'
+      AND tgrelid = 'detection_results'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    EXECUTE 'ALTER TABLE detection_results ENABLE TRIGGER enforce_tenant_active_detection_results';
+  END IF;
+END $$;
