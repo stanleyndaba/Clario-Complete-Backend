@@ -173,11 +173,49 @@ const CSV_TYPE_SIGNATURES: Record<CSVType, string[][]> = {
     unknown: [],
 };
 
+const CSV_TYPE_PRIORITY: Record<CSVType, number> = {
+    transfers: 1,
+    financial_events: 2,
+    settlements: 3,
+    fees: 4,
+    shipments: 5,
+    returns: 6,
+    orders: 7,
+    inventory: 8,
+    unknown: 99,
+};
+
+const CSV_FILENAME_HINTS: Array<{ type: CSVType; patterns: RegExp[] }> = [
+    { type: 'financial_events', patterns: [/financial/i, /financial[_\- ]?events?/i, /\bfin[_\- ]?events?\b/i] },
+    { type: 'transfers', patterns: [/transfer/i, /inventory[_\- ]?transfers?/i] },
+    { type: 'settlements', patterns: [/settlement/i] },
+    { type: 'shipments', patterns: [/shipment/i] },
+    { type: 'returns', patterns: [/return/i] },
+    { type: 'orders', patterns: [/\border/i] },
+    { type: 'inventory', patterns: [/inventory/i, /ledger/i] },
+    { type: 'fees', patterns: [/\bfees?\b/i] },
+];
+
+function inferCsvTypeFromFileName(fileName: string): CSVType | null {
+    for (const hint of CSV_FILENAME_HINTS) {
+        if (hint.patterns.some((pattern) => pattern.test(fileName))) {
+            return hint.type;
+        }
+    }
+
+    return null;
+}
+
 /**
- * Detect CSV type from headers
+ * Detect CSV type from headers, with filename as a soft hint.
+ * When multiple signatures match, prefer the most specific signature first,
+ * then use a small type priority so broad inventory headers do not steal
+ * financial/transfers files.
  */
-function detectCSVType(headers: string[]): CSVType {
+function detectCSVType(headers: string[], fileName: string = ''): CSVType {
     const headerSet = new Set(headers.map(h => h.toLowerCase().replace(/[_\- ]/g, '')));
+    const fileHint = inferCsvTypeFromFileName(fileName);
+    let bestMatch: { type: CSVType; signatureLength: number; priority: number; hinted: boolean } | null = null;
 
     for (const [csvType, signatures] of Object.entries(CSV_TYPE_SIGNATURES)) {
         if (csvType === 'unknown') continue;
@@ -186,13 +224,29 @@ function detectCSVType(headers: string[]): CSVType {
             const normalizedSig = signature.map(s => s.toLowerCase().replace(/[_\- ]/g, ''));
             const allMatch = normalizedSig.every(s => headerSet.has(s));
 
-            if (allMatch) {
-                return csvType as CSVType;
+            if (!allMatch) continue;
+
+            const candidate = {
+                type: csvType as CSVType,
+                signatureLength: normalizedSig.length,
+                priority: CSV_TYPE_PRIORITY[csvType as CSVType] || 50,
+                hinted: fileHint === csvType,
+            };
+
+            if (
+                !bestMatch ||
+                candidate.hinted && !bestMatch.hinted ||
+                candidate.hinted === bestMatch.hinted && candidate.signatureLength > bestMatch.signatureLength ||
+                candidate.hinted === bestMatch.hinted &&
+                candidate.signatureLength === bestMatch.signatureLength &&
+                candidate.priority < bestMatch.priority
+            ) {
+                bestMatch = candidate;
             }
         }
     }
 
-    return 'unknown';
+    return bestMatch?.type || 'unknown';
 }
 
 // ============================================================================
@@ -1177,7 +1231,7 @@ export class CSVIngestionService {
 
         // Detect CSV type
         const headers = Object.keys(records[0]);
-        const csvType = options.explicitType || detectCSVType(headers);
+        const csvType = options.explicitType || detectCSVType(headers, file.originalname);
 
         if (csvType === 'unknown') {
             return {
@@ -1571,6 +1625,17 @@ export class CSVIngestionService {
             getField(records[0], 'Reference ID', 'reference_id', 'ReferenceId') !== null ||
             getField(records[0], 'event_id', 'EventId', 'eventId') !== null
         );
+        const hasSnapshotColumns = records.length > 0 && (
+            getField(records[0], 'availableQuantity', 'available', 'quantity_available') !== null ||
+            getField(records[0], 'reservedQuantity', 'reserved', 'quantity_reserved') !== null ||
+            getField(records[0], 'inboundQuantity', 'inbound', 'quantity_inbound') !== null ||
+            getField(records[0], 'price', 'Price', 'yourPrice', 'your_price') !== null
+        );
+        const isLedgerOnlyInventory = hasLedgerColumns && !hasSnapshotColumns;
+
+        if (isLedgerOnlyInventory) {
+            return this.ingestInventoryLedgerEvents(userId, tenantId, records, syncId, storeId);
+        }
 
         for (let i = 0; i < records.length; i++) {
             try {
@@ -1616,8 +1681,13 @@ export class CSVIngestionService {
 
         // If this CSV has ledger-style columns, ALSO write to inventory_ledger_events
         // so the Whale Hunter detection algorithm can pick them up
-        if (hasLedgerColumns && result.rowsInserted > 0) {
-            await this.ingestInventoryLedgerEvents(userId, tenantId, records, syncId, storeId);
+        if (hasLedgerColumns) {
+            const ledgerResult = await this.ingestInventoryLedgerEvents(userId, tenantId, records, syncId, storeId);
+            result.success = result.success || ledgerResult.success;
+            result.rowsInserted += ledgerResult.rowsInserted;
+            result.rowsSkipped += ledgerResult.rowsSkipped;
+            result.rowsFailed += ledgerResult.rowsFailed;
+            result.errors = Array.from(new Set([...(result.errors || []), ...(ledgerResult.errors || [])]));
         }
 
         return result;
@@ -1634,7 +1704,7 @@ export class CSVIngestionService {
         records: any[],
         syncId: string,
         storeId?: string
-    ): Promise<void> {
+    ): Promise<Omit<IngestionResult, 'fileName'>> {
         const EVENT_TYPE_MAP: Record<string, { eventType: string; direction: 'in' | 'out' }> = {
             'receipts': { eventType: 'Receipt', direction: 'in' },
             'receipt': { eventType: 'Receipt', direction: 'in' },
@@ -1720,7 +1790,16 @@ export class CSVIngestionService {
 
         if (ledgerRows.length === 0) {
             logger.warn('📊 [CSV INGESTION] No inventory ledger events to write', { userId, syncId });
-            return;
+            return {
+                success: false,
+                csvType: 'inventory',
+                rowsProcessed: records.length,
+                rowsInserted: 0,
+                rowsSkipped: 0,
+                rowsFailed: 0,
+                errors,
+                detectionTriggered: false,
+            };
         }
 
         // Calculate ending warehouse balance per FNSKU (running tally)
@@ -1771,7 +1850,7 @@ export class CSVIngestionService {
         }
 
         // Insert into inventory_ledger_events table
-        const result = await this.batchUpsert('inventory_ledger_events', ledgerRows, 'inventory_ledger', [], 0);
+        const result = await this.batchUpsert('inventory_ledger_events', ledgerRows, 'inventory_ledger', errors, 0);
 
         logger.info('📊 [CSV INGESTION] Inventory ledger events written', {
             userId,
@@ -1781,6 +1860,12 @@ export class CSVIngestionService {
             uniqueFnskus: Object.keys(balanceByFnsku).length,
             errors: errors.length > 0 ? errors : undefined,
         });
+
+        return {
+            ...result,
+            csvType: 'inventory',
+            rowsProcessed: records.length,
+        };
     }
 
     private async ingestFinancialEvents(userId: string, tenantId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
