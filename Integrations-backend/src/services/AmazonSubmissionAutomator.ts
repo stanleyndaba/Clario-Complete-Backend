@@ -80,6 +80,7 @@ import {
     isAgent7UnpaidFilingOverrideEnabled,
     recordAgent7UnpaidFilingOverride
 } from './agent7UnpaidFilingOverride';
+import { loadCanonicalEvidenceTruth } from './canonicalEvidenceService';
 
 /**
  * Enhanced Agent 7: Automated Amazon Interface Handler
@@ -362,33 +363,35 @@ export class AmazonSubmissionAutomator {
 
             // 3. Harvesting Evidence (durable Agent 4/5 handoff)
             logger.info(`📂 [AGENT 7] Harvesting evidence for Case: ${caseId}`);
-            const { data: evidence, error: evidenceError } = await supabaseAdmin
-                .from('dispute_evidence_links')
-                .select('evidence_documents(*)')
-                .eq('dispute_case_id', caseId);
+            const canonicalEvidenceTruth = await loadCanonicalEvidenceTruth(caseId, caseInfo.tenant_id);
 
-            if (evidenceError || !evidence || evidence.length === 0) {
-                logger.warn(`⚠️ [AGENT 7] Missing evidence for Case: ${caseId}. Escalating to Agent 10.`);
+            if (!canonicalEvidenceTruth.isEvidenceComplete) {
+                logger.warn(`⚠️ [AGENT 7] Canonical evidence incomplete for Case: ${caseId}. Escalating to Agent 10.`);
+                const blockReasons = canonicalEvidenceTruth.blockReasons.length > 0
+                    ? canonicalEvidenceTruth.blockReasons
+                    : ['missing_evidence_links'];
+                const lastError = canonicalEvidenceTruth.missingRequirements.includes('proof_snapshot')
+                    ? 'Canonical filing evidence requirements are unavailable for this case'
+                    : `Canonical filing evidence is incomplete: ${canonicalEvidenceTruth.missingRequirements.join(', ')}`;
+
                 await supabaseAdmin
                     .from('dispute_cases')
                     .update({
                         filing_status: 'blocked',
                         eligible_to_file: false,
-                        block_reasons: ['missing_evidence_links'],
-                        last_error: 'No evidence linked to case',
+                        block_reasons: blockReasons,
+                        last_error: lastError,
                         updated_at: new Date().toISOString()
                     })
                     .eq('id', caseId)
                     .eq('tenant_id', caseInfo.tenant_id);
-                throw new Error(`[AGENT 7 FATAL] Harvesting Failed: No evidence linked to Case ${caseId}`);
+                throw new Error(`[AGENT 7 FATAL] Canonical evidence incomplete for Case ${caseId}: ${blockReasons.join(', ')}`);
             }
 
             // 4. Open case via the real Seller Central submission channel
             logger.info(`✍️ [AGENT 7] Opening Amazon Seller Central case via browser submission channel`);
 
-            const evidenceDocumentIds = evidence
-                .map((link: any) => link.evidence_documents?.id)
-                .filter(Boolean);
+            const evidenceDocumentIds = canonicalEvidenceTruth.linkedDocumentIds;
 
             const detectionEvidence = eligibilitySnapshot.detectionResult?.evidence || {};
             const evidenceAttachments = parseJsonObject((eligibilitySnapshot as any)?.disputeCase?.evidence_attachments);

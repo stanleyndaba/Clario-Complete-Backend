@@ -1,5 +1,6 @@
 import { supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import recoveryFinancialTruthService from './recoveryFinancialTruthService';
+import { evaluateCanonicalEvidenceTruth } from './canonicalEvidenceService';
 
 export interface DisputeCaseQueueFilters {
   tenantSlug?: string;
@@ -239,13 +240,17 @@ function getMatchedDocumentCount(record: any, linkedDocumentCount: number) {
   return 0;
 }
 
-function deriveEvidenceState(record: any, matchedDocumentCount: number) {
+function deriveEvidenceState(record: any, matchedDocumentCount: number, evidenceTruth?: ReturnType<typeof evaluateCanonicalEvidenceTruth> | null) {
   const filingStatus = normalize(record?.filing_status);
   const rejectionCategory = record?.evidence_attachments?.rejection_category || null;
   const rejectionReason = record?.rejection_reason || null;
   const blockReasons = Array.isArray(record?.block_reasons) ? record.block_reasons : [];
   const matchConfidence = toNumber(record?.evidence_attachments?.match_confidence);
 
+  if (evidenceTruth && evidenceTruth.linkedDocumentCount === 0) return 'Missing Evidence';
+  if (evidenceTruth && !evidenceTruth.isEvidenceComplete) {
+    return evidenceTruth.missingRequirements.includes('proof_snapshot') ? 'Needs Review' : 'Missing Evidence';
+  }
   if (matchedDocumentCount === 0) return 'Missing Evidence';
   if (rejectionCategory || rejectionReason || blockReasons.length > 0 || filingStatus === 'blocked' || REVIEW_FILINGS.has(filingStatus)) return 'Needs Review';
   if (matchConfidence !== null && matchConfidence < 0.5) return 'Weak Evidence';
@@ -261,6 +266,12 @@ function deriveNextAction(row: any) {
   const operationalState = normalize(row.operational_state);
   const eligibilityStatus = deriveEligibilityStatus(row);
   const hasLinkedDisputeCase = row.has_real_dispute_case === true && Boolean(row.linked_dispute_case_id);
+
+  if (!hasLinkedDisputeCase && row.entity_type === 'detection') {
+    return Number(row.matched_document_count || 0) > 0
+      ? 'Supportable but not case-eligible'
+      : 'Waiting for evidence';
+  }
 
   if (BILLING_COMPLETE_STATUSES.has(billingStatus)) return 'Billing complete';
   if (recoveryStatus === 'reconciled' && billingStatus === 'pending') return 'Billing pending';
@@ -355,7 +366,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     disputeIds.length
       ? supabaseAdmin
           .from('dispute_evidence_links')
-          .select('dispute_case_id, evidence_document_id')
+          .select('dispute_case_id, evidence_document_id, evidence_documents(id, doc_type, raw_text, extracted, parsed_metadata, parser_status)')
           .eq('tenant_id', scope.tenantId)
           .in('dispute_case_id', disputeIds)
       : Promise.resolve({ data: [] as any[] }),
@@ -380,10 +391,16 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       : Promise.resolve({ data: [] as any[] })
   ]);
 
-  const evidenceCountByCase = new Map<string, number>();
+  const linkedDocumentsByCase = new Map<string, any[]>();
   for (const link of evidenceLinks || []) {
-    const current = evidenceCountByCase.get(link.dispute_case_id) || 0;
-    evidenceCountByCase.set(link.dispute_case_id, current + 1);
+    const current = linkedDocumentsByCase.get(link.dispute_case_id) || [];
+    const linkedDocument = Array.isArray((link as any)?.evidence_documents)
+      ? (link as any).evidence_documents[0]
+      : (link as any)?.evidence_documents;
+    if (linkedDocument) {
+      current.push(linkedDocument);
+    }
+    linkedDocumentsByCase.set(link.dispute_case_id, current);
   }
 
   const detectionById = new Map<string, any>();
@@ -420,7 +437,11 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       : null;
     const operationalExplanation = decisionIntelligence?.operational_explanation || null;
     const eligibilityStatus = deriveEligibilityStatus(record);
-    const matchedDocumentCount = getMatchedDocumentCount(record, evidenceCountByCase.get(record.id) || 0);
+    const evidenceTruth = evaluateCanonicalEvidenceTruth({
+      disputeCase: record,
+      linkedDocuments: linkedDocumentsByCase.get(record.id) || []
+    });
+    const matchedDocumentCount = evidenceTruth.linkedDocumentCount;
     const requestedAmount = toMoney(record.claim_amount);
     const approvedAmount = deriveApprovedAmount(record);
     const actualPayoutAmount = toMoney(record.recovered_amount ?? record.actual_payout_amount);
@@ -430,8 +451,25 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     const billingStatus = normalize(latestBilling?.billing_status || record.billing_status) || null;
     const rejectionCategory = record?.evidence_attachments?.rejection_category || null;
     const rejectionReason = record?.rejection_reason || null;
-    const evidenceState = deriveEvidenceState(record, matchedDocumentCount);
+    const evidenceState = deriveEvidenceState(record, matchedDocumentCount, evidenceTruth);
     const identityTruth = deriveRowIdentityTruth('dispute_case', record.id || null);
+    const missingRequirements = Array.from(
+      new Set([
+        ...(Array.isArray(proofSnapshot?.missingRequirements) ? proofSnapshot.missingRequirements : []),
+        ...evidenceTruth.missingRequirements
+      ])
+    );
+    const effectiveEligibleToFile =
+      eligibilityStatus === 'READY' &&
+      record.eligible_to_file === true &&
+      evidenceTruth.isEvidenceComplete;
+    const proofStatus = effectiveEligibleToFile
+      ? (proofSnapshot?.filingRecommendation || 'filing_ready')
+      : 'missing_requirements';
+    const manualReviewReason = missingRequirements[0] ||
+      (Array.isArray(record.block_reasons) && record.block_reasons.length > 0
+        ? record.block_reasons[0]
+        : (proofSnapshot?.riskFlags?.[0] || null));
 
     const row = {
       dispute_case_id: record.id,
@@ -447,7 +485,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       recovery_status: record.recovery_status || null,
       billing_status: billingStatus,
       eligibility_status: eligibilityStatus,
-      eligible_to_file: eligibilityStatus === 'READY' && record.eligible_to_file === true,
+      eligible_to_file: effectiveEligibleToFile,
       block_reasons: Array.isArray(record.block_reasons) ? record.block_reasons : [],
       last_error: record.last_error || null,
       requested_amount: requestedAmount,
@@ -461,11 +499,9 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       operational_state: operationalState,
       operational_explanation: operationalExplanation,
       operational_updated_at: decisionIntelligence?.operational_updated_at || null,
-      proof_status: proofSnapshot?.filingRecommendation || null,
-      missing_requirements: Array.isArray(proofSnapshot?.missingRequirements) ? proofSnapshot.missingRequirements : [],
-      manual_review_reason: Array.isArray(record.block_reasons) && record.block_reasons.length > 0
-        ? record.block_reasons[0]
-        : (proofSnapshot?.riskFlags?.[0] || null),
+      proof_status: proofStatus,
+      missing_requirements: missingRequirements,
+      manual_review_reason: manualReviewReason,
       payout_proof_status: actualPayoutAmount != null
         ? 'verified'
         : normalize(record.recovery_status) === 'quarantined'
@@ -500,9 +536,8 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
   const detectedRows = orphanDetections.map((record: any) => {
     const matchedDocumentCount = getMatchedDocumentCount(record, 0);
     const confidenceScore = toNumber(record.confidence_score) ?? 0;
-    const eligibleToFile = matchedDocumentCount > 0 && confidenceScore >= DETECTED_FILING_READY_THRESHOLD;
-    const filingStatus = eligibleToFile ? 'pending' : 'blocked';
-    const eligibilityStatus: EligibilityStatus = eligibleToFile ? 'READY' : (matchedDocumentCount > 0 ? 'SAFETY_HOLD' : 'INSUFFICIENT_DATA');
+    const isSupportable = matchedDocumentCount > 0 && confidenceScore >= DETECTED_FILING_READY_THRESHOLD;
+    const eligibilityStatus: EligibilityStatus = matchedDocumentCount > 0 ? 'SAFETY_HOLD' : 'INSUFFICIENT_DATA';
     const identityTruth = deriveRowIdentityTruth('detection', null);
     const row = {
       dispute_case_id: record.id,
@@ -514,12 +549,12 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       anomaly_type: record.anomaly_type || record.case_type || null,
       case_origin: 'detection_pipeline',
       status: record.status || 'detected',
-      filing_status: filingStatus,
+      filing_status: null,
       recovery_status: null,
       billing_status: null,
       eligibility_status: eligibilityStatus,
-      eligible_to_file: eligibleToFile && eligibilityStatus === 'READY',
-      block_reasons: eligibleToFile ? [] : (matchedDocumentCount === 0 ? ['missing_evidence'] : ['manual_review']),
+      eligible_to_file: false,
+      block_reasons: matchedDocumentCount === 0 ? ['missing_evidence'] : ['supportable_but_not_case_eligible'],
       requested_amount: toMoney(record.estimated_value),
       approved_amount: null,
       actual_payout_amount: null,
@@ -528,9 +563,9 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       evidence_state: deriveEvidenceState(
         {
           ...record,
-          eligible_to_file: eligibleToFile,
-          filing_status: filingStatus,
-          block_reasons: eligibleToFile ? [] : ['missing_evidence']
+          eligible_to_file: false,
+          filing_status: null,
+          block_reasons: matchedDocumentCount === 0 ? ['missing_evidence'] : ['supportable_but_not_case_eligible']
         },
         matchedDocumentCount
       ),
@@ -539,9 +574,9 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       operational_state: null,
       operational_explanation: null,
       operational_updated_at: null,
-      proof_status: eligibleToFile ? 'filing_ready' : (matchedDocumentCount > 0 ? 'manual_review' : 'missing_requirements'),
-      missing_requirements: matchedDocumentCount > 0 ? [] : ['supporting_document'],
-      manual_review_reason: eligibleToFile ? null : (matchedDocumentCount === 0 ? 'missing_evidence' : 'manual_review'),
+      proof_status: isSupportable ? 'supportable_but_not_case_eligible' : 'missing_requirements',
+      missing_requirements: matchedDocumentCount > 0 ? ['case_creation_required'] : ['supporting_document'],
+      manual_review_reason: matchedDocumentCount === 0 ? 'missing_evidence' : 'supportable_but_not_case_eligible',
       payout_proof_status: 'not_applicable',
       quarantine_reason: null,
       matched_document_count: matchedDocumentCount,

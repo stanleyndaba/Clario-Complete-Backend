@@ -11,6 +11,7 @@ import financialWorkItemService from '../services/financialWorkItemService';
 import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import recoveryFinancialTruthService from '../services/recoveryFinancialTruthService';
 import amazonCaseThreadService from '../services/amazonCaseThreadService';
+import { evaluateCanonicalEvidenceTruth, type CanonicalEvidenceTruth } from '../services/canonicalEvidenceService';
 
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -22,6 +23,18 @@ const BILLING_COMPLETE_STATUSES = new Set(['paid', 'charged', 'credited', 'compl
 
 function normalize(value: unknown): string {
     return String(value || '').trim().toLowerCase();
+}
+
+function parseJsonObject(value: any): Record<string, any> {
+    if (!value) return {};
+    if (typeof value === 'string') {
+        try {
+            return JSON.parse(value);
+        } catch {
+            return {};
+        }
+    }
+    return typeof value === 'object' ? value : {};
 }
 
 function toNumber(value: unknown): number {
@@ -378,23 +391,16 @@ function buildFinancialSummaryMap(summaries: any[] = []) {
     return summaryById;
 }
 
-function getEvidenceDocumentCount(record: any, documents: any[]): number {
-    if (Array.isArray(documents) && documents.length > 0) {
-        return documents.length;
-    }
-
-    if (record?.evidence_attachments?.document_id) {
-        return 1;
-    }
-
-    if (Array.isArray(record?.matched_document_ids)) {
-        return record.matched_document_ids.length;
-    }
-
-    return 0;
+function getEvidenceDocumentCount(documents: any[]): number {
+    return Array.isArray(documents) ? documents.length : 0;
 }
 
-function deriveNextStepContext(record: any, documents: any[]) {
+function deriveNextStepContext(
+    record: any,
+    documents: any[],
+    entityType: 'dispute_case' | 'detection',
+    evidenceTruth?: CanonicalEvidenceTruth | null
+) {
     const status = String(record?.status || '').toLowerCase();
     const filingStatus = String(record?.filing_status || '').toLowerCase();
     const recoveryStatus = String(record?.recovery_status || '').toLowerCase();
@@ -406,8 +412,24 @@ function deriveNextStepContext(record: any, documents: any[]) {
     ).trim().toUpperCase();
     const rejectionCategory = record?.evidence_attachments?.rejection_category || null;
     const rejectionReason = record?.rejection_reason || null;
-    const evidenceCount = getEvidenceDocumentCount(record, documents);
+    const evidenceCount = evidenceTruth?.linkedDocumentCount ?? getEvidenceDocumentCount(documents);
     const hasEvidence = evidenceCount > 0;
+
+    if (entityType === 'detection') {
+        return hasEvidence
+            ? {
+                key: 'supportable_not_case_eligible',
+                title: 'Supportable but not case-eligible',
+                description: 'Matched evidence exists, but this detection is not submission-ready until it becomes a real dispute case with canonical linked filing evidence.',
+                generated: false
+            }
+            : {
+                key: 'waiting_for_evidence',
+                title: 'Waiting for evidence',
+                description: 'Matched filing evidence is not available yet, so this detection cannot move into a case-safe filing path.',
+                generated: false
+            };
+    }
 
     if (eligibilityStatus === 'THREAD_ONLY') {
         return {
@@ -432,6 +454,17 @@ function deriveNextStepContext(record: any, documents: any[]) {
             key: 'awaiting_verified_identifiers',
             title: 'Awaiting verified identifiers',
             description: 'Required seller-verified identifiers are still missing or contradictory, so filing remains paused.',
+            generated: false
+        };
+    }
+
+    if (evidenceTruth && !evidenceTruth.isEvidenceComplete) {
+        return {
+            key: hasEvidence ? 'evidence_requirements_incomplete' : 'waiting_for_linked_evidence',
+            title: hasEvidence ? 'Evidence requirements incomplete' : 'Waiting for linked evidence',
+            description: evidenceTruth.missingRequirements.includes('proof_snapshot')
+                ? 'Evidence is linked, but Margin cannot verify the canonical filing requirements for this case yet.'
+                : 'Linked evidence exists, but the required filing documents for this claim type are still incomplete.',
             generated: false
         };
     }
@@ -570,9 +603,42 @@ function buildCaseResponse(
         : (typeof record?.actual_payout_amount === 'number'
             ? record.actual_payout_amount
             : null);
+    const evidenceTruth = entityTruth.entity_type === 'dispute_case'
+        ? evaluateCanonicalEvidenceTruth({
+            disputeCase: record,
+            linkedDocuments: documents
+        })
+        : null;
+    const matchedDocumentCount = evidenceTruth?.linkedDocumentCount ?? getEvidenceDocumentCount(documents);
+    const evidenceAttachments = parseJsonObject(record?.evidence_attachments);
+    const decisionIntelligence = parseJsonObject(evidenceAttachments?.decision_intelligence);
+    const proofSnapshot = parseJsonObject(decisionIntelligence?.proof_snapshot);
+    const proofStatus = typeof proofSnapshot?.filingRecommendation === 'string'
+        ? proofSnapshot.filingRecommendation
+        : null;
+    const missingRequirements = evidenceTruth?.missingRequirements || (entityTruth.entity_type === 'detection' ? ['case_creation_required'] : []);
+    const payoutProofStatus = actualPayoutAmount != null
+        ? 'verified'
+        : normalize(record?.recovery_status) === 'quarantined'
+            ? 'quarantined'
+            : APPROVED_CASE_STATUSES.has(normalize(record?.status))
+                ? 'awaiting_payout'
+                : 'not_applicable';
+    const manualReviewReason = Array.isArray(record?.block_reasons) && record.block_reasons.length > 0
+        ? record.block_reasons[0]
+        : Array.isArray(proofSnapshot?.riskFlags) && proofSnapshot.riskFlags.length > 0
+            ? proofSnapshot.riskFlags[0]
+            : (missingRequirements[0] || null);
+    const quarantineReason = normalize(record?.recovery_status) === 'quarantined'
+        ? (record?.last_error || null)
+        : null;
     const evidenceSummary = {
-        matched_document_count: getEvidenceDocumentCount(record, documents),
-        has_documents: getEvidenceDocumentCount(record, documents) > 0,
+        matched_document_count: matchedDocumentCount,
+        linked_document_count: matchedDocumentCount,
+        has_documents: matchedDocumentCount > 0,
+        evidence_complete: evidenceTruth?.isEvidenceComplete ?? false,
+        required_requirements: evidenceTruth?.requiredRequirements || [],
+        missing_requirements: missingRequirements,
         match_type: record?.evidence_attachments?.match_type || null,
         match_confidence: record?.evidence_attachments?.match_confidence || null
     };
@@ -641,6 +707,11 @@ function buildCaseResponse(
         evidence_attachments: record.evidence_attachments || null,
         evidence: record.evidence || {},
         evidence_summary: evidenceSummary,
+        proof_status: proofStatus,
+        missing_requirements: missingRequirements,
+        manual_review_reason: manualReviewReason,
+        payout_proof_status: payoutProofStatus,
+        quarantine_reason: quarantineReason,
         case_messages: Array.isArray(threadTruth?.case_messages) ? threadTruth?.case_messages : [],
         rejection_category: record?.evidence_attachments?.rejection_category || null,
         rejection_reason: record?.rejection_reason || null,
@@ -648,7 +719,7 @@ function buildCaseResponse(
         last_error: record?.last_error || null,
         duplicate_blocked: record.filing_status === 'duplicate_blocked' || record.duplicate_blocked === true,
         generated_context: buildGeneratedContext(record),
-        next_step_context: deriveNextStepContext(record, documents),
+        next_step_context: deriveNextStepContext(record, documents, entityTruth.entity_type, evidenceTruth),
         events,
         ...generateCaseStrategy(record)
     };
@@ -986,7 +1057,7 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 expectedPayoutAmount,
                 financialSummary
             });
-            const operatorState = matchedDocumentCount > 0 ? 'opportunity_detected' : 'investigation_required';
+            const operatorState = matchedDocumentCount > 0 ? 'supportable_but_not_case_eligible' : 'investigation_required';
             const actualPayoutSource = toNumber(financialSummary?.verified_paid_amount) > 0
                 ? 'verified_financial_event'
                 : 'unavailable';
@@ -1302,23 +1373,6 @@ router.get('/:id', async (req: Request, res: Response) => {
                     .in('id', docIds)
                     .eq('tenant_id', tenantId);
                 documents = docs || [];
-            }
-            // Also check evidence_attachments for document_id (set by matching flow)
-            else if (disputeCase.evidence_attachments?.document_id) {
-                const { data: matchedDoc } = await supabaseAdmin
-                    .from('evidence_documents')
-                    .select('id, filename, doc_type, created_at, ingested_at, source_provider, parser_version, match_confidence, metadata, parsed_metadata, extracted')
-                    .eq('id', disputeCase.evidence_attachments.document_id)
-                    .eq('tenant_id', tenantId)
-                    .single();
-                if (matchedDoc) {
-                    documents = [{
-                        ...matchedDoc,
-                        matchConfidence: disputeCase.evidence_attachments?.match_confidence,
-                        matchType: disputeCase.evidence_attachments?.match_type,
-                        matchedFields: disputeCase.evidence_attachments?.matched_fields,
-                    }];
-                }
             }
 
             const { data: latestSubmission } = await supabaseAdmin
