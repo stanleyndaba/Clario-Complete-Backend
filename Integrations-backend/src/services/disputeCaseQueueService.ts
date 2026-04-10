@@ -268,8 +268,11 @@ function deriveNextAction(row: any) {
   const hasLinkedDisputeCase = row.has_real_dispute_case === true && Boolean(row.linked_dispute_case_id);
 
   if (!hasLinkedDisputeCase && row.entity_type === 'detection') {
+    if (normalize(row.proof_status) === 'supportable_but_not_case_eligible') {
+      return 'Supportable - case not created yet';
+    }
     return Number(row.matched_document_count || 0) > 0
-      ? 'Supportable but not case-eligible'
+      ? 'Detection only - review required'
       : 'Waiting for evidence';
   }
 
@@ -297,7 +300,7 @@ function deriveNextAction(row: any) {
   if (row.evidence_state === 'Missing Evidence') return 'Waiting for evidence';
   if (row.evidence_state === 'Weak Evidence' || row.evidence_state === 'Needs Review') return 'Needs review';
   if (row.eligible_to_file === true && ['pending', 'retrying'].includes(filingStatus)) {
-    return hasLinkedDisputeCase ? 'Ready to file' : 'Detection only';
+    return 'Ready to file';
   }
   return 'Manual review';
 }
