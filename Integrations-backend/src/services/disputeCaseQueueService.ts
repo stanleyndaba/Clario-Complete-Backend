@@ -26,7 +26,7 @@ interface ResolvedScope {
   tenantSlug: string | null;
 }
 
-type EligibilityStatus =
+export type EligibilityStatus =
   | 'READY'
   | 'DUPLICATE_BLOCKED'
   | 'INSUFFICIENT_DATA'
@@ -90,7 +90,7 @@ function deriveRowIdentityTruth(entityType: 'dispute_case' | 'detection', linked
   } as const;
 }
 
-function deriveQueueActionTruth(row: {
+export function deriveQueueActionTruth(row: {
   entity_type: 'dispute_case' | 'detection';
   has_real_dispute_case: boolean;
   linked_dispute_case_id: string | null;

@@ -4,6 +4,10 @@ import { supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import refundFilingWorker from '../workers/refundFilingWorker';
 import { evaluateAndPersistCaseEligibility } from '../services/agent7EligibilityService';
+import {
+  deriveQueueActionTruth,
+  type EligibilityStatus as QueueEligibilityStatus
+} from '../services/disputeCaseQueueService';
 import { createSellerHttpClient } from '../services/sellerHttpClient';
 import proxyAssignmentService from '../services/proxyAssignmentService';
 import amazonCaseThreadService from '../services/amazonCaseThreadService';
@@ -169,6 +173,70 @@ function getDisputeRouteStatusCode(error: any) {
   }
 
   return 500;
+}
+
+type FilingRouteAction = 'file-now' | 'retry-filing' | 'approve-filing';
+
+function normalizeDisputeRouteValue(value: unknown): string {
+  return String(value || '').trim().toLowerCase();
+}
+
+function buildCanonicalRouteActionTruth(
+  disputeId: string,
+  filingStatus: unknown,
+  eligibleToFile: boolean | null | undefined,
+  eligibilityStatus: QueueEligibilityStatus | null | undefined
+) {
+  return deriveQueueActionTruth({
+    entity_type: 'dispute_case',
+    has_real_dispute_case: true,
+    linked_dispute_case_id: disputeId,
+    filing_status: String(filingStatus || ''),
+    eligible_to_file: eligibleToFile === true,
+    eligibility_status: eligibilityStatus ?? null
+  });
+}
+
+function buildRouteActionConflictPayload(params: {
+  action: FilingRouteAction;
+  currentFilingStatus: unknown;
+  evaluatedFilingStatus?: unknown;
+  eligibilityStatus: QueueEligibilityStatus | null | undefined;
+  reasons: string[];
+  actionTruth: ReturnType<typeof buildCanonicalRouteActionTruth>;
+}) {
+  const currentStatus = String(params.currentFilingStatus || 'unknown');
+  const normalizedCurrentStatus = normalizeDisputeRouteValue(params.currentFilingStatus);
+  const evaluatedStatus = String(params.evaluatedFilingStatus || params.currentFilingStatus || 'blocked');
+
+  let message = 'Case cannot enter the filing queue.';
+
+  if (params.action === 'file-now') {
+    message = params.eligibilityStatus !== 'READY'
+      ? 'Case is blocked and cannot be filed'
+      : `Case is not queueable from filing state: ${currentStatus}`;
+  } else if (params.action === 'retry-filing') {
+    message = normalizedCurrentStatus !== 'failed'
+      ? `Case is not retryable from filing state: ${currentStatus}`
+      : 'Case is blocked and cannot be retried';
+  } else if (params.action === 'approve-filing') {
+    message = normalizedCurrentStatus !== 'pending_approval'
+      ? `Case is not pending approval (current status: ${currentStatus})`
+      : 'Case remains blocked after approval review';
+  }
+
+  return {
+    success: false,
+    message,
+    filing_status: evaluatedStatus,
+    eligibility_status: params.eligibilityStatus || null,
+    block_reasons: params.reasons,
+    actionability: {
+      can_file: params.actionTruth.can_file,
+      can_retry: params.actionTruth.can_retry,
+      can_approve: params.actionTruth.can_approve
+    }
+  };
 }
 
 function hasTrustedInternalApiKey(req: any): boolean {
@@ -1243,7 +1311,7 @@ router.post('/file-now', async (req, res) => {
     await resolvePaidSellerIdentity(userId, tenantId, dispute_id);
     const { data: caseData, error: fetchError } = await supabaseAdmin
       .from('dispute_cases')
-      .select('id, filing_status, seller_id')
+      .select('id, filing_status, seller_id, eligibility_status, eligible_to_file, block_reasons')
       .eq('id', dispute_id)
       .eq('tenant_id', tenantId)
       .single();
@@ -1255,25 +1323,52 @@ router.post('/file-now', async (req, res) => {
       });
     }
 
-    const { eligible, reasons, disputeCase, eligibilityStatus } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
-    if (!eligible) {
+    const caseSellerId = String(caseData.seller_id || '').trim();
+    if (!caseSellerId) {
       return res.status(409).json({
         success: false,
-        message: 'Case is blocked and cannot be filed',
-        eligibility_status: eligibilityStatus,
-        filing_status: disputeCase?.filing_status || 'blocked',
-        block_reasons: reasons
+        message: 'Case is missing canonical seller linkage',
+        filing_status: caseData.filing_status || 'unknown'
       });
     }
 
-    if (['submitting', 'filed', 'recovering', 'payment_required'].includes(String(disputeCase?.filing_status || '').toLowerCase())) {
-      return res.status(409).json({
-        success: false,
-        message: `Case is not queueable from filing state: ${disputeCase?.filing_status || 'unknown'}`
-      });
+    const storedActionTruth = buildCanonicalRouteActionTruth(
+      dispute_id,
+      caseData.filing_status,
+      caseData.eligible_to_file,
+      caseData.eligibility_status
+    );
+
+    if (!storedActionTruth.can_file) {
+      return res.status(409).json(buildRouteActionConflictPayload({
+        action: 'file-now',
+        currentFilingStatus: caseData.filing_status,
+        eligibilityStatus: caseData.eligibility_status,
+        reasons: Array.isArray(caseData.block_reasons) ? caseData.block_reasons : [],
+        actionTruth: storedActionTruth
+      }));
     }
 
-    await supabaseAdmin
+    const { reasons, disputeCase, eligibilityStatus } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
+    const actionTruth = buildCanonicalRouteActionTruth(
+      dispute_id,
+      caseData.filing_status,
+      eligibilityStatus === 'READY',
+      eligibilityStatus
+    );
+
+    if (!actionTruth.can_file) {
+      return res.status(409).json(buildRouteActionConflictPayload({
+        action: 'file-now',
+        currentFilingStatus: caseData.filing_status,
+        evaluatedFilingStatus: disputeCase?.filing_status,
+        eligibilityStatus,
+        reasons,
+        actionTruth
+      }));
+    }
+
+    const { error: updateError } = await supabaseAdmin
       .from('dispute_cases')
       .update({
         filing_status: 'pending',
@@ -1286,12 +1381,8 @@ router.post('/file-now', async (req, res) => {
       .eq('id', dispute_id)
       .eq('tenant_id', tenantId);
 
-    const caseSellerId = String(caseData.seller_id || '').trim();
-    if (!caseSellerId) {
-      return res.status(409).json({
-        success: false,
-        message: 'Case is missing canonical seller linkage'
-      });
+    if (updateError) {
+      throw updateError;
     }
 
     const job = await refundFilingWorker.addJob(dispute_id, caseSellerId);
@@ -1352,7 +1443,7 @@ router.post('/retry-filing', async (req, res) => {
     await resolvePaidSellerIdentity(userId, tenantId, dispute_id);
     const { data: caseData, error: fetchError } = await supabaseAdmin
       .from('dispute_cases')
-      .select('*')
+      .select('id, filing_status, seller_id, retry_count, eligibility_status, eligible_to_file, block_reasons')
       .eq('id', dispute_id)
       .eq('tenant_id', tenantId)
       .single();
@@ -1364,19 +1455,54 @@ router.post('/retry-filing', async (req, res) => {
       });
     }
 
-    const { eligible, reasons, disputeCase, eligibilityStatus } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
-    if (!eligible) {
+    const caseSellerId = String(caseData.seller_id || '').trim();
+    if (!caseSellerId) {
       return res.status(409).json({
         success: false,
-        message: 'Case is blocked and cannot be retried',
-        eligibility_status: eligibilityStatus,
-        filing_status: disputeCase?.filing_status || 'blocked',
-        block_reasons: reasons
+        message: 'Case is missing canonical seller linkage',
+        filing_status: caseData.filing_status || 'unknown'
       });
     }
 
+    const storedActionTruth = buildCanonicalRouteActionTruth(
+      dispute_id,
+      caseData.filing_status,
+      caseData.eligible_to_file,
+      caseData.eligibility_status
+    );
+    const isRetryableState = normalizeDisputeRouteValue(caseData.filing_status) === 'failed';
+
+    if (!isRetryableState || !storedActionTruth.can_retry) {
+      return res.status(409).json(buildRouteActionConflictPayload({
+        action: 'retry-filing',
+        currentFilingStatus: caseData.filing_status,
+        eligibilityStatus: caseData.eligibility_status,
+        reasons: Array.isArray(caseData.block_reasons) ? caseData.block_reasons : [],
+        actionTruth: storedActionTruth
+      }));
+    }
+
+    const { reasons, disputeCase, eligibilityStatus } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
+    const actionTruth = buildCanonicalRouteActionTruth(
+      dispute_id,
+      caseData.filing_status,
+      eligibilityStatus === 'READY',
+      eligibilityStatus
+    );
+
+    if (!actionTruth.can_retry) {
+      return res.status(409).json(buildRouteActionConflictPayload({
+        action: 'retry-filing',
+        currentFilingStatus: caseData.filing_status,
+        evaluatedFilingStatus: disputeCase?.filing_status,
+        eligibilityStatus,
+        reasons,
+        actionTruth
+      }));
+    }
+
     const newRetryCount = Number(caseData.retry_count || 0) + 1;
-    await supabaseAdmin
+    const { error: updateError } = await supabaseAdmin
       .from('dispute_cases')
       .update({
         filing_status: 'retrying',
@@ -1390,12 +1516,8 @@ router.post('/retry-filing', async (req, res) => {
       .eq('id', dispute_id)
       .eq('tenant_id', tenantId);
 
-    const caseSellerId = String(caseData.seller_id || '').trim();
-    if (!caseSellerId) {
-      return res.status(409).json({
-        success: false,
-        message: 'Case is missing canonical seller linkage'
-      });
+    if (updateError) {
+      throw updateError;
     }
 
     const job = await refundFilingWorker.addJob(dispute_id, caseSellerId);
@@ -1458,7 +1580,7 @@ router.post('/approve-filing', async (req, res) => {
     await resolvePaidSellerIdentity(userId, tenantId, dispute_id);
     const { data: caseData, error: fetchError } = await supabaseAdmin
       .from('dispute_cases')
-      .select('*')
+      .select('id, filing_status, seller_id, eligibility_status, eligible_to_file, block_reasons')
       .eq('id', dispute_id)
       .eq('tenant_id', tenantId)
       .single();
@@ -1470,23 +1592,49 @@ router.post('/approve-filing', async (req, res) => {
       });
     }
 
-    // Verify case is pending_approval
-    if (caseData.filing_status !== 'pending_approval') {
-      return res.status(400).json({
+    const caseSellerId = String(caseData.seller_id || '').trim();
+    if (!caseSellerId) {
+      return res.status(409).json({
         success: false,
-        message: `Case is not pending approval (current status: ${caseData.filing_status})`
+        message: 'Case is missing canonical seller linkage',
+        filing_status: caseData.filing_status || 'unknown'
       });
     }
 
-    const { eligible, reasons, eligibilityStatus } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
-    if (!eligible) {
-      return res.status(409).json({
-        success: false,
-        message: 'Case remains blocked after approval review',
-        eligibility_status: eligibilityStatus,
-        filing_status: 'blocked',
-        block_reasons: reasons
-      });
+    const storedActionTruth = buildCanonicalRouteActionTruth(
+      dispute_id,
+      caseData.filing_status,
+      caseData.eligible_to_file,
+      caseData.eligibility_status
+    );
+
+    if (!storedActionTruth.can_approve) {
+      return res.status(409).json(buildRouteActionConflictPayload({
+        action: 'approve-filing',
+        currentFilingStatus: caseData.filing_status,
+        eligibilityStatus: caseData.eligibility_status,
+        reasons: Array.isArray(caseData.block_reasons) ? caseData.block_reasons : [],
+        actionTruth: storedActionTruth
+      }));
+    }
+
+    const { reasons, disputeCase, eligibilityStatus } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
+    const actionTruth = buildCanonicalRouteActionTruth(
+      dispute_id,
+      caseData.filing_status,
+      eligibilityStatus === 'READY',
+      eligibilityStatus
+    );
+
+    if (!actionTruth.can_approve) {
+      return res.status(409).json(buildRouteActionConflictPayload({
+        action: 'approve-filing',
+        currentFilingStatus: caseData.filing_status,
+        evaluatedFilingStatus: disputeCase?.filing_status,
+        eligibilityStatus,
+        reasons,
+        actionTruth
+      }));
     }
 
     const { error: updateError } = await supabaseAdmin
@@ -1507,14 +1655,6 @@ router.post('/approve-filing', async (req, res) => {
     }
 
     console.log(`[approve-filing] User ${userId} approved claim ${dispute_id}`);
-
-    const caseSellerId = String(caseData.seller_id || '').trim();
-    if (!caseSellerId) {
-      return res.status(409).json({
-        success: false,
-        message: 'Case is missing canonical seller linkage'
-      });
-    }
 
     const job = await refundFilingWorker.addJob(dispute_id, caseSellerId);
     const queued = job.mode === 'queued';
