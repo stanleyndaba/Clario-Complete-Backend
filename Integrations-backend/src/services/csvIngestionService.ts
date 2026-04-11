@@ -420,11 +420,25 @@ type DetectionQueueRow = {
     payload?: Record<string, any> | null;
 };
 
+type CsvIngestionRunRow = {
+    id?: string | null;
+    tenant_id?: string | null;
+    user_id?: string | null;
+    csv_type?: string | null;
+    file_name?: string | null;
+    file_hash?: string | null;
+    created_at?: string | null;
+};
+
 // ============================================================================
 // CSV Ingestion Service
 // ============================================================================
 
 export class CSVIngestionService {
+    private normalizeCsvFileName(value: string | null | undefined): string {
+        return String(value || '').trim().toLowerCase();
+    }
+
     private getDetectionQueueSandboxFlag(row: DetectionQueueRow | null | undefined): boolean {
         if (!row?.payload || typeof row.payload !== 'object') {
             return false;
@@ -1297,7 +1311,7 @@ export class CSVIngestionService {
 
         const { data, error } = await supabaseAdmin
             .from('csv_ingestion_runs')
-            .select('id')
+            .select('id, created_at')
             .eq('tenant_id', tenantId)
             .eq('user_id', userId)
             .eq('csv_type', csvType)
@@ -1319,7 +1333,35 @@ export class CSVIngestionService {
         }
 
         if (data?.id) {
-            return true;
+            const duplicateState = await this.resolveCsvDuplicateRegistrationState(
+                tenantId,
+                userId,
+                csvType,
+                fileName,
+                data as CsvIngestionRunRow
+            );
+
+            if (duplicateState === 'trusted' || duplicateState === 'active') {
+                return true;
+            }
+
+            const { error: releaseError } = await supabaseAdmin
+                .from('csv_ingestion_runs')
+                .delete()
+                .eq('id', data.id);
+
+            if (releaseError && releaseError.code !== 'PGRST116') {
+                throw new Error(`Failed to release stale duplicate registration: ${releaseError.message}`);
+            }
+
+            logger.info('♻️ [CSV INGESTION] Released stale duplicate registration for retry', {
+                tenantId,
+                userId,
+                csvType,
+                fileName,
+                registrationId: data.id,
+                previousCreatedAt: (data as CsvIngestionRunRow).created_at || null,
+            });
         }
 
         const { error: insertError } = await supabaseAdmin
@@ -1348,6 +1390,124 @@ export class CSVIngestionService {
         }
 
         return insertError?.code === '23505';
+    }
+
+    private async resolveCsvDuplicateRegistrationState(
+        tenantId: string,
+        userId: string,
+        csvType: CSVType,
+        fileName: string,
+        registration: CsvIngestionRunRow
+    ): Promise<'trusted' | 'active' | 'stale'> {
+        const { data: runRows, error } = await supabaseAdmin
+            .from('csv_upload_runs')
+            .select('sync_id, success, total_files, file_count, detection_triggered, detection_job_id, ingestion_results, files_summary, created_at, updated_at, started_at, completed_at, status, error, is_sandbox')
+            .eq('tenant_id', tenantId)
+            .eq('seller_id', userId)
+            .order('started_at', { ascending: false })
+            .limit(25);
+
+        if (error?.code === '42P01') {
+            logger.warn('CSV upload run table is not deployed; duplicate lock cannot be verified authoritatively', {
+                table: 'csv_upload_runs',
+                tenantId,
+                userId,
+                csvType,
+                fileName,
+            });
+            return 'stale';
+        }
+
+        if (error) {
+            throw new Error(`Failed to verify duplicate registration state: ${error.message}`);
+        }
+
+        const registrationTime = registration.created_at ? Date.parse(registration.created_at) : Number.NaN;
+        const normalizedFileName = this.normalizeCsvFileName(fileName);
+        const candidates = (runRows || [])
+            .map((row) => {
+                const typedRow = row as CsvUploadRunRow;
+                const filesSummary = this.normalizeCsvRunFilesSummary(typedRow.files_summary, typedRow.ingestion_results);
+                const matchingFile = filesSummary.some((entry) => {
+                    if (this.normalizeCsvFileName(entry.fileName) !== normalizedFileName) {
+                        return false;
+                    }
+
+                    return !entry.csvType || entry.csvType === csvType;
+                });
+
+                if (!matchingFile) {
+                    return null;
+                }
+
+                const anchorRaw = typedRow.started_at || typedRow.created_at || typedRow.updated_at || typedRow.completed_at;
+                const anchorTime = anchorRaw ? Date.parse(anchorRaw) : Number.NaN;
+                const windowStartRaw = typedRow.started_at || typedRow.created_at || typedRow.updated_at;
+                const windowEndRaw = typedRow.completed_at || typedRow.updated_at || typedRow.created_at || typedRow.started_at;
+                const windowStart = windowStartRaw ? Date.parse(windowStartRaw) - (2 * 60 * 1000) : Number.NaN;
+                const windowEnd = windowEndRaw ? Date.parse(windowEndRaw) + (5 * 60 * 1000) : Number.NaN;
+                const inWindow = Number.isFinite(registrationTime) && Number.isFinite(windowStart) && Number.isFinite(windowEnd)
+                    ? registrationTime >= windowStart && registrationTime <= windowEnd
+                    : false;
+                const distance = Number.isFinite(registrationTime) && Number.isFinite(anchorTime)
+                    ? Math.abs(registrationTime - anchorTime)
+                    : Number.MAX_SAFE_INTEGER;
+
+                return {
+                    row: typedRow,
+                    filesSummary,
+                    inWindow,
+                    distance,
+                };
+            })
+            .filter((entry): entry is { row: CsvUploadRunRow; filesSummary: CsvUploadRunFileSummary[]; inWindow: boolean; distance: number } => !!entry)
+            .sort((left, right) => {
+                if (left.inWindow !== right.inWindow) {
+                    return left.inWindow ? -1 : 1;
+                }
+
+                return left.distance - right.distance;
+            });
+
+        const candidate = candidates[0];
+        if (!candidate) {
+            return 'stale';
+        }
+
+        let detection: CsvUploadDetectionSnapshot | null = null;
+        try {
+            if (candidate.row.sync_id) {
+                detection = await this.getCsvDetectionSnapshot(userId, tenantId, candidate.row.sync_id);
+            }
+        } catch (snapshotError: any) {
+            logger.warn('⚠️ [CSV INGESTION] Failed to refresh detection snapshot while verifying duplicate registration', {
+                tenantId,
+                userId,
+                csvType,
+                fileName,
+                syncId: candidate.row.sync_id,
+                error: snapshotError?.message || 'Unknown error',
+            });
+        }
+
+        const effectiveStatus = this.deriveCsvUploadRunStatus(
+            this.buildBatchResultFromCsvUploadRun(userId, candidate.row, candidate.filesSummary).results,
+            {
+                detectionTriggered: !!candidate.row.detection_triggered,
+                detectionStatus: detection?.status || null,
+                batchError: candidate.row.error,
+            }
+        );
+
+        if (effectiveStatus === 'completed') {
+            return 'trusted';
+        }
+
+        if (effectiveStatus === 'started' || effectiveStatus === 'detection_processing') {
+            return 'active';
+        }
+
+        return 'stale';
     }
 
     /**
