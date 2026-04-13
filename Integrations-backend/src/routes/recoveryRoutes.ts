@@ -1326,6 +1326,7 @@ router.post('/:id/process', async (req: Request, res: Response) => {
 router.get('/:id', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
+        const includeEvents = String(req.query.includeEvents ?? 'true').trim().toLowerCase() !== 'false';
         let tenantId: string;
         try {
             ({ tenantId } = await resolveRecoveriesScope(req));
@@ -1405,10 +1406,14 @@ router.get('/:id', async (req: Request, res: Response) => {
                     ? disputeCase.actual_payout_amount
                     : null);
 
+            const events = includeEvents
+                ? await fetchEventsForRecovery(disputeCase.id, userId, tenantId)
+                : [];
+
             return res.json(buildCaseResponse(
                 disputeCase,
                 documents,
-                await fetchEventsForRecovery(disputeCase.id, userId, tenantId),
+                events,
                 {
                     entity_type: 'dispute_case',
                     has_linked_dispute_case: true,
@@ -1446,10 +1451,14 @@ router.get('/:id', async (req: Request, res: Response) => {
                 documents = docs || [];
             }
 
+            const events = includeEvents
+                ? await fetchEventsForRecovery(detectionResult.id, userId, tenantId)
+                : [];
+
             return res.json(buildCaseResponse(
                 detectionResult,
                 documents,
-                await fetchEventsForRecovery(detectionResult.id, userId, tenantId),
+                events,
                 {
                     entity_type: 'detection',
                     has_linked_dispute_case: false,
