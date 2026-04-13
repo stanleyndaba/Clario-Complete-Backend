@@ -5,6 +5,7 @@ import tokenManager from '../utils/tokenManager';
 import { diagnoseSandboxConnection } from '../utils/sandboxDiagnostics';
 import oauthStateStore from '../utils/oauthStateStore';
 import { syncJobManager } from '../services/syncJobManager';
+import onboardingCapacityService from '../services/onboardingCapacityService';
 import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifier';
 
 const UUID_IN_TEXT_REGEX = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
@@ -200,6 +201,24 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
       });
     }
 
+    const adminOverride = onboardingCapacityService.isAdminOverride(req);
+    const { convertUserIdToUuid } = await import('../database/supabaseClient');
+    const normalizedUserId = convertUserIdToUuid(userId);
+    const capacity = await onboardingCapacityService.reserveSlot(normalizedUserId, startTenant.id, { override: adminOverride });
+    if (!capacity.allowed) {
+      return res.status(409).json({
+        success: false,
+        ok: false,
+        capacity_full: true,
+        error: 'onboarding_capacity_full',
+        message: 'We are onboarding a small batch of sellers right now.',
+        waitlist_url: `${frontendUrl}/waitlist?reason=capacity`,
+        next_batch_hours: onboardingCapacityService.getNextBatchHours(),
+        active: capacity.active,
+        max: capacity.max
+      });
+    }
+
     if (canBypass) {
       logger.info('Bypass flow available - checking if user wants to skip OAuth', {
         hasRefreshToken: true,
@@ -351,7 +370,7 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
 
     // Store frontend URL and user ID with OAuth state for later redirect
     if (result.state) {
-      await oauthStateStore.setState(result.state, userId, frontendUrl, tenantSlug, marketplaceId);
+      await oauthStateStore.setState(result.state, userId, frontendUrl, tenantSlug, marketplaceId, undefined, undefined, adminOverride);
       logger.info('Stored context with OAuth state', {
         state: result.state,
         frontendUrl,
@@ -513,6 +532,8 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     let syncStartMode: 'queued' | 'direct' | 'duplicate' | 'none' = 'none';
     let syncStartMessage = '';
     let syncIdForResponse: string | null = null;
+    let normalizedUserId: string | null = null;
+    let adminOverride = false;
 
     if (!state) {
       trapError('state_validation_failed', {
@@ -539,6 +560,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     marketplaceIdFromState = storedState.marketplaceId;
     tenantSlug = storedState.tenantSlug;
     userId = storedState.userId;
+    adminOverride = Boolean(storedState.adminOverride);
 
     logger.info('Retrieved trusted context from OAuth state', {
       tenantSlug,
@@ -554,6 +576,39 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     });
 
     try {
+      const { supabaseAdmin, convertUserIdToUuid } = await import('../database/supabaseClient');
+      normalizedUserId = convertUserIdToUuid(userId);
+      const { data: tenantRecord, error: tenantError } = await supabaseAdmin
+        .from('tenants')
+        .select('id, slug')
+        .eq('slug', tenantSlug)
+        .is('deleted_at', null)
+        .maybeSingle();
+
+      if (tenantError || !tenantRecord?.id) {
+        throw new Error(`Unable to resolve tenant for OAuth callback slug "${tenantSlug}".`);
+      }
+
+      const capacity = await onboardingCapacityService.reserveSlot(normalizedUserId, tenantRecord.id, { override: adminOverride });
+      if (!capacity.allowed) {
+        const waitlistUrl = `${frontendUrl}/waitlist?reason=capacity`;
+        if (req.method === 'POST') {
+          return res.status(409).json({
+            ok: false,
+            connected: false,
+            success: false,
+            capacity_full: true,
+            error: 'onboarding_capacity_full',
+            message: 'We are onboarding a small batch of sellers right now.',
+            waitlist_url: waitlistUrl,
+            next_batch_hours: onboardingCapacityService.getNextBatchHours(),
+            active: capacity.active,
+            max: capacity.max
+          });
+        }
+        return res.redirect(302, waitlistUrl);
+      }
+
       // Step 1: Validate OAuth response
       if (!code) {
         throw new Error('Missing OAuth authorization code');
@@ -633,22 +688,10 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       });
 
       // Step 4: Bind the connection to the authenticated app user + tenant only
-      const { supabaseAdmin, convertUserIdToUuid } = await import('../database/supabaseClient');
-      const authenticatedUserId = convertUserIdToUuid(userId);
+      const authenticatedUserId = normalizedUserId;
       userId = authenticatedUserId;
       let userEmail: string | null = null;
       const placeholderEmail = `${profile.sellerId}@amazon.seller`.toLowerCase();
-
-      const { data: tenantRecord, error: tenantError } = await supabaseAdmin
-        .from('tenants')
-        .select('id, slug')
-        .eq('slug', tenantSlug)
-        .is('deleted_at', null)
-        .maybeSingle();
-
-      if (tenantError || !tenantRecord?.id) {
-        throw new Error(`Unable to resolve tenant for OAuth callback slug "${tenantSlug}".`);
-      }
 
       const tenantIdToUse = tenantRecord.id;
       tenantIdForResponse = tenantIdToUse;
@@ -1178,6 +1221,17 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         sellerId,
         error: callbackError.message
       });
+
+      if (normalizedUserId && !adminOverride) {
+        try {
+          await onboardingCapacityService.releaseSlot(normalizedUserId, 'failed');
+        } catch (releaseError: any) {
+          logger.warn('Failed to release onboarding slot after OAuth failure', {
+            error: releaseError?.message || String(releaseError),
+            userId: normalizedUserId
+          });
+        }
+      }
 
       // For POST requests, return JSON error
       if (req.method === 'POST') {

@@ -87,7 +87,7 @@ export function createStoreScopedQueryById(tenantId: string, storeId: string, ta
 
         raw: () => {
             logger.warn('Using raw query builder with store scope - ensure filters are applied', { table, storeId });
-            return baseQuery;
-        }
+            return baseQuery; 
+        },
     };
 }

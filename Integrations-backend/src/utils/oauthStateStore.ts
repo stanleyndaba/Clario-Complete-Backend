@@ -20,6 +20,7 @@ interface OAuthStateData {
   marketplaceId?: string;
   storeId?: string;
   redirectUri?: string;
+  adminOverride?: boolean;
 }
 
 /**
@@ -74,7 +75,8 @@ class InMemoryOAuthStateStore {
     tenantSlug?: string, 
     marketplaceId?: string, 
     storeId?: string,
-    redirectUri?: string
+    redirectUri?: string,
+    adminOverride?: boolean
   ): Promise<void> {
     await this.set(state, {
       userId,
@@ -83,6 +85,7 @@ class InMemoryOAuthStateStore {
       marketplaceId,
       storeId,
       redirectUri,
+      adminOverride,
       timestamp: Date.now()
     });
   }

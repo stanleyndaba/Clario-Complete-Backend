@@ -15,6 +15,7 @@ import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import capacityGovernanceService from './capacityGovernanceService';
 import operationalControlService from './operationalControlService';
 import runtimeCapacityService from './runtimeCapacityService';
+import onboardingCapacityService from './onboardingCapacityService';
 
 // Standardized status values - use database values consistently
 export type SyncStatus = 'idle' | 'running' | 'detecting' | 'completed' | 'failed' | 'cancelled';
@@ -1149,6 +1150,16 @@ class SyncJobManager {
           logger.info('✅ [SYNC JOB MANAGER] SSE event sync.completed sent successfully', { userId, syncId });
         }
 
+        try {
+          await onboardingCapacityService.releaseSlot(userId, 'completed');
+        } catch (releaseErr: any) {
+          logger.warn('Failed to release onboarding slot after sync completion', {
+            userId,
+            syncId,
+            error: releaseErr?.message || String(releaseErr)
+          });
+        }
+
         // 🔔 PERSIST: Sync completed notification (survives offline)
         try {
           const notificationHelper = (await import('./notificationHelper')).default;
@@ -1276,6 +1287,16 @@ class SyncJobManager {
           logger.info('✅ [SYNC JOB MANAGER] SSE event sync.failed sent successfully', { userId, syncId });
         }
 
+        try {
+          await onboardingCapacityService.releaseSlot(userId, 'failed');
+        } catch (releaseErr: any) {
+          logger.warn('Failed to release onboarding slot after sync failure', {
+            userId,
+            syncId,
+            error: releaseErr?.message || String(releaseErr)
+          });
+        }
+
         // 🔔 PERSIST: Sync failed notification (survives offline)
         try {
           const notificationHelper = (await import('./notificationHelper')).default;
@@ -1338,6 +1359,16 @@ class SyncJobManager {
           message: syncStatus.message,
           timestamp: new Date().toISOString()
         });
+
+        try {
+          await onboardingCapacityService.releaseSlot(userId, 'failed');
+        } catch (releaseErr: any) {
+          logger.warn('Failed to release onboarding slot after sync timeout', {
+            userId,
+            syncId,
+            error: releaseErr?.message || String(releaseErr)
+          });
+        }
 
         throw error;
       } else {
@@ -1419,6 +1450,16 @@ class SyncJobManager {
         message: 'Sync cancelled by user',
         completedAt: new Date().toISOString()
       }, tenantId, storeId);
+
+      try {
+        await onboardingCapacityService.releaseSlot(userId, 'cancelled');
+      } catch (releaseErr: any) {
+        logger.warn('Failed to release onboarding slot after sync cancellation', {
+          userId,
+          syncId,
+          error: releaseErr?.message || String(releaseErr)
+        });
+      }
 
       return true;
     }

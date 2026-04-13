@@ -63,6 +63,7 @@ import notesRoutes from './routes/notesRoutes';
 import tenantRoutes from './routes/tenantRoutes';
 import storeRoutes from './routes/storeRoutes';
 import waitlistRoutes from './routes/waitlistRoutes';
+import onboardingRoutes from './routes/onboardingRoutes';
 import paymentRoutes from './routes/paymentRoutes';
 import supportRoutes from './routes/supportRoutes';
 
@@ -395,6 +396,7 @@ app.use('/api/phase1', phase1DiagnosticRoutes);
 logger.info('Phase 1 diagnostic routes registered at /api/phase1');
 app.use('/api/auth', authRoutes);
 app.use('/api/waitlist', waitlistRoutes);
+app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/v1/integrations/sync', syncAliasRoutes);
 app.use('/api/v1/integrations', integrationRoutes);
 app.use('/api/detections', detectionRoutes);
