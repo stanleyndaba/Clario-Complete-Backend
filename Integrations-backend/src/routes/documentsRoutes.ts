@@ -182,6 +182,7 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
         }
 
         const uploadedDocuments: any[] = [];
+        const failedDocuments: Array<{ filename: string; reason: string }> = [];
 
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
@@ -191,7 +192,7 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
             const storagePath = `${tenantId}/${docId}/${file.originalname}`;
 
             // Upload to Supabase Storage
-            const { data: storageData, error: storageError } = await supabaseAdmin
+            const { error: storageError } = await supabaseAdmin
                 .storage
                 .from('evidence-documents')
                 .upload(storagePath, file.buffer, {
@@ -204,12 +205,16 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
                     filename: file.originalname,
                     error: storageError.message
                 });
+                failedDocuments.push({
+                    filename: file.originalname,
+                    reason: `Storage upload failed: ${storageError.message}`
+                });
                 // Continue with other files
                 continue;
             }
 
             // Create database record
-            const { data: docRecord, error: dbError } = await supabaseAdmin
+            const { error: dbError } = await supabaseAdmin
                 .from('evidence_documents')
                 .insert({
                     id: docId,
@@ -239,6 +244,10 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
                     filename: file.originalname,
                     error: dbError.message
                 });
+                failedDocuments.push({
+                    filename: file.originalname,
+                    reason: `Database insert failed: ${dbError.message}`
+                });
                 // Try to clean up storage
                 await supabaseAdmin.storage.from('evidence-documents').remove([storagePath]);
                 continue;
@@ -260,6 +269,32 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
             });
         }
 
+        if (uploadedDocuments.length === 0) {
+            logger.warn('⚠️ [DOCUMENTS] Upload completed with zero saved documents', {
+                userId,
+                tenantId,
+                requestedFileCount: files.length,
+                failedCount: failedDocuments.length,
+                failedDocuments
+            });
+
+            return res.status(500).json({
+                success: false,
+                error: 'No documents were saved',
+                message: 'Upload failed before any documents could be stored.',
+                documents: [],
+                document_ids: [],
+                file_count: 0,
+                requested_file_count: files.length,
+                failed_files: failedDocuments
+            });
+        }
+
+        const partial = failedDocuments.length > 0;
+        const successMessage = partial
+            ? `${uploadedDocuments.length} of ${files.length} document(s) uploaded successfully`
+            : `${uploadedDocuments.length} document(s) uploaded successfully`;
+
         // Send SSE event for real-time update
         try {
             const sseHub = (await import('../utils/sseHub')).default;
@@ -267,19 +302,22 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
                 userId: finalUserId,
                 documentIds: uploadedDocuments.map(d => d.id),
                 count: uploadedDocuments.length,
-                message: `${uploadedDocuments.length} document(s) uploaded successfully`,
+                message: successMessage,
                 timestamp: new Date().toISOString()
             });
         } catch (sseError) {
             logger.debug('SSE event failed (non-critical)', { error: sseError });
         }
 
-        res.json({
+        res.status(partial ? 207 : 200).json({
             success: true,
-            message: `${uploadedDocuments.length} document(s) uploaded successfully`,
+            partial,
+            message: successMessage,
             documents: uploadedDocuments,
             document_ids: uploadedDocuments.map(d => d.id),
-            file_count: uploadedDocuments.length
+            file_count: uploadedDocuments.length,
+            requested_file_count: files.length,
+            failed_files: failedDocuments
         });
     } catch (error: any) {
         logger.error('❌ [DOCUMENTS] Upload error', {
