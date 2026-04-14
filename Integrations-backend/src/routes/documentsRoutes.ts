@@ -7,6 +7,59 @@ import { evidenceAuditService } from '../services/evidenceAuditService';
 
 const router = Router();
 
+const DOCUMENT_BUCKET_NAME = 'evidence-documents';
+
+async function ensureEvidenceDocumentsBucket(): Promise<void> {
+    const storageClient = supabaseAdmin || supabase;
+
+    try {
+        const { data: buckets, error: listError } = await storageClient.storage.listBuckets();
+
+        if (listError) {
+            logger.warn('⚠️ [DOCUMENTS] Could not verify evidence storage bucket before upload', {
+                error: listError.message,
+                bucket: DOCUMENT_BUCKET_NAME
+            });
+            return;
+        }
+
+        const bucketExists = buckets?.some(bucket => bucket.name === DOCUMENT_BUCKET_NAME);
+        if (bucketExists) {
+            return;
+        }
+
+        const { error: createError } = await storageClient.storage.createBucket(DOCUMENT_BUCKET_NAME, {
+            public: false,
+            fileSizeLimit: 52428800,
+            allowedMimeTypes: [
+                'application/pdf',
+                'image/jpeg',
+                'image/png',
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'application/vnd.ms-excel',
+                'text/csv'
+            ]
+        });
+
+        if (createError && !/already exists/i.test(createError.message || '')) {
+            logger.warn('⚠️ [DOCUMENTS] Could not create evidence storage bucket before upload', {
+                error: createError.message,
+                bucket: DOCUMENT_BUCKET_NAME
+            });
+            return;
+        }
+
+        logger.info('✅ [DOCUMENTS] Evidence storage bucket is ready for manual upload', {
+            bucket: DOCUMENT_BUCKET_NAME
+        });
+    } catch (error: any) {
+        logger.warn('⚠️ [DOCUMENTS] Evidence storage bucket check failed before upload', {
+            error: error?.message || String(error),
+            bucket: DOCUMENT_BUCKET_NAME
+        });
+    }
+}
+
 function isProductDocument(doc: any) {
     return doc?.metadata?.ingestion_method !== 'demo_seed';
 }
@@ -171,6 +224,8 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
             filenames: files.map(f => f.originalname)
         });
 
+        await ensureEvidenceDocumentsBucket();
+
         // Extract tenant ID
         const tenantId = (req as any).tenant?.tenantId;
 
@@ -194,7 +249,7 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
             // Upload to Supabase Storage
             const { error: storageError } = await supabaseAdmin
                 .storage
-                .from('evidence-documents')
+                .from(DOCUMENT_BUCKET_NAME)
                 .upload(storagePath, file.buffer, {
                     contentType: file.mimetype,
                     upsert: false
@@ -249,7 +304,7 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
                     reason: `Database insert failed: ${dbError.message}`
                 });
                 // Try to clean up storage
-                await supabaseAdmin.storage.from('evidence-documents').remove([storagePath]);
+                await supabaseAdmin.storage.from(DOCUMENT_BUCKET_NAME).remove([storagePath]);
                 continue;
             }
 
