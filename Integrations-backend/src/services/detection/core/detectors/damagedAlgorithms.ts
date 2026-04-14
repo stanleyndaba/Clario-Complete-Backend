@@ -15,6 +15,14 @@ import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
 
 import { requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
+import {
+    buildSellerValuationContext,
+    getUnitValue,
+    type DetectorUnitValueType,
+    type DetectorUnitValueSource,
+    type SellerValuationContext,
+    type ValuationCandidate,
+} from './shared/valuationService';
 // ============================================================================
 // Types
 // ============================================================================
@@ -86,6 +94,7 @@ export interface DamagedSyncedData {
     sync_id: string;
     inventory_ledger: DamagedEvent[];
     reimbursement_events: ReimbursementEvent[];
+    valuation_context?: SellerValuationContext;
 }
 
 export interface DamagedDetectionResult {
@@ -147,7 +156,8 @@ export interface DamagedInventoryEvidence {
     // Valuation
     unit_value: number;
     total_value: number;
-    valuation_source: 'CATALOG_METADATA' | 'SKU_SYNC' | 'LOCAL_CONTEXT' | 'DEFAULT_FALLBACK';
+    valuation_source: DetectorUnitValueSource;
+    valuation_value_type?: DetectorUnitValueType;
     valuation_basis?: string;
     valuation_confidence: number;
 
@@ -197,57 +207,67 @@ function getAnomalyType(reasonCode: string): 'damaged_warehouse' | 'damaged_inbo
 
 interface ValuationResult {
     value: number;
-    source: 'CATALOG_METADATA' | 'SKU_SYNC' | 'LOCAL_CONTEXT' | 'DEFAULT_FALLBACK';
+    source: DetectorUnitValueSource;
     basis?: string;
     confidence: number;
+    valueType: DetectorUnitValueType;
 }
 
 function getDamagedValuation(
     damage: DamagedEvent,
-    linkedReimbs: ReimbursementEvent[]
+    linkedReimbs: ReimbursementEvent[],
+    data: DamagedSyncedData
 ): ValuationResult {
-    // 1. Primary: Exact Item Metadata / unit_value from ledger (if it exists and is non-zero)
+    const localCandidates: ValuationCandidate[] = [];
+
     if (damage.unit_value && damage.unit_value > 0) {
-        return { 
-            value: damage.unit_value, 
-            source: 'CATALOG_METADATA', 
-            basis: `Ledger unit_value provided: ${damage.unit_value}`,
-            confidence: 1.0 
-        };
+        localCandidates.push({
+            source: 'CURRENT_EVENT_UNIT_VALUE',
+            value: damage.unit_value,
+            confidence: 0.92,
+            basis: `Damaged event unit value: ${damage.unit_value}`,
+            observedAt: damage.event_date,
+            currency: 'USD',
+        });
     }
 
-    // 2. Secondary: Recent SKU-level synced value (average_sales_price)
     if (damage.average_sales_price && damage.average_sales_price > 0) {
-        return { 
-            value: damage.average_sales_price, 
-            source: 'SKU_SYNC', 
-            basis: `Ledger SKU ASP: ${damage.average_sales_price}`,
-            confidence: 0.95 
-        };
+        localCandidates.push({
+            source: 'LEDGER_AVERAGE_SALES_PRICE',
+            value: damage.average_sales_price,
+            confidence: 0.9,
+            basis: `Damaged event average sales price: ${damage.average_sales_price}`,
+            observedAt: damage.event_date,
+            currency: 'USD',
+        });
     }
 
-    // 3. Tertiary: Local context (Historical reimbursement basis for this set)
     if (linkedReimbs.length > 0) {
         const totalAmt = linkedReimbs.reduce((sum, r) => sum + r.reimbursement_amount, 0);
         const totalQty = linkedReimbs.reduce((sum, r) => sum + (r.quantity_reimbursed || 1), 0);
         if (totalQty > 0) {
-            const histBasis = totalAmt / totalQty;
-            return { 
-                value: histBasis, 
-                source: 'LOCAL_CONTEXT', 
-                basis: `Reimbursement basis: ${histBasis.toFixed(2)}`,
-                confidence: 0.9 
-            };
+            localCandidates.push({
+                source: 'HISTORICAL_REIMBURSEMENT',
+                value: totalAmt / totalQty,
+                confidence: 0.86,
+                basis: `Historical reimbursement basis from ${linkedReimbs.length} linked reimbursements`,
+                observedAt: linkedReimbs[0]?.reimbursement_date || damage.event_date,
+                currency: linkedReimbs[0]?.currency || 'USD',
+            });
         }
     }
 
-    // 4. Last Resort: Default Fallback
-    return { 
-        value: 15, 
-        source: 'DEFAULT_FALLBACK', 
-        basis: 'Static industry default fallback',
-        confidence: 0.7 
-    };
+    return getUnitValue({
+        sku: damage.sku,
+        fnsku: damage.fnsku,
+        asin: damage.asin,
+        eventDate: damage.event_date,
+        valueType: 'REIMBURSEMENT_RATE',
+        valuationContext: data.valuation_context,
+        localCandidates,
+        fallbackValue: 20,
+        fallbackBasis: `Broken Goods shared fallback for ${damage.fnsku || damage.sku || 'UNKNOWN'}`,
+    });
 }
 
 // ============================================================================
@@ -423,7 +443,7 @@ export function detectDamagedInventory(
         });
 
         // c. Valuation Ladder
-        const val = getDamagedValuation(damage, linkedReimbs);
+        const val = getDamagedValuation(damage, linkedReimbs, data);
         
         let localReimbursedValue = 0;
         let localReimbursedQty = 0;
@@ -476,6 +496,7 @@ export function detectDamagedInventory(
                 unit_value: val.value,
                 total_value: totalDamageValue,
                 valuation_source: val.source,
+                valuation_value_type: val.valueType,
                 valuation_basis: val.basis,
                 valuation_confidence: val.confidence,
 
@@ -660,9 +681,10 @@ export async function runDamagedInventoryDetection(
     // Look back 120 days to catch 45+ day old events
     const lookbackDate = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
 
-    const [damagedEvents, reimbursementEvents] = await Promise.all([
+    const [damagedEvents, reimbursementEvents, valuationContext] = await Promise.all([
         fetchDamagedEvents(sellerId, { startDate: lookbackDate, syncId }),
-        fetchReimbursementsForDamage(sellerId, { startDate: lookbackDate, syncId })
+        fetchReimbursementsForDamage(sellerId, { startDate: lookbackDate, syncId }),
+        buildSellerValuationContext(sellerId, syncId),
     ]);
 
     logger.info('💥 [BROKEN GOODS] Data fetched', {
@@ -681,7 +703,8 @@ export async function runDamagedInventoryDetection(
         seller_id: sellerId,
         sync_id: syncId,
         inventory_ledger: damagedEvents,
-        reimbursement_events: reimbursementEvents
+        reimbursement_events: reimbursementEvents,
+        valuation_context: valuationContext,
     };
 
     const results = await detectDamagedInventory(sellerId, syncId, syncedData);

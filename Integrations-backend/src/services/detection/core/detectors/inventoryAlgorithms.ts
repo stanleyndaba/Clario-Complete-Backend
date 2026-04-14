@@ -8,6 +8,12 @@ import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
 
 import { requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
+import {
+    buildSellerValuationContext,
+    getUnitValue,
+    type SellerValuationContext,
+    type ValuationCandidate,
+} from './shared/valuationService';
 
 // ============================================================================
 // Types
@@ -31,6 +37,7 @@ export interface SyncedData {
     seller_id: string; sync_id: string;
     inventory_ledger: InventoryLedgerEvent[];
     financial_events?: any[]; orders?: any[];
+    valuation_context?: SellerValuationContext;
 }
 
 export interface DetectionResult {
@@ -195,13 +202,43 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
 
             if (unresolved > 0.1) {
                 const priceSource = sorted.find(e => (e.average_sales_price || e.unit_cost));
-                const avgP = priceSource?.average_sales_price || priceSource?.unit_cost || 20;
-                const valuationSource = priceSource ? 'data' : 'fallback';
+                const localCandidates: ValuationCandidate[] = [];
+                if ((priceSource?.average_sales_price || 0) > 0) {
+                    localCandidates.push({
+                        source: 'LEDGER_AVERAGE_SALES_PRICE',
+                        value: Number(priceSource?.average_sales_price || 0),
+                        confidence: 0.9,
+                        basis: `Whale Hunter ledger average sales price for ${fnsku}`,
+                        observedAt: priceSource?.event_date,
+                        currency: 'USD',
+                    });
+                }
+                if ((priceSource?.unit_cost || 0) > 0) {
+                    localCandidates.push({
+                        source: 'LEDGER_UNIT_COST',
+                        value: Number(priceSource?.unit_cost || 0),
+                        confidence: 0.82,
+                        basis: `Whale Hunter ledger unit cost for ${fnsku}`,
+                        observedAt: priceSource?.event_date,
+                        currency: 'USD',
+                    });
+                }
+                const valuation = getUnitValue({
+                    sku: sorted[0].sku,
+                    fnsku,
+                    asin: sorted[0].asin,
+                    eventDate: firstLossDate,
+                    valueType: 'REIMBURSEMENT_RATE',
+                    valuationContext: data.valuation_context,
+                    localCandidates,
+                    fallbackValue: 20,
+                    fallbackBasis: `Whale Hunter shared fallback for ${fnsku}`,
+                });
                 results.push({
                     seller_id: sellerId, sync_id: syncId,
                     anomaly_type: matureUnresolved >= Math.max(balanceGap, netAdj) ? 'lost_in_transit' : 'lost_warehouse',
-                    severity: (unresolved * avgP >= 1000 ? 'critical' : unresolved * avgP >= 500 ? 'high' : 'medium'),
-                    estimated_value: unresolved * avgP, currency: 'USD',
+                    severity: (unresolved * valuation.value >= 1000 ? 'critical' : unresolved * valuation.value >= 500 ? 'high' : 'medium'),
+                    estimated_value: unresolved * valuation.value, currency: 'USD',
                     confidence_score: (latestSnap ? 0.95 : 0.85) + reData.modifier,
                     fnsku, sku: sorted[0].sku, asin: sorted[0].asin, product_name: sorted[0].product_name,
                     evidence_mode: latestSnap ? 'SNAPSHOT_CONFIRMED' : 'LEDGER_RECONCILED',
@@ -216,8 +253,11 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
                         linkage_score: reData.modifier,
                         physical_loss_units: physicalLoss,
                         netted_reimbursement_units: nettedUnits,
-                        valuation_source: valuationSource,
-                        unit_price_used: avgP
+                        valuation_source: valuation.source,
+                        valuation_basis: valuation.basis,
+                        valuation_confidence: valuation.confidence,
+                        valuation_value_type: valuation.valueType,
+                        unit_price_used: valuation.value
                     }
                 });
             }
@@ -276,9 +316,13 @@ function groupByFnsku(events: InventoryLedgerEvent[]): Record<string, InventoryL
 
 export async function runLostInventoryDetection(sellerId: string, syncId: string) {
     const tenantId = await resolveTenantId(sellerId);
-    const data = await fetchInventoryLedger(sellerId, syncId);
+    const [data, valuationContext] = await Promise.all([
+        fetchInventoryLedger(sellerId, syncId),
+        buildSellerValuationContext(sellerId, syncId),
+    ]);
     data.inventory_ledger = (data.inventory_ledger || []).filter(e => e.seller_id === sellerId);
     if (data.financial_events) data.financial_events = data.financial_events.filter(e => e.seller_id === sellerId || !e.seller_id);
+    data.valuation_context = valuationContext;
     const results = detectLostInventory(sellerId, syncId, data);
     if (results.length > 0) await storeDetectionResults(sellerId, tenantId, results);
     return results;

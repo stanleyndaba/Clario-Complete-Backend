@@ -14,6 +14,7 @@ import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
 
 import { requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
+import { buildSellerValuationContext, getUnitValue, type SellerValuationContext } from './shared/valuationService';
 // ============================================================================
 // Types
 // ============================================================================
@@ -86,6 +87,10 @@ export interface TransferLossResult {
 
     evidence: {
         transfer_record: TransferRecord;
+        valuation_source?: string;
+        valuation_value_type?: string;
+        valuation_basis?: string;
+        valuation_confidence?: number;
         detection_reasons: string[];
     };
 }
@@ -105,7 +110,8 @@ const MIN_LOSS_VALUE = 10;
 export async function detectWarehouseTransferLoss(
     sellerId: string,
     syncId: string,
-    transfers: TransferRecord[]
+    transfers: TransferRecord[],
+    valuationContext?: SellerValuationContext
 ): Promise<TransferLossResult[]> {
     const results: TransferLossResult[] = [];
 
@@ -114,7 +120,25 @@ export async function detectWarehouseTransferLoss(
     });
 
     for (const transfer of transfers) {
-        const lossValue = transfer.quantity_missing * transfer.unit_value;
+        const valuation = getUnitValue({
+            sku: transfer.sku,
+            fnsku: transfer.fnsku,
+            asin: transfer.asin,
+            eventDate: transfer.transfer_date,
+            valueType: 'REIMBURSEMENT_RATE',
+            valuationContext,
+            localCandidates: transfer.unit_value > 0 ? [{
+                source: 'TRANSFER_UNIT_VALUE',
+                value: transfer.unit_value,
+                confidence: 0.99,
+                basis: `Transfer unit value for ${transfer.transfer_id}`,
+                observedAt: transfer.transfer_date,
+                currency: transfer.currency,
+            }] : [],
+            fallbackValue: 20,
+            fallbackBasis: `Transfer shared fallback for ${transfer.transfer_id}`,
+        });
+        const lossValue = transfer.quantity_missing * valuation.value;
 
         // Check for actual loss
         if (transfer.quantity_missing > 0 && lossValue >= MIN_LOSS_VALUE) {
@@ -143,6 +167,10 @@ export async function detectWarehouseTransferLoss(
                 recommended_action: lossValue >= 50 ? 'file_claim' : 'investigate',
                 evidence: {
                     transfer_record: transfer,
+                    valuation_source: valuation.source,
+                    valuation_value_type: valuation.valueType,
+                    valuation_basis: valuation.basis,
+                    valuation_confidence: valuation.confidence,
                     detection_reasons: [
                         `${transfer.quantity_missing} units missing from transfer`,
                         `Sent: ${transfer.quantity_sent}, Received: ${transfer.quantity_received}`,
@@ -155,7 +183,7 @@ export async function detectWarehouseTransferLoss(
         // Check for excessive delay
         if (transfer.days_in_transit > MAX_TRANSIT_DAYS &&
             transfer.transfer_status === 'in_transit') {
-            const potentialLoss = transfer.quantity_sent * transfer.unit_value;
+            const potentialLoss = transfer.quantity_sent * valuation.value;
 
             results.push({
                 seller_id: sellerId,
@@ -180,6 +208,10 @@ export async function detectWarehouseTransferLoss(
                 recommended_action: 'investigate',
                 evidence: {
                     transfer_record: transfer,
+                    valuation_source: valuation.source,
+                    valuation_value_type: valuation.valueType,
+                    valuation_basis: valuation.basis,
+                    valuation_confidence: valuation.confidence,
                     detection_reasons: [
                         `Transfer pending for ${transfer.days_in_transit} days (max: ${MAX_TRANSIT_DAYS})`,
                         `Potential at-risk value: $${potentialLoss.toFixed(2)}`
@@ -254,7 +286,7 @@ export async function fetchTransferRecords(
                     quantity_missing: Math.max(0, sent - received),
                     transfer_status: row.status || 'pending',
                     days_in_transit: daysInTransit,
-                    unit_value: parseFloat(row.unit_value) || 15,
+                    unit_value: parseFloat(row.unit_value) || 0,
                     currency: row.currency || 'USD'
                 });
             }
@@ -409,8 +441,11 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
 export async function runTransferLossDetection(sellerId: string, syncId: string): Promise<TransferLossResult[]> {
     logger.info('🏭 [TRANSFER-LOSS] Starting automated run', { sellerId, syncId });
     
-    const transfers = await fetchTransferRecords(sellerId, { syncId });
-    const results = await detectWarehouseTransferLoss(sellerId, syncId, transfers);
+    const [transfers, valuationContext] = await Promise.all([
+        fetchTransferRecords(sellerId, { syncId }),
+        buildSellerValuationContext(sellerId, syncId),
+    ]);
+    const results = await detectWarehouseTransferLoss(sellerId, syncId, transfers, valuationContext);
     
     if (results.length > 0) {
         await storeTransferLossResults(results);

@@ -16,6 +16,7 @@
 import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
 import { requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
+import { buildSellerValuationContext, getUnitValue, type SellerValuationContext } from './shared/valuationService';
 
 // ============================================================================
 // Types
@@ -53,6 +54,7 @@ export interface InboundSyncedData {
     seller_id: string; sync_id: string;
     inbound_shipment_items: InboundShipmentItem[];
     reimbursement_events: InboundReimbursement[];
+    valuation_context?: SellerValuationContext;
 }
 
 export interface InboundDetectionResult {
@@ -107,22 +109,17 @@ function normalizeSku(sku: string): string {
 const daysBetween = (d1: Date, d2: Date) => Math.floor(Math.abs(d2.getTime() - d1.getTime()) / 86400000);
 const severity = (v: number): 'low' | 'medium' | 'high' | 'critical' => v >= 500 ? 'critical' : v >= 200 ? 'high' : v >= 50 ? 'medium' : 'low';
 
-// Strict Valuation Ladder Helper
-function getUnitValuation(item: InboundShipmentItem, data: InboundSyncedData, detectorDefault: number): { value: number, source: string, confidence: number, basis: string } {
-    // Level 1: Same SKU in same data sync (Evidence of previous valuation)
-    const matchingReimb = (data.reimbursement_events || []).find(r => r.sku === item.sku && r.reimbursement_amount > 0);
-    
-    if (matchingReimb) {
-        return { value: detectorDefault, source: 'ITEM_SKU_SYNC', confidence: 0.8, basis: `Confirmed SKU reimbursement exists in sync context` };
-    }
-
-    // Level 2: Fallback Constant
-    return { 
-        value: detectorDefault, 
-        source: 'FALLBACK_CONSTANT', 
-        confidence: 0.6, 
-        basis: `Default for ${item.shipment_id || 'UNKNOWN'}` 
-    };
+function getInboundUnitValuation(item: InboundShipmentItem, data: InboundSyncedData, detectorDefault: number) {
+    return getUnitValue({
+        sku: item.sku,
+        fnsku: item.fnsku,
+        asin: item.asin,
+        eventDate: item.shipment_closed_date || item.shipment_created_date,
+        valueType: 'REIMBURSEMENT_RATE',
+        valuationContext: data.valuation_context,
+        fallbackValue: detectorDefault,
+        fallbackBasis: `Inbound shared fallback for ${item.shipment_id || item.sku || 'UNKNOWN'}`,
+    });
 }
 
 // Tiered Event Fingerprinting
@@ -301,7 +298,7 @@ export function detectShipmentMissing(sellerId: string, syncId: string, data: In
         const greyZoneSuppressed = matches.length > 0 && validMatches.length === 0;
         if (greyZoneSuppressed) continue; 
 
-        const valuation = getUnitValuation(first, data, 20);
+        const valuation = getInboundUnitValuation(first, data, 20);
         const estimatedReimbUnits = Math.round(totalReimbValue / valuation.value);
 
         if (totalReimbValue > 0 && Math.abs(totalReimbValue % valuation.value) > (valuation.value * 0.5)) {
@@ -322,6 +319,7 @@ export function detectShipmentMissing(sellerId: string, syncId: string, data: In
                 observed_received_units: totalReceived,
                 reimbursed_value: totalReimbValue,
                 estimated_reimbursed_units_equivalent: estimatedReimbUnits,
+                valuation_value_type: valuation.valueType,
                 valuation_source: valuation.source,
                 valuation_confidence: valuation.confidence,
                 valuation_basis: valuation.basis,
@@ -411,7 +409,7 @@ export function detectShipmentShortage(sellerId: string, syncId: string, data: I
         const greyZoneSuppressed = hasWeakLinkage && validMatches.length === 0;
         if (greyZoneSuppressed) continue;
 
-        const valuation = getUnitValuation(first, data, 20);
+        const valuation = getInboundUnitValuation(first, data, 20);
         const estimatedReimbUnits = Math.round(totalReimbValue / valuation.value);
         
         if (totalReimbValue > 0 && Math.abs(totalReimbValue % valuation.value) > (valuation.value * 0.5)) {
@@ -436,6 +434,7 @@ export function detectShipmentShortage(sellerId: string, syncId: string, data: I
                 observed_received_units: totalReceived,
                 reimbursed_value: totalReimbValue,
                 estimated_reimbursed_units_equivalent: estimatedReimbUnits,
+                valuation_value_type: valuation.valueType,
                 valuation_source: valuation.source,
                 valuation_confidence: valuation.confidence,
                 valuation_basis: valuation.basis,
@@ -516,7 +515,7 @@ export function detectCarrierDamage(sellerId: string, syncId: string, data: Inbo
         const greyZoneSuppressed = hasWeakLinkage && validMatches.length === 0;
         if (greyZoneSuppressed) continue;
 
-        const valuation = getUnitValuation(item, data, 20);
+        const valuation = getInboundUnitValuation(item, data, 20);
         const estimatedReimbUnits = Math.round(totalReimbValue / valuation.value);
 
         if (totalReimbValue > 0 && Math.abs(totalReimbValue % valuation.value) > (valuation.value * 0.5)) {
@@ -540,6 +539,7 @@ export function detectCarrierDamage(sellerId: string, syncId: string, data: Inbo
                 unresolved_units: damagedQty,
                 reimbursed_value: totalReimbValue,
                 estimated_reimbursed_units_equivalent: estimatedReimbUnits,
+                valuation_value_type: valuation.valueType,
                 valuation_source: valuation.source,
                 valuation_confidence: valuation.confidence,
                 valuation_basis: valuation.basis,
@@ -617,7 +617,7 @@ export function detectReceivingError(sellerId: string, syncId: string, data: Inb
         const greyZoneSuppressed = hasWeakLinkage && validMatches.length === 0;
         if (greyZoneSuppressed) continue;
 
-        const valuation = getUnitValuation(item, data, 18);
+        const valuation = getInboundUnitValuation(item, data, 18);
         const estimatedReimbUnits = Math.round(totalReimbValue / valuation.value);
 
         if (totalReimbValue > 0 && Math.abs(totalReimbValue % valuation.value) > (valuation.value * 0.5)) {
@@ -640,6 +640,7 @@ export function detectReceivingError(sellerId: string, syncId: string, data: Inb
                 unresolved_units: shortage,
                 reimbursed_value: totalReimbValue,
                 estimated_reimbursed_units_equivalent: estimatedReimbUnits,
+                valuation_value_type: valuation.valueType,
                 valuation_source: valuation.source,
                 valuation_confidence: valuation.confidence,
                 valuation_basis: valuation.basis,
@@ -720,7 +721,7 @@ export function detectCaseBreakError(sellerId: string, syncId: string, data: Inb
         const greyZoneSuppressed = hasWeakLinkage && validMatches.length === 0;
         if (greyZoneSuppressed) continue;
 
-        const valuation = getUnitValuation(item, data, 18);
+        const valuation = getInboundUnitValuation(item, data, 18);
         const estimatedReimbUnits = Math.round(totalReimbValue / valuation.value);
 
         if (totalReimbValue > 0 && Math.abs(totalReimbValue % valuation.value) > (valuation.value * 0.5)) {
@@ -745,6 +746,7 @@ export function detectCaseBreakError(sellerId: string, syncId: string, data: Inb
                 unresolved_units: shortage,
                 reimbursed_value: totalReimbValue,
                 estimated_reimbursed_units_equivalent: estimatedReimbUnits,
+                valuation_value_type: valuation.valueType,
                 valuation_source: valuation.source,
                 valuation_confidence: valuation.confidence,
                 valuation_basis: valuation.basis,
@@ -972,8 +974,18 @@ export async function fetchInboundReimbursements(sellerId: string, syncId?: stri
 }
 
 export async function runInboundDetection(sellerId: string, syncId: string): Promise<InboundDetectionResult[]> {
-    const [items, reimbs] = await Promise.all([fetchInboundShipmentItems(sellerId, syncId), fetchInboundReimbursements(sellerId, syncId)]);
-    const results = await detectInboundAnomalies(sellerId, syncId, { seller_id: sellerId, sync_id: syncId, inbound_shipment_items: items, reimbursement_events: reimbs });
+    const [items, reimbs, valuationContext] = await Promise.all([
+        fetchInboundShipmentItems(sellerId, syncId),
+        fetchInboundReimbursements(sellerId, syncId),
+        buildSellerValuationContext(sellerId, syncId),
+    ]);
+    const results = await detectInboundAnomalies(sellerId, syncId, {
+        seller_id: sellerId,
+        sync_id: syncId,
+        inbound_shipment_items: items,
+        reimbursement_events: reimbs,
+        valuation_context: valuationContext,
+    });
     
     if (results.length > 0) {
         await storeInboundDetectionResults(results);
