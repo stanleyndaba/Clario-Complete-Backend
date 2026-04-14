@@ -9,6 +9,30 @@ const router = Router();
 
 const DOCUMENT_BUCKET_NAME = 'evidence-documents';
 
+function buildSafeStorageFilename(originalFilename: string): string {
+    const trimmed = String(originalFilename || 'document').trim();
+    const normalized = trimmed.normalize('NFKD').replace(/[^\x20-\x7E]/g, '');
+    const extensionIndex = normalized.lastIndexOf('.');
+    const hasExtension = extensionIndex > 0 && extensionIndex < normalized.length - 1;
+    const baseName = hasExtension ? normalized.slice(0, extensionIndex) : normalized;
+    const extension = hasExtension ? normalized.slice(extensionIndex).toLowerCase() : '';
+
+    const sanitizedBase = baseName
+        .replace(/[\/\\]/g, '-')
+        .replace(/[^a-zA-Z0-9._ -]/g, '_')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/ /g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^\.+/, '')
+        .replace(/[. ]+$/, '');
+
+    const fallbackBase = sanitizedBase || 'document';
+    const safeExtension = extension.replace(/[^a-z0-9.]/g, '') || '';
+
+    return `${fallbackBase}${safeExtension}`;
+}
+
 async function ensureEvidenceDocumentsBucket(): Promise<void> {
     const storageClient = supabaseAdmin || supabase;
 
@@ -242,9 +266,9 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             const docId = uuidv4();
-            const timestamp = Date.now();
+            const safeStorageFilename = buildSafeStorageFilename(file.originalname);
             // Use index to ensure unique paths even for files with same name
-            const storagePath = `${tenantId}/${docId}/${file.originalname}`;
+            const storagePath = `${tenantId}/${docId}/${safeStorageFilename}`;
 
             // Upload to Supabase Storage
             const { error: storageError } = await supabaseAdmin
@@ -258,6 +282,7 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
             if (storageError) {
                 logger.error('❌ [DOCUMENTS] Storage upload failed', {
                     filename: file.originalname,
+                    safeStorageFilename,
                     error: storageError.message
                 });
                 failedDocuments.push({
@@ -320,6 +345,7 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
             logger.info('✅ [DOCUMENTS] Document uploaded successfully', {
                 docId,
                 filename: file.originalname,
+                safeStorageFilename,
                 storagePath
             });
         }
