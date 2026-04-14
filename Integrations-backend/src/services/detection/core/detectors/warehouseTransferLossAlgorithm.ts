@@ -219,8 +219,12 @@ export async function fetchTransferRecords(
             .from('inventory_transfers')
             .select('*')
             .eq('tenant_id', tenantId)
-            .eq('seller_id', sellerId)
-            .gte('transfer_date', cutoffDate.toISOString());
+            .eq('seller_id', sellerId);
+        // A sync-scoped run is already narrowed to one imported dataset, so keep the
+        // full sync history instead of clipping older transfer rows by the default lookback.
+        if (!options.syncId) {
+            query = query.gte('transfer_date', cutoffDate.toISOString());
+        }
         if (options.syncId) {
             query = query.eq('sync_id', options.syncId);
         }
