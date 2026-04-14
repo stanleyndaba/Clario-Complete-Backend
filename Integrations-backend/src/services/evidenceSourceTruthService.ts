@@ -1,6 +1,7 @@
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import tokenManager from '../utils/tokenManager';
+import { getManagedTokenSourceFields } from '../utils/evidenceSourceRecordShape';
 
 export type EvidenceProvider =
   | 'gmail'
@@ -46,8 +47,85 @@ const PROVIDER_ALIASES: Record<string, EvidenceProvider> = {
   slack: 'slack'
 };
 
+const FILTER_CONFIG_KEYS = [
+  'senderPatterns',
+  'includeSenders',
+  'excludeSenders',
+  'subjectKeywords',
+  'excludeSubjects',
+  'fileTypes',
+  'fileNamePatterns',
+  'folders',
+  'dateRange',
+  'skipDuplicates',
+  'skipExisting'
+] as const;
+
 function normalizeProvider(provider: string): EvidenceProvider | null {
   return PROVIDER_ALIASES[String(provider || '').trim().toLowerCase()] || null;
+}
+
+function isFilterConfig(value: any): value is Record<string, any> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+
+  return FILTER_CONFIG_KEYS.some((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+async function loadTenantEvidenceFilters(tenantId: string): Promise<Record<string, any> | undefined> {
+  const adminClient = supabaseAdmin || supabase;
+  const { data, error } = await adminClient
+    .from('tenants')
+    .select('settings')
+    .eq('id', tenantId)
+    .maybeSingle();
+
+  if (error) {
+    logger.warn('⚠️ [EVIDENCE SOURCE TRUTH] Failed to load tenant evidence filters', {
+      tenantId,
+      error: error.message
+    });
+    return undefined;
+  }
+
+  const filters = data?.settings?.evidenceIngestion?.filters;
+  return isFilterConfig(filters) ? filters : undefined;
+}
+
+function mergeTenantFiltersIntoMetadata(metadata: any, tenantFilters?: Record<string, any>) {
+  const currentMetadata = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+    ? metadata
+    : {};
+
+  if (!tenantFilters) {
+    return {
+      metadata: currentMetadata,
+      changed: false
+    };
+  }
+
+  const hasCanonicalFilters = isFilterConfig(currentMetadata.filters);
+  const hasNestedCanonicalFilters = isFilterConfig(currentMetadata.ingestion_settings?.filters);
+
+  if (hasCanonicalFilters && hasNestedCanonicalFilters) {
+    return {
+      metadata: currentMetadata,
+      changed: false
+    };
+  }
+
+  return {
+    metadata: {
+      ...currentMetadata,
+      filters: hasCanonicalFilters ? currentMetadata.filters : tenantFilters,
+      ingestion_settings: {
+        ...(currentMetadata.ingestion_settings || {}),
+        filters: hasNestedCanonicalFilters ? currentMetadata.ingestion_settings.filters : tenantFilters
+      }
+    },
+    changed: true
+  };
 }
 
 function isExpiryUsable(rawExpiry: string | null | undefined): boolean {
@@ -124,6 +202,8 @@ async function recoverSourceFromTokens(
     recovered_at: new Date().toISOString(),
     expires_at: tokenRow?.expires_at || null
   };
+  const tenantFilters = await loadTenantEvidenceFilters(tenantId);
+  const mergedRecoveryMetadata = mergeTenantFiltersIntoMetadata(metadata, tenantFilters).metadata;
 
   const { data: existingSource, error: existingError } = await adminClient
     .from('evidence_sources')
@@ -145,15 +225,16 @@ async function recoverSourceFromTokens(
   }
 
   if (existingSource?.id) {
-    const mergedMetadata = {
+    const mergedMetadata = mergeTenantFiltersIntoMetadata({
       ...(existingSource.metadata || {}),
       ...metadata
-    };
+    }, tenantFilters).metadata;
 
     const { data: updated, error: updateError } = await adminClient
       .from('evidence_sources')
       .update({
         status: 'connected',
+        ...getManagedTokenSourceFields(),
         metadata: mergedMetadata,
         updated_at: new Date().toISOString()
       })
@@ -191,7 +272,8 @@ async function recoverSourceFromTokens(
       provider,
       account_email: 'unknown',
       status: 'connected',
-      metadata,
+      ...getManagedTokenSourceFields(),
+      metadata: mergedRecoveryMetadata,
       permissions: [],
       tenant_id: tenantId
     })
@@ -269,13 +351,33 @@ export async function resolveEvidenceSourceContext(
   }
 
   if (existingSource) {
+    const tenantFilters = await loadTenantEvidenceFilters(tenantId);
+    const enrichedMetadataResult = mergeTenantFiltersIntoMetadata(existingSource.metadata, tenantFilters);
+    const enrichedMetadata = enrichedMetadataResult.metadata;
+
+    if (enrichedMetadataResult.changed && existingSource.id) {
+      await adminClient
+        .from('evidence_sources')
+        .update({
+          metadata: enrichedMetadata,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', existingSource.id);
+    }
+
     const hasMetadataAuth = hasMetadataAccessToken(existingSource) && isExpiryUsable(existingSource.metadata?.expires_at || existingSource.metadata?.token_expires_at);
     const hasTokenManagerAuth = await hasUsableTokenManagerAuth(userId, normalizedProvider);
     if (hasMetadataAuth) {
-      return toContext(existingSource, normalizedProvider, 'evidence_source');
+      return toContext({
+        ...existingSource,
+        metadata: enrichedMetadata
+      }, normalizedProvider, 'evidence_source');
     }
     if (hasTokenManagerAuth) {
-      return toContext(existingSource, normalizedProvider, 'token_manager');
+      return toContext({
+        ...existingSource,
+        metadata: enrichedMetadata
+      }, normalizedProvider, 'token_manager');
     }
   }
 

@@ -9,6 +9,7 @@ import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supaba
 import logger from '../utils/logger';
 import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifier';
 import { normalizeResolvedAmazonSellerId } from '../utils/sellerIdentity';
+import { getManagedTokenSourceFields } from '../utils/evidenceSourceRecordShape';
 
 type ProviderKey = 'amazon' | 'gmail' | 'outlook' | 'gdrive' | 'dropbox' | 'slack' | 'adobe_sign' | 'onedrive';
 const DOC_TOKEN_PROVIDERS: ProviderKey[] = ['gmail', 'outlook', 'gdrive', 'dropbox'];
@@ -563,6 +564,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
                   provider: providerKey,
                   account_email: accountEmail || 'unknown',
                   status: 'connected',
+                  ...getManagedTokenSourceFields(),
                   permissions: [],
                   metadata: {
                     source: 'token_recovery',

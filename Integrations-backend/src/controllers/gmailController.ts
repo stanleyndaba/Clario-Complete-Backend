@@ -7,6 +7,7 @@ import tokenManager from '../utils/tokenManager';
 import oauthStateStore from '../utils/oauthStateStore';
 import { validateRedirectUri } from '../security/validateRedirect';
 import { convertUserIdToUuid, supabase, supabaseAdmin } from '../database/supabaseClient';
+import { getManagedTokenSourceFields } from '../utils/evidenceSourceRecordShape';
 
 // Gmail OAuth base URL
 const GMAIL_AUTH_BASE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -356,6 +357,7 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
               seller_id: dbUserId,
               status: 'connected',
               account_email: userEmail,
+              ...getManagedTokenSourceFields(!!refresh_token),
               last_sync_at: nowIso,
               updated_at: nowIso,
               permissions: scopes,
@@ -374,6 +376,7 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
               provider: 'gmail',
               account_email: userEmail,
               status: 'connected',
+              ...getManagedTokenSourceFields(!!refresh_token),
               last_sync_at: nowIso,
               permissions: scopes,
               metadata: sourceMetadata,

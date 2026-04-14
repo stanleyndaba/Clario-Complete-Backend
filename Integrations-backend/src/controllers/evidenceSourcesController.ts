@@ -11,6 +11,7 @@ import config from '../config/env';
 import tokenManager from '../utils/tokenManager';
 import oauthStateStore from '../utils/oauthStateStore';
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
+import { getManagedTokenSourceFields } from '../utils/evidenceSourceRecordShape';
 
 // OAuth URLs for different providers
 const OAUTH_URLS = {
@@ -516,6 +517,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
             .update({
               status: 'connected',
               account_email: accountEmail || null,
+              ...getManagedTokenSourceFields(!!refresh_token),
               updated_at: new Date().toISOString(),
               permissions: scopes,
               metadata: sourceMetadata,
@@ -535,6 +537,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
               provider: provider,
               account_email: accountEmail || 'unknown',
               status: 'connected',
+              ...getManagedTokenSourceFields(!!refresh_token),
               permissions: scopes,
               metadata: sourceMetadata,
               tenant_id: tenantId || null,
