@@ -326,18 +326,20 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
                     user_id: finalUserId,
                     tenant_id: tenantId,
                     seller_id: tenantId, // Use tenantId as seller_id in multi-tenant mode
+                    doc_type: 'other',
                     filename: file.originalname,
                     content_type: file.mimetype,
                     mime_type: file.mimetype,
                     size_bytes: file.size,
                     storage_path: storagePath,
-                    status: 'uploaded',
+                    processing_status: 'pending',
                     parser_status: 'pending',
-                    source: 'upload',
                     provider: 'upload',
+                    ingested_at: new Date().toISOString(),
                     metadata: {
                         uploaded_at: new Date().toISOString(),
                         upload_method: 'drag_drop',
+                        source: 'upload',
                         original_filename: file.originalname,
                         safe_storage_filename: safeStorageFilename
                     }
