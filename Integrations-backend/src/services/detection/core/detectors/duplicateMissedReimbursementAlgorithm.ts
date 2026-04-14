@@ -691,6 +691,56 @@ export async function storeSentinelResults(results: SentinelDetectionResult[]): 
     const tenantId = await resolveTenantId(results[0].seller_id);
     const sourceType = await requireDetectionSourceType(tenantId, results[0].seller_id, results[0].sync_id);
     try {
+        const syncId = results[0].sync_id;
+        const sellerId = results[0].seller_id;
+        const nowIso = new Date().toISOString();
+        const normalizeIdList = (value: unknown): string[] => {
+            if (!Array.isArray(value)) return [];
+            return value
+                .map((item) => String(item || '').trim())
+                .filter(Boolean)
+                .sort();
+        };
+        const legacyFingerprintFor = (row: { evidence?: any; detection_type?: string }) => {
+            const evidence = row.evidence || {};
+            const detectionType = row.detection_type || evidence.detection_type || '';
+            const sku = String(evidence.sku || '').trim();
+            const unmatchedLossIds = normalizeIdList(evidence.unmatched_loss_ids);
+            const duplicateReimbursementIds = normalizeIdList(evidence.duplicate_reimbursement_ids);
+
+            return JSON.stringify({
+                detectionType,
+                sku,
+                unmatchedLossIds,
+                duplicateReimbursementIds,
+            });
+        };
+        const fingerprintsFor = (row: { evidence?: any; detection_type?: string }) => {
+            const evidence = row.evidence || {};
+            const detectionType = row.detection_type || evidence.detection_type || '';
+            const cohortId = String(evidence.cohort_id || '').trim();
+            const explicitReference = String(evidence.reference_fingerprint || '').trim();
+            const fingerprints = new Set<string>();
+
+            if (detectionType && cohortId) {
+                fingerprints.add(`${detectionType}|${cohortId}`);
+            }
+            if (explicitReference) {
+                fingerprints.add(explicitReference);
+            }
+
+            const legacyFingerprint = legacyFingerprintFor(row);
+            if (legacyFingerprint !== JSON.stringify({
+                detectionType: '',
+                sku: '',
+                unmatchedLossIds: [],
+                duplicateReimbursementIds: [],
+            })) {
+                fingerprints.add(`legacy|${legacyFingerprint}`);
+            }
+
+            return Array.from(fingerprints);
+        };
         const records = results.map(r => ({
             seller_id: r.seller_id,
             tenant_id: tenantId,
@@ -702,6 +752,9 @@ export async function storeSentinelResults(results: SentinelDetectionResult[]): 
             currency: r.currency,
             confidence_score: r.confidence_score,
             evidence: {
+                cohort_id: r.evidence?.recovery_cohort?.cohort_id || null,
+                reference_fingerprint: `${r.detection_type}|${r.evidence?.recovery_cohort?.cohort_id || ''}`,
+                causal_identity_keys: r.evidence?.recovery_cohort?.causal_identity_keys || null,
                 detection_type: r.detection_type,
                 sku: r.sku,
                 quantity_gap: r.quantity_gap,
@@ -712,9 +765,109 @@ export async function storeSentinelResults(results: SentinelDetectionResult[]): 
                 risk_level: r.risk_level,
                 detection_reasons: r.evidence.detection_reasons
             },
-            status: 'pending'
+            status: 'pending',
+            updated_at: nowIso
         }));
-        await supabaseAdmin.from('detection_results').insert(records);
+
+        const { data: existing, error: existingError } = await supabaseAdmin
+            .from('detection_results')
+            .select('id,evidence,created_at')
+            .eq('tenant_id', tenantId)
+            .eq('seller_id', sellerId)
+            .eq('sync_id', syncId)
+            .eq('anomaly_type', 'reimbursement_duplicate_missed');
+
+        if (existingError) {
+            throw new Error(existingError.message);
+        }
+
+        const existingByFingerprint = new Map<string, any[]>();
+        for (const row of existing || []) {
+            for (const fingerprint of fingerprintsFor({ evidence: row.evidence })) {
+                const rows = existingByFingerprint.get(fingerprint) || [];
+                rows.push(row);
+                existingByFingerprint.set(fingerprint, rows);
+            }
+        }
+
+        const inserts: any[] = [];
+        const updates: Array<{ id: string; payload: any }> = [];
+        const duplicateDeletes: string[] = [];
+
+        for (const record of records) {
+            const matchingRows = Array.from(new Map(
+                fingerprintsFor({
+                    evidence: record.evidence,
+                    detection_type: record.evidence?.detection_type
+                }).flatMap((fingerprint) =>
+                    (existingByFingerprint.get(fingerprint) || []).map((row) => [row.id, row] as const)
+                )
+            ).values()).sort((a, b) =>
+                new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+            );
+
+            if (!matchingRows.length) {
+                inserts.push({
+                    ...record,
+                    created_at: nowIso
+                });
+                continue;
+            }
+
+            const keeper = matchingRows[0];
+            updates.push({
+                id: keeper.id,
+                payload: {
+                    severity: record.severity,
+                    estimated_value: record.estimated_value,
+                    currency: record.currency,
+                    confidence_score: record.confidence_score,
+                    evidence: record.evidence,
+                    source_type: sourceType,
+                    status: record.status,
+                    updated_at: nowIso
+                }
+            });
+
+            for (const duplicate of matchingRows.slice(1)) {
+                duplicateDeletes.push(duplicate.id);
+            }
+        }
+
+        for (const update of updates) {
+            const { error: updateError } = await supabaseAdmin
+                .from('detection_results')
+                .update(update.payload)
+                .eq('id', update.id);
+            if (updateError) {
+                throw new Error(updateError.message);
+            }
+        }
+
+        if (duplicateDeletes.length > 0) {
+            const { error: deleteError } = await supabaseAdmin
+                .from('detection_results')
+                .delete()
+                .in('id', duplicateDeletes);
+            if (deleteError) {
+                throw new Error(deleteError.message);
+            }
+        }
+
+        if (inserts.length > 0) {
+            const { error: insertError } = await supabaseAdmin
+                .from('detection_results')
+                .insert(inserts);
+            if (insertError) {
+                throw new Error(insertError.message);
+            }
+        }
+
+        logger.info('🔍 [SENTINEL] Detection results stored', {
+            inserted: inserts.length,
+            updated: updates.length,
+            deduped: duplicateDeletes.length
+        });
     } catch (err: any) {
         logger.error('🔍 [SENTINEL] Exception storing results', { error: err.message });
     }
