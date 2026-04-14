@@ -129,12 +129,25 @@ const DEFAULT_EVIDENCE_INGESTION_SETTINGS = {
       'asn', 'packing-list', 'pack-list', 'pick-list', 'inventory',
       'FBA', 'reimburse', 'removal', 'liquidation', 'order'
     ],
-    folders: ['/Invoices', '/Shipping', '/Returns', '/Credits', '/Amazon', '/Finance', '/Inventory'],
-    dateRange: 'last_18_months',
-    skipDuplicates: true,
-    skipExisting: true
+    dateRange: 'last_18_months'
   }
 };
+
+function sanitizeEvidenceFilters(raw: any) {
+  const fileTypes = typeof raw?.fileTypes === 'object' && !Array.isArray(raw?.fileTypes)
+    ? raw.fileTypes
+    : DEFAULT_EVIDENCE_INGESTION_SETTINGS.filters.fileTypes;
+
+  return {
+    senderPatterns: Array.isArray(raw?.senderPatterns) ? raw.senderPatterns : [],
+    excludeSenders: Array.isArray(raw?.excludeSenders) ? raw.excludeSenders : [],
+    subjectKeywords: Array.isArray(raw?.subjectKeywords) ? raw.subjectKeywords : [],
+    excludeSubjects: Array.isArray(raw?.excludeSubjects) ? raw.excludeSubjects : [],
+    fileTypes,
+    fileNamePatterns: Array.isArray(raw?.fileNamePatterns) ? raw.fileNamePatterns : [],
+    dateRange: raw?.dateRange || 'last_90'
+  };
+}
 
 function getTenantIdOrReject(req: Request, res: Response): string | null {
   const tenantId = (req as any).tenant?.tenantId;
@@ -321,7 +334,10 @@ async function loadTenantEvidenceSettings(tenantId: string) {
 
   return {
     tenantSettings: tenant?.settings || {},
-    evidenceIngestion: tenant?.settings?.evidenceIngestion || DEFAULT_EVIDENCE_INGESTION_SETTINGS
+    evidenceIngestion: {
+      ...(tenant?.settings?.evidenceIngestion || DEFAULT_EVIDENCE_INGESTION_SETTINGS),
+      filters: sanitizeEvidenceFilters(tenant?.settings?.evidenceIngestion?.filters || DEFAULT_EVIDENCE_INGESTION_SETTINGS.filters)
+    }
   };
 }
 
@@ -1248,32 +1264,23 @@ router.post('/filters', async (req: Request, res: Response) => {
       fileTypes,
       fileNamePatterns,
       dateRange,
-      skipDuplicates,
-      skipExisting,
       // Shared fields
       excludeSenders,
-      folders,
       // Legacy format (backward compatibility)
       includeSenders
     } = req.body;
 
     // Build comprehensive filters object
-    const filters: Record<string, any> = {
+    const filters = sanitizeEvidenceFilters({
       // Use new format if provided, otherwise fall back to legacy
       senderPatterns: senderPatterns || includeSenders || [],
       excludeSenders: excludeSenders || [],
       subjectKeywords: subjectKeywords || [],
       excludeSubjects: excludeSubjects || [],
-      // Handle fileTypes - new format is object, legacy is array
-      fileTypes: typeof fileTypes === 'object' && !Array.isArray(fileTypes)
-        ? fileTypes
-        : { pdf: true, images: true, spreadsheets: true, docs: false },
+      fileTypes,
       fileNamePatterns: fileNamePatterns || [],
-      folders: folders || [],
-      dateRange: dateRange || 'last_90',
-      skipDuplicates: skipDuplicates !== false, // Default true
-      skipExisting: skipExisting !== false // Default true
-    };
+      dateRange: dateRange || 'last_90'
+    });
 
     const { evidenceIngestion } = await loadTenantEvidenceSettings(tenantId);
     const nextSettings = {

@@ -20,10 +20,7 @@ interface EvidenceFilters {
   excludeSubjects: string[];
   fileTypes: { pdf: boolean; images: boolean; spreadsheets: boolean; docs: boolean; shipping: boolean };
   fileNamePatterns: string[];
-  folders: string[];
   dateRange: 'last_30' | 'last_90' | 'last_12_months' | 'last_18_months' | 'since_last_sync' | 'all';
-  skipDuplicates: boolean;
-  skipExisting: boolean;
 }
 
 interface ProviderStatus {
@@ -74,11 +71,24 @@ const DEFAULT_FILTERS: EvidenceFilters = {
     'asn', 'packing-list', 'pack-list', 'pick-list', 'inventory',
     'FBA', 'reimburse', 'removal', 'liquidation', 'order'
   ],
-  folders: ['/Invoices', '/Shipping', '/Returns', '/Credits', '/Amazon', '/Finance', '/Inventory'],
-  dateRange: 'last_18_months',
-  skipDuplicates: true,
-  skipExisting: true
+  dateRange: 'last_18_months'
 };
+
+function sanitizeEvidenceFilters(raw: any): EvidenceFilters {
+  const fileTypes = typeof raw?.fileTypes === 'object' && !Array.isArray(raw?.fileTypes)
+    ? raw.fileTypes
+    : DEFAULT_FILTERS.fileTypes;
+
+  return {
+    senderPatterns: Array.isArray(raw?.senderPatterns) ? raw.senderPatterns : DEFAULT_FILTERS.senderPatterns,
+    excludeSenders: Array.isArray(raw?.excludeSenders) ? raw.excludeSenders : DEFAULT_FILTERS.excludeSenders,
+    subjectKeywords: Array.isArray(raw?.subjectKeywords) ? raw.subjectKeywords : DEFAULT_FILTERS.subjectKeywords,
+    excludeSubjects: Array.isArray(raw?.excludeSubjects) ? raw.excludeSubjects : DEFAULT_FILTERS.excludeSubjects,
+    fileTypes,
+    fileNamePatterns: Array.isArray(raw?.fileNamePatterns) ? raw.fileNamePatterns : DEFAULT_FILTERS.fileNamePatterns,
+    dateRange: raw?.dateRange || DEFAULT_FILTERS.dateRange
+  };
+}
 
 function parseScopes(permissions: any): string[] | undefined {
   if (!permissions) return undefined;
@@ -282,7 +292,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       evidenceSettings: {
         autoCollect: tenant.settings?.evidenceIngestion?.autoCollect !== false,
         schedule: tenant.settings?.evidenceIngestion?.schedule || 'daily_0200',
-        filters: tenant.settings?.evidenceIngestion?.filters || DEFAULT_FILTERS
+        filters: sanitizeEvidenceFilters(tenant.settings?.evidenceIngestion?.filters || DEFAULT_FILTERS)
       },
       providers: {
         amazon: { provider: 'amazon', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false },
