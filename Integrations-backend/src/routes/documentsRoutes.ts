@@ -334,7 +334,7 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
                     storage_path: storagePath,
                     processing_status: 'pending',
                     parser_status: 'pending',
-                    provider: 's3',
+                    provider: 'manual_upload',
                     ingested_at: new Date().toISOString(),
                     metadata: {
                         uploaded_at: new Date().toISOString(),
