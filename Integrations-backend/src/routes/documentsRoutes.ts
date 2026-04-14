@@ -326,6 +326,7 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
                     user_id: finalUserId,
                     tenant_id: tenantId,
                     seller_id: tenantId, // Use tenantId as seller_id in multi-tenant mode
+                    external_id: `manual_upload:${docId}`,
                     doc_type: 'other',
                     filename: file.originalname,
                     content_type: file.mimetype,
