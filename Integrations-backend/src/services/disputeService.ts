@@ -84,6 +84,27 @@ export interface CaseResolution {
   provider_response: any;
 }
 
+function getStoredOriginalFilename(doc: any): string | null {
+  const explicitOriginalFilename = typeof doc?.original_filename === 'string'
+    ? doc.original_filename.trim()
+    : '';
+  if (explicitOriginalFilename) {
+    return explicitOriginalFilename;
+  }
+
+  const metadataOriginalFilename = typeof doc?.metadata?.original_filename === 'string'
+    ? doc.metadata.original_filename.trim()
+    : '';
+  if (metadataOriginalFilename) {
+    return metadataOriginalFilename;
+  }
+
+  const canonicalFilename = typeof doc?.filename === 'string'
+    ? doc.filename.trim()
+    : '';
+  return canonicalFilename || null;
+}
+
 export class DisputeService {
   /**
    * Create a new dispute case
@@ -823,7 +844,7 @@ export class DisputeService {
       if (disputeCase.evidence_document_ids && disputeCase.evidence_document_ids.length > 0) {
         const { data } = await supabase
           .from('evidence_documents')
-          .select('filename, original_filename, doc_type, source_provider, parsed_metadata, extracted, metadata')
+          .select('filename, doc_type, source_provider, parsed_metadata, extracted, metadata')
           .in('id', disputeCase.evidence_document_ids);
         evidenceDocs = data || [];
       }
@@ -909,7 +930,9 @@ export class DisputeService {
       const submissionQuantity = Number(detectionEvidence.quantity || detectionEvidence.units || disputeMeta.quantity || 1) || 1;
       const submissionAmount = Number(disputeCase.estimated_recovery_amount ?? disputeCase.claim_amount ?? 0) || 0;
       const submissionCurrency = disputeCase.currency || 'USD';
-      const evidenceFilenames = evidenceDocs.map((doc) => String(doc.original_filename || doc.filename || '').trim()).filter(Boolean);
+      const evidenceFilenames = evidenceDocs
+        .map((doc) => String(getStoredOriginalFilename(doc) || '').trim())
+        .filter(Boolean);
 
       const generatedBrief = briefGeneratorService.generateBrief({
         caseType: claimType || 'generic',
@@ -992,7 +1015,7 @@ export class DisputeService {
       };
 
       const evidenceRows = evidenceDocs.map((doc) => ({
-        filename: doc.original_filename || doc.filename || 'Unavailable',
+        filename: getStoredOriginalFilename(doc) || 'Unavailable',
         type: doc.doc_type || 'Unavailable',
         source: doc.source_provider || 'Unavailable',
         confidence: extractConfidence(doc)

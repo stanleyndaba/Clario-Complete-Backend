@@ -172,6 +172,27 @@ function normalizeEvidenceProvider(provider: string | null | undefined): string 
   return normalized;
 }
 
+function getStoredOriginalFilename(doc: any): string | null {
+  const explicitOriginalFilename = typeof doc?.original_filename === 'string'
+    ? doc.original_filename.trim()
+    : '';
+  if (explicitOriginalFilename) {
+    return explicitOriginalFilename;
+  }
+
+  const metadataOriginalFilename = typeof doc?.metadata?.original_filename === 'string'
+    ? doc.metadata.original_filename.trim()
+    : '';
+  if (metadataOriginalFilename) {
+    return metadataOriginalFilename;
+  }
+
+  const canonicalFilename = typeof doc?.filename === 'string'
+    ? doc.filename.trim()
+    : '';
+  return canonicalFilename || null;
+}
+
 async function getAuthoritativeEvidenceSourcesForUser(userId: string, tenantId: string) {
   const adminClient = supabaseAdmin || supabase;
   const { data: sourceRows, error: sourcesError } = await adminClient
@@ -2872,8 +2893,8 @@ router.get('/v1/evidence/documents/:documentId', async (req: Request, res: Respo
     // Build response in expected format
     const response = {
       id: doc.id,
-      filename: doc.filename || doc.original_filename,
-      original_filename: doc.original_filename,
+      filename: getStoredOriginalFilename(doc),
+      original_filename: getStoredOriginalFilename(doc),
       processing_status: doc.status || 'completed',
       parser_status: getAuthoritativeParserStatus(doc),
       parser_confidence: parserConfidence,
@@ -2887,7 +2908,7 @@ router.get('/v1/evidence/documents/:documentId', async (req: Request, res: Respo
         confidence_score: parserConfidence
       },
       // Include raw doc data for fallback
-      name: doc.filename || doc.original_filename,
+      name: getStoredOriginalFilename(doc),
       uploadDate: doc.created_at,
       created_at: doc.created_at,
       updated_at: doc.updated_at,

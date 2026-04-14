@@ -9,6 +9,31 @@ const router = Router();
 
 const DOCUMENT_BUCKET_NAME = 'evidence-documents';
 
+function getStoredOriginalFilename(doc: any): string | null {
+    const explicitOriginalFilename = typeof doc?.original_filename === 'string'
+        ? doc.original_filename.trim()
+        : '';
+    if (explicitOriginalFilename) {
+        return explicitOriginalFilename;
+    }
+
+    const metadataOriginalFilename = typeof doc?.metadata?.original_filename === 'string'
+        ? doc.metadata.original_filename.trim()
+        : '';
+    if (metadataOriginalFilename) {
+        return metadataOriginalFilename;
+    }
+
+    const canonicalFilename = typeof doc?.filename === 'string'
+        ? doc.filename.trim()
+        : '';
+    return canonicalFilename || null;
+}
+
+function getDocumentDisplayName(doc: any, fallback = 'Untitled document'): string {
+    return getStoredOriginalFilename(doc) || fallback;
+}
+
 function buildSafeStorageFilename(originalFilename: string): string {
     const trimmed = String(originalFilename || 'document').trim();
     const normalized = trimmed.normalize('NFKD').replace(/[^\x20-\x7E]/g, '');
@@ -302,7 +327,6 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
                     tenant_id: tenantId,
                     seller_id: tenantId, // Use tenantId as seller_id in multi-tenant mode
                     filename: file.originalname,
-                    original_filename: file.originalname,
                     content_type: file.mimetype,
                     mime_type: file.mimetype,
                     size_bytes: file.size,
@@ -313,7 +337,9 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
                     provider: 'upload',
                     metadata: {
                         uploaded_at: new Date().toISOString(),
-                        upload_method: 'drag_drop'
+                        upload_method: 'drag_drop',
+                        original_filename: file.originalname,
+                        safe_storage_filename: safeStorageFilename
                     }
                 })
                 .select()
@@ -469,7 +495,7 @@ router.get('/', async (req: Request, res: Response) => {
 
             return {
                 id: doc.id,
-                name: doc.filename || doc.original_filename,
+                name: getDocumentDisplayName(doc),
                 uploadDate: doc.created_at,
                 status: doc.status || 'uploaded',
                 size: doc.size_bytes,
@@ -628,9 +654,9 @@ router.get('/inventory', async (req: Request, res: Response) => {
 
             return {
                 id: doc.id,
-                name: doc.filename || doc.original_filename || 'Untitled document',
-                filename: doc.filename || doc.original_filename || 'Untitled document',
-                original_filename: doc.original_filename || null,
+                name: getDocumentDisplayName(doc),
+                filename: getDocumentDisplayName(doc),
+                original_filename: getStoredOriginalFilename(doc),
                 created_at: doc.created_at,
                 updated_at: doc.updated_at,
                 uploadDate: doc.created_at,
@@ -872,9 +898,9 @@ router.get('/:id', async (req: Request, res: Response) => {
 
         res.json({
             id: doc.id,
-            name: doc.filename || doc.original_filename,
-            filename: doc.filename || doc.original_filename,
-            original_filename: doc.original_filename,
+            name: getDocumentDisplayName(doc),
+            filename: getDocumentDisplayName(doc),
+            original_filename: getStoredOriginalFilename(doc),
             uploadDate: doc.created_at,
             created_at: doc.created_at,
             updated_at: doc.updated_at,
