@@ -40,6 +40,30 @@ export interface GmailDocument {
   content?: Buffer;
 }
 
+const DEFAULT_GMAIL_INGESTION_QUERY =
+  'from:amazon.com OR from:amazon.co.uk OR subject:(invoice OR receipt OR "FBA" OR "reimbursement" OR "refund")';
+
+const FILTER_CONFIG_KEYS = [
+  'senderPatterns',
+  'includeSenders',
+  'excludeSenders',
+  'subjectKeywords',
+  'excludeSubjects',
+  'fileTypes',
+  'fileNamePatterns',
+  'folders',
+  'dateRange',
+  'skipDuplicates',
+  'skipExisting'
+] as const;
+
+type ResolvedFilterSource =
+  | 'canonical_metadata_filters'
+  | 'canonical_ingestion_settings_filters'
+  | 'legacy_top_level'
+  | 'inline_options_filters'
+  | 'none';
+
 export class GmailIngestionService {
   private gmailService: GmailService;
   private allowedFileTypes: Set<string> = new Set();
@@ -47,6 +71,48 @@ export class GmailIngestionService {
 
   constructor() {
     this.gmailService = new GmailService();
+  }
+
+  private resetFilterState(): void {
+    this.allowedFileTypes.clear();
+    this.fileNamePatterns = [];
+  }
+
+  private isFilterConfig(value: any): value is Record<string, any> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return false;
+    }
+
+    return FILTER_CONFIG_KEYS.some((key) => Object.prototype.hasOwnProperty.call(value, key));
+  }
+
+  private resolvePersistedFilters(metadata: any): { filters?: Record<string, any>; source: ResolvedFilterSource } {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return { source: 'none' };
+    }
+
+    if (this.isFilterConfig(metadata.filters)) {
+      return {
+        filters: metadata.filters,
+        source: 'canonical_metadata_filters'
+      };
+    }
+
+    if (this.isFilterConfig(metadata.ingestion_settings?.filters)) {
+      return {
+        filters: metadata.ingestion_settings.filters,
+        source: 'canonical_ingestion_settings_filters'
+      };
+    }
+
+    if (this.isFilterConfig(metadata)) {
+      return {
+        filters: metadata,
+        source: 'legacy_top_level'
+      };
+    }
+
+    return { source: 'none' };
   }
 
   /**
@@ -223,30 +289,82 @@ export class GmailIngestionService {
         maxResults: options.maxResults || 50
       });
 
-      // Load saved filters from database if not provided inline
-      let filters = options.filters;
-      if (!filters) {
-        try {
-          if (sourceContext.metadata) {
-            filters = sourceContext.metadata;
-            logger.info('📋 [GMAIL INGESTION] Loaded saved filters', { userId, filterKeys: Object.keys(filters) });
-          }
-        } catch (e) {
-          logger.debug('Could not load saved filters, using defaults');
+      this.resetFilterState();
+
+      let filters: Record<string, any> | undefined;
+      let filterSource: ResolvedFilterSource = 'none';
+      try {
+        const resolvedSavedFilters = this.resolvePersistedFilters(sourceContext.metadata);
+        if (resolvedSavedFilters.filters) {
+          filters = resolvedSavedFilters.filters;
+          filterSource = resolvedSavedFilters.source;
+          logger.info('📋 [GMAIL INGESTION] Loaded saved filters', {
+            userId,
+            filterSource,
+            filterKeys: Object.keys(filters)
+          });
+        } else if (this.isFilterConfig(options.filters)) {
+          filters = options.filters;
+          filterSource = 'inline_options_filters';
+          logger.info('📋 [GMAIL INGESTION] Using inline filters because no saved filters were found', {
+            userId,
+            filterSource,
+            filterKeys: Object.keys(filters)
+          });
+        } else {
+          logger.info('📋 [GMAIL INGESTION] No saved Gmail filters found; default query fallback remains available', {
+            userId
+          });
         }
+      } catch (e: any) {
+        logger.debug('Could not resolve saved Gmail filters, using fallback order', {
+          userId,
+          error: e?.message || String(e)
+        });
       }
 
       // Build dynamic query from filters
       let dynamicQuery = options.query;
+      let querySource:
+        | 'explicit_query_override'
+        | 'canonical_saved_filters'
+        | 'legacy_top_level_filters'
+        | 'inline_options_filters'
+        | 'default_fallback' = options.query ? 'explicit_query_override' : 'default_fallback';
+
       if (!dynamicQuery && filters) {
         dynamicQuery = this.buildGmailQueryFromFilters(filters);
+        if (filterSource === 'canonical_metadata_filters' || filterSource === 'canonical_ingestion_settings_filters') {
+          querySource = 'canonical_saved_filters';
+        } else if (filterSource === 'legacy_top_level') {
+          querySource = 'legacy_top_level_filters';
+        } else if (filterSource === 'inline_options_filters') {
+          querySource = 'inline_options_filters';
+        }
       }
 
-      // Default query if no filters configured
-      const finalQuery = dynamicQuery ||
-        'from:amazon.com OR from:amazon.co.uk OR subject:(invoice OR receipt OR "FBA" OR "reimbursement" OR "refund")';
+      if (!dynamicQuery && !filters) {
+        querySource = 'default_fallback';
+      }
 
-      logger.info('🔍 [GMAIL INGESTION] Using query', { userId, query: finalQuery.substring(0, 200) });
+      // Default query is only used when no saved or inline filters resolve.
+      const finalQuery = dynamicQuery !== undefined
+        ? dynamicQuery
+        : DEFAULT_GMAIL_INGESTION_QUERY;
+
+      if (filters && finalQuery.length === 0) {
+        logger.info('🔍 [GMAIL INGESTION] Saved filters resolved to an empty Gmail search query', {
+          userId,
+          filterSource
+        });
+      }
+
+      logger.info('🔍 [GMAIL INGESTION] Using query', {
+        userId,
+        querySource,
+        filterSource,
+        queryPreview: finalQuery.substring(0, 200)
+      });
 
       // Fetch emails from Gmail
       const emails = await this.gmailService.fetchEmails(
