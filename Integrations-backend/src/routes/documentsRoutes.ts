@@ -334,12 +334,13 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
                     storage_path: storagePath,
                     processing_status: 'pending',
                     parser_status: 'pending',
-                    provider: 'upload',
+                    provider: 'other',
                     ingested_at: new Date().toISOString(),
                     metadata: {
                         uploaded_at: new Date().toISOString(),
                         upload_method: 'drag_drop',
                         source: 'upload',
+                        provider_label: 'upload',
                         original_filename: file.originalname,
                         safe_storage_filename: safeStorageFilename
                     }
