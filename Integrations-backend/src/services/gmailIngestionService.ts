@@ -16,6 +16,13 @@ import {
   extractEvidenceLinkHints,
   IngestionStrategy
 } from './evidenceIngestionDecisionUtils';
+import {
+  buildInitialStorageMetadata,
+  hasFailedStorageUpload,
+  IngestionStorageFailureError,
+  markDocumentStorageFailure,
+  markDocumentStorageSuccess
+} from './ingestionStorageTruth';
 import { resolveEvidenceSourceContext } from './evidenceSourceTruthService';
 import amazonCaseThreadService from './amazonCaseThreadService';
 
@@ -23,6 +30,7 @@ export interface GmailIngestionResult {
   success: boolean;
   documentsIngested: number;
   emailsProcessed: number;
+  storageFailures: number;
   errors: string[];
   jobId?: string;
 }
@@ -259,6 +267,7 @@ export class GmailIngestionService {
     const errors: string[] = [];
     let documentsIngested = 0;
     let emailsProcessed = 0;
+    let storageFailures = 0;
     const dbUserId = convertUserIdToUuid(userId);
     const tenantId = options.tenantId;
 
@@ -268,6 +277,7 @@ export class GmailIngestionService {
           success: false,
           documentsIngested: 0,
           emailsProcessed: 0,
+          storageFailures: 0,
           errors: ['Tenant context is required for Gmail ingestion']
         };
       }
@@ -278,6 +288,7 @@ export class GmailIngestionService {
           success: false,
           documentsIngested: 0,
           emailsProcessed: 0,
+          storageFailures: 0,
           errors: ['No ingestable Gmail source was resolved for this tenant']
         };
       }
@@ -543,6 +554,9 @@ export class GmailIngestionService {
             } catch (error: any) {
               const errorMsg = `Failed to store attachment ${attachment.filename}: ${error?.message || String(error)}`;
               errors.push(errorMsg);
+              if (error instanceof IngestionStorageFailureError) {
+                storageFailures += 1;
+              }
               logger.error('❌ [GMAIL INGESTION] Error storing attachment', {
                 error: errorMsg,
                 emailId: email.id,
@@ -583,6 +597,7 @@ export class GmailIngestionService {
         userId,
         documentsIngested,
         emailsProcessed,
+        storageFailures,
         errors: errors.length,
         elapsedTime: `${elapsedTime}s`
       });
@@ -591,6 +606,7 @@ export class GmailIngestionService {
         success: errors.length === 0,
         documentsIngested,
         emailsProcessed,
+        storageFailures,
         errors
       };
     } catch (error: any) {
@@ -604,6 +620,7 @@ export class GmailIngestionService {
         success: false,
         documentsIngested,
         emailsProcessed,
+        storageFailures,
         errors: [error?.message || String(error)]
       };
     }
@@ -713,7 +730,7 @@ export class GmailIngestionService {
           userId,
           filename: attachment.filename
         });
-        return null;
+        throw new Error(`Cannot store ${attachment.filename} without tenant context`);
       }
 
       const dbUserId = convertUserIdToUuid(userId);
@@ -724,13 +741,13 @@ export class GmailIngestionService {
           tenantId,
           filename: attachment.filename
         });
-        return null;
+        throw new Error(`No tenant-bound Gmail source available for ${attachment.filename}`);
       }
 
       // Check if document already exists (by user_id + external_id + filename)
       const { data: existingDoc } = await supabase
         .from('evidence_documents')
-        .select('id')
+        .select('id, storage_path, metadata')
         .eq('tenant_id', tenantId)
         .eq('user_id', dbUserId)
         .eq('external_id', `${email.id}_${attachment.id}`)
@@ -738,6 +755,13 @@ export class GmailIngestionService {
         .maybeSingle();
 
       if (existingDoc) {
+        if (hasFailedStorageUpload(existingDoc)) {
+          throw new IngestionStorageFailureError(
+            `Document row for ${attachment.filename} exists but the prior storage upload failed`,
+            existingDoc.id
+          );
+        }
+
         logger.debug('⏭️ [GMAIL INGESTION] Document already exists, skipping', {
           documentId: existingDoc.id,
           filename: attachment.filename
@@ -803,20 +827,22 @@ export class GmailIngestionService {
         sender: email.from,
         subject: email.subject,
         message_id: email.id,
-        metadata: buildIngestionMetadata({
-          email_id: email.id,
-          email_date: email.date,
-          email_from: email.from,
-          email_subject: email.subject,
-          attachment_id: attachment.id,
-          ingestion_method: 'gmail_api',
-          ingestion_timestamp: new Date().toISOString()
-        }, ingestionStrategy, ingestionExplanation, {
-          has_content: !!attachment.content,
-          duplicate_filename_hint: !!existingByFilename,
-          duplicate_filename_document_id: existingByFilename?.id || null,
-          ...(overrides?.metadata || {})
-        }),
+        metadata: buildInitialStorageMetadata(
+          buildIngestionMetadata({
+            email_id: email.id,
+            email_date: email.date,
+            email_from: email.from,
+            email_subject: email.subject,
+            attachment_id: attachment.id,
+            ingestion_method: 'gmail_api',
+            ingestion_timestamp: new Date().toISOString()
+          }, ingestionStrategy, ingestionExplanation, {
+            duplicate_filename_hint: !!existingByFilename,
+            duplicate_filename_document_id: existingByFilename?.id || null,
+            ...(overrides?.metadata || {})
+          }),
+          !!attachment.content
+        ),
         raw_text: email.snippet || email.body || null,
         extracted: extractedHints,
         parsed_metadata: parsedMetadata,
@@ -837,7 +863,7 @@ export class GmailIngestionService {
           filename: attachment.filename,
           userId
         });
-        return null;
+        throw new Error(docError?.message || `Failed to store document row for ${attachment.filename}`);
       }
 
       // Store document content in Supabase Storage (if content is available)
@@ -854,41 +880,34 @@ export class GmailIngestionService {
             });
 
           if (uploadError) {
-            // If bucket doesn't exist, log warning but continue
-            if (uploadError.message?.includes('Bucket not found') || uploadError.message?.includes('not found')) {
-              logger.warn('⚠️ [GMAIL INGESTION] Storage bucket not found - file not stored', {
-                bucket: bucketName,
-                documentId: document.id,
-                note: 'Bucket must be created manually in Supabase dashboard'
-              });
-            } else {
-              logger.warn('⚠️ [GMAIL INGESTION] Failed to upload file to storage', {
-                error: uploadError.message,
-                documentId: document.id,
-                filename: attachment.filename
-              });
-            }
+            const storageErrorMessage = uploadError.message?.includes('Bucket not found') || uploadError.message?.includes('not found')
+              ? `Storage upload failed for ${attachment.filename}: storage bucket ${bucketName} was not found`
+              : `Storage upload failed for ${attachment.filename}: ${uploadError.message}`;
+
+            await markDocumentStorageFailure(document.id, documentData.metadata, storageErrorMessage);
+
+            logger.warn('⚠️ [GMAIL INGESTION] Storage upload failed after document row insert', {
+              error: uploadError.message,
+              bucket: bucketName,
+              documentId: document.id,
+              filename: attachment.filename
+            });
+
+            throw new IngestionStorageFailureError(storageErrorMessage, document.id);
           } else {
             // Get storage URL
             const { data: urlData } = supabase.storage
               .from(bucketName)
               .getPublicUrl(filePath);
 
-            // Update document with storage path
-            await supabase
-              .from('evidence_documents')
-              .update({
-                file_url: urlData?.publicUrl || filePath,
-                storage_path: filePath,
-                metadata: {
-                  ...documentData.metadata,
-                  has_content: true,
-                  content_size: attachment.content.length,
-                  storage_path: filePath,
-                  storage_bucket: bucketName
-                }
-              })
-              .eq('id', document.id);
+            await markDocumentStorageSuccess(
+              document.id,
+              documentData.metadata,
+              bucketName,
+              filePath,
+              urlData?.publicUrl || filePath,
+              attachment.content.length
+            );
 
             logger.info('✅ [GMAIL INGESTION] File stored in Supabase Storage', {
               documentId: document.id,
@@ -898,10 +917,20 @@ export class GmailIngestionService {
             });
           }
         } catch (storageError: any) {
-          logger.warn('⚠️ [GMAIL INGESTION] Error storing file content', {
-            error: storageError?.message,
-            documentId: document.id
-          });
+          if (!(storageError instanceof IngestionStorageFailureError)) {
+            const storageErrorMessage = `Storage upload failed for ${attachment.filename}: ${storageError?.message || String(storageError)}`;
+
+            await markDocumentStorageFailure(document.id, documentData.metadata, storageErrorMessage);
+
+            logger.warn('⚠️ [GMAIL INGESTION] Error storing file content', {
+              error: storageError?.message,
+              documentId: document.id
+            });
+
+            throw new IngestionStorageFailureError(storageErrorMessage, document.id);
+          }
+
+          throw storageError;
         }
 
         // 🔍 AGENT 5 PREP: Extract text from PDF for parsing
@@ -973,7 +1002,7 @@ export class GmailIngestionService {
         filename: attachment.filename,
         userId
       });
-      return null;
+      throw error;
     }
   }
 
@@ -1208,6 +1237,7 @@ export class GmailIngestionService {
     lastIngestion?: string;
     documentsCount: number;
     processingCount: number;
+    storageFailures: number;
   }> {
     try {
       // Check if user has connected Gmail source
@@ -1219,23 +1249,21 @@ export class GmailIngestionService {
         .eq('status', 'connected')
         .maybeSingle();
 
-      // Get document counts
-      const { count: totalCount } = await supabase
+      const { data: documents } = await supabase
         .from('evidence_documents')
-        .select('*', { count: 'exact', head: true })
+        .select('id, metadata, storage_path, processing_status')
         .eq('user_id', convertUserIdToUuid(userId));
 
-      const { count: processingCount } = await supabase
-        .from('evidence_documents')
-        .select('*', { count: 'exact', head: true })
-        .eq('user_id', convertUserIdToUuid(userId))
-        .eq('processing_status', 'processing');
+      const storageReadyDocuments = (documents || []).filter((document: any) => !hasFailedStorageUpload(document));
+      const processingCount = storageReadyDocuments.filter((document: any) => document.processing_status === 'processing').length;
+      const storageFailures = (documents || []).filter((document: any) => hasFailedStorageUpload(document)).length;
 
       return {
         hasConnectedSource: !!source,
         lastIngestion: source?.last_sync_at || undefined,
-        documentsCount: totalCount || 0,
-        processingCount: processingCount || 0
+        documentsCount: storageReadyDocuments.length,
+        processingCount,
+        storageFailures
       };
     } catch (error: any) {
       logger.error('❌ [GMAIL INGESTION] Error getting ingestion status', {
@@ -1245,7 +1273,8 @@ export class GmailIngestionService {
       return {
         hasConnectedSource: false,
         documentsCount: 0,
-        processingCount: 0
+        processingCount: 0,
+        storageFailures: 0
       };
     }
   }

@@ -14,6 +14,13 @@ import {
   extractEvidenceLinkHints,
   IngestionStrategy
 } from './evidenceIngestionDecisionUtils';
+import {
+  buildInitialStorageMetadata,
+  hasFailedStorageUpload,
+  IngestionStorageFailureError,
+  markDocumentStorageFailure,
+  markDocumentStorageSuccess
+} from './ingestionStorageTruth';
 import { resolveEvidenceSourceContext } from './evidenceSourceTruthService';
 import tokenManager from '../utils/tokenManager';
 
@@ -21,6 +28,7 @@ export interface GoogleDriveIngestionResult {
   success: boolean;
   documentsIngested: number;
   filesProcessed: number;
+  storageFailures: number;
   errors: string[];
   jobId?: string;
 }
@@ -121,6 +129,7 @@ export class GoogleDriveIngestionService {
     const errors: string[] = [];
     let documentsIngested = 0;
     let filesProcessed = 0;
+    let storageFailures = 0;
     const tenantId = options.tenantId;
 
     try {
@@ -129,6 +138,7 @@ export class GoogleDriveIngestionService {
           success: false,
           documentsIngested: 0,
           filesProcessed: 0,
+          storageFailures: 0,
           errors: ['Tenant context is required for Google Drive ingestion']
         };
       }
@@ -147,6 +157,7 @@ export class GoogleDriveIngestionService {
           success: false,
           documentsIngested: 0,
           filesProcessed: 0,
+          storageFailures: 0,
           errors: ['No connected Google Drive account or access token not available']
         };
       }
@@ -225,6 +236,9 @@ export class GoogleDriveIngestionService {
         } catch (error: any) {
           const errorMsg = `Failed to process file ${file.name}: ${error?.message || String(error)}`;
           errors.push(errorMsg);
+          if (error instanceof IngestionStorageFailureError) {
+            storageFailures += 1;
+          }
           logger.error('❌ [GDRIVE INGESTION] Error processing file', {
             error: errorMsg,
             fileId: file.id,
@@ -239,6 +253,7 @@ export class GoogleDriveIngestionService {
         userId,
         documentsIngested,
         filesProcessed,
+        storageFailures,
         errors: errors.length,
         elapsedTime: `${elapsedTime}s`
       });
@@ -247,6 +262,7 @@ export class GoogleDriveIngestionService {
         success: errors.length === 0,
         documentsIngested,
         filesProcessed,
+        storageFailures,
         errors
       };
     } catch (error: any) {
@@ -260,6 +276,7 @@ export class GoogleDriveIngestionService {
         success: false,
         documentsIngested,
         filesProcessed,
+        storageFailures,
         errors: [error?.message || String(error)]
       };
     }
@@ -406,7 +423,7 @@ export class GoogleDriveIngestionService {
           userId,
           filename: file.name
         });
-        return null;
+        throw new Error(`Cannot store ${file.name} without tenant context`);
       }
 
       const dbUserId = convertUserIdToUuid(userId);
@@ -417,12 +434,12 @@ export class GoogleDriveIngestionService {
           tenantId,
           filename: file.name
         });
-        return null;
+        throw new Error(`No tenant-bound Google Drive source available for ${file.name}`);
       }
       // Check if document already exists
       const { data: existingDoc } = await supabase
         .from('evidence_documents')
-        .select('id')
+        .select('id, storage_path, metadata')
         .eq('tenant_id', tenantId)
         .eq('user_id', dbUserId)
         .eq('external_id', file.id)
@@ -430,6 +447,13 @@ export class GoogleDriveIngestionService {
         .maybeSingle();
 
       if (existingDoc) {
+        if (hasFailedStorageUpload(existingDoc)) {
+          throw new IngestionStorageFailureError(
+            `Document row for ${file.name} exists but the prior storage upload failed`,
+            existingDoc.id
+          );
+        }
+
         logger.debug('⏭️ [GDRIVE INGESTION] Document already exists, skipping', {
           documentId: existingDoc.id,
           filename: file.name
@@ -463,15 +487,17 @@ export class GoogleDriveIngestionService {
         content_type: file.mimeType,
         created_at: file.createdTime,
         modified_at: file.modifiedTime,
-        metadata: buildIngestionMetadata({
-          file_id: file.id,
-          file_name: file.name,
-          mime_type: file.mimeType,
-          web_view_link: file.webViewLink,
-          ingestion_method: 'google_drive_api',
-          ingestion_timestamp: new Date().toISOString(),
-          has_content: !!content
-        }, ingestionStrategy, ingestionExplanation, overrides?.metadata || {}),
+        metadata: buildInitialStorageMetadata(
+          buildIngestionMetadata({
+            file_id: file.id,
+            file_name: file.name,
+            mime_type: file.mimeType,
+            web_view_link: file.webViewLink,
+            ingestion_method: 'google_drive_api',
+            ingestion_timestamp: new Date().toISOString()
+          }, ingestionStrategy, ingestionExplanation, overrides?.metadata || {}),
+          !!content
+        ),
         raw_text: [file.name, file.webViewLink].filter(Boolean).join('\n') || null,
         extracted: extractedHints,
         parsed_metadata: buildParsedMetadataForIngestion(extractedHints, ingestionStrategy, ingestionExplanation),
@@ -492,7 +518,7 @@ export class GoogleDriveIngestionService {
           filename: file.name,
           userId
         });
-        return null;
+        throw new Error(docError?.message || `Failed to store document row for ${file.name}`);
       }
 
       // Store document content in Supabase Storage if available
@@ -509,36 +535,33 @@ export class GoogleDriveIngestionService {
             });
 
           if (uploadError) {
-            if (uploadError.message?.includes('Bucket not found') || uploadError.message?.includes('not found')) {
-              logger.warn('⚠️ [GDRIVE INGESTION] Storage bucket not found - file not stored', {
-                bucket: bucketName,
-                documentId: document.id
-              });
-            } else {
-              logger.warn('⚠️ [GDRIVE INGESTION] Failed to upload file to storage', {
-                error: uploadError.message,
-                documentId: document.id
-              });
-            }
+            const storageErrorMessage = uploadError.message?.includes('Bucket not found') || uploadError.message?.includes('not found')
+              ? `Storage upload failed for ${file.name}: storage bucket ${bucketName} was not found`
+              : `Storage upload failed for ${file.name}: ${uploadError.message}`;
+
+            await markDocumentStorageFailure(document.id, documentData.metadata, storageErrorMessage);
+
+            logger.warn('⚠️ [GDRIVE INGESTION] Storage upload failed after document row insert', {
+              error: uploadError.message,
+              bucket: bucketName,
+              documentId: document.id,
+              filename: file.name
+            });
+
+            throw new IngestionStorageFailureError(storageErrorMessage, document.id);
           } else {
             const { data: urlData } = supabase.storage
               .from(bucketName)
               .getPublicUrl(filePath);
 
-            await supabase
-              .from('evidence_documents')
-              .update({
-                file_url: urlData?.publicUrl || filePath,
-                storage_path: filePath,
-                metadata: {
-                  ...documentData.metadata,
-                  has_content: true,
-                  content_size: content.length,
-                  storage_path: filePath,
-                  storage_bucket: bucketName
-                }
-              })
-              .eq('id', document.id);
+            await markDocumentStorageSuccess(
+              document.id,
+              documentData.metadata,
+              bucketName,
+              filePath,
+              urlData?.publicUrl || filePath,
+              content.length
+            );
 
             logger.info('✅ [GDRIVE INGESTION] File stored in Supabase Storage', {
               documentId: document.id,
@@ -547,10 +570,20 @@ export class GoogleDriveIngestionService {
             });
           }
         } catch (storageError: any) {
-          logger.warn('⚠️ [GDRIVE INGESTION] Error storing file content', {
-            error: storageError?.message,
-            documentId: document.id
-          });
+          if (!(storageError instanceof IngestionStorageFailureError)) {
+            const storageErrorMessage = `Storage upload failed for ${file.name}: ${storageError?.message || String(storageError)}`;
+
+            await markDocumentStorageFailure(document.id, documentData.metadata, storageErrorMessage);
+
+            logger.warn('⚠️ [GDRIVE INGESTION] Error storing file content', {
+              error: storageError?.message,
+              documentId: document.id
+            });
+
+            throw new IngestionStorageFailureError(storageErrorMessage, document.id);
+          }
+
+          throw storageError;
         }
       }
 
@@ -561,7 +594,7 @@ export class GoogleDriveIngestionService {
         userId,
         filename: file.name
       });
-      return null;
+      throw error;
     }
   }
 

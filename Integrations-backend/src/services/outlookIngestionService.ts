@@ -14,12 +14,20 @@ import {
   extractEvidenceLinkHints,
   IngestionStrategy
 } from './evidenceIngestionDecisionUtils';
+import {
+  buildInitialStorageMetadata,
+  hasFailedStorageUpload,
+  IngestionStorageFailureError,
+  markDocumentStorageFailure,
+  markDocumentStorageSuccess
+} from './ingestionStorageTruth';
 import { resolveEvidenceSourceContext } from './evidenceSourceTruthService';
 
 export interface OutlookIngestionResult {
   success: boolean;
   documentsIngested: number;
   emailsProcessed: number;
+  storageFailures: number;
   errors: string[];
   jobId?: string;
 }
@@ -101,6 +109,7 @@ export class OutlookIngestionService {
     const errors: string[] = [];
     let documentsIngested = 0;
     let emailsProcessed = 0;
+    let storageFailures = 0;
     const tenantId = options.tenantId;
 
     try {
@@ -109,6 +118,7 @@ export class OutlookIngestionService {
           success: false,
           documentsIngested: 0,
           emailsProcessed: 0,
+          storageFailures: 0,
           errors: ['Tenant context is required for Outlook ingestion']
         };
       }
@@ -126,6 +136,7 @@ export class OutlookIngestionService {
           success: false,
           documentsIngested: 0,
           emailsProcessed: 0,
+          storageFailures: 0,
           errors: ['No connected Outlook account or access token not available']
         };
       }
@@ -218,6 +229,9 @@ export class OutlookIngestionService {
             } catch (error: any) {
               const errorMsg = `Failed to store attachment ${attachment.filename}: ${error?.message || String(error)}`;
               errors.push(errorMsg);
+              if (error instanceof IngestionStorageFailureError) {
+                storageFailures += 1;
+              }
               logger.error('❌ [OUTLOOK INGESTION] Error storing attachment', {
                 error: errorMsg,
                 emailId: email.id,
@@ -243,6 +257,7 @@ export class OutlookIngestionService {
         userId,
         documentsIngested,
         emailsProcessed,
+        storageFailures,
         errors: errors.length,
         elapsedTime: `${elapsedTime}s`
       });
@@ -251,6 +266,7 @@ export class OutlookIngestionService {
         success: errors.length === 0,
         documentsIngested,
         emailsProcessed,
+        storageFailures,
         errors
       };
     } catch (error: any) {
@@ -264,6 +280,7 @@ export class OutlookIngestionService {
         success: false,
         documentsIngested,
         emailsProcessed,
+        storageFailures,
         errors: [error?.message || String(error)]
       };
     }
@@ -465,7 +482,7 @@ export class OutlookIngestionService {
           userId,
           filename: attachment.filename
         });
-        return null;
+        throw new Error(`Cannot store ${attachment.filename} without tenant context`);
       }
 
       const dbUserId = convertUserIdToUuid(userId);
@@ -476,13 +493,13 @@ export class OutlookIngestionService {
           tenantId,
           filename: attachment.filename
         });
-        return null;
+        throw new Error(`No tenant-bound Outlook source available for ${attachment.filename}`);
       }
 
       // Check if document already exists
       const { data: existingDoc } = await supabase
         .from('evidence_documents')
-        .select('id')
+        .select('id, storage_path, metadata')
         .eq('tenant_id', tenantId)
         .eq('user_id', dbUserId)
         .eq('external_id', `${email.id}_${attachment.id}`)
@@ -490,6 +507,13 @@ export class OutlookIngestionService {
         .maybeSingle();
 
       if (existingDoc) {
+        if (hasFailedStorageUpload(existingDoc)) {
+          throw new IngestionStorageFailureError(
+            `Document row for ${attachment.filename} exists but the prior storage upload failed`,
+            existingDoc.id
+          );
+        }
+
         logger.debug('⏭️ [OUTLOOK INGESTION] Document already exists, skipping', {
           documentId: existingDoc.id,
           filename: attachment.filename
@@ -550,20 +574,22 @@ export class OutlookIngestionService {
         sender: email.from,
         subject: email.subject,
         message_id: email.id,
-        metadata: buildIngestionMetadata({
-          email_id: email.id,
-          email_date: email.date,
-          email_from: email.from,
-          email_subject: email.subject,
-          attachment_id: attachment.id,
-          ingestion_method: 'microsoft_graph_api',
-          ingestion_timestamp: new Date().toISOString()
-        }, ingestionStrategy, ingestionExplanation, {
-          has_content: !!attachment.content,
-          duplicate_filename_hint: !!existingByFilename,
-          duplicate_filename_document_id: existingByFilename?.id || null,
-          ...(overrides?.metadata || {})
-        }),
+        metadata: buildInitialStorageMetadata(
+          buildIngestionMetadata({
+            email_id: email.id,
+            email_date: email.date,
+            email_from: email.from,
+            email_subject: email.subject,
+            attachment_id: attachment.id,
+            ingestion_method: 'microsoft_graph_api',
+            ingestion_timestamp: new Date().toISOString()
+          }, ingestionStrategy, ingestionExplanation, {
+            duplicate_filename_hint: !!existingByFilename,
+            duplicate_filename_document_id: existingByFilename?.id || null,
+            ...(overrides?.metadata || {})
+          }),
+          !!attachment.content
+        ),
         raw_text: `${email.subject || ''}\n${email.from || ''}`.trim() || null,
         extracted: extractedHints,
         parsed_metadata: buildParsedMetadataForIngestion(extractedHints, ingestionStrategy, ingestionExplanation),
@@ -584,7 +610,7 @@ export class OutlookIngestionService {
           filename: attachment.filename,
           userId
         });
-        return null;
+        throw new Error(docError?.message || `Failed to store document row for ${attachment.filename}`);
       }
 
       // Store document content in Supabase Storage if available
@@ -601,36 +627,33 @@ export class OutlookIngestionService {
             });
 
           if (uploadError) {
-            if (uploadError.message?.includes('Bucket not found') || uploadError.message?.includes('not found')) {
-              logger.warn('⚠️ [OUTLOOK INGESTION] Storage bucket not found - file not stored', {
-                bucket: bucketName,
-                documentId: document.id
-              });
-            } else {
-              logger.warn('⚠️ [OUTLOOK INGESTION] Failed to upload file to storage', {
-                error: uploadError.message,
-                documentId: document.id
-              });
-            }
+            const storageErrorMessage = uploadError.message?.includes('Bucket not found') || uploadError.message?.includes('not found')
+              ? `Storage upload failed for ${attachment.filename}: storage bucket ${bucketName} was not found`
+              : `Storage upload failed for ${attachment.filename}: ${uploadError.message}`;
+
+            await markDocumentStorageFailure(document.id, documentData.metadata, storageErrorMessage);
+
+            logger.warn('⚠️ [OUTLOOK INGESTION] Storage upload failed after document row insert', {
+              error: uploadError.message,
+              bucket: bucketName,
+              documentId: document.id,
+              filename: attachment.filename
+            });
+
+            throw new IngestionStorageFailureError(storageErrorMessage, document.id);
           } else {
             const { data: urlData } = supabase.storage
               .from(bucketName)
               .getPublicUrl(filePath);
 
-            await supabase
-              .from('evidence_documents')
-              .update({
-                file_url: urlData?.publicUrl || filePath,
-                storage_path: filePath,
-                metadata: {
-                  ...documentData.metadata,
-                  has_content: true,
-                  content_size: attachment.content.length,
-                  storage_path: filePath,
-                  storage_bucket: bucketName
-                }
-              })
-              .eq('id', document.id);
+            await markDocumentStorageSuccess(
+              document.id,
+              documentData.metadata,
+              bucketName,
+              filePath,
+              urlData?.publicUrl || filePath,
+              attachment.content.length
+            );
 
             logger.info('✅ [OUTLOOK INGESTION] File stored in Supabase Storage', {
               documentId: document.id,
@@ -639,10 +662,20 @@ export class OutlookIngestionService {
             });
           }
         } catch (storageError: any) {
-          logger.warn('⚠️ [OUTLOOK INGESTION] Error storing file content', {
-            error: storageError?.message,
-            documentId: document.id
-          });
+          if (!(storageError instanceof IngestionStorageFailureError)) {
+            const storageErrorMessage = `Storage upload failed for ${attachment.filename}: ${storageError?.message || String(storageError)}`;
+
+            await markDocumentStorageFailure(document.id, documentData.metadata, storageErrorMessage);
+
+            logger.warn('⚠️ [OUTLOOK INGESTION] Error storing file content', {
+              error: storageError?.message,
+              documentId: document.id
+            });
+
+            throw new IngestionStorageFailureError(storageErrorMessage, document.id);
+          }
+
+          throw storageError;
         }
       }
 
@@ -653,7 +686,7 @@ export class OutlookIngestionService {
         userId,
         filename: attachment.filename
       });
-      return null;
+      throw error;
     }
   }
 

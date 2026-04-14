@@ -15,6 +15,10 @@ import { slackIngestionService } from '../services/slackIngestionService';
 import { unifiedIngestionService } from '../services/unifiedIngestionService';
 import { resolveEvidenceSourcesForIngestion } from '../services/evidenceSourceTruthService';
 import { evidenceMatchingService } from '../services/evidenceMatchingService';
+import {
+  hasFailedStorageUpload,
+  isStorageReadyEvidenceDocument
+} from '../services/ingestionStorageTruth';
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import mlScoringService from '../services/mlScoringService';
@@ -242,6 +246,7 @@ async function getAuthoritativeEvidenceSourcesForUser(userId: string, tenantId: 
     lastIngestedAt?: string;
     parsedCount: number;
     matchReadyCount: number;
+    storageFailedCount: number;
   }>();
 
   for (const document of (documentRows || []).filter((row: any) => isProductEvidenceDocument(row))) {
@@ -251,14 +256,19 @@ async function getAuthoritativeEvidenceSourcesForUser(userId: string, tenantId: 
       count: 0,
       lastIngestedAt: undefined,
       parsedCount: 0,
-      matchReadyCount: 0
+      matchReadyCount: 0,
+      storageFailedCount: 0
     };
-    current.count += 1;
+    if (hasFailedStorageUpload(document)) {
+      current.storageFailedCount += 1;
+    } else if (isStorageReadyEvidenceDocument(document)) {
+      current.count += 1;
+    }
     const effectiveIngestedAt = document.ingested_at || document.created_at || undefined;
     if (effectiveIngestedAt && (!current.lastIngestedAt || effectiveIngestedAt > current.lastIngestedAt)) {
       current.lastIngestedAt = effectiveIngestedAt;
     }
-    if (document.parser_status === 'completed') {
+    if (isStorageReadyEvidenceDocument(document) && document.parser_status === 'completed') {
       current.parsedCount += 1;
       if (document.parsed_metadata) {
         current.matchReadyCount += 1;
@@ -285,6 +295,7 @@ async function getAuthoritativeEvidenceSourcesForUser(userId: string, tenantId: 
       documents_count: stats?.count || 0,
       parsed_count: stats?.parsedCount || 0,
       match_ready_count: stats?.matchReadyCount || 0,
+      storage_failed_count: stats?.storageFailedCount || 0,
       metadata: source.metadata || {}
     };
   });
@@ -309,6 +320,7 @@ async function getAuthoritativeEvidenceSourcesForUser(userId: string, tenantId: 
       documents_count: stats?.count || 0,
       parsed_count: stats?.parsedCount || 0,
       match_ready_count: stats?.matchReadyCount || 0,
+      storage_failed_count: stats?.storageFailedCount || 0,
       metadata: resolvedSource.metadata || {}
     });
   }
@@ -475,6 +487,7 @@ router.post('/ingest/outlook', async (req: Request, res: Response) => {
         provider: 'outlook',
         documentsIngested: result.documentsIngested,
         emailsProcessed: result.emailsProcessed,
+        storageFailures: result.storageFailures || 0,
         errors: result.errors.length,
         timestamp: new Date().toISOString()
       });
@@ -486,6 +499,7 @@ router.post('/ingest/outlook', async (req: Request, res: Response) => {
       success: result.success,
       documentsIngested: result.documentsIngested,
       emailsProcessed: result.emailsProcessed,
+      storageFailures: result.storageFailures || 0,
       errors: result.errors,
       message: `Ingested ${result.documentsIngested} documents from ${result.emailsProcessed} emails`
     });
@@ -551,6 +565,7 @@ router.post('/ingest/gdrive', async (req: Request, res: Response) => {
         provider: 'gdrive',
         documentsIngested: result.documentsIngested,
         filesProcessed: result.filesProcessed,
+        storageFailures: result.storageFailures || 0,
         errors: result.errors.length,
         timestamp: new Date().toISOString()
       });
@@ -562,6 +577,7 @@ router.post('/ingest/gdrive', async (req: Request, res: Response) => {
       success: result.success,
       documentsIngested: result.documentsIngested,
       filesProcessed: result.filesProcessed,
+      storageFailures: result.storageFailures || 0,
       errors: result.errors,
       message: `Ingested ${result.documentsIngested} documents from ${result.filesProcessed} files`
     });
@@ -937,6 +953,7 @@ router.post('/ingest/all', async (req: Request, res: Response) => {
       totalDocumentsIngested: result.totalDocumentsIngested,
       totalItemsProcessed: result.totalItemsProcessed,
       documentsInserted: result.totalDocumentsIngested,
+      totalStorageFailures: result.totalStorageFailures || 0,
       sourcesResolved: result.sourcesResolved,
       providersAttempted: result.providersAttempted,
       skippedProviders: result.skippedProviders,
@@ -1022,6 +1039,7 @@ router.post('/ingest/gmail', async (req: Request, res: Response) => {
         userId,
         documentsIngested: result.documentsIngested,
         emailsProcessed: result.emailsProcessed,
+        storageFailures: result.storageFailures || 0,
         errors: result.errors.length,
         timestamp: new Date().toISOString()
       });
@@ -1033,6 +1051,7 @@ router.post('/ingest/gmail', async (req: Request, res: Response) => {
       success: result.success,
       documentsIngested: result.documentsIngested,
       emailsProcessed: result.emailsProcessed,
+      storageFailures: result.storageFailures || 0,
       errors: result.errors,
       message: `Ingested ${result.documentsIngested} documents from ${result.emailsProcessed} emails`
     });
@@ -1092,9 +1111,11 @@ router.get('/status', async (req: Request, res: Response) => {
     }
 
     const productDocuments = (documents || []).filter((document: any) => isProductEvidenceDocument(document));
-    const processingCount = productDocuments.filter((document: any) => document.processing_status === 'processing').length;
-    const parsedCount = productDocuments.filter((document: any) => document.parser_status === 'completed').length;
-    const matchReadyCount = productDocuments.filter((document: any) => document.parser_status === 'completed' && document.parsed_metadata).length;
+    const storageFailedCount = productDocuments.filter((document: any) => hasFailedStorageUpload(document)).length;
+    const storageReadyDocuments = productDocuments.filter((document: any) => isStorageReadyEvidenceDocument(document));
+    const processingCount = storageReadyDocuments.filter((document: any) => document.processing_status === 'processing').length;
+    const parsedCount = storageReadyDocuments.filter((document: any) => document.parser_status === 'completed').length;
+    const matchReadyCount = storageReadyDocuments.filter((document: any) => document.parser_status === 'completed' && document.parsed_metadata).length;
     const lastIngestion = productDocuments
       .map((document: any) => document.ingested_at || document.created_at)
       .filter(Boolean)
@@ -1110,10 +1131,11 @@ router.get('/status', async (req: Request, res: Response) => {
       hasConnectedSource: sourceTruth.connectedCount > 0,
       hasIngestableSource: sourceTruth.ingestableCount > 0,
       lastIngestion: lastIngestion || undefined,
-      documentsCount: productDocuments.length,
+      documentsCount: storageReadyDocuments.length,
       processingCount,
       parsedCount,
       matchReadyCount,
+      storageFailedCount,
       sourcesResolved: sourceTruth.ingestableCount,
       skippedProviders: sourceTruth.skippedProviders
     });

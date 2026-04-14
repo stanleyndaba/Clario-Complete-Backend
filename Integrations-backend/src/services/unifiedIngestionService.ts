@@ -22,6 +22,7 @@ export interface UnifiedIngestionResult {
   success: boolean;
   totalDocumentsIngested: number;
   totalItemsProcessed: number;
+  totalStorageFailures: number;
   errors: string[];
   sourcesResolved: number;
   providersAttempted: string[];
@@ -31,18 +32,21 @@ export interface UnifiedIngestionResult {
       success: boolean;
       documentsIngested: number;
       emailsProcessed: number;
+      storageFailures: number;
       errors: string[];
     };
     outlook?: {
       success: boolean;
       documentsIngested: number;
       emailsProcessed: number;
+      storageFailures: number;
       errors: string[];
     };
     gdrive?: {
       success: boolean;
       documentsIngested: number;
       filesProcessed: number;
+      storageFailures: number;
       errors: string[];
     };
     dropbox?: {
@@ -96,6 +100,7 @@ export class UnifiedIngestionService {
     const errors: string[] = [];
     let totalDocumentsIngested = 0;
     let totalItemsProcessed = 0;
+    let totalStorageFailures = 0;
     const results: UnifiedIngestionResult['results'] = {};
     let sourcesResolved = 0;
     const providersAttempted: string[] = [];
@@ -114,6 +119,7 @@ export class UnifiedIngestionService {
           success: false,
           totalDocumentsIngested: 0,
           totalItemsProcessed: 0,
+          totalStorageFailures: 0,
           errors: ['Tenant context is required for evidence ingestion'],
           sourcesResolved: 0,
           providersAttempted: [],
@@ -137,6 +143,7 @@ export class UnifiedIngestionService {
           success: false,
           totalDocumentsIngested: 0,
           totalItemsProcessed: 0,
+          totalStorageFailures: 0,
           errors: ['No ingestable evidence sources found for this tenant'],
           sourcesResolved: 0,
           providersAttempted: [],
@@ -176,6 +183,7 @@ export class UnifiedIngestionService {
 
           totalDocumentsIngested += providerResult.documentsIngested || 0;
           totalItemsProcessed += providerResult.itemsProcessed || 0;
+          totalStorageFailures += providerResult.storageFailures || 0;
 
           if ((providerResult.documentsIngested || 0) > 0) {
             await markEvidenceSourceIngested(source.id);
@@ -204,6 +212,7 @@ export class UnifiedIngestionService {
         userId,
         totalDocumentsIngested,
         totalItemsProcessed,
+        totalStorageFailures,
         errors: errors.length,
         elapsedTime: `${elapsedTime}s`,
         sources: connectedSources.map(s => s.provider)
@@ -213,6 +222,7 @@ export class UnifiedIngestionService {
         success: !noDocumentsIngested && errors.length === 0,
         totalDocumentsIngested,
         totalItemsProcessed,
+        totalStorageFailures,
         errors,
         sourcesResolved,
         providersAttempted,
@@ -230,6 +240,7 @@ export class UnifiedIngestionService {
         success: false,
         totalDocumentsIngested,
         totalItemsProcessed,
+        totalStorageFailures,
         errors: [error?.message || String(error)],
         sourcesResolved,
         providersAttempted,
@@ -250,6 +261,7 @@ export class UnifiedIngestionService {
     success: boolean;
     documentsIngested: number;
     itemsProcessed: number;
+    storageFailures: number;
     errors: string[];
   }> {
     const provider = source.provider;
@@ -273,6 +285,7 @@ export class UnifiedIngestionService {
             success: gmailResult.success,
             documentsIngested: gmailResult.documentsIngested,
             itemsProcessed: gmailResult.emailsProcessed,
+            storageFailures: gmailResult.storageFailures || 0,
             errors: gmailResult.errors
           };
 
@@ -287,6 +300,7 @@ export class UnifiedIngestionService {
             success: outlookResult.success,
             documentsIngested: outlookResult.documentsIngested,
             itemsProcessed: outlookResult.emailsProcessed,
+            storageFailures: outlookResult.storageFailures || 0,
             errors: outlookResult.errors
           };
 
@@ -302,6 +316,7 @@ export class UnifiedIngestionService {
             success: gdriveResult.success,
             documentsIngested: gdriveResult.documentsIngested,
             itemsProcessed: gdriveResult.filesProcessed,
+            storageFailures: gdriveResult.storageFailures || 0,
             errors: gdriveResult.errors
           };
 
@@ -317,6 +332,7 @@ export class UnifiedIngestionService {
             success: dropboxResult.success,
             documentsIngested: dropboxResult.documentsIngested,
             itemsProcessed: dropboxResult.filesProcessed,
+            storageFailures: 0,
             errors: dropboxResult.errors
           };
 
@@ -332,6 +348,7 @@ export class UnifiedIngestionService {
             success: onedriveResult.success,
             documentsIngested: onedriveResult.documentsIngested,
             itemsProcessed: onedriveResult.filesProcessed,
+            storageFailures: 0,
             errors: onedriveResult.errors
           };
 
@@ -346,6 +363,7 @@ export class UnifiedIngestionService {
             success: adobeSignResult.success,
             documentsIngested: adobeSignResult.documentsIngested,
             itemsProcessed: adobeSignResult.agreementsProcessed,
+            storageFailures: 0,
             errors: adobeSignResult.errors
           };
 
@@ -360,6 +378,7 @@ export class UnifiedIngestionService {
             success: slackResult.success,
             documentsIngested: slackResult.documentsIngested,
             itemsProcessed: slackResult.messagesProcessed,
+            storageFailures: 0,
             errors: slackResult.errors
           };
 
@@ -372,6 +391,7 @@ export class UnifiedIngestionService {
             success: false,
             documentsIngested: 0,
             itemsProcessed: 0,
+            storageFailures: 0,
             errors: [`Unknown provider: ${provider}`]
           };
       }
@@ -385,6 +405,7 @@ export class UnifiedIngestionService {
         success: false,
         documentsIngested: 0,
         itemsProcessed: 0,
+        storageFailures: 0,
         errors: [error?.message || String(error)]
       };
     }
