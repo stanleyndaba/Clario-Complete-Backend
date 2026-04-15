@@ -79,6 +79,31 @@ function getSkuFromResult(result: any): string | null {
     || null;
 }
 
+function getFnskuFromResult(result: any): string | null {
+  return result?.fnsku
+    || result?.evidence?.fnsku
+    || result?.evidence?.transfer_record?.fnsku
+    || null;
+}
+
+function getShipmentIdFromResult(result: any): string | null {
+  return result?.shipment_id
+    || result?.evidence?.shipment_id
+    || null;
+}
+
+function normalizeFamilyValue(value?: string | null): string {
+  return String(value || '').trim().toUpperCase();
+}
+
+function getInventoryFamilyKey(result: any): string | null {
+  const fnsku = normalizeFamilyValue(getFnskuFromResult(result));
+  if (fnsku) return `fnsku:${fnsku}`;
+
+  const sku = normalizeFamilyValue(getSkuFromResult(result));
+  return sku ? `sku:${sku}` : null;
+}
+
 function getWhaleTransferReferenceIds(result: DetectionResult): string[] {
   const evidence = result.evidence || {};
   const directIds = Array.isArray(evidence.transfer_reference_ids)
@@ -95,31 +120,80 @@ function getWhaleTransferReferenceIds(result: DetectionResult): string[] {
 
 function buildOverlapRecordKey(result: any): string | null {
   const evidence = result?.evidence || {};
-  if (result?.anomaly_type === 'lost_in_transit') {
+  if (['lost_in_transit', 'lost_warehouse'].includes(result?.anomaly_type)) {
     return `whale|${evidence.fnsku || result?.fnsku || ''}|${evidence.physical_loss_units || ''}`;
   }
   if (result?.anomaly_type === 'warehouse_transfer_loss') {
     return `transfer|${getTransferIdFromResult(result) || ''}|${getSkuFromResult(result) || ''}|${result?.loss_type || evidence.loss_type || ''}`;
   }
+  if ([
+    'shipment_missing',
+    'shipment_shortage',
+    'carrier_damage',
+    'receiving_error',
+    'case_break_error',
+    'label_mismatch',
+    'prep_fee_error'
+  ].includes(result?.anomaly_type)) {
+    return `inbound|${result.anomaly_type}|${getShipmentIdFromResult(result) || ''}|${getSkuFromResult(result) || ''}`;
+  }
   return null;
 }
 
-function adjudicateWhaleTransferOverlaps(results: DetectionResult[]): {
+function mergeFamilyLinks(existingLinks: any, nextLinks: any[]): any[] {
+  const links = Array.isArray(existingLinks) ? existingLinks : [];
+  const byKey = new Map<string, any>();
+  for (const link of [...links, ...nextLinks]) {
+    const key = [
+      link?.rail,
+      link?.detector,
+      link?.anomaly_type,
+      link?.shipment_id,
+      link?.transfer_id,
+      link?.family_key
+    ].map((part) => String(part || '')).join('|');
+    byKey.set(key, link);
+  }
+  return [...byKey.values()];
+}
+
+function adjudicateWhaleMultiRailOverlaps(results: DetectionResult[]): {
   results: DetectionResult[];
   overlapCount: number;
   overlappedValue: number;
+  familyLinkCount: number;
   adjustedRecovery: number;
 } {
   const transferResultsById = new Map<string, DetectionResult>();
+  const inboundResultsByFamily = new Map<string, DetectionResult[]>();
 
   for (const result of results) {
-    if (result.anomaly_type !== 'warehouse_transfer_loss') continue;
-    const transferId = getTransferIdFromResult(result);
-    if (transferId) transferResultsById.set(transferId, result);
+    if (result.anomaly_type === 'warehouse_transfer_loss') {
+      const transferId = getTransferIdFromResult(result);
+      if (transferId) transferResultsById.set(transferId, result);
+      continue;
+    }
+
+    if ([
+      'shipment_missing',
+      'shipment_shortage',
+      'carrier_damage',
+      'receiving_error',
+      'case_break_error',
+      'label_mismatch',
+      'prep_fee_error'
+    ].includes(result.anomaly_type)) {
+      const familyKey = getInventoryFamilyKey(result);
+      if (!familyKey) continue;
+      const rows = inboundResultsByFamily.get(familyKey) || [];
+      rows.push(result);
+      inboundResultsByFamily.set(familyKey, rows);
+    }
   }
 
   let overlapCount = 0;
   let overlappedValue = 0;
+  let familyLinkCount = 0;
 
   for (const result of results) {
     if (result.anomaly_type !== 'lost_in_transit') continue;
@@ -177,10 +251,57 @@ function adjudicateWhaleTransferOverlaps(results: DetectionResult[]): {
     }
   }
 
+  for (const result of results) {
+    if (!['lost_in_transit', 'lost_warehouse'].includes(result.anomaly_type)) continue;
+    const familyKey = getInventoryFamilyKey(result);
+    if (!familyKey) continue;
+
+    const linkedInboundResults = inboundResultsByFamily.get(familyKey) || [];
+    if (linkedInboundResults.length === 0) continue;
+
+    familyLinkCount += 1;
+    const whaleLinks = linkedInboundResults.map((inboundResult) => ({
+      status: 'same_inventory_family_review',
+      rail: 'inbound',
+      detector: 'Inbound Inspector',
+      anomaly_type: inboundResult.anomaly_type,
+      shipment_id: getShipmentIdFromResult(inboundResult),
+      sku: getSkuFromResult(inboundResult),
+      fnsku: getFnskuFromResult(inboundResult),
+      family_key: familyKey,
+      relationship: 'same_sku_or_fnsku_distinct_rail',
+      economic_action: 'count_separately_pending_review',
+    }));
+
+    result.evidence = {
+      ...(result.evidence || {}),
+      cross_rail_family_links: mergeFamilyLinks(result.evidence?.cross_rail_family_links, whaleLinks),
+    };
+
+    for (const inboundResult of linkedInboundResults) {
+      const inboundLink = {
+        status: 'same_inventory_family_review',
+        rail: 'inventory_ledger',
+        detector: 'Whale Hunter',
+        anomaly_type: result.anomaly_type,
+        sku: getSkuFromResult(result),
+        fnsku: getFnskuFromResult(result),
+        family_key: familyKey,
+        relationship: 'same_sku_or_fnsku_distinct_rail',
+        economic_action: 'count_separately_pending_review',
+      };
+      inboundResult.evidence = {
+        ...(inboundResult.evidence || {}),
+        cross_rail_family_links: mergeFamilyLinks(inboundResult.evidence?.cross_rail_family_links, [inboundLink]),
+      };
+    }
+  }
+
   return {
     results,
     overlapCount,
     overlappedValue,
+    familyLinkCount,
     adjustedRecovery: results.reduce((sum, result) => sum + getCountedEstimatedValue(result), 0)
   };
 }
@@ -193,7 +314,11 @@ async function persistOverlapEvidence(
 ): Promise<void> {
   const adjudicatedByKey = new Map<string, DetectionResult>();
   for (const result of results) {
-    if (!result.evidence?.cross_rail_overlap && !result.evidence?.economic_rollup) continue;
+    if (
+      !result.evidence?.cross_rail_overlap
+      && !result.evidence?.economic_rollup
+      && !result.evidence?.cross_rail_family_links
+    ) continue;
     const key = buildOverlapRecordKey(result);
     if (key) adjudicatedByKey.set(key, result);
   }
@@ -205,7 +330,18 @@ async function persistOverlapEvidence(
     .select('id,evidence,anomaly_type,estimated_value')
     .eq('seller_id', userId)
     .eq('sync_id', syncId)
-    .in('anomaly_type', ['lost_in_transit', 'warehouse_transfer_loss']);
+    .in('anomaly_type', [
+      'lost_in_transit',
+      'lost_warehouse',
+      'warehouse_transfer_loss',
+      'shipment_missing',
+      'shipment_shortage',
+      'carrier_damage',
+      'receiving_error',
+      'case_break_error',
+      'label_mismatch',
+      'prep_fee_error'
+    ]);
 
   if (tenantId) {
     query = query.eq('tenant_id', tenantId);
@@ -231,6 +367,7 @@ async function persistOverlapEvidence(
       ...(row.evidence || {}),
       cross_rail_overlap: adjudicated.evidence?.cross_rail_overlap,
       economic_rollup: adjudicated.evidence?.economic_rollup,
+      cross_rail_family_links: adjudicated.evidence?.cross_rail_family_links,
     };
 
     const { error: updateError } = await supabaseAdmin
@@ -365,7 +502,7 @@ export class EnhancedDetectionService {
         }
       }
 
-      const overlapAdjudication = adjudicateWhaleTransferOverlaps(adaptiveResults);
+      const overlapAdjudication = adjudicateWhaleMultiRailOverlaps(adaptiveResults);
       await persistOverlapEvidence(userId, syncId, tenantId, overlapAdjudication.results);
 
       const detectionsFound = overlapAdjudication.results.length;
@@ -396,7 +533,8 @@ export class EnhancedDetectionService {
         estimatedRecovery,
         grossEstimatedRecovery,
         crossRailOverlapCount: overlapAdjudication.overlapCount,
-        crossRailOverlapValue: overlapAdjudication.overlappedValue
+        crossRailOverlapValue: overlapAdjudication.overlappedValue,
+        crossRailFamilyLinkCount: overlapAdjudication.familyLinkCount
       });
 
       return {
