@@ -69,10 +69,24 @@ const OAUTH_URLS = {
     scopes: [
       'files:read',
       'channels:read',
-      'groups:read'
+      'groups:read',
+      'users:read',
+      'users:read.email'
     ]
   }
 };
+
+function getProviderRedirectUri(provider: string, req: Request): string {
+  const configuredRedirectUri = provider === 'slack'
+    ? (config.SLACK_REDIRECT_URI || process.env.SLACK_REDIRECT_URI || '').trim()
+    : '';
+
+  if (configuredRedirectUri) {
+    return configuredRedirectUri;
+  }
+
+  return `${resolveBackendCallbackBase(req)}/api/v1/integrations/${provider}/callback`;
+}
 
 /**
  * Connect evidence source - Generate OAuth URL
@@ -82,7 +96,6 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
   try {
     const { provider } = req.params;
     const frontendUrl = req.query.frontend_url as string;
-    const redirectUri = req.query.redirect_uri as string;
     const tenantSlug = (req.query.tenant_slug as string) || (req.query.tenantSlug as string);
     const storeId = (req.query.store_id as string) || (req.query.storeId as string);
 
@@ -115,9 +128,8 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
     }
 
     // Use provided redirect_uri or construct default
-    const backendUrl = resolveBackendCallbackBase(req);
-    const defaultRedirectUri = `${backendUrl}/api/v1/integrations/${provider}/callback`;
-    const callbackRedirectUri = redirectUri || defaultRedirectUri;
+    const defaultRedirectUri = getProviderRedirectUri(provider, req);
+    const callbackRedirectUri = defaultRedirectUri;
 
     let normalizedFrontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     if (frontendUrl) {
@@ -305,7 +317,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
     }
 
     // Exchange code for token
-    const redirectUri = stateData.redirectUri || `${resolveBackendCallbackBase(req)}/api/v1/integrations/${provider}/callback`;
+    const redirectUri = stateData.redirectUri || getProviderRedirectUri(provider, req);
 
     let tokenResponse: any;
 

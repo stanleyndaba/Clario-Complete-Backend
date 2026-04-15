@@ -8,6 +8,7 @@ import logger from '../utils/logger';
 import { supabase, convertUserIdToUuid } from '../database/supabaseClient';
 import axios from 'axios';
 import { resolveEvidenceSourceContext } from './evidenceSourceTruthService';
+import config from '../config/env';
 
 export interface SlackIngestionResult {
     success: boolean;
@@ -34,6 +35,17 @@ export interface SlackFile {
 export class SlackIngestionService {
     private baseUrl = 'https://slack.com/api';
 
+    private getConfiguredBotToken(): string | null {
+        const token = (
+            config.SLACK_BOT_USER_OAUTH_TOKEN ||
+            process.env.SLACK_BOT_USER_OAUTH_TOKEN ||
+            process.env.BOT_USER_OAUTH_TOKEN ||
+            ''
+        ).trim();
+
+        return token || null;
+    }
+
     /**
      * Get access token for Slack from evidence_sources table
      */
@@ -59,6 +71,16 @@ export class SlackIngestionService {
             const accessToken = metadata.access_token;
 
             if (!accessToken) {
+                const configuredBotToken = this.getConfiguredBotToken();
+                if (configuredBotToken) {
+                    logger.warn('⚠️ [SLACK INGESTION] Using configured Slack bot token fallback for connected tenant source', {
+                        userId,
+                        tenantId,
+                        sourceId: sourceContext.id
+                    });
+                    return configuredBotToken;
+                }
+
                 logger.warn('⚠️ [SLACK INGESTION] No access token found in evidence source', {
                     userId
                 });

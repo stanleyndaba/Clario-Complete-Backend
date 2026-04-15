@@ -126,20 +126,22 @@ function isRecoveryRelevant(record: any): boolean {
     );
 }
 
-function deriveApprovedAmount(record: any): number | null {
+type ApprovedAmountSource = 'approved_amount' | 'claim_amount_fallback' | 'unavailable';
+
+function deriveApprovedAmountTruth(record: any): { amount: number | null; source: ApprovedAmountSource } {
     const approvedAmount = toOptionalAmount(record?.approved_amount);
     if (approvedAmount !== null) {
-        return approvedAmount;
+        return { amount: approvedAmount, source: 'approved_amount' };
     }
 
     if (isApprovedCase(record)) {
         const claimAmount = toOptionalAmount(record?.claim_amount);
         if (claimAmount !== null) {
-            return claimAmount;
+            return { amount: claimAmount, source: 'claim_amount_fallback' };
         }
     }
 
-    return null;
+    return { amount: null, source: 'unavailable' };
 }
 
 type LedgerReconciliationTruth = {
@@ -930,7 +932,8 @@ router.get('/ledger', async (req: Request, res: Response) => {
         }
 
         const caseLedgerRows = recoveryRelevantCases.map((record: any) => {
-            const approvedAmount = deriveApprovedAmount(record);
+            const approvedAmountTruth = deriveApprovedAmountTruth(record);
+            const approvedAmount = approvedAmountTruth.amount;
             const actualPayoutAmount = toOptionalAmount(record.recovered_amount ?? record.actual_payout_amount);
             const financialSummary = financialSummaryById.get(record.id) || (record.detection_result_id ? financialSummaryById.get(record.detection_result_id) : null);
             const latestBilling = latestBillingByDisputeId.get(record.id);
@@ -1019,10 +1022,15 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 recovery_next_attempt_at: latestRecoveryWork?.next_attempt_at || null,
                 billing_next_attempt_at: latestBillingWork?.next_attempt_at || null,
                 approved_amount: approvedAmount,
+                approved_amount_source: approvedAmountTruth.source,
                 actual_payout_amount: actualPayoutAmount,
                 expected_payout_amount: expectedPayoutAmount,
                 expected_payout_source: expectedPayoutSource,
                 actual_payout_source: actualPayoutSource,
+                verified_paid_amount: toNullableFiniteAmount(financialSummary?.verified_paid_amount),
+                financial_event_count: Number(financialSummary?.financial_event_count || 0),
+                reimbursement_event_count: Number(financialSummary?.reimbursement_event_count || 0),
+                latest_financial_event_date: financialSummary?.latest_event_date || null,
                 billed_revenue_amount: billingRevenueAmount,
                 reconciliation_status: reconciliationTruth.reconciliation_status,
                 reconciliation_source: reconciliationTruth.reconciliation_source,
@@ -1118,10 +1126,15 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 recovery_next_attempt_at: null,
                 billing_next_attempt_at: null,
                 approved_amount: null,
+                approved_amount_source: 'unavailable',
                 actual_payout_amount: null,
                 expected_payout_amount: expectedPayoutAmount,
                 expected_payout_source: expectedPayoutSource,
                 actual_payout_source: actualPayoutSource,
+                verified_paid_amount: toNullableFiniteAmount(financialSummary?.verified_paid_amount),
+                financial_event_count: Number(financialSummary?.financial_event_count || 0),
+                reimbursement_event_count: Number(financialSummary?.reimbursement_event_count || 0),
+                latest_financial_event_date: financialSummary?.latest_event_date || null,
                 billed_revenue_amount: null,
                 reconciliation_status: reconciliationTruth.reconciliation_status,
                 reconciliation_source: reconciliationTruth.reconciliation_source,
