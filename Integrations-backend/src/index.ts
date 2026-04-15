@@ -756,12 +756,62 @@ function startBackgroundJobs(): void {
   }
 }
 
+function withStartupTimeout<T>(operation: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+  });
+
+  return Promise.race([operation, timeoutPromise]).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
+}
+
+function startAgent10NotificationSchemaCheck(): void {
+  if (process.env.ENABLE_AGENT10_SCHEMA_BOOTSTRAP === 'false') {
+    logger.info('Agent 10 notification schema bootstrap disabled', {
+      reason: 'ENABLE_AGENT10_SCHEMA_BOOTSTRAP=false'
+    });
+    return;
+  }
+
+  const configuredTimeoutMs = Number.parseInt(
+    process.env.AGENT10_SCHEMA_BOOT_TIMEOUT_MS || '15000',
+    10
+  );
+  const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+    ? configuredTimeoutMs
+    : 15000;
+
+  logger.info('Agent 10 notification schema check queued after API boot', {
+    timeoutMs
+  });
+
+  withStartupTimeout(
+    ensureAgent10NotificationSchema(),
+    timeoutMs,
+    `AGENT10_SCHEMA_BOOT_TIMEOUT:${timeoutMs}ms`
+  )
+    .then(() => {
+      logger.info('Agent 10 notification schema check completed after API boot');
+    })
+    .catch((error: any) => {
+      logger.error('Agent 10 notification schema check failed after API boot', {
+        error: error?.message || String(error),
+        note: 'Server remains live; Render health checks are not blocked by schema repair'
+      });
+    });
+}
+
 async function startServer(): Promise<void> {
   if (process.env.NODE_ENV === 'test') {
     return;
   }
-
-  await ensureAgent10NotificationSchema();
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log('Server running on port ' + PORT);
@@ -773,6 +823,7 @@ async function startServer(): Promise<void> {
       routeCount: 'See logs above for details'
     });
 
+    setImmediate(startAgent10NotificationSchemaCheck);
     setImmediate(startBackgroundJobs);
   });
 }
