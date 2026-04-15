@@ -331,6 +331,8 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
             evidence: {
                 transfer_id: r.transfer_id,
                 sku: r.sku,
+                asin: r.asin || null,
+                fnsku: r.evidence.transfer_record.fnsku || null,
                 loss_type: r.loss_type,
                 quantity_sent: r.quantity_sent,
                 quantity_received: r.quantity_received,

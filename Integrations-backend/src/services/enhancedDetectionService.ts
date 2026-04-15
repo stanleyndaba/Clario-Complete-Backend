@@ -58,6 +58,200 @@ export interface DetectionResult {
   created_at?: string;
 }
 
+function getCountedEstimatedValue(result: Pick<DetectionResult, 'estimated_value' | 'evidence'>): number {
+  const countedValue = result.evidence?.economic_rollup?.counted_value;
+  return typeof countedValue === 'number' && Number.isFinite(countedValue)
+    ? countedValue
+    : Number(result.estimated_value || 0);
+}
+
+function getTransferIdFromResult(result: any): string | null {
+  return result?.transfer_id
+    || result?.evidence?.transfer_id
+    || result?.evidence?.transfer_record?.transfer_id
+    || null;
+}
+
+function getSkuFromResult(result: any): string | null {
+  return result?.sku
+    || result?.evidence?.sku
+    || result?.evidence?.transfer_record?.sku
+    || null;
+}
+
+function getWhaleTransferReferenceIds(result: DetectionResult): string[] {
+  const evidence = result.evidence || {};
+  const directIds = Array.isArray(evidence.transfer_reference_ids)
+    ? evidence.transfer_reference_ids
+    : [];
+  const familyIds = Array.isArray(evidence.transfer_loss_families)
+    ? evidence.transfer_loss_families.map((family: any) => family?.reference_id)
+    : [];
+
+  return [...new Set([...directIds, ...familyIds]
+    .map((id) => String(id || '').trim())
+    .filter(Boolean))];
+}
+
+function buildOverlapRecordKey(result: any): string | null {
+  const evidence = result?.evidence || {};
+  if (result?.anomaly_type === 'lost_in_transit') {
+    return `whale|${evidence.fnsku || result?.fnsku || ''}|${evidence.physical_loss_units || ''}`;
+  }
+  if (result?.anomaly_type === 'warehouse_transfer_loss') {
+    return `transfer|${getTransferIdFromResult(result) || ''}|${getSkuFromResult(result) || ''}|${result?.loss_type || evidence.loss_type || ''}`;
+  }
+  return null;
+}
+
+function adjudicateWhaleTransferOverlaps(results: DetectionResult[]): {
+  results: DetectionResult[];
+  overlapCount: number;
+  overlappedValue: number;
+  adjustedRecovery: number;
+} {
+  const transferResultsById = new Map<string, DetectionResult>();
+
+  for (const result of results) {
+    if (result.anomaly_type !== 'warehouse_transfer_loss') continue;
+    const transferId = getTransferIdFromResult(result);
+    if (transferId) transferResultsById.set(transferId, result);
+  }
+
+  let overlapCount = 0;
+  let overlappedValue = 0;
+
+  for (const result of results) {
+    if (result.anomaly_type !== 'lost_in_transit') continue;
+
+    const matchingTransferIds = getWhaleTransferReferenceIds(result)
+      .filter((transferId) => transferResultsById.has(transferId));
+
+    if (matchingTransferIds.length === 0) continue;
+
+    overlapCount += 1;
+    overlappedValue += Number(result.estimated_value || 0);
+
+    const matchedTransfers = matchingTransferIds
+      .map((transferId) => transferResultsById.get(transferId))
+      .filter((transferResult): transferResult is DetectionResult => Boolean(transferResult));
+
+    result.evidence = {
+      ...(result.evidence || {}),
+      cross_rail_overlap: {
+        status: 'overlaps_transfer_auditor',
+        authoritative_detector: 'Transfer Auditor',
+        linked_detector: 'Whale Hunter',
+        linked_transfer_ids: matchingTransferIds,
+        overlap_reason: 'Whale Hunter reconstructed the same transfer family from inventory ledger transfer legs.',
+      },
+      economic_rollup: {
+        status: 'linked_not_counted',
+        counted_value: 0,
+        original_estimated_value: Number(result.estimated_value || 0),
+        authoritative_detector: 'Transfer Auditor',
+        linked_transfer_ids: matchingTransferIds,
+      }
+    };
+
+    for (const transferResult of matchedTransfers) {
+      const existingLinkedIds = Array.isArray(transferResult.evidence?.cross_rail_overlap?.linked_whale_reference_ids)
+        ? transferResult.evidence.cross_rail_overlap.linked_whale_reference_ids
+        : [];
+      transferResult.evidence = {
+        ...(transferResult.evidence || {}),
+        cross_rail_overlap: {
+          status: 'authoritative_transfer_loss',
+          authoritative_detector: 'Transfer Auditor',
+          linked_detector: 'Whale Hunter',
+          linked_whale_reference_ids: [...new Set([...existingLinkedIds, ...matchingTransferIds])],
+          overlap_reason: 'Direct transfer record owns economic value when Whale Hunter reconstructs the same transfer family.',
+        },
+        economic_rollup: {
+          status: 'counted',
+          counted_value: Number(transferResult.estimated_value || 0),
+          original_estimated_value: Number(transferResult.estimated_value || 0),
+          authoritative_detector: 'Transfer Auditor',
+        }
+      };
+    }
+  }
+
+  return {
+    results,
+    overlapCount,
+    overlappedValue,
+    adjustedRecovery: results.reduce((sum, result) => sum + getCountedEstimatedValue(result), 0)
+  };
+}
+
+async function persistOverlapEvidence(
+  userId: string,
+  syncId: string,
+  tenantId: string | null,
+  results: DetectionResult[]
+): Promise<void> {
+  const adjudicatedByKey = new Map<string, DetectionResult>();
+  for (const result of results) {
+    if (!result.evidence?.cross_rail_overlap && !result.evidence?.economic_rollup) continue;
+    const key = buildOverlapRecordKey(result);
+    if (key) adjudicatedByKey.set(key, result);
+  }
+
+  if (adjudicatedByKey.size === 0) return;
+
+  let query: any = supabaseAdmin
+    .from('detection_results')
+    .select('id,evidence,anomaly_type,estimated_value')
+    .eq('seller_id', userId)
+    .eq('sync_id', syncId)
+    .in('anomaly_type', ['lost_in_transit', 'warehouse_transfer_loss']);
+
+  if (tenantId) {
+    query = query.eq('tenant_id', tenantId);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    logger.warn('🧠 [AGENT3] Failed to load detections for overlap evidence update', {
+      userId,
+      syncId,
+      error: error.message
+    });
+    return;
+  }
+
+  for (const row of data || []) {
+    const key = buildOverlapRecordKey(row);
+    if (!key) continue;
+    const adjudicated = adjudicatedByKey.get(key);
+    if (!adjudicated) continue;
+
+    const mergedEvidence = {
+      ...(row.evidence || {}),
+      cross_rail_overlap: adjudicated.evidence?.cross_rail_overlap,
+      economic_rollup: adjudicated.evidence?.economic_rollup,
+    };
+
+    const { error: updateError } = await supabaseAdmin
+      .from('detection_results')
+      .update({
+        evidence: mergedEvidence,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', row.id);
+
+    if (updateError) {
+      logger.warn('🧠 [AGENT3] Failed to persist overlap evidence update', {
+        userId,
+        syncId,
+        detectionId: row.id,
+        error: updateError.message
+      });
+    }
+  }
+}
+
 // ============================================================================
 // Enhanced Detection Service - LIVE CORE
 // ============================================================================
@@ -171,8 +365,12 @@ export class EnhancedDetectionService {
         }
       }
 
-      const detectionsFound = adaptiveResults.length;
-      const estimatedRecovery = adaptiveResults.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
+      const overlapAdjudication = adjudicateWhaleTransferOverlaps(adaptiveResults);
+      await persistOverlapEvidence(userId, syncId, tenantId, overlapAdjudication.results);
+
+      const detectionsFound = overlapAdjudication.results.length;
+      const grossEstimatedRecovery = overlapAdjudication.results.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
+      const estimatedRecovery = overlapAdjudication.adjustedRecovery;
 
       // Record Financial Impact
       if (detectionsFound > 0) {
@@ -195,7 +393,10 @@ export class EnhancedDetectionService {
         userId,
         syncId,
         detectionsFound,
-        estimatedRecovery
+        estimatedRecovery,
+        grossEstimatedRecovery,
+        crossRailOverlapCount: overlapAdjudication.overlapCount,
+        crossRailOverlapValue: overlapAdjudication.overlappedValue
       });
 
       return {
@@ -290,7 +491,7 @@ export class EnhancedDetectionService {
     try {
       let query = supabaseAdmin
         .from('detection_results')
-        .select('estimated_value')
+        .select('estimated_value,evidence')
         .limit(100);
 
       // PATCH: Enforce strict tenant isolation
@@ -310,7 +511,7 @@ export class EnhancedDetectionService {
       const { data, error } = await query;
 
       const claimsFound = data?.length || 0;
-      const estimatedRecovery = data?.reduce((sum: number, r: any) => sum + (r.estimated_value || 0), 0) || 0;
+      const estimatedRecovery = data?.reduce((sum: number, r: any) => sum + getCountedEstimatedValue(r), 0) || 0;
 
       return {
         id: jobId,
@@ -371,7 +572,7 @@ export class EnhancedDetectionService {
       if (error || !data) throw new Error(error?.message || 'No data');
 
       const totalDetections = data.length;
-      const estimatedRecovery = data.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
+      const estimatedRecovery = data.reduce((sum, r) => sum + getCountedEstimatedValue(r), 0);
       
       const byAnomalyType: Record<string, { count: number; value: number }> = {};
       const bySeverity: Record<string, number> = {};
@@ -380,7 +581,7 @@ export class EnhancedDetectionService {
         const type = r.anomaly_type || 'unknown';
         if (!byAnomalyType[type]) byAnomalyType[type] = { count: 0, value: 0 };
         byAnomalyType[type].count++;
-        byAnomalyType[type].value += r.estimated_value || 0;
+        byAnomalyType[type].value += getCountedEstimatedValue(r);
 
         const severity = r.severity || 'unknown';
         bySeverity[severity] = (bySeverity[severity] || 0) + 1;

@@ -9,6 +9,13 @@ const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
 const router = Router();
 
+const getDetectionRollupValue = (row: any): number => {
+  const countedValue = row?.evidence?.economic_rollup?.counted_value;
+  return typeof countedValue === 'number' && Number.isFinite(countedValue)
+    ? countedValue
+    : Number(row?.estimated_value || 0);
+};
+
 type DetectionQueueStatusRow = {
   id?: string | null;
   sync_id?: string | null;
@@ -309,7 +316,7 @@ router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
     const results = claimsFound > 0
       ? await detectionService.getDetectionResults(userId, syncId, undefined, undefined, 500, 0, tenantId)
       : [];
-    const estimatedRecovery = results.reduce((sum: number, row: any) => sum + Number(row?.estimated_value || 0), 0);
+    const estimatedRecovery = results.reduce((sum: number, row: any) => sum + getDetectionRollupValue(row), 0);
 
     return res.json({
       success: true,

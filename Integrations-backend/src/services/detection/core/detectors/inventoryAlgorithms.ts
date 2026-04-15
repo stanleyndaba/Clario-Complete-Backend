@@ -152,9 +152,24 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
 
         // --- Final Tally ---
         let grossOut = 0; let matchedIn = 0; let matureUnresolved = 0;
+        const transferLossFamilies: Array<{
+            reference_id: string | null;
+            fnsku: string;
+            sku?: string;
+            asin?: string;
+            source_fc?: string;
+            transfer_out_event_id: string;
+            transfer_out_date: string;
+            quantity_out: number;
+            matched_quantity_in: number;
+            unresolved_units: number;
+            match_mode: string;
+            match_score: number;
+        }> = [];
         for (const outE of transfersOut) {
             const outQty = Math.abs(outE.quantity);
-            const matched = matchedOutMetrics.get(outE.id)?.matched || 0;
+            const matchMetrics = matchedOutMetrics.get(outE.id);
+            const matched = matchMetrics?.matched || 0;
             const diff = Math.max(0, outQty - matched);
             
             grossOut += outQty;
@@ -162,7 +177,23 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
 
             if (diff > 0.01) {
                 const age = (syncTime - new Date(outE.event_date).getTime()) / (1000 * 3600 * 24);
-                if (age >= MATURITY_WINDOW_DAYS) matureUnresolved += diff;
+                if (age >= MATURITY_WINDOW_DAYS) {
+                    matureUnresolved += diff;
+                    transferLossFamilies.push({
+                        reference_id: outE.reference_id || null,
+                        fnsku,
+                        sku: outE.sku,
+                        asin: outE.asin,
+                        source_fc: outE.fulfillment_center_id,
+                        transfer_out_event_id: outE.id,
+                        transfer_out_date: outE.event_date,
+                        quantity_out: outQty,
+                        matched_quantity_in: matched,
+                        unresolved_units: diff,
+                        match_mode: matchMetrics?.mode || 'UNMATCHED',
+                        match_score: matchMetrics?.score || 0,
+                    });
+                }
             }
         }
 
@@ -234,6 +265,12 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
                     fallbackValue: 20,
                     fallbackBasis: `Whale Hunter shared fallback for ${fnsku}`,
                 });
+                const transferReferenceIds = [...new Set(
+                    transferLossFamilies
+                        .map((family) => family.reference_id)
+                        .filter((referenceId): referenceId is string => Boolean(referenceId))
+                )];
+
                 results.push({
                     seller_id: sellerId, sync_id: syncId,
                     anomaly_type: matureUnresolved >= Math.max(balanceGap, netAdj) ? 'lost_in_transit' : 'lost_warehouse',
@@ -248,6 +285,8 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
                         gross_transfer_out_units: grossOut,
                         matched_transfer_in_units: matchedIn,
                         mature_unresolved_transfer_units: matureUnresolved,
+                        transfer_reference_ids: transferReferenceIds,
+                        transfer_loss_families: transferLossFamilies,
                         net_unresolved_units: unresolved,
                         reimbursement_linkage_mode: reData.linkage,
                         linkage_score: reData.modifier,
