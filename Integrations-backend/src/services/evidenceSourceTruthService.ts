@@ -2,6 +2,7 @@ import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supaba
 import logger from '../utils/logger';
 import tokenManager from '../utils/tokenManager';
 import { getManagedTokenSourceFields } from '../utils/evidenceSourceRecordShape';
+import config from '../config/env';
 
 export type EvidenceProvider =
   | 'gmail'
@@ -20,7 +21,7 @@ export interface EvidenceSourceContext {
   metadata: Record<string, any>;
   permissions: any;
   lastIngestedAt?: string;
-  authSource: 'evidence_source' | 'token_recovery' | 'token_manager';
+  authSource: 'evidence_source' | 'token_recovery' | 'token_manager' | 'configured_provider_token';
 }
 
 export interface SkippedEvidenceSource {
@@ -137,6 +138,21 @@ function isExpiryUsable(rawExpiry: string | null | undefined): boolean {
 
 function hasMetadataAccessToken(source: { metadata?: any }): boolean {
   return typeof source?.metadata?.access_token === 'string' && source.metadata.access_token.trim().length > 0;
+}
+
+function hasConfiguredProviderAuth(provider: EvidenceProvider): boolean {
+  if (provider !== 'slack') {
+    return false;
+  }
+
+  return Boolean(
+    (
+      config.SLACK_BOT_USER_OAUTH_TOKEN ||
+      process.env.SLACK_BOT_USER_OAUTH_TOKEN ||
+      process.env.BOT_USER_OAUTH_TOKEN ||
+      ''
+    ).trim()
+  );
 }
 
 export function buildEvidenceUserFilter(userId: string): string {
@@ -379,6 +395,12 @@ export async function resolveEvidenceSourceContext(
         metadata: enrichedMetadata
       }, normalizedProvider, 'token_manager');
     }
+    if (hasConfiguredProviderAuth(normalizedProvider)) {
+      return toContext({
+        ...existingSource,
+        metadata: enrichedMetadata
+      }, normalizedProvider, 'configured_provider_token');
+    }
   }
 
   return recoverSourceFromTokens(userId, tenantId, normalizedProvider);
@@ -421,8 +443,9 @@ export async function resolveEvidenceSourcesForIngestion(
 
     const hasMetadataAuth = hasMetadataAccessToken(source) && isExpiryUsable(source.metadata?.expires_at || source.metadata?.token_expires_at);
     const hasTokenAuth = await hasUsableTokenManagerAuth(userId, provider);
+    const hasConfiguredAuth = hasConfiguredProviderAuth(provider);
 
-    if (!hasMetadataAuth && !hasTokenAuth) {
+    if (!hasMetadataAuth && !hasTokenAuth && !hasConfiguredAuth) {
       skippedSources.push({
         provider,
         reason: 'connected_row_missing_usable_auth'
@@ -430,7 +453,15 @@ export async function resolveEvidenceSourcesForIngestion(
       continue;
     }
 
-    const context = toContext(source, provider, hasMetadataAuth ? 'evidence_source' : 'token_manager');
+    const context = toContext(
+      source,
+      provider,
+      hasMetadataAuth
+        ? 'evidence_source'
+        : hasTokenAuth
+          ? 'token_manager'
+          : 'configured_provider_token'
+    );
     if (!context) {
       skippedSources.push({
         provider,

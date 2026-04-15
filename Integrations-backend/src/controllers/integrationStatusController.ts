@@ -10,6 +10,7 @@ import logger from '../utils/logger';
 import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifier';
 import { normalizeResolvedAmazonSellerId } from '../utils/sellerIdentity';
 import { getManagedTokenSourceFields } from '../utils/evidenceSourceRecordShape';
+import { buildEvidenceUserFilter } from '../services/evidenceSourceTruthService';
 
 type ProviderKey = 'amazon' | 'gmail' | 'outlook' | 'gdrive' | 'dropbox' | 'slack' | 'adobe_sign' | 'onedrive';
 const DOC_TOKEN_PROVIDERS: ProviderKey[] = ['gmail', 'outlook', 'gdrive', 'dropbox'];
@@ -386,7 +387,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         .from('evidence_documents')
         .select('provider, created_at')
         .eq('tenant_id', tenant.id)
-        .eq('user_id', safeUserId);
+        .or(buildEvidenceUserFilter(userId));
 
       for (const doc of providerDocuments || []) {
         const key = (doc.provider || '').toLowerCase();
@@ -403,7 +404,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         .from('evidence_sources')
         .select('id, provider, status, last_ingested_at, account_email, permissions, seller_id, display_name, metadata')
         .eq('tenant_id', tenant.id)
-        .eq('user_id', safeUserId);
+        .or(buildEvidenceUserFilter(userId));
 
       if (sourcesError) {
         const isTenantColumnIssue = sourcesError.code === 'PGRST204' ||
