@@ -2,16 +2,17 @@ import { Router } from 'express';
 import { authenticateToken } from '../middleware/authMiddleware';
 import {
     initiateDropboxOAuth,
-    handleDropboxCallback,
     getDropboxStatus,
     listDropboxFiles,
     disconnectDropbox
 } from '../controllers/dropboxController';
+import { handleEvidenceSourceCallback } from '../controllers/evidenceSourcesController';
 
 const router = Router();
 
 // OAuth routes (no authentication required for callback)
-router.get('/callback', handleDropboxCallback);
+// Keep Dropbox on the same durable evidence_sources persistence path as Gmail/GDrive.
+router.get('/callback', handleEvidenceSourceCallback);
 
 // OAuth initiation - allow X-User-Id header (for testing without full auth)
 router.get('/auth', (req, res, next) => {

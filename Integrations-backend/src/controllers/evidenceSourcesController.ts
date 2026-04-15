@@ -44,7 +44,7 @@ const OAUTH_URLS = {
   dropbox: {
     auth: 'https://www.dropbox.com/oauth2/authorize',
     token: 'https://api.dropbox.com/oauth2/token',
-    scopes: ['files.content.read', 'files.metadata.read']
+    scopes: ['files.content.read', 'files.metadata.read', 'account_info.read']
   },
   onedrive: {
     auth: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
@@ -77,9 +77,13 @@ const OAUTH_URLS = {
 };
 
 function getProviderRedirectUri(provider: string, req: Request): string {
-  const configuredRedirectUri = provider === 'slack'
-    ? (config.SLACK_REDIRECT_URI || process.env.SLACK_REDIRECT_URI || '').trim()
-    : '';
+  let configuredRedirectUri = '';
+  if (provider === 'slack') {
+    configuredRedirectUri = config.SLACK_REDIRECT_URI || process.env.SLACK_REDIRECT_URI || '';
+  } else if (provider === 'dropbox') {
+    configuredRedirectUri = config.DROPBOX_REDIRECT_URI || process.env.DROPBOX_REDIRECT_URI || '';
+  }
+  configuredRedirectUri = configuredRedirectUri.trim();
 
   if (configuredRedirectUri) {
     return configuredRedirectUri;
@@ -188,6 +192,7 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
         `redirect_uri=${encodeURIComponent(defaultRedirectUri)}&` +
         `response_type=code&` +
         `scope=${encodeURIComponent(scopes)}&` +
+        `token_access_type=offline&` +
         `state=${state}`;
     } else if (provider === 'onedrive') {
       // Microsoft OAuth (OneDrive) - same flow as Outlook
