@@ -4,6 +4,7 @@ import enhancedDetectionService from '../services/enhancedDetectionService';
 import detectionService from '../services/detectionService';
 import csvIngestionService, { CsvUploadRunSnapshot } from '../services/csvIngestionService';
 import { timelineService } from '../services/timelineService';
+import { enrichDetectionFinding } from '../services/detectionFindingTruthService';
 
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -223,9 +224,10 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
       tenantId
     );
 
-    // Enhance results with document counts from dispute_evidence_links
-    const { supabase } = await import('../database/supabaseClient');
+    // Enhance results with durable document counts, filing movement, and seller-facing truth.
+    const { supabase, supabaseAdmin } = await import('../database/supabaseClient');
     const detectionIds = results.map((r: any) => r.id);
+    let linkedCaseByDetectionId = new Map<string, any>();
 
     if (detectionIds.length > 0) {
       // Get document counts for all detections in one query
@@ -245,6 +247,28 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
         r.matched_document_ids = r.matched_document_ids || [];
         r.matched_document_count = docCounts[r.id] || r.matched_document_ids?.length || 0;
       });
+
+      const { data: linkedCases, error: linkedCasesError } = await supabaseAdmin
+        .from('dispute_cases')
+        .select('id, detection_result_id, case_number, status, filing_status, case_state, eligibility_status, block_reasons, amazon_case_id, provider_case_id, recovery_status, submission_date, approved_amount, resolution_amount, updated_at, created_at')
+        .eq('tenant_id', tenantId)
+        .in('detection_result_id', detectionIds)
+        .order('updated_at', { ascending: false });
+
+      if (linkedCasesError) {
+        console.warn('[DETECTIONS] Failed to load linked filing movement truth', {
+          tenantId,
+          error: linkedCasesError.message
+        });
+      } else {
+        linkedCaseByDetectionId = new Map<string, any>();
+        for (const linkedCase of linkedCases || []) {
+          const detectionId = linkedCase?.detection_result_id;
+          if (detectionId && !linkedCaseByDetectionId.has(detectionId)) {
+            linkedCaseByDetectionId.set(detectionId, linkedCase);
+          }
+        }
+      }
     }
 
     let meta: any = undefined;
@@ -274,7 +298,11 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
       };
     }
 
-    return res.json({ success: true, results, total, meta });
+    const enrichedResults = results.map((row: any) =>
+      enrichDetectionFinding(row, linkedCaseByDetectionId.get(row.id))
+    );
+
+    return res.json({ success: true, results: enrichedResults, total, meta });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Internal error' } });
   }

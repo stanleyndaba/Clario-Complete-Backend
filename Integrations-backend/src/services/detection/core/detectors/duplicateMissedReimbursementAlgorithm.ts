@@ -694,6 +694,8 @@ export async function storeSentinelResults(results: SentinelDetectionResult[]): 
         const syncId = results[0].sync_id;
         const sellerId = results[0].seller_id;
         const nowIso = new Date().toISOString();
+        const deadlineIso = new Date(Date.now() + 60 * 86400000).toISOString();
+        const daysRemaining = Math.max(0, Math.ceil((new Date(deadlineIso).getTime() - Date.now()) / 86400000));
         const normalizeIdList = (value: unknown): string[] => {
             if (!Array.isArray(value)) return [];
             return value
@@ -766,12 +768,15 @@ export async function storeSentinelResults(results: SentinelDetectionResult[]): 
                 detection_reasons: r.evidence.detection_reasons
             },
             status: 'pending',
+            discovery_date: nowIso,
+            deadline_date: deadlineIso,
+            days_remaining: daysRemaining,
             updated_at: nowIso
         }));
 
         const { data: existing, error: existingError } = await supabaseAdmin
             .from('detection_results')
-            .select('id,evidence,created_at')
+            .select('id,evidence,created_at,discovery_date,deadline_date,days_remaining')
             .eq('tenant_id', tenantId)
             .eq('seller_id', sellerId)
             .eq('sync_id', syncId)
@@ -815,6 +820,9 @@ export async function storeSentinelResults(results: SentinelDetectionResult[]): 
             }
 
             const keeper = matchingRows[0];
+            const discoveryIso = keeper.discovery_date || keeper.created_at || record.discovery_date;
+            const resolvedDeadlineIso = keeper.deadline_date || new Date(new Date(discoveryIso).getTime() + 60 * 86400000).toISOString();
+            const resolvedDaysRemaining = keeper.days_remaining ?? Math.max(0, Math.ceil((new Date(resolvedDeadlineIso).getTime() - Date.now()) / 86400000));
             updates.push({
                 id: keeper.id,
                 payload: {
@@ -825,6 +833,9 @@ export async function storeSentinelResults(results: SentinelDetectionResult[]): 
                     evidence: record.evidence,
                     source_type: sourceType,
                     status: record.status,
+                    discovery_date: discoveryIso,
+                    deadline_date: resolvedDeadlineIso,
+                    days_remaining: resolvedDaysRemaining,
                     updated_at: nowIso
                 }
             });
