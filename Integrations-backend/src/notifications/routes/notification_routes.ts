@@ -42,6 +42,148 @@ function getAutoFilePreferenceValue(preferences: Record<string, any>): boolean {
     return typeof storedValue === 'boolean' ? storedValue : true;
 }
 
+function normalizeFilingValue(value: unknown): string {
+    return String(value || '').trim().toLowerCase();
+}
+
+function normalizeReasonList(value: unknown): string[] {
+    if (Array.isArray(value)) {
+        return value.map((item) => normalizeFilingValue(item)).filter(Boolean);
+    }
+
+    if (typeof value === 'string') {
+        return value
+            .split(',')
+            .map((item) => normalizeFilingValue(item))
+            .filter(Boolean);
+    }
+
+    return [];
+}
+
+async function buildAutoFileGateStatus(userId: string, tenantId: string, sellerIntentEnabled: boolean) {
+    const checkedAt = new Date().toISOString();
+    const { supabaseAdmin } = await import('../../database/supabaseClient');
+
+    let globalFilingEnabled: boolean | null = null;
+    let queueAvailable: boolean | null = null;
+    let queueReason: string | null = null;
+    let paymentRequired = false;
+    let filingReadyCount = 0;
+    let evidenceBlockedCount = 0;
+
+    try {
+        const { default: operationalControlService } = await import('../../services/operationalControlService');
+        globalFilingEnabled = await operationalControlService.isEnabled('auto_filing', true);
+    } catch (error: any) {
+        console.warn('[NOTIFICATIONS] Failed to resolve auto-file global gate', {
+            userId,
+            tenantId,
+            error: error?.message || String(error)
+        });
+    }
+
+    try {
+        const { default: refundFilingWorker } = await import('../../workers/refundFilingWorker');
+        const queueMetrics = await refundFilingWorker.getSubmissionQueueMetrics();
+        queueAvailable = Boolean(queueMetrics.available);
+        queueReason = queueMetrics.reason || null;
+    } catch (error: any) {
+        queueAvailable = null;
+        queueReason = error?.message || 'queue_status_unavailable';
+        console.warn('[NOTIFICATIONS] Failed to resolve auto-file queue gate', {
+            userId,
+            tenantId,
+            error: error?.message || String(error)
+        });
+    }
+
+    try {
+        const { isAgent7UnpaidFilingOverrideEnabled } = await import('../../services/agent7UnpaidFilingOverride');
+        const { data: user } = await supabaseAdmin
+            .from('users')
+            .select('id, is_paid_beta, amazon_seller_id, seller_id')
+            .eq('id', userId)
+            .maybeSingle();
+
+        paymentRequired = Boolean(user && !user.is_paid_beta && !isAgent7UnpaidFilingOverrideEnabled());
+
+        const sellerIds = Array.from(new Set([
+            userId,
+            user?.amazon_seller_id,
+            user?.seller_id
+        ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)));
+
+        if (sellerIds.length > 0) {
+            const { data: cases, error } = await supabaseAdmin
+                .from('dispute_cases')
+                .select('id, eligibility_status, filing_status, block_reasons')
+                .eq('tenant_id', tenantId)
+                .in('seller_id', sellerIds)
+                .in('filing_status', ['pending', 'retrying', 'blocked', 'pending_safety_verification', 'pending_approval'])
+                .limit(500);
+
+            if (error) {
+                throw error;
+            }
+
+            filingReadyCount = (cases || []).filter((record: any) => {
+                const eligibilityStatus = normalizeFilingValue(record?.eligibility_status);
+                const filingStatus = normalizeFilingValue(record?.filing_status);
+                return eligibilityStatus === 'ready' && ['pending', 'retrying'].includes(filingStatus);
+            }).length;
+
+            evidenceBlockedCount = (cases || []).filter((record: any) => {
+                const eligibilityStatus = normalizeFilingValue(record?.eligibility_status);
+                const reasons = normalizeReasonList(record?.block_reasons);
+                return eligibilityStatus === 'insufficient_data' || reasons.includes('missing_evidence_links');
+            }).length;
+        }
+    } catch (error: any) {
+        console.warn('[NOTIFICATIONS] Failed to resolve auto-file case/payment gate', {
+            userId,
+            tenantId,
+            error: error?.message || String(error)
+        });
+    }
+
+    let primaryBlocker: string | null = null;
+    let message = sellerIntentEnabled
+        ? 'Auto-File is on. Eligible cases can be submitted automatically when all filing requirements are met.'
+        : 'Auto-File is off. Cases will wait for your review before filing.';
+
+    if (sellerIntentEnabled) {
+        if (globalFilingEnabled === false) {
+            primaryBlocker = 'global_filing_paused';
+            message = 'Auto-File is on, but global filing is currently paused.';
+        } else if (paymentRequired) {
+            primaryBlocker = 'payment_required';
+            message = 'Auto-File is on, but payment is required before filing.';
+        } else if (queueAvailable === false) {
+            primaryBlocker = 'filing_queue_paused';
+            message = 'Auto-File is on, but filing dispatch is temporarily paused.';
+        } else if (evidenceBlockedCount > 0 && filingReadyCount === 0) {
+            primaryBlocker = 'evidence_required';
+            message = 'Auto-File is on, but some cases still need evidence before filing.';
+        } else if (filingReadyCount > 0) {
+            message = `${filingReadyCount} filing-ready case${filingReadyCount === 1 ? '' : 's'} can submit automatically when dispatch gates permit it.`;
+        }
+    }
+
+    return {
+        sellerIntentEnabled,
+        globalFilingEnabled,
+        queueAvailable,
+        queueReason,
+        paymentRequired,
+        filingReadyCount,
+        evidenceBlockedCount,
+        primaryBlocker,
+        message,
+        checkedAt
+    };
+}
+
 /**
  * @swagger
  * components:
@@ -428,11 +570,14 @@ router.get('/preferences/filing', async (req: any, res) => {
         const userId = getPreferenceUserId(req);
         const tenantId = getPreferenceTenantId(req);
         const preferences = await getStoredUserPreferences(userId, tenantId);
+        const enabled = getAutoFilePreferenceValue(preferences);
+        const gateStatus = await buildAutoFileGateStatus(userId, tenantId, enabled);
 
         res.json({
             success: true,
             data: {
-                enabled: getAutoFilePreferenceValue(preferences)
+                enabled,
+                gateStatus
             }
         });
     } catch (error: any) {
@@ -541,7 +686,8 @@ router.put('/preferences/filing', async (req: any, res) => {
             success: true,
             message: 'Filing preferences saved successfully',
             data: {
-                enabled
+                enabled,
+                gateStatus: await buildAutoFileGateStatus(userId, tenantId, enabled)
             }
         });
     } catch (error: any) {
