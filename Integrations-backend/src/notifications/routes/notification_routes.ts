@@ -34,7 +34,15 @@ async function getStoredUserPreferences(userId: string, tenantId: string): Promi
         throw error;
     }
 
-    return normalizeNotificationPreferences((data?.preferences || {}) as Record<string, any>);
+    const rawPreferences = (data?.preferences || {}) as Record<string, any>;
+    const normalized = normalizeNotificationPreferences(rawPreferences) as Record<string, any>;
+    const autoFileEnabled = rawPreferences?.auto_file_cases?.enabled;
+
+    if (typeof autoFileEnabled === 'boolean') {
+        normalized.auto_file_cases = { enabled: autoFileEnabled };
+    }
+
+    return normalized;
 }
 
 function getAutoFilePreferenceValue(preferences: Record<string, any>): boolean {
@@ -608,7 +616,13 @@ router.put('/preferences', async (req: any, res) => {
     try {
         const userId = getPreferenceUserId(req);
         const tenantId = getPreferenceTenantId(req);
-        const preferences = normalizeNotificationPreferences({ ...(req.body || {}) });
+        const existingPreferences = await getStoredUserPreferences(userId, tenantId);
+        const preferences = normalizeNotificationPreferences({ ...(req.body || {}) }) as Record<string, any>;
+        const existingAutoFileEnabled = existingPreferences?.auto_file_cases?.enabled;
+
+        if (typeof existingAutoFileEnabled === 'boolean') {
+            preferences.auto_file_cases = { enabled: existingAutoFileEnabled };
+        }
 
         const { supabaseAdmin } = await import('../../database/supabaseClient');
 
