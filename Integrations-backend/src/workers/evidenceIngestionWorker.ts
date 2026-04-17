@@ -758,7 +758,7 @@ export class EvidenceIngestionWorker {
 
           const { data: recentDocs } = await client
             .from('evidence_documents')
-            .select('id, filename, provider')
+            .select('id, filename, provider, doc_type')
             .eq('seller_id', dbUserIdForDocs)
             .eq('provider', source.provider)
             .order('created_at', { ascending: false })
@@ -772,9 +772,11 @@ export class EvidenceIngestionWorker {
               await notificationHelper.notifyEvidenceFound(userId, {
                 tenantId: sourceContext.tenant_id,
                 documentId: doc.id,
-                source: notificationSource as 'gmail' | 'outlook' | 'drive' | 'dropbox',
+                source: notificationSource as 'gmail' | 'outlook' | 'drive' | 'dropbox' | 'unknown',
                 fileName: doc.filename || 'Unknown',
-                parsed: false
+                parsed: false,
+                documentType: (doc as any).doc_type || null,
+                documentLabel: (doc as any).doc_type || doc.filename || null
               });
             }
           }

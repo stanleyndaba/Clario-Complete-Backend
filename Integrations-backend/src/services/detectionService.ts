@@ -123,6 +123,55 @@ export class DetectionService {
     return data.tenant_id;
   }
 
+  private deriveDetectionReviewTier(result: DetectionResult): 'claim_candidate' | 'review_only' | 'monitoring' {
+    const reviewTier = String(result.evidence?.review_tier || '').toLowerCase();
+    if (reviewTier === 'review_only' || reviewTier === 'monitoring') {
+      return reviewTier as 'review_only' | 'monitoring';
+    }
+
+    const claimReadiness = String(result.evidence?.claim_readiness || '').toLowerCase();
+    if (claimReadiness === 'not_claim_ready') {
+      return 'review_only';
+    }
+
+    return result.confidence_score >= 0.85 ? 'claim_candidate' : 'review_only';
+  }
+
+  private async persistDetectionSummaryNotification(
+    job: DetectionJob & { is_sandbox?: boolean },
+    results: DetectionResult[]
+  ): Promise<void> {
+    const tenantId = job.tenant_id || await this.resolveDetectionQueueTenantId(job);
+    const totalValue = results.reduce((sum, result) => sum + (result.estimated_value || 0), 0);
+    const claimReadyCount = results.filter((result) => this.deriveDetectionReviewTier(result) === 'claim_candidate').length;
+    const reviewNeededCount = results.filter((result) => this.deriveDetectionReviewTier(result) === 'review_only').length;
+    const monitoringCount = results.filter((result) => this.deriveDetectionReviewTier(result) === 'monitoring').length;
+    const averageConfidence = results.length > 0
+      ? results.reduce((sum, result) => sum + (result.confidence_score || 0), 0) / results.length
+      : 0;
+
+    try {
+      const notificationHelper = (await import('./notificationHelper')).default;
+      await notificationHelper.notifyClaimDetected(job.seller_id, {
+        tenantId,
+        count: results.length,
+        totalValue,
+        currency: results[0]?.currency || 'USD',
+        confidence: averageConfidence,
+        syncId: job.sync_id,
+        claimReadyCount,
+        reviewNeededCount,
+        monitoringCount
+      });
+    } catch (error: any) {
+      logger.warn('Failed to persist durable detection summary notification', {
+        seller_id: job.seller_id,
+        sync_id: job.sync_id,
+        error: error.message
+      });
+    }
+  }
+
   /**
    * Enqueue a detection job after sync completion
    * If Redis is not available, processes the job directly from the database
@@ -269,51 +318,7 @@ export class DetectionService {
       const highConfidenceClaims = results.filter(r => r.confidence_score >= 0.85);
       const mediumConfidenceClaims = results.filter(r => r.confidence_score >= 0.50 && r.confidence_score < 0.85);
       const lowConfidenceClaims = results.filter(r => r.confidence_score < 0.50);
-
-      // Send notifications for each category
-      const websocketService = (await import('./websocketService')).default;
-
-      if (highConfidenceClaims.length > 0) {
-        websocketService.sendNotificationToUser(job.seller_id, {
-          type: 'success',
-          title: '⚡ ' + highConfidenceClaims.length + ' claims ready for auto submission',
-          message: `High confidence (85%+): ${highConfidenceClaims.length} claims totaling $${highConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0).toFixed(2)}`,
-          data: {
-            category: 'high_confidence',
-            count: highConfidenceClaims.length,
-            total_amount: highConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
-            is_sandbox: job.is_sandbox || false
-          }
-        });
-      }
-
-      if (mediumConfidenceClaims.length > 0) {
-        websocketService.sendNotificationToUser(job.seller_id, {
-          type: 'warning',
-          title: '❓ ' + mediumConfidenceClaims.length + ' claims need your input',
-          message: `Medium confidence (50-85%): Review required for ${mediumConfidenceClaims.length} claims`,
-          data: {
-            category: 'medium_confidence',
-            count: mediumConfidenceClaims.length,
-            total_amount: mediumConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
-            is_sandbox: job.is_sandbox || false
-          }
-        });
-      }
-
-      if (lowConfidenceClaims.length > 0) {
-        websocketService.sendNotificationToUser(job.seller_id, {
-          type: 'info',
-          title: '📋 ' + lowConfidenceClaims.length + ' claims need manual review',
-          message: `Low confidence (<50%): Manual review required`,
-          data: {
-            category: 'low_confidence',
-            count: lowConfidenceClaims.length,
-            total_amount: lowConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
-            is_sandbox: job.is_sandbox || false
-          }
-        });
-      }
+      await this.persistDetectionSummaryNotification(job, results);
 
       // 🎯 PHASE 3: Trigger orchestrator Phase 3 (Detection Completion)
       try {
@@ -540,51 +545,7 @@ export class DetectionService {
         const highConfidenceClaims = results.filter(r => r.confidence_score >= 0.85);
         const mediumConfidenceClaims = results.filter(r => r.confidence_score >= 0.50 && r.confidence_score < 0.85);
         const lowConfidenceClaims = results.filter(r => r.confidence_score < 0.50);
-
-        // Send notifications for each category
-        const websocketService = (await import('./websocketService')).default;
-
-        if (highConfidenceClaims.length > 0) {
-          websocketService.sendNotificationToUser(job.seller_id, {
-            type: 'success',
-            title: '⚡ ' + highConfidenceClaims.length + ' claims ready for auto submission',
-            message: `High confidence (85%+): ${highConfidenceClaims.length} claims totaling $${highConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0).toFixed(2)}`,
-            data: {
-              category: 'high_confidence',
-              count: highConfidenceClaims.length,
-              total_amount: highConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
-              is_sandbox: (job as any).is_sandbox || false
-            }
-          });
-        }
-
-        if (mediumConfidenceClaims.length > 0) {
-          websocketService.sendNotificationToUser(job.seller_id, {
-            type: 'warning',
-            title: '❓ ' + mediumConfidenceClaims.length + ' claims need your input',
-            message: `Medium confidence (50-85%): Review required for ${mediumConfidenceClaims.length} claims`,
-            data: {
-              category: 'medium_confidence',
-              count: mediumConfidenceClaims.length,
-              total_amount: mediumConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
-              is_sandbox: (job as any).is_sandbox || false
-            }
-          });
-        }
-
-        if (lowConfidenceClaims.length > 0) {
-          websocketService.sendNotificationToUser(job.seller_id, {
-            type: 'info',
-            title: '📋 ' + lowConfidenceClaims.length + ' claims need manual review',
-            message: `Low confidence (<50%): Manual review required`,
-            data: {
-              category: 'low_confidence',
-              count: lowConfidenceClaims.length,
-              total_amount: lowConfidenceClaims.reduce((sum, r) => sum + (r.estimated_value || 0), 0),
-              is_sandbox: (job as any).is_sandbox || false
-            }
-          });
-        }
+        await this.persistDetectionSummaryNotification(job, results);
 
         // 🎯 PHASE 3: Trigger orchestrator Phase 3 (Detection Completion)
         try {
@@ -866,43 +827,6 @@ export class DetectionService {
           isSandbox,
           mode: isSandbox ? 'SANDBOX' : 'PRODUCTION'
         });
-
-        // Send real-time notification with results (sandbox mode indicator)
-        const websocketService = (await import('./websocketService')).default;
-        const sandboxPrefix = isSandbox ? '[SANDBOX] ' : '';
-        websocketService.sendNotificationToUser(job.seller_id, {
-          type: 'success',
-          title: sandboxPrefix + '💰 Found $' + totalAmount.toFixed(2) + ' in recoverable funds',
-          message: `${results.length} claims detected: ${highConfidence} high confidence, ${mediumConfidence} need review${isSandbox ? ' (Sandbox Test Data)' : ''}`,
-          data: {
-            claims_found: results.length,
-            total_amount: totalAmount,
-            high_confidence: highConfidence,
-            medium_confidence: mediumConfidence,
-            low_confidence: lowConfidence,
-            auto_submit_ready: highConfidence,
-            needs_review: mediumConfidence + lowConfidence,
-            is_sandbox: isSandbox,
-            mode: isSandbox ? 'SANDBOX' : 'PRODUCTION',
-            sandbox_test_data: isSandbox
-          }
-        });
-
-        // Send additional toast for high-confidence claims ready for auto-submit
-        if (highConfidence > 0) {
-          websocketService.sendNotificationToUser(job.seller_id, {
-            type: 'success',
-            title: sandboxPrefix + '⚡ ' + highConfidence + ' claims ready for auto submission',
-            message: `High confidence (85%+): ${highConfidence} claims totaling $${results.filter(r => r.confidence_score >= 0.85).reduce((sum, r) => sum + (r.estimated_value || 0), 0).toFixed(2)}${isSandbox ? ' (Sandbox)' : ''}`,
-            data: {
-              category: 'high_confidence',
-              count: highConfidence,
-              total_amount: results.filter(r => r.confidence_score >= 0.85).reduce((sum, r) => sum + (r.estimated_value || 0), 0),
-              is_sandbox: isSandbox,
-              sandbox_test_data: isSandbox
-            }
-          });
-        }
 
       } catch (error: any) {
         apiResponseTimeMs = Date.now() - apiCallStartTime;

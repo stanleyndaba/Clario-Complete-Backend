@@ -22,32 +22,45 @@ export interface ClaimDetectedData {
   sku?: string;
   source?: string;
   syncId?: string;
+  claimReadyCount?: number;
+  reviewNeededCount?: number;
+  monitoringCount?: number;
+  caseNumber?: string;
 }
 
 export interface EvidenceFoundData {
   tenantId: string;
   documentId: string;
-  source: 'gmail' | 'outlook' | 'drive' | 'dropbox';
+  source: 'gmail' | 'outlook' | 'drive' | 'dropbox' | 'unknown';
   fileName: string;
   parsed?: boolean;
   matchFound?: boolean;
   disputeId?: string;
+  caseNumber?: string;
+  amazonCaseId?: string;
+  documentType?: string | null;
+  documentLabel?: string | null;
+  matchType?: string | null;
+  matchedFields?: string[];
 }
 
 export interface CaseFiledData {
   tenantId: string;
   disputeId: string;
   caseId?: string;
+  caseNumber?: string;
   amazonCaseId?: string;
   claimAmount: number;
   currency?: string;
   status: 'filed' | 'pending' | 'in_progress';
+  syncId?: string;
 }
 
 export interface RefundApprovedData {
   tenantId: string;
   disputeId: string;
   amazonCaseId?: string;
+  caseNumber?: string;
   claimAmount: number;
   currency?: string;
   approvedAmount?: number;
@@ -62,6 +75,50 @@ export interface FundsDepositedData {
   platformFee?: number;
   sellerPayout?: number;
   billingStatus?: 'charged' | 'credited' | 'pending' | 'sent';
+  caseNumber?: string;
+  payoutId?: string;
+}
+
+function formatMoney(amount: number | undefined, currency: string = 'USD'): string {
+  const safeAmount = Number(amount || 0);
+  const normalizedCurrency = String(currency || 'USD').toUpperCase();
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: normalizedCurrency
+    }).format(safeAmount);
+  } catch {
+    return `${normalizedCurrency} ${safeAmount.toFixed(2)}`;
+  }
+}
+
+function compactIdentifier(value?: string | null, maxLength = 28): string | null {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  if (raw.length <= maxLength) return raw;
+  return `${raw.slice(0, maxLength - 3)}...`;
+}
+
+function parentheticalIdentifier(value?: string | null): string {
+  const compact = compactIdentifier(value);
+  return compact ? `(${compact}) ` : '';
+}
+
+function humanizeToken(value?: string | null): string | null {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  return raw
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+function normalizeRequestedDocumentLabel(value?: string | null): string | null {
+  return humanizeToken(value) || compactIdentifier(value);
 }
 
 class NotificationHelper {
@@ -127,7 +184,9 @@ class NotificationHelper {
       logger.warn('Skipping notification - no valid recipient context', {
         targetId,
         tenantId: event.tenant_id,
-        trackingType
+        trackingType,
+        notificationType: event.type,
+        title: event.title
       });
       throw new Error('RECIPIENT_NOT_FOUND_FOR_TENANT');
     }
@@ -175,23 +234,28 @@ class NotificationHelper {
       const isBulk = data.count && data.count > 1;
       const amount = data.totalValue || data.amount || 0;
       const currency = data.currency || 'USD';
-      const currencySymbol = currency === 'USD' ? '$' : currency + ' ';
+      const count = data.count || (data.claimId ? 1 : 0);
+      const claimReadyCount = Number.isFinite(Number(data.claimReadyCount)) ? Number(data.claimReadyCount) : count;
+      const reviewNeededCount = Number.isFinite(Number(data.reviewNeededCount)) ? Number(data.reviewNeededCount) : Math.max(count - claimReadyCount, 0);
+      const amountLabel = formatMoney(amount, currency);
+      const titleIdentifier = compactIdentifier(data.syncId) || (isBulk ? `${count} findings` : compactIdentifier(data.caseNumber || data.claimId));
 
       logger.info('📢 [NOTIFICATIONS] Notifying claim detected', {
         userId,
         isBulk,
-        count: data.count,
+        count,
         claimId: data.claimId,
         amount
       });
 
-      let title = 'Detected High-Probability Claim';
-      let message = `Margin identified a discrepancy Amazon likely owes you for. Reviewing and validating evidence now.`;
-
-      if (isBulk) {
-        title = `Detected ${data.count} High-Probability Claims - ${currencySymbol}${amount.toLocaleString()}`;
-        message = `Margin identified discrepancies Amazon likely owes you for. Reviewing and validating evidence now.`;
-      }
+      const title = `${parentheticalIdentifier(titleIdentifier)}Recovery opportunities detected`.trim();
+      const countSummary = count > 0 ? `${count} ${count === 1 ? 'finding' : 'findings'}` : 'A recovery finding';
+      const valueSummary = amount > 0 ? `worth ${amountLabel}` : 'ready for review';
+      const readinessSummary = [
+        claimReadyCount > 0 ? `${claimReadyCount} claim-ready` : null,
+        reviewNeededCount > 0 ? `${reviewNeededCount} review-needed` : null
+      ].filter(Boolean).join(' · ');
+      const message = `${countSummary} ${valueSummary}.${readinessSummary ? ` ${readinessSummary}.` : ''}${data.syncId ? ` Sync ${compactIdentifier(data.syncId, 20)} completed.` : ''}`;
 
       const event: Omit<NotificationEvent, 'user_id'> = {
         type: NotificationType.CLAIM_DETECTED,
@@ -202,17 +266,24 @@ class NotificationHelper {
         channel: NotificationChannel.BOTH,
         payload: normalizeAgent10EventPayload(NotificationType.CLAIM_DETECTED, {
           claimId: data.claimId,
-          count: data.count,
+          count,
           amount,
+          totalValue: amount,
           currency,
           confidence: data.confidence,
           orderId: data.orderId,
           sku: data.sku,
-          isBulk
+          isBulk,
+          syncId: data.syncId,
+          claimReadyCount,
+          reviewNeededCount,
+          monitoringCount: data.monitoringCount || 0,
+          caseNumber: data.caseNumber,
+          status: claimReadyCount > 0 ? 'claim_ready' : 'review_needed'
         }, {
           tenantId: data.tenantId,
           entityType: data.claimId ? 'detection_result' : 'unknown',
-          entityId: data.claimId
+          entityId: data.claimId || data.syncId
         }),
         immediate: true
       };
@@ -239,12 +310,20 @@ class NotificationHelper {
         source: data.source
       });
 
-      let title = 'Ingested Discovery Evidence';
-      let message = `Processed documents from ${data.source}. Reviewing for claim validation data.`;
+      const documentLabel =
+        normalizeRequestedDocumentLabel(data.documentLabel) ||
+        normalizeRequestedDocumentLabel(data.documentType) ||
+        compactIdentifier(data.fileName, 36) ||
+        'Document';
+      let title = `${parentheticalIdentifier(documentLabel)}Evidence found`.trim();
+      let message = `Margin ingested ${data.fileName || 'a document'} from ${data.source || 'a connected source'} and is checking where it can help.`;
 
       if (data.matchFound && data.disputeId) {
-        title = 'Attached Supporting Evidence';
-        message = `Purchase invoices, delivery confirmations, and inventory trails linked to claims.`;
+        title = `${parentheticalIdentifier(documentLabel)}Evidence linked`.trim();
+        message = `Margin linked this document to ${data.caseNumber ? `${data.caseNumber}` : 'a live case'} and recorded it for filing review.`;
+      } else if (data.parsed) {
+        title = `${parentheticalIdentifier(documentLabel)}Document parsed`.trim();
+        message = `Margin parsed ${data.fileName || 'this document'} and updated the evidence record for matching.`;
       }
 
       const event: Omit<NotificationEvent, 'user_id'> = {
@@ -260,7 +339,13 @@ class NotificationHelper {
           fileName: data.fileName,
           parsed: data.parsed || false,
           matchFound: data.matchFound || false,
-          disputeId: data.disputeId
+          disputeId: data.disputeId,
+          caseNumber: data.caseNumber,
+          amazonCaseId: data.amazonCaseId,
+          documentType: data.documentType,
+          documentLabel,
+          matchType: data.matchType,
+          matchedFields: data.matchedFields
         }, {
           tenantId: data.tenantId,
           entityType: data.documentId ? 'evidence_document' : 'unknown',
@@ -291,22 +376,35 @@ class NotificationHelper {
         status: data.status
       });
 
+      const identifier = data.caseNumber || data.amazonCaseId || data.caseId || data.disputeId;
+      const amountLabel = formatMoney(data.claimAmount, data.currency || 'USD');
+      const title = data.status === 'filed'
+        ? `${parentheticalIdentifier(identifier)}Filed`.trim()
+        : data.status === 'in_progress'
+          ? `${parentheticalIdentifier(identifier)}Queued for filing`.trim()
+          : `${parentheticalIdentifier(identifier)}Preparing case`.trim();
+      const message = data.status === 'filed'
+        ? `Margin submitted this case to Amazon${data.amazonCaseId ? ` as ${data.amazonCaseId}` : ''}. Current tracked value: ${amountLabel}.`
+        : data.status === 'in_progress'
+          ? `Margin queued this case for Amazon filing once the submission worker reaches it.`
+          : `Margin is preparing this case for filing and checking the final supporting record.`;
+
       const event: Omit<NotificationEvent, 'user_id'> = {
         type: NotificationType.CASE_FILED,
         tenant_id: data.tenantId,
-        title: data.status === 'filed' ? `Submitted ${data.caseId ? 'Claim' : 'Claims'} to Amazon` : 'Preparing Amazon Claim Filing',
-        message: data.status === 'filed'
-          ? `Filed with structured evidence packages and audit references.`
-          : `Preparing evidence packages and constructing audit trails for filing.`,
+        title,
+        message,
         priority: NotificationPriority.HIGH,
         channel: NotificationChannel.BOTH,
         payload: normalizeAgent10EventPayload(NotificationType.CASE_FILED, {
           disputeId: data.disputeId,
           caseId: data.caseId,
+          caseNumber: data.caseNumber,
           amazonCaseId: data.amazonCaseId,
           claimAmount: data.claimAmount,
           currency: data.currency || 'usd',
-          status: data.status
+          status: data.status,
+          syncId: data.syncId
         }, {
           tenantId: data.tenantId,
           entityType: 'dispute_case',
@@ -339,18 +437,20 @@ class NotificationHelper {
 
       const approvedAmount = data.approvedAmount || data.claimAmount;
       const currency = data.currency || 'USD';
-      const currencySymbol = currency === 'USD' ? '$' : currency + ' ';
+      const identifier = data.caseNumber || data.amazonCaseId || data.disputeId;
+      const amountLabel = formatMoney(approvedAmount, currency);
 
       const event: Omit<NotificationEvent, 'user_id'> = {
         type: NotificationType.REFUND_APPROVED,
         tenant_id: data.tenantId,
-        title: `Recovered ${currencySymbol}${approvedAmount.toFixed(2)}`,
-        message: `Amazon approved the reimbursement. Cleared and scheduled for payout.`,
+        title: `${parentheticalIdentifier(identifier)}Approved`.trim(),
+        message: `Amazon approved ${amountLabel} on this case. Margin is now tracking payout confirmation.`,
         priority: NotificationPriority.URGENT,
         channel: NotificationChannel.BOTH,
         payload: normalizeAgent10EventPayload(NotificationType.REFUND_APPROVED, {
           disputeId: data.disputeId,
           amazonCaseId: data.amazonCaseId,
+          caseNumber: data.caseNumber,
           claimAmount: data.claimAmount,
           approvedAmount,
           currency: data.currency || 'usd'
@@ -384,21 +484,17 @@ class NotificationHelper {
         amount: data.amount
       });
 
-      let title = 'Funds Deposited! 🎉';
       const currency = (data.currency || 'USD').toUpperCase();
-      const currencySymbol = currency === 'USD' ? '$' : currency + ' ';
-      const formattedAmount = `${currencySymbol}${data.amount.toFixed(2)}`;
-      let message = `Funds have been cleared and deposited to your account.`;
-
-      if (typeof data.amount === 'number' && Number.isFinite(data.amount)) {
-        message += ` You keep ${currencySymbol}${data.amount.toFixed(2)}. Margin billing stays on flat subscription pricing and never deducts a recovery commission.`;
-      }
+      const formattedAmount = formatMoney(data.amount, currency);
+      const identifier = data.caseNumber || data.payoutId || data.recoveryId || data.disputeId;
+      const title = `${parentheticalIdentifier(identifier)}Payout confirmed`.trim();
+      const message = `Amazon recorded ${formattedAmount} as deposited${data.payoutId ? ` under payout ${compactIdentifier(data.payoutId)}` : ''}. Margin is keeping the payout record in sync.`;
 
       const event: Omit<NotificationEvent, 'user_id'> = {
         type: NotificationType.FUNDS_DEPOSITED,
         tenant_id: data.tenantId,
-        title: `Deposit Confirmed: ${formattedAmount}`,
-        message: message,
+        title,
+        message,
         priority: NotificationPriority.URGENT,
         channel: NotificationChannel.BOTH,
         payload: normalizeAgent10EventPayload(NotificationType.FUNDS_DEPOSITED, {
@@ -407,7 +503,9 @@ class NotificationHelper {
           amount: data.amount,
           currency: data.currency || 'usd',
           sellerPayout: data.sellerPayout ?? data.amount,
-          billingStatus: data.billingStatus
+          billingStatus: data.billingStatus,
+          caseNumber: data.caseNumber,
+          payoutId: data.payoutId
         }, {
           tenantId: data.tenantId,
           entityType: data.recoveryId ? 'recovery' : 'dispute_case',

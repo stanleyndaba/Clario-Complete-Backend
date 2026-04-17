@@ -656,7 +656,7 @@ export class DocumentParsingWorker {
         const notificationHelper = (await import('../services/notificationHelper')).default;
         const { data: doc } = await supabaseAdmin
           .from('evidence_documents')
-          .select('filename, source')
+          .select('filename, source, doc_type')
           .eq('id', document.id)
           .single();
 
@@ -664,9 +664,11 @@ export class DocumentParsingWorker {
           await notificationHelper.notifyEvidenceFound(document.seller_id, {
             tenantId,
             documentId: document.id,
-            source: (doc.source || 'unknown') as 'gmail' | 'outlook' | 'drive' | 'dropbox',
+            source: (doc.source || 'unknown') as 'gmail' | 'outlook' | 'drive' | 'dropbox' | 'unknown',
             fileName: doc.filename || 'Unknown',
-            parsed: true
+            parsed: true,
+            documentType: (doc as any).doc_type || null,
+            documentLabel: (doc as any).doc_type || doc.filename || null
           });
         }
       } catch (notifError: any) {

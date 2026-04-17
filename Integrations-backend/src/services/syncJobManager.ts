@@ -544,8 +544,8 @@ class SyncJobManager {
       await notificationHelper.notifyUser(
         userId,
         NotificationType.SYNC_STARTED,
-        'Amazon Update Started',
-        'We\'re pulling your latest Amazon records, including recent FBA activity.',
+        `(Sync ${syncId}) Amazon update started`,
+        'Margin started refreshing your latest Amazon records and recovery inputs.',
         NotificationPriority.LOW,
         NotificationChannel.IN_APP,
         { syncId },
@@ -1173,8 +1173,8 @@ class SyncJobManager {
           await notificationHelper.notifyUser(
             userId,
             NotificationType.SYNC_COMPLETED,
-            'Amazon Update Complete',
-            `Your Amazon update finished successfully.${claimMsg}${valueMsg}`,
+            `(Sync ${syncId}) Amazon update complete`,
+            `Margin finished processing this Amazon update.${claimMsg}${valueMsg}`,
             syncStatus.claimsDetected && syncStatus.claimsDetected > 0 ? NotificationPriority.HIGH : NotificationPriority.NORMAL,
             NotificationChannel.IN_APP,
             {
@@ -1304,8 +1304,8 @@ class SyncJobManager {
           await notificationHelper.notifyUser(
             userId,
             NotificationType.SYNC_FAILED,
-            'Amazon Update Paused',
-            'We hit a temporary issue while updating your Amazon records. We\'ll retry automatically.',
+            `(Sync ${syncId}) Amazon update paused`,
+            'Margin hit a temporary issue while updating your Amazon records and will retry automatically.',
             NotificationPriority.HIGH,
             NotificationChannel.IN_APP,
             { syncId, errorCode: structuredError.code, error: error.message },

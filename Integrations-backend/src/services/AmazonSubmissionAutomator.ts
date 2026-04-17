@@ -648,6 +648,25 @@ export class AmazonSubmissionAutomator {
             throw new Error(divergenceMessage);
         }
 
+        try {
+            const notificationHelper = (await import('./notificationHelper')).default;
+            await notificationHelper.notifyCaseFiled(sellerId, {
+                tenantId,
+                disputeId: caseId,
+                caseId,
+                amazonCaseId: amazonCaseId || undefined,
+                claimAmount: Number(requestSummary.claim_amount || requestSummary.amount_claimed || 0) || 0,
+                currency: String(requestSummary.currency || 'USD'),
+                status: 'filed'
+            });
+        } catch (notificationError: any) {
+            logger.warn('[AGENT 7] Failed to persist filed notification', {
+                caseId,
+                sellerId,
+                error: notificationError.message
+            });
+        }
+
         const { error: claimSyncError } = await supabaseAdmin
             .from('claims')
             .update({

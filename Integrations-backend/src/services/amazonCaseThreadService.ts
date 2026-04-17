@@ -148,6 +148,37 @@ function asStringArray(value: unknown): string[] {
   return [];
 }
 
+function titleCaseToken(value: string): string {
+  return value
+    .replace(/[_-]+/g, ' ')
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function buildNotificationIdentifier(disputeCase: any, amazonCaseId: string): string {
+  return trimOrNull(disputeCase?.case_number) || amazonCaseId || trimOrNull(disputeCase?.id) || 'Case';
+}
+
+function extractRequestedDocuments(subject: string, bodyText: string | null): string[] {
+  const haystack = `${subject || ''}\n${bodyText || ''}`.toLowerCase();
+  const candidates: Array<{ label: string; pattern: RegExp }> = [
+    { label: 'invoice', pattern: /\binvoice\b|\bcommercial invoice\b|\btax invoice\b/ },
+    { label: 'proof of delivery', pattern: /\bproof of delivery\b|\bdelivery confirmation\b|\bpod\b/ },
+    { label: 'bill of lading', pattern: /\bbill of lading\b|\bbol\b/ },
+    { label: 'packing slip', pattern: /\bpacking slip\b/ },
+    { label: 'purchase order', pattern: /\bpurchase order\b|\bpo\b/ },
+    { label: 'shipment record', pattern: /\bshipment\b|\btracking\b|\bcarrier\b/ },
+    { label: 'photos', pattern: /\bphotos?\b|\bpictures?\b|\bimages?\b/ },
+    { label: 'return record', pattern: /\breturn\b|\brma\b/ }
+  ];
+
+  return candidates
+    .filter((candidate) => candidate.pattern.test(haystack))
+    .map((candidate) => candidate.label);
+}
+
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   return Array.from(new Set(values.map((value) => trimOrNull(value)).filter((value): value is string => Boolean(value))));
 }
@@ -633,20 +664,39 @@ class AmazonCaseThreadService {
       return;
     }
 
+    const requestedDocuments = params.nextState === 'needs_evidence'
+      ? extractRequestedDocuments(params.subject, params.bodyText)
+      : [];
+    const requestType = requestedDocuments[0] || (params.nextState === 'needs_evidence' ? 'additional evidence' : null);
+    const identifier = buildNotificationIdentifier(params.disputeCase, params.amazonCaseId);
+    const title = params.nextState === 'needs_evidence'
+      ? `(${titleCaseToken(requestType || 'additional evidence')}) Amazon requested`
+      : params.nextState === 'approved'
+        ? `(${identifier}) Approved`
+        : params.nextState === 'rejected'
+          ? `(${identifier}) Rejected`
+          : `(${identifier}) Payout issued`;
+    const message = params.nextState === 'needs_evidence'
+      ? `Amazon requested ${requestType || 'additional evidence'} for ${identifier}. Margin linked the thread and is keeping the response trail ready.`
+      : descriptor.message;
+
     await notificationHelper.notifyUser(
       targetId,
       descriptor.type,
-      descriptor.title,
-      descriptor.message,
+      title,
+      message,
       descriptor.priority,
       NotificationChannel.BOTH,
       normalizeAgent10EventPayload(descriptor.type, {
         disputeId: params.disputeCase.id,
         amazon_case_id: params.amazonCaseId,
+        case_number: trimOrNull(params.disputeCase?.case_number),
         case_state: params.nextState,
         provider_message_id: params.providerMessageId,
         subject: params.subject,
-        body_preview: trimOrNull(params.bodyText)?.slice(0, 500) || null
+        body_preview: trimOrNull(params.bodyText)?.slice(0, 500) || null,
+        request_type: requestType,
+        requested_documents: requestedDocuments
       }, {
         tenantId: params.tenantId,
         entityType: 'dispute_case',

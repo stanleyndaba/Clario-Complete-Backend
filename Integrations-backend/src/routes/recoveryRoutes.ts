@@ -1699,8 +1699,8 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
                 user_id: userId,
                 tenant_id: tenantId,
                 type: NotificationType.CASE_FILED,
-                title: `Submitted Claim ${caseNumber}`,
-                message: `Claim ${caseNumber} submitted for ${formatCurrency(detectionResult.estimated_value || 0, detectionResult.currency || 'USD')}`,
+                title: `(${caseNumber}) Filed`,
+                message: `Margin submitted this case to Amazon for ${formatCurrency(detectionResult.estimated_value || 0, detectionResult.currency || 'USD')}.`,
                 priority: NotificationPriority.HIGH,
                 channel: NotificationChannel.BOTH,
                 payload: {
@@ -1708,7 +1708,8 @@ router.post('/:id/submit', async (req: Request, res: Response) => {
                     dispute_case_id: newCase.id,
                     case_number: caseNumber,
                     amount: detectionResult.estimated_value,
-                    currency: detectionResult.currency || 'USD'
+                    currency: detectionResult.currency || 'USD',
+                    status: 'filed'
                 },
                 immediate: true
             });

@@ -1278,11 +1278,16 @@ class EvidenceMatchingService {
         await notificationHelper.notifyEvidenceFound(userId, {
           tenantId,
           documentId: result.evidence_document_id,
-          source: 'unknown' as 'gmail' | 'outlook' | 'drive' | 'dropbox',
+          source: 'unknown',
           fileName: 'Evidence Document',
           parsed: true,
           matchFound: true,
-          disputeId: disputeCase.id
+          disputeId: disputeCase.id,
+          caseNumber: disputeCase.case_number,
+          documentType: result.match_type || null,
+          documentLabel: result.match_type ? result.match_type.replace(/_/g, ' ') : null,
+          matchType: result.match_type || null,
+          matchedFields: result.matched_fields || []
         });
       } catch (notifError: any) {
         logger.warn('⚠️ [EVIDENCE MATCHING] Failed to send notification', {
@@ -1632,6 +1637,25 @@ class EvidenceMatchingService {
       });
     }
 
+    try {
+      const notificationHelper = (await import('../services/notificationHelper')).default;
+      await notificationHelper.notifyCaseFiled(detectionResult.seller_id, {
+        tenantId,
+        disputeId: createdCase.id,
+        caseId: createdCase.id,
+        caseNumber: createdCase.case_number,
+        claimAmount: detectionResult.estimated_value || 0,
+        currency: detectionResult.currency || 'USD',
+        status: 'pending'
+      });
+    } catch (notifError: any) {
+      logger.warn('⚠️ [EVIDENCE MATCHING] Failed to persist case.created notification', {
+        tenantId,
+        detectionId: result.dispute_id,
+        error: notifError.message
+      });
+    }
+
     return createdCase;
   }
 
@@ -1692,6 +1716,22 @@ class EvidenceMatchingService {
           case_number: disputeCase.case_number,
           status: 'linked',
           message: `Evidence linked to case ${disputeCase.case_number || disputeCaseId}`
+        });
+
+        const notificationHelper = (await import('../services/notificationHelper')).default;
+        await notificationHelper.notifyEvidenceFound(disputeCase.seller_id, {
+          tenantId,
+          documentId: evidenceAttachment.document_id,
+          source: 'unknown',
+          fileName: evidenceAttachment.document_id,
+          parsed: true,
+          matchFound: true,
+          disputeId: disputeCaseId,
+          caseNumber: disputeCase.case_number,
+          documentType: evidenceAttachment.match_type || null,
+          documentLabel: evidenceAttachment.match_type ? evidenceAttachment.match_type.replace(/_/g, ' ') : null,
+          matchType: evidenceAttachment.match_type || null,
+          matchedFields: evidenceAttachment.matched_fields || []
         });
       }
     } catch (eventError: any) {
