@@ -23,6 +23,7 @@ type YocoLinkDefinition = {
   billingInterval: BillingInterval;
   amountCents: number;
   envVar: string;
+  envVarAliases?: string[];
 };
 
 const YOCO_LINK_DEFINITIONS: Record<YocoPaymentLinkKey, YocoLinkDefinition> = {
@@ -32,6 +33,7 @@ const YOCO_LINK_DEFINITIONS: Record<YocoPaymentLinkKey, YocoLinkDefinition> = {
     billingInterval: 'monthly',
     amountCents: 4900,
     envVar: 'YOCO_STARTER_MONTHLY_URL',
+    envVarAliases: ['YOC0_STARTER_MONTHLY_URL'],
   },
   starter_annual: {
     key: 'starter_annual',
@@ -39,6 +41,7 @@ const YOCO_LINK_DEFINITIONS: Record<YocoPaymentLinkKey, YocoLinkDefinition> = {
     billingInterval: 'annual',
     amountCents: 46800,
     envVar: 'YOCO_STARTER_ANNUAL_URL',
+    envVarAliases: ['YOC0_STARTER_ANNUAL_URL'],
   },
   pro_monthly: {
     key: 'pro_monthly',
@@ -46,6 +49,7 @@ const YOCO_LINK_DEFINITIONS: Record<YocoPaymentLinkKey, YocoLinkDefinition> = {
     billingInterval: 'monthly',
     amountCents: 9900,
     envVar: 'YOCO_PRO_MONTHLY_URL',
+    envVarAliases: ['YOC0_PRO_MONTHLY_URL'],
   },
   pro_annual: {
     key: 'pro_annual',
@@ -53,6 +57,7 @@ const YOCO_LINK_DEFINITIONS: Record<YocoPaymentLinkKey, YocoLinkDefinition> = {
     billingInterval: 'annual',
     amountCents: 94800,
     envVar: 'YOCO_PRO_ANNUAL_URL',
+    envVarAliases: ['YOC0_PRO_ANNUAL_URL'],
   },
   enterprise_monthly: {
     key: 'enterprise_monthly',
@@ -60,6 +65,7 @@ const YOCO_LINK_DEFINITIONS: Record<YocoPaymentLinkKey, YocoLinkDefinition> = {
     billingInterval: 'monthly',
     amountCents: 19900,
     envVar: 'YOCO_ENTERPRISE_MONTHLY_URL',
+    envVarAliases: ['YOC0_ENTERPRISE_MONTHLY_URL'],
   },
   enterprise_annual: {
     key: 'enterprise_annual',
@@ -67,8 +73,20 @@ const YOCO_LINK_DEFINITIONS: Record<YocoPaymentLinkKey, YocoLinkDefinition> = {
     billingInterval: 'annual',
     amountCents: 190800,
     envVar: 'YOCO_ENTERPRISE_ANNUAL_URL',
+    envVarAliases: ['YOC0_ENTERPRISE_ANNUAL_URL'],
   },
 };
+
+function readYocoEnvUrl(definition: YocoLinkDefinition): string | null {
+  const envVars = [definition.envVar, ...(definition.envVarAliases || [])];
+
+  for (const envVar of envVars) {
+    const value = String(process.env[envVar] || '').trim();
+    if (value) return value;
+  }
+
+  return null;
+}
 
 export function buildYocoPaymentLinkKey(planTier: PlanTier | null | undefined, billingInterval: BillingInterval | null | undefined): YocoPaymentLinkKey | null {
   if (planTier === 'starter' && billingInterval === 'monthly') return 'starter_monthly';
@@ -98,7 +116,7 @@ export function resolveYocoCheckoutLink(input: {
   }
 
   const definition = YOCO_LINK_DEFINITIONS[paymentLinkKey];
-  const paymentLinkUrl = String(process.env[definition.envVar] || '').trim() || null;
+  const paymentLinkUrl = readYocoEnvUrl(definition);
 
   if (Number(input.billingAmountCents) !== definition.amountCents) {
     return {
