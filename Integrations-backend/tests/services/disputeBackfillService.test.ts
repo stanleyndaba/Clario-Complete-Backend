@@ -104,6 +104,10 @@ describe('disputeBackfillService', () => {
     expect(tables.dispute_cases).toHaveLength(1);
     expect(Object.prototype.hasOwnProperty.call(tables.dispute_cases[0], 'store_id')).toBe(false);
     expect(tables.dispute_cases[0].status).toBe('approved');
+    expect(tables.dispute_cases[0].filing_status).toBe('pending');
+    expect(tables.dispute_cases[0].eligibility_status).toBe('SAFETY_HOLD');
+    expect(tables.dispute_cases[0].eligible_to_file).toBe(false);
+    expect(tables.dispute_cases[0].block_reasons).toEqual([]);
     expect(tables.dispute_cases[0].tenant_id).toBe('tenant-1');
     expect(tables.dispute_cases[0].seller_id).toBe('seller-1');
     expect(tables.dispute_cases[0].detection_result_id).toBe('detection-1');
