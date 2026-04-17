@@ -12,6 +12,7 @@ import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import recoveryFinancialTruthService from '../services/recoveryFinancialTruthService';
 import amazonCaseThreadService from '../services/amazonCaseThreadService';
 import { evaluateCanonicalEvidenceTruth, type CanonicalEvidenceTruth } from '../services/canonicalEvidenceService';
+import { enrichDetectionFinding } from '../services/detectionFindingTruthService';
 
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -583,7 +584,8 @@ function buildCaseResponse(
         amazon_thread_linked: boolean;
         can_reply_to_thread: boolean;
         case_messages: any[];
-    }
+    },
+    findingTruth?: any | null
 ) {
     const isAmazonThreadBackfill = record?.case_origin === 'amazon_thread_backfill';
     const originMetadata = record?.origin_metadata && typeof record.origin_metadata === 'object'
@@ -653,6 +655,16 @@ function buildCaseResponse(
         linked_dispute_case_id: entityTruth.linked_dispute_case_id,
         has_submission: entityTruth.has_submission,
         has_payout: entityTruth.has_payout,
+        finding_truth: findingTruth || null,
+        seller_summary: findingTruth?.seller_summary || null,
+        policy_basis: findingTruth?.policy_basis || null,
+        filing_movement: findingTruth?.filing_movement || null,
+        review_tier: findingTruth?.review_tier || null,
+        claim_readiness: findingTruth?.claim_readiness || null,
+        recommended_action: findingTruth?.recommended_action || null,
+        value_label: findingTruth?.value_label || null,
+        why_not_claim_ready: findingTruth?.why_not_claim_ready || null,
+        coverage_family: findingTruth?.coverage_family || null,
         dispute_case_id: entityTruth.entity_type === 'dispute_case' ? record.id : null,
         detection_result_id: entityTruth.entity_type === 'dispute_case' ? (record.detection_result_id || null) : record.id,
         title: record.case_type || record.anomaly_type || 'Claim Details',
@@ -1397,6 +1409,31 @@ router.get('/:id', async (req: Request, res: Response) => {
                 .limit(1)
                 .maybeSingle();
 
+            let linkedDetection: any | null = null;
+            if (disputeCase.detection_result_id) {
+                const { data: detectionRow, error: detectionLookupError } = await supabaseAdmin
+                    .from('detection_results')
+                    .select('*')
+                    .eq('id', disputeCase.detection_result_id)
+                    .eq('tenant_id', tenantId)
+                    .maybeSingle();
+
+                if (detectionLookupError) {
+                    logger.warn('Failed to enrich recovery detail with linked detection truth', {
+                        disputeCaseId: disputeCase.id,
+                        detectionResultId: disputeCase.detection_result_id,
+                        tenantId,
+                        error: detectionLookupError.message
+                    });
+                } else {
+                    linkedDetection = detectionRow || null;
+                }
+            }
+
+            const findingTruth = linkedDetection
+                ? enrichDetectionFinding(linkedDetection, disputeCase)
+                : null;
+
             const caseMessages = await amazonCaseThreadService.listCaseMessages(tenantId, disputeCase.id);
             const threadLinked = Boolean(disputeCase.amazon_case_id);
             const eligibilityStatus = String(
@@ -1439,7 +1476,8 @@ router.get('/:id', async (req: Request, res: Response) => {
                     amazon_thread_linked: threadLinked,
                     can_reply_to_thread: canReplyToThread,
                     case_messages: caseMessages
-                }
+                },
+                findingTruth
             ));
         }
 
@@ -1468,6 +1506,8 @@ router.get('/:id', async (req: Request, res: Response) => {
                 ? await fetchEventsForRecovery(detectionResult.id, userId, tenantId)
                 : [];
 
+            const findingTruth = enrichDetectionFinding(detectionResult, null);
+
             return res.json(buildCaseResponse(
                 detectionResult,
                 documents,
@@ -1478,7 +1518,9 @@ router.get('/:id', async (req: Request, res: Response) => {
                     linked_dispute_case_id: null,
                     has_submission: false,
                     has_payout: false
-                }
+                },
+                undefined,
+                findingTruth
             ));
         }
 
