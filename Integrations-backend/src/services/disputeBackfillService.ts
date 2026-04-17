@@ -13,6 +13,7 @@ export interface DetectionForDispute {
   created_at?: string | null;
   sync_id?: string | null;
   store_id?: string | null;
+  evidence?: Record<string, any> | null;
 }
 
 type DisputeCaseRow = {
@@ -44,7 +45,39 @@ const deriveCaseNumber = (detection: DetectionForDispute, index: number) => {
   return `${CASE_PREFIX}-${syncPart}-${idPart}`;
 };
 
-const deriveCaseStatus = (detection: DetectionForDispute): 'approved' | 'submitted' | 'pending' => {
+type DisputeBackfillStatus = 'approved' | 'submitted' | 'pending' | 'review_needed';
+type ReviewTier = 'claim_candidate' | 'review_only' | 'monitoring';
+type ClaimReadiness = 'claim_ready' | 'not_claim_ready';
+
+const getReviewTier = (detection: DetectionForDispute): ReviewTier | null => {
+  const tier = String(detection.evidence?.review_tier || '').trim().toLowerCase();
+  if (tier === 'claim_candidate' || tier === 'review_only' || tier === 'monitoring') {
+    return tier;
+  }
+  return null;
+};
+
+const getClaimReadiness = (detection: DetectionForDispute): ClaimReadiness | null => {
+  const readiness = String(detection.evidence?.claim_readiness || '').trim().toLowerCase();
+  if (readiness === 'claim_ready' || readiness === 'not_claim_ready') {
+    return readiness;
+  }
+  return null;
+};
+
+const isReviewOnlyDetection = (detection: DetectionForDispute): boolean => {
+  const reviewTier = getReviewTier(detection);
+  const claimReadiness = getClaimReadiness(detection);
+  return reviewTier === 'review_only'
+    || reviewTier === 'monitoring'
+    || claimReadiness === 'not_claim_ready';
+};
+
+const deriveCaseStatus = (detection: DetectionForDispute): DisputeBackfillStatus => {
+  if (isReviewOnlyDetection(detection)) {
+    return 'review_needed';
+  }
+
   const confidence = detection.confidence_score ?? 0;
   const severity = (detection.severity || '').toLowerCase();
   if (confidence >= 0.88 || severity === 'critical' || severity === 'high') {
@@ -95,10 +128,12 @@ export async function upsertDisputesAndRecoveriesFromDetections(
     const claimAmount = Number(detection.estimated_value ?? 0);
     const status = deriveCaseStatus(detection);
     const detectionIso = toIsoOrNull(detection.created_at) || nowIso;
-    const submissionDate = status === 'pending' ? null : detectionIso;
+    const reviewOnly = isReviewOnlyDetection(detection);
+    const submissionDate = status === 'pending' || status === 'review_needed' ? null : detectionIso;
     const isApproved = status === 'approved';
     const resolutionDate = isApproved ? submissionDate : null;
     const expectedPayoutDate = (() => {
+      if (reviewOnly) return null;
       if (isApproved && resolutionDate) return resolutionDate;
       const baseDate = submissionDate || detectionIso;
       const leadDays = status === 'submitted' ? 5 : 10;
@@ -120,6 +155,10 @@ export async function upsertDisputesAndRecoveriesFromDetections(
       resolution_amount: null,
       expected_payout_date: expectedPayoutDate,
       recovery_status: 'pending',
+      filing_status: reviewOnly ? 'blocked' : 'pending',
+      eligibility_status: reviewOnly ? 'SAFETY_HOLD' : null,
+      eligible_to_file: reviewOnly ? false : null,
+      block_reasons: reviewOnly ? ['review_only_detection_not_claim_ready'] : [],
       actual_payout_amount: null,
       reconciled_at: null,
       created_at: detectionIso,

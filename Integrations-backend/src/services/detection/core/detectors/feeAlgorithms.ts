@@ -180,6 +180,11 @@ export interface FeeOverchargeEvidence {
     effective_date_mode?: string;
     explanation?: FeeOverchargeExplanation;
     cohort_trace_graph?: string[];
+    review_tier?: 'claim_candidate' | 'review_only' | 'monitoring';
+    claim_readiness?: 'claim_ready' | 'not_claim_ready';
+    recommended_action?: 'file_claim' | 'review' | 'monitor' | 'investigate';
+    value_label?: 'estimated_recovery' | 'potential_exposure' | 'no_recovery_value';
+    why_not_claim_ready?: string;
 }
 
 // ============================================================================
@@ -1371,6 +1376,13 @@ export async function fetchProductCatalog(sellerId: string, syncId?: string) {
     return data || [];
 }
 
+export type FeeDetectionPersistenceResult = {
+    success: boolean;
+    attemptedCount: number;
+    persistedCount: number;
+    error?: string;
+};
+
 export async function runFeeOverchargeDetection(sellerId: string, syncId: string) {
     const lookback = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
     const [events, catalog] = await Promise.all([
@@ -1380,21 +1392,86 @@ export async function runFeeOverchargeDetection(sellerId: string, syncId: string
     const results = await detectAllFeeOvercharges(sellerId, syncId, { seller_id: sellerId, sync_id: syncId, fee_events: events, product_catalog: catalog });
     
     if (results.length > 0) {
-        await storeFeeDetectionResults(results);
+        const persistence = await storeFeeDetectionResults(results);
+        if (!persistence.success) {
+            throw new Error(persistence.error || 'Fee detection persistence failed');
+        }
     }
     
     return results;
 }
 
-export async function storeFeeDetectionResults(results: FeeDetectionResult[]) {
-    if (results.length === 0) return;
+export async function storeFeeDetectionResults(results: FeeDetectionResult[]): Promise<FeeDetectionPersistenceResult> {
+    if (results.length === 0) {
+        return { success: true, attemptedCount: 0, persistedCount: 0 };
+    }
     const tenantId = await resolveTenantId(results[0].seller_id);
     const sourceType = await requireDetectionSourceType(tenantId, results[0].seller_id, results[0].sync_id);
     const records = results.map(r => ({
-        ...r, tenant_id: tenantId, source_type: sourceType, status: 'detected', created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-        discovery_date: r.discovery_date.toISOString(), deadline_date: r.deadline_date.toISOString()
+        seller_id: r.seller_id,
+        sync_id: r.sync_id,
+        anomaly_type: r.anomaly_type,
+        severity: r.severity,
+        estimated_value: r.estimated_value,
+        currency: r.currency,
+        confidence_score: r.confidence_score,
+        evidence: {
+            ...r.evidence,
+            sku: r.evidence?.sku ?? r.sku,
+            asin: r.evidence?.asin ?? r.asin,
+            product_name: r.evidence?.product_name ?? r.product_name,
+        },
+        related_event_ids: r.related_event_ids,
+        discovery_date: r.discovery_date.toISOString(),
+        deadline_date: r.deadline_date.toISOString(),
+        days_remaining: r.days_remaining,
+        tenant_id: tenantId,
+        source_type: sourceType,
+        status: 'detected',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
     }));
-    await supabaseAdmin.from('detection_results').upsert(records, { onConflict: 'seller_id,sync_id,anomaly_type' });
+
+    const { data, error } = await supabaseAdmin
+        .from('detection_results')
+        .insert(records)
+        .select('id, anomaly_type');
+
+    if (error) {
+        const message = `Fee detection persistence failed: ${error.message}`;
+        logger.error('❌ [FEE] Detection persistence failed', {
+            sellerId: results[0].seller_id,
+            syncId: results[0].sync_id,
+            attemptedCount: records.length,
+            anomalyTypes: records.map(record => record.anomaly_type),
+            error: error.message,
+            code: error.code,
+            details: error.details,
+            hint: error.hint,
+        });
+
+        return {
+            success: false,
+            attemptedCount: records.length,
+            persistedCount: 0,
+            error: message,
+        };
+    }
+
+    const persistedCount = Array.isArray(data) ? data.length : records.length;
+    logger.info('✅ [FEE] Detection results persisted', {
+        sellerId: results[0].seller_id,
+        syncId: results[0].sync_id,
+        attemptedCount: records.length,
+        persistedCount,
+        anomalyTypes: records.map(record => record.anomaly_type),
+    });
+
+    return {
+        success: true,
+        attemptedCount: records.length,
+        persistedCount,
+    };
 }
 
 export default {

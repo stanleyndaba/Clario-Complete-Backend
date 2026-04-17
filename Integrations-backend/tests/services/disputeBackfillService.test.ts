@@ -113,4 +113,35 @@ describe('disputeBackfillService', () => {
     expect(tables.recoveries[0].user_id).toBe('seller-1');
     expect(tables.recoveries[0].dispute_id).toBe(tables.dispute_cases[0].id);
   });
+
+  it('keeps review-only detections out of submitted and approved case states', async () => {
+    await upsertDisputesAndRecoveriesFromDetections([
+      {
+        id: 'review-detection-1',
+        seller_id: 'seller-1',
+        tenant_id: 'tenant-1',
+        estimated_value: 0,
+        currency: 'usd',
+        severity: 'high',
+        confidence_score: 0.99,
+        anomaly_type: 'fee_sign_polarity_review',
+        created_at: '2026-04-06T14:00:00.000Z',
+        sync_id: 'csv_1775484396213',
+        evidence: {
+          review_tier: 'review_only',
+          claim_readiness: 'not_claim_ready',
+          recommended_action: 'review',
+        },
+      },
+    ]);
+
+    expect(tables.dispute_cases).toHaveLength(1);
+    expect(tables.dispute_cases[0].status).toBe('review_needed');
+    expect(tables.dispute_cases[0].filing_status).toBe('blocked');
+    expect(tables.dispute_cases[0].eligible_to_file).toBe(false);
+    expect(tables.dispute_cases[0].block_reasons).toContain('review_only_detection_not_claim_ready');
+    expect(tables.dispute_cases[0].submission_date).toBeNull();
+    expect(tables.dispute_cases[0].expected_payout_date).toBeNull();
+    expect(tables.recoveries).toHaveLength(0);
+  });
 });
