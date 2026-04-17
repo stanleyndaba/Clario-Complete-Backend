@@ -45,6 +45,11 @@ type FilingMovement = {
   block_reasons: string[];
 };
 
+type ReviewTier = 'claim_candidate' | 'review_only' | 'monitoring';
+type ClaimReadiness = 'claim_ready' | 'not_claim_ready';
+type RecommendedAction = 'file_claim' | 'review' | 'monitor';
+type ValueLabel = 'estimated_recovery' | 'potential_exposure' | 'no_recovery_value';
+
 const OFFICIAL_POLICY_LAST_VERIFIED_AT = '2026-04-16';
 
 const INVENTORY_REIMBURSEMENT_POLICY_URL =
@@ -125,6 +130,35 @@ const buildEvidenceSummary = (row: DetectionRow): string => {
   if (relatedIds.length) return `Related Amazon event IDs: ${relatedIds.join(', ')}`;
 
   return 'Structured evidence is available on the backend detection record.';
+};
+
+const reviewPresentationFor = (row: DetectionRow) => {
+  const evidence = asRecord(row.evidence);
+  const reviewTier = clean(evidence.review_tier) as ReviewTier | null;
+  const claimReadiness = clean(evidence.claim_readiness) as ClaimReadiness | null;
+  const recommendedAction = clean(evidence.recommended_action) as RecommendedAction | null;
+  const valueLabel = clean(evidence.value_label) as ValueLabel | null;
+
+  return {
+    review_tier: reviewTier || 'claim_candidate',
+    claim_readiness: claimReadiness || 'claim_ready',
+    recommended_action: recommendedAction || 'file_claim',
+    value_label: valueLabel || 'estimated_recovery',
+    why_not_claim_ready: clean(evidence.why_not_claim_ready),
+  };
+};
+
+const coverageFamilyFor = (row: DetectionRow): string => {
+  const anomalyType = String(row.anomaly_type || '').toLowerCase();
+  const detectionType = String(clean(row?.evidence?.detection_type) || '').toLowerCase();
+
+  if (anomalyType.includes('warehouse_transfer')) return 'Transfer Auditor';
+  if (anomalyType.includes('inbound') || anomalyType.includes('shipment')) return 'Inbound Inspector';
+  if (anomalyType.includes('refund') || anomalyType.includes('return')) return 'Refund Trap';
+  if (anomalyType.includes('fee') || anomalyType.includes('commission') || anomalyType.includes('storage')) return 'Fee Phantom';
+  if (anomalyType.includes('lost') || anomalyType.includes('damaged')) return 'Whale Hunter';
+  if (anomalyType.includes('found_without_prior_loss') || detectionType.includes('clawback') || anomalyType.includes('reimbursement_duplicate')) return 'Sentinel';
+  return 'Launch detector';
 };
 
 const policyBasisFor = (row: DetectionRow): PolicyBasis => {
@@ -223,6 +257,23 @@ const sellerSummaryFor = (row: DetectionRow): SellerSummary => {
     };
   }
 
+  if (anomalyType === 'warehouse_transfer_overage_review') {
+    const sent = clean(evidence.quantity_sent);
+    const received = clean(evidence.quantity_received);
+    const overage = clean(evidence.quantity_overage);
+    return {
+      title: 'Transfer Overage Review',
+      summary: joinTokens([
+        'A fulfillment-center transfer shows more units received than sent.',
+        sent && received ? `${sent} sent, ${received} received` : null,
+        overage ? `${overage} over-received` : null,
+      ]),
+      event_label: 'Transfer reconciliation review',
+      recoverability_reason: 'This is not a recovery claim yet. Margin is surfacing the overage so the transfer records can be reconciled before any filing decision.',
+      evidence_summary: evidenceSummary,
+    };
+  }
+
   if (anomalyType === 'warehouse_transfer_loss') {
     const sent = clean(evidence.quantity_sent);
     const received = clean(evidence.quantity_received);
@@ -240,6 +291,38 @@ const sellerSummaryFor = (row: DetectionRow): SellerSummary => {
     };
   }
 
+  if (anomalyType === 'stuck_inbound_review') {
+    const shipped = clean(evidence.quantity_shipped);
+    const received = clean(evidence.quantity_received);
+    const status = clean(evidence.shipment_status);
+    return {
+      title: 'Stuck Inbound Review',
+      summary: joinTokens([
+        'An inbound shipment is still non-terminal with units not yet received.',
+        status ? `Status ${status}` : null,
+        shipped && received ? `${shipped} shipped, ${received} received` : null,
+      ]),
+      event_label: 'Inbound monitoring review',
+      recoverability_reason: 'The shipment is still in progress or unresolved, so Margin monitors it without treating it as claim-ready.',
+      evidence_summary: evidenceSummary,
+    };
+  }
+
+  if (anomalyType === 'inbound_shortage_review') {
+    const shipped = clean(evidence.quantity_shipped);
+    const received = clean(evidence.quantity_received);
+    return {
+      title: 'Fresh Inbound Shortage Review',
+      summary: joinTokens([
+        'A closed inbound shipment shows a shortage, but the shortage is still inside Margin’s maturity window.',
+        shipped && received ? `${shipped} shipped, ${received} received` : null,
+      ]),
+      event_label: 'Inbound maturity review',
+      recoverability_reason: 'Margin keeps this visible while waiting for the claim window and reconciliation evidence to mature.',
+      evidence_summary: evidenceSummary,
+    };
+  }
+
   if (anomalyType.includes('inbound') || anomalyType === 'lost_inbound' || anomalyType === 'missing_unit') {
     const shipped = clean(evidence.quantity_shipped) || clean(evidence.shipped_quantity);
     const received = clean(evidence.quantity_received) || clean(evidence.received_quantity);
@@ -251,6 +334,16 @@ const sellerSummaryFor = (row: DetectionRow): SellerSummary => {
       ]),
       event_label: 'Inbound discrepancy',
       recoverability_reason: 'Margin is comparing shipment, receipt, and reimbursement records to determine whether the unresolved inbound gap can move into a case.',
+      evidence_summary: evidenceSummary,
+    };
+  }
+
+  if (anomalyType === 'found_without_prior_loss_review') {
+    return {
+      title: 'Found Inventory Without Prior Loss',
+      summary: 'An inventory found/recovery event appears without a prior loss event in this imported history.',
+      event_label: 'Inventory reconciliation review',
+      recoverability_reason: 'This is monitoring truth, not recoverable value. Margin keeps it visible to avoid reconciliation or clawback blind spots.',
       evidence_summary: evidenceSummary,
     };
   }
@@ -281,12 +374,52 @@ const sellerSummaryFor = (row: DetectionRow): SellerSummary => {
     };
   }
 
+  if (anomalyType === 'return_refund_missing_review') {
+    return {
+      title: 'Return Refund Missing Review',
+      summary: 'A received return has no visible refund amount in the imported records.',
+      event_label: 'Return/refund reconciliation review',
+      recoverability_reason: 'Margin needs more reconciliation before deciding whether this is exposure, missing refund activity, or a record-timing issue.',
+      evidence_summary: evidenceSummary,
+    };
+  }
+
+  if (anomalyType === 'refund_amount_mismatch_review') {
+    return {
+      title: 'Refund Amount Mismatch Review',
+      summary: 'A refund amount is materially above the linked order total.',
+      event_label: 'Refund amount review',
+      recoverability_reason: 'This is exposure review, not an automatic claim. Margin is checking whether the refund amount, order total, and settlement trail reconcile.',
+      evidence_summary: evidenceSummary,
+    };
+  }
+
+  if (anomalyType === 'settlement_refund_sign_review') {
+    return {
+      title: 'Refund Sign Review',
+      summary: 'A settlement row labeled refund has a positive amount.',
+      event_label: 'Settlement sign review',
+      recoverability_reason: 'Margin preserves the sign mismatch for review before deciding whether it reflects a reversal, import convention, or financial anomaly.',
+      evidence_summary: evidenceSummary,
+    };
+  }
+
   if (anomalyType === 'refund_no_return' || anomalyType.includes('refund')) {
     return {
       title: 'Refund Without Return',
       summary: 'Amazon issued a refund, but the matching return or restock trail is not visible in the seller records.',
       event_label: 'Refund event discrepancy',
       recoverability_reason: 'The refund-side and return-side records do not reconcile, so Margin needs evidence that the customer return was not completed or restocked correctly.',
+      evidence_summary: evidenceSummary,
+    };
+  }
+
+  if (anomalyType === 'fee_sign_polarity_review') {
+    return {
+      title: 'Fee Sign Polarity Review',
+      summary: 'A fee row has a positive source amount before Margin normalizes fee signs.',
+      event_label: 'Fee import review',
+      recoverability_reason: 'This is not claim-ready. Margin is preserving the raw sign truth so fee charges, credits, and import conventions are not silently confused.',
       evidence_summary: evidenceSummary,
     };
   }
@@ -465,11 +598,14 @@ export const enrichDetectionFinding = (row: DetectionRow, disputeCase?: DisputeC
   const sellerSummary = sellerSummaryFor(row);
   const policyBasis = policyBasisFor(row);
   const filingMovement = movementFor(row, disputeCase);
+  const reviewPresentation = reviewPresentationFor(row);
 
   return {
     ...row,
     detected_at: detectedAt,
     detector_key: normalizeType(row),
+    coverage_family: coverageFamilyFor(row),
+    ...reviewPresentation,
     seller_summary: sellerSummary,
     policy_basis: policyBasis,
     filing_movement: filingMovement,

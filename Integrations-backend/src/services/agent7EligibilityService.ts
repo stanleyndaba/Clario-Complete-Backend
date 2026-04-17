@@ -1195,6 +1195,13 @@ export function evaluateCaseEligibility(
     if (reason && !isAutoClearableStoredReason(reason)) reasons.add(reason);
   }
 
+  const detectionEvidence = parseJsonObject(detectionResult.evidence);
+  const reviewTier = normalize(detectionEvidence.review_tier);
+  const claimReadiness = normalize(detectionEvidence.claim_readiness);
+  if (reviewTier === 'review_only' || reviewTier === 'monitoring' || claimReadiness === 'not_claim_ready') {
+    reasons.add('review_only_detection_not_claim_ready');
+  }
+
   const minimumEvidenceDocuments = Math.max(1, Number(options?.minEvidenceDocuments || 1));
   if (!context.linkedEvidenceCount || evidenceDocuments.length === 0) {
     reasons.add('missing_evidence_links');

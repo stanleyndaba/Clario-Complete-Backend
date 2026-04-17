@@ -8,6 +8,7 @@
 import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
 import { relationExists, requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
+import { buildReviewAnomalyEvidence } from './shared/reviewAnomaly';
 
 // ============================================================================
 // Types
@@ -26,7 +27,8 @@ export type FeeAnomalyType =
     | 'inbound_placement_fee_error'
     | 'peak_fulfillment_surcharge_error'
     | 'size_tier_misclassification'
-    | 'duplicate_fee_error';
+    | 'duplicate_fee_error'
+    | 'fee_sign_polarity_review';
 
 export type CohortState = 
     | 'OPEN_CHARGE' 
@@ -68,6 +70,9 @@ export interface FeeEvent {
     product_name?: string;
     fee_type: string;
     fee_amount: number;
+    raw_amount?: number;
+    raw_event_type?: string;
+    reference_id?: string;
     currency: string;
     item_weight_oz?: number;
     item_length_in?: number;
@@ -1128,7 +1133,63 @@ export function detectAllFeeOvercharges(sellerId: string, syncId: string, data: 
     ];
 
     const reconciled = reconcileValuationOwnership(results);
-    return enrichWithObservability(reconciled, data);
+    const reviewOnly = detectFeeSignPolarityReview(sellerId, syncId, data);
+    return [...enrichWithObservability(reconciled, data), ...reviewOnly];
+}
+
+export function detectFeeSignPolarityReview(sellerId: string, syncId: string, data: FeeSyncedData): FeeDetectionResult[] {
+    const discoveryDate = new Date();
+    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
+    const results: FeeDetectionResult[] = [];
+
+    for (const event of data.fee_events || []) {
+        if (event.raw_amount === undefined || event.raw_amount === null) continue;
+        const rawAmount = Number(event.raw_amount);
+        if (!Number.isFinite(rawAmount) || rawAmount <= 0) continue;
+
+        results.push({
+            seller_id: sellerId,
+            sync_id: syncId,
+            anomaly_type: 'fee_sign_polarity_review',
+            severity: rawAmount >= 100 ? 'high' : rawAmount >= 25 ? 'medium' : 'low',
+            estimated_value: 0,
+            currency: event.currency || 'USD',
+            confidence_score: 0.68,
+            related_event_ids: [event.id],
+            discovery_date: discoveryDate,
+            deadline_date: deadline,
+            days_remaining: daysRemaining,
+            sku: event.sku,
+            asin: event.asin,
+            product_name: event.product_name,
+            evidence: buildReviewAnomalyEvidence(
+                'A fee row has a positive source amount. Margin keeps it as sign-polarity review before deciding whether it is a charge, reversal, or import-normalization issue.',
+                {
+                    detection_type: 'fee_sign_polarity_review',
+                    fee_type: event.fee_type,
+                    charged_amount: rawAmount,
+                    expected_amount: 0,
+                    overcharge_amount: 0,
+                    overcharge_percentage: 0,
+                    calculation_method: 'raw_fee_sign_polarity_check',
+                    calculation_inputs: {
+                        raw_amount: rawAmount,
+                        normalized_fee_amount: event.fee_amount,
+                        raw_event_type: event.raw_event_type,
+                    },
+                    evidence_summary: `Fee row ${event.id} has positive source amount $${rawAmount.toFixed(2)} before fee normalization.`,
+                    fee_event_ids: [event.id],
+                    reference_id: event.reference_id,
+                    raw_amount: rawAmount,
+                    normalized_fee_amount: event.fee_amount,
+                    exposure_value: rawAmount,
+                    value_label: 'potential_exposure',
+                } as any,
+            ) as any,
+        });
+    }
+
+    return results;
 }
 
 /**
@@ -1271,6 +1332,9 @@ export async function fetchFeeEvents(sellerId: string, options?: { startDate?: s
         product_name: row.product_name || undefined,
         fee_type: row.description || row.raw_payload?.FeeType || 'Fee',
         fee_amount: Number(row.amount || 0) * -1,
+        raw_amount: Number(row.amount || 0),
+        raw_event_type: row.event_subtype || row.raw_payload?.EventType || row.event_type,
+        reference_id: row.reference_id || row.amazon_event_id || row.raw_payload?.ReferenceId,
         currency: row.currency || 'USD',
         item_weight_oz: row.raw_payload?.weight_oz,
         item_length_in: row.raw_payload?.length_in,
@@ -1335,5 +1399,5 @@ export async function storeFeeDetectionResults(results: FeeDetectionResult[]) {
 
 export default {
     detectFulfillmentFeeOvercharge, detectStorageFeeOvercharge, detectCommissionOvercharge,
-    detectAllFeeOvercharges, fetchFeeEvents, fetchProductCatalog, runFeeOverchargeDetection, storeFeeDetectionResults
+    detectAllFeeOvercharges, detectFeeSignPolarityReview, fetchFeeEvents, fetchProductCatalog, runFeeOverchargeDetection, storeFeeDetectionResults
 };

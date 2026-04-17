@@ -15,6 +15,7 @@ import logger from '../../../../utils/logger';
 
 import { requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
 import { buildSellerValuationContext, getUnitValue, type SellerValuationContext } from './shared/valuationService';
+import { buildReviewAnomalyEvidence } from './shared/reviewAnomaly';
 // ============================================================================
 // Types
 // ============================================================================
@@ -61,7 +62,7 @@ export interface TransferLossResult {
     estimated_value: number;
 
     // Loss details
-    loss_type: 'partial_loss' | 'total_loss' | 'excessive_delay' | 'pending_too_long';
+    loss_type: 'partial_loss' | 'total_loss' | 'excessive_delay' | 'pending_too_long' | 'overage_review';
     severity: 'low' | 'medium' | 'high' | 'critical';
 
     // Quantities
@@ -83,7 +84,7 @@ export interface TransferLossResult {
     confidence_score: number;
 
     // Action
-    recommended_action: 'monitor' | 'investigate' | 'file_claim';
+    recommended_action: 'monitor' | 'investigate' | 'file_claim' | 'review';
 
     evidence: {
         transfer_record: TransferRecord;
@@ -139,6 +140,55 @@ export async function detectWarehouseTransferLoss(
             fallbackBasis: `Transfer shared fallback for ${transfer.transfer_id}`,
         });
         const lossValue = transfer.quantity_missing * valuation.value;
+        const overageUnits = Math.max(0, transfer.quantity_received - transfer.quantity_sent);
+
+        if (overageUnits > 0) {
+            const exposureValue = overageUnits * valuation.value;
+            results.push({
+                seller_id: sellerId,
+                sync_id: syncId,
+                transfer_id: transfer.transfer_id,
+                sku: transfer.sku,
+                asin: transfer.asin,
+                anomaly_type: 'warehouse_transfer_overage_review',
+                estimated_value: 0,
+                loss_type: 'overage_review',
+                severity: exposureValue >= 100 ? 'high' : exposureValue >= 25 ? 'medium' : 'low',
+                quantity_sent: transfer.quantity_sent,
+                quantity_received: transfer.quantity_received,
+                quantity_lost: 0,
+                loss_percent: 0,
+                loss_value: 0,
+                currency: transfer.currency,
+                source_fc: transfer.source_fc,
+                destination_fc: transfer.destination_fc,
+                days_in_transit: transfer.days_in_transit,
+                confidence_score: 0.66,
+                recommended_action: 'review',
+                evidence: {
+                    transfer_record: transfer,
+                    valuation_source: valuation.source,
+                    valuation_value_type: valuation.valueType,
+                    valuation_basis: valuation.basis,
+                    valuation_confidence: valuation.confidence,
+                    detection_reasons: [
+                        `${overageUnits} more units received than sent`,
+                        `Sent: ${transfer.quantity_sent}, Received: ${transfer.quantity_received}`,
+                        'Over-receipt can indicate reconciliation drift or data sign issues, not an automatic recovery claim.'
+                    ],
+                    ...buildReviewAnomalyEvidence(
+                        'The transfer shows an overage rather than a loss. Margin should review reconciliation before any filing action.',
+                        {
+                            detection_type: 'warehouse_transfer_overage_review',
+                            quantity_overage: overageUnits,
+                            exposure_value: exposureValue,
+                            value_label: 'potential_exposure',
+                            evidence_summary: `Transfer ${transfer.transfer_id} received ${transfer.quantity_received} units after ${transfer.quantity_sent} were sent.`,
+                        }
+                    ),
+                }
+            });
+        }
 
         // Check for actual loss
         if (transfer.quantity_missing > 0 && lossValue >= MIN_LOSS_VALUE) {
@@ -320,9 +370,9 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
             tenant_id: tenantId,
             sync_id: r.sync_id,
             source_type: sourceType,
-            anomaly_type: 'warehouse_transfer_loss',
+            anomaly_type: r.anomaly_type,
             severity: r.severity,
-            estimated_value: r.loss_value,
+            estimated_value: r.estimated_value,
             currency: r.currency,
             confidence_score: r.confidence_score,
             discovery_date: discoveryDate.toISOString(),
@@ -340,7 +390,16 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
                 source_fc: r.source_fc,
                 destination_fc: r.destination_fc,
                 days_in_transit: r.days_in_transit,
-                detection_reasons: r.evidence.detection_reasons
+                detection_reasons: r.evidence.detection_reasons,
+                review_tier: (r.evidence as any).review_tier,
+                claim_readiness: (r.evidence as any).claim_readiness,
+                recommended_action: (r.evidence as any).recommended_action || r.recommended_action,
+                value_label: (r.evidence as any).value_label,
+                why_not_claim_ready: (r.evidence as any).why_not_claim_ready,
+                filing_block_reason: (r.evidence as any).filing_block_reason,
+                quantity_overage: (r.evidence as any).quantity_overage,
+                exposure_value: (r.evidence as any).exposure_value,
+                evidence_summary: (r.evidence as any).evidence_summary,
             },
             status: 'pending'
             };
@@ -352,7 +411,7 @@ export async function storeTransferLossResults(results: TransferLossResult[]): P
             .eq('tenant_id', tenantId)
             .eq('seller_id', results[0].seller_id)
             .eq('sync_id', syncId)
-            .eq('anomaly_type', 'warehouse_transfer_loss');
+            .in('anomaly_type', Array.from(new Set(results.map(result => result.anomaly_type))));
 
         if (existingError) {
             throw new Error(existingError.message);

@@ -14,6 +14,7 @@ import {
     type SellerValuationContext,
     type ValuationCandidate,
 } from './shared/valuationService';
+import { buildMonitoringEvidence } from './shared/reviewAnomaly';
 
 // ============================================================================
 // Types
@@ -42,7 +43,7 @@ export interface SyncedData {
 
 export interface DetectionResult {
     seller_id: string; sync_id: string;
-    anomaly_type: 'lost_warehouse' | 'lost_in_transit' | 'damaged_warehouse' | 'damaged_inbound' | 'inbound_shipment_shortage';
+    anomaly_type: 'lost_warehouse' | 'lost_in_transit' | 'damaged_warehouse' | 'damaged_inbound' | 'inbound_shipment_shortage' | 'found_without_prior_loss_review';
     severity: 'low' | 'medium' | 'high' | 'critical';
     estimated_value: number; currency: string; confidence_score: number;
     evidence: any; discovery_date: Date; deadline_date: Date; days_remaining: number;
@@ -76,6 +77,7 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
     const cleanLedger = deduplicateLedger(ledger);
     const fnskuGroups = groupByFnsku(cleanLedger);
     const results: DetectionResult[] = [];
+    results.push(...detectFoundWithoutPriorLossReview(sellerId, syncId, cleanLedger));
 
     for (const [fnsku, allEvents] of Object.entries(fnskuGroups)) {
         if (!fnsku || fnsku === 'null') continue;
@@ -305,6 +307,77 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
     return results;
 }
 
+export function detectFoundWithoutPriorLossReview(
+    sellerId: string,
+    syncId: string,
+    ledger: InventoryLedgerEvent[]
+): DetectionResult[] {
+    const results: DetectionResult[] = [];
+    const now = new Date();
+    const groups = groupByFnsku(ledger.filter(event => event.seller_id === sellerId && event.fnsku));
+
+    for (const [fnsku, events] of Object.entries(groups)) {
+        const sorted = [...events].sort((a, b) => new Date(a.event_date).getTime() - new Date(b.event_date).getTime());
+        for (const event of sorted) {
+            const reason = String(event.reason || event.disposition || '').toLowerCase();
+            const isFoundEvent = event.quantity_direction === 'in'
+                && event.event_type === 'Adjustment'
+                && (reason.includes('found') || reason.includes('recover') || reason === 'f' || reason === 'p');
+            if (!isFoundEvent) continue;
+
+            const eventTime = new Date(event.event_date).getTime();
+            const hasPriorLoss = sorted.some(candidate => {
+                if (new Date(candidate.event_date).getTime() >= eventTime) return false;
+                if (candidate.quantity_direction !== 'out') return false;
+                const candidateReason = String(candidate.reason || candidate.disposition || '').toLowerCase();
+                return candidateReason.includes('lost')
+                    || candidateReason.includes('misplaced')
+                    || candidateReason.includes('damaged')
+                    || ['m', 'e', 'd', 'n'].includes(candidateReason);
+            });
+
+            if (hasPriorLoss) continue;
+
+            results.push({
+                seller_id: sellerId,
+                sync_id: syncId,
+                anomaly_type: 'found_without_prior_loss_review',
+                severity: 'low',
+                estimated_value: 0,
+                currency: 'USD',
+                confidence_score: 0.6,
+                fnsku,
+                sku: event.sku,
+                asin: event.asin,
+                product_name: event.product_name,
+                evidence_mode: 'LEDGER_RECONCILIATION_REVIEW',
+                discovery_date: now,
+                deadline_date: new Date(now.getTime() + 60 * 86400000),
+                days_remaining: 60,
+                related_event_ids: [event.id],
+                evidence: buildMonitoringEvidence(
+                    'A found/recovery inventory event exists without a prior loss event in this sync history. This is reconciliation or clawback monitoring, not a recovery claim.',
+                    {
+                        detection_type: 'found_without_prior_loss_review',
+                        fnsku,
+                        sku: event.sku,
+                        asin: event.asin,
+                        event_id: event.id,
+                        event_date: event.event_date,
+                        quantity: Math.abs(Number(event.quantity || 0)),
+                        reason: event.reason,
+                        disposition: event.disposition,
+                        value_label: 'no_recovery_value',
+                        evidence_summary: `Inventory event ${event.id} records found/recovery units for ${fnsku} without a prior loss in the imported history.`,
+                    }
+                ),
+            });
+        }
+    }
+
+    return results;
+}
+
 function deduplicateLedger(events: InventoryLedgerEvent[]): InventoryLedgerEvent[] {
     const results = new Map<string, InventoryLedgerEvent>();
     const fingerprintMap = new Map<string, InventoryLedgerEvent>();
@@ -505,14 +578,14 @@ export async function storeDetectionResults(sellerId: string, tenantId: string, 
         .eq('tenant_id', tenantId)
         .eq('seller_id', sellerId)
         .eq('sync_id', syncId)
-        .in('anomaly_type', ['lost_warehouse', 'lost_in_transit'])
+        .in('anomaly_type', ['lost_warehouse', 'lost_in_transit', 'found_without_prior_loss_review'])
         .in('status', ['detected', 'pending', 'superseded']);
     if (existingError) {
         throw new Error(`Whale Hunter dedupe lookup failed: ${existingError.message}`);
     }
 
     const fingerprintFor = (row: any) =>
-        `${row.anomaly_type}|${row.evidence?.fnsku || ''}|${row.evidence?.physical_loss_units || ''}`;
+        `${row.anomaly_type}|${row.evidence?.fnsku || ''}|${row.evidence?.physical_loss_units || row.evidence?.event_id || ''}`;
 
     const existingByFingerprint = new Map<string, any[]>();
     for (const row of existing || []) {
@@ -646,4 +719,4 @@ export async function storeDetectionResults(sellerId: string, tenantId: string, 
         deduped: duplicateDeletes.length
     });
 }
-export default { detectLostInventory, fetchInventoryLedger, runLostInventoryDetection, storeDetectionResults };
+export default { detectLostInventory, detectFoundWithoutPriorLossReview, fetchInventoryLedger, runLostInventoryDetection, storeDetectionResults };

@@ -5,6 +5,7 @@ import detectionService from '../services/detectionService';
 import csvIngestionService, { CsvUploadRunSnapshot } from '../services/csvIngestionService';
 import { timelineService } from '../services/timelineService';
 import { enrichDetectionFinding } from '../services/detectionFindingTruthService';
+import { getDetectorCoverageMap } from '../services/detection/detectorCoverageMapService';
 
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -169,6 +170,17 @@ router.use(async (req, res, next) => {
     // If all fails, continue anyway (userIdMiddleware should have set demo-user)
     next();
   }
+});
+
+// GET /api/v1/integrations/detections/coverage
+// Launch-set detector coverage diagnostics for CSV calibration and admin review.
+router.get('/coverage', async (_req: AuthenticatedRequest, res) => {
+  return res.json({
+    success: true,
+    launch_set_count: 7,
+    archived_detectors_activated: false,
+    coverage: getDetectorCoverageMap(),
+  });
 });
 
 // POST /api/v1/integrations/detections/run

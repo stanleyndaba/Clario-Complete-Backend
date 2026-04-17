@@ -330,6 +330,7 @@ export interface IngestionResult {
     rowsSkipped: number;
     rowsFailed: number;
     errors: string[];
+    warnings?: string[];
     detectionTriggered: boolean;
     detectionJobId?: string;
 }
@@ -356,6 +357,7 @@ export interface CsvUploadRunFileSummary {
     rowsSkipped?: number;
     rowsFailed?: number;
     errors?: string[];
+    warnings?: string[];
     detectionTriggered?: boolean;
     detectionJobId?: string;
 }
@@ -763,6 +765,7 @@ export class CSVIngestionService {
             rowsSkipped: result.rowsSkipped,
             rowsFailed: result.rowsFailed,
             errors: result.errors || [],
+            warnings: result.warnings || [],
             detectionTriggered: result.detectionTriggered,
             detectionJobId: result.detectionJobId,
         }));
@@ -806,6 +809,7 @@ export class CSVIngestionService {
                 rowsSkipped,
                 rowsFailed,
                 errors: Array.isArray(entry.errors) ? entry.errors.map((value: unknown) => String(value)) : [],
+                warnings: Array.isArray(entry.warnings) ? entry.warnings.map((value: unknown) => String(value)) : [],
                 detectionTriggered: !!entry.detectionTriggered,
                 detectionJobId: typeof entry.detectionJobId === 'string' ? entry.detectionJobId : undefined,
             };
@@ -1671,7 +1675,8 @@ export class CSVIngestionService {
 
     private async ingestOrders(userId: string, tenantId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {
         const errors: string[] = [];
-        const rows: any[] = [];
+        const candidates: any[] = [];
+        const warnings: string[] = [];
         let skipped = 0;
 
         for (let i = 0; i < records.length; i++) {
@@ -1686,8 +1691,10 @@ export class CSVIngestionService {
                     continue;
                 }
 
-                rows.push({
+                candidates.push({
                     id: uuidv4(),
+                    __csv_row_number: i + 1,
+                    __csv_source_record: r,
                     tenant_id: tenantId,
                     user_id: userId,
                     store_id: storeId || null,
@@ -1705,6 +1712,7 @@ export class CSVIngestionService {
                     sync_timestamp: new Date().toISOString(),
                     source: 'csv_upload',
                     is_sandbox: false,
+                    metadata: {},
                     created_at: new Date().toISOString(),
                     updated_at: new Date().toISOString(),
                 });
@@ -1714,7 +1722,72 @@ export class CSVIngestionService {
             }
         }
 
-        return this.batchUpsert('orders', rows, 'orders', errors, skipped);
+        const rows: any[] = [];
+        const byOrderId = new Map<string, any[]>();
+        for (const candidate of candidates) {
+            const key = String(candidate.order_id || '').trim();
+            byOrderId.set(key, [...(byOrderId.get(key) || []), candidate]);
+        }
+
+        const comparableFields = [
+            'seller_id',
+            'marketplace_id',
+            'order_date',
+            'order_status',
+            'fulfillment_channel',
+            'total_amount',
+            'currency',
+        ];
+
+        for (const [orderId, group] of byOrderId) {
+            const canonical = { ...group[0] };
+            const duplicateObservations = group.map((row, index) => ({
+                row_number: row.__csv_row_number,
+                canonical: index === 0,
+                order_id: row.order_id,
+                seller_id: row.seller_id,
+                marketplace_id: row.marketplace_id,
+                order_date: row.order_date,
+                order_status: row.order_status,
+                fulfillment_channel: row.fulfillment_channel,
+                total_amount: row.total_amount,
+                currency: row.currency,
+                source_record: row.__csv_source_record,
+            }));
+
+            if (group.length > 1) {
+                const conflictFields = comparableFields.filter(field => {
+                    const first = JSON.stringify(group[0][field] ?? null);
+                    return group.some(row => JSON.stringify(row[field] ?? null) !== first);
+                });
+                const conflictType = conflictFields.length > 0 ? 'conflicting_duplicate' : 'exact_duplicate';
+
+                canonical.metadata = {
+                    ...(canonical.metadata || {}),
+                    csv_duplicate_summary: {
+                        observed_count: group.length,
+                        duplicate_count: group.length - 1,
+                        conflict_type: conflictType,
+                        conflict_fields: conflictFields,
+                    },
+                    csv_duplicate_observations: duplicateObservations,
+                };
+
+                skipped += group.length - 1;
+                warnings.push(
+                    conflictFields.length
+                        ? `Order ${orderId}: collapsed ${group.length} duplicate CSV rows with conflicting fields (${conflictFields.join(', ')}).`
+                        : `Order ${orderId}: collapsed ${group.length} exact duplicate CSV rows.`
+                );
+            }
+
+            delete canonical.__csv_row_number;
+            delete canonical.__csv_source_record;
+            rows.push(canonical);
+        }
+
+        const result = await this.batchUpsert('orders', rows, 'orders', errors, skipped);
+        return { ...result, warnings };
     }
 
     private async ingestShipments(userId: string, tenantId: string, records: any[], syncId: string, storeId?: string): Promise<Omit<IngestionResult, 'fileName'>> {

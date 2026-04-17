@@ -17,6 +17,7 @@ import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
 import { requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
 import { buildSellerValuationContext, getUnitValue, type SellerValuationContext } from './shared/valuationService';
+import { buildReviewAnomalyEvidence } from './shared/reviewAnomaly';
 
 // ============================================================================
 // Types
@@ -29,7 +30,9 @@ export type InboundAnomalyType =
     | 'receiving_error'
     | 'case_break_error'
     | 'label_mismatch'
-    | 'prep_fee_error';
+    | 'prep_fee_error'
+    | 'stuck_inbound_review'
+    | 'inbound_shortage_review';
 
 export interface InboundShipmentItem {
     id: string; seller_id: string; shipment_id: string;
@@ -813,6 +816,113 @@ export function detectPrepFeeError(sellerId: string, syncId: string, data: Inbou
 }
 
 // ============================================================================
+// REVIEW STATES - Truthful non-claim-ready inbound anomalies
+// ============================================================================
+
+export function detectInboundReviewStates(sellerId: string, syncId: string, data: InboundSyncedData): InboundDetectionResult[] {
+    const results: InboundDetectionResult[] = [];
+    const now = new Date();
+    const nonTerminalStatuses = new Set(['OPEN', 'RECEIVING', 'WORKING', 'SHIPPED', 'CREATED']);
+    const groups = new Map<string, InboundShipmentItem[]>();
+
+    for (const item of data.inbound_shipment_items || []) {
+        const key = `${item.shipment_id || item.id}|${item.sku || 'UNKNOWN'}`;
+        groups.set(key, [...(groups.get(key) || []), item]);
+    }
+
+    for (const [, items] of groups) {
+        const first = items[0];
+        const status = String(first.shipment_status || '').toUpperCase();
+        const totalShipped = items.reduce((sum, item) => sum + Number(item.quantity_shipped || 0), 0);
+        const totalReceived = items.reduce((sum, item) => sum + Number(item.quantity_received || 0), 0);
+        const shortage = totalShipped - totalReceived;
+        if (shortage <= 0) continue;
+
+        const refDate = first.shipment_closed_date ? new Date(first.shipment_closed_date) : new Date(first.shipment_created_date);
+        const daysSinceRef = daysBetween(refDate, now);
+        const valuation = getInboundUnitValuation(first, data, 20);
+        const potentialValue = shortage * valuation.value;
+        const baseEvidence = {
+            shipment_id: first.shipment_id,
+            sku: first.sku,
+            fnsku: first.fnsku,
+            product_name: first.product_name,
+            quantity_shipped: totalShipped,
+            quantity_received: totalReceived,
+            quantity_gap: shortage,
+            shipment_status: status || 'UNKNOWN',
+            days_since_reference: daysSinceRef,
+            potential_value: potentialValue,
+            valuation_value_type: valuation.valueType,
+            valuation_source: valuation.source,
+            valuation_confidence: valuation.confidence,
+            valuation_basis: valuation.basis,
+            grouped_row_count: items.length,
+        };
+
+        if (nonTerminalStatuses.has(status) && daysSinceRef >= 30) {
+            results.push({
+                seller_id: sellerId,
+                sync_id: syncId,
+                anomaly_type: 'stuck_inbound_review',
+                severity: severity(potentialValue),
+                estimated_value: 0,
+                currency: 'USD',
+                confidence_score: 0.62,
+                evidence: buildReviewAnomalyEvidence(
+                    'The shipment is not terminal yet, so Margin can monitor the shortage but should not auto-file it as a mature claim.',
+                    {
+                        ...baseEvidence,
+                        detection_type: 'stuck_inbound_review',
+                        evidence_summary: `Shipment ${first.shipment_id} is ${status} after ${daysSinceRef} days with ${shortage} units not yet received.`,
+                    }
+                ),
+                related_event_ids: items.map(item => item.id),
+                discovery_date: now,
+                deadline_date: new Date(now.getTime() + 60 * 86400000),
+                days_remaining: 60,
+                shipment_id: first.shipment_id,
+                sku: first.sku,
+                fnsku: first.fnsku,
+                product_name: first.product_name,
+            });
+            continue;
+        }
+
+        if (status === 'CLOSED' && daysSinceRef < 90) {
+            results.push({
+                seller_id: sellerId,
+                sync_id: syncId,
+                anomaly_type: 'inbound_shortage_review',
+                severity: severity(potentialValue),
+                estimated_value: 0,
+                currency: 'USD',
+                confidence_score: 0.68,
+                evidence: buildReviewAnomalyEvidence(
+                    'The shipment is closed with a shortage, but it is still inside the maturity window Margin uses before treating the shortage as claim-ready.',
+                    {
+                        ...baseEvidence,
+                        detection_type: 'inbound_shortage_review',
+                        days_until_claim_maturity: Math.max(0, 90 - daysSinceRef),
+                        evidence_summary: `Shipment ${first.shipment_id} is closed with ${shortage} units short, but the shortage is still maturing.`,
+                    }
+                ),
+                related_event_ids: items.map(item => item.id),
+                discovery_date: now,
+                deadline_date: new Date(now.getTime() + 60 * 86400000),
+                days_remaining: 60,
+                shipment_id: first.shipment_id,
+                sku: first.sku,
+                fnsku: first.fnsku,
+                product_name: first.product_name,
+            });
+        }
+    }
+
+    return results;
+}
+
+// ============================================================================
 // COMBINED RUNNER - Runs all distinct algorithms
 // ============================================================================
 
@@ -839,9 +949,10 @@ export function detectInboundAnomalies(sellerId: string, syncId: string, data: I
     const receivingError = detectReceivingError(sellerId, syncId, dedupData, claimedMap);
     const caseBreak = detectCaseBreakError(sellerId, syncId, dedupData, claimedMap);
     const prepFee = detectPrepFeeError(sellerId, syncId, dedupData);
+    const reviewStates = detectInboundReviewStates(sellerId, syncId, dedupData);
 
     // Combine results and enrich with dedup metadata
-    const all = [...missing, ...shortage, ...carrierDamage, ...receivingError, ...caseBreak, ...prepFee].map(res => ({
+    const all = [...missing, ...shortage, ...carrierDamage, ...receivingError, ...caseBreak, ...prepFee, ...reviewStates].map(res => ({
         ...res,
         evidence: {
             ...res.evidence,
@@ -853,6 +964,7 @@ export function detectInboundAnomalies(sellerId: string, syncId: string, data: I
     logger.info('📦 [INBOUND] Detection complete', {
         missing: missing.length, shortage: shortage.length, carrierDamage: carrierDamage.length,
         receivingError: receivingError.length, caseBreak: caseBreak.length, prepFee: prepFee.length,
+        reviewStates: reviewStates.length,
         total: all.length, recovery: all.reduce((s, r) => s + r.estimated_value, 0),
         ...counters
     });
@@ -1120,4 +1232,4 @@ export async function storeInboundDetectionResults(results: InboundDetectionResu
     }
 }
 
-export default { detectShipmentMissing, detectShipmentShortage, detectCarrierDamage, detectReceivingError, detectCaseBreakError, detectPrepFeeError, detectInboundAnomalies, runInboundDetection, storeInboundDetectionResults };
+export default { detectShipmentMissing, detectShipmentShortage, detectCarrierDamage, detectReceivingError, detectCaseBreakError, detectPrepFeeError, detectInboundReviewStates, detectInboundAnomalies, runInboundDetection, storeInboundDetectionResults };

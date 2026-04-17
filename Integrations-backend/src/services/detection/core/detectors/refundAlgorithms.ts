@@ -13,6 +13,7 @@
 import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
 import { requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
+import { buildReviewAnomalyEvidence } from './shared/reviewAnomaly';
 
 // ============================================================================
 // Types
@@ -45,6 +46,8 @@ export interface ReturnEvent {
     return_date: string;
     return_status: string;  // 'received', 'pending', 'carrier_damaged', etc.
     quantity_returned?: number;
+    refund_amount?: number;
+    currency?: string;
     disposition?: string;   // 'sellable', 'damaged', 'defective', etc.
     fulfillment_center_id?: string;
     created_at: string;
@@ -72,17 +75,41 @@ export interface RefundSyncedData {
     refund_events: RefundEvent[];
     return_events: ReturnEvent[];
     reimbursement_events: ReimbursementEvent[];
+    order_events?: OrderEvent[];
+    settlement_events?: SettlementEvent[];
+}
+
+export interface OrderEvent {
+    id: string;
+    seller_id: string;
+    order_id: string;
+    total_amount: number;
+    currency: string;
+    order_date: string;
+    created_at: string;
+}
+
+export interface SettlementEvent {
+    id: string;
+    seller_id: string;
+    settlement_id: string;
+    order_id?: string;
+    transaction_type: string;
+    amount: number;
+    currency: string;
+    settlement_date: string;
+    created_at: string;
 }
 
 export interface RefundDetectionResult {
     seller_id: string;
     sync_id: string;
-    anomaly_type: 'refund_no_return';
+    anomaly_type: 'refund_no_return' | 'return_refund_missing_review' | 'refund_amount_mismatch_review' | 'settlement_refund_sign_review';
     severity: 'low' | 'medium' | 'high' | 'critical';
     estimated_value: number;
     currency: string;
     confidence_score: number;
-    evidence: RefundWithoutReturnEvidence;
+    evidence: RefundWithoutReturnEvidence | any;
     related_event_ids: string[];
     discovery_date: Date;
     deadline_date: Date;
@@ -345,6 +372,186 @@ export function detectRefundWithoutReturn(
 }
 
 // ============================================================================
+// Review-only refund and settlement anomalies
+// ============================================================================
+
+export function detectRefundReviewAnomalies(
+    sellerId: string,
+    syncId: string,
+    data: RefundSyncedData
+): RefundDetectionResult[] {
+    const results: RefundDetectionResult[] = [];
+    const discoveryDate = new Date();
+    const now = new Date();
+    const { deadline, daysRemaining } = calculateDeadline(discoveryDate);
+    const ordersById = new Map<string, OrderEvent>();
+    for (const order of data.order_events || []) {
+        if (order.order_id) ordersById.set(order.order_id, order);
+    }
+
+    for (const ret of data.return_events || []) {
+        const status = String(ret.return_status || '').toLowerCase();
+        const daysSinceReturn = daysBetween(new Date(ret.return_date), now);
+        const linkedOrder = ordersById.get(ret.order_id);
+        const potentialValue = linkedOrder?.total_amount || 0;
+
+        if (['received', 'complete', 'completed', 'sellable'].includes(status) && daysSinceReturn >= 7) {
+            const linkedRefunds = (data.refund_events || []).filter(refund => refund.order_id === ret.order_id);
+            const returnRefundAmount = Number(ret.refund_amount || 0);
+            const totalRefunded = Math.max(returnRefundAmount, linkedRefunds.reduce((sum, refund) => sum + Number(refund.refund_amount || 0), 0));
+            if (totalRefunded <= 0.01) {
+                results.push({
+                    seller_id: sellerId,
+                    sync_id: syncId,
+                    anomaly_type: 'return_refund_missing_review',
+                    severity: potentialValue >= 100 ? 'high' : potentialValue >= 25 ? 'medium' : 'low',
+                    estimated_value: 0,
+                    currency: linkedOrder?.currency || 'USD',
+                    confidence_score: 0.62,
+                    evidence: buildReviewAnomalyEvidence(
+                        'The return appears received, but the refund trail is missing or zero. Margin needs review before treating this as recoverable.',
+                        {
+                            detection_type: 'return_refund_missing_review',
+                            order_id: ret.order_id,
+                            sku: ret.sku,
+                            asin: ret.asin,
+                            return_id: ret.id,
+                            return_status: ret.return_status,
+                            return_date: ret.return_date,
+                            days_since_return: daysSinceReturn,
+                            observed_refund_amount: totalRefunded,
+                            return_refund_amount: returnRefundAmount,
+                            potential_value: potentialValue,
+                            evidence_summary: `Return ${ret.id} for order ${ret.order_id} is received, but refund records total $${totalRefunded.toFixed(2)}.`,
+                        }
+                    ),
+                    related_event_ids: [ret.id, ...linkedRefunds.map(refund => refund.id)],
+                    discovery_date: discoveryDate,
+                    deadline_date: deadline,
+                    days_remaining: daysRemaining,
+                    order_id: ret.order_id,
+                    sku: ret.sku,
+                    asin: ret.asin,
+                });
+            }
+        }
+    }
+
+    for (const refund of data.refund_events || []) {
+        const linkedOrder = ordersById.get(refund.order_id);
+        if (!linkedOrder || linkedOrder.total_amount <= 0) continue;
+        const excess = Number(refund.refund_amount || 0) - Number(linkedOrder.total_amount || 0);
+        if (excess > Math.max(1, linkedOrder.total_amount * 0.05)) {
+            results.push({
+                seller_id: sellerId,
+                sync_id: syncId,
+                anomaly_type: 'refund_amount_mismatch_review',
+                severity: excess >= 100 ? 'high' : excess >= 25 ? 'medium' : 'low',
+                estimated_value: 0,
+                currency: refund.currency || linkedOrder.currency || 'USD',
+                confidence_score: 0.7,
+                evidence: buildReviewAnomalyEvidence(
+                    'The refund amount is materially above the linked order total. This is exposure/reconciliation review, not an automatic recovery claim.',
+                    {
+                        detection_type: 'refund_amount_mismatch_review',
+                        order_id: refund.order_id,
+                        sku: refund.sku,
+                        asin: refund.asin,
+                        refund_event_id: refund.id,
+                        refund_amount: refund.refund_amount,
+                        order_total: linkedOrder.total_amount,
+                        exposure_value: excess,
+                        value_label: 'potential_exposure',
+                        evidence_summary: `Refund ${refund.id} is $${refund.refund_amount.toFixed(2)} against order total $${linkedOrder.total_amount.toFixed(2)}.`,
+                    }
+                ),
+                related_event_ids: [refund.id, linkedOrder.id],
+                discovery_date: discoveryDate,
+                deadline_date: deadline,
+                days_remaining: daysRemaining,
+                order_id: refund.order_id,
+                sku: refund.sku,
+                asin: refund.asin,
+            });
+        }
+    }
+
+    for (const ret of data.return_events || []) {
+        const linkedOrder = ordersById.get(ret.order_id);
+        const refundAmount = Number(ret.refund_amount || 0);
+        if (!linkedOrder || linkedOrder.total_amount <= 0 || refundAmount <= 0) continue;
+        const excess = refundAmount - Number(linkedOrder.total_amount || 0);
+        if (excess <= Math.max(1, linkedOrder.total_amount * 0.05)) continue;
+        results.push({
+            seller_id: sellerId,
+            sync_id: syncId,
+            anomaly_type: 'refund_amount_mismatch_review',
+            severity: excess >= 100 ? 'high' : excess >= 25 ? 'medium' : 'low',
+            estimated_value: 0,
+            currency: ret.currency || linkedOrder.currency || 'USD',
+            confidence_score: 0.7,
+            evidence: buildReviewAnomalyEvidence(
+                'The return refund amount is materially above the linked order total. This is exposure/reconciliation review, not an automatic recovery claim.',
+                {
+                    detection_type: 'refund_amount_mismatch_review',
+                    order_id: ret.order_id,
+                    sku: ret.sku,
+                    asin: ret.asin,
+                    return_id: ret.id,
+                    refund_amount: refundAmount,
+                    order_total: linkedOrder.total_amount,
+                    exposure_value: excess,
+                    value_label: 'potential_exposure',
+                    evidence_summary: `Return ${ret.id} records refund $${refundAmount.toFixed(2)} against order total $${linkedOrder.total_amount.toFixed(2)}.`,
+                }
+            ),
+            related_event_ids: [ret.id, linkedOrder.id],
+            discovery_date: discoveryDate,
+            deadline_date: deadline,
+            days_remaining: daysRemaining,
+            order_id: ret.order_id,
+            sku: ret.sku,
+            asin: ret.asin,
+        });
+    }
+
+    for (const settlement of data.settlement_events || []) {
+        if (String(settlement.transaction_type || '').toLowerCase() !== 'refund') continue;
+        if (Number(settlement.amount || 0) <= 0) continue;
+        results.push({
+            seller_id: sellerId,
+            sync_id: syncId,
+            anomaly_type: 'settlement_refund_sign_review',
+            severity: Number(settlement.amount || 0) >= 100 ? 'high' : Number(settlement.amount || 0) >= 25 ? 'medium' : 'low',
+            estimated_value: 0,
+            currency: settlement.currency || 'USD',
+            confidence_score: 0.7,
+            evidence: buildReviewAnomalyEvidence(
+                'A settlement row labeled refund has a positive amount. Margin preserves this as sign-polarity review before claiming money is recoverable.',
+                {
+                    detection_type: 'settlement_refund_sign_review',
+                    settlement_id: settlement.settlement_id,
+                    order_id: settlement.order_id,
+                    settlement_row_id: settlement.id,
+                    transaction_type: settlement.transaction_type,
+                    observed_amount: settlement.amount,
+                    exposure_value: Math.abs(Number(settlement.amount || 0)),
+                    value_label: 'potential_exposure',
+                    evidence_summary: `Settlement ${settlement.settlement_id} is labeled refund but has positive amount $${Number(settlement.amount || 0).toFixed(2)}.`,
+                }
+            ),
+            related_event_ids: [settlement.id],
+            discovery_date: discoveryDate,
+            deadline_date: deadline,
+            days_remaining: daysRemaining,
+            order_id: settlement.order_id || '',
+        });
+    }
+
+    return results;
+}
+
+// ============================================================================
 // Data Fetchers
 // ============================================================================
 
@@ -395,6 +602,8 @@ export async function fetchReturnEvents(sellerId: string, options?: { startDate?
         sku: r.items?.[0]?.sku, asin: r.items?.[0]?.asin,
         return_date: r.returned_date, return_status: r.status || 'received',
         quantity_returned: r.items?.[0]?.quantity || 1,
+        refund_amount: Number(r.refund_amount || 0),
+        currency: r.currency || 'USD',
         disposition: r.metadata?.disposition, created_at: r.created_at
     }));
 }
@@ -427,20 +636,76 @@ export async function fetchReimbursementEvents(sellerId: string, options?: { sta
     }));
 }
 
+export async function fetchOrderEventsForRefundReview(sellerId: string, options?: { startDate?: string; syncId?: string }): Promise<OrderEvent[]> {
+    const tenantId = await resolveTenantId(sellerId);
+    let query = supabaseAdmin.from('orders')
+        .select('id,seller_id,order_id,total_amount,currency,order_date,created_at')
+        .eq('tenant_id', tenantId)
+        .eq('user_id', sellerId);
+    if (options?.syncId) query = query.eq('sync_id', options.syncId);
+    if (options?.startDate) query = query.gte('order_date', options.startDate);
+    const { data, error } = await query;
+    if (error) return [];
+    return (data || []).map((row: any) => ({
+        id: row.id,
+        seller_id: sellerId,
+        order_id: row.order_id,
+        total_amount: Number(row.total_amount || 0),
+        currency: row.currency || 'USD',
+        order_date: row.order_date,
+        created_at: row.created_at,
+    }));
+}
+
+export async function fetchSettlementEventsForRefundReview(sellerId: string, options?: { startDate?: string; syncId?: string }): Promise<SettlementEvent[]> {
+    const tenantId = await resolveTenantId(sellerId);
+    let query = supabaseAdmin.from('settlements')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .eq('user_id', sellerId);
+    if (options?.syncId) query = query.eq('sync_id', options.syncId);
+    if (options?.startDate) query = query.gte('settlement_date', options.startDate);
+    const { data, error } = await query;
+    if (error) return [];
+    return (data || []).map((row: any) => ({
+        id: row.id,
+        seller_id: sellerId,
+        settlement_id: row.settlement_id,
+        order_id: row.order_id,
+        transaction_type: row.transaction_type || '',
+        amount: Number(row.amount || 0),
+        currency: row.currency || 'USD',
+        settlement_date: row.settlement_date,
+        created_at: row.created_at,
+    }));
+}
+
 export async function runRefundWithoutReturnDetection(sellerId: string, syncId: string): Promise<RefundDetectionResult[]> {
     const lookback = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
-    const [refunds, returns, reimbs] = await Promise.all([
+    const [refunds, returns, reimbs, orders, settlements] = await Promise.all([
         fetchRefundEvents(sellerId, { startDate: lookback, syncId }),
         fetchReturnEvents(sellerId, { startDate: lookback, syncId }),
-        fetchReimbursementEvents(sellerId, { startDate: lookback, syncId })
+        fetchReimbursementEvents(sellerId, { startDate: lookback, syncId }),
+        fetchOrderEventsForRefundReview(sellerId, { startDate: lookback, syncId }),
+        fetchSettlementEventsForRefundReview(sellerId, { startDate: lookback, syncId }),
     ]);
-    const results = await detectRefundWithoutReturn(sellerId, syncId, { 
+    const claimResults = await detectRefundWithoutReturn(sellerId, syncId, {
         seller_id: sellerId, 
         sync_id: syncId, 
         refund_events: refunds, 
         return_events: returns, 
         reimbursement_events: reimbs 
     });
+    const reviewResults = detectRefundReviewAnomalies(sellerId, syncId, {
+        seller_id: sellerId,
+        sync_id: syncId,
+        refund_events: refunds,
+        return_events: returns,
+        reimbursement_events: reimbs,
+        order_events: orders,
+        settlement_events: settlements,
+    });
+    const results = [...claimResults, ...reviewResults];
     
     if (results.length > 0) {
         await storeRefundDetectionResults(results);
@@ -462,22 +727,28 @@ export async function storeRefundDetectionResults(results: RefundDetectionResult
         days_remaining: r.days_remaining, tenant_id: tenantId, source_type: sourceType, status: 'detected',
         created_at: new Date().toISOString(), updated_at: new Date().toISOString()
     }));
+    const anomalyTypes = Array.from(new Set(records.map(row => row.anomaly_type)));
+    const fingerprintFor = (row: any) => [
+        row.anomaly_type,
+        row.evidence?.refund_event_id || row.evidence?.return_id || row.evidence?.settlement_row_id || '',
+        row.evidence?.order_id || row.order_id || '',
+        row.evidence?.sku || '',
+    ].join('|');
+
     const { data: existing } = await supabaseAdmin
         .from('detection_results')
         .select('anomaly_type,evidence,tenant_id,seller_id')
         .eq('tenant_id', tenantId)
         .eq('seller_id', results[0].seller_id)
         .eq('sync_id', syncId)
-        .eq('anomaly_type', 'refund_no_return');
+        .in('anomaly_type', anomalyTypes);
 
     const existingFingerprints = new Set(
-        (existing || []).map((row: any) =>
-            `refund_no_return|${row.evidence?.refund_event_id || ''}|${row.evidence?.order_id || ''}|${row.evidence?.sku || ''}`
-        )
+        (existing || []).map((row: any) => fingerprintFor(row))
     );
 
     const uniqueRecords = records.filter((row: any) => {
-        const fingerprint = `refund_no_return|${row.evidence?.refund_event_id || ''}|${row.evidence?.order_id || ''}|${row.evidence?.sku || ''}`;
+        const fingerprint = fingerprintFor(row);
         if (existingFingerprints.has(fingerprint)) return false;
         existingFingerprints.add(fingerprint);
         return true;
@@ -489,6 +760,7 @@ export async function storeRefundDetectionResults(results: RefundDetectionResult
 
 export default {
     detectRefundWithoutReturn,
+    detectRefundReviewAnomalies,
     runRefundWithoutReturnDetection,
     storeRefundDetectionResults
 };
