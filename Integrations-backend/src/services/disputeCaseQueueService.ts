@@ -113,6 +113,20 @@ function buildSubmissionProof(submission: any) {
   };
 }
 
+function hasSubmissionStateDivergence(record: any, submissionProof: ReturnType<typeof buildSubmissionProof>) {
+  if (!submissionProof?.proof_present) {
+    return false;
+  }
+
+  const blockReasons = Array.isArray(record?.block_reasons)
+    ? record.block_reasons.map((reason: unknown) => normalize(reason))
+    : [];
+  const lastError = normalize(record?.last_error);
+
+  return blockReasons.includes('submission_state_divergence') ||
+    (normalize(record?.filing_status) === 'failed' && lastError.includes('submission persisted'));
+}
+
 function buildOpportunityCaseNumber(id: string | null | undefined) {
   const compact = String(id || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
   return `OPP-${compact.slice(0, 8) || 'UNFILED'}`;
@@ -485,6 +499,8 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     const detection = record.detection_result_id ? detectionById.get(record.detection_result_id) : null;
     const latestBilling = latestBillingByDisputeId.get(record.id);
     const latestSubmission = latestSubmissionByDisputeId.get(record.id);
+    const submissionProof = buildSubmissionProof(latestSubmission);
+    const submissionStateDivergence = hasSubmissionStateDivergence(record, submissionProof);
     const decisionIntelligence = record?.evidence_attachments?.decision_intelligence || {};
     const proofSnapshot = decisionIntelligence?.proof_snapshot || null;
     const filingStrategy = typeof decisionIntelligence?.filing_strategy === 'string'
@@ -583,7 +599,11 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       asin: record.asin || detection?.asin || null,
       expected_payout_amount: actualPayoutAmount == null && record.expected_payout_date ? approvedAmount : null,
       expected_payout_date: record.expected_payout_date || null,
-      submission_proof: buildSubmissionProof(latestSubmission)
+      submission_proof: submissionProof,
+      submission_state_divergence: submissionStateDivergence,
+      submission_state_divergence_message: submissionStateDivergence
+        ? 'Submission proof exists, but the dispute case state needs reconciliation.'
+        : null
     };
 
     return {
