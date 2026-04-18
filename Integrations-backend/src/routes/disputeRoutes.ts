@@ -197,6 +197,46 @@ function buildCanonicalRouteActionTruth(
   });
 }
 
+function buildEvaluatedRouteActionTruth(
+  disputeId: string,
+  disputeCase: any,
+  eligibilityStatus: QueueEligibilityStatus | null | undefined
+) {
+  const filingStatus = disputeCase?.filing_status || 'blocked';
+  const eligibleToFile = disputeCase?.eligible_to_file === true && eligibilityStatus === 'READY';
+  const actionTruth = buildCanonicalRouteActionTruth(
+    disputeId,
+    filingStatus,
+    eligibleToFile,
+    eligibilityStatus
+  );
+
+  return {
+    filingStatus,
+    eligibleToFile,
+    actionTruth
+  };
+}
+
+function isFreshRouteActionAllowed(
+  action: FilingRouteAction,
+  actionTruth: ReturnType<typeof buildCanonicalRouteActionTruth>
+) {
+  if (action === 'file-now') {
+    return actionTruth.can_file;
+  }
+
+  if (action === 'retry-filing') {
+    return actionTruth.can_retry || actionTruth.can_file;
+  }
+
+  if (action === 'approve-filing') {
+    return actionTruth.can_approve || actionTruth.can_file;
+  }
+
+  return false;
+}
+
 function buildRouteActionConflictPayload(params: {
   action: FilingRouteAction;
   currentFilingStatus: unknown;
@@ -1240,18 +1280,14 @@ router.post('/file-now', async (req, res) => {
     }
 
     const { reasons, disputeCase, eligibilityStatus } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
-    const actionTruth = buildCanonicalRouteActionTruth(
-      dispute_id,
-      caseData.filing_status,
-      eligibilityStatus === 'READY',
-      eligibilityStatus
-    );
+    const evaluatedTruth = buildEvaluatedRouteActionTruth(dispute_id, disputeCase, eligibilityStatus);
+    const { actionTruth } = evaluatedTruth;
 
     if (!actionTruth.can_file) {
       return res.status(409).json(buildRouteActionConflictPayload({
         action: 'file-now',
-        currentFilingStatus: caseData.filing_status,
-        evaluatedFilingStatus: disputeCase?.filing_status,
+        currentFilingStatus: evaluatedTruth.filingStatus,
+        evaluatedFilingStatus: evaluatedTruth.filingStatus,
         eligibilityStatus,
         reasons,
         actionTruth
@@ -1373,18 +1409,14 @@ router.post('/retry-filing', async (req, res) => {
     }
 
     const { reasons, disputeCase, eligibilityStatus } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
-    const actionTruth = buildCanonicalRouteActionTruth(
-      dispute_id,
-      caseData.filing_status,
-      eligibilityStatus === 'READY',
-      eligibilityStatus
-    );
+    const evaluatedTruth = buildEvaluatedRouteActionTruth(dispute_id, disputeCase, eligibilityStatus);
+    const { actionTruth } = evaluatedTruth;
 
-    if (!actionTruth.can_retry) {
+    if (!isFreshRouteActionAllowed('retry-filing', actionTruth)) {
       return res.status(409).json(buildRouteActionConflictPayload({
         action: 'retry-filing',
-        currentFilingStatus: caseData.filing_status,
-        evaluatedFilingStatus: disputeCase?.filing_status,
+        currentFilingStatus: evaluatedTruth.filingStatus,
+        evaluatedFilingStatus: evaluatedTruth.filingStatus,
         eligibilityStatus,
         reasons,
         actionTruth
@@ -1509,18 +1541,14 @@ router.post('/approve-filing', async (req, res) => {
     }
 
     const { reasons, disputeCase, eligibilityStatus } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
-    const actionTruth = buildCanonicalRouteActionTruth(
-      dispute_id,
-      caseData.filing_status,
-      eligibilityStatus === 'READY',
-      eligibilityStatus
-    );
+    const evaluatedTruth = buildEvaluatedRouteActionTruth(dispute_id, disputeCase, eligibilityStatus);
+    const { actionTruth } = evaluatedTruth;
 
-    if (!actionTruth.can_approve) {
+    if (!isFreshRouteActionAllowed('approve-filing', actionTruth)) {
       return res.status(409).json(buildRouteActionConflictPayload({
         action: 'approve-filing',
-        currentFilingStatus: caseData.filing_status,
-        evaluatedFilingStatus: disputeCase?.filing_status,
+        currentFilingStatus: evaluatedTruth.filingStatus,
+        evaluatedFilingStatus: evaluatedTruth.filingStatus,
         eligibilityStatus,
         reasons,
         actionTruth
