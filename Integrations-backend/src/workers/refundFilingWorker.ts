@@ -91,6 +91,9 @@ async function retryWithBackoff<T>(
 
 export interface FilingStats {
   processed: number;
+  queued: number;
+  dispatched: number;
+  attempted: number;
   filed: number;
   failed: number;
   skipped: number; // Skipped due to duplicates or other reasons
@@ -109,6 +112,8 @@ interface FilingSafetyCheckResult {
 type FilingDispatchResult = {
   id: string;
   mode: 'queued' | 'blocked';
+  attempted?: boolean;
+  proofBacked?: boolean;
 };
 
 type SubmissionQueueMetrics = {
@@ -1632,6 +1637,9 @@ class RefundFilingWorker {
   async runFilingForAllTenants(): Promise<FilingStats> {
     const stats: FilingStats = {
       processed: 0,
+      queued: 0,
+      dispatched: 0,
+      attempted: 0,
       filed: 0,
       failed: 0,
       skipped: 0,
@@ -1693,6 +1701,9 @@ class RefundFilingWorker {
         try {
           const tenantStats = await this.runFilingForTenant(tenant.id);
           stats.processed += tenantStats.processed;
+          stats.queued += tenantStats.queued;
+          stats.dispatched += tenantStats.dispatched;
+          stats.attempted += tenantStats.attempted;
           stats.filed += tenantStats.filed;
           stats.failed += tenantStats.failed;
           stats.skipped += tenantStats.skipped;
@@ -1717,7 +1728,7 @@ class RefundFilingWorker {
       });
       runtimeCapacityService.recordWorkerEnd(this.workerName, {
         processed: stats.processed,
-        succeeded: stats.filed,
+        succeeded: stats.dispatched,
         failed: stats.failed,
         backlogDepth: queueMetrics.waiting + queueMetrics.delayed,
         oldestItemAgeMs: queueMetrics.oldestWaitingAgeMs
@@ -1729,7 +1740,7 @@ class RefundFilingWorker {
       stats.errors.push(`Fatal error: ${error.message}`);
       runtimeCapacityService.recordWorkerEnd(this.workerName, {
         processed: stats.processed,
-        succeeded: stats.filed,
+        succeeded: stats.dispatched,
         failed: stats.failed || 1,
         lastError: error.message
       });
@@ -1744,6 +1755,9 @@ class RefundFilingWorker {
   async runFilingForTenant(tenantId: string): Promise<FilingStats> {
     const stats: FilingStats = {
       processed: 0,
+      queued: 0,
+      dispatched: 0,
+      attempted: 0,
       filed: 0,
       failed: 0,
       skipped: 0,
@@ -2528,8 +2542,14 @@ class RefundFilingWorker {
               reason
             });
             const dispatchResult = await this.executeDirectFallback(disputeCase.id, disputeCase.seller_id);
+            if (dispatchResult.attempted) {
+              stats.attempted++;
+            }
             if (dispatchResult.mode === 'queued') {
-              stats.filed++;
+              stats.dispatched++;
+              if (dispatchResult.proofBacked) {
+                stats.filed++;
+              }
             } else {
               runtimeCapacityService.setCircuitBreaker('filing-auto-dispatch', 'open', reason);
               stats.skipped++;
@@ -2569,7 +2589,8 @@ class RefundFilingWorker {
             disputeId: disputeCase.id, 
             sellerId: disputeCase.seller_id 
           });
-          stats.filed++;
+          stats.queued++;
+          stats.dispatched++;
         } catch (queueError: any) {
           if (handleRedisRuntimeError(queueError, 'refund_filing_scheduled_enqueue')) {
             await this.disableQueueInfrastructure(`redis_unavailable:${queueError.message}`);
@@ -2926,11 +2947,13 @@ class RefundFilingWorker {
         reason: this.queueInfrastructureReason || 'queue_unavailable'
       });
 
-      await this.automator.executeFullSubmission(caseId, sellerId);
+      const submissionReference = await this.automator.executeFullSubmission(caseId, sellerId);
 
       return {
         id: caseId,
-        mode: 'queued'
+        mode: 'queued',
+        attempted: true,
+        proofBacked: Boolean(submissionReference)
       };
     } catch (error: any) {
       logger.error('[AGENT 7] Direct filing fallback failed', {
@@ -2941,7 +2964,9 @@ class RefundFilingWorker {
       await this.logError(caseId, sellerId, `DB filing fallback failed: ${error.message}`);
       return {
         id: caseId,
-        mode: 'blocked'
+        mode: 'blocked',
+        attempted: true,
+        proofBacked: false
       };
     }
   }
