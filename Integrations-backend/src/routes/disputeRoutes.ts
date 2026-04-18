@@ -218,6 +218,78 @@ function buildEvaluatedRouteActionTruth(
   };
 }
 
+function getRouteBlockReasons(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) => String(item || '').trim()).filter(Boolean);
+      }
+    } catch {
+      return [value.trim()];
+    }
+  }
+
+  return [];
+}
+
+function isStaleOperationalQueueHold(caseData: any): boolean {
+  const filingStatus = normalizeDisputeRouteValue(caseData?.filing_status);
+  const eligibilityStatus = String(caseData?.eligibility_status || '').trim().toUpperCase();
+  const eligibleToFile = caseData?.eligible_to_file === true;
+  const blockReasons = getRouteBlockReasons(caseData?.block_reasons);
+  const lastError = normalizeDisputeRouteValue(caseData?.last_error);
+
+  if (
+    filingStatus !== 'pending' ||
+    eligibilityStatus !== 'SAFETY_HOLD' ||
+    eligibleToFile ||
+    blockReasons.length > 0 ||
+    !lastError
+  ) {
+    return false;
+  }
+
+  const hasOperationalQueueSignature =
+    lastError.includes('redis_quota_exceeded') ||
+    lastError.includes('dispatch queue cannot safely accept more work') ||
+    lastError.includes('filing_queue_gate') ||
+    lastError.includes('queue_waiting_limit_reached') ||
+    lastError.includes('queue_age_limit_reached');
+
+  return hasOperationalQueueSignature;
+}
+
+async function isFilingQueueHealthyForStaleRecovery(disputeId: string): Promise<boolean> {
+  try {
+    const metrics = await refundFilingWorker.getSubmissionQueueMetrics();
+    const healthy = metrics.available === true && !metrics.reason;
+
+    if (!healthy) {
+      logger.info('[AGENT 7] Stale queue-hold recovery skipped because filing queue is not healthy', {
+        disputeId,
+        queueAvailable: metrics.available,
+        queueReason: metrics.reason || null,
+        waiting: metrics.waiting,
+        active: metrics.active,
+        delayed: metrics.delayed
+      });
+    }
+
+    return healthy;
+  } catch (error: any) {
+    logger.warn('[AGENT 7] Stale queue-hold recovery skipped because queue metrics failed', {
+      disputeId,
+      error: error?.message || String(error)
+    });
+    return false;
+  }
+}
+
 function isFreshRouteActionAllowed(
   action: FilingRouteAction,
   actionTruth: ReturnType<typeof buildCanonicalRouteActionTruth>
@@ -1241,7 +1313,7 @@ router.post('/file-now', async (req, res) => {
     await resolvePaidSellerIdentity(userId, tenantId, dispute_id);
     const { data: caseData, error: fetchError } = await supabaseAdmin
       .from('dispute_cases')
-      .select('id, filing_status, seller_id, eligibility_status, eligible_to_file, block_reasons')
+      .select('id, filing_status, seller_id, eligibility_status, eligible_to_file, block_reasons, last_error')
       .eq('id', dispute_id)
       .eq('tenant_id', tenantId)
       .single();
@@ -1269,17 +1341,34 @@ router.post('/file-now', async (req, res) => {
       caseData.eligibility_status
     );
 
+    let evaluatedEligibility: Awaited<ReturnType<typeof evaluateAndPersistCaseEligibility>> | null = null;
+
     if (!storedActionTruth.can_file) {
-      return res.status(409).json(buildRouteActionConflictPayload({
-        action: 'file-now',
-        currentFilingStatus: caseData.filing_status,
-        eligibilityStatus: caseData.eligibility_status,
-        reasons: Array.isArray(caseData.block_reasons) ? caseData.block_reasons : [],
-        actionTruth: storedActionTruth
-      }));
+      const shouldRecoverStaleQueueHold =
+        isStaleOperationalQueueHold(caseData) &&
+        await isFilingQueueHealthyForStaleRecovery(dispute_id);
+
+      if (shouldRecoverStaleQueueHold) {
+        logger.info('[AGENT 7] Re-evaluating stale queue-hold case before file-now rejection', {
+          disputeId: dispute_id,
+          tenantId,
+          previousFilingStatus: caseData.filing_status,
+          previousEligibilityStatus: caseData.eligibility_status
+        });
+        evaluatedEligibility = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
+      } else {
+        return res.status(409).json(buildRouteActionConflictPayload({
+          action: 'file-now',
+          currentFilingStatus: caseData.filing_status,
+          eligibilityStatus: caseData.eligibility_status,
+          reasons: getRouteBlockReasons(caseData.block_reasons),
+          actionTruth: storedActionTruth
+        }));
+      }
     }
 
-    const { reasons, disputeCase, eligibilityStatus } = await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
+    const { reasons, disputeCase, eligibilityStatus } =
+      evaluatedEligibility || await evaluateAndPersistCaseEligibility(dispute_id, tenantId);
     const evaluatedTruth = buildEvaluatedRouteActionTruth(dispute_id, disputeCase, eligibilityStatus);
     const { actionTruth } = evaluatedTruth;
 
