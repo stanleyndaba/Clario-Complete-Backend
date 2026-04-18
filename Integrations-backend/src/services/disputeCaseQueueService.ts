@@ -38,6 +38,7 @@ const BILLING_COMPLETE_STATUSES = new Set(['paid', 'charged', 'credited', 'compl
 const REJECTED_STATUSES = new Set(['rejected', 'denied']);
 const APPROVED_STATUSES = new Set(['approved', 'won']);
 const FILED_STATUSES = new Set(['filed', 'submitted', 'resubmitted', 'filing', 'submitting']);
+const AUTHORITATIVE_SUBMISSION_OUTCOMES = new Set(['submitted', 'accepted', 'filed', 'success', 'open', 'in_progress']);
 const ACTIVE_AMAZON_REVIEW_STATUSES = new Set(['submitted', 'under review', 'in review']);
 const BLOCKED_FILING_STATUSES = new Set([
   'blocked',
@@ -73,6 +74,43 @@ function toNumber(value: unknown): number | null {
 function toMoney(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
+}
+
+function countAttachmentManifest(value: unknown): number | null {
+  return Array.isArray(value) ? value.length : null;
+}
+
+function buildSubmissionProof(submission: any) {
+  if (!submission) return null;
+
+  const normalizedOutcome = normalize(submission.outcome || submission.status);
+  const externalReference = String(
+    submission.external_reference ||
+    submission.amazon_case_id ||
+    ''
+  ).trim() || null;
+  const fallbackSubmissionId = String(submission.submission_id || '').trim() || null;
+  const proofReference = externalReference || (
+    fallbackSubmissionId && AUTHORITATIVE_SUBMISSION_OUTCOMES.has(normalizedOutcome)
+      ? fallbackSubmissionId
+      : null
+  );
+
+  return {
+    id: submission.id || null,
+    submission_id: fallbackSubmissionId,
+    amazon_case_id: String(submission.amazon_case_id || '').trim() || null,
+    external_reference: String(submission.external_reference || '').trim() || null,
+    proof_reference: proofReference,
+    proof_present: Boolean(proofReference),
+    submitted_at: submission.submission_timestamp || submission.created_at || null,
+    request_started_at: submission.request_started_at || null,
+    response_received_at: submission.response_received_at || null,
+    submission_channel: String(submission.submission_channel || '').trim() || null,
+    attachment_count: countAttachmentManifest(submission.attachment_manifest),
+    status: submission.status || null,
+    outcome: submission.outcome || null
+  };
 }
 
 function buildOpportunityCaseNumber(id: string | null | undefined) {
@@ -365,7 +403,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     ...orphanDetections.map((row: any) => row.store_id).filter(Boolean)
   ];
 
-  const [{ data: evidenceLinks }, { data: detectionRows }, { data: stores }, { data: billingRows }] = await Promise.all([
+  const [{ data: evidenceLinks }, { data: detectionRows }, { data: stores }, { data: billingRows }, { data: submissionRows }] = await Promise.all([
     disputeIds.length
       ? supabaseAdmin
           .from('dispute_evidence_links')
@@ -390,6 +428,13 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       ? supabaseAdmin
           .from('billing_transactions')
           .select('dispute_id, billing_status, platform_fee_cents, updated_at, created_at')
+          .in('dispute_id', disputeIds)
+      : Promise.resolve({ data: [] as any[] }),
+    disputeIds.length
+      ? supabaseAdmin
+          .from('dispute_submissions')
+          .select('id, dispute_id, submission_id, amazon_case_id, external_reference, submission_timestamp, request_started_at, response_received_at, submission_channel, attachment_manifest, status, outcome, created_at, updated_at')
+          .eq('tenant_id', scope.tenantId)
           .in('dispute_id', disputeIds)
       : Promise.resolve({ data: [] as any[] })
   ]);
@@ -426,9 +471,20 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     }
   }
 
+  const latestSubmissionByDisputeId = new Map<string, any>();
+  for (const submission of submissionRows || []) {
+    const current = latestSubmissionByDisputeId.get(submission.dispute_id);
+    const submissionTimestamp = submission.response_received_at || submission.submission_timestamp || submission.updated_at || submission.created_at || '';
+    const currentTimestamp = current?.response_received_at || current?.submission_timestamp || current?.updated_at || current?.created_at || '';
+    if (!current || submissionTimestamp > currentTimestamp) {
+      latestSubmissionByDisputeId.set(submission.dispute_id, submission);
+    }
+  }
+
   const enrichedRows = rows.map((record: any) => {
     const detection = record.detection_result_id ? detectionById.get(record.detection_result_id) : null;
     const latestBilling = latestBillingByDisputeId.get(record.id);
+    const latestSubmission = latestSubmissionByDisputeId.get(record.id);
     const decisionIntelligence = record?.evidence_attachments?.decision_intelligence || {};
     const proofSnapshot = decisionIntelligence?.proof_snapshot || null;
     const filingStrategy = typeof decisionIntelligence?.filing_strategy === 'string'
@@ -526,7 +582,8 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       sku: record.sku || detection?.sku || null,
       asin: record.asin || detection?.asin || null,
       expected_payout_amount: actualPayoutAmount == null && record.expected_payout_date ? approvedAmount : null,
-      expected_payout_date: record.expected_payout_date || null
+      expected_payout_date: record.expected_payout_date || null,
+      submission_proof: buildSubmissionProof(latestSubmission)
     };
 
     return {
@@ -593,7 +650,8 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       sku: record.sku || record.evidence?.sku || null,
       asin: record.asin || record.evidence?.asin || null,
       expected_payout_amount: toMoney(record.estimated_value),
-      expected_payout_date: null
+      expected_payout_date: null,
+      submission_proof: null
     };
 
     return {
