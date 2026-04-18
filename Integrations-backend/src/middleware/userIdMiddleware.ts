@@ -20,7 +20,9 @@ const PUBLIC_PATHS = [
   '/api/status',
   '/api/metrics/track',
   '/api/v1/integrations/amazon/diagnose/live',
+  '/api/v1/integrations/amazon/diagnose/seller-central-readiness',
   '/api/integrations/amazon/diagnose/live',
+  '/api/integrations/amazon/diagnose/seller-central-readiness',
   '/favicon.ico',
   '/robots.txt'
 ];

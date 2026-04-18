@@ -9,6 +9,7 @@ import {
   diagnoseAmazonConnection
 } from '../controllers/amazonController';
 import amazonService from '../services/amazonService';
+import refundFilingService from '../services/refundFilingService';
 import { runAmazonLiveDiagnostics } from '../services/amazonLiveDiagnosticsService';
 import { syncJobManager } from '../services/syncJobManager';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
@@ -318,6 +319,22 @@ router.get('/diagnose/live', wrap(async (req: Request, res: Response) => {
   return res.status(diagnostics.ok ? 200 : 500).json({
     success: diagnostics.ok,
     ...diagnostics,
+  });
+}));
+
+router.get('/diagnose/seller-central-readiness', wrap(async (req: Request, res: Response) => {
+  if (!hasTrustedInternalApiKey(req)) {
+    return res.status(403).json({
+      success: false,
+      error: 'Trusted internal API key is required for Seller Central filing readiness diagnostics.',
+    });
+  }
+
+  const diagnostic = refundFilingService.getSellerCentralReadinessDiagnostic();
+
+  return res.status(200).json({
+    success: true,
+    ...diagnostic,
   });
 }));
 

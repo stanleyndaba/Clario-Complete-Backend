@@ -254,6 +254,80 @@ class RefundFilingService {
         return getSellerCentralReadiness(process.env);
     }
 
+    getSellerCentralReadinessDiagnostic(): Record<string, any> {
+        const readiness = this.getSellerCentralReadiness();
+        const submitterScriptPath = path.resolve(process.cwd(), 'src', 'scripts', 'sellerCentralSubmit.js');
+        const submitterScriptPresent = fs.existsSync(submitterScriptPath);
+        let puppeteerAvailable = true;
+
+        try {
+            require.resolve('puppeteer');
+        } catch (_error) {
+            puppeteerAvailable = false;
+        }
+
+        const globalDryRunEnabled = process.env.DRY_RUN === 'true' || (global as any).DRY_RUN === true;
+        const preSubmitDryRunEnabled = String(process.env.SELLER_CENTRAL_DRY_RUN_PRE_SUBMIT || '').trim().toLowerCase() === 'true';
+        const dryRunEnabled = globalDryRunEnabled || preSubmitDryRunEnabled || readiness.dryRunEnabled;
+        const selectorConfigured = Object.fromEntries(
+            Object.entries(readiness.selectorMap || {}).map(([key, value]) => [
+                key,
+                Array.isArray(value) ? value.length > 0 : String(value || '').trim().length > 0
+            ])
+        );
+        const caseUrlHost = (() => {
+            try {
+                return new URL(String(process.env.SELLER_CENTRAL_CASE_URL || '')).host || null;
+            } catch (_error) {
+                return null;
+            }
+        })();
+        const blockers = [
+            ...readiness.missing.map((item) => `missing:${item}`),
+            ...(submitterScriptPresent ? [] : ['seller_central_submitter_script_missing']),
+            ...(puppeteerAvailable ? [] : ['puppeteer_module_missing']),
+            ...(globalDryRunEnabled ? ['dry_run_enabled'] : []),
+            ...(preSubmitDryRunEnabled ? ['seller_central_dry_run_pre_submit_enabled'] : [])
+        ];
+        const ready = readiness.ready && submitterScriptPresent && puppeteerAvailable && !dryRunEnabled;
+
+        return {
+            ready,
+            status: ready ? 'ready' : 'blocked',
+            checked_at: new Date().toISOString(),
+            blockers,
+            warnings: readiness.warnings,
+            checks: {
+                session: {
+                    present: readiness.sessionSourcePresent,
+                    source_type: readiness.sessionSourceType
+                },
+                case_url: {
+                    present: readiness.caseUrlPresent,
+                    host: caseUrlHost
+                },
+                dry_run: {
+                    enabled: dryRunEnabled,
+                    global_dry_run_enabled: globalDryRunEnabled,
+                    pre_submit_dry_run_enabled: preSubmitDryRunEnabled
+                },
+                submitter_script: {
+                    present: submitterScriptPresent,
+                    path: submitterScriptPresent ? submitterScriptPath : null
+                },
+                automation_adapter: {
+                    enabled: submitterScriptPresent && puppeteerAvailable,
+                    puppeteer_available: puppeteerAvailable,
+                    node_executable_present: Boolean(process.execPath)
+                },
+                selector_config: {
+                    present: readiness.selectorConfigPresent,
+                    configured: selectorConfigured
+                }
+            }
+        };
+    }
+
     private resolveSellerCentralScriptPath(): string {
         const scriptPath = path.resolve(process.cwd(), 'src', 'scripts', 'sellerCentralSubmit.js');
         if (!fs.existsSync(scriptPath)) {
