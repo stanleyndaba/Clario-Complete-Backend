@@ -54,6 +54,53 @@ function normalizeHighlights(value: unknown): string[] {
     .slice(0, 5);
 }
 
+function throwProductUpdateDbError(operation: string, error: any, context: Record<string, unknown> = {}): never {
+  const code = String(error?.code || '');
+  const message = String(error?.message || 'Unknown database error');
+  const normalizedMessage = message.toLowerCase();
+
+  logger.error('[PRODUCT UPDATES] Database operation failed', {
+    operation,
+    code: code || null,
+    message,
+    details: error?.details || null,
+    hint: error?.hint || null,
+    ...context
+  });
+
+  if (
+    code === '23505' ||
+    normalizedMessage.includes('duplicate key') ||
+    normalizedMessage.includes('unique constraint')
+  ) {
+    throw new Error(
+      'PRODUCT_UPDATE_SLUG_EXISTS:A product update with this slug already exists. Change the slug or edit the existing draft.'
+    );
+  }
+
+  if (
+    code === '42P01' ||
+    normalizedMessage.includes('schema cache') ||
+    (normalizedMessage.includes('product_updates') && normalizedMessage.includes('does not exist'))
+  ) {
+    throw new Error(
+      'PRODUCT_UPDATE_SCHEMA_MISSING:Product update tables are not available in the live database yet. Run migration 106_product_updates_publish_broadcast.sql, then retry.'
+    );
+  }
+
+  if (
+    code === '42703' ||
+    normalizedMessage.includes('column') ||
+    normalizedMessage.includes('foreign key constraint')
+  ) {
+    throw new Error(
+      `PRODUCT_UPDATE_SCHEMA_MISMATCH:Live product update schema does not match the deployed API. Database said: ${message}`
+    );
+  }
+
+  throw new Error(`${operation}:${message}`);
+}
+
 function serializeUpdate(row: any) {
   return {
     id: row.id,
@@ -213,7 +260,7 @@ class ProductUpdateService {
       .single();
 
     if (error) {
-      throw new Error(`PRODUCT_UPDATE_CREATE_FAILED:${error.message}`);
+      throwProductUpdateDbError('PRODUCT_UPDATE_CREATE_FAILED', error, { slug });
     }
 
     return serializeUpdate(data);
@@ -250,7 +297,7 @@ class ProductUpdateService {
       .single();
 
     if (error) {
-      throw new Error(`PRODUCT_UPDATE_UPDATE_FAILED:${error.message}`);
+      throwProductUpdateDbError('PRODUCT_UPDATE_UPDATE_FAILED', error, { productUpdateId: id });
     }
 
     return serializeUpdate(data);

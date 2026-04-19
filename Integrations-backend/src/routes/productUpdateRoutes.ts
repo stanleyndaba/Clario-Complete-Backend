@@ -75,6 +75,14 @@ function normalizeError(error: unknown): { status: number; code: string; message
     return { status: 404, code, message };
   }
 
+  if (code === 'PRODUCT_UPDATE_SLUG_EXISTS') {
+    return { status: 409, code, message };
+  }
+
+  if (code === 'PRODUCT_UPDATE_SCHEMA_MISSING' || code === 'PRODUCT_UPDATE_SCHEMA_MISMATCH') {
+    return { status: 503, code, message };
+  }
+
   return { status: 500, code, message };
 }
 
