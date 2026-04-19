@@ -7,6 +7,7 @@ export type Agent10EntityType =
   | 'billing_transaction'
   | 'sync_job'
   | 'notification'
+  | 'product_update'
   | 'metrics'
   | 'unknown';
 
@@ -89,13 +90,21 @@ export function extractAgent10EntityIds(source?: LegacyPayload) {
     metadata.syncId
   );
 
+  const productUpdateId = pickFirstString(
+    payload.product_update_id,
+    payload.productUpdateId,
+    metadata.product_update_id,
+    metadata.productUpdateId
+  );
+
   return {
     disputeCaseId,
     detectionId,
     documentId,
     recoveryId,
     billingTransactionId,
-    syncId
+    syncId,
+    productUpdateId
   };
 }
 
@@ -103,6 +112,7 @@ export function inferAgent10PrimaryEntityType(source?: LegacyPayload): Agent10En
   const ids = extractAgent10EntityIds(source);
   if (ids.recoveryId) return 'recovery';
   if (ids.billingTransactionId) return 'billing_transaction';
+  if (ids.productUpdateId) return 'product_update';
   if (ids.documentId) return 'evidence_document';
   if (ids.disputeCaseId) return 'dispute_case';
   if (ids.detectionId) return 'detection_result';
@@ -115,6 +125,7 @@ export function inferAgent10PrimaryEntityId(source?: LegacyPayload): string | un
   return (
     ids.recoveryId ||
     ids.billingTransactionId ||
+    ids.productUpdateId ||
     ids.documentId ||
     ids.disputeCaseId ||
     ids.detectionId ||
@@ -163,6 +174,7 @@ export function buildCanonicalLiveEvent(
     recovery_id: ids.recoveryId,
     billing_transaction_id: ids.billingTransactionId,
     sync_id: ids.syncId,
+    product_update_id: ids.productUpdateId,
     metadata: {
       ...(typeof data.metadata === 'object' && data.metadata ? data.metadata : {}),
       raw_event_name: eventName

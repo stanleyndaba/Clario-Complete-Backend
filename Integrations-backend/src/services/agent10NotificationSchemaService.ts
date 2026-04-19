@@ -13,7 +13,7 @@ type NotificationSchemaSnapshot = {
 
 const REQUIRED_COLUMNS = ['dedupe_key', 'delivery_state', 'last_delivery_error', 'created_at', 'updated_at'];
 const REQUIRED_STATUS_VALUES = ['partial'];
-const REQUIRED_TYPE_VALUES = ['needs_evidence', 'approved', 'rejected', 'paid', 'sync_started', 'sync_failed'];
+const REQUIRED_TYPE_VALUES = ['needs_evidence', 'approved', 'rejected', 'paid', 'sync_started', 'sync_failed', 'product_update'];
 const NOTIFICATIONS_SCHEMA_MIGRATION = '100_agent10_notifications_live_schema_unblock.sql';
 
 function getNotificationsSchemaPatchSql(): string {

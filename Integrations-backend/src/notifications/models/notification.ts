@@ -48,7 +48,8 @@ export enum NotificationType {
   NEEDS_EVIDENCE = 'needs_evidence',
   APPROVED = 'approved',
   REJECTED = 'rejected',
-  PAID = 'paid'
+  PAID = 'paid',
+  PRODUCT_UPDATE = 'product_update'
 }
 
 export enum NotificationStatus {

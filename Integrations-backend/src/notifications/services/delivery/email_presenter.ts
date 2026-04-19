@@ -82,6 +82,12 @@ function normalizeSentence(value?: string | null): string | null {
   return normalized.replace(/\s+/g, ' ').trim();
 }
 
+function truncateText(value: string | null, maxLength: number): string | null {
+  if (!value) return null;
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
 function stripHtml(value: string): string {
   return value
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
@@ -257,6 +263,19 @@ function buildActionUrl(frontendUrl: string, payload: FlattenedPayload): string 
   }
 
   return `${baseUrl}/notifications`;
+}
+
+function buildProductUpdateActionUrl(frontendUrl: string, payload: FlattenedPayload): string {
+  const baseUrl = frontendUrl.replace(/\/+$/, '');
+  const tenantSlug = sanitizeTenantSlug(pickFirstString(payload.tenant_slug, payload.tenantSlug));
+  const slug = sanitizeEntityId(pickFirstString(payload.slug, payload.product_update_slug, payload.productUpdateSlug));
+  const anchor = slug ? `#${encodeURIComponent(slug)}` : '';
+
+  if (tenantSlug) {
+    return `${baseUrl}/app/${encodeURIComponent(tenantSlug)}/whats-new${anchor}`;
+  }
+
+  return `${baseUrl}/whats-new${anchor}`;
 }
 
 function buildCommonDetailLines(payload: FlattenedPayload, statusLabel: string): NotificationEmailDetailLine[] {
@@ -669,6 +688,49 @@ function buildResubmittedCaseViewModel(
   };
 }
 
+function buildProductUpdateViewModel(
+  notification: Notification,
+  payload: FlattenedPayload,
+  frontendUrl: string
+): NotificationEmailViewModel {
+  const title = normalizeSentence(pickFirstString(payload.title, notification.title)) || 'Product update';
+  const summary = normalizeSentence(pickFirstString(payload.summary, notification.message)) ||
+    'A new Margin product update is available.';
+  const highlights = pickFirstStringList(payload.highlights).slice(0, 5);
+  const publishedAt = formatTimestamp(pickFirstString(payload.published_at, payload.publishedAt, payload.timestamp, payload.created_at));
+  const tag = normalizeSentence(pickFirstString(payload.tag, payload.category));
+  const detailLines: NotificationEmailDetailLine[] = [
+    { label: 'Status', value: 'Published' }
+  ];
+
+  if (publishedAt) {
+    detailLines.push({ label: 'Shipped', value: publishedAt });
+  }
+
+  if (tag) {
+    detailLines.push({ label: 'Category', value: tag });
+  }
+
+  return {
+    email_subject: `New in Margin: ${title}`,
+    email_heading: title,
+    email_summary: summary,
+    what_changed_lines: highlights.length ? highlights : null,
+    detail_heading: 'Rollout details',
+    email_detail_lines: detailLines,
+    why_this_matters: truncateText(
+      normalizeSentence(pickFirstString(payload.why_this_matters, payload.whyThisMatters, payload.body)),
+      280
+    ),
+    trust_line:
+      'Margin sends product update emails only after a rollout is published as a real Latest Changes record.',
+    what_to_do_next:
+      'Open the product update to review what changed and where it affects your workspace.',
+    action_label: 'View Product Update',
+    action_url: buildProductUpdateActionUrl(frontendUrl, payload)
+  };
+}
+
 function buildAmazonThreadViewModel(
   notification: Notification,
   payload: FlattenedPayload,
@@ -778,6 +840,8 @@ export function buildNotificationEmailViewModel(
   const frontendUrl = options?.frontendUrl || 'https://app.margin-finance.com';
 
   switch (notification.type) {
+    case NotificationType.PRODUCT_UPDATE:
+      return buildProductUpdateViewModel(notification, payload, frontendUrl);
     case NotificationType.CASE_FILED:
       if (['resubmitted', 're_submitted', 're-submitted', 'refiled', 're_filed', 're-filed'].includes(String(payload.status || '').trim().toLowerCase())) {
         return buildResubmittedCaseViewModel(notification, payload, frontendUrl);

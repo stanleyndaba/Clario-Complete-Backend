@@ -66,6 +66,7 @@ import waitlistRoutes from './routes/waitlistRoutes';
 import onboardingRoutes from './routes/onboardingRoutes';
 import paymentRoutes from './routes/paymentRoutes';
 import supportRoutes from './routes/supportRoutes';
+import productUpdateRoutes from './routes/productUpdateRoutes';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -440,6 +441,9 @@ logger.info('Export routes registered at /api/export-claims');
 
 app.use('/api/notifications', notificationRoutes);
 logger.info('Notification routes registered at /api/notifications');
+
+app.use('/api/product-updates', productUpdateRoutes);
+logger.info('Product update routes registered at /api/product-updates');
 
 app.use('/api/learning', learningRoutes);
 logger.info('Learning routes registered at /api/learning');

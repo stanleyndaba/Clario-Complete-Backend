@@ -143,7 +143,8 @@ BEGIN
       'needs_evidence',
       'approved',
       'rejected',
-      'paid'
+      'paid',
+      'product_update'
     ));
 END $$;
 

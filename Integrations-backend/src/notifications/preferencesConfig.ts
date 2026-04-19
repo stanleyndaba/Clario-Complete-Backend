@@ -27,7 +27,8 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: Record<string, NotificationPrefer
   [NotificationType.INTEGRATION_COMPLETED]: { email: false, inApp: true },
   [NotificationType.PAYMENT_PROCESSED]: { email: true, inApp: true },
   [NotificationType.DISCREPANCY_FOUND]: { email: true, inApp: true },
-  [NotificationType.SYSTEM_ALERT]: { email: true, inApp: true }
+  [NotificationType.SYSTEM_ALERT]: { email: true, inApp: true },
+  [NotificationType.PRODUCT_UPDATE]: { email: true, inApp: true }
 };
 
 const LEGACY_PREFERENCE_ALIASES: Record<string, string[]> = {
@@ -55,7 +56,7 @@ const LEGACY_PREFERENCE_ALIASES: Record<string, string[]> = {
     NotificationType.WEEKLY_SUMMARY
   ],
   'product-updates': [
-    NotificationType.LEARNING_INSIGHT
+    NotificationType.PRODUCT_UPDATE
   ]
 };
 
