@@ -35,6 +35,8 @@ if (!isRealDatabaseConfigured) {
     product_updates: [],
     product_update_broadcast_jobs: [],
     product_update_deliveries: [],
+    manual_user_broadcasts: [],
+    manual_user_broadcast_deliveries: [],
     support_requests: [],
     recovery_lifecycle_logs: [],
     detection_results: [],

@@ -68,6 +68,7 @@ import onboardingRoutes from './routes/onboardingRoutes';
 import paymentRoutes from './routes/paymentRoutes';
 import supportRoutes from './routes/supportRoutes';
 import productUpdateRoutes from './routes/productUpdateRoutes';
+import manualUserBroadcastRoutes from './routes/manualUserBroadcastRoutes';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -97,6 +98,7 @@ import scheduledSyncJob from './jobs/scheduledSyncJob';
 import { schedulerService } from './services/schedulerService';
 import { ensureAgent10NotificationSchema } from './services/agent10NotificationSchemaService';
 import productUpdateService from './services/productUpdateService';
+import manualUserBroadcastService from './services/manualUserBroadcastService';
 
 const app = express();
 const server = createServer(app);
@@ -446,6 +448,9 @@ logger.info('Notification routes registered at /api/notifications');
 
 app.use('/api/product-updates', productUpdateRoutes);
 logger.info('Product update routes registered at /api/product-updates');
+
+app.use('/api/admin/user-broadcasts', manualUserBroadcastRoutes);
+logger.info('Manual user broadcast admin routes registered at /api/admin/user-broadcasts');
 
 app.use('/api/learning', learningRoutes);
 logger.info('Learning routes registered at /api/learning');
@@ -847,6 +852,19 @@ function startProductUpdateBroadcastRecovery(): void {
     });
 }
 
+function startManualUserBroadcastRecovery(): void {
+  manualUserBroadcastService.resumeSendingBroadcasts()
+    .then((result) => {
+      logger.info('Manual user broadcast recovery completed after API boot', result);
+    })
+    .catch((error: any) => {
+      logger.warn('Manual user broadcast recovery skipped or failed after API boot', {
+        error: error?.message || String(error),
+        note: 'Server remains live; this usually means migration 108 has not run yet or the database is temporarily unavailable'
+      });
+    });
+}
+
 async function startServer(): Promise<void> {
   if (process.env.NODE_ENV === 'test') {
     return;
@@ -864,6 +882,7 @@ async function startServer(): Promise<void> {
 
     setImmediate(startAgent10NotificationSchemaCheck);
     setImmediate(startProductUpdateBroadcastRecovery);
+    setImmediate(startManualUserBroadcastRecovery);
     setImmediate(startBackgroundJobs);
   });
 }

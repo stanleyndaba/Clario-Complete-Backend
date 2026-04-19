@@ -52,6 +52,7 @@ const TENANT_EXEMPT_PATHS = [
     '/api/admin/revenue',
     '/api/admin/users',
     '/api/admin/queue',
+    '/api/admin/user-broadcasts',
 ];
 
 /**
