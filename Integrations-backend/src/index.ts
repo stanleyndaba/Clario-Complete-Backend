@@ -26,6 +26,7 @@ import { warnIfAgent7UnpaidFilingOverrideEnabledOnBoot } from './services/agent7
 // Import middleware
 import { userIdMiddleware } from './middleware/userIdMiddleware';
 import { tenantMiddleware } from './middleware/tenantMiddleware';
+import { requirePlatformAdmin } from './middleware/platformAdminMiddleware';
 
 // Import routes
 import amazonRoutes from './routes/amazonRoutes';
@@ -470,6 +471,7 @@ logger.info('Store routes registered at /api/v1/stores');
 
 // Admin revenue routes (internal metrics)
 import adminRevenueRoutes from './routes/adminRevenueRoutes';
+app.use('/api/admin', requirePlatformAdmin);
 app.use('/api/admin/revenue', adminRevenueRoutes);
 logger.info('Admin revenue routes registered at /api/admin/revenue');
 
