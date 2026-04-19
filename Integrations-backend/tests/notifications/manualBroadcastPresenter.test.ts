@@ -15,8 +15,10 @@ describe('manual user broadcast email presenter', () => {
     expect(template.view.email_highlights).toEqual([]);
     expect(template.view.action_label).toBeNull();
     expect(template.view.action_url).toBeNull();
-    expect(template.html).toContain('From Margin');
+    expect(template.html).toContain('Margin');
+    expect(template.html).toContain('Margin Team');
     expect(template.html).toContain('This is a direct account message from Margin.');
+    expect(template.html).not.toContain('background:#0b0b0b');
     expect(template.html).not.toContain('Key notes');
     expect(template.html).not.toContain('undefined');
   });
@@ -37,6 +39,9 @@ describe('manual user broadcast email presenter', () => {
     expect(template.view.action_label).toBe('Open Margin');
     expect(template.html).toContain('Key notes');
     expect(template.html).toContain('Open Margin');
+    expect(template.html).toContain('Next step');
+    expect(template.html).not.toContain('display:inline-block; background:#111827');
     expect(template.text).toContain('- Monitoring is running');
+    expect(template.text).toContain('Margin Team');
   });
 });
