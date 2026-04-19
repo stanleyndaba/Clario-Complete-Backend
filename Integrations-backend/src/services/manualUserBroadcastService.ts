@@ -430,7 +430,7 @@ export class ManualUserBroadcastService {
           if (!claimed) continue;
         }
 
-        await this.emailService.sendEmail({
+        const sendResult = await this.emailService.sendEmail({
           to: recipient.email,
           subject: template.subject,
           html: template.html,
@@ -438,14 +438,29 @@ export class ManualUserBroadcastService {
         });
 
         sent += 1;
+        const sentAt = new Date().toISOString();
         await supabaseAdmin
           .from('manual_user_broadcast_deliveries')
           .update({
             status: 'sent',
             error: null,
-            sent_at: new Date().toISOString()
+            sent_at: sentAt
           })
           .eq('id', deliveryId);
+
+        if (sendResult.providerMessageId) {
+          try {
+            await supabaseAdmin
+              .from('manual_user_broadcast_deliveries')
+              .update({
+                provider_message_id: sendResult.providerMessageId,
+                last_event_at: sentAt
+              })
+              .eq('id', deliveryId);
+          } catch {
+            // Provider tracking is useful, but must never block the primary delivery state.
+          }
+        }
       } catch (error) {
         failed += 1;
         await supabaseAdmin

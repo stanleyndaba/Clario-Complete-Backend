@@ -69,6 +69,7 @@ import paymentRoutes from './routes/paymentRoutes';
 import supportRoutes from './routes/supportRoutes';
 import productUpdateRoutes from './routes/productUpdateRoutes';
 import manualUserBroadcastRoutes from './routes/manualUserBroadcastRoutes';
+import resendWebhookRoutes from './routes/resendWebhookRoutes';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -232,7 +233,14 @@ import { generalRateLimiter, authRateLimiter } from './security/rateLimiter';
 app.use(generalRateLimiter);
 
 // Body parsing middleware
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({
+  limit: '10mb',
+  verify: (req: any, _res, buf) => {
+    if (req.originalUrl?.startsWith('/api/webhooks/resend')) {
+      req.rawBody = buf.toString('utf8');
+    }
+  }
+}));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Cookie parsing middleware (required for cookie-based auth)
 app.use(cookieParser());
@@ -260,6 +268,8 @@ app.use(tenantMiddleware);
 app.use('/', healthRoutes);
 app.use('/api/webhooks/amazon/notifications', amazonNotificationWebhookRouter);
 logger.info('Amazon notification webhook routes registered at /api/webhooks/amazon/notifications');
+app.use('/api/webhooks/resend', resendWebhookRoutes);
+logger.info('Resend webhook routes registered at /api/webhooks/resend');
 
 // Root health check (for Render)
 app.get('/', (_, res) => {

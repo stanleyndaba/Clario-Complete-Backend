@@ -33,6 +33,7 @@ const PUBLIC_PATH_PREFIXES = [
   '/api/amazon/callback', // OAuth callbacks
   '/api/v1/integrations/amazon/auth', // Amazon OAuth
   '/api/webhooks/amazon/notifications', // Amazon SNS/webhook intake
+  '/api/webhooks/resend', // Resend email delivery webhooks
   '/api/v1/integrations/gmail/callback',  // Gmail OAuth callback
   '/api/v1/integrations/gmail/auth',  // Gmail OAuth
   '/api/v1/integrations/outlook/callback', // Outlook OAuth callback

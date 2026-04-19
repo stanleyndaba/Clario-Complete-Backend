@@ -35,6 +35,7 @@ const TENANT_EXEMPT_PATHS = [
     '/api/integrations/amazon/diagnose/live',
     '/api/integrations/amazon/diagnose/seller-central-readiness',
     '/api/webhooks/amazon/notifications',
+    '/api/webhooks/resend',
     '/api/auth',
     '/api/amazon/callback',
     '/api/v1/integrations/amazon/auth',

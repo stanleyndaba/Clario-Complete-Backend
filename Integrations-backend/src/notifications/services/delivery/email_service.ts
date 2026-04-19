@@ -20,6 +20,11 @@ export interface EmailTemplate {
   text: string;
 }
 
+export interface EmailSendResult {
+  provider: 'resend';
+  providerMessageId: string | null;
+}
+
 type EmailEnv = Record<string, string | undefined>;
 
 export function resolveEmailConfig(env: EmailEnv = process.env): EmailConfig {
@@ -27,8 +32,8 @@ export function resolveEmailConfig(env: EmailEnv = process.env): EmailConfig {
     provider: 'resend',
     apiKey: env.RESEND_API_KEY || '',
     fromEmail: env.EMAIL_FROM_EMAIL || 'notifications@margin-finance.com',
-    fromName: env.EMAIL_FROM_NAME || 'Margin Notifications',
-    replyTo: env.EMAIL_REPLY_TO
+    fromName: env.EMAIL_FROM_NAME || 'Margin',
+    replyTo: env.EMAIL_REPLY_TO || 'support@margin-finance.com'
   };
 }
 
@@ -107,13 +112,13 @@ export class EmailService {
     html: string;
     text: string;
     replyTo?: string;
-  }): Promise<void> {
+  }): Promise<EmailSendResult> {
     try {
       if (!this.isInitialized) {
         await this.initialize();
       }
 
-      await this.sendViaResend(emailData);
+      return await this.sendViaResend(emailData);
     } catch (error) {
       logger.error('Error sending email:', error);
       throw error;
@@ -129,7 +134,7 @@ export class EmailService {
     html: string;
     text: string;
     replyTo?: string;
-  }): Promise<void> {
+  }): Promise<EmailSendResult> {
     if (!this.resend) {
       throw new Error('Resend client not initialized');
     }
@@ -150,6 +155,10 @@ export class EmailService {
       }
 
       logger.info('Email sent via Resend', { to: emailData.to, subject: emailData.subject, id: data?.id });
+      return {
+        provider: 'resend',
+        providerMessageId: data?.id || null
+      };
     } catch (error) {
       logger.error('Resend catch error:', error);
       throw error;

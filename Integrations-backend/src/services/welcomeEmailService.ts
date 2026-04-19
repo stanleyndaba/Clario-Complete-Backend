@@ -38,7 +38,10 @@ function isMissingWelcomeEmailSchema(error: any): boolean {
     error?.code === '42703' ||
     message.includes('welcome_email_attempted_at') ||
     message.includes('welcome_email_sent_at') ||
-    message.includes('welcome_email_last_error')
+    message.includes('welcome_email_last_error') ||
+    message.includes('welcome_email_provider_message_id') ||
+    message.includes('welcome_email_delivery_status') ||
+    message.includes('welcome_email_last_event_at')
   );
 }
 
@@ -50,57 +53,38 @@ function buildAppUrl(tenantSlug?: string | null, path = ''): string {
   return `${baseUrl}/app`;
 }
 
-function buildWelcomeEmail(
+export function buildWelcomeEmail(
   input: WorkspaceWelcomeEmailInput,
   setupState: WelcomeSetupState
 ): { subject: string; html: string; text: string } {
   const workspaceName = input.tenantName?.trim() || 'your Margin workspace';
-  const workspaceUrl = buildAppUrl(input.tenantSlug);
-  const connectAmazonUrl = buildAppUrl(input.tenantSlug, '/connect-amazon');
-  const dataUploadUrl = buildAppUrl(input.tenantSlug, '/data-upload');
-  const primaryCta = !setupState.reliable
-    ? { label: 'Open Margin', url: workspaceUrl }
-    : setupState.amazonConnected
-      ? { label: 'Upload FBA Data', url: dataUploadUrl }
-      : { label: 'Connect Amazon', url: connectAmazonUrl };
-  const secondaryCta = !setupState.reliable
-    ? null
-    : setupState.amazonConnected
-      ? { label: 'Open Margin', url: workspaceUrl }
-      : { label: 'Upload FBA Data', url: dataUploadUrl };
   const safeWorkspaceName = escapeHtml(workspaceName);
-  const safePrimaryUrl = escapeHtml(primaryCta.url);
-  const safeSecondaryUrl = secondaryCta ? escapeHtml(secondaryCta.url) : null;
-
   const subject = 'Welcome to Margin';
-  const summary = 'Your workspace is ready. To start your recovery audit, choose one of the setup options below.';
-  const amazonSectionText = setupState.amazonConnected && setupState.reliable
-    ? 'Your Amazon connection is already detected. Margin can use that connection to sync seller data, audit FBA activity, and identify eligible reimbursement opportunities.'
-    : 'This is the fastest and most complete way to get started. Margin connects directly to your Amazon seller data so it can begin syncing, auditing, and identifying eligible reimbursement opportunities.';
+  const intro = 'Your workspace is ready.';
+  const setupLine = setupState.amazonConnected && setupState.reliable
+    ? 'Your Amazon connection is already in place. Margin will use that connection to keep the workspace current as account activity changes.'
+    : 'When you are ready, start with one setup path: connect Amazon for the most complete setup, or upload FBA reports if you prefer to begin manually.';
   const text = [
     'Welcome to Margin',
     '=================',
     '',
-    summary,
+    intro,
     '',
     `Workspace: ${workspaceName}`,
     '',
-    'Setup option 1: Connect Amazon via SP-API',
-    amazonSectionText,
+    'Margin is here to give your Amazon operations a calmer place to see what needs attention, what is already moving, and what requires action next.',
     '',
-    'Setup option 2: Upload your FBA data',
-    'If you prefer to start manually, you can upload your FBA files through Data Uploads. Margin will use that data to begin reviewing your account for missed recoveries and what Amazon may owe you.',
+    setupLine,
     '',
-    'Current audit coverage:',
-    'Margin currently focuses on seven high-priority reimbursement detection categories first, with additional categories rolling out this month.',
+    'A good first step:',
+    '- Connect Amazon SP-API if you want the workspace to stay current automatically.',
+    '- Upload FBA reports if you would rather start with files you already have.',
     '',
-    'What happens next:',
-    'Once your data is connected or uploaded, Margin begins reviewing your FBA activity, identifying recovery opportunities, and preparing the next steps as cases move forward.',
+    'You do not need to solve everything today. Start with the setup path that is easiest for you. Margin will organize the next steps from there.',
     '',
-    `${primaryCta.label}: ${primaryCta.url}`,
-    ...(secondaryCta ? [`${secondaryCta.label}: ${secondaryCta.url}`] : []),
+    'If anything feels unclear, reply to this email and we will help.',
     '',
-    'This is an automated account email from Margin.'
+    'Margin Team'
   ].join('\n');
 
   const html = `
@@ -111,85 +95,60 @@ function buildWelcomeEmail(
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>${escapeHtml(subject)}</title>
       </head>
-      <body style="margin:0; padding:0; background:#f5f5f3; color:#171717; font-family:Arial, sans-serif;">
-        <div style="max-width:620px; margin:0 auto; padding:28px 18px;">
-          <div style="background:#0b0b0b; color:#ffffff; border-radius:18px; padding:28px;">
-            <div style="font-size:11px; letter-spacing:0.12em; text-transform:uppercase; color:#a3a3a3; font-weight:700;">
-              Margin workspace
+      <body style="margin:0; padding:0; background:#ffffff; color:#171717; font-family:Arial, Helvetica, sans-serif;">
+        <div style="display:none; max-height:0; overflow:hidden; opacity:0;">
+          ${escapeHtml(intro)}
+        </div>
+        <div style="max-width:600px; margin:0 auto; padding:36px 24px 40px 24px;">
+          <div style="border-bottom:1px solid #e5e5e5; padding-bottom:20px;">
+            <div style="font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#111827; font-weight:700;">
+              Margin
             </div>
-            <h1 style="margin:12px 0 0 0; font-size:30px; line-height:1.05; font-weight:700;">
-              Welcome to Margin.
+            <h1 style="margin:28px 0 0 0; font-size:28px; line-height:1.18; font-weight:600; color:#111827;">
+              Welcome to Margin
             </h1>
-            <p style="margin:16px 0 0 0; color:#d4d4d4; font-size:15px; line-height:1.7;">
-              ${escapeHtml(summary)}
+            <p style="margin:14px 0 0 0; color:#404040; font-size:16px; line-height:1.7;">
+              ${escapeHtml(intro)}
             </p>
           </div>
 
-          <div style="background:#ffffff; border-radius:18px; padding:24px; margin-top:14px; border:1px solid #e7e5e4;">
-            <div style="font-size:12px; color:#737373; font-weight:700; text-transform:uppercase; letter-spacing:0.06em;">
-              Workspace
-            </div>
-            <p style="margin:8px 0 0 0; font-size:16px; color:#171717;">
-              ${safeWorkspaceName}
+          <div style="padding-top:24px;">
+            <p style="margin:0; color:#525252; font-size:14px; line-height:1.7;">
+              Workspace: <strong style="color:#171717; font-weight:600;">${safeWorkspaceName}</strong>
             </p>
 
-            <div style="margin-top:22px; padding:18px; background:#f7f7f5; border-radius:14px; border-left:4px solid #111827;">
-              <div style="font-size:12px; color:#525252; font-weight:700; text-transform:uppercase; letter-spacing:0.06em;">
-                Option 1
-              </div>
-              <h2 style="margin:8px 0 0 0; color:#171717; font-size:18px; line-height:1.25;">
-                Connect Amazon via SP-API
-              </h2>
-              <p style="margin:10px 0 0 0; color:#262626; line-height:1.65; font-size:14px;">
-                ${escapeHtml(amazonSectionText)}
-              </p>
-            </div>
-
-            <div style="margin-top:14px; padding:18px; background:#f7f7f5; border-radius:14px; border-left:4px solid #737373;">
-              <div style="font-size:12px; color:#525252; font-weight:700; text-transform:uppercase; letter-spacing:0.06em;">
-                Option 2
-              </div>
-              <h2 style="margin:8px 0 0 0; color:#171717; font-size:18px; line-height:1.25;">
-                Upload your FBA data
-              </h2>
-              <p style="margin:10px 0 0 0; color:#262626; line-height:1.65; font-size:14px;">
-                If you prefer to start manually, you can upload your FBA files through Data Uploads. Margin will use that data to begin reviewing your account for missed recoveries and what Amazon may owe you.
-              </p>
-            </div>
-
-            <div style="margin-top:14px; padding:16px; background:#fff8e6; border-radius:14px; border:1px solid #fde68a;">
-              <div style="font-size:12px; color:#92400e; font-weight:700; text-transform:uppercase; letter-spacing:0.06em;">
-                Current audit coverage
-              </div>
-              <p style="margin:8px 0 0 0; color:#78350f; line-height:1.6; font-size:14px;">
-                Margin currently focuses on seven high-priority reimbursement detection categories first, with additional categories rolling out this month.
-              </p>
-            </div>
-
-            <p style="margin:22px 0 0 0; color:#525252; font-size:14px; line-height:1.6;">
-              Once your data is connected or uploaded, Margin begins reviewing your FBA activity, identifying recovery opportunities, and preparing the next steps as cases move forward.
+            <p style="margin:20px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
+              Margin is here to give your Amazon operations a calmer place to see what needs attention,
+              what is already moving, and what requires action next.
             </p>
 
-            <div style="margin-top:24px; display:block;">
-              <a href="${safePrimaryUrl}" style="display:inline-block; background:#111827; color:#ffffff; text-decoration:none; padding:12px 18px; border-radius:10px; font-weight:700; font-size:14px;">
-                ${escapeHtml(primaryCta.label)}
-              </a>
-              ${secondaryCta && safeSecondaryUrl ? `
-                <a href="${safeSecondaryUrl}" style="display:inline-block; margin-left:10px; color:#111827; text-decoration:none; padding:11px 17px; border-radius:10px; border:1px solid #d6d3d1; font-weight:700; font-size:14px;">
-                  ${escapeHtml(secondaryCta.label)}
-                </a>
-              ` : ''}
+            <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
+              ${escapeHtml(setupLine)}
+            </p>
+
+            <div style="margin-top:24px; padding-top:20px; border-top:1px solid #eeeeee;">
+              <p style="margin:0; color:#111827; font-size:14px; line-height:1.7; font-weight:600;">
+                A good first step
+              </p>
+              <ol style="margin:12px 0 0 20px; padding:0; color:#333333; font-size:14px; line-height:1.8;">
+                <li style="margin-bottom:8px;">Connect Amazon SP-API if you want the workspace to stay current automatically.</li>
+                <li>Upload FBA reports if you would rather start with files you already have.</li>
+              </ol>
             </div>
 
-            <p style="margin:18px 0 0 0; color:#737373; font-size:12px; line-height:1.5;">
-              If the button does not work, copy and paste this link:<br>
-              <a href="${safePrimaryUrl}" style="color:#111827; word-break:break-all;">${safePrimaryUrl}</a>
+            <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
+              You do not need to solve everything today. Start with the setup path that is easiest for you.
+              Margin will organize the next steps from there.
+            </p>
+
+            <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
+              If anything feels unclear, reply to this email and we will help.
+            </p>
+
+            <p style="margin:28px 0 0 0; color:#171717; font-size:15px; line-height:1.7;">
+              Margin Team
             </p>
           </div>
-
-          <p style="margin:18px 0 0 0; text-align:center; color:#737373; font-size:12px;">
-            This is an automated account email from Margin.
-          </p>
         </div>
       </body>
     </html>
@@ -286,17 +245,19 @@ class WelcomeEmailService {
 
       const setupState = await this.resolveAmazonSetupState(input.userId, input.tenantId);
       const emailTemplate = buildWelcomeEmail(input, setupState);
-      await this.emailService.sendEmail({
+      const sendResult = await this.emailService.sendEmail({
         to: email,
         subject: emailTemplate.subject,
         html: emailTemplate.html,
-        text: emailTemplate.text
+        text: emailTemplate.text,
+        replyTo: 'support@margin-finance.com'
       });
 
+      const sentAt = new Date().toISOString();
       const { error: sentError } = await supabaseAdmin
         .from('users')
         .update({
-          welcome_email_sent_at: new Date().toISOString(),
+          welcome_email_sent_at: sentAt,
           welcome_email_last_error: null
         })
         .eq('id', input.userId);
@@ -305,9 +266,31 @@ class WelcomeEmailService {
         throw new Error(`WELCOME_EMAIL_SENT_MARK_FAILED:${sentError.message}`);
       }
 
+      if (sendResult.providerMessageId) {
+        try {
+          await supabaseAdmin
+            .from('users')
+            .update({
+              welcome_email_provider_message_id: sendResult.providerMessageId,
+              welcome_email_delivery_status: 'sent_to_provider',
+              welcome_email_last_event_at: sentAt
+            })
+            .eq('id', input.userId);
+        } catch (providerWriteError: any) {
+          if (!isMissingWelcomeEmailSchema(providerWriteError)) {
+            logger.warn('[WELCOME EMAIL] Provider tracking write failed', {
+              userId: input.userId,
+              tenantId: input.tenantId,
+              error: providerWriteError?.message || String(providerWriteError)
+            });
+          }
+        }
+      }
+
       logger.info('[WELCOME EMAIL] Sent workspace welcome email', {
         userId: input.userId,
-        tenantId: input.tenantId
+        tenantId: input.tenantId,
+        providerMessageId: sendResult.providerMessageId || null
       });
     } catch (error) {
       const lastError = truncateError(error);

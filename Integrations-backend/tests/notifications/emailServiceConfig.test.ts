@@ -15,6 +15,7 @@ describe('resolveEmailConfig', () => {
     expect(config.apiKey).toBe('resend-key');
     expect(config.fromEmail).toBe('notifications@margin-finance.com');
     expect(config.fromName).toBe('Margin');
+    expect(config.replyTo).toBe('support@margin-finance.com');
   });
 
   it('ignores legacy provider settings and still resolves Resend', () => {
@@ -27,6 +28,7 @@ describe('resolveEmailConfig', () => {
 
     expect(config.provider).toBe('resend');
     expect(config.apiKey).toBe('resend-key');
+    expect(config.replyTo).toBe('support@margin-finance.com');
   });
 
   it('does not fall back to generic email keys', () => {
