@@ -52,6 +52,9 @@ CREATE TABLE IF NOT EXISTS product_update_broadcast_jobs (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_product_update_broadcast_jobs_update
   ON product_update_broadcast_jobs(product_update_id);
 
+CREATE INDEX IF NOT EXISTS idx_product_update_broadcast_jobs_recovery
+  ON product_update_broadcast_jobs(status, started_at, created_at);
+
 CREATE TABLE IF NOT EXISTS product_update_deliveries (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   product_update_id UUID NOT NULL REFERENCES product_updates(id) ON DELETE CASCADE,

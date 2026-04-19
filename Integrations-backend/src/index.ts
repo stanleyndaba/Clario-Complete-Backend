@@ -95,6 +95,7 @@ import weeklySummaryWorker from './workers/weeklySummaryWorker';
 import scheduledSyncJob from './jobs/scheduledSyncJob';
 import { schedulerService } from './services/schedulerService';
 import { ensureAgent10NotificationSchema } from './services/agent10NotificationSchemaService';
+import productUpdateService from './services/productUpdateService';
 
 const app = express();
 const server = createServer(app);
@@ -812,6 +813,38 @@ function startAgent10NotificationSchemaCheck(): void {
     });
 }
 
+function startProductUpdateBroadcastRecovery(): void {
+  if (process.env.ENABLE_PRODUCT_UPDATE_BROADCAST_RECOVERY === 'false') {
+    logger.info('Product update broadcast recovery disabled', {
+      reason: 'ENABLE_PRODUCT_UPDATE_BROADCAST_RECOVERY=false'
+    });
+    return;
+  }
+
+  const staleRunningMinutes = Number.parseInt(
+    process.env.PRODUCT_UPDATE_BROADCAST_STALE_MINUTES || '15',
+    10
+  );
+  const limit = Number.parseInt(
+    process.env.PRODUCT_UPDATE_BROADCAST_RECOVERY_LIMIT || '25',
+    10
+  );
+
+  productUpdateService.resumeQueuedBroadcastJobs({
+    staleRunningMinutes: Number.isFinite(staleRunningMinutes) ? staleRunningMinutes : 15,
+    limit: Number.isFinite(limit) ? limit : 25
+  })
+    .then((result) => {
+      logger.info('Product update broadcast recovery completed after API boot', result);
+    })
+    .catch((error: any) => {
+      logger.warn('Product update broadcast recovery skipped or failed after API boot', {
+        error: error?.message || String(error),
+        note: 'Server remains live; this usually means the product update migration has not run yet or the database is temporarily unavailable'
+      });
+    });
+}
+
 async function startServer(): Promise<void> {
   if (process.env.NODE_ENV === 'test') {
     return;
@@ -828,6 +861,7 @@ async function startServer(): Promise<void> {
     });
 
     setImmediate(startAgent10NotificationSchemaCheck);
+    setImmediate(startProductUpdateBroadcastRecovery);
     setImmediate(startBackgroundJobs);
   });
 }

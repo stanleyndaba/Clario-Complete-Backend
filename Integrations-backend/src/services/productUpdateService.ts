@@ -96,6 +96,58 @@ function requestedDeliveryChannels(update: any): DeliveryChannel[] {
 }
 
 class ProductUpdateService {
+  async resumeQueuedBroadcastJobs(options?: { staleRunningMinutes?: number; limit?: number }) {
+    const staleRunningMinutes = Number.isFinite(options?.staleRunningMinutes)
+      ? Math.max(1, Number(options?.staleRunningMinutes))
+      : 15;
+    const limit = Number.isFinite(options?.limit)
+      ? Math.max(1, Math.min(100, Number(options?.limit)))
+      : 25;
+    const staleCutoff = new Date(Date.now() - staleRunningMinutes * 60_000).toISOString();
+
+    const { data: requeuedRows, error: requeueError } = await supabaseAdmin
+      .from('product_update_broadcast_jobs')
+      .update({
+        status: 'queued',
+        error: `Recovered stale running broadcast after ${staleRunningMinutes} minutes`
+      })
+      .eq('status', 'running')
+      .lt('started_at', staleCutoff)
+      .is('completed_at', null)
+      .select('id');
+
+    if (requeueError) {
+      throw new Error(`PRODUCT_UPDATE_BROADCAST_REQUEUE_FAILED:${requeueError.message}`);
+    }
+
+    const { data: queuedRows, error: queuedError } = await supabaseAdmin
+      .from('product_update_broadcast_jobs')
+      .select('id, product_update_id, status, created_at')
+      .eq('status', 'queued')
+      .order('created_at', { ascending: true })
+      .limit(limit);
+
+    if (queuedError) {
+      throw new Error(`PRODUCT_UPDATE_BROADCAST_RESUME_LOOKUP_FAILED:${queuedError.message}`);
+    }
+
+    const jobs = queuedRows || [];
+    for (const job of jobs) {
+      this.processBroadcastJobSoon(job.id);
+    }
+
+    logger.info('[PRODUCT UPDATES] Broadcast recovery sweep dispatched jobs', {
+      staleRunningMinutes,
+      requeued: requeuedRows?.length || 0,
+      dispatched: jobs.length
+    });
+
+    return {
+      requeued: requeuedRows?.length || 0,
+      dispatched: jobs.length
+    };
+  }
+
   async listPublishedUpdates() {
     const { data, error } = await supabaseAdmin
       .from('product_updates')
@@ -308,12 +360,16 @@ class ProductUpdateService {
         error: null
       })
       .eq('id', jobId)
-      .neq('status', 'completed')
+      .eq('status', 'queued')
       .select('*')
-      .single();
+      .maybeSingle();
 
     if (jobError || !job) {
-      throw new Error(`PRODUCT_UPDATE_JOB_START_FAILED:${jobError?.message || 'missing_job'}`);
+      logger.info('[PRODUCT UPDATES] Broadcast job was not claimable', {
+        jobId,
+        reason: jobError?.message || 'not_queued'
+      });
+      return;
     }
 
     try {
