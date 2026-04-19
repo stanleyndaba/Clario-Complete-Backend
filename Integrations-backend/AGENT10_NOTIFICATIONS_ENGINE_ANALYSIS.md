@@ -12,7 +12,7 @@
    - Event-driven architecture
 
 2. **Email Notifications**
-   - SendGrid/Postmark integration
+   - Resend integration
    - HTML email templates
 
 3. **Events to Handle:**
@@ -65,8 +65,8 @@ emitWorkflowPhaseEvent(
 **Status:** ✅ **IMPLEMENTED**
 
 **Features:**
-- ✅ SendGrid integration
-- ✅ Postmark support (placeholder)
+- ✅ Resend integration
+- ✅ Seller-facing email template generation
 - ✅ Email template generation
 - ✅ `sendNotification()` — Send notification via email
 - ✅ `sendEmail()` — Send custom email
@@ -83,8 +83,7 @@ async sendEmail(emailData: {
 ```
 
 **Configuration:**
-- `EMAIL_PROVIDER` — 'sendgrid' | 'postmark'
-- `EMAIL_API_KEY` — API key for email provider
+- `RESEND_API_KEY` — API key for Resend
 - `EMAIL_FROM_EMAIL` — From email address
 - `EMAIL_FROM_NAME` — From name
 
@@ -334,7 +333,7 @@ Agent 10 (Notifications Worker)
 
 **What Exists:**
 - ✅ WebSocket Service (Socket.IO)
-- ✅ Email Service (SendGrid/Postmark)
+- ✅ Email Service (Resend)
 - ✅ Notification Service (partially working)
 - ✅ Notification Model (database)
 - ✅ SSE Routes

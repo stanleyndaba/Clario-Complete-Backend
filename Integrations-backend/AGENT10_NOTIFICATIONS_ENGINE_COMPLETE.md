@@ -238,8 +238,8 @@ Agent 4 (Evidence Ingestion)
 
 2. **Email Notifications**
    - HTML email templates
-   - SendGrid/Postmark support
-   - Configurable via `EMAIL_PROVIDER` env var
+   - Resend support
+   - Configurable via `RESEND_API_KEY` env var
 
 3. **Automated Background Processing**
    - Worker runs every 2 minutes
@@ -304,8 +304,7 @@ notificationsWorker.stop();
 ENABLE_NOTIFICATIONS_WORKER=true  # Enable/disable worker
 
 # Email Service
-EMAIL_PROVIDER=sendgrid  # sendgrid | postmark
-EMAIL_API_KEY=your_api_key
+RESEND_API_KEY=your_resend_api_key
 EMAIL_FROM_EMAIL=notifications@yourdomain.com
 EMAIL_FROM_NAME=Your App Name
 ```

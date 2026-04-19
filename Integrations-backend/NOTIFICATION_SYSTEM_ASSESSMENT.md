@@ -15,7 +15,7 @@ This is the only thing that matters enough to interrupt a user's inbox. Everythi
 
 ## 📧 Final Email Strategy: Only 2 Emails
 
-We use **Resend** as our email provider (SendGrid will be configured later when properly established).
+We use **Resend** as our email provider.
 
 Only two events warrant an email — the two moments when **money moves in the user's favor:**
 
@@ -51,7 +51,7 @@ Only two events warrant an email — the two moments when **money moves in the u
 | 1 | Install Resend SDK: `npm install resend` | ❌ Not done |
 | 2 | Add `RESEND_API_KEY` to `.env` and Render | ❌ Not done |
 | 3 | Add `EMAIL_FROM` (e.g., `notifications@opside.io` or Resend-verified domain) | ❌ Not done |
-| 4 | Update `email_service.ts` to support `resend` as a provider (currently only supports `sendgrid` / `postmark`) | ❌ Not done |
+| 4 | Keep `email_service.ts` Resend-only and remove legacy provider fallbacks | ✅ Done |
 | 5 | Map `REFUND_APPROVED` and `FUNDS_DEPOSITED` types to branded Resend email templates | ❌ Not done |
 | 6 | Verify `EmailService.initialize()` is called on server startup | ❌ Not verified |
 | 7 | Test both emails with real data | ❌ Not done |
@@ -150,8 +150,8 @@ These events show a toast IF the user is online, but are lost forever if they're
 │         └──▶ Email delivery ❌ (not configured)              │
 │                    │                                         │
 │              email_service.ts                                │
-│              (SendGrid/Postmark — needs Resend support)      │
-│              ⚠️ No API key configured                        │
+│              (Resend-only delivery)                          │
+│              ⚠️ Requires RESEND_API_KEY                      │
 │                                                              │
 │  notificationsWorker.ts                                      │
 │  (Cron: every 2 min, processes queued notifications)         │
@@ -167,7 +167,7 @@ These events show a toast IF the user is online, but are lost forever if they're
 | [notificationHelper.ts](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/services/notificationHelper.ts) | Typed notification methods for all agents | ✅ Working |
 | [notification_service.ts](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/notifications/services/notification_service.ts) | Core CRUD + delivery dispatcher | ✅ Working |
 | [notificationsWorker.ts](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/workers/notificationsWorker.ts) | Cron processor (every 2 min) | ✅ Working |
-| [email_service.ts](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/notifications/services/delivery/email_service.ts) | Email sender (needs Resend integration) | ⚠️ Code exists for SendGrid/Postmark, needs Resend |
+| [email_service.ts](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/notifications/services/delivery/email_service.ts) | Email sender | ✅ Resend-only |
 | [notification.ts](file:///c:/Users/Student/Contacts/Clario-Complete-Backend/Integrations-backend/src/notifications/models/notification.ts) | Data model + Supabase CRUD | ✅ Working |
 
 ### Frontend Files
@@ -201,13 +201,11 @@ enum NotificationType {
 
 ### Gap 1: Email Provider Not Configured
 
-**Problem:** The `EmailService` class is fully coded (SendGrid integration with template generation), but no API key is configured. No emails are being sent. The codebase only supports `sendgrid` and `postmark`; **Resend is not yet integrated.**
+**Problem:** Email delivery requires a valid `RESEND_API_KEY`. If production still carries stale legacy email variables without `RESEND_API_KEY`, email delivery fails closed instead of falling back to another provider.
 
 **Impact:** The 2 most important emails (Claim Approved + Money Recovered) are not being sent.
 
 **Fix Required:**
-- Install `resend` npm package
-- Add `resend` as a provider in `email_service.ts`
 - Configure `RESEND_API_KEY` and `EMAIL_FROM` in `.env` / Render
 - Build 2 branded email templates (Claim Approved + Money Recovered)
 - Verify `EmailService.initialize()` is called on startup

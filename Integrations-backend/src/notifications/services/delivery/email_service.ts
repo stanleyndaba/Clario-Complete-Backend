@@ -1,6 +1,5 @@
 import { getLogger } from '../../../utils/logger';
 import Notification from '../../models/notification';
-import sgMail from '@sendgrid/mail';
 import { Resend } from 'resend';
 import { supabaseAdmin } from '../../../database/supabaseClient';
 import { buildNotificationEmailViewModel } from './email_presenter';
@@ -8,7 +7,7 @@ import { buildNotificationEmailViewModel } from './email_presenter';
 const logger = getLogger('EmailService');
 
 export interface EmailConfig {
-  provider: 'sendgrid' | 'postmark' | 'resend';
+  provider: 'resend';
   apiKey: string;
   fromEmail: string;
   fromName: string;
@@ -21,28 +20,25 @@ export interface EmailTemplate {
   text: string;
 }
 
+type EmailEnv = Record<string, string | undefined>;
+
+export function resolveEmailConfig(env: EmailEnv = process.env): EmailConfig {
+  return {
+    provider: 'resend',
+    apiKey: env.RESEND_API_KEY || '',
+    fromEmail: env.EMAIL_FROM_EMAIL || 'notifications@margin-finance.com',
+    fromName: env.EMAIL_FROM_NAME || 'Margin Notifications',
+    replyTo: env.EMAIL_REPLY_TO
+  };
+}
+
 export class EmailService {
   private config: EmailConfig;
   private isInitialized: boolean = false;
   private resend: Resend | null = null;
 
   constructor() {
-    const provider = (process.env.EMAIL_PROVIDER as 'sendgrid' | 'postmark' | 'resend') || 'sendgrid';
-    let apiKey = process.env.EMAIL_API_KEY || '';
-
-    // Fallback to provider-specific keys if the generic one is missing
-    if (!apiKey) {
-      if (provider === 'sendgrid') apiKey = process.env.SENDGRID_API_KEY || '';
-      else if (provider === 'resend') apiKey = process.env.RESEND_API_KEY || '';
-    }
-
-    this.config = {
-      provider,
-      apiKey,
-      fromEmail: process.env.EMAIL_FROM_EMAIL || 'notifications@margin-finance.com',
-      fromName: process.env.EMAIL_FROM_NAME || 'Margin Notifications',
-      replyTo: process.env.EMAIL_REPLY_TO
-    };
+    this.config = resolveEmailConfig();
   }
 
   /**
@@ -51,24 +47,12 @@ export class EmailService {
   async initialize(): Promise<void> {
     try {
       if (!this.config.apiKey) {
-        throw new Error('EMAIL_API_KEY environment variable is required');
+        throw new Error('RESEND_API_KEY environment variable is required');
       }
 
-      if (this.config.provider === 'sendgrid') {
-        sgMail.setApiKey(this.config.apiKey);
-        this.isInitialized = true;
-        logger.info('Email service initialized with SendGrid');
-      } else if (this.config.provider === 'postmark') {
-        // Postmark initialization would go here
-        this.isInitialized = true;
-        logger.info('Email service initialized with Postmark');
-      } else if (this.config.provider === 'resend') {
-        this.resend = new Resend(this.config.apiKey);
-        this.isInitialized = true;
-        logger.info('Email service initialized with Resend');
-      } else {
-        throw new Error(`Unsupported email provider: ${this.config.provider}`);
-      }
+      this.resend = new Resend(this.config.apiKey);
+      this.isInitialized = true;
+      logger.info('Email service initialized with Resend');
     } catch (error) {
       logger.error('Failed to initialize email service:', error);
       throw error;
@@ -129,49 +113,10 @@ export class EmailService {
         await this.initialize();
       }
 
-      if (this.config.provider === 'sendgrid') {
-        await this.sendViaSendGrid(emailData);
-      } else if (this.config.provider === 'postmark') {
-        await this.sendViaPostmark(emailData);
-      } else if (this.config.provider === 'resend') {
-        await this.sendViaResend(emailData);
-      } else {
-        throw new Error(`Unsupported email provider: ${this.config.provider}`);
-      }
+      await this.sendViaResend(emailData);
     } catch (error) {
       logger.error('Error sending email:', error);
       throw error;
-    }
-  }
-
-  /**
-   * Send email via SendGrid
-   */
-  private async sendViaSendGrid(emailData: {
-    to: string;
-    subject: string;
-    html: string;
-    text: string;
-    replyTo?: string;
-  }): Promise<void> {
-    const msg = {
-      to: emailData.to,
-      from: {
-        email: this.config.fromEmail,
-        name: this.config.fromName
-      },
-      subject: emailData.subject,
-      html: emailData.html,
-      text: emailData.text,
-      replyTo: emailData.replyTo || this.config.replyTo
-    };
-
-    try {
-      await sgMail.send(msg);
-      logger.info('Email sent via SendGrid', { to: emailData.to, subject: emailData.subject });
-    } catch (error) {
-      logger.error('SendGrid error:', error);
-      throw new Error(`SendGrid error: ${error}`);
     }
   }
 
@@ -209,22 +154,6 @@ export class EmailService {
       logger.error('Resend catch error:', error);
       throw error;
     }
-  }
-
-  /**
-   * Send email via Postmark
-   */
-  private async sendViaPostmark(emailData: {
-    to: string;
-    subject: string;
-    html: string;
-    text: string;
-    replyTo?: string;
-  }): Promise<void> {
-    // TODO: Implement Postmark integration
-    // This would use the Postmark API client
-    logger.info('Postmark integration not yet implemented');
-    throw new Error('Postmark integration not yet implemented');
   }
 
   /**

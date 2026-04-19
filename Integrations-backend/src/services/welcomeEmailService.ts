@@ -8,6 +8,7 @@ interface WorkspaceWelcomeEmailInput {
   tenantId: string;
   tenantName?: string | null;
   tenantSlug?: string | null;
+  retryFailedOnly?: boolean;
 }
 
 interface WelcomeSetupState {
@@ -236,7 +237,7 @@ class WelcomeEmailService {
     try {
       const { data: user, error: loadError } = await supabaseAdmin
         .from('users')
-        .select('id, welcome_email_attempted_at, welcome_email_sent_at')
+        .select('id, welcome_email_attempted_at, welcome_email_sent_at, welcome_email_last_error')
         .eq('id', input.userId)
         .maybeSingle();
 
@@ -250,6 +251,10 @@ class WelcomeEmailService {
       }
 
       if (!user?.id || user.welcome_email_sent_at) {
+        return;
+      }
+
+      if (input.retryFailedOnly && !user.welcome_email_last_error) {
         return;
       }
 
@@ -300,7 +305,7 @@ class WelcomeEmailService {
         throw new Error(`WELCOME_EMAIL_SENT_MARK_FAILED:${sentError.message}`);
       }
 
-      logger.info('[WELCOME EMAIL] Sent login welcome email', {
+      logger.info('[WELCOME EMAIL] Sent workspace welcome email', {
         userId: input.userId,
         tenantId: input.tenantId
       });

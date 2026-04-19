@@ -35,13 +35,20 @@ router.post('/bootstrap', async (req, res) => {
       preferredTenantSlug: typeof req.body?.preferredTenantSlug === 'string' ? req.body.preferredTenantSlug : null
     });
 
+    const welcomeEmailPayload = {
+      userId: result.userId,
+      email: result.email,
+      tenantId: result.tenant.id,
+      tenantName: result.tenant.name,
+      tenantSlug: result.tenant.slug
+    };
+
     if (result.createdUser && result.createdTenant) {
+      void welcomeEmailService.sendWorkspaceCreatedWelcomeEmailOnce(welcomeEmailPayload);
+    } else {
       void welcomeEmailService.sendWorkspaceCreatedWelcomeEmailOnce({
-        userId: result.userId,
-        email: result.email,
-        tenantId: result.tenant.id,
-        tenantName: result.tenant.name,
-        tenantSlug: result.tenant.slug
+        ...welcomeEmailPayload,
+        retryFailedOnly: true
       });
     }
 

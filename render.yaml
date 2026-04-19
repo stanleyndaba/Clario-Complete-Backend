@@ -101,11 +101,10 @@ services:
       - key: GMAIL_REDIRECT_URI
         sync: false
       - key: PYTHON_API_URL
-        value: "https://python-api-7.onrender.com"
+        value: "https://clario-complete-backend-6ca7.onrender.com"
         sync: false
       - key: USE_MOCK_SPAPI
         value: "true"
         sync: false
     healthCheckPath: /health
     plan: free  # Start with free tier
-

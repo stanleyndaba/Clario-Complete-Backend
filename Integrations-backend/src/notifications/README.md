@@ -8,7 +8,7 @@ A complete, production-ready notifications system for the Margin Integrations Ba
 - **Priority-based Processing**: Urgent, high, normal, and low priority levels
 - **Background Job Processing**: BullMQ-powered async notification delivery
 - **Real-time Updates**: WebSocket-based instant notifications
-- **Email Integration**: SendGrid/Postmark support with beautiful HTML templates
+- **Email Integration**: Resend delivery with seller-facing HTML templates
 - **Database Storage**: Supabase/PostgreSQL with Row Level Security (RLS)
 - **TypeScript**: Full type safety and modern development experience
 - **Production Ready**: Error handling, logging, and monitoring
@@ -64,10 +64,9 @@ REDIS_PASSWORD=
 REDIS_DB=0
 
 # Email Configuration
-EMAIL_PROVIDER=sendgrid  # or 'postmark'
-EMAIL_API_KEY=your_email_api_key
-EMAIL_FROM_EMAIL=notifications@yourdomain.com
-EMAIL_FROM_NAME=Your App Name
+RESEND_API_KEY=your_resend_api_key
+EMAIL_FROM_EMAIL=notifications@margin-finance.com
+EMAIL_FROM_NAME=Margin
 EMAIL_REPLY_TO=support@yourdomain.com
 
 # Frontend URL (for WebSocket CORS and email links)
