@@ -4,8 +4,13 @@ import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifi
 import { ensureAuthenticatedUserWorkspace } from '../services/userWorkspaceBootstrap';
 import { normalizeResolvedAmazonSellerId } from '../utils/sellerIdentity';
 import { welcomeEmailService } from '../services/welcomeEmailService';
+import type { BootstrapWorkspaceResult } from '../services/userWorkspaceBootstrap';
 
 const router = Router();
+
+export function shouldSendFreshWorkspaceWelcomeEmail(result: Pick<BootstrapWorkspaceResult, 'createdTenant'>): boolean {
+  return result.createdTenant;
+}
 
 router.post('/bootstrap', async (req, res) => {
   try {
@@ -43,7 +48,7 @@ router.post('/bootstrap', async (req, res) => {
       tenantSlug: result.tenant.slug
     };
 
-    if (result.createdUser && result.createdTenant) {
+    if (shouldSendFreshWorkspaceWelcomeEmail(result)) {
       void welcomeEmailService.sendWorkspaceCreatedWelcomeEmailOnce(welcomeEmailPayload);
     } else {
       void welcomeEmailService.sendWorkspaceCreatedWelcomeEmailOnce({

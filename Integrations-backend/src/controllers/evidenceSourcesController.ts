@@ -59,8 +59,8 @@ const OAUTH_URLS = {
     auth: 'https://secure.na1.adobesign.com/public/oauth/v2',
     token: 'https://api.na1.adobesign.com/oauth/v2/token',
     scopes: [
-      'agreement_read',
-      'agreement_write'
+      'user_login:self',
+      'agreement_read:self'
     ]
   },
   slack: {
@@ -82,6 +82,8 @@ function getProviderRedirectUri(provider: string, req: Request): string {
     configuredRedirectUri = config.SLACK_REDIRECT_URI || process.env.SLACK_REDIRECT_URI || '';
   } else if (provider === 'dropbox') {
     configuredRedirectUri = config.DROPBOX_REDIRECT_URI || process.env.DROPBOX_REDIRECT_URI || '';
+  } else if (provider === 'adobe_sign') {
+    configuredRedirectUri = config.ADOBESIGN_REDIRECT_URI || process.env.ADOBESIGN_REDIRECT_URI || '';
   }
   configuredRedirectUri = configuredRedirectUri.trim();
 
@@ -261,7 +263,7 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
 export const handleEvidenceSourceCallback = async (req: Request, res: Response) => {
   try {
     const { provider } = req.params;
-    const { code, state, error } = req.query;
+    const { code, state, error, api_access_point, web_access_point } = req.query;
 
     if (error) {
       logger.warn('OAuth callback error', { provider, error });
@@ -524,7 +526,13 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
           expires_at: expires_in ? new Date(Date.now() + expires_in * 1000).toISOString() : undefined,
           connected_at: new Date().toISOString(),
           source: `${provider}_oauth`,
-          token_source: 'oauth_callback'
+          token_source: 'oauth_callback',
+          ...(provider === 'adobe_sign' && typeof api_access_point === 'string' && api_access_point
+            ? { api_access_point }
+            : {}),
+          ...(provider === 'adobe_sign' && typeof web_access_point === 'string' && web_access_point
+            ? { web_access_point }
+            : {})
         };
 
         if (existingSource) {

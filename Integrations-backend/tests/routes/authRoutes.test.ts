@@ -106,7 +106,17 @@ jest.mock('jsonwebtoken', () => ({
 }));
 
 import jwt from 'jsonwebtoken';
-import authRoutes from '../../src/routes/authRoutes';
+import authRoutes, { shouldSendFreshWorkspaceWelcomeEmail } from '../../src/routes/authRoutes';
+
+describe('authRoutes /bootstrap welcome email truth', () => {
+  it('sends the fresh welcome email when the workspace is newly created even if the app user row already existed', () => {
+    expect(shouldSendFreshWorkspaceWelcomeEmail({ createdTenant: true })).toBe(true);
+  });
+
+  it('does not send a fresh welcome email on regular logins to an existing workspace', () => {
+    expect(shouldSendFreshWorkspaceWelcomeEmail({ createdTenant: false })).toBe(false);
+  });
+});
 
 describe('authRoutes /me tenant truth', () => {
   beforeEach(() => {
