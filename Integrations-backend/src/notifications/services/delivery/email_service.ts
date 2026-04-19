@@ -234,8 +234,20 @@ export class EmailService {
     const emailView = buildNotificationEmailViewModel(notification, {
       frontendUrl: process.env.FRONTEND_URL || 'https://app.margin-finance.com'
     });
-    const htmlDetails = this.renderDetailLinesHtml(emailView.email_detail_lines);
-    const textDetails = this.renderDetailLinesText(emailView.email_detail_lines);
+    const htmlWhatChanged = this.renderListSectionHtml('What changed', emailView.what_changed_lines);
+    const textWhatChanged = this.renderListSectionText('What changed', emailView.what_changed_lines);
+    const htmlDetails = this.renderDetailLinesHtml(
+      emailView.email_detail_lines,
+      emailView.detail_heading || 'Additional Details:'
+    );
+    const textDetails = this.renderDetailLinesText(
+      emailView.email_detail_lines,
+      emailView.detail_heading || 'Additional Details'
+    );
+    const htmlSellerAction = this.renderCalloutHtml('Seller action', emailView.seller_action_text);
+    const textSellerAction = this.renderCalloutText('Seller action', emailView.seller_action_text);
+    const htmlDisclaimer = this.renderSecondaryNoteHtml(emailView.disclaimer_text);
+    const textDisclaimer = this.renderSecondaryNoteText(emailView.disclaimer_text);
 
     // Generate HTML content
     const html = `
@@ -266,6 +278,8 @@ export class EmailService {
           
           <div class="content">
             <p>${this.escapeHtml(emailView.email_summary)}</p>
+
+            ${htmlWhatChanged}
 
             ${htmlDetails}
 
@@ -307,6 +321,10 @@ export class EmailService {
                 </p>
               </div>
             ` : ''}
+
+            ${htmlSellerAction}
+
+            ${htmlDisclaimer}
             
             <div style="text-align: center; margin-top: 30px;">
               <a href="${this.escapeHtml(emailView.action_url)}" class="btn">
@@ -340,9 +358,11 @@ ${'='.repeat(emailView.email_heading.length)}
 
 ${emailView.email_summary}
 
+${textWhatChanged}
+
 ${textDetails}
 
-${emailView.why_this_matters ? `Why this matters:\n${emailView.why_this_matters}\n\n` : ''}${emailView.amazon_said_preview ? `What Amazon said:\n"${emailView.amazon_said_preview}"\n\n` : ''}${emailView.trust_line ? `${emailView.trust_line}\n\n` : ''}${emailView.what_to_do_next ? `What to do next:\n${emailView.what_to_do_next}\n\n` : ''}View in App: ${emailView.action_url}
+${emailView.why_this_matters ? `Why this matters:\n${emailView.why_this_matters}\n\n` : ''}${emailView.amazon_said_preview ? `What Amazon said:\n"${emailView.amazon_said_preview}"\n\n` : ''}${emailView.trust_line ? `${emailView.trust_line}\n\n` : ''}${emailView.what_to_do_next ? `What to do next:\n${emailView.what_to_do_next}\n\n` : ''}${textSellerAction}${textDisclaimer}View in App: ${emailView.action_url}
 
 If the button doesn’t work, copy and paste this link:
 ${emailView.action_url}
@@ -359,7 +379,7 @@ If you have any questions, please contact our support team.
     };
   }
 
-  private renderDetailLinesHtml(details: Array<{ label: string; value: string }>): string {
+  private renderDetailLinesHtml(details: Array<{ label: string; value: string }>, heading: string): string {
     if (!details.length) return '';
 
     const rows = details
@@ -379,22 +399,96 @@ If you have any questions, please contact our support team.
 
     return `
       <div style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 5px;">
-        <h4 style="margin: 0 0 12px 0; color: #495057;">Additional Details:</h4>
+        <h4 style="margin: 0 0 12px 0; color: #495057;">${this.escapeHtml(heading)}</h4>
         ${rows}
       </div>
     `;
   }
 
-  private renderDetailLinesText(details: Array<{ label: string; value: string }>): string {
+  private renderDetailLinesText(details: Array<{ label: string; value: string }>, heading: string): string {
     if (!details.length) return '';
 
-    let text = '\nAdditional Details:\n';
-    text += '-'.repeat(20) + '\n';
+    let text = `\n${heading}:\n`;
+    text += '-'.repeat(Math.max(heading.length, 20)) + '\n';
     for (const detail of details) {
       text += `${detail.label}: ${detail.value}\n`;
     }
 
     return text;
+  }
+
+  private renderListSectionHtml(heading: string, lines?: string[] | null): string {
+    const cleanedLines = (lines || []).filter((line) => typeof line === 'string' && line.trim());
+    if (!cleanedLines.length) return '';
+
+    const items = cleanedLines
+      .map(
+        (line) => `
+          <li style="margin: 0 0 8px 0; color: #212529;">
+            ${this.escapeHtml(line)}
+          </li>
+        `
+      )
+      .join('');
+
+    return `
+      <div style="margin-top: 18px; padding: 16px; background: #f8f9fa; border-radius: 6px; border-left: 3px solid #212529;">
+        <div style="font-size: 12px; color: #495057; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em;">
+          ${this.escapeHtml(heading)}
+        </div>
+        <ul style="margin: 10px 0 0 18px; padding: 0;">
+          ${items}
+        </ul>
+      </div>
+    `;
+  }
+
+  private renderListSectionText(heading: string, lines?: string[] | null): string {
+    const cleanedLines = (lines || []).filter((line) => typeof line === 'string' && line.trim());
+    if (!cleanedLines.length) return '';
+
+    let text = `${heading}:\n`;
+    text += '-'.repeat(Math.max(heading.length, 20)) + '\n';
+    for (const line of cleanedLines) {
+      text += `- ${line}\n`;
+    }
+
+    return `${text}\n`;
+  }
+
+  private renderCalloutHtml(heading: string, value?: string | null): string {
+    if (!value) return '';
+
+    return `
+      <div style="margin-top: 18px; padding: 14px 16px; background: #eef7f0; border-radius: 6px;">
+        <div style="font-size: 12px; color: #2f6f3e; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em;">
+          ${this.escapeHtml(heading)}
+        </div>
+        <p style="margin: 8px 0 0 0; color: #24542f;">
+          ${this.escapeHtml(value)}
+        </p>
+      </div>
+    `;
+  }
+
+  private renderCalloutText(heading: string, value?: string | null): string {
+    if (!value) return '';
+    return `${heading}:\n${value}\n\n`;
+  }
+
+  private renderSecondaryNoteHtml(value?: string | null): string {
+    if (!value) return '';
+
+    return `
+      <p style="margin: 18px 0 0 0; color: #6c757d; font-size: 13px; line-height: 1.5;">
+        ${this.escapeHtml(value)}
+      </p>
+    `;
+  }
+
+  private renderSecondaryNoteText(value?: string | null): string {
+    if (!value) return '';
+    return `${value}\n\n`;
   }
 
   private escapeHtml(value: string): string {
