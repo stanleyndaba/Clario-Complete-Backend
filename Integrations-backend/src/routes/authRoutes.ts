@@ -3,6 +3,7 @@ import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supaba
 import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifier';
 import { ensureAuthenticatedUserWorkspace } from '../services/userWorkspaceBootstrap';
 import { normalizeResolvedAmazonSellerId } from '../utils/sellerIdentity';
+import { welcomeEmailService } from '../services/welcomeEmailService';
 
 const router = Router();
 
@@ -33,6 +34,16 @@ router.post('/bootstrap', async (req, res) => {
       preferredWorkspaceName: typeof req.body?.workspaceName === 'string' ? req.body.workspaceName : null,
       preferredTenantSlug: typeof req.body?.preferredTenantSlug === 'string' ? req.body.preferredTenantSlug : null
     });
+
+    if (result.createdUser && result.createdTenant) {
+      void welcomeEmailService.sendWorkspaceCreatedWelcomeEmailOnce({
+        userId: result.userId,
+        email: result.email,
+        tenantId: result.tenant.id,
+        tenantName: result.tenant.name,
+        tenantSlug: result.tenant.slug
+      });
+    }
 
     res.json({
       success: true,
