@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { supportRequestService } from '../services/supportRequestService';
 import notificationService from '../notifications/services/notification_service';
+import { supabaseAdmin } from '../database/supabaseClient';
 import logger from '../utils/logger';
 
 const SUPPORT_INBOX_EMAIL = process.env.SUPPORT_INBOX_EMAIL || 'support@margin-finance.com';
@@ -35,6 +36,26 @@ function normalizeContactEmail(raw: unknown): string | null {
     const email = typeof raw === 'string' ? raw.trim() : '';
     if (!email) return null;
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
+}
+
+async function resolveUserReplyEmail(userId: string): Promise<string | null> {
+    if (!userId) return null;
+
+    const { data, error } = await supabaseAdmin
+        .from('users')
+        .select('email')
+        .eq('id', userId)
+        .maybeSingle();
+
+    if (error) {
+        logger.warn('Failed to resolve support request user email', {
+            userId,
+            error: error.message,
+        });
+        return null;
+    }
+
+    return normalizeContactEmail(data?.email);
 }
 
 async function sendSupportInboxEmail(args: {
@@ -114,7 +135,8 @@ export async function createSupportRequest(req: Request, res: Response) {
         }
 
         const metadataInput = typeof metadata === 'object' && metadata ? metadata : {};
-        const contactEmail = normalizeContactEmail((metadataInput as any).contact_email);
+        const submittedContactEmail = normalizeContactEmail((metadataInput as any).contact_email);
+        const contactEmail = submittedContactEmail || await resolveUserReplyEmail(userId);
 
         const record = await supportRequestService.create({
             tenantId,
@@ -128,6 +150,7 @@ export async function createSupportRequest(req: Request, res: Response) {
             metadata: {
                 ...metadataInput,
                 contact_email: contactEmail,
+                submitted_contact_email: submittedContactEmail,
                 support_recipient: SUPPORT_INBOX_EMAIL,
             },
         });
