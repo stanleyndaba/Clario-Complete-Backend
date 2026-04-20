@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { supabaseAdmin } from '../database/supabaseClient';
+import { waitlistEmailService } from '../services/waitlistEmailService';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -81,9 +82,28 @@ router.post('/', async (req: Request, res: Response) => {
 
         logger.info('✅ [WAITLIST] Successfully registered email', { email, id: data.id });
 
+        let confirmationEmailSent = false;
+        try {
+            const sendResult = await waitlistEmailService.sendWaitlistConfirmationEmail(email);
+            confirmationEmailSent = true;
+            logger.info('✅ [WAITLIST] Confirmation email sent', {
+                email,
+                id: data.id,
+                providerMessageId: sendResult.providerMessageId || null
+            });
+        } catch (emailError: any) {
+            logger.warn('⚠️ [WAITLIST] Confirmation email failed after successful signup', {
+                email,
+                id: data.id,
+                error: emailError?.message || String(emailError)
+            });
+        }
+
         return res.status(201).json({
             success: true,
-            message: 'Welcome to the waitlist! We will be in touch soon.',
+            message: confirmationEmailSent
+                ? 'Welcome to the waitlist! Check your email for confirmation.'
+                : 'Welcome to the waitlist! We will be in touch soon.',
             data
         });
     } catch (error: any) {
