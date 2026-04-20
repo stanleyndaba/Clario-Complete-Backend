@@ -38,14 +38,14 @@ describe('waitlistRoutes', () => {
     sendWaitlistConfirmationEmailMock.mockReset();
   });
 
-  it('sends a confirmation email after a successful waitlist signup', async () => {
+  it('returns success immediately after a successful waitlist signup and queues the confirmation email', async () => {
     insertSingleMock.mockImplementation(async () => ({
       data: { id: 'waitlist-1', email: 'seller@example.com' },
       error: null,
     }));
-    sendWaitlistConfirmationEmailMock.mockImplementation(async () => ({
-      provider: 'resend',
-      providerMessageId: 're_123',
+    let resolveSend: ((value: { provider: 'resend'; providerMessageId: string }) => void) | undefined;
+    sendWaitlistConfirmationEmailMock.mockImplementation(() => new Promise((resolve) => {
+      resolveSend = resolve as typeof resolveSend;
     }));
 
     const app = createApp();
@@ -55,11 +55,14 @@ describe('waitlistRoutes', () => {
 
     expect(response.status).toBe(201);
     expect(response.body.success).toBe(true);
-    expect(response.body.message).toContain('Check your email for confirmation');
+    expect(response.body.message).toBe('Welcome to the waitlist! Your spot is secured.');
+    expect(response.body.confirmation_email_status).toBe('queued');
     expect(sendWaitlistConfirmationEmailMock).toHaveBeenCalledWith('seller@example.com');
+
+    resolveSend?.({ provider: 'resend', providerMessageId: 're_123' });
   });
 
-  it('does not fail the signup if the confirmation email send fails', async () => {
+  it('does not fail the signup if the confirmation email send fails in the background', async () => {
     insertSingleMock.mockImplementation(async () => ({
       data: { id: 'waitlist-2', email: 'seller@example.com' },
       error: null,
@@ -75,7 +78,8 @@ describe('waitlistRoutes', () => {
 
     expect(response.status).toBe(201);
     expect(response.body.success).toBe(true);
-    expect(response.body.message).toBe('Welcome to the waitlist! We will be in touch soon.');
+    expect(response.body.message).toBe('Welcome to the waitlist! Your spot is secured.');
+    expect(response.body.confirmation_email_status).toBe('queued');
   });
 
   it('does not resend the confirmation email for an already-registered address', async () => {
@@ -92,6 +96,7 @@ describe('waitlistRoutes', () => {
     expect(response.status).toBe(200);
     expect(response.body.success).toBe(true);
     expect(response.body.already_registered).toBe(true);
+    expect(response.body.confirmation_email_status).toBe('not_resent');
     expect(sendWaitlistConfirmationEmailMock).not.toHaveBeenCalled();
   });
 });
