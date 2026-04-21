@@ -53,6 +53,74 @@ function toNullableFiniteAmount(value: unknown): number | null {
     return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
 }
 
+function buildSubmissionProof(submission: any) {
+    if (!submission) return null;
+
+    const normalizedOutcome = normalize(submission.outcome || submission.status);
+    const externalReference = String(
+        submission.external_reference ||
+        submission.amazon_case_id ||
+        ''
+    ).trim() || null;
+    const fallbackSubmissionId = String(submission.submission_id || '').trim() || null;
+    const authoritativeOutcomes = new Set(['submitted', 'accepted', 'filed', 'success', 'open', 'in_progress']);
+    const proofReference = externalReference || (
+        fallbackSubmissionId && authoritativeOutcomes.has(normalizedOutcome)
+            ? fallbackSubmissionId
+            : null
+    );
+
+    return {
+        id: submission.id || null,
+        submission_id: fallbackSubmissionId,
+        amazon_case_id: String(submission.amazon_case_id || '').trim() || null,
+        external_reference: String(submission.external_reference || '').trim() || null,
+        proof_reference: proofReference,
+        proof_present: Boolean(proofReference),
+        submitted_at: submission.submission_timestamp || submission.created_at || null,
+        request_started_at: submission.request_started_at || null,
+        response_received_at: submission.response_received_at || null,
+        submission_channel: String(submission.submission_channel || '').trim() || null,
+        status: submission.status || null,
+        outcome: submission.outcome || null
+    };
+}
+
+function hasSubmissionProof(proof: ReturnType<typeof buildSubmissionProof>): boolean {
+    return proof?.proof_present === true;
+}
+
+function hasAmazonCaseReference(record: any, proof?: ReturnType<typeof buildSubmissionProof>): boolean {
+    return Boolean(
+        record?.provider_case_id ||
+        record?.amazon_case_id ||
+        proof?.amazon_case_id ||
+        proof?.external_reference ||
+        proof?.proof_reference
+    );
+}
+
+function hasFiledTruth(record: any, proof?: ReturnType<typeof buildSubmissionProof>): boolean {
+    const filingStatus = normalize(record?.filing_status);
+    const status = normalize(record?.status);
+    const caseState = normalize(record?.case_state);
+
+    return hasSubmissionProof(proof) ||
+        hasAmazonCaseReference(record, proof) ||
+        ['filed', 'submitted', 'resubmitted'].includes(filingStatus) ||
+        ['submitted', 'under review', 'under_review', 'in review', 'in_review', 'in_progress', 'processing'].includes(status) ||
+        ['under review', 'under_review', 'approved', 'paid'].includes(caseState);
+}
+
+function hasApprovalTruth(record: any, proof?: ReturnType<typeof buildSubmissionProof>, financialSummary?: any | null): boolean {
+    if (!hasFiledTruth(record, proof)) return false;
+
+    return isApprovedCase(record) ||
+        normalize(record?.case_state) === 'approved' ||
+        toOptionalAmount(record?.approved_amount) !== null ||
+        toOptionalAmount(financialSummary?.approved_amount) !== null;
+}
+
 async function resolveRecoveriesScope(req: Request): Promise<{ tenantId: string; tenantSlug: string | null }> {
     const tenantSlug = String(req.query.tenantSlug || req.query.tenant_slug || '').trim() || null;
     const requestTenantId = String((req as any).tenant?.tenantId || '').trim();
@@ -127,19 +195,24 @@ function isRecoveryRelevant(record: any): boolean {
     );
 }
 
-type ApprovedAmountSource = 'approved_amount' | 'claim_amount_fallback' | 'unavailable';
+type ApprovedAmountSource = 'approved_amount' | 'canonical_financial_truth' | 'unavailable';
 
-function deriveApprovedAmountTruth(record: any): { amount: number | null; source: ApprovedAmountSource } {
+function deriveApprovedAmountTruth(record: any, params?: {
+    hasApprovalTruth?: boolean;
+    financialSummary?: any | null;
+}): { amount: number | null; source: ApprovedAmountSource } {
+    if (params?.hasApprovalTruth === false) {
+        return { amount: null, source: 'unavailable' };
+    }
+
     const approvedAmount = toOptionalAmount(record?.approved_amount);
     if (approvedAmount !== null) {
         return { amount: approvedAmount, source: 'approved_amount' };
     }
 
-    if (isApprovedCase(record)) {
-        const claimAmount = toOptionalAmount(record?.claim_amount);
-        if (claimAmount !== null) {
-            return { amount: claimAmount, source: 'claim_amount_fallback' };
-        }
+    const canonicalApprovedAmount = toOptionalAmount(params?.financialSummary?.approved_amount);
+    if (canonicalApprovedAmount !== null) {
+        return { amount: canonicalApprovedAmount, source: 'canonical_financial_truth' };
     }
 
     return { amount: null, source: 'unavailable' };
@@ -158,6 +231,7 @@ function deriveLedgerReconciliationTruth(params: {
     approvedAmount: number | null;
     actualPayoutAmount: number | null;
     expectedPayoutAmount: number | null;
+    hasApprovalTruth?: boolean;
     financialSummary?: any | null;
 }): LedgerReconciliationTruth {
     const payoutStatus = String(params.financialSummary?.payout_status || '').trim().toLowerCase();
@@ -184,7 +258,11 @@ function deriveLedgerReconciliationTruth(params: {
             reconciliationStatus = 'reconciled';
         } else if (canonicalPayoutStatus === 'partially_paid') {
             reconciliationStatus = 'partial_recovery';
-        } else if (canonicalPayoutStatus === 'not_paid' && (params.financialSummary?.approved_amount != null || params.financialSummary?.requested_amount != null)) {
+        } else if (
+            canonicalPayoutStatus === 'not_paid' &&
+            params.hasApprovalTruth === true &&
+            (params.financialSummary?.approved_amount != null || params.financialSummary?.requested_amount != null)
+        ) {
             reconciliationStatus = 'pending_payout';
         }
 
@@ -312,6 +390,10 @@ function isCanonicalAwaitingPayoutRow(row: any): boolean {
     const payoutStatus = normalize(row?.payout_status);
     const outstandingAmount = toNullableFiniteAmount(row?.outstanding_amount);
 
+    if (row?.has_approval_truth !== true) {
+        return false;
+    }
+
     if (reconciliationStatus !== 'pending_payout') {
         return false;
     }
@@ -328,7 +410,7 @@ function isCanonicalAwaitingPayoutRow(row: any): boolean {
 }
 
 function buildRecoveriesSummary(rows: any[], financialSummaryById: Map<string, any>) {
-    const approvedRows = rows.filter((row: any) => isApprovedCase({ status: row.status }));
+    const approvedRows = rows.filter((row: any) => row.has_approval_truth === true);
     const pendingPayoutRows = rows.filter((row: any) => isCanonicalAwaitingPayoutRow(row));
     const reconciledRows = rows.filter((row: any) => row.reconciliation_status === 'reconciled');
     const partialRows = rows.filter((row: any) => row.reconciliation_status === 'partial_recovery');
@@ -868,8 +950,9 @@ router.get('/ledger', async (req: Request, res: Response) => {
         let latestRecoveryRecordByDisputeId = new Map<string, any>();
         let latestRecoveryWorkByDisputeId = new Map<string, any>();
         let latestBillingWorkByDisputeId = new Map<string, any>();
+        let latestSubmissionByDisputeId = new Map<string, any>();
         if (disputeIds.length > 0) {
-            const [billingResult, recoveryRecordResult, recoveryWorkResult, billingWorkResult] = await Promise.all([
+            const [billingResult, recoveryRecordResult, recoveryWorkResult, billingWorkResult, submissionResult] = await Promise.all([
                 supabaseAdmin
                     .from('billing_transactions')
                     .select('id, dispute_id, billing_status, platform_fee_cents, created_at, updated_at')
@@ -890,7 +973,12 @@ router.get('/ledger', async (req: Request, res: Response) => {
                      .from('billing_work_items')
                     .select('id, dispute_case_id, recovery_id, status, attempts, max_attempts, next_attempt_at, locked_by, payload, updated_at, created_at, last_error')
                     .eq('tenant_id', tenantId)
-                    .in('dispute_case_id', disputeIds)
+                    .in('dispute_case_id', disputeIds),
+                supabaseAdmin
+                    .from('dispute_submissions')
+                    .select('id, dispute_id, submission_id, amazon_case_id, external_reference, submission_timestamp, request_started_at, response_received_at, submission_channel, status, outcome, created_at, updated_at')
+                    .eq('tenant_id', tenantId)
+                    .in('dispute_id', disputeIds)
              ]);
 
             if (billingResult.error) {
@@ -904,6 +992,9 @@ router.get('/ledger', async (req: Request, res: Response) => {
             }
             if (billingWorkResult.error) {
                 throw billingWorkResult.error;
+            }
+            if (submissionResult.error) {
+                throw submissionResult.error;
             }
 
             (billingResult.data || []).forEach((transaction: any) => {
@@ -941,17 +1032,35 @@ router.get('/ledger', async (req: Request, res: Response) => {
                     latestBillingWorkByDisputeId.set(workItem.dispute_case_id, workItem);
                 }
             });
+
+            (submissionResult.data || []).forEach((submission: any) => {
+                const existing = latestSubmissionByDisputeId.get(submission.dispute_id);
+                const existingTime = existing
+                    ? new Date(existing.response_received_at || existing.submission_timestamp || existing.updated_at || existing.created_at || 0).getTime()
+                    : 0;
+                const candidateTime = new Date(submission.response_received_at || submission.submission_timestamp || submission.updated_at || submission.created_at || 0).getTime();
+                if (!existing || candidateTime >= existingTime) {
+                    latestSubmissionByDisputeId.set(submission.dispute_id, submission);
+                }
+            });
         }
 
         const caseLedgerRows = recoveryRelevantCases.map((record: any) => {
-            const approvedAmountTruth = deriveApprovedAmountTruth(record);
-            const approvedAmount = approvedAmountTruth.amount;
             const actualPayoutAmount = toOptionalAmount(record.recovered_amount ?? record.actual_payout_amount);
             const financialSummary = financialSummaryById.get(record.id) || (record.detection_result_id ? financialSummaryById.get(record.detection_result_id) : null);
             const latestBilling = latestBillingByDisputeId.get(record.id);
             const latestRecoveryRecord = latestRecoveryRecordByDisputeId.get(record.id);
             const latestRecoveryWork = latestRecoveryWorkByDisputeId.get(record.id);
             const latestBillingWork = latestBillingWorkByDisputeId.get(record.id);
+            const latestSubmission = latestSubmissionByDisputeId.get(record.id);
+            const submissionProof = buildSubmissionProof(latestSubmission);
+            const filedTruth = hasFiledTruth(record, submissionProof);
+            const approvalTruth = hasApprovalTruth(record, submissionProof, financialSummary);
+            const approvedAmountTruth = deriveApprovedAmountTruth(record, {
+                hasApprovalTruth: approvalTruth,
+                financialSummary
+            });
+            const approvedAmount = approvedAmountTruth.amount;
             const recoveryWorkPayload = latestRecoveryWork?.payload || null;
             const billingStatus = normalize(latestBilling?.billing_status || record.billing_status) || null;
             const expectedPayoutAmount = actualPayoutAmount === null && record.expected_payout_date ? approvedAmount : null;
@@ -960,6 +1069,7 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 approvedAmount,
                 actualPayoutAmount,
                 expectedPayoutAmount,
+                hasApprovalTruth: approvalTruth,
                 financialSummary
             });
             const operatorState = deriveOperatorState(
@@ -993,6 +1103,11 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 merchant_reference: storeNameById.get(record.store_id) || record.store_name || record.seller_id || null,
                 status: record.status || null,
                 filing_status: record.filing_status || null,
+                submission_proof: submissionProof,
+                has_submission_proof: hasSubmissionProof(submissionProof),
+                has_amazon_reference: hasAmazonCaseReference(record, submissionProof),
+                has_filing_truth: filedTruth,
+                has_approval_truth: approvalTruth,
                 recovery_status: record.recovery_status || null,
                 billing_status: billingStatus,
                 block_reasons: Array.isArray(record.block_reasons) ? record.block_reasons : [],
@@ -1075,6 +1190,7 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 approvedAmount: null,
                 actualPayoutAmount: null,
                 expectedPayoutAmount,
+                hasApprovalTruth: false,
                 financialSummary
             });
             const operatorState = matchedDocumentCount > 0 ? 'supportable_but_not_case_eligible' : 'investigation_required';
@@ -1097,6 +1213,11 @@ router.get('/ledger', async (req: Request, res: Response) => {
                 merchant_reference: storeNameById.get(record.store_id) || record.seller_id || null,
                 status: record.status || 'detected',
                 filing_status: null,
+                submission_proof: null,
+                has_submission_proof: false,
+                has_amazon_reference: false,
+                has_filing_truth: false,
+                has_approval_truth: false,
                 recovery_status: null,
                 billing_status: null,
                 block_reasons: [],
@@ -1403,7 +1524,7 @@ router.get('/:id', async (req: Request, res: Response) => {
 
             const { data: latestSubmission } = await supabaseAdmin
                 .from('dispute_submissions')
-                .select('id, submission_id, amazon_case_id, created_at')
+                .select('id, submission_id, amazon_case_id, external_reference, submission_timestamp, request_started_at, response_received_at, submission_channel, status, outcome, created_at, updated_at')
                 .eq('dispute_id', disputeCase.id)
                 .order('created_at', { ascending: false })
                 .limit(1)
@@ -1430,8 +1551,17 @@ router.get('/:id', async (req: Request, res: Response) => {
                 }
             }
 
+            const submissionProof = buildSubmissionProof(latestSubmission);
+            const disputeCaseWithSubmissionTruth = {
+                ...disputeCase,
+                submission_proof: submissionProof,
+                has_submission_proof: hasSubmissionProof(submissionProof),
+                has_filing_truth: hasFiledTruth(disputeCase, submissionProof),
+                has_approval_truth: hasApprovalTruth(disputeCase, submissionProof, null)
+            };
+
             const findingTruth = linkedDetection
-                ? enrichDetectionFinding(linkedDetection, disputeCase)
+                ? enrichDetectionFinding(linkedDetection, disputeCaseWithSubmissionTruth)
                 : null;
 
             const caseMessages = await amazonCaseThreadService.listCaseMessages(tenantId, disputeCase.id);
@@ -1443,11 +1573,8 @@ router.get('/:id', async (req: Request, res: Response) => {
             ).trim().toUpperCase();
             const canReplyToThread = threadLinked && caseMessages.length > 0 && eligibilityStatus === 'READY';
             const hasRecordedSubmission = Boolean(
-                latestSubmission?.id ||
-                latestSubmission?.submission_id ||
-                latestSubmission?.amazon_case_id ||
-                disputeCase.filing_status === 'filed' ||
-                disputeCase.status === 'submitted'
+                hasSubmissionProof(submissionProof) ||
+                hasAmazonCaseReference(disputeCase, submissionProof)
             );
 
             const actualPayoutAmount = typeof disputeCase?.recovered_amount === 'number'
@@ -1461,7 +1588,7 @@ router.get('/:id', async (req: Request, res: Response) => {
                 : [];
 
             return res.json(buildCaseResponse(
-                disputeCase,
+                disputeCaseWithSubmissionTruth,
                 documents,
                 events,
                 {

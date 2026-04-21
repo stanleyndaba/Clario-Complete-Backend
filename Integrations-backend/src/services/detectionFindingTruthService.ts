@@ -648,6 +648,22 @@ const movementFor = (row: DetectionRow, disputeCase: DisputeCaseRow): FilingMove
   const eligibilityStatus = clean(disputeCase?.eligibility_status) || null;
   const blockReasons = toReasonList(disputeCase?.block_reasons);
   const hasCase = Boolean(disputeCase?.id);
+  const submissionProof = asRecord(disputeCase?.submission_proof);
+  const hasSubmissionProof = submissionProof.proof_present === true;
+  const hasAmazonReference = Boolean(
+    clean(disputeCase?.amazon_case_id || disputeCase?.provider_case_id) ||
+    clean(submissionProof.amazon_case_id) ||
+    clean(submissionProof.external_reference) ||
+    clean(submissionProof.proof_reference)
+  );
+  const hasFiledTruth = Boolean(disputeCase?.has_filing_truth) ||
+    hasSubmissionProof ||
+    hasAmazonReference ||
+    ['filed', 'submitted', 'resubmitted'].includes(filingStatus || '') ||
+    ['submitted', 'under review', 'under_review', 'in review', 'in_review', 'in_progress', 'processing'].includes(status || '') ||
+    ['under review', 'under_review', 'approved', 'paid'].includes(caseState || '');
+  const hasApprovalTruth = Boolean(disputeCase?.has_approval_truth) ||
+    (hasFiledTruth && (caseState === 'approved' || status === 'approved'));
 
   const base = {
     dispute_case_id: clean(disputeCase?.id),
@@ -669,7 +685,7 @@ const movementFor = (row: DetectionRow, disputeCase: DisputeCaseRow): FilingMove
     };
   }
 
-  if (caseState === 'paid' || status === 'closed' || status === 'approved' && filingStatus === 'filed') {
+  if (caseState === 'paid' || (status === 'closed' && hasApprovalTruth) || (status === 'approved' && filingStatus === 'filed' && hasApprovalTruth)) {
     return {
       ...base,
       state: 'completed',
@@ -679,7 +695,7 @@ const movementFor = (row: DetectionRow, disputeCase: DisputeCaseRow): FilingMove
     };
   }
 
-  if (caseState === 'approved' || status === 'approved' || filingStatus === 'recovering') {
+  if (hasApprovalTruth || filingStatus === 'recovering') {
     return {
       ...base,
       state: 'awaiting_payout',
@@ -689,7 +705,7 @@ const movementFor = (row: DetectionRow, disputeCase: DisputeCaseRow): FilingMove
     };
   }
 
-  if (filingStatus === 'filed' || status === 'submitted' || caseState === 'pending') {
+  if (hasFiledTruth) {
     return {
       ...base,
       state: 'filed',
