@@ -449,6 +449,80 @@ export class CSVIngestionService {
         return !!(row.payload.is_sandbox ?? row.payload.isSandbox);
     }
 
+    private getCountedDetectionValue(row: any): number {
+        const countedValue = Number(row?.evidence?.economic_rollup?.counted_value);
+        if (Number.isFinite(countedValue)) {
+            return countedValue;
+        }
+
+        const estimatedValue = Number(row?.estimated_value);
+        return Number.isFinite(estimatedValue) ? estimatedValue : 0;
+    }
+
+    private deriveDetectionReviewTier(row: any): 'claim_candidate' | 'review_only' | 'monitoring' {
+        const evidence = row?.evidence && typeof row.evidence === 'object' ? row.evidence : {};
+        const reviewTier = String(evidence.review_tier || '').toLowerCase();
+        if (reviewTier === 'review_only' || reviewTier === 'monitoring') {
+            return reviewTier as 'review_only' | 'monitoring';
+        }
+
+        const claimReadiness = String(evidence.claim_readiness || '').toLowerCase();
+        if (claimReadiness === 'not_claim_ready') {
+            return 'review_only';
+        }
+
+        const confidence = Number(row?.confidence_score);
+        return Number.isFinite(confidence) && confidence >= 0.85 ? 'claim_candidate' : 'review_only';
+    }
+
+    private async notifyCsvDetectionSummary(
+        userId: string,
+        tenantId: string,
+        syncId: string,
+        detectionResults: any[]
+    ): Promise<void> {
+        if (detectionResults.length === 0) return;
+
+        try {
+            const notificationHelper = (await import('./notificationHelper')).default;
+            const totalValue = detectionResults.reduce((sum, row) => sum + this.getCountedDetectionValue(row), 0);
+            const claimReadyCount = detectionResults.filter((row) => this.deriveDetectionReviewTier(row) === 'claim_candidate').length;
+            const reviewNeededCount = detectionResults.filter((row) => this.deriveDetectionReviewTier(row) === 'review_only').length;
+            const monitoringCount = detectionResults.filter((row) => this.deriveDetectionReviewTier(row) === 'monitoring').length;
+            const averageConfidence = detectionResults.length > 0
+                ? detectionResults.reduce((sum, row) => sum + Number(row?.confidence_score || 0), 0) / detectionResults.length
+                : 0;
+
+            await notificationHelper.notifyClaimDetected(userId, {
+                tenantId,
+                count: detectionResults.length,
+                totalValue,
+                currency: detectionResults[0]?.currency || 'USD',
+                confidence: averageConfidence,
+                source: 'csv_upload',
+                syncId,
+                claimReadyCount,
+                reviewNeededCount,
+                monitoringCount,
+            });
+
+            logger.info('🔔 [CSV INGESTION] Durable notification created for persisted CSV detections', {
+                userId,
+                tenantId,
+                syncId,
+                count: detectionResults.length,
+                totalValue,
+            });
+        } catch (error: any) {
+            logger.warn('⚠️ [CSV INGESTION] Failed to create durable CSV detection notification', {
+                userId,
+                tenantId,
+                syncId,
+                error: error?.message || error,
+            });
+        }
+    }
+
     /**
      * Ingest multiple CSV files for a user
      */
@@ -2717,7 +2791,9 @@ export class CSVIngestionService {
             import('../utils/tenantEventRouting'),
         ]);
         const tenantSlug = await resolveTenantSlug(tenantId);
-        const totalRecoverableValue = detectionResults.reduce((sum, row) => sum + (row.estimated_value || 0), 0);
+        const totalRecoverableValue = detectionResults.reduce((sum, row) => sum + this.getCountedDetectionValue(row), 0);
+
+        await this.notifyCsvDetectionSummary(userId, tenantId, syncId, detectionResults);
 
         sseHub.sendEvent(userId, 'detection.completed', {
             tenant_id: tenantId,
