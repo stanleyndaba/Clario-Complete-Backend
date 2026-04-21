@@ -619,25 +619,12 @@ export class Agent2DataSyncService {
             message: 'Reconciling payouts with expected amounts...'
           });
 
-          // Step 10b: Trigger Agent 10 Notifications for Settlements (Funds Deposited)
-          try {
-            const recentSettlements = result.normalized.settlements.slice(0, 3); // Notify for most recent ones
-            for (const settlement of recentSettlements) {
-              // Only notify if amount is positive
-              if (settlement.amount > 0) {
-                await notificationHelper.notifyFundsDeposited(userId, {
-                  tenantId,
-                  disputeId: settlement.settlement_id || `settlement_${Date.now()}`,
-                  amount: settlement.amount,
-                  currency: settlement.currency || 'USD',
-                  billingStatus: 'pending'
-                });
-                logger.info('🔔 [AGENT 10] Notification sent for funds deposited', { userId, settlementId: settlement.settlement_id });
-              }
-            }
-          } catch (notifError) {
-            logger.error('❌ [AGENT 10] Failed to send settlement notifications', { error: notifError });
-          }
+          logger.info('[AGENT 2] Settlement periods imported without payout notification', {
+            userId,
+            syncId,
+            settlementsCount: result.summary.settlementsCount,
+            reason: 'settlement_import_is_not_recovery_payout_truth'
+          });
 
         } else {
           this.sendSyncLog(userId, syncId, {

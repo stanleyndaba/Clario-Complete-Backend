@@ -216,17 +216,13 @@ class AmazonNotificationService {
         break;
       case 'refund_signal':
       case 'settlement_ready':
-      case 'financial_report_ready': {
-        const amount = this.findNumericValue(parsed.payload, [/reimburse/i, /refund/i, /amount/i, /deposit/i, /total/i]);
-        if (!amount) {
-          return;
-        }
-        type = NotificationType.FUNDS_DEPOSITED;
-        title = `Amazon Posted ${new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount)}`;
-        message = 'Amazon reported a reimbursement-related financial event. Margin is reconciling the payout now.';
-        priority = NotificationPriority.URGENT;
-        break;
-      }
+      case 'financial_report_ready':
+        logger.info('[AMAZON NOTIFICATIONS] Financial/report signal routed without payout user notification', {
+          notificationId,
+          classification: classification.classification,
+          reason: 'report_ready_or_refund_signal_is_not_recovery_payout_truth'
+        });
+        return;
       default:
         return;
     }

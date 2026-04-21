@@ -77,6 +77,7 @@ export interface FundsDepositedData {
   billingStatus?: 'charged' | 'credited' | 'pending' | 'sent';
   caseNumber?: string;
   payoutId?: string;
+  payoutTruthSource?: 'recovery_reconciliation';
 }
 
 function formatMoney(amount: number | undefined, currency: string = 'USD'): string {
@@ -478,6 +479,16 @@ class NotificationHelper {
    */
   async notifyFundsDeposited(userId: string, data: FundsDepositedData): Promise<void> {
     try {
+      if (!data.recoveryId || data.payoutTruthSource !== 'recovery_reconciliation') {
+        logger.warn('Skipping funds deposited notification without recovery payout truth', {
+          userId,
+          disputeId: data.disputeId,
+          recoveryId: data.recoveryId,
+          payoutTruthSource: data.payoutTruthSource
+        });
+        return;
+      }
+
       logger.info('📢 [NOTIFICATIONS] Notifying funds deposited', {
         userId,
         disputeId: data.disputeId,
@@ -505,11 +516,13 @@ class NotificationHelper {
           sellerPayout: data.sellerPayout ?? data.amount,
           billingStatus: data.billingStatus,
           caseNumber: data.caseNumber,
-          payoutId: data.payoutId
+          payoutId: data.payoutId,
+          payoutTruthSource: data.payoutTruthSource,
+          payout_truth_source: data.payoutTruthSource
         }, {
           tenantId: data.tenantId,
-          entityType: data.recoveryId ? 'recovery' : 'dispute_case',
-          entityId: data.recoveryId || data.disputeId
+          entityType: 'recovery',
+          entityId: data.recoveryId
         }),
         immediate: true
       };

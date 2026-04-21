@@ -1410,7 +1410,8 @@ class RecoveriesService {
             recoveryId: recovery.id,
             amount: match.actualAmount,
             currency: 'usd',
-            billingStatus: null
+            billingStatus: null,
+            payoutTruthSource: 'recovery_reconciliation'
           });
         } catch (notifError: any) {
           logger.warn('⚠️ [RECOVERIES] Failed to send notification', {

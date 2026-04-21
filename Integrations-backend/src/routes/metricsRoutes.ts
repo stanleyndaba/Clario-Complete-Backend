@@ -7,7 +7,7 @@
 import { Router, Request, Response } from 'express';
 import { metricsService } from '../services/metricsService';
 import { financialImpactService } from '../services/financialImpactService';
-import financialSummaryService from '../services/financialSummaryService';
+import recoveryFinancialTruthService from '../services/recoveryFinancialTruthService';
 import { getLaunchMonitor } from '../services/launchMonitoringService';
 import { supabase, supabaseAdmin } from '../database/supabaseClient';
 import logger from '../utils/logger';
@@ -30,26 +30,117 @@ function normalize(value: unknown): string {
     return String(value || '').trim().toLowerCase();
 }
 
-function isFiledCase(record: any): boolean {
+function buildSubmissionProof(submission: any) {
+    if (!submission) return null;
+
+    const normalizedOutcome = normalize(submission.outcome || submission.status);
+    const externalReference = String(
+        submission.external_reference ||
+        submission.amazon_case_id ||
+        ''
+    ).trim() || null;
+    const fallbackSubmissionId = String(submission.submission_id || '').trim() || null;
+    const authoritativeOutcomes = new Set(['submitted', 'accepted', 'filed', 'success', 'open', 'in_progress']);
+    const proofReference = externalReference || (
+        fallbackSubmissionId && authoritativeOutcomes.has(normalizedOutcome)
+            ? fallbackSubmissionId
+            : null
+    );
+
+    return {
+        id: submission.id || null,
+        submission_id: fallbackSubmissionId,
+        amazon_case_id: String(submission.amazon_case_id || '').trim() || null,
+        external_reference: String(submission.external_reference || '').trim() || null,
+        proof_reference: proofReference,
+        proof_present: Boolean(proofReference),
+        submitted_at: submission.submission_timestamp || submission.created_at || null,
+        request_started_at: submission.request_started_at || null,
+        response_received_at: submission.response_received_at || null,
+        status: submission.status || null,
+        outcome: submission.outcome || null
+    };
+}
+
+function hasSubmissionProof(proof: ReturnType<typeof buildSubmissionProof>): boolean {
+    return proof?.proof_present === true;
+}
+
+function hasFiledTruth(_record: any, proof?: ReturnType<typeof buildSubmissionProof>): boolean {
+    return hasSubmissionProof(proof);
+}
+
+function hasApprovalTruth(record: any, proof?: ReturnType<typeof buildSubmissionProof>, financialSummary?: any | null): boolean {
+    if (!hasFiledTruth(record, proof)) return false;
+
+    const status = normalize(record?.status);
+    const caseState = normalize(record?.case_state);
+    const proofOutcome = normalize(proof?.outcome || proof?.status);
+    const hasResponseTimestamp = Boolean(proof?.response_received_at);
+    const approvedAmount = toNumber(record?.approved_amount) > 0
+        ? toNumber(record?.approved_amount)
+        : toNumber(financialSummary?.approved_amount);
+
+    return ['approved', 'paid', 'won'].includes(caseState) ||
+        ['approved', 'paid', 'won'].includes(status) ||
+        ['approved', 'paid', 'won'].includes(proofOutcome) ||
+        (approvedAmount > 0 && hasResponseTimestamp);
+}
+
+function hasVerifiedPayoutTruth(record: any, proof?: ReturnType<typeof buildSubmissionProof>, financialSummary?: any | null): boolean {
+    if (!hasApprovalTruth(record, proof, financialSummary)) return false;
+    return normalize(financialSummary?.payout_status) === 'paid' && toNumber(financialSummary?.verified_paid_amount) > 0;
+}
+
+function isFiledCase(record: any, proof?: ReturnType<typeof buildSubmissionProof>, financialSummary?: any | null): boolean {
+    if (!hasFiledTruth(record, proof)) return false;
+    if (isRecoveredCase(record, proof, financialSummary)) return false;
+    if (hasApprovalTruth(record, proof, financialSummary)) return false;
+    if (isRejectedCase(record, proof)) return false;
+
     const filingStatus = normalize(record?.filing_status);
     const caseStatus = normalize(record?.status);
-    return Boolean(record?.provider_case_id) || FILED_FILING_STATUSES.has(filingStatus) || POST_FILE_STATUSES.has(caseStatus);
+    return FILED_FILING_STATUSES.has(filingStatus) || ['submitted', 'in_review', 'under_review', 'pending'].includes(caseStatus) || hasSubmissionProof(proof);
 }
 
-function isApprovedCase(record: any): boolean {
-    return APPROVED_STATUSES.has(normalize(record?.status));
+function isApprovedCase(record: any, proof?: ReturnType<typeof buildSubmissionProof>, financialSummary?: any | null): boolean {
+    return hasApprovalTruth(record, proof, financialSummary) && !hasVerifiedPayoutTruth(record, proof, financialSummary);
 }
 
-function isRejectedCase(record: any): boolean {
-    return REJECTED_STATUSES.has(normalize(record?.status));
+function isRejectedCase(record: any, proof?: ReturnType<typeof buildSubmissionProof>): boolean {
+    if (!hasFiledTruth(record, proof)) return false;
+    return REJECTED_STATUSES.has(normalize(record?.status)) || REJECTED_STATUSES.has(normalize(record?.case_state));
 }
 
-function isRecoveredCase(record: any): boolean {
-    return RECOVERED_STATUSES.has(normalize(record?.recovery_status)) || toNumber(record?.actual_payout_amount) > 0;
+function isRecoveredCase(record: any, proof?: ReturnType<typeof buildSubmissionProof>, financialSummary?: any | null): boolean {
+    return hasVerifiedPayoutTruth(record, proof, financialSummary);
 }
 
 function isBilledRecord(record: any): boolean {
     return BILLED_STATUSES.has(normalize(record?.billing_status));
+}
+
+function buildLatestSubmissionMap(submissions: any[] = []) {
+    const map = new Map<string, any>();
+    for (const submission of submissions) {
+        const disputeId = String(submission?.dispute_id || '').trim();
+        if (!disputeId || map.has(disputeId)) continue;
+        map.set(disputeId, submission);
+    }
+    return map;
+}
+
+function buildFinancialSummaryMap(summaries: any[] = []) {
+    const map = new Map<string, any>();
+    for (const summary of summaries) {
+        const inputId = String(summary?.input_id || '').trim();
+        const disputeCaseId = String(summary?.dispute_case_id || '').trim();
+        const detectionResultId = String(summary?.detection_result_id || '').trim();
+        if (inputId) map.set(inputId, summary);
+        if (disputeCaseId) map.set(disputeCaseId, summary);
+        if (detectionResultId) map.set(detectionResultId, summary);
+    }
+    return map;
 }
 
 function pickLatestTimestamp(...values: Array<string | null | undefined>): string | null {
@@ -166,8 +257,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
             disputeResult,
             billingResult,
             documentResult,
-            sourceResult,
-            financialSummary
+            sourceResult
         ] = await Promise.all([
             dbClient
                 .from('detection_results')
@@ -175,7 +265,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
                 .eq('tenant_id', tenantId),
             dbClient
                 .from('dispute_cases')
-                .select('id, status, filing_status, recovery_status, billing_status, claim_amount, actual_payout_amount, provider_case_id, updated_at, created_at')
+                .select('id, detection_result_id, status, case_state, filing_status, recovery_status, billing_status, claim_amount, approved_amount, actual_payout_amount, provider_case_id, amazon_case_id, updated_at, created_at')
                 .eq('tenant_id', tenantId),
             dbClient
                 .from('billing_transactions')
@@ -188,8 +278,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
             dbClient
                 .from('evidence_sources')
                 .select('id, status, last_sync_at, updated_at, created_at')
-                .eq('tenant_id', tenantId),
-            financialSummaryService.getSummary({ tenantId })
+                .eq('tenant_id', tenantId)
         ]);
 
         if (detectionResult.error) throw detectionResult.error;
@@ -206,6 +295,35 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
         const disputeIds = disputes.map((row: any) => row.id).filter(Boolean);
         let linkedDocumentIds = new Set<string>();
 
+        let latestSubmissionByDisputeId = new Map<string, any>();
+        let financialSummaryById = new Map<string, any>();
+
+        if (disputeIds.length > 0) {
+            const [submissionsResult, financialTruthResult] = await Promise.all([
+                dbClient
+                    .from('dispute_submissions')
+                    .select('id, dispute_id, submission_id, amazon_case_id, external_reference, submission_timestamp, request_started_at, response_received_at, submission_channel, status, outcome, created_at, updated_at')
+                    .in('dispute_id', disputeIds)
+                    .order('created_at', { ascending: false }),
+                recoveryFinancialTruthService.getFinancialTruth({
+                    tenantId,
+                    caseIds: disputeIds
+                })
+            ]);
+
+            if (submissionsResult.error) throw submissionsResult.error;
+            latestSubmissionByDisputeId = buildLatestSubmissionMap(submissionsResult.data || []);
+            financialSummaryById = buildFinancialSummaryMap(financialTruthResult.summaries || []);
+        }
+
+        const getSubmissionProofForDispute = (record: any) =>
+            buildSubmissionProof(latestSubmissionByDisputeId.get(String(record?.id || '').trim()));
+
+        const getFinancialSummaryForDispute = (record: any) =>
+            financialSummaryById.get(String(record?.id || '').trim()) ||
+            financialSummaryById.get(String(record?.detection_result_id || '').trim()) ||
+            null;
+
         if (disputeIds.length > 0) {
             const { data: linkedDocs, error: linkedDocsError } = await dbClient
                 .from('dispute_evidence_links')
@@ -216,10 +334,25 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
             linkedDocumentIds = new Set((linkedDocs || []).map((row: any) => row.evidence_document_id).filter(Boolean));
         }
 
-        const filedCases = disputes.filter(isFiledCase);
-        const approvedCases = disputes.filter(isApprovedCase);
-        const rejectedCases = disputes.filter(isRejectedCase);
-        const recoveredCases = disputes.filter(isRecoveredCase);
+        const filedCases = disputes.filter((record: any) => {
+            const proof = getSubmissionProofForDispute(record);
+            const financial = getFinancialSummaryForDispute(record);
+            return isFiledCase(record, proof, financial);
+        });
+        const approvedCases = disputes.filter((record: any) => {
+            const proof = getSubmissionProofForDispute(record);
+            const financial = getFinancialSummaryForDispute(record);
+            return isApprovedCase(record, proof, financial);
+        });
+        const rejectedCases = disputes.filter((record: any) => {
+            const proof = getSubmissionProofForDispute(record);
+            return isRejectedCase(record, proof);
+        });
+        const recoveredCases = disputes.filter((record: any) => {
+            const proof = getSubmissionProofForDispute(record);
+            const financial = getFinancialSummaryForDispute(record);
+            return isRecoveredCase(record, proof, financial);
+        });
         const billedTransactions = billingTransactions.filter(isBilledRecord);
 
         const parsedDocuments = documents.filter((document: any) => normalize(document.processing_status) === 'completed');
@@ -234,9 +367,20 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
 
         const estimatedValueTotal = detections.reduce((sum, row: any) => sum + toNumber(row.estimated_value), 0);
         const filedValueTotal = filedCases.reduce((sum, row: any) => sum + toNumber(row.claim_amount), 0);
-        const approvedValueTotal = approvedCases.reduce((sum, row: any) => sum + toNumber(row.claim_amount), 0);
-        const recoveredCashTotal = financialSummary.total_recovered;
+        const approvedValueTotal = approvedCases.reduce((sum, row: any) => {
+            const financial = getFinancialSummaryForDispute(row);
+            return sum + (toNumber(financial?.approved_amount) || toNumber(row.approved_amount) || toNumber(row.claim_amount));
+        }, 0);
+        const recoveredCashTotal = recoveredCases.reduce((sum, row: any) => {
+            const financial = getFinancialSummaryForDispute(row);
+            return sum + toNumber(financial?.verified_paid_amount);
+        }, 0);
         const billedRevenueTotal = billedTransactions.reduce((sum, row: any) => sum + (toNumber(row.platform_fee_cents) / 100), 0);
+        const lastVerifiedPayoutDate = recoveredCases
+            .map((row: any) => getFinancialSummaryForDispute(row)?.latest_event_date)
+            .filter(Boolean)
+            .sort()
+            .reverse()[0] || null;
 
         const connectedSources = sources.filter((source: any) => normalize(source.status) === 'connected');
         const staleCutoff = new Date(Date.now() - (7 * 24 * 60 * 60 * 1000));
@@ -247,10 +391,11 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
         });
 
         const billingBacklogCount = disputes.filter((record: any) =>
-            isRecoveredCase(record) && !isBilledRecord(record)
+            isRecoveredCase(record, getSubmissionProofForDispute(record), getFinancialSummaryForDispute(record)) && !isBilledRecord(record)
         ).length;
         const unreconciledRecoveryCount = disputes.filter((record: any) =>
-            isApprovedCase(record) && !isRecoveredCase(record)
+            isApprovedCase(record, getSubmissionProofForDispute(record), getFinancialSummaryForDispute(record)) &&
+            !isRecoveredCase(record, getSubmissionProofForDispute(record), getFinancialSummaryForDispute(record))
         ).length;
 
         const blockers = [
@@ -286,7 +431,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
             ...billingTransactions.map((row: any) => row.updated_at || row.created_at),
             ...documents.map((row: any) => row.updated_at || row.created_at),
             ...sources.map((row: any) => row.updated_at || row.created_at || row.last_sync_at),
-            financialSummary.last_payout_date
+            lastVerifiedPayoutDate
         ) || new Date().toISOString();
 
         res.json({
@@ -303,9 +448,9 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
                 approved_value_total: Number(approvedValueTotal.toFixed(2)),
                 recovered_cash_total: Number(recoveredCashTotal.toFixed(2)),
                 billed_revenue_total: Number(billedRevenueTotal.toFixed(2)),
-                outstanding_amount: Number(financialSummary.outstanding_amount.toFixed(2)),
-                last_payout_date: financialSummary.last_payout_date,
-                payout_count: financialSummary.payout_count,
+                outstanding_amount: Number(Math.max(estimatedValueTotal - recoveredCashTotal, 0).toFixed(2)),
+                last_payout_date: lastVerifiedPayoutDate,
+                payout_count: recoveredCases.length,
                 last_updated_at: lastUpdatedAt,
                 integrations_summary: {
                     connected_count: connectedSources.length,

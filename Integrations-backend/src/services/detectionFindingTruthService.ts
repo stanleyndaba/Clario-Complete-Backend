@@ -641,6 +641,57 @@ const toReasonList = (value: unknown): string[] => {
   return [];
 };
 
+const formatBlockReasonForSeller = (reason: string): string => {
+  const normalized = String(reason || '').trim().toLowerCase();
+  if (!normalized) return 'Filing hold';
+  if (normalized.includes('review_only_detection_not_claim_ready')) return 'Review-only, not claim-ready';
+  if (normalized.includes('duplicate')) return 'Possible duplicate';
+  if (normalized.includes('already_reimbursed')) return 'Already reimbursed';
+  if (normalized.includes('safety_hold')) return 'Safety hold';
+  if (normalized.includes('thread_only')) return 'Thread-only case';
+  if (normalized.includes('insufficient_data')) return 'Missing required evidence';
+  if (normalized.includes('payment_required')) return 'Account setup required';
+  if (normalized.includes('quarantined_dangerous_doc')) return 'Document safety hold';
+  if (normalized.includes('redis_quota_exceeded')) return 'Filing queue paused';
+  return titleCase(reason);
+};
+
+const sellerBlockedDetailFor = (row: DetectionRow, blockReasons: string[]): string => {
+  const evidence = asRecord(row.evidence);
+  const whyNotClaimReady = clean(evidence.why_not_claim_ready);
+  const normalizedReasons = blockReasons.map(reason => reason.toLowerCase());
+  const hasReviewOnlyHold = normalizedReasons.some(reason => reason.includes('review_only_detection_not_claim_ready'));
+  const hasDuplicateHold = normalizedReasons.some(reason => reason.includes('duplicate'));
+  const hasAlreadyReimbursedHold = normalizedReasons.some(reason => reason.includes('already_reimbursed'));
+  const hasEvidenceHold = normalizedReasons.some(reason => reason.includes('insufficient_data'));
+
+  if (whyNotClaimReady) {
+    return `Margin is holding this finding before filing. ${whyNotClaimReady}`;
+  }
+
+  if (hasReviewOnlyHold) {
+    return 'Margin is holding this finding because it is review-only and not claim-ready yet. It needs a supported loss, missing reimbursement, or clear policy/evidence basis before any Amazon filing.';
+  }
+
+  if (hasDuplicateHold) {
+    return 'Margin is holding this finding because a possible duplicate or previously handled recovery path exists. It should not be filed again until that is reconciled.';
+  }
+
+  if (hasAlreadyReimbursedHold) {
+    return 'Margin is holding this finding because a reimbursement or payout trail already appears linked to it. Filing again could create a duplicate claim.';
+  }
+
+  if (hasEvidenceHold) {
+    return 'Margin is holding this finding because required identifiers, documents, or reconciliation records are not complete enough to support filing yet.';
+  }
+
+  if (blockReasons.length) {
+    return `Margin is holding this finding before filing. Reason: ${blockReasons.slice(0, 2).map(formatBlockReasonForSeller).join(', ')}.`;
+  }
+
+  return 'Margin is holding this finding because a filing gate has not cleared yet.';
+};
+
 const movementFor = (row: DetectionRow, disputeCase: DisputeCaseRow): FilingMovement => {
   const filingStatus = clean(disputeCase?.filing_status)?.toLowerCase() || null;
   const caseState = clean(disputeCase?.case_state)?.toLowerCase() || null;
@@ -762,9 +813,7 @@ const movementFor = (row: DetectionRow, disputeCase: DisputeCaseRow): FilingMove
       ...base,
       state: 'blocked',
       label: 'Blocked',
-      detail: blockReasons.length
-        ? `Margin is holding this case: ${blockReasons.slice(0, 2).join(', ')}.`
-        : 'Margin is holding this case because a filing gate has not cleared.',
+      detail: sellerBlockedDetailFor(row, blockReasons),
       next_action_label: 'View blocker',
     };
   }
