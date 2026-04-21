@@ -24,6 +24,7 @@ type YocoLinkDefinition = {
   amountCents: number;
   envVar: string;
   envVarAliases?: string[];
+  defaultUrl?: string;
 };
 
 const YOCO_LINK_DEFINITIONS: Record<YocoPaymentLinkKey, YocoLinkDefinition> = {
@@ -34,6 +35,7 @@ const YOCO_LINK_DEFINITIONS: Record<YocoPaymentLinkKey, YocoLinkDefinition> = {
     amountCents: 7900,
     envVar: 'YOCO_STARTER_MONTHLY_URL',
     envVarAliases: ['YOC0_STARTER_MONTHLY_URL'],
+    defaultUrl: 'https://pay.yoco.com/r/mErEdy',
   },
   starter_annual: {
     key: 'starter_annual',
@@ -50,6 +52,7 @@ const YOCO_LINK_DEFINITIONS: Record<YocoPaymentLinkKey, YocoLinkDefinition> = {
     amountCents: 19900,
     envVar: 'YOCO_PRO_MONTHLY_URL',
     envVarAliases: ['YOC0_PRO_MONTHLY_URL'],
+    defaultUrl: 'https://pay.yoco.com/r/4ZDLyo',
   },
   pro_annual: {
     key: 'pro_annual',
@@ -66,6 +69,7 @@ const YOCO_LINK_DEFINITIONS: Record<YocoPaymentLinkKey, YocoLinkDefinition> = {
     amountCents: 39900,
     envVar: 'YOCO_ENTERPRISE_MONTHLY_URL',
     envVarAliases: ['YOC0_ENTERPRISE_MONTHLY_URL'],
+    defaultUrl: 'https://pay.yoco.com/r/2bLVnw',
   },
   enterprise_annual: {
     key: 'enterprise_annual',
@@ -85,7 +89,7 @@ function readYocoEnvUrl(definition: YocoLinkDefinition): string | null {
     if (value) return value;
   }
 
-  return null;
+  return definition.defaultUrl || null;
 }
 
 export function buildYocoPaymentLinkKey(planTier: PlanTier | null | undefined, billingInterval: BillingInterval | null | undefined): YocoPaymentLinkKey | null {
