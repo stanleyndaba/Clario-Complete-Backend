@@ -94,9 +94,9 @@ export type LegacyRecoveryFeeSummary = {
 };
 
 const PLAN_PRICING_CENTS: Record<PlanTier, { monthly: number; annualEquivalent: number; annualBilled: number }> = {
-  starter: { monthly: 4900, annualEquivalent: 3900, annualBilled: 46800 },
-  pro: { monthly: 9900, annualEquivalent: 7900, annualBilled: 94800 },
-  enterprise: { monthly: 19900, annualEquivalent: 15900, annualBilled: 190800 },
+  starter: { monthly: 7900, annualEquivalent: 7900, annualBilled: 94800 },
+  pro: { monthly: 19900, annualEquivalent: 19900, annualBilled: 238800 },
+  enterprise: { monthly: 39900, annualEquivalent: 39900, annualBilled: 478800 },
 };
 
 const SUBSCRIPTION_STATUSES = new Set<SubscriptionStatus>(['trialing', 'active', 'past_due', 'canceled', 'incomplete', 'not_started']);
@@ -146,7 +146,7 @@ export function normalizeSubscriptionStatus(value: unknown): SubscriptionStatus 
 export function planTierLabel(value: PlanTier | null | undefined): string | null {
   if (value === 'starter') return 'Starter';
   if (value === 'pro') return 'Pro';
-  if (value === 'enterprise') return 'Enterprise';
+  if (value === 'enterprise') return 'Scale / Ultra';
   return null;
 }
 
