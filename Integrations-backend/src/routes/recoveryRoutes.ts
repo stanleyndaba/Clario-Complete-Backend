@@ -108,10 +108,14 @@ function hasFiledTruth(record: any, proof?: ReturnType<typeof buildSubmissionPro
 function hasApprovalTruth(record: any, proof?: ReturnType<typeof buildSubmissionProof>, financialSummary?: any | null): boolean {
     if (!hasFiledTruth(record, proof)) return false;
 
-    return isApprovedCase(record) ||
-        normalize(record?.case_state) === 'approved' ||
-        toOptionalAmount(record?.approved_amount) !== null ||
-        toOptionalAmount(financialSummary?.approved_amount) !== null;
+    const caseState = normalize(record?.case_state);
+    const proofOutcome = normalize(proof?.outcome || proof?.status);
+    const hasResponseTimestamp = Boolean(proof?.response_received_at);
+    const approvedAmount = toOptionalAmount(record?.approved_amount) ?? toOptionalAmount(financialSummary?.approved_amount);
+
+    return ['approved', 'paid', 'won'].includes(caseState) ||
+        ['approved', 'paid', 'won'].includes(proofOutcome) ||
+        (approvedAmount !== null && hasResponseTimestamp && hasAmazonCaseReference(record, proof));
 }
 
 async function resolveRecoveriesScope(req: Request): Promise<{ tenantId: string; tenantSlug: string | null }> {
@@ -675,9 +679,8 @@ function buildCaseResponse(
         : (typeof record?.estimated_recovery_amount === 'number'
             ? record.estimated_recovery_amount
             : (typeof record?.estimated_value === 'number' ? record.estimated_value : 0)));
-    const approvedAmount = typeof record?.approved_amount === 'number'
-        ? record.approved_amount
-        : null;
+    const hasApprovalTruth = record?.has_approval_truth === true;
+    const approvedAmount = hasApprovalTruth ? toOptionalAmount(record?.approved_amount) : null;
     const actualPayoutAmount = typeof record?.recovered_amount === 'number'
         ? record.recovered_amount
         : (typeof record?.actual_payout_amount === 'number'
@@ -701,7 +704,7 @@ function buildCaseResponse(
         ? 'verified'
         : normalize(record?.recovery_status) === 'quarantined'
             ? 'quarantined'
-            : APPROVED_CASE_STATUSES.has(normalize(record?.status))
+            : hasApprovalTruth
                 ? 'awaiting_payout'
                 : 'not_applicable';
     const manualReviewReason = Array.isArray(record?.block_reasons) && record.block_reasons.length > 0
@@ -731,6 +734,11 @@ function buildCaseResponse(
         linked_dispute_case_id: entityTruth.linked_dispute_case_id,
         has_submission: entityTruth.has_submission,
         has_payout: entityTruth.has_payout,
+        submission_proof: record?.submission_proof || null,
+        has_submission_proof: record?.has_submission_proof === true,
+        has_amazon_reference: hasAmazonCaseReference(record, record?.submission_proof || null),
+        has_filing_truth: record?.has_filing_truth === true,
+        has_approval_truth: hasApprovalTruth,
         finding_truth: findingTruth || null,
         seller_summary: findingTruth?.seller_summary || null,
         policy_basis: findingTruth?.policy_basis || null,
@@ -1590,7 +1598,7 @@ router.get('/:id', async (req: Request, res: Response) => {
                     has_linked_dispute_case: true,
                     linked_dispute_case_id: disputeCase.id,
                     has_submission: hasRecordedSubmission,
-                    has_payout: actualPayoutAmount !== null
+                    has_payout: toOptionalAmount(actualPayoutAmount) !== null
                 },
                 {
                     case_state: disputeCase.case_state || (disputeCase.amazon_case_id ? 'pending' : 'unlinked'),
