@@ -101,15 +101,8 @@ function hasAmazonCaseReference(record: any, proof?: ReturnType<typeof buildSubm
 }
 
 function hasFiledTruth(record: any, proof?: ReturnType<typeof buildSubmissionProof>): boolean {
-    const filingStatus = normalize(record?.filing_status);
-    const status = normalize(record?.status);
-    const caseState = normalize(record?.case_state);
-
     return hasSubmissionProof(proof) ||
-        hasAmazonCaseReference(record, proof) ||
-        ['filed', 'submitted', 'resubmitted'].includes(filingStatus) ||
-        ['submitted', 'under review', 'under_review', 'in review', 'in_review', 'in_progress', 'processing'].includes(status) ||
-        ['under review', 'under_review', 'approved', 'paid'].includes(caseState);
+        hasAmazonCaseReference(record, proof);
 }
 
 function hasApprovalTruth(record: any, proof?: ReturnType<typeof buildSubmissionProof>, financialSummary?: any | null): boolean {

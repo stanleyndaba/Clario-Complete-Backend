@@ -113,6 +113,43 @@ function buildSubmissionProof(submission: any) {
   };
 }
 
+function hasSubmissionProof(proof: ReturnType<typeof buildSubmissionProof>): boolean {
+  return proof?.proof_present === true;
+}
+
+function hasAmazonCaseReference(record: any, proof?: ReturnType<typeof buildSubmissionProof>): boolean {
+  return Boolean(
+    String(record?.amazon_case_id || '').trim() ||
+    String(proof?.amazon_case_id || '').trim() ||
+    String(proof?.external_reference || '').trim() ||
+    String(proof?.proof_reference || '').trim()
+  );
+}
+
+function hasFiledTruth(record: any, proof?: ReturnType<typeof buildSubmissionProof>): boolean {
+  return hasSubmissionProof(proof || null)
+    || hasAmazonCaseReference(record, proof);
+}
+
+function hasApprovalTruth(record: any, proof?: ReturnType<typeof buildSubmissionProof>): boolean {
+  if (!hasFiledTruth(record, proof)) return false;
+
+  const status = normalize(record?.status);
+  const caseState = normalize(record?.case_state);
+  return APPROVED_STATUSES.has(status) ||
+    ['approved', 'paid'].includes(caseState) ||
+    toMoney(record?.approved_amount) !== null;
+}
+
+function hasRejectionTruth(record: any, proof?: ReturnType<typeof buildSubmissionProof>): boolean {
+  if (!hasFiledTruth(record, proof)) return false;
+
+  const status = normalize(record?.status);
+  return REJECTED_STATUSES.has(status) ||
+    Boolean(String(record?.rejection_reason || '').trim()) ||
+    Boolean(String(record?.evidence_attachments?.rejection_category || '').trim());
+}
+
 function hasSubmissionStateDivergence(record: any, submissionProof: ReturnType<typeof buildSubmissionProof>) {
   if (!submissionProof?.proof_present) {
     return false;
@@ -311,7 +348,6 @@ function deriveEvidenceState(record: any, matchedDocumentCount: number, evidence
 }
 
 function deriveNextAction(row: any) {
-  const status = normalize(row.status);
   const filingStatus = normalize(row.filing_status);
   const recoveryStatus = normalize(row.recovery_status);
   const billingStatus = normalize(row.billing_status);
@@ -344,9 +380,9 @@ function deriveNextAction(row: any) {
   if (operationalState === 'blocked_operational') return 'Dispatch blocked';
   if (operationalState === 'failed_durable') return 'Operational failure';
   if (row.actual_payout_amount) return 'Payout detected, review reconciliation';
-  if (REJECTED_STATUSES.has(status) || row.rejection_reason || row.rejection_category) return 'Review rejection';
-  if (APPROVED_STATUSES.has(status)) return 'Waiting for payout';
-  if (FILED_STATUSES.has(filingStatus)) return 'Filed / awaiting Amazon';
+  if (row.has_rejection_truth === true) return 'Review Amazon response';
+  if (row.has_approval_truth === true) return 'Waiting for payout';
+  if (row.has_filing_truth === true) return 'Filed / awaiting Amazon';
   if (filingStatus === 'pending_safety_verification') return 'Awaiting identifiers';
   if (filingStatus === 'blocked' || row.eligible_to_file === false) return 'Blocked';
   if (row.evidence_state === 'Missing Evidence') return 'Waiting for evidence';
@@ -501,6 +537,9 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     const latestSubmission = latestSubmissionByDisputeId.get(record.id);
     const submissionProof = buildSubmissionProof(latestSubmission);
     const submissionStateDivergence = hasSubmissionStateDivergence(record, submissionProof);
+    const filedTruth = hasFiledTruth(record, submissionProof);
+    const approvalTruth = hasApprovalTruth(record, submissionProof);
+    const rejectionTruth = hasRejectionTruth(record, submissionProof);
     const decisionIntelligence = record?.evidence_attachments?.decision_intelligence || {};
     const proofSnapshot = decisionIntelligence?.proof_snapshot || null;
     const filingStrategy = typeof decisionIntelligence?.filing_strategy === 'string'
@@ -581,7 +620,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
         ? 'verified'
         : normalize(record.recovery_status) === 'quarantined'
           ? 'quarantined'
-          : APPROVED_STATUSES.has(normalize(record.status))
+          : approvalTruth
             ? 'awaiting_payout'
             : 'not_applicable',
       quarantine_reason: normalize(record.recovery_status) === 'quarantined'
@@ -597,9 +636,15 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       order_id: record.order_id || detection?.order_id || null,
       sku: record.sku || detection?.sku || null,
       asin: record.asin || detection?.asin || null,
-      expected_payout_amount: actualPayoutAmount == null && record.expected_payout_date ? approvedAmount : null,
+      expected_payout_amount: approvalTruth && actualPayoutAmount == null && record.expected_payout_date ? approvedAmount : null,
       expected_payout_date: record.expected_payout_date || null,
       submission_proof: submissionProof,
+      has_submission_proof: hasSubmissionProof(submissionProof),
+      has_amazon_reference: hasAmazonCaseReference(record, submissionProof),
+      has_filing_truth: filedTruth,
+      has_approval_truth: approvalTruth,
+      has_rejection_truth: rejectionTruth,
+      has_amazon_response_truth: approvalTruth || rejectionTruth,
       submission_state_divergence: submissionStateDivergence,
       submission_state_divergence_message: submissionStateDivergence
         ? 'Submission proof exists, but the dispute case state needs reconciliation.'
@@ -671,7 +716,13 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       asin: record.asin || record.evidence?.asin || null,
       expected_payout_amount: toMoney(record.estimated_value),
       expected_payout_date: null,
-      submission_proof: null
+      submission_proof: null,
+      has_submission_proof: false,
+      has_amazon_reference: false,
+      has_filing_truth: false,
+      has_approval_truth: false,
+      has_rejection_truth: false,
+      has_amazon_response_truth: false
     };
 
     return {
@@ -805,8 +856,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
 
   const hasLinkedDisputeCase = (row: any) => row.has_real_dispute_case === true && Boolean(row.linked_dispute_case_id);
 
-  const isRejectedRow = (row: any) =>
-    REJECTED_STATUSES.has(normalize(row.status)) || Boolean(row.rejection_reason) || Boolean(row.rejection_category);
+  const isRejectedRow = (row: any) => row.has_rejection_truth === true;
 
   const isRecoveredRow = (row: any) => {
     const financialSummary = getFinancialSummaryForRow(row);
@@ -819,13 +869,13 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
     const filingStatus = normalize(row.filing_status);
     const status = normalize(row.status);
     return hasLinkedDisputeCase(row)
+      && row.has_filing_truth === true
       && (FILED_STATUSES.has(filingStatus) || ACTIVE_AMAZON_REVIEW_STATUSES.has(status));
   };
 
   const isApprovedPendingPayoutRow = (row: any) => {
-    const status = normalize(row.status);
     return hasLinkedDisputeCase(row)
-      && APPROVED_STATUSES.has(status)
+      && row.has_approval_truth === true
       && !isRecoveredRow(row);
   };
 
@@ -856,7 +906,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
   const blockedCount = filteredRows.filter(isBlockedRow).length;
   const readyToFileCount = filteredRows.filter((row) => row.can_file === true).length;
   const filedCount = filteredRows.filter(isFiledRow).length;
-  const rejectedCount = filteredRows.filter((row) => REJECTED_STATUSES.has(normalize(row.status)) || !!row.rejection_reason || !!row.rejection_category).length;
+  const rejectedCount = filteredRows.filter(isRejectedRow).length;
   const approvedPendingPayoutCount = filteredRows.filter(isApprovedPendingPayoutRow).length;
   const recoveredCount = filteredRows.filter(isRecoveredRow).length;
   const billingPendingCount = filteredRows.filter(isBillingPendingRow).length;

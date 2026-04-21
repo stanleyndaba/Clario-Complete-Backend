@@ -658,10 +658,7 @@ const movementFor = (row: DetectionRow, disputeCase: DisputeCaseRow): FilingMove
   );
   const hasFiledTruth = Boolean(disputeCase?.has_filing_truth) ||
     hasSubmissionProof ||
-    hasAmazonReference ||
-    ['filed', 'submitted', 'resubmitted'].includes(filingStatus || '') ||
-    ['submitted', 'under review', 'under_review', 'in review', 'in_review', 'in_progress', 'processing'].includes(status || '') ||
-    ['under review', 'under_review', 'approved', 'paid'].includes(caseState || '');
+    hasAmazonReference;
   const hasApprovalTruth = Boolean(disputeCase?.has_approval_truth) ||
     (hasFiledTruth && (caseState === 'approved' || status === 'approved'));
 
