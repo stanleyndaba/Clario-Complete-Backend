@@ -20,7 +20,17 @@ type PolicyBasis = {
   source_url: string;
   last_verified_at: string | null;
   summary: string;
+  amazon_policy_rule: string;
+  policy_window: {
+    label: string;
+    rule: string;
+    start_event: string;
+  };
   required_evidence: string[];
+  required_documentation: Array<{
+    label: string;
+    detail: string;
+  }>;
 };
 
 type SellerSummary = {
@@ -53,9 +63,9 @@ type ValueLabel = 'estimated_recovery' | 'potential_exposure' | 'no_recovery_val
 const OFFICIAL_POLICY_LAST_VERIFIED_AT = '2026-04-16';
 
 const INVENTORY_REIMBURSEMENT_POLICY_URL =
-  'https://sellercentral.amazon.com/help/hub/reference/G200213130';
+  'https://sellercentral.amazon.com/help/hub/reference/GGEV4254LJJ9BAEG';
 const CUSTOMER_RETURNS_POLICY_URL =
-  'https://sellercentral.amazon.com/help/hub/reference/G9N934L7Y4SFWPJ4';
+  INVENTORY_REIMBURSEMENT_POLICY_URL;
 const SELLING_FEES_POLICY_URL =
   'https://sellercentral.amazon.com/help/hub/reference/GTG4BAWSY39Z98Z3';
 
@@ -161,6 +171,93 @@ const coverageFamilyFor = (row: DetectionRow): string => {
   return 'Launch detector';
 };
 
+const inventoryRequiredDocumentation = (
+  anomalyType: string,
+  detectionType: string
+): PolicyBasis['required_documentation'] => {
+  if (anomalyType.includes('warehouse_transfer')) {
+    return [
+      {
+        label: 'Transfer and product identifiers',
+        detail: 'Transfer ID plus the SKU, FNSKU, or ASIN for the exact units being reconciled.',
+      },
+      {
+        label: 'Sent-versus-received quantity trail',
+        detail: 'Units sent, units received, and the unresolved unit gap for the transfer.',
+      },
+      {
+        label: 'Inventory movement events',
+        detail: 'Transfer, adjustment, lost, damaged, or receiving events that explain the unit movement.',
+      },
+      {
+        label: 'Settlement or reimbursement outcome',
+        detail: 'Any reimbursement, reversal, or settlement transaction already posted for the same transfer/SKU.',
+      },
+    ];
+  }
+
+  if (anomalyType.includes('inbound') || anomalyType.includes('shipment')) {
+    return [
+      {
+        label: 'Shipment and product identifiers',
+        detail: 'Shipment ID plus the SKU, FNSKU, or ASIN for the row Amazon received short or damaged.',
+      },
+      {
+        label: 'Shipped-versus-received quantity trail',
+        detail: 'Units shipped or expected, units received by Amazon, and the remaining unresolved units.',
+      },
+      {
+        label: 'Inbound receiving or discrepancy event',
+        detail: 'Amazon receiving, shortage, damage, adjustment, or carrier event tied to the shipment.',
+      },
+      {
+        label: 'Reimbursement or settlement trail',
+        detail: 'Any reimbursement, reversal, or settlement transaction already posted for the same shipment/SKU.',
+      },
+    ];
+  }
+
+  if (detectionType.includes('clawback') || anomalyType.includes('reimbursement_duplicate')) {
+    return [
+      {
+        label: 'Original loss or damage event',
+        detail: 'The Amazon event that created the expected reimbursement obligation.',
+      },
+      {
+        label: 'Expected reimbursement trail',
+        detail: 'Expected unit/value recovery for the affected SKU, FNSKU, ASIN, shipment, or order.',
+      },
+      {
+        label: 'Posted reimbursement and reversal trail',
+        detail: 'Settlement, reimbursement, reversal, or clawback transactions tied to the same event.',
+      },
+      {
+        label: 'Unresolved value or unit gap',
+        detail: 'The remaining quantity or value that does not reconcile after posted reimbursements.',
+      },
+    ];
+  }
+
+  return [
+    {
+      label: 'SKU, FNSKU, or ASIN',
+      detail: 'The exact product identifier for the units Amazon reported as lost, damaged, missing, or adjusted.',
+    },
+    {
+      label: 'Inventory event record',
+      detail: 'The Amazon lost, damaged, adjustment, transfer, or receiving event that created the discrepancy.',
+    },
+    {
+      label: 'Quantity reconciliation',
+      detail: 'Affected units, recovered units if any, and the unresolved quantity still requiring review.',
+    },
+    {
+      label: 'Settlement or reimbursement trail',
+      detail: 'Any reimbursement, reversal, or settlement transaction already posted for the same product/event.',
+    },
+  ];
+};
+
 const policyBasisFor = (row: DetectionRow): PolicyBasis => {
   const anomalyType = String(row.anomaly_type || '').toLowerCase();
   const detectionType = String(clean(row?.evidence?.detection_type) || '').toLowerCase();
@@ -177,8 +274,32 @@ const policyBasisFor = (row: DetectionRow): PolicyBasis => {
       source_name: 'Amazon Seller Central Help',
       source_url: CUSTOMER_RETURNS_POLICY_URL,
       last_verified_at: OFFICIAL_POLICY_LAST_VERIFIED_AT,
-      summary: 'Margin compares refund, return, restock, and reimbursement records to identify customer-return outcomes that may require seller review.',
+      summary: 'Amazon sets a customer-return reimbursement window after the customer refund or replacement. Margin applies that reference only when the order, return/restock state, and reimbursement trail support seller review.',
+      amazon_policy_rule: 'Customer-return reimbursement claims are windowed between 45 and 105 days after the customer refund or replacement event.',
+      policy_window: {
+        label: 'Customer return reimbursement window',
+        rule: 'Between 45 and 105 days after customer refund or replacement.',
+        start_event: 'Customer refund or replacement date',
+      },
       required_evidence: ['Order or refund identifier', 'Return/restock status', 'Settlement or reimbursement trail'],
+      required_documentation: [
+        {
+          label: 'Order and refund identifiers',
+          detail: 'Amazon order ID, refund event ID, refund date, SKU, ASIN, and refunded quantity.',
+        },
+        {
+          label: 'Return or restock outcome',
+          detail: 'Whether the unit was returned, restocked, damaged, or still not matched to a return event.',
+        },
+        {
+          label: 'Unit reconciliation',
+          detail: 'Refunded units compared with returned, restocked, damaged, reimbursed, and unresolved units.',
+        },
+        {
+          label: 'Settlement or reimbursement trail',
+          detail: 'Refund, reimbursement, reversal, or settlement rows tied to the same order/SKU.',
+        },
+      ],
     };
   }
 
@@ -196,8 +317,32 @@ const policyBasisFor = (row: DetectionRow): PolicyBasis => {
       source_name: 'Amazon Seller Central Help',
       source_url: SELLING_FEES_POLICY_URL,
       last_verified_at: OFFICIAL_POLICY_LAST_VERIFIED_AT,
-      summary: 'Margin compares charged fees against the product, order, shipment, and fee context available in seller records.',
+      summary: 'Amazon fee schedules define the fee basis by marketplace, product, order, shipment, and service context. Margin keeps fee findings in review until the charged event and expected fee basis reconcile.',
+      amazon_policy_rule: 'Fee review depends on the specific Amazon fee type, marketplace, and charged event; Margin requires the fee event and expected fee basis before treating the finding as supported.',
+      policy_window: {
+        label: 'Fee review window',
+        rule: 'Uses the stored detector deadline until a fee-specific official window is mapped for this event.',
+        start_event: 'Charged fee or settlement event date',
+      },
       required_evidence: ['Fee event', 'SKU or ASIN context', 'Expected fee basis', 'Charged amount'],
+      required_documentation: [
+        {
+          label: 'Fee event or settlement row',
+          detail: 'The charged fee transaction, fee type, settlement ID, order ID, or shipment context.',
+        },
+        {
+          label: 'Product and marketplace context',
+          detail: 'SKU/ASIN, marketplace, fulfillment channel, size tier, dimensions, weight, and category when available.',
+        },
+        {
+          label: 'Expected fee basis',
+          detail: 'The schedule version, rate basis, or calculation inputs Margin is comparing against the charge.',
+        },
+        {
+          label: 'Charged-versus-expected amount',
+          detail: 'The actual fee, expected fee, currency, and overcharge delta for the same event.',
+        },
+      ],
     };
   }
 
@@ -218,8 +363,15 @@ const policyBasisFor = (row: DetectionRow): PolicyBasis => {
       source_name: 'Amazon Seller Central Help',
       source_url: INVENTORY_REIMBURSEMENT_POLICY_URL,
       last_verified_at: OFFICIAL_POLICY_LAST_VERIFIED_AT,
-      summary: 'Margin compares inventory, shipment, transfer, adjustment, and reimbursement records to identify unit losses or unresolved reimbursement gaps.',
+      summary: 'Amazon sets the FBA inventory reimbursement window for lost or damaged items. Margin applies that reference only when the affected product, unit movement, Amazon event, and reimbursement outcome reconcile.',
+      amazon_policy_rule: 'Lost or damaged FBA inventory reimbursement claims must be submitted within 60 days of the reported loss or damage.',
+      policy_window: {
+        label: 'Lost or damaged FBA inventory window',
+        rule: 'Within 60 days of reported loss or damage.',
+        start_event: 'Reported loss or damage date',
+      },
       required_evidence: ['SKU/FNSKU or ASIN', 'Quantity movement', 'Inventory or shipment event', 'Reimbursement or settlement trail'],
+      required_documentation: inventoryRequiredDocumentation(anomalyType, detectionType),
     };
   }
 
@@ -231,7 +383,27 @@ const policyBasisFor = (row: DetectionRow): PolicyBasis => {
     source_url: 'https://sellercentral.amazon.com/help',
     last_verified_at: null,
     summary: 'Margin has not mapped this detector to a curated policy reference yet. The finding should remain in review until policy support is confirmed.',
+    amazon_policy_rule: 'No curated Amazon policy rule has been mapped for this detector family yet.',
+    policy_window: {
+      label: 'Policy window pending verification',
+      rule: 'Do not treat this finding as filing-ready until an official policy window is confirmed.',
+      start_event: 'Manual policy review required',
+    },
     required_evidence: ['Backend detection record', 'Supporting seller records', 'Manual policy confirmation'],
+    required_documentation: [
+      {
+        label: 'Backend detection record',
+        detail: 'The structured finding fields, source type, detected event, and evidence payload.',
+      },
+      {
+        label: 'Supporting seller records',
+        detail: 'Seller Central reports, settlements, inventory records, or uploaded documents tied to the event.',
+      },
+      {
+        label: 'Manual Amazon policy confirmation',
+        detail: 'The official Seller Central policy reference must be verified before filing support is shown.',
+      },
+    ],
   };
 };
 
