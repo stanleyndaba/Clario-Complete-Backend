@@ -7,8 +7,20 @@ import { AuthenticatedRequest } from '../../middleware/authMiddleware';
 const logger = getLogger('NotificationController');
 
 export class NotificationController {
-  private getTenantId(req: AuthenticatedRequest): string | undefined {
-    return (req as any).tenant?.tenantId || undefined;
+  private getTenantId(req: AuthenticatedRequest): string | null {
+    return String((req as any).tenant?.tenantId || '').trim() || null;
+  }
+
+  private requireTenantId(req: AuthenticatedRequest, res: Response): string | null {
+    const tenantId = this.getTenantId(req);
+    if (!tenantId) {
+      res.status(400).json({
+        error: 'Workspace context required',
+        message: 'Notifications must be requested inside an authenticated workspace.'
+      });
+      return null;
+    }
+    return tenantId;
   }
 
   /**
@@ -22,6 +34,8 @@ export class NotificationController {
         res.status(401).json({ error: 'User not authenticated' });
         return;
       }
+      const tenantId = this.requireTenantId(req, res);
+      if (!tenantId) return;
 
       // Extract query parameters
       const {
@@ -37,7 +51,7 @@ export class NotificationController {
       // Build filters
       const filters: any = {
         user_id: userId,
-        tenant_id: this.getTenantId(req),
+        tenant_id: tenantId,
         limit: parseInt(limit as string),
         offset: parseInt(offset as string)
       };
@@ -89,6 +103,8 @@ export class NotificationController {
         res.status(401).json({ error: 'User not authenticated' });
         return;
       }
+      const tenantId = this.requireTenantId(req, res);
+      if (!tenantId) return;
 
       const { id } = (req as any).params;
       if (!id) {
@@ -104,7 +120,7 @@ export class NotificationController {
       }
 
       // Ensure user can only access their own notifications
-      if (notification.user_id !== userId || (this.getTenantId(req) && notification.tenant_id !== this.getTenantId(req))) {
+      if (notification.user_id !== userId || notification.tenant_id !== tenantId) {
         res.status(403).json({ error: 'Access denied' });
         return;
       }
@@ -133,6 +149,8 @@ export class NotificationController {
         res.status(401).json({ error: 'User not authenticated' });
         return;
       }
+      const tenantId = this.requireTenantId(req, res);
+      if (!tenantId) return;
 
       const { notificationIds } = (req as any).body;
 
@@ -146,14 +164,14 @@ export class NotificationController {
         const scoped: any[] = [];
         for (const id of notificationIds) {
           const notification = await notificationService.getNotificationById(id);
-          if (notification && notification.user_id === userId && (!this.getTenantId(req) || notification.tenant_id === this.getTenantId(req))) {
+          if (notification && notification.user_id === userId && notification.tenant_id === tenantId) {
             scoped.push(id);
           }
         }
         result = await notificationService.markMultipleAsRead(scoped);
       } else {
         const existing = await notificationService.getNotificationById(notificationIds);
-        if (!existing || existing.user_id !== userId || (this.getTenantId(req) && existing.tenant_id !== this.getTenantId(req))) {
+        if (!existing || existing.user_id !== userId || existing.tenant_id !== tenantId) {
           res.status(403).json({ error: 'Access denied' });
           return;
         }
@@ -189,8 +207,10 @@ export class NotificationController {
         res.status(401).json({ error: 'User not authenticated' });
         return;
       }
+      const tenantId = this.requireTenantId(req, res);
+      if (!tenantId) return;
 
-      const count = await notificationService.markAllAsRead(userId, this.getTenantId(req));
+      const count = await notificationService.markAllAsRead(userId, tenantId);
 
       res.json({
         success: true,
@@ -220,6 +240,8 @@ export class NotificationController {
         res.status(401).json({ error: 'User not authenticated' });
         return;
       }
+      const tenantId = this.requireTenantId(req, res);
+      if (!tenantId) return;
 
       const {
         type,
@@ -254,7 +276,7 @@ export class NotificationController {
       const notificationEvent = {
         type: type as NotificationType,
         user_id: userId,
-        tenant_id: this.getTenantId(req),
+        tenant_id: tenantId,
         title,
         message,
         priority: priority as NotificationPriority || NotificationPriority.NORMAL,
@@ -300,6 +322,8 @@ export class NotificationController {
         res.status(401).json({ error: 'User not authenticated' });
         return;
       }
+      const tenantId = this.requireTenantId(req, res);
+      if (!tenantId) return;
 
       const { id } = (req as any).params;
       if (!id) {
@@ -321,7 +345,7 @@ export class NotificationController {
       }
 
       // Ensure user can only update their own notifications
-      if (existingNotification.user_id !== userId || (this.getTenantId(req) && existingNotification.tenant_id !== this.getTenantId(req))) {
+      if (existingNotification.user_id !== userId || existingNotification.tenant_id !== tenantId) {
         res.status(403).json({ error: 'Access denied' });
         return;
       }
@@ -353,6 +377,8 @@ export class NotificationController {
         res.status(401).json({ error: 'User not authenticated' });
         return;
       }
+      const tenantId = this.requireTenantId(req, res);
+      if (!tenantId) return;
 
       const { id } = (req as any).params;
       if (!id) {
@@ -368,7 +394,7 @@ export class NotificationController {
       }
 
       // Ensure user can only delete their own notifications
-      if (existingNotification.user_id !== userId || (this.getTenantId(req) && existingNotification.tenant_id !== this.getTenantId(req))) {
+      if (existingNotification.user_id !== userId || existingNotification.tenant_id !== tenantId) {
         res.status(403).json({ error: 'Access denied' });
         return;
       }
@@ -399,8 +425,10 @@ export class NotificationController {
         res.status(401).json({ error: 'User not authenticated' });
         return;
       }
+      const tenantId = this.requireTenantId(req, res);
+      if (!tenantId) return;
 
-      const stats = await notificationService.getNotificationStats(userId, this.getTenantId(req));
+      const stats = await notificationService.getNotificationStats(userId, tenantId);
 
       res.json({
         success: true,

@@ -32,14 +32,14 @@ function normalizeVerifiedUser(decoded: any, source: VerifiedAuthUser['source'])
 }
 
 export function extractRequestToken(req: Request): string | null {
-  const cookieToken = (req as any).cookies?.session_token;
-  if (cookieToken) {
-    return cookieToken;
-  }
-
   const authHeader = req.headers['authorization'];
   if (authHeader && authHeader.startsWith('Bearer ')) {
     return authHeader.split(' ')[1];
+  }
+
+  const cookieToken = (req as any).cookies?.session_token;
+  if (cookieToken) {
+    return cookieToken;
   }
 
   return null;

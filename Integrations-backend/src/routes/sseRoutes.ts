@@ -9,6 +9,42 @@ const router = Router();
 // Apply SSE authentication middleware to all SSE routes
 router.use(authenticateSSE);
 
+function resolveSseTenantSlug(req: AuthenticatedSSERequest, res: any): string | null {
+  const resolvedSlug = String((req as any).tenant?.tenantSlug || '').trim();
+  const requestedSlug = String(((req as any).query.tenantSlug as string) || '').trim();
+
+  if (!resolvedSlug) {
+    logger.warn('SSE request rejected without workspace context', {
+      user_id: req.user?.id,
+      requestedSlug,
+      url: (req as any).url
+    });
+    if (!res.headersSent) {
+      res.status(400).json({ error: 'Workspace context required for realtime events' });
+    } else {
+      closeSSEConnection(res);
+    }
+    return null;
+  }
+
+  if (requestedSlug && requestedSlug !== resolvedSlug) {
+    logger.warn('SSE request rejected for workspace mismatch', {
+      user_id: req.user?.id,
+      requestedSlug,
+      resolvedSlug,
+      url: (req as any).url
+    });
+    if (!res.headersSent) {
+      res.status(403).json({ error: 'Realtime workspace mismatch' });
+    } else {
+      closeSSEConnection(res);
+    }
+    return null;
+  }
+
+  return resolvedSlug;
+}
+
 // Unified stream that sends an initial event and registers the connection.
 // Other parts of the system can still target specific event names via sseHub.sendEvent(userId, event, data)
 router.get('/stream', (req: AuthenticatedSSERequest, res) => {
@@ -17,7 +53,8 @@ router.get('/stream', (req: AuthenticatedSSERequest, res) => {
     closeSSEConnection(res);
     return;
   }
-  const tenantSlug = ((req as any).query.tenantSlug as string) || 'beta';
+  const tenantSlug = resolveSseTenantSlug(req, res);
+  if (!tenantSlug) return;
 
   openAuthenticatedSSEStream(req, res);
 
@@ -58,7 +95,8 @@ router.get('/status', (req: AuthenticatedSSERequest, res) => {
     closeSSEConnection(res);
     return;
   }
-  const tenantSlug = ((req as any).query.tenantSlug as string) || 'beta';
+  const tenantSlug = resolveSseTenantSlug(req, res);
+  if (!tenantSlug) return;
 
   openAuthenticatedSSEStream(req, res);
 
@@ -122,7 +160,8 @@ router.get('/recent', async (req: AuthenticatedSSERequest, res) => {
     });
   }
 
-  const tenantSlug = String(((req as any).query.tenantSlug as string) || '').trim() || undefined;
+  const tenantSlug = resolveSseTenantSlug(req, res);
+  if (!tenantSlug) return;
   const limit = Math.max(1, Math.min(Number((req as any).query.limit || 50), 100));
 
   return res.json({
@@ -145,7 +184,8 @@ router.get('/sync-progress/:syncId', (req: AuthenticatedSSERequest, res) => {
     closeSSEConnection(res);
     return;
   }
-  const tenantSlug = ((req as any).query.tenantSlug as string) || 'beta';
+  const tenantSlug = resolveSseTenantSlug(req, res);
+  if (!tenantSlug) return;
 
   openAuthenticatedSSEStream(req, res);
 
@@ -207,7 +247,8 @@ router.get('/detection-updates/:syncId', (req: AuthenticatedSSERequest, res) => 
     closeSSEConnection(res);
     return;
   }
-  const tenantSlug = ((req as any).query.tenantSlug as string) || 'beta';
+  const tenantSlug = resolveSseTenantSlug(req, res);
+  if (!tenantSlug) return;
 
   openAuthenticatedSSEStream(req, res);
 
@@ -262,7 +303,8 @@ router.get('/financial-events', (req: AuthenticatedSSERequest, res) => {
     closeSSEConnection(res);
     return;
   }
-  const tenantSlug = ((req as any).query.tenantSlug as string) || 'beta';
+  const tenantSlug = resolveSseTenantSlug(req, res);
+  if (!tenantSlug) return;
 
   openAuthenticatedSSEStream(req, res);
 
@@ -320,26 +362,26 @@ router.get('/connection-status', (req: AuthenticatedSSERequest, res) => {
     });
   }
 
-  const hasConnection = sseHub.hasConnection(userId);
-  const connectionCount = sseHub.getConnectionCount(userId);
-  const allConnectedUsers = sseHub.getConnectedUsers();
+  const tenantSlug = resolveSseTenantSlug(req, res);
+  if (!tenantSlug) return;
+  const hasConnection = sseHub.hasConnection(userId, tenantSlug);
+  const connectionCount = sseHub.getConnectionCount(userId, tenantSlug);
 
   logger.info('🔍 [SSE ROUTES] Connection status check', {
     user_id: userId,
     hasConnection,
     connectionCount,
-    allConnectedUsers
+    tenantSlug
   });
 
   res.json({
     success: true,
-    user_id: userId,
     hasConnection,
     connectionCount,
-    allConnectedUsers,
+    tenantSlug,
     message: hasConnection
-      ? `User ${userId} has ${connectionCount} active SSE connection(s)`
-      : `User ${userId} has no active SSE connections. Make sure to connect to /api/sse/status first.`
+      ? `This workspace has ${connectionCount} active SSE connection(s) for your session.`
+      : 'This workspace has no active SSE connections for your session. Make sure to connect to /api/sse/status first.'
   });
 });
 
@@ -351,7 +393,8 @@ router.get('/notifications', (req: AuthenticatedSSERequest, res) => {
     closeSSEConnection(res);
     return;
   }
-  const tenantSlug = ((req as any).query.tenantSlug as string) || 'beta';
+  const tenantSlug = resolveSseTenantSlug(req, res);
+  if (!tenantSlug) return;
 
   openAuthenticatedSSEStream(req, res);
 

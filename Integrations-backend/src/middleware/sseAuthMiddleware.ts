@@ -88,16 +88,13 @@ export const authenticateSSE = async (
       }
     }
 
-    // EventSource can't send custom headers, so we need to support cookies
-    // Priority 1: Check cookie (session_token) - this is how EventSource sends auth
-    const cookieToken = (req as any).cookies?.session_token;
-
-    // Priority 2: Check Authorization header (for testing with curl/Postman)
+    // Prefer the explicit bearer token the current frontend session sends.
+    // Fall back to the cookie only for clients that cannot send custom headers.
     const authHeader = (req as any).headers?.authorization;
     const headerToken = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    const cookieToken = (req as any).cookies?.session_token;
 
-    // Use cookie token if available, otherwise use header token
-    const token = cookieToken || headerToken;
+    const token = headerToken || cookieToken;
 
     if (!token) {
       if (getExplicitDemoSignal(req)) {
