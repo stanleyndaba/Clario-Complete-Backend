@@ -24,6 +24,7 @@
     "db:migrate:generate": "ts-node scripts/run-migrations-supabase.ts",
     "db:migrate:single": "psql -d $DATABASE_URL -f migrations/005_add_dispute_system.sql",
     "db:seed": "ts-node scripts/seed.ts",
+    "seed:acme-demo": "ts-node scripts/seed-acme-operations-demo.ts",
     "worker:detection": "ts-node src/services/enhancedDetectionService.ts",
     "worker:dispute": "ts-node src/services/disputeService.ts",
     "worker:recoveries-lane": "node dist/workers/startRecoveriesLane.js",
