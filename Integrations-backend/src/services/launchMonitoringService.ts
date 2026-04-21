@@ -125,6 +125,33 @@ function normalize(value: unknown): string {
   return String(value || '').trim().toLowerCase();
 }
 
+function isQueueCapacityDetail(value: unknown): boolean {
+  const normalized = normalize(value);
+  return (
+    normalized.includes('redis_quota_exceeded') ||
+    normalized.includes('max requests limit exceeded') ||
+    normalized.includes('upstash.com/docs/redis') ||
+    normalized.includes('dispatch queue cannot safely accept more work')
+  );
+}
+
+function sellerSafeOperationalDetail(value: unknown, fallback: string): string {
+  const raw = String(value || '').trim();
+  if (isQueueCapacityDetail(raw)) {
+    return 'Automatic filing is paused because Margin filing capacity is temporarily unavailable. This case is safely held and will retry when filing capacity is available.';
+  }
+
+  if (raw) {
+    return raw
+      .replace(/\s*\(redis_quota_exceeded:[^)]+\)/gi, '')
+      .replace(/https?:\/\/\S+/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  return fallback;
+}
+
 function asIsoTimestamp(value: unknown): string | null {
   if (!value) return null;
   const parsed = new Date(String(value));
@@ -222,17 +249,19 @@ export function buildBlockedEvents(cases: DisputeCaseMonitorRow[]): LaunchMonito
     .filter((record) => ['duplicate_blocked', 'insufficient_data', 'thread_only', 'safety_hold'].includes(normalize(record.eligibility_status)))
     .map((record) => {
       const eligibility = normalize(record.eligibility_status);
+      const isQueuePaused = isQueueCapacityDetail(record.last_error);
       const title =
-        eligibility === 'duplicate_blocked'
+        isQueuePaused
+          ? 'Filing queue paused'
+          : eligibility === 'duplicate_blocked'
           ? 'Duplicate detected - not filed'
           : eligibility === 'insufficient_data'
             ? 'Awaiting verified identifiers'
             : eligibility === 'thread_only'
               ? 'Amazon thread detected'
               : 'Safety hold';
-      const detail =
-        record.last_error ||
-        `${formatCaseReference(record)} is currently held as ${eligibility.replace(/_/g, ' ')} for ${formatCaseType(record)}.`;
+      const fallbackDetail = `${formatCaseReference(record)} is currently held as ${eligibility.replace(/_/g, ' ')} for ${formatCaseType(record)}.`;
+      const detail = sellerSafeOperationalDetail(record.last_error, fallbackDetail);
       return {
         id: `case_blocked:${record.id}`,
         event_type: 'case_blocked',
@@ -344,7 +373,7 @@ export function buildNotificationEvents(notifications: NotificationMonitorRow[])
         event_type: eventType,
         title,
         detail: status === 'failed' || status === 'partial'
-          ? record.last_delivery_error || record.message || 'Notification delivery needs attention.'
+          ? sellerSafeOperationalDetail(record.last_delivery_error || record.message, 'Notification delivery needs attention.')
           : record.message || record.title || title,
         severity: status === 'failed' ? 'high' : status === 'partial' ? 'medium' : type === 'needs_evidence' ? 'high' : 'low',
         timestamp: asIsoTimestamp(record.created_at || record.updated_at) || new Date(0).toISOString(),
