@@ -349,11 +349,11 @@ function deriveEvidenceState(record: any, matchedDocumentCount: number, evidence
 
 function deriveNextAction(row: any) {
   const filingStatus = normalize(row.filing_status);
-  const recoveryStatus = normalize(row.recovery_status);
   const billingStatus = normalize(row.billing_status);
   const operationalState = normalize(row.operational_state);
   const eligibilityStatus = deriveEligibilityStatus(row);
   const hasLinkedDisputeCase = row.has_real_dispute_case === true && Boolean(row.linked_dispute_case_id);
+  const actualPayoutAmount = toMoney(row.actual_payout_amount);
 
   if (!hasLinkedDisputeCase && row.entity_type === 'detection') {
     if (normalize(row.proof_status) === 'supportable_but_not_case_eligible') {
@@ -365,8 +365,8 @@ function deriveNextAction(row: any) {
   }
 
   if (BILLING_COMPLETE_STATUSES.has(billingStatus)) return 'Billing complete';
-  if (recoveryStatus === 'reconciled' && billingStatus === 'pending') return 'Billing pending';
-  if (recoveryStatus === 'reconciled') return 'Recovered';
+  if (actualPayoutAmount !== null && actualPayoutAmount > 0 && billingStatus === 'pending') return 'Billing pending';
+  if (actualPayoutAmount !== null && actualPayoutAmount > 0) return 'Payout detected, review reconciliation';
   if (eligibilityStatus === 'DUPLICATE_BLOCKED') return 'Duplicate detected - not filed';
   if (eligibilityStatus === 'THREAD_ONLY') {
     return row.case_origin === 'amazon_thread_backfill' || row.amazon_case_id
@@ -379,7 +379,6 @@ function deriveNextAction(row: any) {
   if (operationalState === 'deferred_explicit') return 'Deferred operationally';
   if (operationalState === 'blocked_operational') return 'Dispatch blocked';
   if (operationalState === 'failed_durable') return 'Operational failure';
-  if (row.actual_payout_amount) return 'Payout detected, review reconciliation';
   if (row.has_rejection_truth === true) return 'Review Amazon response';
   if (row.has_approval_truth === true) return 'Waiting for payout';
   if (row.has_filing_truth === true) return 'Filed / awaiting Amazon';
@@ -616,7 +615,7 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
       proof_status: proofStatus,
       missing_requirements: missingRequirements,
       manual_review_reason: manualReviewReason,
-      payout_proof_status: actualPayoutAmount != null
+      payout_proof_status: actualPayoutAmount != null && actualPayoutAmount > 0
         ? 'verified'
         : normalize(record.recovery_status) === 'quarantined'
           ? 'quarantined'
@@ -860,9 +859,8 @@ export async function getDisputeCaseQueue(filters: DisputeCaseQueueFilters) {
 
   const isRecoveredRow = (row: any) => {
     const financialSummary = getFinancialSummaryForRow(row);
-    return normalize(row.recovery_status) === 'reconciled'
-      || Boolean(row.actual_payout_amount)
-      || financialSummary?.payout_status === 'paid';
+    return (toMoney(row.actual_payout_amount) !== null && Number(row.actual_payout_amount) > 0)
+      || (financialSummary?.payout_status === 'paid' && Number(financialSummary?.verified_paid_amount || 0) > 0);
   };
 
   const isFiledRow = (row: any) => {

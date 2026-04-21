@@ -492,6 +492,7 @@ function deriveNextStepContext(
     const rejectionReason = record?.rejection_reason || null;
     const evidenceCount = evidenceTruth?.linkedDocumentCount ?? getEvidenceDocumentCount(documents);
     const hasEvidence = evidenceCount > 0;
+    const actualPayoutAmount = toOptionalAmount(record?.recovered_amount ?? record?.actual_payout_amount);
 
     if (entityType === 'detection') {
         return hasEvidence
@@ -556,7 +557,7 @@ function deriveNextStepContext(
         };
     }
 
-    if (billingStatus === 'pending' && recoveryStatus === 'reconciled') {
+    if (billingStatus === 'pending' && recoveryStatus === 'reconciled' && actualPayoutAmount !== null && actualPayoutAmount > 0) {
         return {
             key: 'billing_pending',
             title: 'Billing pending',
@@ -565,7 +566,7 @@ function deriveNextStepContext(
         };
     }
 
-    if (recoveryStatus === 'reconciled') {
+    if (recoveryStatus === 'reconciled' && actualPayoutAmount !== null && actualPayoutAmount > 0) {
         return {
             key: 'payout_reconciled',
             title: 'Payout reconciled',
@@ -696,7 +697,7 @@ function buildCaseResponse(
         ? proofSnapshot.filingRecommendation
         : null;
     const missingRequirements = evidenceTruth?.missingRequirements || (entityTruth.entity_type === 'detection' ? ['case_creation_required'] : []);
-    const payoutProofStatus = actualPayoutAmount != null
+    const payoutProofStatus = actualPayoutAmount != null && actualPayoutAmount > 0
         ? 'verified'
         : normalize(record?.recovery_status) === 'quarantined'
             ? 'quarantined'
