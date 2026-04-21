@@ -142,6 +142,54 @@ async function deleteDemoTokenRows(): Promise<void> {
   }
 }
 
+async function releaseSellerIdentityFromOtherDemoProfiles(): Promise<void> {
+  const { data, error } = await db
+    .from('users')
+    .select('id, email, tenant_id, last_active_tenant_id, amazon_seller_id, seller_id, company_name')
+    .eq('amazon_seller_id', sellerId)
+    .neq('id', demoUserId);
+
+  if (error && !isSchemaError(error)) {
+    throw new Error(`Failed checking existing Acme seller profile: ${error.message}`);
+  }
+
+  if (error || !data?.length) return;
+
+  const nonDemoProfiles = data.filter((row) => {
+    const isAcmeDemoProfile =
+      row.id === DEFAULT_DEMO_USER_ID ||
+      row.tenant_id === resolvedTenantId ||
+      row.last_active_tenant_id === resolvedTenantId ||
+      row.email === 'demo@acme-operations.test' ||
+      row.company_name === 'Acme Operations';
+
+    return !isAcmeDemoProfile;
+  });
+
+  if (nonDemoProfiles.length) {
+    const ids = nonDemoProfiles.map((row) => row.id).join(', ');
+    throw new Error(`Refusing to reassign ${sellerId}; non-demo user profile(s) already use it: ${ids}`);
+  }
+
+  for (const row of data) {
+    const archivedSellerId = `${sellerId}-archived-${String(row.id).slice(0, 8)}`;
+    const { error: updateError } = await db
+      .from('users')
+      .update({
+        amazon_seller_id: archivedSellerId,
+        seller_id: row.seller_id === sellerId ? archivedSellerId : row.seller_id,
+        updated_at: iso()
+      })
+      .eq('id', row.id);
+
+    if (updateError && !isSchemaError(updateError)) {
+      throw new Error(`Failed releasing old Acme demo seller profile ${row.id}: ${updateError.message}`);
+    }
+  }
+
+  console.log(`released ${sellerId} from ${data.length} old Acme demo profile(s).`);
+}
+
 async function writeRows<T extends Record<string, any>>(
   table: string,
   rows: T[],
@@ -852,6 +900,10 @@ function disputeRows() {
     platform_fee_cents: 0,
     seller_payout_cents: row.actual_payout_amount ? Math.round(Number(row.actual_payout_amount) * 100) : null,
     resolution_amount: row.approved_amount,
+    evidence_attachments: {
+      ...(row.evidence_attachments || {}),
+      ...primaryEvidenceMatchForDispute(row.id)
+    },
     case_origin: row.case_origin || 'detection_pipeline',
     origin_metadata: row.origin_metadata || {},
     deleted_at: null
@@ -1003,27 +1055,49 @@ function evidenceDocuments() {
     metadata: {
       demo_seed: true,
       ingestion_method: 'acme_operations_demo_seed',
-      original_filename: `${invoiceNumber}.pdf`
+      original_filename: `${invoiceNumber}.pdf`,
+      supplier,
+      invoice_number: invoiceNumber,
+      amount,
+      sku,
+      asin
     },
     created_at: iso(days),
     updated_at: iso(days, 2)
   }));
 }
 
-function evidenceLinks() {
-  const pairs = [
-    ['00000000-0000-0000-0000-000000006001', disputes[0].id, '00000000-0000-0000-0000-000000004101', 0.98],
-    ['00000000-0000-0000-0000-000000006002', disputes[0].id, '00000000-0000-0000-0000-000000004102', 0.95],
-    ['00000000-0000-0000-0000-000000006003', disputes[1].id, '00000000-0000-0000-0000-000000004103', 0.92],
-    ['00000000-0000-0000-0000-000000006004', disputes[2].id, '00000000-0000-0000-0000-000000004104', 0.91],
-    ['00000000-0000-0000-0000-000000006005', disputes[3].id, '00000000-0000-0000-0000-000000004105', 0.96],
-    ['00000000-0000-0000-0000-000000006006', disputes[4].id, '00000000-0000-0000-0000-000000004106', 0.97],
-    ['00000000-0000-0000-0000-000000006007', disputes[5].id, '00000000-0000-0000-0000-000000004107', 0.94],
-    ['00000000-0000-0000-0000-000000006008', disputes[6].id, '00000000-0000-0000-0000-000000004108', 0.57],
-    ['00000000-0000-0000-0000-000000006009', disputes[8].id, '00000000-0000-0000-0000-000000004110', 0.72]
-  ] as const;
+const evidenceLinkPairs = [
+  ['00000000-0000-0000-0000-000000006001', disputes[0].id, '00000000-0000-0000-0000-000000004101', 0.98],
+  ['00000000-0000-0000-0000-000000006002', disputes[0].id, '00000000-0000-0000-0000-000000004102', 0.95],
+  ['00000000-0000-0000-0000-000000006003', disputes[1].id, '00000000-0000-0000-0000-000000004103', 0.92],
+  ['00000000-0000-0000-0000-000000006004', disputes[2].id, '00000000-0000-0000-0000-000000004104', 0.91],
+  ['00000000-0000-0000-0000-000000006005', disputes[3].id, '00000000-0000-0000-0000-000000004105', 0.96],
+  ['00000000-0000-0000-0000-000000006006', disputes[4].id, '00000000-0000-0000-0000-000000004106', 0.97],
+  ['00000000-0000-0000-0000-000000006007', disputes[5].id, '00000000-0000-0000-0000-000000004107', 0.94],
+  ['00000000-0000-0000-0000-000000006008', disputes[6].id, '00000000-0000-0000-0000-000000004108', 0.57],
+  ['00000000-0000-0000-0000-000000006009', disputes[8].id, '00000000-0000-0000-0000-000000004110', 0.72]
+] as const;
 
-  return pairs.map(([id, dispute_case_id, evidence_document_id, relevance_score]) => ({
+function primaryEvidenceMatchForDispute(disputeId: string) {
+  const primary = evidenceLinkPairs.find(([, linkedDisputeId]) => linkedDisputeId === disputeId);
+  if (!primary) return {};
+
+  const [, , documentId, relevanceScore] = primary;
+  return {
+    document_id: documentId,
+    match_type: 'sku_asin_invoice',
+    match_confidence: relevanceScore,
+    matched_fields: ['sku', 'asin', 'invoice_number'],
+    matched_at: iso(-2),
+    evidence_document_ids: evidenceLinkPairs
+      .filter(([, linkedDisputeId]) => linkedDisputeId === disputeId)
+      .map(([, , evidenceDocumentId]) => evidenceDocumentId)
+  };
+}
+
+function evidenceLinks() {
+  return evidenceLinkPairs.map(([id, dispute_case_id, evidence_document_id, relevance_score]) => ({
     id,
     tenant_id: resolvedTenantId,
     dispute_case_id,
@@ -1979,6 +2053,7 @@ async function seedAcmeOperations(): Promise<void> {
     await resetTenantData();
 
     if (shouldUpsertUserProfile) {
+      await releaseSellerIdentityFromOtherDemoProfiles();
       await writeRows('users', [userProfileRow()], { onConflict: 'id' });
     } else {
       console.log('skip users profile update: set ALLOW_DEMO_PROFILE_UPSERT=true to update a non-default demo user profile.');
