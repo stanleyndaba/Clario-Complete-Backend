@@ -19,6 +19,7 @@ const PUBLIC_PATHS = [
   '/',
   '/api/status',
   '/api/metrics/track',
+  '/api/support/public-contact',
   '/api/v1/integrations/amazon/diagnose/live',
   '/api/v1/integrations/amazon/diagnose/seller-central-readiness',
   '/api/integrations/amazon/diagnose/live',

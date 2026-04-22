@@ -114,6 +114,108 @@ async function sendSupportInboxEmail(args: {
     });
 }
 
+async function sendPublicSupportInboxEmail(args: {
+    name: string;
+    email: string;
+    company: string | null;
+    subject: string;
+    message: string;
+    sourcePage: string | null;
+}): Promise<void> {
+    const safeSubject = args.subject.trim();
+    const rows = [
+        ['Name', args.name],
+        ['Reply email', args.email],
+        ['Company', args.company || 'Not provided'],
+        ['Source page', args.sourcePage || 'Public contact page'],
+    ];
+    const htmlRows = rows.map(([label, value]) => `
+        <tr>
+          <td style="padding:6px 12px 6px 0;color:#666;font-weight:600;white-space:nowrap;">${escapeHtml(label)}</td>
+          <td style="padding:6px 0;color:#111;">${escapeHtml(value)}</td>
+        </tr>
+      `).join('');
+
+    const text = [
+        `New Margin public support request`,
+        ``,
+        ...rows.map(([label, value]) => `${label}: ${value}`),
+        ``,
+        `Subject: ${safeSubject}`,
+        ``,
+        args.message,
+    ].join('\n');
+
+    const html = `
+      <div style="font-family:Inter,Arial,sans-serif;color:#111;line-height:1.5;">
+        <h2 style="margin:0 0 12px;font-size:18px;">New Margin public support request</h2>
+        <table style="border-collapse:collapse;margin-bottom:16px;">${htmlRows}</table>
+        <h3 style="margin:16px 0 8px;font-size:14px;">Subject</h3>
+        <p style="margin:0 0 16px;">${escapeHtml(safeSubject)}</p>
+        <h3 style="margin:16px 0 8px;font-size:14px;">Message</h3>
+        <div style="white-space:pre-wrap;border-top:1px solid #ddd;padding-top:12px;">${escapeHtml(args.message)}</div>
+      </div>
+    `;
+
+    await notificationService.sendEmail({
+        to: SUPPORT_INBOX_EMAIL,
+        subject: `[Margin Contact] ${safeSubject}`,
+        html,
+        text,
+        replyTo: args.email,
+    });
+}
+
+export async function createPublicSupportContact(req: Request, res: Response) {
+    try {
+        const {
+            name,
+            email,
+            company,
+            subject,
+            message,
+            source_page,
+        } = req.body || {};
+
+        const normalizedName = typeof name === 'string' ? name.trim() : '';
+        const normalizedEmail = normalizeContactEmail(email);
+        const normalizedSubject = typeof subject === 'string' ? subject.trim() : '';
+        const normalizedMessage = typeof message === 'string' ? message.trim() : '';
+        const normalizedCompany = typeof company === 'string' && company.trim() ? company.trim() : null;
+        const normalizedSourcePage = typeof source_page === 'string' && source_page.trim() ? source_page.trim() : null;
+
+        if (!normalizedName || !normalizedEmail || !normalizedSubject || !normalizedMessage) {
+            return res.status(400).json({
+                success: false,
+                error: 'Name, valid email, subject, and message are required'
+            });
+        }
+
+        await sendPublicSupportInboxEmail({
+            name: normalizedName,
+            email: normalizedEmail,
+            company: normalizedCompany,
+            subject: normalizedSubject,
+            message: normalizedMessage,
+            sourcePage: normalizedSourcePage,
+        });
+
+        return res.status(202).json({
+            success: true,
+            email_sent_to: SUPPORT_INBOX_EMAIL,
+        });
+    } catch (error: any) {
+        logger.error('Failed to send public support contact email', {
+            error: error?.message,
+            stack: error?.stack,
+        });
+        return res.status(502).json({
+            success: false,
+            error: `Email delivery to ${SUPPORT_INBOX_EMAIL} failed. Please email ${SUPPORT_INBOX_EMAIL} directly.`
+        });
+    }
+}
+
 export async function createSupportRequest(req: Request, res: Response) {
     try {
         const { tenantId, userId } = getRequestScope(req);
