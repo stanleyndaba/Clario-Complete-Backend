@@ -127,6 +127,56 @@ function buildReferenceSet(context: FinancialContext): Set<string> {
   );
 }
 
+function isMissingColumnError(error?: any): boolean {
+  if (!error) return false;
+  const message = `${error.message || ''} ${error.details || ''} ${error.hint || ''}`.toLowerCase();
+  return String(error.code || '') === '42703' ||
+    String(error.code || '') === 'PGRST204' ||
+    message.includes('does not exist') ||
+    message.includes('could not find');
+}
+
+function parseMissingColumn(error?: any): string | null {
+  const message = `${error?.message || ''} ${error?.details || ''}`;
+  const quoted = message.match(/'([^']+)' column/i);
+  if (quoted?.[1]) return quoted[1];
+  const doubleQuoted = message.match(/column\s+(?:[a-z0-9_]+\.)?"([^"]+)"/i);
+  if (doubleQuoted?.[1]) return doubleQuoted[1];
+  const unquoted = message.match(/column\s+(?:[a-z0-9_]+\.)?([a-z0-9_]+)\s+does not exist/i);
+  if (unquoted?.[1]) return unquoted[1];
+  return null;
+}
+
+async function selectRowsWithSchemaFallback(
+  table: string,
+  columns: string[],
+  configure: (query: any) => any
+): Promise<any[]> {
+  const omitted = new Set<string>();
+  const client = supabaseAdmin as any;
+
+  for (let attempt = 0; attempt <= columns.length; attempt += 1) {
+    const selectedColumns = columns.filter((column) => !omitted.has(column));
+    const { data, error } = await configure(
+      client
+        .from(table)
+        .select(selectedColumns.join(', '))
+    );
+
+    if (!error) return data || [];
+
+    const missingColumn = parseMissingColumn(error);
+    if (missingColumn && columns.includes(missingColumn)) {
+      omitted.add(missingColumn);
+      continue;
+    }
+
+    throw error;
+  }
+
+  return [];
+}
+
 class RecoveryFinancialTruthService {
   private async loadContexts(tenantId: string, caseIds: string[]): Promise<FinancialContext[]> {
     const requestedIds = Array.from(new Set(caseIds.map((value) => String(value || '').trim()).filter(Boolean)));
@@ -134,42 +184,62 @@ class RecoveryFinancialTruthService {
       return [];
     }
 
-    const [disputeByIdResult, disputeByDetectionResult, directDetectionsResult] = await Promise.all([
-      supabaseAdmin
-        .from('dispute_cases')
-        .select('id, detection_result_id, tenant_id, store_id, seller_id, case_number, claim_id, amazon_case_id, order_id, sku, asin, currency, claim_amount, approved_amount')
-        .eq('tenant_id', tenantId)
-        .in('id', requestedIds),
-      supabaseAdmin
-        .from('dispute_cases')
-        .select('id, detection_result_id, tenant_id, store_id, seller_id, case_number, claim_id, amazon_case_id, order_id, sku, asin, currency, claim_amount, approved_amount')
-        .eq('tenant_id', tenantId)
-        .in('detection_result_id', requestedIds),
-      supabaseAdmin
-        .from('detection_results')
-        .select('id, tenant_id, store_id, seller_id, order_id, sku, asin, currency, estimated_value')
-        .eq('tenant_id', tenantId)
-        .in('id', requestedIds)
+    const disputeColumns = [
+      'id',
+      'detection_result_id',
+      'tenant_id',
+      'store_id',
+      'seller_id',
+      'case_number',
+      'claim_id',
+      'amazon_case_id',
+      'order_id',
+      'sku',
+      'asin',
+      'currency',
+      'claim_amount',
+      'approved_amount'
+    ];
+    const detectionColumns = [
+      'id',
+      'tenant_id',
+      'store_id',
+      'seller_id',
+      'order_id',
+      'sku',
+      'asin',
+      'currency',
+      'estimated_value'
+    ];
+
+    const [disputeByIdRows, disputeByDetectionRows, directDetectionsRows] = await Promise.all([
+      selectRowsWithSchemaFallback('dispute_cases', disputeColumns, (query) =>
+        query.eq('tenant_id', tenantId).in('id', requestedIds)
+      ),
+      selectRowsWithSchemaFallback('dispute_cases', disputeColumns, (query) =>
+        query.eq('tenant_id', tenantId).in('detection_result_id', requestedIds)
+      ),
+      selectRowsWithSchemaFallback('detection_results', detectionColumns, (query) =>
+        query.eq('tenant_id', tenantId).in('id', requestedIds)
+      )
     ]);
 
-    const disputeRows = dedupeById([...(disputeByIdResult.data || []), ...(disputeByDetectionResult.data || [])]);
-    const directDetections = dedupeById((directDetectionsResult.data || []) as any[]) as any[];
+    const disputeRows = dedupeById([...disputeByIdRows, ...disputeByDetectionRows]);
+    const directDetections = dedupeById(directDetectionsRows as any[]) as any[];
 
     const linkedDetectionIds = disputeRows
       .map((row: any) => String(row?.detection_result_id || '').trim())
       .filter(Boolean);
 
     const missingDetectionIds = linkedDetectionIds.filter((id) => !directDetections.some((row: any) => String(row?.id || '').trim() === id));
-    const linkedDetectionsResult = missingDetectionIds.length
-      ? await supabaseAdmin
-          .from('detection_results')
-          .select('id, tenant_id, store_id, seller_id, order_id, sku, asin, currency, estimated_value')
-          .eq('tenant_id', tenantId)
-          .in('id', missingDetectionIds)
-      : { data: [] as any[] };
+    const linkedDetections = missingDetectionIds.length
+      ? await selectRowsWithSchemaFallback('detection_results', detectionColumns, (query) =>
+          query.eq('tenant_id', tenantId).in('id', missingDetectionIds)
+        )
+      : [];
 
     const detectionById = new Map<string, any>();
-    for (const row of [...directDetections, ...(dedupeById((linkedDetectionsResult.data || []) as any[]) as any[])]) {
+    for (const row of [...directDetections, ...(dedupeById(linkedDetections as any[]) as any[])]) {
       detectionById.set(String(row.id), row);
     }
 
@@ -224,11 +294,14 @@ class RecoveryFinancialTruthService {
   private async queryFinancialEvents(tenantId: string, field: string, values: string[]): Promise<any[]> {
     const normalizedValues = Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
     if (!normalizedValues.length) return [];
-    const { data } = await supabaseAdmin
+    const client = supabaseAdmin as any;
+    const { data, error } = await client
       .from('financial_events')
       .select('*')
       .eq('tenant_id', tenantId)
-      .in(field as any, normalizedValues as any);
+      .in(field, normalizedValues);
+    if (error && isMissingColumnError(error)) return [];
+    if (error) throw error;
     return data || [];
   }
 
