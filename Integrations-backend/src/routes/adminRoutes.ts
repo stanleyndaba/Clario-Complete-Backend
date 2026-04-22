@@ -106,6 +106,7 @@ router.get('/users', async (req: Request, res: Response) => {
         const { data: users, error } = await supabaseAdmin
             .from('users')
             .select('id, email, role, status, created_at, last_login_at, amazon_seller_id, tenant_id')
+            .is('deleted_at', null)
             .order('created_at', { ascending: false });
 
         if (error) throw error;
