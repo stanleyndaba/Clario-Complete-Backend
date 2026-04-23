@@ -2315,19 +2315,31 @@ function eventBelongsToRecovery(
 
 function formatAgentEventMessage(event: any): string {
     const metadata = event.metadata || {};
+    const filename = firstString(metadata.filename, metadata.file_name, metadata.document_name);
+    const matchedFields = Array.isArray(metadata.matched_fields) ? metadata.matched_fields : [];
+    const matchFieldCopy = matchedFields.length ? ` on ${matchedFields.join(', ')}` : '';
+    const confidence = firstNumber(metadata.confidence);
+    const confidenceCopy = confidence !== null
+        ? ` (${confidence > 1 ? Math.round(confidence) : Math.round(confidence * 100)}% confidence)`
+        : '';
     switch (event.event_type) {
         case 'matching_completed':
-            return `Evidence matched with confidence ${metadata.confidence ?? 'unknown'}.`;
+            return `${filename ? `${filename} matched` : 'Evidence matched'}${matchFieldCopy}${confidenceCopy}.`;
         case 'filing_completed':
+            return metadata.amazon_case_id
+                ? `Claim filed to Amazon as ${metadata.amazon_case_id}.`
+                : 'Claim filing status updated in Amazon.';
         case 'case_approved':
-            return `Claim filing status updated in Amazon.`;
+            return metadata.amazon_case_id
+                ? `Amazon approved ${metadata.amazon_case_id}.`
+                : 'Claim filing status updated in Amazon.';
         case 'recovery_detected':
         case 'recovery_reconciled':
-            return `Recovery detected for ${formatCurrency(metadata.actualAmount || metadata.expectedAmount || 0, 'USD')}.`;
+            return `Recovery detected for ${formatCurrency(metadata.actualAmount || metadata.expectedAmount || 0, 'USD')}${metadata.settlement_id ? ` in ${metadata.settlement_id}` : ''}.`;
         case 'billing_completed':
             return `Billing recorded for ${formatCurrency(metadata.amountRecovered || 0, 'USD')}.`;
         case 'ingestion_completed':
-            return `Evidence ingestion completed.`;
+            return `Evidence ingestion completed${filename ? ` for ${filename}` : ''}${metadata.provider ? ` from ${metadata.provider}` : ''}.`;
         default:
             return event.event_type || 'Event recorded';
     }
