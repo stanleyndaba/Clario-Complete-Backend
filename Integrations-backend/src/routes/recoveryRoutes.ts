@@ -53,6 +53,64 @@ function toNullableFiniteAmount(value: unknown): number | null {
     return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
 }
 
+function firstString(...values: unknown[]): string | null {
+    for (const value of values) {
+        const text = String(value ?? '').trim();
+        if (text && text.toLowerCase() !== 'n/a') {
+            return text;
+        }
+    }
+    return null;
+}
+
+function firstNumber(...values: unknown[]): number | null {
+    for (const value of values) {
+        if (value === null || value === undefined || value === '') continue;
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) {
+            return parsed;
+        }
+    }
+    return null;
+}
+
+function extractDocumentUnitCost(documents: any[], sku?: string | null, asin?: string | null): number | null {
+    const normalizedSku = normalize(sku);
+    const normalizedAsin = normalize(asin);
+
+    for (const document of Array.isArray(documents) ? documents : []) {
+        const parsed = parseJsonObject(document?.parsed_metadata);
+        const extracted = parseJsonObject(document?.extracted);
+        const metadata = parseJsonObject(document?.metadata);
+        const items = [
+            ...(Array.isArray(parsed?.items) ? parsed.items : []),
+            ...(Array.isArray(extracted?.items) ? extracted.items : [])
+        ];
+
+        for (const item of items) {
+            const itemSku = normalize(item?.sku);
+            const itemAsin = normalize(item?.asin);
+            const identifiersMatch = !normalizedSku && !normalizedAsin
+                ? true
+                : (normalizedSku && itemSku === normalizedSku) || (normalizedAsin && itemAsin === normalizedAsin);
+
+            if (!identifiersMatch) continue;
+
+            const unitCost = firstNumber(item?.unit_cost, item?.unitPrice, item?.unit_price, item?.cost);
+            if (unitCost !== null && unitCost > 0) {
+                return Number(unitCost.toFixed(2));
+            }
+        }
+
+        const metadataUnitCost = firstNumber(metadata?.unit_cost, metadata?.unitCost, document?.unit_manufacturing_cost);
+        if (metadataUnitCost !== null && metadataUnitCost > 0) {
+            return Number(metadataUnitCost.toFixed(2));
+        }
+    }
+
+    return null;
+}
+
 function buildSubmissionProof(submission: any) {
     if (!submission) return null;
 
@@ -665,8 +723,15 @@ function buildCaseResponse(
         can_reply_to_thread: boolean;
         case_messages: any[];
     },
-    findingTruth?: any | null
+    findingTruth?: any | null,
+    sourceDetection?: any | null
 ) {
+    const recordEvidence = parseJsonObject(record?.evidence);
+    const detectionEvidence = parseJsonObject(sourceDetection?.evidence);
+    const combinedEvidence = {
+        ...detectionEvidence,
+        ...recordEvidence
+    };
     const isAmazonThreadBackfill = record?.case_origin === 'amazon_thread_backfill';
     const originMetadata = record?.origin_metadata && typeof record.origin_metadata === 'object'
         ? record.origin_metadata
@@ -715,6 +780,72 @@ function buildCaseResponse(
     const quarantineReason = normalize(record?.recovery_status) === 'quarantined'
         ? (record?.last_error || null)
         : null;
+    const resolvedSku = firstString(record?.sku, combinedEvidence?.sku, sourceDetection?.sku, 'N/A');
+    const resolvedAsin = firstString(record?.asin, combinedEvidence?.asin, sourceDetection?.asin);
+    const resolvedFacility = firstString(
+        record?.facility,
+        record?.warehouse,
+        combinedEvidence?.fulfillment_center,
+        combinedEvidence?.facility,
+        combinedEvidence?.warehouse
+    );
+    const resolvedUnitsLost = firstNumber(
+        record?.units_lost,
+        record?.quantity,
+        combinedEvidence?.units_lost,
+        combinedEvidence?.unitsLost,
+        combinedEvidence?.quantity_lost,
+        combinedEvidence?.quantity_gap,
+        combinedEvidence?.missing_quantity,
+        combinedEvidence?.discrepancy,
+        combinedEvidence?.quantity
+    );
+    const unitCostFromDocuments = extractDocumentUnitCost(documents, resolvedSku, resolvedAsin);
+    const computedValuePerUnit = requestedAmount !== null && resolvedUnitsLost !== null && resolvedUnitsLost > 0
+        ? Number((requestedAmount / resolvedUnitsLost).toFixed(2))
+        : null;
+    const resolvedUnitCost = firstNumber(
+        record?.unit_cost,
+        combinedEvidence?.unit_cost,
+        combinedEvidence?.unitCost,
+        combinedEvidence?.value_per_unit,
+        unitCostFromDocuments,
+        computedValuePerUnit
+    );
+    const resolvedValuePerUnit = firstNumber(
+        record?.value_per_unit,
+        combinedEvidence?.value_per_unit,
+        computedValuePerUnit,
+        resolvedUnitCost
+    );
+    const resolvedAnomalyType = firstString(record?.anomaly_type, sourceDetection?.anomaly_type, record?.case_type);
+    const resolvedProductName = firstString(
+        record?.product_name,
+        combinedEvidence?.product_name,
+        combinedEvidence?.product_title,
+        combinedEvidence?.item_name,
+        sourceDetection?.product_name,
+        resolvedSku,
+        record?.case_type,
+        record?.anomaly_type
+    );
+    const displayEvidence = {
+        ...combinedEvidence,
+        sku: resolvedSku,
+        asin: resolvedAsin,
+        fulfillment_center: resolvedFacility || combinedEvidence?.fulfillment_center || null,
+        quantity_gap: resolvedUnitsLost ?? combinedEvidence?.quantity_gap ?? null,
+        missing_quantity: resolvedUnitsLost ?? combinedEvidence?.missing_quantity ?? null,
+        unit_cost: resolvedUnitCost ?? combinedEvidence?.unit_cost ?? null,
+        value_per_unit: resolvedValuePerUnit ?? combinedEvidence?.value_per_unit ?? null
+    };
+    const strategyRecord = {
+        ...record,
+        anomaly_type: resolvedAnomalyType,
+        sku: resolvedSku,
+        asin: resolvedAsin,
+        evidence: displayEvidence
+    };
     const evidenceSummary = {
         matched_document_count: matchedDocumentCount,
         linked_document_count: matchedDocumentCount,
@@ -722,8 +853,8 @@ function buildCaseResponse(
         evidence_complete: evidenceTruth?.isEvidenceComplete ?? false,
         required_requirements: evidenceTruth?.requiredRequirements || [],
         missing_requirements: missingRequirements,
-        match_type: record?.evidence_attachments?.match_type || null,
-        match_confidence: record?.evidence_attachments?.match_confidence || null
+        match_type: evidenceAttachments?.match_type || null,
+        match_confidence: evidenceAttachments?.match_confidence || null
     };
 
     return {
@@ -751,21 +882,21 @@ function buildCaseResponse(
         coverage_family: findingTruth?.coverage_family || null,
         dispute_case_id: entityTruth.entity_type === 'dispute_case' ? record.id : null,
         detection_result_id: entityTruth.entity_type === 'dispute_case' ? (record.detection_result_id || null) : record.id,
-        title: record.case_type || record.anomaly_type || 'Claim Details',
+        title: resolvedAnomalyType || 'Claim Details',
         status: record.status || null,
         filing_status: record.filing_status || null,
         recovery_status: record.recovery_status || null,
         billing_status: record.billing_status || null,
-        eligibility_status: record.eligibility_status || record?.evidence_attachments?.decision_intelligence?.eligibility_status || null,
+        eligibility_status: record.eligibility_status || decisionIntelligence?.eligibility_status || null,
         case_origin: record.case_origin || 'detection_pipeline',
         origin_metadata: originMetadata,
         thread_backfilled_at: record.thread_backfilled_at || null,
         updated_at: record.updated_at || record.created_at || null,
-        createdDate: record.created_at || record.discovery_date || null,
+        createdDate: record.created_at || record.discovery_date || sourceDetection?.discovery_date || null,
         expectedPayoutDate: record.expected_payout_date || null,
-        sku: record.sku || record.evidence?.sku || 'N/A',
-        asin: record.asin || record.evidence?.asin || null,
-        productName: record.case_type || record.anomaly_type || 'Unknown Product',
+        sku: resolvedSku || 'N/A',
+        asin: resolvedAsin,
+        productName: resolvedProductName || 'Unknown Product',
         amazonCaseId: record.amazon_case_id || record.provider_case_id || null,
         case_state: threadTruth?.case_state || record.case_state || (record.amazon_case_id ? 'pending' : 'unlinked'),
         amazon_thread_linked: typeof threadTruth?.amazon_thread_linked === 'boolean'
@@ -777,19 +908,20 @@ function buildCaseResponse(
         provider_case_id: record.provider_case_id || record.amazon_case_id || null,
         currency: record.currency || 'USD',
         case_number: record.case_number || null,
-        claim_number: record.claim_id || record.case_number || record.claim_number || null,
+        claim_number: record.claim_id || record.case_number || record.claim_number || sourceDetection?.claim_number || null,
         seller_id: record.seller_id || null,
         user_id: record.user_id || null,
-        store_name: record.store_name || null,
+        store_name: record.store_name || combinedEvidence?.store_name || sourceDetection?.store_name || null,
         prior_case_id: record.prior_case_id || null,
-        warehouse: record.warehouse || null,
-        facility: record.facility || record.evidence?.fulfillment_center || null,
-        order_id: record.order_id || record.evidence?.order_id || null,
-        units_lost: record.units_lost ?? record.quantity ?? null,
-        units_is_verified: record.units_is_verified === true,
-        unit_cost: record.unit_cost ?? null,
-        confidence_score: typeof record.confidence_score === 'number' ? record.confidence_score : null,
-        anomaly_type: record.anomaly_type || record.case_type || null,
+        warehouse: record.warehouse || combinedEvidence?.warehouse || resolvedFacility || null,
+        facility: resolvedFacility,
+        order_id: record.order_id || combinedEvidence?.order_id || sourceDetection?.order_id || null,
+        units_lost: resolvedUnitsLost,
+        units_is_verified: record.units_is_verified === true || resolvedUnitsLost !== null,
+        unit_cost: resolvedUnitCost,
+        value_per_unit: resolvedValuePerUnit,
+        confidence_score: firstNumber(record?.confidence_score, record?.confidence, sourceDetection?.confidence_score, sourceDetection?.confidence, evidenceAttachments?.match_confidence),
+        anomaly_type: resolvedAnomalyType,
         estimated_claim_value: claimAmountUnknown
             ? null
             : (entityTruth.entity_type === 'detection'
@@ -800,10 +932,15 @@ function buildCaseResponse(
         requested_amount: requestedAmount,
         approved_amount: approvedAmount,
         actual_payout_amount: actualPayoutAmount,
-        billed_amount: typeof record.billed_amount === 'number' ? record.billed_amount : null,
+        billed_amount: typeof record.billed_amount === 'number'
+            ? record.billed_amount
+            : (typeof record.platform_fee_cents === 'number' && record.platform_fee_cents > 0 ? Number((record.platform_fee_cents / 100).toFixed(2)) : null),
         documents,
         evidence_attachments: record.evidence_attachments || null,
-        evidence: record.evidence || {},
+        evidence: displayEvidence,
+        evidenceStatus: evidenceSummary.evidence_complete
+            ? 'Evidence complete'
+            : (matchedDocumentCount > 0 ? 'Evidence linked' : null),
         evidence_summary: evidenceSummary,
         proof_status: proofStatus,
         missing_requirements: missingRequirements,
@@ -816,10 +953,15 @@ function buildCaseResponse(
         block_reasons: Array.isArray(record?.block_reasons) ? record.block_reasons : [],
         last_error: record?.last_error || null,
         duplicate_blocked: record.filing_status === 'duplicate_blocked' || record.duplicate_blocked === true,
+        prior_reimbursement_detected: record?.prior_reimbursement_detected === true || combinedEvidence?.prior_reimbursement_detected === true,
+        inventory_adjustment_applied: record?.inventory_adjustment_applied === true || combinedEvidence?.inventory_adjustment_applied === true,
+        warehouse_history: record?.warehouse_history || combinedEvidence?.warehouse_history || null,
+        safety_audit: record?.safety_audit || evidenceAttachments?.safety_audit || combinedEvidence?.safety_audit || null,
+        autonomous_logic_summary: record?.autonomous_logic_summary || combinedEvidence?.autonomous_logic_summary || null,
         generated_context: buildGeneratedContext(record),
         next_step_context: deriveNextStepContext(record, documents, entityTruth.entity_type, evidenceTruth),
         events,
-        ...generateCaseStrategy(record)
+        ...generateCaseStrategy(strategyRecord)
     };
 }
 
@@ -1606,7 +1748,8 @@ router.get('/:id', async (req: Request, res: Response) => {
                     can_reply_to_thread: canReplyToThread,
                     case_messages: caseMessages
                 },
-                findingTruth
+                findingTruth,
+                linkedDetection
             ));
         }
 
@@ -1649,7 +1792,8 @@ router.get('/:id', async (req: Request, res: Response) => {
                     has_payout: false
                 },
                 undefined,
-                findingTruth
+                findingTruth,
+                detectionResult
             ));
         }
 

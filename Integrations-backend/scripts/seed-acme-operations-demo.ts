@@ -355,6 +355,7 @@ async function resetTenantData(): Promise<void> {
     'recovery_cycles',
     'recent_platform_events',
     'notifications',
+    'agent_events',
     'user_notification_preferences',
     'sync_snapshots',
     'sync_progress',
@@ -415,7 +416,16 @@ function decisionIntelligence(params: {
         ? 'review_then_file'
         : 'submit_with_invoice_and_shipment_proof',
       operational_state: params.operationalState || 'ready',
-      operational_explanation: params.blockReasons?.[0] || 'Ready for the next workflow step.'
+      explanation_payload: {
+        justification: 'Acme demo truth links Amazon records, seller documents, and case status before any filing state is shown.',
+        assumptions: params.missing?.length ? [`Waiting on ${params.missing.join(', ')}`] : []
+      },
+      operational_explanation: {
+        reason: params.blockReasons?.[0]
+          ? `Case is held by ${params.blockReasons[0]}.`
+          : 'Evidence and identifiers are sufficient for the next workflow step.',
+        next_action: params.blockReasons?.[0] ? 'Review blocker' : 'Continue case workflow'
+      }
     },
     match_confidence: 0.94
   };
@@ -909,6 +919,146 @@ const disputes = [
   }
 ];
 
+const productNameBySku: Record<string, string> = {
+  'ACME-TRAVEL-MUG-BLK': 'Acme Black Travel Mug, 16 oz',
+  'ACME-CABLE-USB3-6FT': 'Acme USB-C Cable, 6 ft',
+  'ACME-DESK-LAMP-OAK': 'Acme Oak Desk Lamp',
+  'ACME-AIR-FILTER-3PK': 'Acme Air Filter 3-Pack',
+  'ACME-YOGA-MAT-SAGE': 'Acme Sage Yoga Mat',
+  'ACME-STORAGE-BIN-L': 'Acme Large Storage Bin',
+  'ACME-LED-STRIP-16FT': 'Acme LED Light Strip, 16 ft',
+  'ACME-PHONE-STAND-WHT': 'Acme White Phone Stand',
+  'ACME-BENTO-BOX-GRN': 'Acme Green Bento Box',
+  'ACME-CLEANING-CLOTH-12': 'Acme Microfiber Cleaning Cloth, 12-Pack',
+  'ACME-THERMAL-BAG-BLU': 'Acme Blue Thermal Delivery Bag'
+};
+
+function demoStoreNameForSku(sku?: string | null): string {
+  return sku === 'ACME-DESK-LAMP-OAK' || sku === 'ACME-AIR-FILTER-3PK'
+    ? 'Acme Operations EU FBA'
+    : 'Acme Operations US FBA';
+}
+
+function demoUnitCost(amount: unknown, quantity: unknown): number | null {
+  const parsedAmount = Number(amount);
+  const parsedQuantity = Number(quantity);
+  if (!Number.isFinite(parsedAmount) || !Number.isFinite(parsedQuantity) || parsedQuantity <= 0) {
+    return null;
+  }
+  return Number((parsedAmount / parsedQuantity).toFixed(2));
+}
+
+function caseDetailEvidenceForDetection(row: typeof detections[number]): Record<string, any> {
+  const evidence = (row.evidence || {}) as Record<string, any>;
+  const unitsAffected = Number(
+    evidence.quantity_gap ??
+    evidence.missing_quantity ??
+    evidence.quantity_lost ??
+    evidence.discrepancy ??
+    evidence.quantity ??
+    1
+  );
+  const resolvedUnits = Number.isFinite(unitsAffected) && unitsAffected > 0 ? unitsAffected : null;
+  const valuePerUnit = demoUnitCost(row.estimated_value, resolvedUnits);
+  const base = {
+    product_name: productNameBySku[row.sku] || row.sku,
+    store_name: demoStoreNameForSku(row.sku),
+    value_per_unit: valuePerUnit,
+    unit_cost: valuePerUnit,
+    units_lost: resolvedUnits,
+    units_is_verified: resolvedUnits !== null,
+    autonomous_logic_summary: 'Margin is using linked Amazon records and seller-side proof before showing this as a case action.',
+  };
+
+  const perClaim: Record<string, Record<string, any>> = {
+    'ACM-LI-2604-0001': {
+      total_receipts: 60,
+      total_returns: 0,
+      total_adjustments: 0,
+      total_input: 60,
+      total_shipments: 0,
+      total_removals: 0,
+      total_output: 0,
+      calculated_stock: 60,
+      ending_warehouse_balance: 46,
+      discrepancy: 14,
+      warehouse_history: {
+        occurrence_count: 4,
+        total_value_lost: 1516.32,
+        source: 'Acme inbound receiving ledger, last 90 days'
+      },
+      safety_audit: {
+        score: 98,
+        risk_of_warning: 'Low',
+        verified_by: 'Agent 7 pre-filing truth gate'
+      },
+      autonomous_logic_summary: '14 units were shipped to ONT8 but only 46 were received. Invoice and bill-of-lading evidence are linked before filing.'
+    },
+    'ACM-FD-2604-0002': {
+      charged_amount: 412.44,
+      expected_amount: 193.69,
+      fee_type: 'FBA fulfillment fee',
+      autonomous_logic_summary: 'Fee basis differs from the expected standard-size classification and is queued for review before filing.'
+    },
+    'ACM-OC-2604-0003': {
+      settlement_id: 'SETTLE-ACME-003',
+      total_charged: 1484.8,
+      total_expected: 742.4,
+      autonomous_logic_summary: 'Duplicate long-term storage adjustment is filed and waiting for Amazon case movement.'
+    },
+    'ACM-OC-2604-0004': {
+      settlement_id: 'SETTLE-ACME-004',
+      approved_source: 'Amazon case response',
+      autonomous_logic_summary: 'Amazon approved the duplicate reversal case; Margin is tracking payout confirmation.'
+    },
+    'ACM-DM-2604-0005': {
+      fulfillment_center: 'LGB8',
+      damage_code: 'WHSE_DAMAGED',
+      payout_settlement_id: 'SETTLE-ACME-PAYOUT-01',
+      autonomous_logic_summary: 'Warehouse damage reimbursement was detected in settlement and reconciled against the case.'
+    },
+    'ACM-FD-2604-0006': {
+      charged_amount: 997.36,
+      expected_amount: 362.48,
+      fee_type: 'Weight tier correction',
+      payout_settlement_id: 'SETTLE-ACME-PAYOUT-02',
+      autonomous_logic_summary: 'Weight tier correction was approved, paid, reconciled, and moved into billing truth.'
+    },
+    'ACM-LI-2604-0007': {
+      total_receipts: 48,
+      total_returns: 0,
+      total_adjustments: 0,
+      total_input: 48,
+      total_shipments: 0,
+      total_removals: 0,
+      total_output: 0,
+      calculated_stock: 48,
+      ending_warehouse_balance: 39,
+      discrepancy: 9,
+      warehouse_history: {
+        occurrence_count: 2,
+        total_value_lost: 639.25,
+        source: 'Acme inbound receiving ledger, last 60 days'
+      },
+      autonomous_logic_summary: 'Amazon rejected the first packet because the carrier proof did not fall inside the receiving window.'
+    },
+    'ACM-LI-2604-0010': {
+      total_receipts: 36,
+      total_input: 36,
+      total_output: 0,
+      calculated_stock: 36,
+      ending_warehouse_balance: 32,
+      discrepancy: 4,
+      autonomous_logic_summary: 'Supplier invoice is still pending, so Margin keeps this visible without filing.'
+    }
+  };
+
+  return {
+    ...base,
+    ...(perClaim[row.claim_number] || {})
+  };
+}
+
 function detectionRows() {
   return detections.map((row, index) => ({
     ...row,
@@ -918,6 +1068,10 @@ function detectionRows() {
     currency: 'USD',
     store_id: index > 1 ? storeEuId : storeUsId,
     related_event_ids: [],
+    evidence: {
+      ...row.evidence,
+      ...caseDetailEvidenceForDetection(row)
+    },
     timeline: [
       { id: `${row.claim_number}-detected`, date: row.discovery_date, action: 'detected', description: row.evidence.issue }
     ],
@@ -1051,60 +1205,80 @@ const evidenceDocSpecs = [
   ['00000000-0000-0000-0000-000000004110', '00000000-0000-0000-0000-000000004003', 'gdrive', 'po', 'Acme Operations', 'PO-ACME-2011', 'ACME-THERMAL-BAG-BLU', 'B0ACME0011', 529.42, -3]
 ] as const;
 
+const evidenceDocQuantities: Record<string, number> = {
+  'INV-ACME-2001': 14,
+  'BOL-ACME-2001': 14,
+  'INV-ACME-2002': 5,
+  'INV-ACME-2003': 4,
+  'INV-ACME-2004': 8,
+  'SHIP-ACME-2005': 12,
+  'INV-ACME-2006': 6,
+  'INV-ACME-2007': 9,
+  'INV-ACME-2009': 6,
+  'PO-ACME-2011': 7
+};
+
 function evidenceDocuments() {
-  return evidenceDocSpecs.map(([id, sourceId, provider, docType, supplier, invoiceNumber, sku, asin, amount, days]) => ({
-    id,
-    tenant_id: resolvedTenantId,
-    user_id: demoUserId,
-    seller_id: demoUserId,
-    source_id: sourceId,
-    external_id: `acme-doc-${invoiceNumber.toLowerCase()}`,
-    provider,
-    doc_type: docType,
-    supplier_name: supplier,
-    invoice_number: invoiceNumber,
-    purchase_order_number: invoiceNumber.startsWith('PO') ? invoiceNumber : null,
-    document_date: iso(days),
-    currency: 'USD',
-    total_amount: amount,
-    file_url: `demo://acme/${invoiceNumber}.pdf`,
-    filename: `${invoiceNumber}.pdf`,
-    original_filename: `${invoiceNumber}.pdf`,
-    file_size: 220000 + Math.round(amount * 10),
-    size_bytes: 220000 + Math.round(amount * 10),
-    mime_type: 'application/pdf',
-    content_type: 'application/pdf',
-    storage_path: `demo/acme-operations/${invoiceNumber}.pdf`,
-    raw_text: `${supplier} ${invoiceNumber} for SKU ${sku} ASIN ${asin}. Unit cost proof and shipment identifiers captured for reimbursement support.`,
-    extracted: {
-      items: [{ sku, asin, quantity: Math.max(1, Math.round(Number(amount) / 80)), unit_cost: Number((Number(amount) / Math.max(1, Math.round(Number(amount) / 80))).toFixed(2)) }]
-    },
-    parsed_metadata: {
-      parser_status: 'completed',
-      confidence: 0.97,
-      items: [{ sku, asin, quantity: Math.max(1, Math.round(Number(amount) / 80)), unit_cost: Number((Number(amount) / Math.max(1, Math.round(Number(amount) / 80))).toFixed(2)) }],
-      identifiers: { sku, asin, invoiceNumber }
-    },
-    parser_status: 'completed',
-    parser_confidence: 0.97,
-    parser_started_at: iso(days, 1),
-    parser_completed_at: iso(days, 2),
-    parsed_at: iso(days, 2),
-    ingested_at: iso(days, 1),
-    unit_manufacturing_cost: Number((Number(amount) / Math.max(1, Math.round(Number(amount) / 80))).toFixed(4)),
-    metadata: {
-      demo_seed: true,
-      ingestion_method: 'acme_operations_demo_seed',
-      original_filename: `${invoiceNumber}.pdf`,
-      supplier,
+  return evidenceDocSpecs.map(([id, sourceId, provider, docType, supplier, invoiceNumber, sku, asin, amount, days]) => {
+    const quantity = evidenceDocQuantities[invoiceNumber] || Math.max(1, Math.round(Number(amount) / 80));
+    const unitCost = Number((Number(amount) / quantity).toFixed(2));
+
+    return {
+      id,
+      tenant_id: resolvedTenantId,
+      user_id: demoUserId,
+      seller_id: demoUserId,
+      source_id: sourceId,
+      external_id: `acme-doc-${invoiceNumber.toLowerCase()}`,
+      provider,
+      doc_type: docType,
+      supplier_name: supplier,
       invoice_number: invoiceNumber,
-      amount,
-      sku,
-      asin
-    },
-    created_at: iso(days),
-    updated_at: iso(days, 2)
-  }));
+      purchase_order_number: invoiceNumber.startsWith('PO') ? invoiceNumber : null,
+      document_date: iso(days),
+      currency: 'USD',
+      total_amount: amount,
+      file_url: `demo://acme/${invoiceNumber}.pdf`,
+      filename: `${invoiceNumber}.pdf`,
+      original_filename: `${invoiceNumber}.pdf`,
+      file_size: 220000 + Math.round(amount * 10),
+      size_bytes: 220000 + Math.round(amount * 10),
+      mime_type: 'application/pdf',
+      content_type: 'application/pdf',
+      storage_path: `demo/acme-operations/${invoiceNumber}.pdf`,
+      raw_text: `${supplier} ${invoiceNumber} for SKU ${sku} ASIN ${asin}. Quantity ${quantity}, unit cost ${unitCost}. Shipment identifiers captured for reimbursement support.`,
+      extracted: {
+        items: [{ sku, asin, quantity, unit_cost: unitCost }]
+      },
+      parsed_metadata: {
+        parser_status: 'completed',
+        confidence: 0.97,
+        items: [{ sku, asin, quantity, unit_cost: unitCost }],
+        identifiers: { sku, asin, invoiceNumber }
+      },
+      parser_status: 'completed',
+      parser_confidence: 0.97,
+      parser_started_at: iso(days, 1),
+      parser_completed_at: iso(days, 2),
+      parsed_at: iso(days, 2),
+      ingested_at: iso(days, 1),
+      unit_manufacturing_cost: Number(unitCost.toFixed(4)),
+      metadata: {
+        demo_seed: true,
+        ingestion_method: 'acme_operations_demo_seed',
+        original_filename: `${invoiceNumber}.pdf`,
+        supplier,
+        invoice_number: invoiceNumber,
+        amount,
+        quantity,
+        unit_cost: unitCost,
+        sku,
+        asin
+      },
+      created_at: iso(days),
+      updated_at: iso(days, 2)
+    };
+  });
 }
 
 const evidenceLinkPairs = [
@@ -1849,37 +2023,56 @@ function notifications() {
     ['payment_processed', 'Subscription invoice paid', 'The April Pro subscription invoice was marked paid.', 'low', true, 'SUB-PRO-20260401-ACMEDEMO']
   ] as const;
 
-  return rows.map(([type, title, message, priority, read, entityId], index) => ({
-    id: `00000000-0000-0000-0000-0000000140${String(index + 1).padStart(2, '0')}`,
-    tenant_id: resolvedTenantId,
-    user_id: demoUserId,
-    type,
-    title,
-    message,
-    status: read ? 'read' : 'delivered',
-    priority,
-    channel: 'in_app',
-    payload: {
-      tenant_slug: tenantSlug,
-      entity_id: entityId,
-      demo_seed: true
-    },
-    dedupe_key: `acme-demo:${type}:${entityId}`,
-    delivery_state: {
-      in_app_requested: true,
-      in_app_success: true,
-      realtime_requested: true,
-      realtime_success: true,
-      email_requested: false,
-      derived_state: read ? 'read' : 'delivered',
-      attempted_at: iso(-index)
-    },
-    read_at: read ? iso(-index) : null,
-    delivered_at: iso(-index),
-    expires_at: iso(30),
-    created_at: iso(-index - 1),
-    updated_at: iso(-index)
-  }));
+  return rows.map(([type, title, message, priority, read, entityId], index) => {
+    const dispute = disputes.find((row) => row.id === entityId);
+    const evidenceLink = dispute ? evidenceLinkPairs.find(([, disputeId]) => disputeId === dispute.id) : null;
+    const entityPayload = dispute
+      ? {
+          entity_type: 'dispute_case',
+          dispute_case_id: dispute.id,
+          detection_id: dispute.detection_result_id,
+          document_id: evidenceLink?.[2] || undefined,
+          amount: dispute.approved_amount || dispute.recovered_amount || dispute.claim_amount,
+          currency: 'USD'
+        }
+      : type === 'sync_completed'
+        ? { entity_type: 'sync_job', sync_id: entityId }
+        : { entity_type: 'billing_transaction', billing_transaction_id: entityId };
+
+    return {
+      id: `00000000-0000-0000-0000-0000000140${String(index + 1).padStart(2, '0')}`,
+      tenant_id: resolvedTenantId,
+      user_id: demoUserId,
+      type,
+      title,
+      message,
+      status: read ? 'read' : 'delivered',
+      priority,
+      channel: 'in_app',
+      payload: {
+        tenant_slug: tenantSlug,
+        entity_id: entityId,
+        event_type: type,
+        demo_seed: true,
+        ...entityPayload
+      },
+      dedupe_key: `acme-demo:${type}:${entityId}`,
+      delivery_state: {
+        in_app_requested: true,
+        in_app_success: true,
+        realtime_requested: true,
+        realtime_success: true,
+        email_requested: false,
+        derived_state: read ? 'read' : 'delivered',
+        attempted_at: iso(-index)
+      },
+      read_at: read ? iso(-index) : null,
+      delivered_at: iso(-index),
+      expires_at: iso(30),
+      created_at: iso(-index - 1),
+      updated_at: iso(-index)
+    };
+  });
 }
 
 function recentPlatformEvents() {
@@ -1901,6 +2094,130 @@ function recentPlatformEvents() {
     entity_id,
     payload: { ...payload, tenant_slug: tenantSlug, demo_seed: true },
     created_at: iso(-index)
+  }));
+}
+
+function agentEvents() {
+  const rows = [
+    {
+      id: '00000000-0000-0000-0000-000000014501',
+      agent: 'claim_detection',
+      event_type: 'claim_detected',
+      dispute: disputes[0],
+      document_id: null,
+      metadata: {
+        expectedAmount: 486.2,
+        confidence: 0.93,
+        message: 'Inbound shortage detected from Amazon shipment and inventory ledger reconciliation.'
+      },
+      created_at: iso(-8, -4)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000014502',
+      agent: 'evidence_ingestion',
+      event_type: 'ingestion_completed',
+      dispute: disputes[0],
+      document_id: '00000000-0000-0000-0000-000000004101',
+      metadata: {
+        provider: 'gdrive',
+        filename: 'INV-ACME-2001.pdf',
+        confidence: 0.97
+      },
+      created_at: iso(-7, -5)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000014503',
+      agent: 'evidence_matching',
+      event_type: 'matching_completed',
+      dispute: disputes[0],
+      document_id: '00000000-0000-0000-0000-000000004102',
+      metadata: {
+        confidence: 0.95,
+        matched_fields: ['shipment_id', 'sku', 'asin', 'quantity']
+      },
+      created_at: iso(-7, -2)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000014504',
+      agent: 'refund_filing',
+      event_type: 'filing_completed',
+      dispute: disputes[2],
+      document_id: '00000000-0000-0000-0000-000000004104',
+      metadata: {
+        amazon_case_id: 'AMZ-ACME-42003',
+        expectedAmount: 742.4
+      },
+      created_at: iso(-5)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000014505',
+      agent: 'refund_filing',
+      event_type: 'case_approved',
+      dispute: disputes[3],
+      document_id: '00000000-0000-0000-0000-000000004105',
+      metadata: {
+        amazon_case_id: 'AMZ-ACME-42004',
+        expectedAmount: 1184.5
+      },
+      created_at: iso(-2)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000014506',
+      agent: 'recoveries',
+      event_type: 'recovery_reconciled',
+      dispute: disputes[4],
+      document_id: '00000000-0000-0000-0000-000000004106',
+      metadata: {
+        amazon_case_id: 'AMZ-ACME-42005',
+        actualAmount: 963.1,
+        settlement_id: 'SETTLE-ACME-PAYOUT-01'
+      },
+      created_at: iso(-1)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000014507',
+      agent: 'billing',
+      event_type: 'billing_completed',
+      dispute: disputes[5],
+      document_id: '00000000-0000-0000-0000-000000004107',
+      metadata: {
+        amazon_case_id: 'AMZ-ACME-42006',
+        amountRecovered: 634.88
+      },
+      created_at: iso(-1, -2)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000014508',
+      agent: 'refund_filing',
+      event_type: 'filing_failed',
+      dispute: disputes[6],
+      document_id: '00000000-0000-0000-0000-000000004108',
+      metadata: {
+        amazon_case_id: 'AMZ-ACME-42007',
+        expectedAmount: 376.45,
+        error: 'Evidence window mismatch'
+      },
+      created_at: iso(-3)
+    }
+  ];
+
+  return rows.map((row) => ({
+    id: row.id,
+    tenant_id: resolvedTenantId,
+    user_id: demoUserId,
+    agent: row.agent,
+    event_type: row.event_type,
+    success: row.event_type !== 'filing_failed',
+    metadata: {
+      tenant_slug: tenantSlug,
+      demo_seed: true,
+      dispute_case_id: row.dispute.id,
+      detection_id: row.dispute.detection_result_id,
+      document_id: row.document_id,
+      case_number: row.dispute.case_number,
+      ...row.metadata
+    },
+    created_at: row.created_at
   }));
 }
 
@@ -1991,7 +2308,9 @@ function caseMessages() {
       direction: 'inbound',
       subject: 'Your reimbursement request AMZ-ACME-42004 has been approved',
       body_text: 'We approved your reimbursement request for $1,184.50. Payment will appear in an upcoming settlement.',
-      attachments: [],
+      attachments: [
+        { filename: 'INV-ACME-2004.pdf', evidence_document_id: '00000000-0000-0000-0000-000000004105' }
+      ],
       sender: 'seller-performance@amazon.com',
       recipients: ['claims@acme-operations.test'],
       received_at: iso(-2),
@@ -2011,7 +2330,9 @@ function caseMessages() {
       direction: 'inbound',
       subject: 'Action required on reimbursement case AMZ-ACME-42011',
       body_text: 'Please provide carrier proof that matches the affected FBA shipment.',
-      attachments: [],
+      attachments: [
+        { filename: 'PO-ACME-2011.pdf', evidence_document_id: '00000000-0000-0000-0000-000000004110' }
+      ],
       sender: 'seller-performance@amazon.com',
       recipients: ['claims@acme-operations.test'],
       received_at: iso(-2),
@@ -2019,6 +2340,28 @@ function caseMessages() {
       metadata: { demo_seed: true },
       created_at: iso(-2),
       updated_at: iso(-2)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000015303',
+      tenant_id: resolvedTenantId,
+      dispute_case_id: disputes[6].id,
+      amazon_case_id: 'AMZ-ACME-42007',
+      provider: 'gmail',
+      provider_message_id: 'gmail-acme-42007-rejected-window',
+      provider_thread_id: 'thread-acme-42007',
+      direction: 'inbound',
+      subject: 'Additional documentation required for AMZ-ACME-42007',
+      body_text: 'The submitted document does not match the requested receiving period. Please provide proof that falls inside the inbound receiving window.',
+      attachments: [
+        { filename: 'INV-ACME-2007.pdf', evidence_document_id: '00000000-0000-0000-0000-000000004108' }
+      ],
+      sender: 'seller-performance@amazon.com',
+      recipients: ['claims@acme-operations.test'],
+      received_at: iso(-3),
+      state_signal: 'rejected',
+      metadata: { demo_seed: true, rejection_category: 'insufficient_evidence' },
+      created_at: iso(-3),
+      updated_at: iso(-3)
     }
   ];
 }
@@ -2133,6 +2476,7 @@ async function seedAcmeOperations(): Promise<void> {
 
     await writeRows('sync_progress', syncProgressRows(), { onConflict: 'id', optional: true });
     await writeRows('notifications', notifications(), { onConflict: 'id', optional: true });
+    await writeRows('agent_events', agentEvents(), { onConflict: 'id', optional: true });
     await writeRows('recent_platform_events', recentPlatformEvents(), { optional: true });
 
     const evidenceExtras = proofPacketsAndPrompts();

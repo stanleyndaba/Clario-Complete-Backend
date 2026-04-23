@@ -10,6 +10,7 @@ It targets the demo tenant slug `demo-workspace`, names it `Acme Operations`, fi
 - Amazon, Gmail, Google Drive, and Dropbox connection truth rows.
 - Stores, tokens, sync progress, raw source data, product catalog, inventory, orders, shipments, returns, settlements, and financial events.
 - Detection results, dispute cases, filing submissions, evidence documents, evidence links, proof packets, smart prompts, case messages, recoveries, work items, and billing truth.
+- Case Detail demo truth for multiple lifecycle states: filing-ready inbound shortage, filed Amazon review, approved awaiting payout, paid/reconciled, rejected-needs-evidence, and existing Amazon-thread backfill.
 - Notifications, recent platform events, subscription, and invoices.
 
 ## Safety Guards
