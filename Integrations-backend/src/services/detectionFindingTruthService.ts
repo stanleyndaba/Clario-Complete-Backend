@@ -41,6 +41,10 @@ type SellerSummary = {
   evidence_summary: string;
 };
 
+type EnrichmentOptions = {
+  tenantSlug?: string | null;
+};
+
 type FilingMovement = {
   state: FilingMovementState;
   label: string;
@@ -175,6 +179,9 @@ const duplicateSummaryLeadFor = (evidence: Record<string, any>) => {
   }
   return 'A charge or adjustment appears more than once against the same seller event, without a clean offset in the record trail.';
 };
+
+const useDemoWorkspaceCopy = (options?: EnrichmentOptions) =>
+  String(options?.tenantSlug || '').trim().toLowerCase() === 'demo-workspace';
 
 const buildEvidenceSummary = (row: DetectionRow): string => {
   const evidence = asRecord(row.evidence);
@@ -472,11 +479,12 @@ const policyBasisFor = (row: DetectionRow): PolicyBasis => {
   };
 };
 
-const sellerSummaryFor = (row: DetectionRow): SellerSummary => {
+const sellerSummaryFor = (row: DetectionRow, options?: EnrichmentOptions): SellerSummary => {
   const anomalyType = String(row.anomaly_type || '').toLowerCase();
   const detectionType = String(clean(row?.evidence?.detection_type) || '').toLowerCase();
   const evidence = asRecord(row.evidence);
   const evidenceSummary = buildEvidenceSummary(row);
+  const demoCopy = useDemoWorkspaceCopy(options);
 
   if (anomalyType === 'reimbursement_duplicate_missed' || detectionType.includes('missed_reimbursement')) {
     const valueGap = clean(evidence.value_gap);
@@ -563,21 +571,27 @@ const sellerSummaryFor = (row: DetectionRow): SellerSummary => {
   if (anomalyType.includes('inbound') || anomalyType === 'lost_inbound' || anomalyType === 'missing_unit') {
     const shipped = clean(evidence.quantity_shipped) || clean(evidence.shipped_quantity);
     const received = clean(evidence.quantity_received) || clean(evidence.received_quantity);
-    const gap =
-      formatUnitGap(evidence.quantity_gap)
-      || formatUnitGap(evidence.missing_quantity)
-      || (
-        numberValue(shipped) !== null && numberValue(received) !== null
-          ? formatUnitGap(Number(shipped) - Number(received))
-          : null
-      );
-    const fulfillmentCenter = clean(evidence.fulfillment_center);
     return {
       title: anomalyType.includes('damage') ? 'Inbound Damage Review' : 'Inbound Shipment Shortage',
       summary: joinTokens([
-        inboundSummaryLeadFor(evidence),
+        demoCopy
+          ? inboundSummaryLeadFor(evidence)
+          : 'An inbound shipment record does not reconcile with the quantity Amazon received.',
         shipped && received ? `${shipped} shipped, ${received} received` : null,
-        gap && fulfillmentCenter ? `${gap} at ${fulfillmentCenter}` : gap || (fulfillmentCenter ? `FC ${fulfillmentCenter}` : null),
+        demoCopy
+          ? (() => {
+              const gap =
+                formatUnitGap(evidence.quantity_gap)
+                || formatUnitGap(evidence.missing_quantity)
+                || (
+                  numberValue(shipped) !== null && numberValue(received) !== null
+                    ? formatUnitGap(Number(shipped) - Number(received))
+                    : null
+                );
+              const fulfillmentCenter = clean(evidence.fulfillment_center);
+              return gap && fulfillmentCenter ? `${gap} at ${fulfillmentCenter}` : gap || (fulfillmentCenter ? `FC ${fulfillmentCenter}` : null);
+            })()
+          : null,
       ]),
       event_label: 'Inbound discrepancy',
       recoverability_reason: 'Margin is comparing shipment, receipt, and reimbursement records to determine whether the unresolved inbound gap can move into a case.',
@@ -671,7 +685,7 @@ const sellerSummaryFor = (row: DetectionRow): SellerSummary => {
     };
   }
 
-  if (anomalyType.includes('duplicate')) {
+  if (demoCopy && anomalyType.includes('duplicate')) {
     const settlement = clean(evidence.settlement_id);
     const order = evidenceToken(evidence, ['order_id', 'amazon_order_id']);
     return {
@@ -694,22 +708,21 @@ const sellerSummaryFor = (row: DetectionRow): SellerSummary => {
     || anomalyType.includes('storage')
   ) {
     const feeType = clean(evidence.fee_type);
-    const feeLead = feeSummaryLeadFor(evidence);
     const charged =
-      formatCurrencyAmount(evidence.charged_amount)
-      || formatCurrencyAmount(evidence.total_charged)
+      (demoCopy ? formatCurrencyAmount(evidence.charged_amount) : null)
+      || (demoCopy ? formatCurrencyAmount(evidence.total_charged) : null)
       || clean(evidence.charged_amount)
       || clean(evidence.total_charged);
     const expected =
-      formatCurrencyAmount(evidence.expected_amount)
-      || formatCurrencyAmount(evidence.total_expected)
+      (demoCopy ? formatCurrencyAmount(evidence.expected_amount) : null)
+      || (demoCopy ? formatCurrencyAmount(evidence.total_expected) : null)
       || clean(evidence.expected_amount)
       || clean(evidence.total_expected);
     return {
       title: 'Fee Charge Review',
       summary: joinTokens([
-        feeLead,
-        !String(feeLead).toLowerCase().includes(String(feeType || '').toLowerCase()) ? feeType : null,
+        demoCopy ? feeSummaryLeadFor(evidence) : 'A fee charge does not reconcile with the expected fee basis in seller records.',
+        demoCopy && !String(feeSummaryLeadFor(evidence)).toLowerCase().includes(String(feeType || '').toLowerCase()) ? feeType : !demoCopy ? feeType : null,
         charged && expected ? `${charged} charged vs ${expected} expected` : null,
       ]),
       event_label: 'Fee discrepancy',
@@ -720,10 +733,12 @@ const sellerSummaryFor = (row: DetectionRow): SellerSummary => {
 
   return {
     title: titleCase(String(row.anomaly_type || 'Detected discrepancy')),
-    summary: joinTokens([
-      'Amazon activity does not reconcile with the seller-side record Margin linked to this finding.',
-      issueText(evidence),
-    ]),
+    summary: demoCopy
+      ? joinTokens([
+          'Amazon activity does not reconcile with the seller-side record Margin linked to this finding.',
+          issueText(evidence),
+        ])
+      : 'Amazon records do not reconcile with the expected seller outcome for this finding.',
     event_label: 'Detected discrepancy',
     recoverability_reason: 'Margin is holding this finding in review until identifiers, evidence, and policy support line up.',
     evidence_summary: evidenceSummary,
@@ -929,9 +944,9 @@ const movementFor = (row: DetectionRow, disputeCase: DisputeCaseRow): FilingMove
   };
 };
 
-export const enrichDetectionFinding = (row: DetectionRow, disputeCase?: DisputeCaseRow) => {
+export const enrichDetectionFinding = (row: DetectionRow, disputeCase?: DisputeCaseRow, options?: EnrichmentOptions) => {
   const detectedAt = clean(row.discovery_date) || clean(row.created_at) || null;
-  const sellerSummary = sellerSummaryFor(row);
+  const sellerSummary = sellerSummaryFor(row, options);
   const policyBasis = policyBasisFor(row);
   const filingMovement = movementFor(row, disputeCase);
   const reviewPresentation = reviewPresentationFor(row);

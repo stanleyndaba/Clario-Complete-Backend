@@ -310,8 +310,14 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
       };
     }
 
+    const requestTenantSlug =
+      String((req as any).tenant?.tenantSlug || '').trim()
+      || String((req as any).query?.tenantSlug || '').trim()
+      || String((req as any).query?.tenant_slug || '').trim()
+      || null;
+
     const enrichedResults = results.map((row: any) =>
-      enrichDetectionFinding(row, linkedCaseByDetectionId.get(row.id))
+      enrichDetectionFinding(row, linkedCaseByDetectionId.get(row.id), { tenantSlug: requestTenantSlug })
     );
 
     return res.json({ success: true, results: enrichedResults, total, meta });

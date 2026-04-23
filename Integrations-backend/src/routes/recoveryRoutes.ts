@@ -1792,8 +1792,9 @@ router.get('/:id', async (req: Request, res: Response) => {
         const { id } = req.params;
         const includeEvents = String(req.query.includeEvents ?? 'true').trim().toLowerCase() !== 'false';
         let tenantId: string;
+        let tenantSlug: string | null = null;
         try {
-            ({ tenantId } = await resolveRecoveriesScope(req));
+            ({ tenantId, tenantSlug } = await resolveRecoveriesScope(req));
         } catch (scopeError: any) {
             return res.status(400).json({ error: scopeError?.message || 'Tenant context required' });
         }
@@ -1864,7 +1865,7 @@ router.get('/:id', async (req: Request, res: Response) => {
             };
 
             const findingTruth = linkedDetection
-                ? enrichDetectionFinding(linkedDetection, disputeCaseWithSubmissionTruth)
+                ? enrichDetectionFinding(linkedDetection, disputeCaseWithSubmissionTruth, { tenantSlug })
                 : null;
 
             const caseMessages = await amazonCaseThreadService.listCaseMessages(tenantId, disputeCase.id);
@@ -1937,7 +1938,7 @@ router.get('/:id', async (req: Request, res: Response) => {
                 ? await fetchEventsForRecovery(detectionResult.id, userId, tenantId)
                 : [];
 
-            const findingTruth = enrichDetectionFinding(detectionResult, null);
+            const findingTruth = enrichDetectionFinding(detectionResult, null, { tenantSlug });
 
             return res.json(buildCaseResponse(
                 detectionResult,
