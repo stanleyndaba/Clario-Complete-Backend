@@ -1726,7 +1726,12 @@ router.get('/ledger', async (req: Request, res: Response) => {
 router.post('/:id/process', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
-        const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
+        let tenantId: string;
+        try {
+            ({ tenantId } = await resolveRecoveriesScope(req));
+        } catch (scopeError: any) {
+            return res.status(400).json({ error: scopeError?.message || 'Tenant context required' });
+        }
 
         const { data: disputeCase, error } = await supabaseAdmin
             .from('dispute_cases')
@@ -2700,7 +2705,12 @@ router.get('/:id/events', async (req: Request, res: Response) => {
         const { id } = req.params;
         // Support multiple auth methods: req.user, X-User-Id header, or demo-user fallback
         const userId = (req as any).user?.id || req.headers['x-user-id'] as string || 'demo-user';
-        const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
+        let tenantId: string;
+        try {
+            ({ tenantId } = await resolveRecoveriesScope(req));
+        } catch (scopeError: any) {
+            return res.status(400).json({ error: scopeError?.message || 'Tenant context required' });
+        }
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' });
@@ -2730,7 +2740,12 @@ router.get('/:id/events', async (req: Request, res: Response) => {
 router.get('/:id/status', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
-        const tenantId = (req as any).tenant?.tenantId || DEFAULT_TENANT_ID;
+        let tenantId: string;
+        try {
+            ({ tenantId } = await resolveRecoveriesScope(req));
+        } catch (scopeError: any) {
+            return res.status(400).json({ error: scopeError?.message || 'Tenant context required' });
+        }
 
         const { data: disputeCase, error } = await supabaseAdmin
             .from('dispute_cases')
