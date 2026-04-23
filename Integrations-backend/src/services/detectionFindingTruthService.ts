@@ -111,6 +111,71 @@ const formatUnits = (value: unknown, fallback = 'units') => {
   return `${n} ${Math.abs(n) === 1 ? fallback.replace(/s$/, '') : fallback}`;
 };
 
+const formatCurrencyAmount = (value: unknown): string | null => {
+  const n = numberValue(value);
+  if (n === null) return null;
+  const sign = n < 0 ? '-' : '';
+  return `${sign}$${Math.abs(n).toFixed(2)}`;
+};
+
+const formatUnitGap = (value: unknown): string | null => {
+  const n = numberValue(value);
+  if (n === null) return null;
+  return `${Math.abs(n)}-unit gap`;
+};
+
+const issueText = (evidence: Record<string, any>): string | null =>
+  clean(evidence.autonomous_logic_summary)
+  || clean(evidence.issue);
+
+const inboundSummaryLeadFor = (evidence: Record<string, any>) => {
+  const issue = String(issueText(evidence) || '').toLowerCase();
+  if (issue.includes('supplier proof')) {
+    return 'Amazon received fewer units than the inbound shipment record shows were shipped, and supplier proof is still missing for the gap.';
+  }
+  if (issue.includes('carrier') && issue.includes('window')) {
+    return 'Amazon received fewer units than the inbound shipment record shows were shipped, but the current carrier proof falls outside the reimbursement window.';
+  }
+  return 'Amazon received fewer units than the inbound shipment record shows were shipped.';
+};
+
+const feeSummaryLeadFor = (evidence: Record<string, any>) => {
+  const issue = String(issueText(evidence) || '').toLowerCase();
+  const feeType = clean(evidence.fee_type);
+
+  if (issue.includes('oversize') && issue.includes('standard-size')) {
+    return 'Amazon applied an oversize fee to a SKU that seller records classify as standard-size.';
+  }
+  if (issue.includes('referral')) {
+    return 'The referral fee charged on this order does not line up with the expected referral basis in seller records.';
+  }
+  if (issue.includes('weight tier')) {
+    return 'The weight-tier fee charged does not line up with the product data and expected rate in seller records.';
+  }
+  if (issue.includes('storage')) {
+    return 'A storage-related charge appears to have been applied more than the seller record supports.';
+  }
+  if (feeType) {
+    return `${feeType} does not reconcile with the expected fee basis in seller records.`;
+  }
+  return 'This fee was charged on a basis that does not match the seller-side product, rate, or order context.';
+};
+
+const duplicateSummaryLeadFor = (evidence: Record<string, any>) => {
+  const issue = String(issueText(evidence) || '').toLowerCase();
+
+  if (issue.includes('reimbursement reversal')) {
+    return 'A reimbursement reversal appears more than once against the same recovery path.';
+  }
+  if (issue.includes('long-term storage')) {
+    return 'A long-term storage adjustment appears to have posted more than once for the same seller event.';
+  }
+  if (issue.includes('already reimbursed')) {
+    return 'This charge path appears to duplicate an amount that was already reimbursed in settlement.';
+  }
+  return 'A charge or adjustment appears more than once against the same seller event, without a clean offset in the record trail.';
+};
+
 const buildEvidenceSummary = (row: DetectionRow): string => {
   const evidence = asRecord(row.evidence);
   const sku = evidenceToken(evidence, ['sku', 'fnsku', 'asin']);
@@ -498,11 +563,21 @@ const sellerSummaryFor = (row: DetectionRow): SellerSummary => {
   if (anomalyType.includes('inbound') || anomalyType === 'lost_inbound' || anomalyType === 'missing_unit') {
     const shipped = clean(evidence.quantity_shipped) || clean(evidence.shipped_quantity);
     const received = clean(evidence.quantity_received) || clean(evidence.received_quantity);
+    const gap =
+      formatUnitGap(evidence.quantity_gap)
+      || formatUnitGap(evidence.missing_quantity)
+      || (
+        numberValue(shipped) !== null && numberValue(received) !== null
+          ? formatUnitGap(Number(shipped) - Number(received))
+          : null
+      );
+    const fulfillmentCenter = clean(evidence.fulfillment_center);
     return {
       title: anomalyType.includes('damage') ? 'Inbound Damage Review' : 'Inbound Shipment Shortage',
       summary: joinTokens([
-        'An inbound shipment record does not reconcile with the quantity Amazon received.',
+        inboundSummaryLeadFor(evidence),
         shipped && received ? `${shipped} shipped, ${received} received` : null,
+        gap && fulfillmentCenter ? `${gap} at ${fulfillmentCenter}` : gap || (fulfillmentCenter ? `FC ${fulfillmentCenter}` : null),
       ]),
       event_label: 'Inbound discrepancy',
       recoverability_reason: 'Margin is comparing shipment, receipt, and reimbursement records to determine whether the unresolved inbound gap can move into a case.',
@@ -596,6 +671,21 @@ const sellerSummaryFor = (row: DetectionRow): SellerSummary => {
     };
   }
 
+  if (anomalyType.includes('duplicate')) {
+    const settlement = clean(evidence.settlement_id);
+    const order = evidenceToken(evidence, ['order_id', 'amazon_order_id']);
+    return {
+      title: 'Duplicate Charge',
+      summary: joinTokens([
+        duplicateSummaryLeadFor(evidence),
+        settlement ? `Settlement ${settlement}` : order ? `Order ${order}` : null,
+      ]),
+      event_label: 'Duplicate financial event',
+      recoverability_reason: 'Margin found overlapping financial activity and is reconciling whether the seller was charged twice, reversed twice, or already reimbursed on the same path.',
+      evidence_summary: evidenceSummary,
+    };
+  }
+
   if (
     anomalyType.includes('fee')
     || anomalyType.includes('overcharge')
@@ -604,13 +694,22 @@ const sellerSummaryFor = (row: DetectionRow): SellerSummary => {
     || anomalyType.includes('storage')
   ) {
     const feeType = clean(evidence.fee_type);
-    const charged = clean(evidence.charged_amount) || clean(evidence.total_charged);
-    const expected = clean(evidence.expected_amount) || clean(evidence.total_expected);
+    const feeLead = feeSummaryLeadFor(evidence);
+    const charged =
+      formatCurrencyAmount(evidence.charged_amount)
+      || formatCurrencyAmount(evidence.total_charged)
+      || clean(evidence.charged_amount)
+      || clean(evidence.total_charged);
+    const expected =
+      formatCurrencyAmount(evidence.expected_amount)
+      || formatCurrencyAmount(evidence.total_expected)
+      || clean(evidence.expected_amount)
+      || clean(evidence.total_expected);
     return {
       title: 'Fee Charge Review',
       summary: joinTokens([
-        'A fee charge does not reconcile with the expected fee basis in seller records.',
-        feeType,
+        feeLead,
+        !String(feeLead).toLowerCase().includes(String(feeType || '').toLowerCase()) ? feeType : null,
         charged && expected ? `${charged} charged vs ${expected} expected` : null,
       ]),
       event_label: 'Fee discrepancy',
@@ -621,7 +720,10 @@ const sellerSummaryFor = (row: DetectionRow): SellerSummary => {
 
   return {
     title: titleCase(String(row.anomaly_type || 'Detected discrepancy')),
-    summary: 'Amazon records do not reconcile with the expected seller outcome for this finding.',
+    summary: joinTokens([
+      'Amazon activity does not reconcile with the seller-side record Margin linked to this finding.',
+      issueText(evidence),
+    ]),
     event_label: 'Detected discrepancy',
     recoverability_reason: 'Margin is holding this finding in review until identifiers, evidence, and policy support line up.',
     evidence_summary: evidenceSummary,
