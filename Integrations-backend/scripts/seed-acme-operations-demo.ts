@@ -1266,6 +1266,7 @@ function evidenceDocuments() {
       metadata: {
         demo_seed: true,
         ingestion_method: 'acme_operations_demo_seed',
+        evidence_title: `${String(docType).replace(/[_-]+/g, ' ')} ${invoiceNumber} - ${supplier}`,
         original_filename: `${invoiceNumber}.pdf`,
         supplier,
         invoice_number: invoiceNumber,
@@ -2318,6 +2319,50 @@ function caseMessages() {
       metadata: { demo_seed: true },
       created_at: iso(-2),
       updated_at: iso(-2)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000015304',
+      tenant_id: resolvedTenantId,
+      dispute_case_id: disputes[4].id,
+      amazon_case_id: 'AMZ-ACME-42005',
+      provider: 'gmail',
+      provider_message_id: 'gmail-acme-42005-paid',
+      provider_thread_id: 'thread-acme-42005',
+      direction: 'inbound',
+      subject: 'Reimbursement issued for AMZ-ACME-42005',
+      body_text: 'We issued a reimbursement of $963.10 for the units missing from the inbound shipment. The amount has been posted to settlement SETTLE-ACME-5.',
+      attachments: [
+        { filename: 'INV-ACME-2005.pdf', evidence_document_id: '00000000-0000-0000-0000-000000004106' }
+      ],
+      sender: 'seller-performance@amazon.com',
+      recipients: ['claims@acme-operations.test'],
+      received_at: iso(-1),
+      state_signal: 'paid',
+      metadata: { demo_seed: true, settlement_id: 'SETTLE-ACME-5' },
+      created_at: iso(-1),
+      updated_at: iso(-1)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000015305',
+      tenant_id: resolvedTenantId,
+      dispute_case_id: disputes[5].id,
+      amazon_case_id: 'AMZ-ACME-42006',
+      provider: 'gmail',
+      provider_message_id: 'gmail-acme-42006-paid',
+      provider_thread_id: 'thread-acme-42006',
+      direction: 'inbound',
+      subject: 'Fee correction reimbursement posted for AMZ-ACME-42006',
+      body_text: 'We completed review of the fee overcharge and posted a reimbursement of $634.88. The correction is now visible in the settlement ledger.',
+      attachments: [
+        { filename: 'INV-ACME-2006.pdf', evidence_document_id: '00000000-0000-0000-0000-000000004107' }
+      ],
+      sender: 'seller-performance@amazon.com',
+      recipients: ['claims@acme-operations.test'],
+      received_at: iso(-3),
+      state_signal: 'paid',
+      metadata: { demo_seed: true, settlement_id: 'SETTLE-ACME-6' },
+      created_at: iso(-3),
+      updated_at: iso(-3)
     },
     {
       id: '00000000-0000-0000-0000-000000015302',

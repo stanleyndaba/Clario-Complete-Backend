@@ -111,6 +111,137 @@ function extractDocumentUnitCost(documents: any[], sku?: string | null, asin?: s
     return null;
 }
 
+const EVIDENCE_DOCUMENT_SELECT = 'id, filename, doc_type, created_at, ingested_at, source_provider, parser_version, match_confidence, metadata, parsed_metadata, extracted, supplier_name, invoice_number, purchase_order_number, total_amount, currency, unit_manufacturing_cost';
+
+function addEvidenceDocumentId(ids: Set<string>, value: unknown) {
+    const text = String(value ?? '').trim();
+    if (text) {
+        ids.add(text);
+    }
+}
+
+function collectEvidenceDocumentIds(value: any, ids: Set<string> = new Set()): Set<string> {
+    if (!value) return ids;
+
+    if (typeof value === 'string') {
+        try {
+            const parsed = JSON.parse(value);
+            return collectEvidenceDocumentIds(parsed, ids);
+        } catch {
+            return ids;
+        }
+    }
+
+    if (Array.isArray(value)) {
+        value.forEach((item) => collectEvidenceDocumentIds(item, ids));
+        return ids;
+    }
+
+    if (typeof value !== 'object') {
+        return ids;
+    }
+
+    Object.entries(value).forEach(([key, rawValue]) => {
+        const normalizedKey = key.toLowerCase();
+        const isDocumentIdField = [
+            'document_id',
+            'documentid',
+            'evidence_document_id',
+            'evidencedocumentid'
+        ].includes(normalizedKey);
+        const isDocumentIdListField = [
+            'document_ids',
+            'documentids',
+            'evidence_document_ids',
+            'evidencedocumentids'
+        ].includes(normalizedKey);
+
+        if (isDocumentIdField) {
+            addEvidenceDocumentId(ids, rawValue);
+            return;
+        }
+
+        if (isDocumentIdListField) {
+            if (Array.isArray(rawValue)) {
+                rawValue.forEach((item) => addEvidenceDocumentId(ids, item));
+            } else {
+                addEvidenceDocumentId(ids, rawValue);
+            }
+            return;
+        }
+
+        if (
+            normalizedKey.includes('attachment') ||
+            normalizedKey.includes('document') ||
+            normalizedKey.includes('evidence')
+        ) {
+            collectEvidenceDocumentIds(rawValue, ids);
+        }
+    });
+
+    return ids;
+}
+
+function getEvidenceDocumentTitle(document: any, fallbackIndex: number = 0): string {
+    const metadata = parseJsonObject(document?.metadata);
+    const parsed = parseJsonObject(document?.parsed_metadata);
+    const identifiers = parseJsonObject(parsed?.identifiers);
+    const explicitTitle = firstString(metadata?.evidence_title, metadata?.title, document?.title);
+    if (explicitTitle) return explicitTitle;
+
+    const typeLabel = firstString(document?.doc_type, metadata?.doc_type, metadata?.document_type, 'Evidence')
+        ?.replace(/[_-]+/g, ' ');
+    const invoice = firstString(document?.invoice_number, metadata?.invoice_number, identifiers?.invoiceNumber);
+    const supplier = firstString(document?.supplier_name, metadata?.supplier);
+    const filename = firstString(document?.filename, document?.original_filename, metadata?.original_filename);
+
+    if (invoice && supplier) return `${typeLabel} ${invoice} - ${supplier}`;
+    if (invoice) return `${typeLabel} ${invoice}`;
+    if (supplier && filename) return `${supplier} - ${filename}`;
+    return filename || `Evidence document ${fallbackIndex + 1}`;
+}
+
+async function fetchLinkedEvidenceDocumentsForDispute(disputeCase: any, tenantId: string): Promise<any[]> {
+    if (!disputeCase?.id || !tenantId) return [];
+
+    const documentIds = collectEvidenceDocumentIds(disputeCase?.evidence_attachments);
+    const { data: docLinks, error: docLinkError } = await supabaseAdmin
+        .from('dispute_evidence_links')
+        .select('evidence_document_id')
+        .eq('dispute_case_id', disputeCase.id)
+        .eq('tenant_id', tenantId);
+
+    if (docLinkError) {
+        logger.warn('Failed to fetch dispute evidence links', {
+            disputeCaseId: disputeCase.id,
+            tenantId,
+            error: docLinkError.message
+        });
+    }
+
+    (docLinks || []).forEach((link: any) => addEvidenceDocumentId(documentIds, link?.evidence_document_id));
+
+    const ids = Array.from(documentIds);
+    if (!ids.length) return [];
+
+    const { data: docs, error: docsError } = await supabaseAdmin
+        .from('evidence_documents')
+        .select(EVIDENCE_DOCUMENT_SELECT)
+        .in('id', ids)
+        .eq('tenant_id', tenantId);
+
+    if (docsError) {
+        logger.warn('Failed to fetch linked evidence documents', {
+            disputeCaseId: disputeCase.id,
+            tenantId,
+            error: docsError.message
+        });
+        return [];
+    }
+
+    return docs || [];
+}
+
 function buildSubmissionProof(submission: any) {
     if (!submission) return null;
 
@@ -595,6 +726,44 @@ function deriveNextStepContext(
             key: 'awaiting_verified_identifiers',
             title: 'Awaiting verified identifiers',
             description: 'Required seller-verified identifiers are still missing or contradictory, so filing remains paused.',
+            generated: false
+        };
+    }
+
+    if (actualPayoutAmount !== null && actualPayoutAmount > 0) {
+        if (BILLING_COMPLETE_STATUSES.has(billingStatus)) {
+            return {
+                key: 'billing_completed',
+                title: 'Billing completed',
+                description: 'Recovery payout has been reconciled and billing is complete.',
+                generated: false
+            };
+        }
+
+        if (billingStatus === 'pending') {
+            return {
+                key: 'billing_pending',
+                title: 'Billing pending',
+                description: 'Payout is reconciled. Billing is the next system step.',
+                generated: false
+            };
+        }
+
+        if (recoveryStatus === 'reconciled') {
+            return {
+                key: 'payout_reconciled',
+                title: 'Payout reconciled',
+                description: 'Funds were detected and reconciled against this case.',
+                generated: false
+            };
+        }
+    }
+
+    if (status === 'approved' || toOptionalAmount(record?.approved_amount) !== null || ['approved', 'paid'].includes(normalize(record?.case_state))) {
+        return {
+            key: 'approved_awaiting_payout',
+            title: 'Approved and awaiting payout',
+            description: 'Amazon approved the case. The system is now waiting for reimbursement to appear and reconcile.',
             generated: false
         };
     }
@@ -1648,23 +1817,8 @@ router.get('/:id', async (req: Request, res: Response) => {
 
         // If found in dispute_cases, return it
         if (disputeCase) {
-            // Fetch linked documents for dispute case
-            const { data: docLinks } = await supabaseAdmin
-                .from('dispute_evidence_links')
-                .select('evidence_document_id')
-                .eq('dispute_case_id', disputeCase.id)
-                .eq('tenant_id', tenantId);
-
-            let documents: any[] = [];
-            if (docLinks && docLinks.length > 0) {
-                const docIds = docLinks.map(l => l.evidence_document_id);
-                const { data: docs } = await supabaseAdmin
-                    .from('evidence_documents')
-                    .select('id, filename, doc_type, created_at, ingested_at, source_provider, parser_version, match_confidence, metadata, parsed_metadata, extracted')
-                    .in('id', docIds)
-                    .eq('tenant_id', tenantId);
-                documents = docs || [];
-            }
+            // Fetch linked documents from both canonical link rows and case-level evidence attachments.
+            const documents = await fetchLinkedEvidenceDocumentsForDispute(disputeCase, tenantId);
 
             const { data: latestSubmission } = await supabaseAdmin
                 .from('dispute_submissions')
@@ -1768,7 +1922,7 @@ router.get('/:id', async (req: Request, res: Response) => {
             if (matchedDocIds && Array.isArray(matchedDocIds) && matchedDocIds.length > 0) {
                 const { data: docs } = await supabaseAdmin
                     .from('evidence_documents')
-                    .select('id, filename, doc_type, created_at, ingested_at, source_provider, parser_version, match_confidence, metadata, parsed_metadata, extracted')
+                    .select(EVIDENCE_DOCUMENT_SELECT)
                     .in('id', matchedDocIds)
                     .eq('tenant_id', tenantId);
                 documents = docs || [];
@@ -2179,6 +2333,142 @@ function formatAgentEventMessage(event: any): string {
     }
 }
 
+function pickLatestTimestamp(...values: Array<string | null | undefined>): string | null {
+    const sorted = values
+        .filter(Boolean)
+        .map((value) => String(value))
+        .filter((value) => !Number.isNaN(new Date(value).getTime()))
+        .sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
+    return sorted[0] || null;
+}
+
+function buildFallbackRecoveryEvents({
+    id,
+    detectionResult,
+    disputeCase,
+    documents
+}: {
+    id: string;
+    detectionResult: any | null;
+    disputeCase: any | null;
+    documents: any[];
+}) {
+    const events: any[] = [];
+    const currency = disputeCase?.currency || detectionResult?.currency || 'USD';
+    const claimId = disputeCase?.id || detectionResult?.id || id;
+    const detectionId = detectionResult?.id || disputeCase?.detection_result_id || null;
+    const caseNumber = disputeCase?.case_number || detectionResult?.claim_number || claimId;
+    const claimType = firstString(disputeCase?.anomaly_type, detectionResult?.anomaly_type, disputeCase?.case_type, 'claim');
+    const sku = firstString(disputeCase?.sku, detectionResult?.sku);
+    const facility = firstString(disputeCase?.facility, disputeCase?.warehouse, detectionResult?.evidence?.fulfillment_center, detectionResult?.evidence?.warehouse);
+
+    const detectedAt = pickLatestTimestamp(detectionResult?.discovery_date, detectionResult?.created_at, disputeCase?.created_at);
+    if (detectedAt) {
+        const amount = toOptionalAmount(disputeCase?.claim_amount ?? detectionResult?.estimated_value ?? detectionResult?.estimated_recovery_amount) ?? undefined;
+        events.push({
+            id: `case-record-detected-${detectionId || claimId}`,
+            type: 'case_record',
+            status: 'detected',
+            at: detectedAt,
+            claimId,
+            message: `Margin detected ${String(claimType).replace(/[_-]+/g, ' ')}${sku ? ` for SKU ${sku}` : ''}${facility ? ` at ${facility}` : ''}.`,
+            amount,
+            currency,
+            docIds: [],
+            source: 'case_record',
+            eventType: 'detection_recorded'
+        });
+    }
+
+    if (Array.isArray(documents) && documents.length > 0) {
+        const docIds = documents.map((document) => String(document?.id || '').trim()).filter(Boolean);
+        const titles = documents
+            .slice(0, 3)
+            .map((document, index) => getEvidenceDocumentTitle(document, index))
+            .filter(Boolean);
+        const evidenceAt = pickLatestTimestamp(
+            ...documents.map((document) => document?.ingested_at || document?.created_at),
+            disputeCase?.created_at,
+            detectionResult?.created_at
+        );
+        events.push({
+            id: `case-record-evidence-${claimId}`,
+            type: 'evidence',
+            status: 'matched',
+            at: evidenceAt || detectedAt || new Date().toISOString(),
+            claimId,
+            message: `${documents.length} evidence document${documents.length === 1 ? '' : 's'} linked${titles.length ? `: ${titles.join(', ')}` : '.'}`,
+            amount: undefined,
+            currency,
+            docIds,
+            source: 'case_record',
+            eventType: 'evidence_matched'
+        });
+    }
+
+    const filedAt = pickLatestTimestamp(
+        disputeCase?.submission_date,
+        disputeCase?.submission_proof?.submitted_at,
+        disputeCase?.created_at
+    );
+    if (disputeCase && (disputeCase.amazon_case_id || disputeCase.provider_case_id || ['filed', 'submitted', 'resubmitted'].includes(normalize(disputeCase.filing_status)))) {
+        const amazonCaseId = disputeCase.amazon_case_id || disputeCase.provider_case_id || 'Amazon case reference pending';
+        events.push({
+            id: `case-record-filed-${claimId}`,
+            type: 'case_record',
+            status: 'filed',
+            at: filedAt || detectedAt || new Date().toISOString(),
+            claimId,
+            message: `${caseNumber} was filed to Amazon as ${amazonCaseId}.`,
+            amount: toOptionalAmount(disputeCase?.claim_amount) ?? undefined,
+            currency,
+            docIds: [],
+            source: 'case_record',
+            eventType: 'filing_recorded'
+        });
+    }
+
+    const approvedAmount = toOptionalAmount(disputeCase?.approved_amount);
+    const approvedAt = pickLatestTimestamp(disputeCase?.resolution_date, disputeCase?.updated_at);
+    if (disputeCase && (approvedAmount !== null || ['approved', 'paid'].includes(normalize(disputeCase.case_state)))) {
+        events.push({
+            id: `case-record-approved-${claimId}`,
+            type: 'case_record',
+            status: 'approved',
+            at: approvedAt || filedAt || detectedAt || new Date().toISOString(),
+            claimId,
+            message: approvedAmount !== null
+                ? `Amazon approval recorded for ${formatCurrency(approvedAmount, currency)}.`
+                : 'Amazon approval state is recorded on the case.',
+            amount: approvedAmount ?? undefined,
+            currency,
+            docIds: [],
+            source: 'case_record',
+            eventType: 'approval_recorded'
+        });
+    }
+
+    const payoutAmount = toOptionalAmount(disputeCase?.recovered_amount ?? disputeCase?.actual_payout_amount);
+    const recoveredAt = pickLatestTimestamp(disputeCase?.reconciled_at, disputeCase?.expected_payout_date, disputeCase?.updated_at);
+    if (disputeCase && payoutAmount !== null) {
+        events.push({
+            id: `case-record-recovered-${claimId}`,
+            type: 'case_record',
+            status: 'recovery',
+            at: recoveredAt || approvedAt || filedAt || detectedAt || new Date().toISOString(),
+            claimId,
+            message: `Payout reconciled for ${formatCurrency(payoutAmount, currency)}.`,
+            amount: payoutAmount,
+            currency,
+            docIds: [],
+            source: 'case_record',
+            eventType: 'recovery_reconciled'
+        });
+    }
+
+    return events;
+}
+
 async function fetchEventsForRecovery(id: string, _userId: string, tenantId: string) {
     try {
         // First, try to find in detection_results (claims)
@@ -2223,6 +2513,9 @@ async function fetchEventsForRecovery(id: string, _userId: string, tenantId: str
         if (!detectionResult && !disputeCase) return [];
 
         const events: any[] = [];
+        const linkedDocuments = disputeCase
+            ? await fetchLinkedEvidenceDocumentsForDispute(disputeCase, tenantId)
+            : [];
         const canonical = {
             disputeCaseId: disputeCase?.id,
             detectionId: detectionResult?.id || disputeCase?.detection_result_id
@@ -2294,6 +2587,23 @@ async function fetchEventsForRecovery(id: string, _userId: string, tenantId: str
                     agentName: event.agent_name || event.agent
                 });
             });
+        }
+
+        const fallbackEvents = buildFallbackRecoveryEvents({
+            id,
+            detectionResult,
+            disputeCase,
+            documents: linkedDocuments
+        });
+        if (events.length === 0) {
+            events.push(...fallbackEvents);
+        } else if (
+            linkedDocuments.length > 0 &&
+            !events.some((event) => (
+                Array.isArray(event?.docIds) && event.docIds.length > 0
+            ) || normalize(event?.type) === 'evidence' || normalize(event?.status) === 'matched' || normalize(event?.eventType).includes('evidence') || normalize(event?.eventType).includes('matching'))
+        ) {
+            events.push(...fallbackEvents.filter((event) => event.eventType === 'evidence_matched'));
         }
 
         return events.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
