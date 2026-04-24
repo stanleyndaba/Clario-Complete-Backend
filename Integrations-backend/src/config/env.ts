@@ -107,6 +107,12 @@ const config = {
 
   // Sync configuration
   SYNC_TIMEOUT_MS: toInt(process.env.SYNC_TIMEOUT_MS, 10 * 60 * 1000),
+
+  // AI explainer
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  AI_EXPLAINER_ENABLED: process.env.AI_EXPLAINER_ENABLED || 'false',
+  AI_EXPLAINER_MODEL: process.env.AI_EXPLAINER_MODEL || 'gpt-4.1-nano',
+  AI_EXPLAINER_TIMEOUT_MS: toInt(process.env.AI_EXPLAINER_TIMEOUT_MS, 8000),
 };
 
 export default config;

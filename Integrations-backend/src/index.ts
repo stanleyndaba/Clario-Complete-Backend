@@ -58,6 +58,7 @@ import evidenceSourcesRoutes from './routes/evidenceSourcesRoutes';
 import healthRoutes from './routes/healthRoutes';
 import notificationRoutes from './notifications/routes/notification_routes';
 import recoveryRoutes from './routes/recoveryRoutes';
+import aiRoutes from './routes/aiRoutes';
 import learningRoutes from './routes/learningRoutes';
 import inviteRoutes from './routes/inviteRoutes';
 import notesRoutes from './routes/notesRoutes';
@@ -444,6 +445,8 @@ app.use('/api/revenue', revenueRoutes);
 logger.info('Revenue routes registered at /api/revenue');
 app.use('/api/recoveries', recoveryRoutes);
 logger.info('Recovery routes registered at /api/recoveries');
+app.use('/api/ai', aiRoutes);
+logger.info('AI explainer routes registered at /api/ai');
 
 import billingRoutes from './routes/billingRoutes';
 app.use('/api/billing', billingRoutes);
