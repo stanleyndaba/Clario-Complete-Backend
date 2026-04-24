@@ -241,6 +241,39 @@ const stableStringify = (value: unknown): string => {
 const buildRequestFingerprint = (tenantId: string, userId: string) =>
   hashText(`${tenantId}:${convertUserIdToUuid(userId)}`).slice(0, 24);
 
+function sanitizeUpstreamExplainError(status: number, payload: any): AiExplainerError {
+  const upstreamCode = clean(payload?.error?.code)?.toLowerCase() || '';
+  const upstreamType = clean(payload?.error?.type)?.toLowerCase() || '';
+  const upstreamMessage = clean(payload?.error?.message)?.toLowerCase()
+    || clean(payload?.message)?.toLowerCase()
+    || '';
+
+  const looksLikeQuotaOrBillingIssue =
+    status === 429
+    || upstreamCode.includes('quota')
+    || upstreamCode.includes('insufficient')
+    || upstreamType.includes('insufficient')
+    || upstreamMessage.includes('quota')
+    || upstreamMessage.includes('billing')
+    || upstreamMessage.includes('plan')
+    || upstreamMessage.includes('rate limit')
+    || upstreamMessage.includes('credits');
+
+  if (looksLikeQuotaOrBillingIssue) {
+    return new AiExplainerError(
+      503,
+      'AI_EXPLAINER_TEMPORARILY_UNAVAILABLE',
+      "Explanation is taking a moment right now. Margin's recorded case data below remains the source of truth."
+    );
+  }
+
+  return new AiExplainerError(
+    503,
+    'AI_EXPLAINER_TEMPORARILY_UNAVAILABLE',
+    "Explanation is not available right now. Margin's recorded case data below remains the source of truth."
+  );
+}
+
 function addEvidenceDocumentId(ids: Set<string>, value: unknown) {
   const text = clean(value);
   if (text) ids.add(text);
@@ -494,11 +527,7 @@ async function callOpenAiExplanation(scope: ExplainRequestScope, context: Explai
 
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const errorMessage =
-        clean(payload?.error?.message)
-        || clean(payload?.message)
-        || `OpenAI request failed with status ${response.status}`;
-      throw new AiExplainerError(502, 'AI_EXPLAINER_UPSTREAM_ERROR', errorMessage);
+      throw sanitizeUpstreamExplainError(response.status, payload);
     }
 
     const text = parseChatCompletionText(payload);
