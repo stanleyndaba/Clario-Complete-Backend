@@ -2411,25 +2411,52 @@ router.get('/matching/results', async (req: Request, res: Response) => {
 
     const client = supabaseAdmin || supabase;
 
-    // Query dispute_cases that have evidence_attachments with document_id set - scope by tenant_id
-    const { data: casesWithEvidence, error: casesError } = await client
+    const richCaseSelect =
+      'id, detection_result_id, case_number, case_type, status, claim_amount, filing_status, case_state, recovery_status, billing_status, sku, asin, evidence_attachments, created_at, tenant_id';
+    const fallbackCaseSelect =
+      'id, case_type, status, claim_amount, evidence_attachments, created_at, tenant_id';
+
+    let casesWithEvidence: any[] = [];
+
+    // Query dispute_cases that have evidence_attachments with document_id set - scope by tenant_id.
+    // Some deployed databases can lag behind the newest dispute_cases shape, so we fail soft here.
+    const { data: richCasesWithEvidence, error: richCasesError } = await client
       .from('dispute_cases')
-      .select('id, detection_result_id, case_number, case_type, status, claim_amount, filing_status, case_state, recovery_status, billing_status, sku, asin, evidence_attachments, created_at, tenant_id')
+      .select(richCaseSelect)
       .eq('tenant_id', tenantId)
       .order('created_at', { ascending: false })
-      .limit(500);  // Fetch more to filter in JS
+      .limit(500);
 
-    if (casesError) {
-      logger.error('❌ [EVIDENCE] Error fetching cases with evidence', {
-        error: casesError.message,
+    if (richCasesError) {
+      logger.warn('⚠️ [EVIDENCE] Rich dispute case select failed, falling back to compatibility shape', {
+        tenantId,
         userId,
-        tenantId
+        error: richCasesError.message
       });
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to fetch matching results',
-        message: casesError.message
-      });
+
+      const { data: fallbackCasesWithEvidence, error: fallbackCasesError } = await client
+        .from('dispute_cases')
+        .select(fallbackCaseSelect)
+        .eq('tenant_id', tenantId)
+        .order('created_at', { ascending: false })
+        .limit(500);
+
+      if (fallbackCasesError) {
+        logger.error('❌ [EVIDENCE] Error fetching cases with evidence', {
+          error: fallbackCasesError.message,
+          userId,
+          tenantId
+        });
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to fetch matching results',
+          message: fallbackCasesError.message
+        });
+      }
+
+      casesWithEvidence = fallbackCasesWithEvidence || [];
+    } else {
+      casesWithEvidence = richCasesWithEvidence || [];
     }
 
     // Filter to only cases that have document_id in evidence_attachments
