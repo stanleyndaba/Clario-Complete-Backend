@@ -23,6 +23,7 @@ import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supaba
 import logger from '../utils/logger';
 import mlScoringService from '../services/mlScoringService';
 import evidenceMatchingWorker from '../workers/evidenceMatchingWorker';
+import { enrichDetectionFinding } from '../services/detectionFindingTruthService';
 
 // Type for multer file
 interface MulterFile {
@@ -208,6 +209,174 @@ function getStoredOriginalFilename(doc: any): string | null {
     ? doc.filename.trim()
     : '';
   return canonicalFilename || null;
+}
+
+const DEMO_WORKSPACE_SLUG = 'demo-workspace';
+
+function normalizeDocTypeLabel(value: unknown): string | null {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return null;
+  return text
+    .replace(/[_-]+/g, ' ')
+    .replace(/\w\S*/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .replace(/\bPo\b/g, 'PO')
+    .replace(/\bBol\b/g, 'BOL')
+    .replace(/\bAud\b/g, 'Audit')
+    .replace(/\bStmt\b/g, 'Statement');
+}
+
+function buildLinkedDocumentSummary(linkedDocs: any[]): string | null {
+  if (!linkedDocs.length) return null;
+  const types = [...new Set(
+    linkedDocs
+      .map((doc) => normalizeDocTypeLabel(doc?.doc_type || doc?.document_type))
+      .filter(Boolean)
+  )] as string[];
+
+  if (linkedDocs.length === 1) {
+    return types[0] ? `1 linked document · ${types[0]}` : '1 linked document';
+  }
+
+  return types.length > 0
+    ? `${linkedDocs.length} linked documents · ${types.slice(0, 3).join(', ')}`
+    : `${linkedDocs.length} linked documents`;
+}
+
+function buildPrimaryDocumentTitle(doc: any): string {
+  return String(
+    doc?.metadata?.evidence_title
+    || doc?.filename
+    || doc?.original_filename
+    || doc?.invoice_number
+    || doc?.id
+    || 'Linked document'
+  );
+}
+
+function buildPrimaryDocumentSubtitle(doc: any, linkedDocs: any[]): string | null {
+  const parts = [
+    normalizeDocTypeLabel(doc?.doc_type || doc?.document_type),
+    typeof doc?.supplier_name === 'string' ? doc.supplier_name : (typeof doc?.metadata?.supplier === 'string' ? doc.metadata.supplier : null),
+    buildLinkedDocumentSummary(linkedDocs),
+  ].filter(Boolean) as string[];
+
+  return parts.length ? parts.join(' · ') : null;
+}
+
+function buildDemoMatchTitle(findingTitle: string | null, doc: any, linkedDocs: any[]): string | null {
+  const normalizedTitle = String(findingTitle || '').toLowerCase();
+  const normalizedDocType = String(doc?.doc_type || doc?.document_type || '').toLowerCase();
+
+  if (normalizedTitle.includes('inbound shipment shortage')) {
+    if (linkedDocs.length >= 2) return 'Inbound shortage proof packet';
+    if (normalizedDocType.includes('shipping')) return 'Inbound shipment proof';
+    if (normalizedDocType.includes('invoice')) return 'Supplier invoice linked';
+    if (normalizedDocType.includes('po')) return 'Purchase order cross-check';
+  }
+
+  if (normalizedTitle.includes('fee charge review')) {
+    if (linkedDocs.length >= 2) return 'Fee correction support packet';
+    if (normalizedDocType.includes('statement')) return 'Settlement statement linked';
+    if (normalizedDocType.includes('worksheet')) return 'Audit worksheet linked';
+    if (normalizedDocType.includes('invoice')) return 'Supplier invoice basis linked';
+  }
+
+  if (normalizedTitle.includes('duplicate charge')) {
+    return linkedDocs.length >= 2 ? 'Duplicate charge proof set' : 'Duplicate charge support';
+  }
+
+  if (normalizedTitle.includes('warehouse damage') || normalizedTitle.includes('warehouse loss')) {
+    return linkedDocs.length >= 2 ? 'Damage reimbursement packet' : 'Damage support linked';
+  }
+
+  if (normalizedTitle.includes('thread') || normalizedTitle.includes('evidence')) {
+    return 'Requested Amazon proof';
+  }
+
+  if (linkedDocs.length >= 2) return 'Evidence packet linked';
+  return normalizeDocTypeLabel(doc?.doc_type || doc?.document_type);
+}
+
+function collectEvidenceDocumentIds(value: any, ids: Set<string> = new Set()): Set<string> {
+  if (!value) return ids;
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectEvidenceDocumentIds(item, ids));
+    return ids;
+  }
+
+  if (typeof value !== 'object') {
+    const text = String(value || '').trim();
+    if (text) ids.add(text);
+    return ids;
+  }
+
+  Object.entries(value).forEach(([key, rawValue]) => {
+    const normalizedKey = key.toLowerCase();
+    const isSingleDocumentId = [
+      'document_id',
+      'documentid',
+      'evidence_document_id',
+      'evidencedocumentid',
+    ].includes(normalizedKey);
+    const isDocumentIdList = [
+      'document_ids',
+      'documentids',
+      'evidence_document_ids',
+      'evidencedocumentids',
+    ].includes(normalizedKey);
+
+    if (isSingleDocumentId) {
+      const text = String(rawValue || '').trim();
+      if (text) ids.add(text);
+      return;
+    }
+
+    if (isDocumentIdList) {
+      if (Array.isArray(rawValue)) {
+        rawValue.forEach((item) => {
+          const text = String(item || '').trim();
+          if (text) ids.add(text);
+        });
+      } else {
+        const text = String(rawValue || '').trim();
+        if (text) ids.add(text);
+      }
+      return;
+    }
+
+    if (
+      normalizedKey.includes('attachment') ||
+      normalizedKey.includes('document') ||
+      normalizedKey.includes('evidence')
+    ) {
+      collectEvidenceDocumentIds(rawValue, ids);
+    }
+  });
+
+  return ids;
+}
+
+function titleCaseLabel(value: unknown, fallback = 'Recovery case'): string {
+  const text = String(value || '').trim();
+  if (!text) return fallback;
+  return text
+    .replace(/[_-]+/g, ' ')
+    .replace(/\w\S*/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
+}
+
+function buildClaimDisplaySubtitle(enrichedFinding: any, disputeCase: any): string | null {
+  const summary = typeof enrichedFinding?.seller_summary?.summary === 'string'
+    ? enrichedFinding.seller_summary.summary.trim()
+    : '';
+  if (summary) return summary;
+
+  const parts = [
+    disputeCase?.sku ? `SKU ${disputeCase.sku}` : null,
+    disputeCase?.asin ? `ASIN ${disputeCase.asin}` : null,
+  ].filter(Boolean) as string[];
+
+  return parts.length ? parts.join(' · ') : null;
 }
 
 async function getAuthoritativeEvidenceSourcesForUser(userId: string, tenantId: string) {
@@ -2226,6 +2395,8 @@ router.get('/matching/results', async (req: Request, res: Response) => {
     const offset = parseInt(req.query.offset as string) || 0;
 
     const tenantId = (req as any).tenant?.tenantId;
+    const tenantSlug = String((req as any).tenant?.tenantSlug || '').trim().toLowerCase();
+    const isDemoWorkspace = tenantSlug === DEMO_WORKSPACE_SLUG;
 
     if (!tenantId) {
       return res.status(401).json({ success: false, error: 'Unauthorized: Tenant context missing' });
@@ -2243,7 +2414,7 @@ router.get('/matching/results', async (req: Request, res: Response) => {
     // Query dispute_cases that have evidence_attachments with document_id set - scope by tenant_id
     const { data: casesWithEvidence, error: casesError } = await client
       .from('dispute_cases')
-      .select('id, case_type, status, claim_amount, evidence_attachments, created_at, tenant_id')
+      .select('id, detection_result_id, case_number, case_type, status, claim_amount, filing_status, case_state, recovery_status, billing_status, sku, asin, evidence_attachments, created_at, tenant_id')
       .eq('tenant_id', tenantId)
       .order('created_at', { ascending: false })
       .limit(500);  // Fetch more to filter in JS
@@ -2276,54 +2447,187 @@ router.get('/matching/results', async (req: Request, res: Response) => {
       c.evidence_attachments?.document_id
     ).length;
 
-    // Fetch document details for each match
-    const results = await Promise.all(matchedCases.map(async (c: any) => {
-      const docId = c.evidence_attachments?.document_id;
-      let docDetails: any = {};
+    const detectionIds = [...new Set(
+      matchedCases
+        .map((c: any) => String(c?.detection_result_id || '').trim())
+        .filter(Boolean)
+    )];
+    const disputeCaseIds = matchedCases.map((c: any) => String(c.id)).filter(Boolean);
 
-      if (docId) {
-        const { data: doc } = await client
-          .from('evidence_documents')
-          .select('id, filename, doc_type, created_at, metadata, tenant_id')
-          .eq('id', docId)
-          .eq('tenant_id', tenantId)
-          .single();
+    const attachedDocumentIds = new Set<string>();
+    matchedCases.forEach((c: any) => {
+      collectEvidenceDocumentIds(c?.evidence_attachments, attachedDocumentIds);
+    });
 
-        if (doc) {
-          docDetails = {
-            filename: doc.filename,
-            doc_type: doc.doc_type,
-            supplier: doc.metadata?.supplier,
-            invoice_number: doc.metadata?.invoice_number,
-            amount: doc.metadata?.amount
-          };
-        }
+    const [detectionsResult, documentLinksResult] = await Promise.all([
+      detectionIds.length
+        ? client
+            .from('detection_results')
+            .select('id, anomaly_type, status, estimated_value, confidence_score, order_id, sku, asin, evidence')
+            .in('id', detectionIds)
+            .eq('tenant_id', tenantId)
+        : Promise.resolve({ data: [], error: null }),
+      disputeCaseIds.length
+        ? client
+            .from('dispute_evidence_links')
+            .select('dispute_case_id, evidence_document_id')
+            .in('dispute_case_id', disputeCaseIds)
+            .eq('tenant_id', tenantId)
+        : Promise.resolve({ data: [], error: null })
+    ]);
+
+    if (detectionsResult.error) {
+      logger.warn('⚠️ [EVIDENCE] Failed to fetch detection context for matching results', {
+        tenantId,
+        error: detectionsResult.error.message
+      });
+    }
+
+    if (documentLinksResult.error) {
+      logger.warn('⚠️ [EVIDENCE] Failed to fetch dispute evidence links for matching results', {
+        tenantId,
+        error: documentLinksResult.error.message
+      });
+    }
+
+    const linkedDocumentIdsByCase = new Map<string, string[]>();
+    (documentLinksResult.data || []).forEach((link: any) => {
+      const disputeCaseId = String(link?.dispute_case_id || '').trim();
+      const evidenceDocumentId = String(link?.evidence_document_id || '').trim();
+      if (!disputeCaseId || !evidenceDocumentId) return;
+
+      attachedDocumentIds.add(evidenceDocumentId);
+
+      const existing = linkedDocumentIdsByCase.get(disputeCaseId) || [];
+      if (!existing.includes(evidenceDocumentId)) {
+        existing.push(evidenceDocumentId);
+        linkedDocumentIdsByCase.set(disputeCaseId, existing);
       }
+    });
 
+    const allDocumentIds = Array.from(attachedDocumentIds);
+    const documentsResult = allDocumentIds.length
+      ? await client
+          .from('evidence_documents')
+          .select('id, filename, original_filename, doc_type, supplier_name, invoice_number, total_amount, currency, metadata, tenant_id')
+          .in('id', allDocumentIds)
+          .eq('tenant_id', tenantId)
+      : { data: [], error: null as any };
+
+    if (documentsResult.error) {
+      logger.warn('⚠️ [EVIDENCE] Failed to fetch evidence document details for matching results', {
+        tenantId,
+        error: documentsResult.error.message
+      });
+    }
+
+    const detectionById = new Map<string, any>(
+      (detectionsResult.data || []).map((row: any) => [String(row.id), row])
+    );
+    const documentById = new Map<string, any>(
+      (documentsResult.data || []).map((row: any) => [String(row.id), row])
+    );
+
+    const results = matchedCases.map((c: any) => {
+      const attachmentDocumentIds = Array.from(collectEvidenceDocumentIds(c?.evidence_attachments));
+      const linkedDocumentIds = [
+        ...new Set([
+          ...attachmentDocumentIds,
+          ...(linkedDocumentIdsByCase.get(String(c.id)) || [])
+        ])
+      ];
+
+      const fallbackPrimaryDocumentId = linkedDocumentIds[0] || '';
+      const primaryDocumentId = String(c.evidence_attachments?.document_id || fallbackPrimaryDocumentId || '').trim();
+      const primaryDocument = documentById.get(primaryDocumentId) || documentById.get(fallbackPrimaryDocumentId) || null;
+      const linkedDocuments = linkedDocumentIds
+        .map((documentId) => documentById.get(documentId))
+        .filter(Boolean);
+      const detection = c.detection_result_id ? detectionById.get(String(c.detection_result_id)) : null;
+      const enrichedFinding = detection ? enrichDetectionFinding(detection, c, { tenantSlug }) : null;
       const confidence = c.evidence_attachments?.match_confidence || 0;
 
-      return {
+      const primaryDocumentTitle = primaryDocument
+        ? buildPrimaryDocumentTitle(primaryDocument)
+        : (primaryDocumentId || 'Linked document');
+      const primaryDocumentSubtitle = primaryDocument
+        ? buildPrimaryDocumentSubtitle(primaryDocument, linkedDocuments)
+        : (linkedDocuments.length ? buildLinkedDocumentSummary(linkedDocuments) : null);
+      const claimReference = c.case_number || String(c.id).slice(0, 12).toUpperCase();
+      const claimTitle = enrichedFinding?.seller_summary?.title || titleCaseLabel(c.case_type, 'Recovery case');
+      const claimSubtitle = buildClaimDisplaySubtitle(enrichedFinding, c);
+
+      const matchTitle = isDemoWorkspace
+        ? (buildDemoMatchTitle(enrichedFinding?.seller_summary?.title || claimTitle, primaryDocument, linkedDocuments)
+            || claimTitle)
+        : null;
+      const matchSubtitle = isDemoWorkspace
+        ? (enrichedFinding?.seller_summary?.evidence_summary || claimSubtitle || primaryDocumentSubtitle)
+        : null;
+
+      const documentDetails: any = {
+        filename: primaryDocument?.filename,
+        doc_type: primaryDocument?.doc_type,
+        supplier: primaryDocument?.supplier_name || primaryDocument?.metadata?.supplier,
+        invoice_number: primaryDocument?.invoice_number || primaryDocument?.metadata?.invoice_number,
+        amount: primaryDocument?.total_amount || primaryDocument?.metadata?.amount
+      };
+
+      if (isDemoWorkspace) {
+        documentDetails.title = primaryDocumentTitle;
+        documentDetails.subtitle = primaryDocumentSubtitle;
+        documentDetails.original_filename = primaryDocument ? getStoredOriginalFilename(primaryDocument) : null;
+        documentDetails.linked_document_count = linkedDocuments.length;
+        documentDetails.linked_document_names = linkedDocuments
+          .slice(0, 4)
+          .map((doc: any) => buildPrimaryDocumentTitle(doc));
+      }
+
+      const claimDetails: any = {
+        type: c.case_type,
+        amount: c.claim_amount,
+        currency: primaryDocument?.currency || 'USD',
+        sku: c.sku || detection?.sku || null,
+        asin: c.asin || detection?.asin || null
+      };
+
+      if (isDemoWorkspace) {
+        claimDetails.case_number = c.case_number || null;
+        claimDetails.reference = claimReference;
+        claimDetails.title = claimTitle;
+        claimDetails.subtitle = claimSubtitle;
+      }
+
+      const row: any = {
         id: c.id,
         claim_id: c.id,
-        document_id: docId,
+        document_id: primaryDocument?.id || primaryDocumentId,
         confidence_score: confidence,
         match_type: c.evidence_attachments?.match_type || 'unknown',
         action_taken: deriveEvidenceMatchDisplayAction(c.evidence_attachments, confidence),
         matched_fields: c.evidence_attachments?.matched_fields || [],
-        reasoning: '',
+        reasoning: isDemoWorkspace ? (enrichedFinding?.seller_summary?.recoverability_reason || '') : '',
         created_at: c.evidence_attachments?.matched_at || c.created_at,
-        // Additional claim info
         claim_type: c.case_type,
         claim_status: c.status,
         claim_amount: c.claim_amount,
-        // Document details
-        document_details: docDetails,
-        filename: docDetails.filename,
-        supplier: docDetails.supplier,
-        invoice_number: docDetails.invoice_number,
-        amount: docDetails.amount
+        claim_details: claimDetails,
+        document_details: documentDetails,
+        filename: documentDetails.filename,
+        supplier: documentDetails.supplier,
+        invoice_number: documentDetails.invoice_number,
+        amount: documentDetails.amount
       };
-    }));
+
+      if (isDemoWorkspace) {
+        row.match_details = {
+          title: matchTitle,
+          subtitle: matchSubtitle
+        };
+      }
+
+      return row;
+    });
 
     logger.info('✅ [EVIDENCE] Matching results fetched', {
       userId: userId || 'all',
