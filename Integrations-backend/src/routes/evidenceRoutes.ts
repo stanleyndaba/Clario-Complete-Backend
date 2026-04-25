@@ -293,6 +293,12 @@ function buildDemoMatchTitle(findingTitle: string | null, doc: any, linkedDocs: 
     return 'Requested Amazon proof';
   }
 
+  if (normalizedDocType.includes('shipping')) return 'Inbound shipment proof';
+  if (normalizedDocType.includes('invoice')) return 'Supplier invoice linked';
+  if (normalizedDocType.includes('po')) return 'Purchase order cross-check';
+  if (normalizedDocType.includes('statement')) return 'Settlement statement linked';
+  if (normalizedDocType.includes('worksheet')) return 'Audit worksheet linked';
+
   if (linkedDocs.length >= 2) return 'Evidence packet linked';
   return normalizeDocTypeLabel(doc?.doc_type || doc?.document_type);
 }
@@ -377,6 +383,84 @@ function buildClaimDisplaySubtitle(enrichedFinding: any, disputeCase: any): stri
   ].filter(Boolean) as string[];
 
   return parts.length ? parts.join(' · ') : null;
+}
+
+async function selectCompatibleRows(
+  client: any,
+  table: string,
+  selectShapes: string[],
+  configureQuery: (query: any) => any,
+  logContext: Record<string, any>
+): Promise<{ data: any[]; shape: string | null; error: any | null }> {
+  let lastError: any = null;
+
+  for (const selectShape of selectShapes) {
+    const { data, error } = await configureQuery(
+      client
+        .from(table)
+        .select(selectShape)
+    );
+
+    if (!error) {
+      return {
+        data: data || [],
+        shape: selectShape,
+        error: null
+      };
+    }
+
+    lastError = error;
+    logger.warn('⚠️ [EVIDENCE] Compatibility select failed', {
+      ...logContext,
+      table,
+      selectShape,
+      error: error.message
+    });
+  }
+
+  return {
+    data: [],
+    shape: null,
+    error: lastError
+  };
+}
+
+function deriveDemoCaseReference(disputeCase: any, primaryDocument: any): string | null {
+  const canonical = String(disputeCase?.case_number || '').trim();
+  if (canonical) return canonical;
+
+  const documentTokens = [
+    primaryDocument?.invoice_number,
+    primaryDocument?.metadata?.invoice_number,
+    primaryDocument?.filename,
+    primaryDocument?.original_filename,
+  ]
+    .map((value: unknown) => String(value || '').trim())
+    .filter(Boolean);
+
+  for (const token of documentTokens) {
+    const match = token.match(/ACME-(\d{4})/i);
+    if (match) {
+      return `ACME-CASE-${match[1]}`;
+    }
+  }
+
+  return null;
+}
+
+function deriveDemoClaimTitle(enrichedFinding: any, disputeCase: any, primaryDocument: any, linkedDocuments: any[]): string {
+  const findingTitle = String(enrichedFinding?.seller_summary?.title || '').trim();
+  if (findingTitle) return findingTitle;
+
+  const docType = String(primaryDocument?.doc_type || primaryDocument?.document_type || '').trim().toLowerCase();
+  if (linkedDocuments.length >= 2) return 'Evidence-backed recovery case';
+  if (docType.includes('shipping')) return 'Shipment-backed recovery case';
+  if (docType.includes('invoice')) return 'Supplier-backed recovery case';
+  if (docType.includes('statement')) return 'Settlement-backed recovery case';
+  if (docType.includes('worksheet')) return 'Audit-backed recovery case';
+  if (docType.includes('po')) return 'Purchase-order-backed recovery case';
+
+  return titleCaseLabel(disputeCase?.case_type, 'Recovery case');
 }
 
 async function getAuthoritativeEvidenceSourcesForUser(userId: string, tenantId: string) {
@@ -2411,52 +2495,40 @@ router.get('/matching/results', async (req: Request, res: Response) => {
 
     const client = supabaseAdmin || supabase;
 
-    const richCaseSelect =
-      'id, detection_result_id, case_number, case_type, status, claim_amount, filing_status, case_state, recovery_status, billing_status, sku, asin, evidence_attachments, created_at, tenant_id';
-    const fallbackCaseSelect =
-      'id, case_type, status, claim_amount, evidence_attachments, created_at, tenant_id';
+    const caseSelectShapes = [
+      'id, detection_result_id, case_number, case_type, status, claim_amount, filing_status, case_state, recovery_status, billing_status, sku, asin, evidence_attachments, created_at, tenant_id',
+      'id, detection_result_id, case_number, case_type, status, claim_amount, sku, asin, evidence_attachments, created_at, tenant_id',
+      'id, detection_result_id, case_number, case_type, status, claim_amount, evidence_attachments, created_at, tenant_id',
+      'id, case_number, case_type, status, claim_amount, evidence_attachments, created_at, tenant_id',
+      'id, case_type, status, claim_amount, evidence_attachments, created_at, tenant_id'
+    ];
 
-    let casesWithEvidence: any[] = [];
-
-    // Query dispute_cases that have evidence_attachments with document_id set - scope by tenant_id.
-    // Some deployed databases can lag behind the newest dispute_cases shape, so we fail soft here.
-    const { data: richCasesWithEvidence, error: richCasesError } = await client
-      .from('dispute_cases')
-      .select(richCaseSelect)
-      .eq('tenant_id', tenantId)
-      .order('created_at', { ascending: false })
-      .limit(500);
-
-    if (richCasesError) {
-      logger.warn('⚠️ [EVIDENCE] Rich dispute case select failed, falling back to compatibility shape', {
-        tenantId,
-        userId,
-        error: richCasesError.message
-      });
-
-      const { data: fallbackCasesWithEvidence, error: fallbackCasesError } = await client
-        .from('dispute_cases')
-        .select(fallbackCaseSelect)
+    const {
+      data: casesWithEvidence,
+      shape: caseSelectShape,
+      error: caseSelectError
+    } = await selectCompatibleRows(
+      client,
+      'dispute_cases',
+      caseSelectShapes,
+      (query) => query
         .eq('tenant_id', tenantId)
         .order('created_at', { ascending: false })
-        .limit(500);
+        .limit(500),
+      { tenantId, userId, route: 'matching/results' }
+    );
 
-      if (fallbackCasesError) {
-        logger.error('❌ [EVIDENCE] Error fetching cases with evidence', {
-          error: fallbackCasesError.message,
-          userId,
-          tenantId
-        });
-        return res.status(500).json({
-          success: false,
-          error: 'Failed to fetch matching results',
-          message: fallbackCasesError.message
-        });
-      }
-
-      casesWithEvidence = fallbackCasesWithEvidence || [];
-    } else {
-      casesWithEvidence = richCasesWithEvidence || [];
+    if (caseSelectError) {
+      logger.error('❌ [EVIDENCE] Error fetching cases with evidence', {
+        error: caseSelectError.message,
+        userId,
+        tenantId
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch matching results',
+        message: caseSelectError.message
+      });
     }
 
     // Filter to only cases that have document_id in evidence_attachments
@@ -2488,12 +2560,21 @@ router.get('/matching/results', async (req: Request, res: Response) => {
 
     const [detectionsResult, documentLinksResult] = await Promise.all([
       detectionIds.length
-        ? client
-            .from('detection_results')
-            .select('id, anomaly_type, status, estimated_value, confidence_score, order_id, sku, asin, evidence')
-            .in('id', detectionIds)
-            .eq('tenant_id', tenantId)
-        : Promise.resolve({ data: [], error: null }),
+        ? selectCompatibleRows(
+            client,
+            'detection_results',
+            [
+              'id, anomaly_type, status, estimated_value, confidence_score, order_id, sku, asin, evidence',
+              'id, anomaly_type, status, estimated_value, confidence_score, sku, asin, evidence',
+              'id, anomaly_type, status, estimated_value, confidence_score, evidence',
+              'id, anomaly_type, evidence'
+            ],
+            (query) => query
+              .in('id', detectionIds)
+              .eq('tenant_id', tenantId),
+            { tenantId, route: 'matching/results', relation: 'detection_results' }
+          )
+        : Promise.resolve({ data: [], shape: null, error: null }),
       disputeCaseIds.length
         ? client
             .from('dispute_evidence_links')
@@ -2534,12 +2615,22 @@ router.get('/matching/results', async (req: Request, res: Response) => {
 
     const allDocumentIds = Array.from(attachedDocumentIds);
     const documentsResult = allDocumentIds.length
-      ? await client
-          .from('evidence_documents')
-          .select('id, filename, original_filename, doc_type, supplier_name, invoice_number, total_amount, currency, metadata, tenant_id')
-          .in('id', allDocumentIds)
-          .eq('tenant_id', tenantId)
-      : { data: [], error: null as any };
+      ? await selectCompatibleRows(
+          client,
+          'evidence_documents',
+          [
+            'id, filename, original_filename, doc_type, supplier_name, invoice_number, total_amount, currency, metadata, tenant_id',
+            'id, filename, doc_type, supplier_name, invoice_number, metadata, tenant_id',
+            'id, filename, original_filename, doc_type, metadata, tenant_id',
+            'id, filename, doc_type, metadata, tenant_id',
+            'id, filename, doc_type, tenant_id'
+          ],
+          (query) => query
+            .in('id', allDocumentIds)
+            .eq('tenant_id', tenantId),
+          { tenantId, route: 'matching/results', relation: 'evidence_documents' }
+        )
+      : { data: [], shape: null, error: null as any };
 
     if (documentsResult.error) {
       logger.warn('⚠️ [EVIDENCE] Failed to fetch evidence document details for matching results', {
@@ -2580,8 +2671,14 @@ router.get('/matching/results', async (req: Request, res: Response) => {
       const primaryDocumentSubtitle = primaryDocument
         ? buildPrimaryDocumentSubtitle(primaryDocument, linkedDocuments)
         : (linkedDocuments.length ? buildLinkedDocumentSummary(linkedDocuments) : null);
-      const claimReference = c.case_number || String(c.id).slice(0, 12).toUpperCase();
-      const claimTitle = enrichedFinding?.seller_summary?.title || titleCaseLabel(c.case_type, 'Recovery case');
+      const claimReference = (
+        c.case_number
+        || (isDemoWorkspace ? deriveDemoCaseReference(c, primaryDocument) : null)
+        || String(c.id).slice(0, 12).toUpperCase()
+      );
+      const claimTitle = isDemoWorkspace
+        ? deriveDemoClaimTitle(enrichedFinding, c, primaryDocument, linkedDocuments)
+        : (enrichedFinding?.seller_summary?.title || titleCaseLabel(c.case_type, 'Recovery case'));
       const claimSubtitle = buildClaimDisplaySubtitle(enrichedFinding, c);
 
       const matchTitle = isDemoWorkspace
@@ -2659,7 +2756,10 @@ router.get('/matching/results', async (req: Request, res: Response) => {
     logger.info('✅ [EVIDENCE] Matching results fetched', {
       userId: userId || 'all',
       count: results.length,
-      total: totalMatched
+      total: totalMatched,
+      caseSelectShape,
+      detectionSelectShape: detectionsResult.shape,
+      documentSelectShape: documentsResult.shape
     });
 
     res.json({
