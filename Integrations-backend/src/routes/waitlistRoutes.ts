@@ -5,6 +5,9 @@ import logger from '../utils/logger';
 
 const router = Router();
 
+const normalizeEmail = (value: unknown): string => String(value || '').trim().toLowerCase();
+const isValidEmail = (value: string): boolean => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+
 /**
  * POST /api/waitlist
  * Register a new user for the waitlist
@@ -112,6 +115,88 @@ router.post('/', async (req: Request, res: Response) => {
         return res.status(500).json({
             success: false,
             message: 'Failed to join the waitlist. Please try again later.'
+        });
+    }
+});
+
+/**
+ * POST /api/waitlist/quick-capture
+ * Capture a waitlist lead without relying on the database.
+ */
+router.post('/quick-capture', async (req: Request, res: Response) => {
+    const email = normalizeEmail(req.body?.email);
+    const {
+        user_type,
+        brand_count,
+        annual_revenue,
+        contact_handle,
+        primary_goal,
+        source_page,
+        intent,
+        reason,
+    } = req.body || {};
+
+    if (!email) {
+        return res.status(400).json({
+            success: false,
+            message: 'Email is required',
+        });
+    }
+
+    if (!isValidEmail(email)) {
+        return res.status(400).json({
+            success: false,
+            message: 'Please enter a valid email address.',
+        });
+    }
+
+    try {
+        logger.info('📝 [WAITLIST] Quick capture request received', {
+            email,
+            source_page: source_page || 'unknown',
+            intent: intent || null,
+        });
+
+        await waitlistEmailService.sendWaitlistLeadCaptureEmail({
+            email,
+            user_type,
+            brand_count,
+            annual_revenue,
+            contact_handle,
+            primary_goal,
+            source_page: source_page || '/waitlist',
+            intent: intent || null,
+            reason: reason || null,
+            user_agent: req.headers['user-agent'] ? String(req.headers['user-agent']) : null,
+            ip: req.ip || null,
+        });
+
+        let confirmationEmailStatus: 'queued' | 'failed' = 'queued';
+        try {
+            await waitlistEmailService.sendWaitlistConfirmationEmail(email);
+        } catch (emailError: any) {
+            confirmationEmailStatus = 'failed';
+            logger.warn('⚠️ [WAITLIST] Quick capture confirmation email failed after lead capture', {
+                email,
+                error: emailError?.message || String(emailError),
+            });
+        }
+
+        return res.status(201).json({
+            success: true,
+            message: 'You are on the waitlist. We secured your email and will reach out as soon as access opens.',
+            confirmation_email_status: confirmationEmailStatus,
+            capture_mode: 'email_only',
+        });
+    } catch (error: any) {
+        logger.error('❌ [WAITLIST] Quick capture failed', {
+            email,
+            error: error.message,
+        });
+
+        return res.status(503).json({
+            success: false,
+            message: 'We could not secure your waitlist request right now. Please try again in a moment.',
         });
     }
 });

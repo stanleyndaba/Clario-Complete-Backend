@@ -113,6 +113,9 @@ const config = {
   AI_EXPLAINER_ENABLED: process.env.AI_EXPLAINER_ENABLED || 'false',
   AI_EXPLAINER_MODEL: process.env.AI_EXPLAINER_MODEL || 'gpt-4.1-nano',
   AI_EXPLAINER_TIMEOUT_MS: toInt(process.env.AI_EXPLAINER_TIMEOUT_MS, 8000),
+
+  // Waitlist capture
+  WAITLIST_CAPTURE_EMAIL: process.env.WAITLIST_CAPTURE_EMAIL || 'support@margin-finance.com',
 };
 
 export default config;
