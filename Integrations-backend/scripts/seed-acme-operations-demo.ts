@@ -916,6 +916,69 @@ const disputes = [
     block_reasons: ['amazon_thread_requested_more_evidence'],
     created_at: iso(-9),
     updated_at: iso(-2)
+  },
+  {
+    id: '00000000-0000-0000-0000-000000003012',
+    detection_result_id: detections[8].id,
+    case_number: 'ACME-CASE-2009',
+    status: 'processing',
+    case_state: 'submitting',
+    claim_amount: 311.28,
+    approved_amount: null,
+    actual_payout_amount: null,
+    recovered_amount: null,
+    filing_status: 'submitting',
+    recovery_status: 'pending',
+    billing_status: 'pending',
+    eligibility_status: 'READY',
+    eligible_to_file: false,
+    amazon_case_id: null,
+    provider_case_id: null,
+    order_id: detections[8].order_id,
+    sku: detections[8].sku,
+    asin: detections[8].asin,
+    expected_payout_date: iso(9),
+    submission_date: iso(-1),
+    evidence_attachments: decisionIntelligence({
+      eligibility: 'READY',
+      requirements: ['document_type:invoice', 'document_type:worksheet', 'fee_basis_proof'],
+      recommendation: 'smart_filing',
+      operationalState: 'submitting'
+    }),
+    block_reasons: [],
+    created_at: iso(-4),
+    updated_at: iso(-1, -1)
+  },
+  {
+    id: '00000000-0000-0000-0000-000000003013',
+    detection_result_id: detections[9].id,
+    case_number: 'ACME-CASE-2010',
+    status: 'under_review',
+    case_state: 'pending',
+    claim_amount: 96.7,
+    approved_amount: null,
+    actual_payout_amount: null,
+    recovered_amount: null,
+    filing_status: 'submitted',
+    recovery_status: 'pending',
+    billing_status: 'pending',
+    eligibility_status: 'SAFETY_HOLD',
+    eligible_to_file: false,
+    amazon_case_id: 'AMZ-ACME-42010',
+    provider_case_id: 'AMZ-ACME-42010',
+    order_id: detections[9].order_id,
+    sku: detections[9].sku,
+    asin: detections[9].asin,
+    expected_payout_date: iso(11),
+    submission_date: iso(-2),
+    evidence_attachments: decisionIntelligence({
+      eligibility: 'SAFETY_HOLD',
+      requirements: ['document_type:invoice', 'document_type:shipping', 'unit_cost_proof'],
+      operationalState: 'filed_waiting_on_amazon'
+    }),
+    block_reasons: [],
+    created_at: iso(-5),
+    updated_at: iso(-1)
   }
 ];
 
@@ -1041,6 +1104,13 @@ function caseDetailEvidenceForDetection(row: typeof detections[number]): Record<
         source: 'Acme inbound receiving ledger, last 60 days'
       },
       autonomous_logic_summary: 'Amazon rejected the first packet because the carrier proof did not fall inside the receiving window.'
+    },
+    'ACM-FD-2604-0009': {
+      charged_amount: 534.12,
+      expected_amount: 222.84,
+      fee_type: 'Referral fee basis mismatch',
+      audit_scope: 'fee_category, referral_rate, settlement_line_items',
+      autonomous_logic_summary: 'Margin assembled the fee basis packet and moved the case into live submission after the invoice and audit worksheet aligned.'
     },
     'ACM-LI-2604-0010': {
       total_receipts: 36,
@@ -1206,7 +1276,10 @@ const evidenceDocSpecs = [
   ['00000000-0000-0000-0000-000000004114', '00000000-0000-0000-0000-000000004004', 'dropbox', 'worksheet', 'Margin Weight Audit', 'AUD-ACME-2006', 'ACME-STORAGE-BIN-L', 'B0ACME0006', 634.88, -8],
   ['00000000-0000-0000-0000-000000004108', '00000000-0000-0000-0000-000000004002', 'gmail', 'invoice', 'Brightline Electronics', 'INV-ACME-2007', 'ACME-LED-STRIP-16FT', 'B0ACME0007', 376.45, -5],
   ['00000000-0000-0000-0000-000000004109', '00000000-0000-0000-0000-000000004004', 'dropbox', 'invoice', 'DeskDirect Supply', 'INV-ACME-2009', 'ACME-BENTO-BOX-GRN', 'B0ACME0009', 311.28, -4],
-  ['00000000-0000-0000-0000-000000004110', '00000000-0000-0000-0000-000000004003', 'gdrive', 'po', 'Acme Operations', 'PO-ACME-2011', 'ACME-THERMAL-BAG-BLU', 'B0ACME0011', 529.42, -3]
+  ['00000000-0000-0000-0000-000000004110', '00000000-0000-0000-0000-000000004003', 'gdrive', 'po', 'Acme Operations', 'PO-ACME-2011', 'ACME-THERMAL-BAG-BLU', 'B0ACME0011', 529.42, -3],
+  ['00000000-0000-0000-0000-000000004115', '00000000-0000-0000-0000-000000004004', 'dropbox', 'worksheet', 'Margin Fee Audit', 'AUD-ACME-2009', 'ACME-BENTO-BOX-GRN', 'B0ACME0009', 311.28, -3],
+  ['00000000-0000-0000-0000-000000004116', '00000000-0000-0000-0000-000000004003', 'gdrive', 'invoice', 'LintFree Supply Co', 'INV-ACME-2010', 'ACME-CLEANING-CLOTH-12', 'B0ACME0010', 96.7, -3],
+  ['00000000-0000-0000-0000-000000004117', '00000000-0000-0000-0000-000000004002', 'gmail', 'shipping', 'North Coast Freight', 'BOL-ACME-2010', 'ACME-CLEANING-CLOTH-12', 'B0ACME0010', 96.7, -2]
 ] as const;
 
 const evidenceDocQuantities: Record<string, number> = {
@@ -1223,7 +1296,10 @@ const evidenceDocQuantities: Record<string, number> = {
   'AUD-ACME-2006': 6,
   'INV-ACME-2007': 9,
   'INV-ACME-2009': 6,
-  'PO-ACME-2011': 7
+  'PO-ACME-2011': 7,
+  'AUD-ACME-2009': 6,
+  'INV-ACME-2010': 4,
+  'BOL-ACME-2010': 4
 };
 
 function evidenceDocuments() {
@@ -1303,7 +1379,11 @@ const evidenceLinkPairs = [
   ['00000000-0000-0000-0000-000000006012', disputes[5].id, '00000000-0000-0000-0000-000000004113', 0.92],
   ['00000000-0000-0000-0000-000000006013', disputes[5].id, '00000000-0000-0000-0000-000000004114', 0.91],
   ['00000000-0000-0000-0000-000000006008', disputes[6].id, '00000000-0000-0000-0000-000000004108', 0.57],
-  ['00000000-0000-0000-0000-000000006009', disputes[8].id, '00000000-0000-0000-0000-000000004110', 0.72]
+  ['00000000-0000-0000-0000-000000006009', disputes[8].id, '00000000-0000-0000-0000-000000004110', 0.72],
+  ['00000000-0000-0000-0000-000000006014', disputes[9].id, '00000000-0000-0000-0000-000000004109', 0.96],
+  ['00000000-0000-0000-0000-000000006015', disputes[9].id, '00000000-0000-0000-0000-000000004115', 0.93],
+  ['00000000-0000-0000-0000-000000006016', disputes[10].id, '00000000-0000-0000-0000-000000004116', 0.95],
+  ['00000000-0000-0000-0000-000000006017', disputes[10].id, '00000000-0000-0000-0000-000000004117', 0.92]
 ] as const;
 
 function primaryEvidenceMatchForDispute(disputeId: string) {
@@ -2034,6 +2114,8 @@ function notifications() {
     ['funds_deposited', 'Funds deposited', 'A verified reimbursement of $963.10 landed for ACME-CASE-2005.', 'high', false, disputes[4].id],
     ['evidence_found', 'Evidence packet linked', 'Invoice, settlement statement, and audit worksheet were linked to ACME-CASE-2006.', 'normal', true, disputes[5].id],
     ['claim_denied', 'Evidence window mismatch', 'ACME-CASE-2007 needs review after Amazon rejected the first packet.', 'normal', true, disputes[6].id],
+    ['case_filed', 'Submission started', 'ACME-CASE-2009 is actively moving through filing with the fee audit packet attached.', 'normal', false, disputes[9].id],
+    ['case_filed', 'Case filed with Amazon', 'ACME-CASE-2010 was filed and is now waiting on Amazon review.', 'normal', false, disputes[10].id],
     ['sync_completed', 'Amazon sync complete', 'Latest Acme Operations sync processed 1,842 orders and 612 fee events.', 'normal', true, syncId],
     ['payment_processed', 'Subscription invoice paid', 'The April Pro subscription invoice was marked paid.', 'low', true, 'SUB-PRO-20260401-ACMEDEMO']
   ] as const;
@@ -2096,6 +2178,8 @@ function recentPlatformEvents() {
     ['claim_detected', 'detection_result', detections[0].id, { claim_number: detections[0].claim_number, amount: 486.2 }],
     ['evidence_found', 'evidence_document', '00000000-0000-0000-0000-000000004101', { case_number: 'ACME-CASE-2001', confidence: 0.98 }],
     ['case_filed', 'dispute_case', disputes[2].id, { amazon_case_id: 'AMZ-ACME-42003' }],
+    ['filing_started', 'dispute_case', disputes[9].id, { case_number: 'ACME-CASE-2009', amount: 311.28 }],
+    ['case_filed', 'dispute_case', disputes[10].id, { amazon_case_id: 'AMZ-ACME-42010' }],
     ['approved', 'dispute_case', disputes[3].id, { amount: 1184.5 }],
     ['paid', 'dispute_case', disputes[4].id, { amount: 963.1 }]
   ] as const;
@@ -2164,6 +2248,43 @@ function agentEvents() {
         expectedAmount: 742.4
       },
       created_at: iso(-5)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000014514',
+      agent: 'refund_filing',
+      event_type: 'filing_started',
+      dispute: disputes[9],
+      document_id: '00000000-0000-0000-0000-000000004115',
+      metadata: {
+        expectedAmount: 311.28,
+        proofPacket: 'ACME-CASE-2009',
+        message: 'Fee basis packet moved from ready state into active submission.'
+      },
+      created_at: iso(-1, -2)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000014515',
+      agent: 'refund_filing',
+      event_type: 'filing_completed',
+      dispute: disputes[10],
+      document_id: '00000000-0000-0000-0000-000000004116',
+      metadata: {
+        amazon_case_id: 'AMZ-ACME-42010',
+        expectedAmount: 96.7
+      },
+      created_at: iso(-2, -1)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000014516',
+      agent: 'amazon_case_sync',
+      event_type: 'review_acknowledged',
+      dispute: disputes[10],
+      document_id: '00000000-0000-0000-0000-000000004117',
+      metadata: {
+        amazon_case_id: 'AMZ-ACME-42010',
+        message: 'Amazon acknowledged the submission and moved the case into review.'
+      },
+      created_at: iso(-1, -1)
     },
     {
       id: '00000000-0000-0000-0000-000000014505',
@@ -2331,6 +2452,34 @@ function proofPacketsAndPrompts() {
         readiness: 'approved'
       },
       created_at: iso(-5)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000015003',
+      tenant_id: resolvedTenantId,
+      seller_id: demoUserId,
+      dispute_case_id: disputes[9].id,
+      packet_url: 'demo://proof-packets/acme-case-2009.pdf',
+      summary: {
+        demo_seed: true,
+        case_number: 'ACME-CASE-2009',
+        documents: ['INV-ACME-2009.pdf', 'AUD-ACME-2009.pdf'],
+        readiness: 'submitting'
+      },
+      created_at: iso(-1)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000015004',
+      tenant_id: resolvedTenantId,
+      seller_id: demoUserId,
+      dispute_case_id: disputes[10].id,
+      packet_url: 'demo://proof-packets/acme-case-2010.pdf',
+      summary: {
+        demo_seed: true,
+        case_number: 'ACME-CASE-2010',
+        documents: ['INV-ACME-2010.pdf', 'BOL-ACME-2010.pdf'],
+        readiness: 'filed'
+      },
+      created_at: iso(-2)
     }
   ];
 
@@ -2537,6 +2686,51 @@ function caseMessages() {
       metadata: { demo_seed: true, settlement_id: 'SETTLE-ACME-PAYOUT-02' },
       created_at: iso(-3),
       updated_at: iso(-3)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000015310',
+      tenant_id: resolvedTenantId,
+      dispute_case_id: disputes[10].id,
+      amazon_case_id: 'AMZ-ACME-42010',
+      provider: 'gmail',
+      provider_message_id: 'gmail-acme-42010-submitted-proof',
+      provider_thread_id: 'thread-acme-42010',
+      direction: 'outbound',
+      subject: 'Proof packet for AMZ-ACME-42010',
+      body_text: 'Attaching the supplier invoice and inbound shipment proof for the four units Amazon marked missing from FBA17ACME010 at ONT8.',
+      attachments: [
+        { filename: 'INV-ACME-2010.pdf', evidence_document_id: '00000000-0000-0000-0000-000000004116' },
+        { filename: 'BOL-ACME-2010.pdf', evidence_document_id: '00000000-0000-0000-0000-000000004117' }
+      ],
+      sender: 'claims@acme-operations.test',
+      recipients: ['seller-performance@amazon.com'],
+      sent_at: iso(-2),
+      state_signal: 'pending',
+      metadata: { demo_seed: true, attachment_count: 2 },
+      created_at: iso(-2),
+      updated_at: iso(-2)
+    },
+    {
+      id: '00000000-0000-0000-0000-000000015311',
+      tenant_id: resolvedTenantId,
+      dispute_case_id: disputes[10].id,
+      amazon_case_id: 'AMZ-ACME-42010',
+      provider: 'gmail',
+      provider_message_id: 'gmail-acme-42010-reviewing',
+      provider_thread_id: 'thread-acme-42010',
+      direction: 'inbound',
+      subject: 'We are reviewing reimbursement request AMZ-ACME-42010',
+      body_text: 'We received the inbound shipment packet and confirmed the receiving discrepancy. The case is now under review.',
+      attachments: [
+        { filename: 'BOL-ACME-2010.pdf', evidence_document_id: '00000000-0000-0000-0000-000000004117' }
+      ],
+      sender: 'seller-performance@amazon.com',
+      recipients: ['claims@acme-operations.test'],
+      received_at: iso(-1),
+      state_signal: 'pending',
+      metadata: { demo_seed: true },
+      created_at: iso(-1),
+      updated_at: iso(-1)
     },
     {
       id: '00000000-0000-0000-0000-000000015302',
