@@ -2,7 +2,6 @@ import { EmailService, EmailSendResult } from '../notifications/services/deliver
 import config from '../config/env';
 
 const EARLY_ACCESS_CHECKOUT_URL = 'https://www.paypal.com/ncp/payment/P4XPE6PAPWT56';
-const EARLY_ACCESS_ONBOARDING_URL = 'https://calendly.com/mvelo-margin-finance/30min';
 
 function escapeHtml(value: string): string {
   return value
@@ -48,7 +47,7 @@ function buildEarlyAccessLeadEmail(input: EarlyAccessCaptureInput): {
     '',
     ...detailLines.map(([label, value]) => `${label}: ${value}`),
     '',
-    'Action: match this email against the PayPal payment notification, then start white-glove onboarding.',
+    'Action: match this email against the PayPal payment notification, then send the Founding 100 onboarding invitation within the batch window.',
   ].join('\n');
 
   const rows = detailLines
@@ -87,7 +86,7 @@ function buildEarlyAccessLeadEmail(input: EarlyAccessCaptureInput): {
               ${rows}
             </table>
             <div style="margin-top:22px; padding:16px; border-radius:12px; background:#f8fafc; color:#111827; font-size:14px; line-height:1.7;">
-              Match this email against the PayPal payment notification, then start white-glove onboarding.
+              Match this email against the PayPal payment notification, then send the Founding 100 onboarding invitation within the batch window.
             </div>
           </div>
         </div>
@@ -107,11 +106,11 @@ export function buildEarlyAccessConfirmationEmail(): {
   html: string;
   text: string;
 } {
-  const subject = 'Your Margin Early Access next step';
+  const subject = 'Your Margin Early Access reservation next step';
   const preheader = 'We saved your onboarding contact details.';
   const text = [
-    'Your Margin Early Access next step',
-    '==================================',
+    'Your Margin Early Access reservation next step',
+    '================================================',
     '',
     'We saved your onboarding contact details.',
     '',
@@ -119,11 +118,11 @@ export function buildEarlyAccessConfirmationEmail(): {
     '',
     `Checkout link: ${EARLY_ACCESS_CHECKOUT_URL}`,
     '',
-    'After payment, book your Early Access onboarding call using the same email you used for checkout.',
+    'After payment, you are placed into the Founding 100 priority batch.',
     '',
-    `Book onboarding: ${EARLY_ACCESS_ONBOARDING_URL}`,
+    'We provision Early Access workspaces manually to ensure setup quality. Your onboarding invitation will be sent within 3-5 business days after payment verification.',
     '',
-    'We will verify the reservation before access is activated. Early Access is handled in small batches so setup stays direct and useful.',
+    'Use the same email for checkout so we can match your reservation quickly. Early Access is handled in small batches so setup stays direct and useful.',
     '',
     'Margin',
   ].join('\n');
@@ -165,17 +164,15 @@ export function buildEarlyAccessConfirmationEmail(): {
             </div>
 
             <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              After payment, book your Early Access onboarding call using the same email you used for checkout.
+              After payment, you are placed into the Founding 100 priority batch.
             </p>
 
-            <div style="margin-top:18px;">
-              <a href="${EARLY_ACCESS_ONBOARDING_URL}" style="display:inline-block; padding:12px 18px; border-radius:999px; border:1px solid #d1d5db; color:#111827; text-decoration:none; font-size:14px; font-weight:700;">
-                Book Early Access onboarding
-              </a>
+            <div style="margin-top:18px; padding:16px; border-radius:14px; background:#f8fafc; color:#111827; font-size:14px; line-height:1.7;">
+              We provision Early Access workspaces manually to ensure setup quality. Your onboarding invitation will be sent within 3-5 business days after payment verification.
             </div>
 
             <p style="margin:22px 0 0 0; color:#525252; font-size:14px; line-height:1.7;">
-              We will verify the reservation before access is activated. Early Access is handled in small batches so setup stays direct and useful.
+              Use the same email for checkout so we can match your reservation quickly. Early Access is handled in small batches so setup stays direct and useful.
             </p>
 
             <p style="margin:28px 0 0 0; color:#171717; font-size:15px; line-height:1.7;">
