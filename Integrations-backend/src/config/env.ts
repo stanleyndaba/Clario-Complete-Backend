@@ -116,6 +116,7 @@ const config = {
 
   // Waitlist capture
   WAITLIST_CAPTURE_EMAIL: process.env.WAITLIST_CAPTURE_EMAIL || 'support@margin-finance.com',
+  EARLY_ACCESS_CAPTURE_EMAIL: process.env.EARLY_ACCESS_CAPTURE_EMAIL || process.env.WAITLIST_CAPTURE_EMAIL || 'support@margin-finance.com',
 };
 
 export default config;
