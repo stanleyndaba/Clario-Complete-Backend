@@ -22,6 +22,43 @@ export interface EarlyAccessCaptureInput {
   ip?: string | null;
 }
 
+function renderGuidedRecoveryCycleText(): string[] {
+  return [
+    'Early Access includes a guided first recovery cycle:',
+    '- Read-only setup',
+    '- Workspace preparation',
+    '- First audit review',
+    '- Evidence-backed case preparation',
+    '- Guided filing workflow for eligible cases',
+    '',
+    'Weak, duplicate, or unsupported cases are held back before any filing step.'
+  ];
+}
+
+function renderGuidedRecoveryCycleHtml(): string {
+  const items = [
+    'Read-only setup',
+    'Workspace preparation',
+    'First audit review',
+    'Evidence-backed case preparation',
+    'Guided filing workflow for eligible cases'
+  ];
+
+  return `
+    <div style="margin-top:22px; padding:16px; border-radius:14px; background:#f8fafc; color:#111827;">
+      <p style="margin:0; font-size:14px; line-height:1.7; font-weight:700;">
+        Early Access includes a guided first recovery cycle:
+      </p>
+      <ul style="margin:12px 0 0 18px; padding:0; color:#262626; font-size:14px; line-height:1.8;">
+        ${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}
+      </ul>
+      <p style="margin:14px 0 0 0; color:#525252; font-size:13px; line-height:1.7;">
+        Weak, duplicate, or unsupported cases are held back before any filing step.
+      </p>
+    </div>
+  `;
+}
+
 function buildEarlyAccessLeadEmail(input: EarlyAccessCaptureInput): {
   subject: string;
   html: string;
@@ -122,6 +159,8 @@ export function buildEarlyAccessConfirmationEmail(): {
     '',
     'We provision Early Access workspaces manually to ensure setup quality. Your onboarding invitation will be sent within 3-5 business days after payment verification.',
     '',
+    ...renderGuidedRecoveryCycleText(),
+    '',
     'Use the same email for checkout so we can match your reservation quickly. Early Access is handled in small batches so setup stays direct and useful.',
     '',
     'Margin',
@@ -171,8 +210,98 @@ export function buildEarlyAccessConfirmationEmail(): {
               We provision Early Access workspaces manually to ensure setup quality. Your onboarding invitation will be sent within 3-5 business days after payment verification.
             </div>
 
+            ${renderGuidedRecoveryCycleHtml()}
+
             <p style="margin:22px 0 0 0; color:#525252; font-size:14px; line-height:1.7;">
               Use the same email for checkout so we can match your reservation quickly. Early Access is handled in small batches so setup stays direct and useful.
+            </p>
+
+            <p style="margin:28px 0 0 0; color:#171717; font-size:15px; line-height:1.7;">
+              Margin
+            </p>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+  return {
+    subject,
+    html: html.trim(),
+    text,
+  };
+}
+
+export function buildEarlyAccessPaymentConfirmedEmail(): {
+  subject: string;
+  html: string;
+  text: string;
+} {
+  const subject = 'Margin Early Access confirmed';
+  const preheader = 'Your Founding 100 reservation is confirmed.';
+  const text = [
+    'Margin Early Access confirmed',
+    '==============================',
+    '',
+    'Your Margin Early Access reservation is confirmed.',
+    '',
+    'You are now in the Founding 100 priority batch.',
+    '',
+    'We provision Early Access workspaces manually to ensure setup quality. Your onboarding invitation will be sent within 3-5 business days.',
+    '',
+    ...renderGuidedRecoveryCycleText(),
+    '',
+    'Your onboarding starts the first recovery cycle. We will guide setup, verify the data bridge, prepare your first audit review, and review eligible cases with you before any filing step.',
+    '',
+    'After read-only setup is complete, your first audit review is prepared within 3-5 business days.',
+    '',
+    'Final reimbursement outcomes remain subject to Amazon review.',
+    '',
+    'Margin',
+  ].join('\n');
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>${escapeHtml(subject)}</title>
+      </head>
+      <body style="margin:0; padding:0; background:#ffffff; color:#171717; font-family:Arial, Helvetica, sans-serif;">
+        <div style="display:none; max-height:0; overflow:hidden; opacity:0;">
+          ${escapeHtml(preheader)}
+        </div>
+        <div style="max-width:600px; margin:0 auto; padding:36px 24px 40px 24px;">
+          <div style="border-bottom:1px solid #e5e5e5; padding-bottom:20px;">
+            <div style="font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#111827; font-weight:700;">
+              Margin Early Access
+            </div>
+            <h1 style="margin:28px 0 0 0; font-size:28px; line-height:1.18; font-weight:600; color:#111827;">
+              Your Early Access reservation is confirmed.
+            </h1>
+            <p style="margin:14px 0 0 0; color:#404040; font-size:16px; line-height:1.7;">
+              You are now in the Founding 100 priority batch.
+            </p>
+          </div>
+
+          <div style="padding-top:24px;">
+            <div style="padding:16px; border-radius:14px; background:#f8fafc; color:#111827; font-size:14px; line-height:1.7;">
+              We provision Early Access workspaces manually to ensure setup quality. Your onboarding invitation will be sent within 3-5 business days.
+            </div>
+
+            ${renderGuidedRecoveryCycleHtml()}
+
+            <p style="margin:22px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
+              Your onboarding starts the first recovery cycle. We will guide setup, verify the data bridge, prepare your first audit review, and review eligible cases with you before any filing step.
+            </p>
+
+            <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
+              After read-only setup is complete, your first audit review is prepared within 3-5 business days.
+            </p>
+
+            <p style="margin:18px 0 0 0; color:#525252; font-size:13px; line-height:1.7;">
+              Final reimbursement outcomes remain subject to Amazon review.
             </p>
 
             <p style="margin:28px 0 0 0; color:#171717; font-size:15px; line-height:1.7;">
@@ -210,6 +339,19 @@ class EarlyAccessEmailService {
   async sendEarlyAccessConfirmationEmail(email: string): Promise<EmailSendResult> {
     const recipient = email.trim().toLowerCase();
     const template = buildEarlyAccessConfirmationEmail();
+
+    return this.emailService.sendEmail({
+      to: recipient,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      replyTo: 'support@margin-finance.com',
+    });
+  }
+
+  async sendEarlyAccessPaymentConfirmedEmail(email: string): Promise<EmailSendResult> {
+    const recipient = email.trim().toLowerCase();
+    const template = buildEarlyAccessPaymentConfirmedEmail();
 
     return this.emailService.sendEmail({
       to: recipient,
