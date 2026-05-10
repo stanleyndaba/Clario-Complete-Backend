@@ -128,8 +128,7 @@ export function buildEarlyAccessConfirmationEmail(): {
     'Margin does not guarantee reimbursement outcomes. Amazon makes final reimbursement decisions. Margin prepares and tracks evidence-backed recovery work.',
     '',
     'Best,',
-    'Mvelo',
-    'Founder, Margin',
+    'Margin Support Team',
   ].join('\n');
 
   const html = `
@@ -186,8 +185,7 @@ export function buildEarlyAccessConfirmationEmail(): {
 
             <p style="margin:28px 0 0 0; color:#171717; font-size:15px; line-height:1.7;">
               Best,<br>
-              Mvelo<br>
-              Founder, Margin
+              Margin Support Team
             </p>
           </div>
         </div>
@@ -231,8 +229,7 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
     'Margin does not guarantee reimbursement outcomes. Amazon makes final reimbursement decisions. Margin prepares and tracks evidence-backed recovery work.',
     '',
     'Best,',
-    'Mvelo',
-    'Founder, Margin',
+    'Margin Support Team',
   ].join('\n');
 
   const html = `
@@ -291,8 +288,7 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
 
             <p style="margin:28px 0 0 0; color:#171717; font-size:15px; line-height:1.7;">
               Best,<br>
-              Mvelo<br>
-              Founder, Margin
+              Margin Support Team
             </p>
           </div>
         </div>
