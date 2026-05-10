@@ -413,7 +413,7 @@ class InvoicePdfService {
   private renderFooter(doc: PDFKit.PDFDocument, invoice: InvoiceData): void {
     const footerY = 750;
     doc.fontSize(8).font('Helvetica').fillColor('#9CA3AF');
-    doc.text('Margin subscription billing: flat pricing, no commissions, no recovery-based charges.', 50, footerY, {
+    doc.text('No recovery commissions. Margin is monthly recovery management.', 50, footerY, {
       align: 'center',
       width: 495,
     });

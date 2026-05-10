@@ -199,9 +199,9 @@ export function isPromoActive(subscription: Pick<BillingSubscriptionRow, 'promo_
 export function buildPromoNote(subscription: Pick<BillingSubscriptionRow, 'promo_start_at' | 'promo_end_at' | 'promo_type'>, atIso?: string | null): string | null {
   if (subscription.promo_type !== 'keep_100_percent_recoveries_60_days') return null;
   if (isPromoActive(subscription, atIso)) {
-    return 'First 60 days: you keep 100% of recoveries. Subscription pricing remains flat with no commissions.';
+    return 'First 60 days: you keep 100% of recoveries. No recovery commissions. Margin is monthly recovery management.';
   }
-  return 'Flat subscription pricing. No commissions, no recovery-based charges, no surprises.';
+  return 'No recovery commissions. Margin is monthly recovery management.';
 }
 
 export function buildSubscriptionInvoiceId(subscription: Pick<BillingSubscriptionRow, 'id' | 'plan_tier'>, invoiceDateIso: string): string {

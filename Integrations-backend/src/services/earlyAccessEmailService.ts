@@ -123,7 +123,7 @@ export function buildEarlyAccessConfirmationEmail(): {
     '',
     'After your payment is confirmed, we’ll send your intake form and First Recovery Setup Call instructions.',
     '',
-    'Margin starts read-only. No filing happens without seller approval. During Early Access, Margin charges no commissions on approved recoveries.',
+    'Margin charges no recovery commissions. Sellers pay for ongoing recovery management, and approved recoveries stay with the seller.',
     '',
     'Margin does not guarantee reimbursement outcomes. Amazon makes final reimbursement decisions. Margin prepares and tracks evidence-backed recovery work.',
     '',
@@ -176,7 +176,7 @@ export function buildEarlyAccessConfirmationEmail(): {
             </p>
 
             <p style="margin:22px 0 0 0; color:#525252; font-size:14px; line-height:1.7;">
-              Margin starts read-only. No filing happens without seller approval. During Early Access, Margin charges no commissions on approved recoveries.
+              Margin charges no recovery commissions. Sellers pay for ongoing recovery management, and approved recoveries stay with the seller.
             </p>
 
             <p style="margin:18px 0 0 0; color:#525252; font-size:14px; line-height:1.7;">
@@ -224,7 +224,7 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
     '',
     'Founding 100 is onboarded in controlled batches so each workspace can be prepared carefully before read-only setup begins. In some cases, setup can begin within 24 hours after payment confirmation and intake completion. During heavier onboarding batches, setup may take up to 3–5 business days.',
     '',
-    'Margin starts read-only. No filing happens without seller approval. During Early Access, Margin charges no commissions on approved recoveries.',
+    'Margin charges no recovery commissions. Sellers pay for ongoing recovery management, and approved recoveries stay with the seller.',
     '',
     'Margin does not guarantee reimbursement outcomes. Amazon makes final reimbursement decisions. Margin prepares and tracks evidence-backed recovery work.',
     '',
@@ -279,7 +279,7 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
             </p>
 
             <p style="margin:18px 0 0 0; color:#525252; font-size:13px; line-height:1.7;">
-              Margin starts read-only. No filing happens without seller approval. During Early Access, Margin charges no commissions on approved recoveries.
+              Margin charges no recovery commissions. Sellers pay for ongoing recovery management, and approved recoveries stay with the seller.
             </p>
 
             <p style="margin:18px 0 0 0; color:#525252; font-size:13px; line-height:1.7;">
