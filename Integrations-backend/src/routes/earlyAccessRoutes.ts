@@ -60,7 +60,7 @@ router.post('/reservations', async (req: Request, res: Response) => {
 
     return res.status(201).json({
       success: true,
-      message: 'Your Early Access details are secured. Redirecting to PayPal checkout.',
+      message: 'Your audit request is secured. Redirecting you to checkout.',
       confirmation_email_status: confirmationEmailStatus,
       capture_mode: 'email_only',
     });
@@ -72,7 +72,7 @@ router.post('/reservations', async (req: Request, res: Response) => {
 
     return res.status(503).json({
       success: false,
-      message: 'We could not secure your Early Access details right now. Please try again in a moment.',
+      message: 'We could not secure your audit request right now. Please try again in a moment.',
     });
   }
 });
