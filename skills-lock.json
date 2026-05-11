@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "distro-seo": {
+      "source": "ZeiProX76/distro-seo",
+      "sourceType": "github",
+      "skillPath": "skills/distro-seo/SKILL.md",
+      "computedHash": "d602dc32d8d00458b77f596a5b57de6a9462e09cc1dd801ffc896bd4c37b3244"
+    }
+  }
+}

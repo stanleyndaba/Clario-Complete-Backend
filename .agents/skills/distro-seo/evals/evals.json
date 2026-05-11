@@ -1,0 +1,101 @@
+{
+  "skill_name": "distro-seo",
+  "evals": [
+    {
+      "id": 1,
+      "name": "cwv-render-blocking-and-lcp",
+      "prompt": "Lighthouse on https://example.com/landing flagged two issues: 'Eliminate render-blocking resources' (3 sync stylesheets in head, 2 sync scripts before content) and 'LCP > 4 s on mobile' (LCP element is the hero image, currently a 480 KB JPEG). The site is Next.js 16 App Router. Fix both.",
+      "expected_output": "Per-issue fix blocks for render-blocking and LCP. Render-blocking fix shows critical CSS inlining + async load + next/script with strategy. LCP fix uses next/image with priority + fetchPriority='high' + preload, with explicit guidance not to set loading='lazy'. Each fix has a verification step.",
+      "files": [],
+      "expectations": [
+        "The response loads references/cwv.md, not the other reference files",
+        "The render-blocking fix mentions inline critical CSS and an async-load pattern with rel='preload' + onload",
+        "The render-blocking fix specifically uses next/script with a strategy prop (lazyOnload, afterInteractive, or worker)",
+        "The LCP fix uses Next.js <Image> with priority and fetchPriority='high'",
+        "The LCP fix explicitly warns against loading='lazy' on the LCP image",
+        "Each issue is presented in the per-issue output block format defined in SKILL.md (Issue / Diagnosed cause / Files changed / Fix applied / Verification / Expected impact)",
+        "The summary line at the end reports 'Fixed 2 of 2' or equivalent"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "on-page-titles-meta-h1",
+      "prompt": "I ran Screaming Frog on https://acme.com and got these issues: 47 pages have duplicate <title> tags (all say 'Acme Inc'), 31 pages have no <meta name='description'>, and 12 pages have multiple <h1> elements. The site is Astro. Generate a plan to fix these without touching unrelated files.",
+      "expected_output": "Per-issue fix blocks for titles, meta descriptions, H1s. Title fix gives a templating pattern (e.g., {pageTitle} | {Brand}). Meta description fix shows Astro layout pattern. H1 fix explains the one-H1-per-page rule and how to demote extras. Each fix references on-page.md, not the others.",
+      "files": [],
+      "expectations": [
+        "The response loads references/on-page.md",
+        "The title fix proposes a per-page templated title pattern (not a single hardcoded string)",
+        "The title fix mentions the 50-60 character target",
+        "The meta description fix mentions the 150-160 character target",
+        "The meta description fix shows where to put the meta in an Astro layout",
+        "The H1 fix explicitly states one H1 per page and explains how to demote the extras to h2/h3",
+        "The fix output format matches the per-issue block defined in SKILL.md",
+        "The skill does NOT also fix unrelated SEO categories the user did not ask about"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "technical-robots-sitemap-canonical",
+      "prompt": "GSC says my sitemap.xml returns 404, my robots.txt has 'Disallow: /' (oops), and my product pages are missing <link rel='canonical'>. The site is plain HTML hand-built, deployed on Vercel. Fix all three.",
+      "expected_output": "Three fix blocks. robots.txt rewritten to allow crawl with sitemap directive. Sitemap created (either /public/sitemap.xml hand-rolled OR app/sitemap.ts if migrating to Next, but plain HTML implies hand-rolled). Canonical tag added per page with self-referencing absolute HTTPS URL.",
+      "files": [],
+      "expectations": [
+        "The response loads references/technical.md",
+        "The robots.txt fix removes 'Disallow: /' and adds 'Sitemap: ...' directive",
+        "The robots.txt fix preserves Allow rules for /*.css$ and /*.js$ so Googlebot can render",
+        "The sitemap fix produces valid XML with <urlset>, <url>, <loc>, <lastmod>",
+        "The canonical fix uses absolute HTTPS URLs (not relative or http://)",
+        "The canonical fix recommends self-referencing canonicals",
+        "The skill does NOT propose moving to Next.js / a framework just to fix these (the user said plain HTML)"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "geo-ai-crawlers-and-llms-txt",
+      "prompt": "Our SEO scan flagged that GPTBot, PerplexityBot, ClaudeBot, and Google-Extended are all blocked in our robots.txt, and we have no llms.txt. We're a B2B SaaS at saas.example.com that wants to show up in ChatGPT, Perplexity, and Claude. Fix it.",
+      "expected_output": "Two fix blocks. robots.txt updated to allow GPTBot, PerplexityBot, ClaudeBot, and Google-Extended (with discussion of the trade-off — Google-Extended controls AI training, OAI-SearchBot vs GPTBot, etc.). llms.txt created at site root with the standard structure (H1, blockquote one-liner, About paragraph, Docs / Data / Policies sections).",
+      "files": [],
+      "expectations": [
+        "The response loads references/geo.md",
+        "The robots.txt fix unblocks GPTBot, PerplexityBot, ClaudeBot, and Google-Extended",
+        "The fix mentions or references the AI crawler matrix (OAI-SearchBot, ChatGPT-User, CCBot, etc.)",
+        "The fix explains that Google-Extended affects AI Overview eligibility, not Google Search rankings",
+        "The llms.txt fix produces a Markdown file with H1 + blockquote one-liner + About paragraph + sectioned link list",
+        "The llms.txt fix recommends Content-Type: text/markdown",
+        "Verification step includes curling with each AI user agent and checking 200 responses",
+        "Skill does NOT recommend blocking any AI crawler (since user explicitly wants AI visibility)"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "mixed-multi-domain-audit",
+      "prompt": "Here are all the failing checks from PageSpeed Insights + my SEO crawler on https://shop.example.com (Next.js, Vercel): LCP 5.2s on mobile, missing meta descriptions on 18 product pages, sitemap.xml has stale lastmod dates from 2023, GPTBot blocked in robots.txt. Solve them.",
+      "expected_output": "Four per-issue blocks routed across all four references. LCP fix from cwv.md, meta description fix from on-page.md, sitemap fix from technical.md (with Next.js app/sitemap.ts pattern), GPTBot fix from geo.md. Final summary line.",
+      "files": [],
+      "expectations": [
+        "The response loads at least 3 of the 4 references (cwv.md, on-page.md, technical.md, geo.md) — exactly the ones needed",
+        "The LCP fix uses Next.js <Image> with priority",
+        "The meta description fix uses the Next.js metadata export pattern",
+        "The sitemap fix uses app/sitemap.ts with MetadataRoute.Sitemap and dynamic lastModified",
+        "The GPTBot fix unblocks GPTBot in robots.txt (or app/robots.ts)",
+        "Each issue is in its own per-issue output block",
+        "The final summary line reports 'Fixed 4 of 4' or notes which were skipped with reasons"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "ambiguous-fix-with-tradeoff-flagged",
+      "prompt": "PageSpeed Insights flagged 'Reduce thin content' on 200+ tag archive pages (each has 1-2 posts, ~50 words). Site is WordPress. Fix it.",
+      "expected_output": "Skill recognizes this is a judgment call — bulking up tag pages with filler content is an anti-pattern. It should either (a) recommend noindexing low-value tag pages OR (b) flag this as needing human judgment per the 'When to stop and ask' section in SKILL.md.",
+      "files": [],
+      "expectations": [
+        "The response loads references/on-page.md",
+        "The skill does NOT recommend bulk-generating filler content for the tag pages",
+        "The skill either recommends noindexing low-value tag pages, or surfaces this as a judgment call requiring human input",
+        "If a judgment call is surfaced, the question is concrete (e.g., 'do these tags have SEO value or are they admin-only?')",
+        "The skill mentions the WordPress-specific path to noindex (via Yoast or Rank Math plugin, or a hook)"
+      ]
+    }
+  ]
+}
