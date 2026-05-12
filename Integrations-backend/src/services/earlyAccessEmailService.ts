@@ -2,6 +2,9 @@ import { EmailService, EmailSendResult } from '../notifications/services/deliver
 import config from '../config/env';
 
 const EARLY_ACCESS_CHECKOUT_URL = 'https://www.paypal.com/ncp/payment/P4XPE6PAPWT56';
+const FOUNDING_RECOVERY_INTAKE_URL = 'https://forms.gle/Z6rTJfJ3L3EVkoF59';
+const FOUNDING_RECOVERY_BOOKING_URL = 'https://calendly.com/mvelo-margin-finance/margin-founding-recovery-setup-call';
+const EMAIL_BUTTON_STYLE = 'display:inline-block; padding:12px 18px; border-radius:12px; background:#111827; color:#ffffff; text-decoration:none; font-size:14px; font-weight:700;';
 
 function escapeHtml(value: string): string {
   return value
@@ -216,11 +219,11 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
     '',
     'Next step: complete your intake form so we can prepare your workspace:',
     '',
-    '{{intake_link}}',
+    FOUNDING_RECOVERY_INTAKE_URL,
     '',
     'Then book your First Recovery Setup Call:',
     '',
-    '{{booking_link}}',
+    FOUNDING_RECOVERY_BOOKING_URL,
     '',
     'Founding 100 is onboarded in controlled batches so each workspace can be prepared carefully before read-only setup begins. In some cases, setup can begin within 24 hours after payment confirmation and intake completion. During heavier onboarding batches, setup may take up to 3–5 business days.',
     '',
@@ -262,17 +265,21 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
               Next step: complete your intake form so we can prepare your workspace:
             </p>
 
-            <p style="margin:10px 0 0 0; color:#111827; font-size:15px; line-height:1.8; font-weight:700;">
-              {{intake_link}}
-            </p>
+            <div style="margin-top:12px;">
+              <a href="${FOUNDING_RECOVERY_INTAKE_URL}" style="${EMAIL_BUTTON_STYLE}">
+                Complete intake form
+              </a>
+            </div>
 
             <p style="margin:22px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
               Then book your First Recovery Setup Call:
             </p>
 
-            <p style="margin:10px 0 0 0; color:#111827; font-size:15px; line-height:1.8; font-weight:700;">
-              {{booking_link}}
-            </p>
+            <div style="margin-top:12px;">
+              <a href="${FOUNDING_RECOVERY_BOOKING_URL}" style="${EMAIL_BUTTON_STYLE}">
+                Book setup call
+              </a>
+            </div>
 
             <p style="margin:22px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
               Founding 100 is onboarded in controlled batches so each workspace can be prepared carefully before read-only setup begins. In some cases, setup can begin within 24 hours after payment confirmation and intake completion. During heavier onboarding batches, setup may take up to 3&ndash;5 business days.
@@ -284,6 +291,172 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
 
             <p style="margin:18px 0 0 0; color:#525252; font-size:13px; line-height:1.7;">
               Margin does not guarantee reimbursement outcomes. Amazon makes final reimbursement decisions. Margin prepares and tracks evidence-backed recovery work.
+            </p>
+
+            <p style="margin:28px 0 0 0; color:#171717; font-size:15px; line-height:1.7;">
+              Best,<br>
+              Margin Support Team
+            </p>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+  return {
+    subject,
+    html: html.trim(),
+    text,
+  };
+}
+
+export function buildEarlyAccessIntakeReceivedEmail(): {
+  subject: string;
+  html: string;
+  text: string;
+} {
+  const subject = 'Your Founding Recovery Audit intake is received';
+  const preheader = 'Your intake is complete. Your setup call is the next step.';
+  const text = [
+    'Hi,',
+    '',
+    'Your Founding Recovery Audit intake is received.',
+    '',
+    'Thanks for completing the intake form. We will use those details to prepare your workspace, review marketplace coverage, and make the first recovery setup call more useful.',
+    '',
+    'Next step: book your First Recovery Setup Call if you have not already done so:',
+    '',
+    FOUNDING_RECOVERY_BOOKING_URL,
+    '',
+    'Founding 100 setup is handled in controlled batches so each seller gets a careful read-only start before recovery review begins.',
+    '',
+    'Best,',
+    'Margin Support Team',
+  ].join('\n');
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>${escapeHtml(subject)}</title>
+      </head>
+      <body style="margin:0; padding:0; background:#ffffff; color:#171717; font-family:Arial, Helvetica, sans-serif;">
+        <div style="display:none; max-height:0; overflow:hidden; opacity:0;">
+          ${escapeHtml(preheader)}
+        </div>
+        <div style="max-width:600px; margin:0 auto; padding:36px 24px 40px 24px;">
+          <div style="border-bottom:1px solid #e5e5e5; padding-bottom:20px;">
+            <div style="font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#111827; font-weight:700;">
+              Founding 100 Recovery Audit
+            </div>
+            <h1 style="margin:28px 0 0 0; font-size:28px; line-height:1.18; font-weight:600; color:#111827;">
+              Your intake is received.
+            </h1>
+            <p style="margin:14px 0 0 0; color:#404040; font-size:16px; line-height:1.7;">
+              Thanks for completing the intake form. We will use those details to prepare your workspace and make the first recovery setup call more useful.
+            </p>
+          </div>
+
+          <div style="padding-top:24px;">
+            <p style="margin:0; color:#262626; font-size:15px; line-height:1.8;">
+              Next step: book your First Recovery Setup Call if you have not already done so.
+            </p>
+
+            <div style="margin-top:18px;">
+              <a href="${FOUNDING_RECOVERY_BOOKING_URL}" style="${EMAIL_BUTTON_STYLE}">
+                Book setup call
+              </a>
+            </div>
+
+            <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
+              Founding 100 setup is handled in controlled batches so each seller gets a careful read-only start before recovery review begins.
+            </p>
+
+            <p style="margin:28px 0 0 0; color:#171717; font-size:15px; line-height:1.7;">
+              Best,<br>
+              Margin Support Team
+            </p>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+  return {
+    subject,
+    html: html.trim(),
+    text,
+  };
+}
+
+export function buildEarlyAccessSetupScheduledEmail(): {
+  subject: string;
+  html: string;
+  text: string;
+} {
+  const subject = 'Your Founding Recovery setup is scheduled';
+  const preheader = 'Your onboarding slot is confirmed.';
+  const text = [
+    'Hi,',
+    '',
+    'Your Founding Recovery setup is scheduled.',
+    '',
+    'Your onboarding slot is confirmed. We prepare Founding 100 workspaces in controlled batches so read-only setup, marketplace coverage, and first-cycle recovery review stay accurate.',
+    '',
+    'Before the call, please make sure your intake is complete:',
+    '',
+    FOUNDING_RECOVERY_INTAKE_URL,
+    '',
+    'On the setup call, we will confirm your marketplace coverage, walk through the read-only connection path, and explain what happens before any recovery case moves forward.',
+    '',
+    'Best,',
+    'Margin Support Team',
+  ].join('\n');
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>${escapeHtml(subject)}</title>
+      </head>
+      <body style="margin:0; padding:0; background:#ffffff; color:#171717; font-family:Arial, Helvetica, sans-serif;">
+        <div style="display:none; max-height:0; overflow:hidden; opacity:0;">
+          ${escapeHtml(preheader)}
+        </div>
+        <div style="max-width:600px; margin:0 auto; padding:36px 24px 40px 24px;">
+          <div style="border-bottom:1px solid #e5e5e5; padding-bottom:20px;">
+            <div style="font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#111827; font-weight:700;">
+              Founding 100 Recovery Audit
+            </div>
+            <h1 style="margin:28px 0 0 0; font-size:28px; line-height:1.18; font-weight:600; color:#111827;">
+              Your setup is scheduled.
+            </h1>
+            <p style="margin:14px 0 0 0; color:#404040; font-size:16px; line-height:1.7;">
+              Your onboarding slot is confirmed.
+            </p>
+          </div>
+
+          <div style="padding-top:24px;">
+            <p style="margin:0; color:#262626; font-size:15px; line-height:1.8;">
+              We prepare Founding 100 workspaces in controlled batches so read-only setup, marketplace coverage, and first-cycle recovery review stay accurate.
+            </p>
+
+            <p style="margin:22px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
+              Before the call, please make sure your intake is complete.
+            </p>
+
+            <div style="margin-top:18px;">
+              <a href="${FOUNDING_RECOVERY_INTAKE_URL}" style="${EMAIL_BUTTON_STYLE}">
+                Complete intake form
+              </a>
+            </div>
+
+            <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
+              On the setup call, we will confirm your marketplace coverage, walk through the read-only connection path, and explain what happens before any recovery case moves forward.
             </p>
 
             <p style="margin:28px 0 0 0; color:#171717; font-size:15px; line-height:1.7;">
@@ -335,6 +508,32 @@ class EarlyAccessEmailService {
   async sendEarlyAccessPaymentConfirmedEmail(email: string): Promise<EmailSendResult> {
     const recipient = email.trim().toLowerCase();
     const template = buildEarlyAccessPaymentConfirmedEmail();
+
+    return this.emailService.sendEmail({
+      to: recipient,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      replyTo: 'support@margin-finance.com',
+    });
+  }
+
+  async sendEarlyAccessIntakeReceivedEmail(email: string): Promise<EmailSendResult> {
+    const recipient = email.trim().toLowerCase();
+    const template = buildEarlyAccessIntakeReceivedEmail();
+
+    return this.emailService.sendEmail({
+      to: recipient,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      replyTo: 'support@margin-finance.com',
+    });
+  }
+
+  async sendEarlyAccessSetupScheduledEmail(email: string): Promise<EmailSendResult> {
+    const recipient = email.trim().toLowerCase();
+    const template = buildEarlyAccessSetupScheduledEmail();
 
     return this.emailService.sendEmail({
       to: recipient,
