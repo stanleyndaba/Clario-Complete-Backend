@@ -61,18 +61,18 @@ router.post('/reservations', async (req: Request, res: Response) => {
   }
 
   try {
-    logger.info('[EARLY ACCESS] Reservation contact capture received', {
+    logger.info('[EARLY ACCESS] Free audit contact capture received', {
       email,
       source_page: source_page || '/early-access',
-      intent: intent || 'reserve_early_access',
+      intent: intent || 'request_free_pre_audit_report',
     });
 
     await earlyAccessEmailService.sendEarlyAccessLeadEmail({
       email,
       source_page: source_page || '/early-access',
-      offer: offer || 'Margin Early Access',
-      price: price || '$99',
-      intent: intent || 'reserve_early_access',
+      offer: offer || 'Free FBA Recovery Audit Report',
+      price: price || 'Free pre-audit',
+      intent: intent || 'request_free_pre_audit_report',
       user_agent: req.headers['user-agent'] ? String(req.headers['user-agent']) : null,
       ip: req.ip || null,
     });
@@ -90,7 +90,7 @@ router.post('/reservations', async (req: Request, res: Response) => {
 
     return res.status(201).json({
       success: true,
-      message: 'Your audit request is secured. Redirecting you to checkout.',
+        message: 'Your free audit request is received. We will email your report within 48 hours.',
       confirmation_email_status: confirmationEmailStatus,
       capture_mode: 'email_only',
     });

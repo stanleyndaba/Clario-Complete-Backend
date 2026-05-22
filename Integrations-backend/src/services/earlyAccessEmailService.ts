@@ -31,13 +31,13 @@ function buildEarlyAccessLeadEmail(input: EarlyAccessCaptureInput): {
   text: string;
 } {
   const normalizedEmail = input.email.trim().toLowerCase();
-  const subject = `New Early Access paid-intent lead: ${normalizedEmail}`;
+  const subject = `New free FBA recovery audit request: ${normalizedEmail}`;
   const capturedAt = new Date().toISOString();
   const detailLines = [
     ['Email', normalizedEmail],
     ['Offer', input.offer || 'Early Access'],
-    ['Price', input.price || '$99'],
-    ['Intent', input.intent || 'reserve_early_access'],
+    ['Price', input.price || 'Free pre-audit'],
+    ['Intent', input.intent || 'request_free_pre_audit_report'],
     ['Source page', input.source_page || '/early-access'],
     ['IP', input.ip || 'Not provided'],
     ['User agent', input.user_agent || 'Not provided'],
@@ -45,12 +45,12 @@ function buildEarlyAccessLeadEmail(input: EarlyAccessCaptureInput): {
   ];
 
   const text = [
-    'New Margin Early Access paid-intent lead',
-    '========================================',
+    'New Margin free FBA recovery audit request',
+    '==========================================',
     '',
     ...detailLines.map(([label, value]) => `${label}: ${value}`),
     '',
-    'Action: match this email against the PayPal payment notification, then send the Founding 100 onboarding invitation within the batch window.',
+    'Action: review this seller for a free pre-audit report, then send the report within the promised 48-hour window or follow up if more context is needed.',
   ].join('\n');
 
   const rows = detailLines
@@ -78,10 +78,10 @@ function buildEarlyAccessLeadEmail(input: EarlyAccessCaptureInput): {
         <div style="max-width:640px; margin:0 auto; padding:32px 24px;">
           <div style="border-bottom:1px solid #e5e5e5; padding-bottom:18px;">
             <div style="font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#111827; font-weight:700;">
-              Margin Early Access
+              Margin Free Audit
             </div>
             <h1 style="margin:22px 0 0 0; font-size:26px; line-height:1.2; font-weight:600; color:#111827;">
-              New paid-intent lead captured
+              New free audit request captured
             </h1>
           </div>
           <div style="padding-top:24px;">
@@ -89,7 +89,7 @@ function buildEarlyAccessLeadEmail(input: EarlyAccessCaptureInput): {
               ${rows}
             </table>
             <div style="margin-top:22px; padding:16px; border-radius:12px; background:#f8fafc; color:#111827; font-size:14px; line-height:1.7;">
-              Match this email against the PayPal payment notification, then send the Founding 100 onboarding invitation within the batch window.
+              Review this seller for a free pre-audit report, then send the report within the promised 48-hour window or follow up if more context is needed.
             </div>
           </div>
         </div>
@@ -109,24 +109,24 @@ export function buildEarlyAccessConfirmationEmail(): {
   html: string;
   text: string;
 } {
-  const subject = 'Your Founding Recovery Audit next step';
-  const preheader = 'Your Founding Recovery Audit request is received.';
+  const subject = 'Your free Margin audit report request is received';
+  const preheader = 'We will email your free FBA recovery audit report within 48 hours.';
   const text = [
     'Hi,',
     '',
-    'Your Founding Recovery Audit request is received.',
+    'Your free FBA recovery audit report request is received.',
     '',
-    'Next, complete your $99 audit activation using the checkout link below:',
+    'We will review your FBA recovery signals and email your written pre-audit report within 48 hours.',
+    '',
+    'The report is designed to show hidden inventory losses, shipment issues, returns, fee errors, payout discrepancies, and which opportunities may be worth filing.',
+    '',
+    'No payment is required for the pre-audit report.',
+    '',
+    `If your report shows opportunities worth pursuing, you can upgrade to Founding 100 for $99:`,
     '',
     EARLY_ACCESS_CHECKOUT_URL,
     '',
-    'Your audit activation includes a founder-led first recovery cycle, read-only setup guidance, claim-clock review, evidence readiness review, and a walkthrough of any recovery issues Margin surfaces.',
-    '',
-    'Founding 100 is onboarded in controlled batches so each workspace can be prepared carefully before read-only setup begins.',
-    '',
-    'After your payment is confirmed, we’ll send your intake form and First Recovery Setup Call instructions.',
-    '',
-    'Margin charges no recovery commissions. Sellers pay for ongoing recovery management, and approved recoveries stay with the seller.',
+    'Founding 100 includes guided filing support, 0% recovery commission to Margin, and seller approval before any filing.',
     '',
     'Margin does not guarantee reimbursement outcomes. Amazon makes final reimbursement decisions. Margin prepares and tracks evidence-backed recovery work.',
     '',
@@ -149,37 +149,37 @@ export function buildEarlyAccessConfirmationEmail(): {
         <div style="max-width:600px; margin:0 auto; padding:36px 24px 40px 24px;">
           <div style="border-bottom:1px solid #e5e5e5; padding-bottom:20px;">
             <div style="font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#111827; font-weight:700;">
-              Founding 100 Recovery Audit
+              Free FBA Recovery Audit Report
             </div>
             <h1 style="margin:28px 0 0 0; font-size:28px; line-height:1.18; font-weight:600; color:#111827;">
-              Your Founding Recovery Audit request is received.
+              Your free audit report request is received.
             </h1>
             <p style="margin:14px 0 0 0; color:#404040; font-size:16px; line-height:1.7;">
-              Next, complete your $99 audit activation using the checkout link below.
+              We will email your written pre-audit report within 48 hours.
             </p>
           </div>
 
           <div style="padding-top:24px;">
             <p style="margin:0; color:#262626; font-size:15px; line-height:1.8;">
-              Your audit activation includes a founder-led first recovery cycle, read-only setup guidance, claim-clock review, evidence readiness review, and a walkthrough of any recovery issues Margin surfaces.
+              We will review your FBA recovery signals for hidden inventory losses, shipment issues, returns, fee errors, payout discrepancies, and which opportunities may be worth filing.
             </p>
 
-            <div style="margin-top:24px;">
-              <a href="${EARLY_ACCESS_CHECKOUT_URL}" style="display:inline-block; padding:12px 18px; border-radius:999px; background:#111827; color:#ffffff; text-decoration:none; font-size:14px; font-weight:700;">
-                Complete audit activation
-              </a>
-            </div>
-
             <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              Founding 100 is onboarded in controlled batches so each workspace can be prepared carefully before read-only setup begins.
+              No payment is required for this pre-audit report.
             </p>
 
             <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              After your payment is confirmed, we&rsquo;ll send your intake form and First Recovery Setup Call instructions.
+              If your report shows opportunities worth pursuing, you can upgrade to Founding 100 for $99.
             </p>
 
+            <div style="margin-top:20px;">
+              <a href="${EARLY_ACCESS_CHECKOUT_URL}" style="display:inline-block; padding:12px 18px; border-radius:999px; background:#111827; color:#ffffff; text-decoration:none; font-size:14px; font-weight:700;">
+                Upgrade after reviewing your report
+              </a>
+            </div>
+
             <p style="margin:22px 0 0 0; color:#525252; font-size:14px; line-height:1.7;">
-              Margin charges no recovery commissions. Sellers pay for ongoing recovery management, and approved recoveries stay with the seller.
+              Founding 100 includes guided filing support, 0% recovery commission to Margin, and seller approval before any filing.
             </p>
 
             <p style="margin:18px 0 0 0; color:#525252; font-size:14px; line-height:1.7;">
