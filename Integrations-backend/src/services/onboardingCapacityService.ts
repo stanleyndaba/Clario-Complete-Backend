@@ -8,7 +8,7 @@ export type OnboardingCapacityStatus = {
   nextBatchHours: number;
 };
 
-const DEFAULT_MAX_ACTIVE = Number(process.env.MAX_ACTIVE_ONBOARDING_USERS || '5');
+const DEFAULT_MAX_ACTIVE = Number(process.env.MAX_ACTIVE_ONBOARDING_USERS || '10');
 const DEFAULT_TTL_MINUTES = Number(process.env.ONBOARDING_SLOT_TTL_MINUTES || '1440'); // 24 hours
 const DEFAULT_NEXT_BATCH_HOURS = Number(process.env.ONBOARDING_NEXT_BATCH_HOURS || '24');
 
