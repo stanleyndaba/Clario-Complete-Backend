@@ -122,7 +122,7 @@ export function buildEarlyAccessConfirmationEmail(): {
     '',
     'No payment is required for the pre-audit report.',
     '',
-    `If your report shows opportunities worth pursuing, you can upgrade to Founding 100 for $99:`,
+    `If your report shows opportunities worth pursuing, you can upgrade to Founding 100 for $99 and get full recovery service through December 31, 2026 (regardless of when you join). No commissions, no monthly fees, no automatic renewal. After 2026, the service ends – unless you choose a new plan for 2027. This offer closes June 30, 2026.`,
     '',
     EARLY_ACCESS_CHECKOUT_URL,
     '',
@@ -169,7 +169,7 @@ export function buildEarlyAccessConfirmationEmail(): {
             </p>
 
             <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              If your report shows opportunities worth pursuing, you can upgrade to Founding 100 for $99.
+              If your report shows opportunities worth pursuing, you can upgrade to Founding 100 for $99 and get full recovery service through December 31, 2026 (regardless of when you join). No commissions, no monthly fees, no automatic renewal. After 2026, the service ends &ndash; unless you choose a new plan for 2027. This offer closes June 30, 2026.
             </p>
 
             <div style="margin-top:20px;">
@@ -215,7 +215,7 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
     '',
     'Your Founding Recovery Audit is confirmed.',
     '',
-    'Your $99 audit activation includes a founder-led first recovery cycle, read-only setup guidance, claim-clock review, evidence readiness review, and a walkthrough of any recovery issues Margin surfaces.',
+    'Your $99 payment activates Margin through December 31, 2026. You\'re covered for the rest of the year – no surprises, no renewals. We\'ll notify you before the end of the year about 2027 options. Founding 100 closes June 30 – you\'ve secured your spot.',
     '',
     'Next step: complete your intake form so we can prepare your workspace:',
     '',
@@ -256,7 +256,7 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
               Your Founding Recovery Audit is confirmed.
             </h1>
             <p style="margin:14px 0 0 0; color:#404040; font-size:16px; line-height:1.7;">
-              Your $99 audit activation includes a founder-led first recovery cycle, read-only setup guidance, claim-clock review, evidence readiness review, and a walkthrough of any recovery issues Margin surfaces.
+              Your $99 payment activates Margin through December 31, 2026. You're covered for the rest of the year &ndash; no surprises, no renewals. We'll notify you before the end of the year about 2027 options. Founding 100 closes June 30 &ndash; you've secured your spot.
             </p>
           </div>
 
@@ -330,6 +330,8 @@ export function buildEarlyAccessIntakeReceivedEmail(): {
     '',
     'Founding 100 setup is handled in controlled batches so each seller gets a careful read-only start before recovery review begins.',
     '',
+    'Your service is valid through Dec 31, 2026.',
+    '',
     'Best,',
     'Margin Support Team',
   ].join('\n');
@@ -374,6 +376,10 @@ export function buildEarlyAccessIntakeReceivedEmail(): {
               Founding 100 setup is handled in controlled batches so each seller gets a careful read-only start before recovery review begins.
             </p>
 
+            <p style="margin:24px 0 0 0; color:#525252; font-size:13px; line-height:1.7;">
+              Your service is valid through Dec 31, 2026.
+            </p>
+
             <p style="margin:28px 0 0 0; color:#171717; font-size:15px; line-height:1.7;">
               Best,<br>
               Margin Support Team
@@ -410,6 +416,8 @@ export function buildEarlyAccessSetupScheduledEmail(): {
     FOUNDING_RECOVERY_INTAKE_URL,
     '',
     'On the setup call, we will confirm your marketplace coverage, walk through the read-only connection path, and explain what happens before any recovery case moves forward.',
+    '',
+    'Your service is valid through Dec 31, 2026.',
     '',
     'Best,',
     'Margin Support Team',
@@ -457,6 +465,10 @@ export function buildEarlyAccessSetupScheduledEmail(): {
 
             <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
               On the setup call, we will confirm your marketplace coverage, walk through the read-only connection path, and explain what happens before any recovery case moves forward.
+            </p>
+
+            <p style="margin:24px 0 0 0; color:#525252; font-size:13px; line-height:1.7;">
+              Your service is valid through Dec 31, 2026.
             </p>
 
             <p style="margin:28px 0 0 0; color:#171717; font-size:15px; line-height:1.7;">
