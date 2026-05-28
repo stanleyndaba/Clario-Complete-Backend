@@ -15,6 +15,10 @@ export interface AuthenticatedRequest extends Request {
 export const authenticateToken = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   const authHeader = (req as any).headers?.['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
+  const allowDemoUser = process.env.ALLOW_DEMO_USER === 'true';
+  const requestedTenantSlug = String((req as any).query?.tenantSlug || (req as any).query?.tenant_slug || '').trim();
+  const pathTenantSlug = String((req as any).originalUrl || '').match(/\/app\/([^/?#]+)/)?.[1] || '';
+  const isExplicitDemoRequest = requestedTenantSlug === 'demo-workspace' || pathTenantSlug === 'demo-workspace' || (req as any).headers?.['x-demo-mode'] === 'true';
 
   if (!token) {
     res.status(401).json({
@@ -25,6 +29,18 @@ export const authenticateToken = async (req: AuthenticatedRequest, res: Response
   }
 
   try {
+    if (allowDemoUser && isExplicitDemoRequest && token === 'demo-session-local') {
+      req.user = {
+        id: 'demo-user',
+        email: 'demo@margin.local',
+        role: 'viewer'
+      };
+      (req as any).userId = 'demo-user';
+      logger.debug('Demo token authentication accepted for explicit demo request');
+      next();
+      return;
+    }
+
     // Check if token is Supabase service role key (for sandbox testing)
     const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (serviceRoleKey && token === serviceRoleKey) {
