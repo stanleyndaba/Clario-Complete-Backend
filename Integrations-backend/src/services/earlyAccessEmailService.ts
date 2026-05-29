@@ -122,11 +122,11 @@ export function buildEarlyAccessConfirmationEmail(): {
     '',
     'No payment is required for the pre-audit report.',
     '',
-    `If your report shows opportunities worth pursuing, you can upgrade to Founding 100 for $99 and get full recovery service through December 31, 2026 (regardless of when you join). No commissions, no monthly fees, no automatic renewal. After 2026, the service ends – unless you choose a new plan for 2027. This offer closes June 30, 2026.`,
+    `If your report shows opportunities worth pursuing, you can upgrade to Founding 500 for $99 and keep 100% of every recovery through December 31, 2026. No monthly fees during Early Access and no automatic renewal. Upgrade to Pro or Scale anytime and your $99 is credited. This offer closes June 30, 2026 or when 500 slots are filled.`,
     '',
     EARLY_ACCESS_CHECKOUT_URL,
     '',
-    'Founding 100 includes guided filing support, 0% recovery commission to Margin, and seller approval before any filing.',
+    'Founding 500 includes guided filing support, 0% recovery commission during Early Access, and seller approval before any filing.',
     '',
     'Margin does not guarantee reimbursement outcomes. Amazon makes final reimbursement decisions. Margin prepares and tracks evidence-backed recovery work.',
     '',
@@ -169,7 +169,7 @@ export function buildEarlyAccessConfirmationEmail(): {
             </p>
 
             <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              If your report shows opportunities worth pursuing, you can upgrade to Founding 100 for $99 and get full recovery service through December 31, 2026 (regardless of when you join). No commissions, no monthly fees, no automatic renewal. After 2026, the service ends &ndash; unless you choose a new plan for 2027. This offer closes June 30, 2026.
+              If your report shows opportunities worth pursuing, you can upgrade to Founding 500 for $99 and keep 100% of every recovery through December 31, 2026. No monthly fees during Early Access and no automatic renewal. Upgrade to Pro or Scale anytime and your $99 is credited. This offer closes June 30, 2026 or when 500 slots are filled.
             </p>
 
             <div style="margin-top:20px;">
@@ -179,7 +179,7 @@ export function buildEarlyAccessConfirmationEmail(): {
             </div>
 
             <p style="margin:22px 0 0 0; color:#525252; font-size:14px; line-height:1.7;">
-              Founding 100 includes guided filing support, 0% recovery commission to Margin, and seller approval before any filing.
+              Founding 500 includes guided filing support, 0% recovery commission during Early Access, and seller approval before any filing.
             </p>
 
             <p style="margin:18px 0 0 0; color:#525252; font-size:14px; line-height:1.7;">
@@ -215,7 +215,7 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
     '',
     'Your Founding Recovery Audit is confirmed.',
     '',
-    'Your $99 payment activates Margin through December 31, 2026. You\'re covered for the rest of the year – no surprises, no renewals. We\'ll notify you before the end of the year about 2027 options. Founding 100 closes June 30 – you\'ve secured your spot.',
+    'Your $99 payment activates Founding 500 access through December 31, 2026. You keep 100% of every recovery during Early Access. You can upgrade to Pro or Scale anytime and your $99 is credited toward the new plan. Founding 500 closes June 30 or when 500 slots are filled – you\'ve secured your spot.',
     '',
     'Next step: complete your intake form so we can prepare your workspace:',
     '',
@@ -225,7 +225,7 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
     '',
     FOUNDING_RECOVERY_BOOKING_URL,
     '',
-    'Founding 100 is onboarded in controlled batches so each workspace can be prepared carefully before read-only setup begins. In some cases, setup can begin within 24 hours after payment confirmation and intake completion. During heavier onboarding batches, setup may take up to 3–5 business days.',
+    'Founding 500 is onboarded in controlled batches so each workspace can be prepared carefully before read-only setup begins. In some cases, setup can begin within 24 hours after payment confirmation and intake completion. During heavier onboarding batches, setup may take up to 3–5 business days.',
     '',
     'Margin charges no recovery commissions. Sellers pay for ongoing recovery management, and approved recoveries stay with the seller.',
     '',
@@ -250,13 +250,13 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
         <div style="max-width:600px; margin:0 auto; padding:36px 24px 40px 24px;">
           <div style="border-bottom:1px solid #e5e5e5; padding-bottom:20px;">
             <div style="font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#111827; font-weight:700;">
-              Founding 100 Recovery Audit
+              Founding 500 Recovery Audit
             </div>
             <h1 style="margin:28px 0 0 0; font-size:28px; line-height:1.18; font-weight:600; color:#111827;">
               Your Founding Recovery Audit is confirmed.
             </h1>
             <p style="margin:14px 0 0 0; color:#404040; font-size:16px; line-height:1.7;">
-              Your $99 payment activates Margin through December 31, 2026. You're covered for the rest of the year &ndash; no surprises, no renewals. We'll notify you before the end of the year about 2027 options. Founding 100 closes June 30 &ndash; you've secured your spot.
+              Your $99 payment activates Founding 500 access through December 31, 2026. You keep 100% of every recovery during Early Access. You can upgrade to Pro or Scale anytime and your $99 is credited toward the new plan. Founding 500 closes June 30 or when 500 slots are filled &ndash; you've secured your spot.
             </p>
           </div>
 
@@ -282,7 +282,7 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
             </div>
 
             <p style="margin:22px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              Founding 100 is onboarded in controlled batches so each workspace can be prepared carefully before read-only setup begins. In some cases, setup can begin within 24 hours after payment confirmation and intake completion. During heavier onboarding batches, setup may take up to 3&ndash;5 business days.
+              Founding 500 is onboarded in controlled batches so each workspace can be prepared carefully before read-only setup begins. In some cases, setup can begin within 24 hours after payment confirmation and intake completion. During heavier onboarding batches, setup may take up to 3&ndash;5 business days.
             </p>
 
             <p style="margin:18px 0 0 0; color:#525252; font-size:13px; line-height:1.7;">
@@ -328,7 +328,7 @@ export function buildEarlyAccessIntakeReceivedEmail(): {
     '',
     FOUNDING_RECOVERY_BOOKING_URL,
     '',
-    'Founding 100 setup is handled in controlled batches so each seller gets a careful read-only start before recovery review begins.',
+    'Founding 500 setup is handled in controlled batches so each seller gets a careful read-only start before recovery review begins.',
     '',
     'Your service is valid through Dec 31, 2026.',
     '',
@@ -351,7 +351,7 @@ export function buildEarlyAccessIntakeReceivedEmail(): {
         <div style="max-width:600px; margin:0 auto; padding:36px 24px 40px 24px;">
           <div style="border-bottom:1px solid #e5e5e5; padding-bottom:20px;">
             <div style="font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#111827; font-weight:700;">
-              Founding 100 Recovery Audit
+              Founding 500 Recovery Audit
             </div>
             <h1 style="margin:28px 0 0 0; font-size:28px; line-height:1.18; font-weight:600; color:#111827;">
               Your intake is received.
@@ -373,7 +373,7 @@ export function buildEarlyAccessIntakeReceivedEmail(): {
             </div>
 
             <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              Founding 100 setup is handled in controlled batches so each seller gets a careful read-only start before recovery review begins.
+              Founding 500 setup is handled in controlled batches so each seller gets a careful read-only start before recovery review begins.
             </p>
 
             <p style="margin:24px 0 0 0; color:#525252; font-size:13px; line-height:1.7;">
@@ -409,7 +409,7 @@ export function buildEarlyAccessSetupScheduledEmail(): {
     '',
     'Your Founding Recovery setup is scheduled.',
     '',
-    'Your onboarding slot is confirmed. We prepare Founding 100 workspaces in controlled batches so read-only setup, marketplace coverage, and first-cycle recovery review stay accurate.',
+    'Your onboarding slot is confirmed. We prepare Founding 500 workspaces in controlled batches so read-only setup, marketplace coverage, and first-cycle recovery review stay accurate.',
     '',
     'Before the call, please make sure your intake is complete:',
     '',
@@ -438,7 +438,7 @@ export function buildEarlyAccessSetupScheduledEmail(): {
         <div style="max-width:600px; margin:0 auto; padding:36px 24px 40px 24px;">
           <div style="border-bottom:1px solid #e5e5e5; padding-bottom:20px;">
             <div style="font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#111827; font-weight:700;">
-              Founding 100 Recovery Audit
+              Founding 500 Recovery Audit
             </div>
             <h1 style="margin:28px 0 0 0; font-size:28px; line-height:1.18; font-weight:600; color:#111827;">
               Your setup is scheduled.
@@ -450,7 +450,7 @@ export function buildEarlyAccessSetupScheduledEmail(): {
 
           <div style="padding-top:24px;">
             <p style="margin:0; color:#262626; font-size:15px; line-height:1.8;">
-              We prepare Founding 100 workspaces in controlled batches so read-only setup, marketplace coverage, and first-cycle recovery review stay accurate.
+              We prepare Founding 500 workspaces in controlled batches so read-only setup, marketplace coverage, and first-cycle recovery review stay accurate.
             </p>
 
             <p style="margin:22px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
