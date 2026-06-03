@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Keeps the Margin Analytics Amazon SP-API developer account alive by making a successful API call every 14 days. Prevents the 90-day deactivation policy from triggering.</Description>
+    <Author>MarginAnalytics</Author>
+  </RegistrationInfo>
+  <Triggers>
+    <!-- Trigger 1: Every 14 days at 9 AM -->
+    <CalendarTrigger>
+      <StartBoundary>2026-06-04T09:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>14</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+    <!-- Trigger 2: On PC startup (with 3 min delay to let network connect) -->
+    <BootTrigger>
+      <Enabled>true</Enabled>
+      <Delay>PT3M</Delay>
+    </BootTrigger>
+    <!-- Trigger 3: On user login (backup) -->
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <Delay>PT2M</Delay>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <!-- Run immediately if a scheduled start was missed (PC was off) -->
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>C:\Users\Student\Contacts\Clario-Complete-Backend\Integrations-backend\run-spapi-keepalive.bat</Command>
+    </Exec>
+  </Actions>
+</Task>
