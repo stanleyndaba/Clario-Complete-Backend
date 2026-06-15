@@ -43,7 +43,18 @@ function applySSEHeaders(req: AuthenticatedSSERequest, res: Response): void {
   if (origin) {
     headers['Access-Control-Allow-Origin'] = origin;
     headers['Access-Control-Allow-Credentials'] = 'true';
-    headers['Access-Control-Allow-Headers'] = 'Cache-Control, Authorization';
+    headers['Access-Control-Allow-Headers'] = [
+      'Content-Type',
+      'Authorization',
+      'Cache-Control',
+      'X-User-Id',
+      'X-Forwarded-User-Id',
+      'X-Tenant-Id',
+      'X-Tenant-Slug',
+      'X-Demo-Mode',
+      'X-Request-Id',
+      'X-Correlation-Id'
+    ].join(', ');
   }
 
   res.writeHead(200, headers);

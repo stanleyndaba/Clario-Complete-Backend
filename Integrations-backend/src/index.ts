@@ -217,14 +217,18 @@ app.use(cors({
     'X-User-Id',
     'X-Forwarded-User-Id',
     'X-Tenant-Id',
+    'X-Tenant-Slug',
+    'X-Demo-Mode',
     'X-Store-Id',
     'X-Frontend-URL',
+    'X-Request-Id',
+    'X-Correlation-Id',
     'Origin',
     'Referer',
     'Accept',
     'Cache-Control'
   ],
-  exposedHeaders: ['X-User-Id', 'X-Request-Id', 'X-Tenant-Id', 'X-Store-Id'],
+  exposedHeaders: ['X-User-Id', 'X-Request-Id', 'X-Tenant-Id', 'X-Tenant-Slug', 'X-Store-Id'],
   maxAge: 86400 // 24 hours
 }));
 

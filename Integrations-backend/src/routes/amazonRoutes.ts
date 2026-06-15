@@ -234,7 +234,7 @@ router.options('/auth', (req, res) => {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Frontend-URL, Origin, Referer');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Tenant-Id, X-Tenant-Slug, X-Demo-Mode, X-Frontend-URL, Origin, Referer');
     res.header('Access-Control-Max-Age', '86400');
     res.status(204).send();
   } else {
@@ -251,7 +251,7 @@ router.options('/auth/start', (req, res) => {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Frontend-URL, Origin, Referer');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Tenant-Id, X-Tenant-Slug, X-Demo-Mode, X-Frontend-URL, Origin, Referer');
     res.header('Access-Control-Max-Age', '86400');
     res.status(204).send();
   } else {
@@ -279,7 +279,7 @@ router.options('/sandbox/callback', (req, res) => {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Frontend-URL, Origin, Referer');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Tenant-Id, X-Tenant-Slug, X-Demo-Mode, X-Frontend-URL, Origin, Referer');
     res.header('Access-Control-Max-Age', '86400');
     res.status(204).send();
   } else {

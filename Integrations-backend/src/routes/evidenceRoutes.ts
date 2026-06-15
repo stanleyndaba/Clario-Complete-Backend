@@ -1610,7 +1610,7 @@ router.options('/upload', (req, res) => {
   res.header('Access-Control-Allow-Origin', origin || '*');
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Forwarded-User-Id, Origin, Referer');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-User-Id, X-Forwarded-User-Id, X-Tenant-Id, X-Tenant-Slug, X-Demo-Mode, X-Request-Id, X-Correlation-Id, Origin, Referer');
   res.header('Access-Control-Max-Age', '86400');
   res.status(204).send();
 });
