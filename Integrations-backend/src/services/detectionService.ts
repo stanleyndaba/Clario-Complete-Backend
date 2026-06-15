@@ -97,6 +97,11 @@ export interface DetectionResultRecord {
   updated_at: string;
 }
 
+function toFiniteNumber(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
 export class DetectionService {
   private readonly queueName = 'detection_queue';
   private readonly pythonApiUrl = process.env.PYTHON_API_URL || 'https://clario-complete-backend-6ca7.onrender.com';
@@ -1858,7 +1863,7 @@ export class DetectionService {
         throw new Error(`Failed to fetch detection statistics: ${error.message}`);
       }
 
-      const results = data as { anomaly_type: string; severity: string; estimated_value: number; days_remaining?: number; expired?: boolean; confidence_score?: number }[];
+      const results = data as { anomaly_type: string; severity: string; estimated_value: number | string; days_remaining?: number; expired?: boolean; confidence_score?: number | string }[];
       const by_severity: Record<string, { count: number; value: number }> = {};
       const by_type: Record<string, { count: number; value: number }> = {};
       const by_confidence = { high: 0, medium: 0, low: 0 };
@@ -1867,27 +1872,30 @@ export class DetectionService {
       let expired_count = 0;
 
       results.forEach(result => {
+        const estimatedValue = toFiniteNumber(result.estimated_value);
+        const confidenceScore = toFiniteNumber(result.confidence_score);
+
         // By severity
         if (!by_severity[result.severity]) {
           by_severity[result.severity] = { count: 0, value: 0 };
         }
         by_severity[result.severity].count++;
-        by_severity[result.severity].value += result.estimated_value;
+        by_severity[result.severity].value += estimatedValue;
 
         // By type
         if (!by_type[result.anomaly_type]) {
           by_type[result.anomaly_type] = { count: 0, value: 0 };
         }
         by_type[result.anomaly_type].count++;
-        by_type[result.anomaly_type].value += result.estimated_value;
+        by_type[result.anomaly_type].value += estimatedValue;
 
-        total_value += result.estimated_value;
+        total_value += estimatedValue;
 
         // Count by confidence
         if (result.confidence_score !== undefined) {
-          if (result.confidence_score >= 0.75) {
+          if (confidenceScore >= 0.75) {
             by_confidence.high++;
-          } else if (result.confidence_score >= 0.50) {
+          } else if (confidenceScore >= 0.50) {
             by_confidence.medium++;
           } else {
             by_confidence.low++;

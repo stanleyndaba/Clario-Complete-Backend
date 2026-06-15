@@ -60,7 +60,8 @@ function buildUserFilter(userId: string): string {
 }
 
 function isProductEvidenceSource(source: any): boolean {
-  return source?.metadata?.test !== true && source?.account_email !== 'unknown@placeholder.invalid';
+  const accountEmail = source?.account_email || source?.metadata?.account_email || source?.metadata?.email;
+  return source?.metadata?.test !== true && accountEmail !== 'unknown@placeholder.invalid';
 }
 
 function isProductEvidenceDocument(document: any): boolean {
@@ -467,7 +468,7 @@ async function getAuthoritativeEvidenceSourcesForUser(userId: string, tenantId: 
   const adminClient = supabaseAdmin || supabase;
   const { data: sourceRows, error: sourcesError } = await adminClient
     .from('evidence_sources')
-    .select('id, provider, account_email, status, last_ingested_at, created_at, metadata')
+    .select('id, provider, display_name, status, last_ingested_at, created_at, metadata')
     .eq('tenant_id', tenantId)
     .or(buildUserFilter(userId))
     .order('created_at', { ascending: false });
@@ -538,7 +539,7 @@ async function getAuthoritativeEvidenceSourcesForUser(userId: string, tenantId: 
     return {
       id: source.id,
       provider,
-      account_email: source.account_email || `${provider}@connected.local`,
+      account_email: source.metadata?.account_email || source.metadata?.email || source.display_name || `${provider}@connected.local`,
       status: source.status || 'connected',
       connected: source.status === 'connected',
       ingestable: !!resolvedSource,
@@ -1355,7 +1356,7 @@ router.get('/status', async (req: Request, res: Response) => {
 
     const { data: documents, error: documentsError } = await supabaseAdmin
       .from('evidence_documents')
-      .select('id, metadata, processing_status, parser_status, parsed_metadata, ingested_at, created_at')
+      .select('id, metadata, parser_status, parsed_metadata, ingested_at, created_at')
       .eq('tenant_id', tenantId)
       .or(userFilter);
 
@@ -1366,7 +1367,7 @@ router.get('/status', async (req: Request, res: Response) => {
     const productDocuments = (documents || []).filter((document: any) => isProductEvidenceDocument(document));
     const storageFailedCount = productDocuments.filter((document: any) => hasFailedStorageUpload(document)).length;
     const storageReadyDocuments = productDocuments.filter((document: any) => isStorageReadyEvidenceDocument(document));
-    const processingCount = storageReadyDocuments.filter((document: any) => document.processing_status === 'processing').length;
+    const processingCount = storageReadyDocuments.filter((document: any) => document.parser_status === 'processing').length;
     const parsedCount = storageReadyDocuments.filter((document: any) => document.parser_status === 'completed').length;
     const matchReadyCount = storageReadyDocuments.filter((document: any) => document.parser_status === 'completed' && document.parsed_metadata).length;
     const lastIngestion = productDocuments

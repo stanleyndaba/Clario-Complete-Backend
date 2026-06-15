@@ -80,6 +80,58 @@ function isSimpleColumn(column: string): boolean {
   return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(column.trim());
 }
 
+function legacySelectExpression(
+  table: string,
+  column: string,
+  columnTypes: Map<string, ColumnType>
+): string | null {
+  if (table === 'evidence_documents' && column === 'processing_status' && columnTypes.has('parser_status')) {
+    return `${quoteIdentifier('parser_status')} AS ${quoteIdentifier(column)}`;
+  }
+
+  if (table === 'evidence_sources') {
+    if (column === 'account_email') {
+      const candidates: string[] = [];
+      if (columnTypes.has('metadata')) {
+        candidates.push(`${quoteIdentifier('metadata')}->>'account_email'`);
+        candidates.push(`${quoteIdentifier('metadata')}->>'email'`);
+      }
+      if (columnTypes.has('display_name')) {
+        candidates.push(quoteIdentifier('display_name'));
+      }
+      if (columnTypes.has('provider')) {
+        candidates.push(`${quoteIdentifier('provider')} || '@connected.local'`);
+      }
+
+      return candidates.length
+        ? `COALESCE(${candidates.join(', ')}) AS ${quoteIdentifier(column)}`
+        : `NULL::text AS ${quoteIdentifier(column)}`;
+    }
+
+    if (column === 'permissions') {
+      return columnTypes.has('metadata')
+        ? `COALESCE(${quoteIdentifier('metadata')}->'permissions', '[]'::jsonb) AS ${quoteIdentifier(column)}`
+        : `'[]'::jsonb AS ${quoteIdentifier(column)}`;
+    }
+
+    if (column === 'last_sync_at') {
+      const candidates = ['last_sync_at', 'last_synced_at', 'last_ingested_at', 'updated_at', 'created_at']
+        .filter((candidate) => columnTypes.has(candidate))
+        .map(quoteIdentifier);
+
+      return candidates.length
+        ? `COALESCE(${candidates.join(', ')}) AS ${quoteIdentifier(column)}`
+        : `NULL::timestamptz AS ${quoteIdentifier(column)}`;
+    }
+
+    if (column === 'encrypted_access_token' || column === 'encrypted_refresh_token') {
+      return `NULL::text AS ${quoteIdentifier(column)}`;
+    }
+  }
+
+  return null;
+}
+
 export function createPostgresSupabaseAdapter(connectionString: string): any {
   const client = new Client({
     connectionString,
@@ -316,13 +368,28 @@ export function createPostgresSupabaseAdapter(connectionString: string): any {
       return clauses.length ? ` ${clauses.join(' ')}` : '';
     }
 
-    private selectList(): string {
+    private async selectList(): Promise<string> {
       if (!this.selectedColumns || this.selectedColumns === '*') return '*';
 
+      const columnTypes = await getColumnTypes(this.table);
       const columns = splitSelectColumns(this.selectedColumns)
         .filter((column) => isSimpleColumn(column));
 
-      return columns.length ? columns.map(quoteIdentifier).join(', ') : '*';
+      const selectExpressions = columns
+        .map((column) => {
+          if (columnTypes.has(column)) return quoteIdentifier(column);
+          const legacyExpression = legacySelectExpression(this.table, column, columnTypes);
+          if (legacyExpression) return legacyExpression;
+
+          logger.warn('[PG_ADAPTER] Ignoring selected column that does not exist', {
+            table: this.table,
+            column
+          });
+          return null;
+        })
+        .filter(Boolean);
+
+      return selectExpressions.length ? selectExpressions.join(', ') : '*';
     }
 
     private async addNestedTenantRows(rows: any[]): Promise<any[]> {
@@ -349,8 +416,13 @@ export function createPostgresSupabaseAdapter(connectionString: string): any {
       const rows = normalizeRows(this.payload);
       if (!rows.length) return { data: [], error: null, count: 0 };
 
-      const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
       const columnTypes = await getColumnTypes(this.table);
+      const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))))
+        .filter((column) => columnTypes.has(column));
+      if (!columns.length) {
+        logger.warn('[PG_ADAPTER] Insert ignored because no payload columns exist on table', { table: this.table });
+        return { data: [], error: null, count: 0 };
+      }
       const values = [...this.values];
       const tuples = rows.map((row) => {
         const placeholders = columns.map((column) => {
@@ -383,10 +455,12 @@ export function createPostgresSupabaseAdapter(connectionString: string): any {
 
     private async executeUpdate(): Promise<DbResult> {
       const row = this.payload || {};
-      const columns = Object.keys(row);
-      if (!columns.length) return { data: [], error: null, count: 0 };
-
       const columnTypes = await getColumnTypes(this.table);
+      const columns = Object.keys(row).filter((column) => columnTypes.has(column));
+      if (!columns.length) {
+        logger.warn('[PG_ADAPTER] Update ignored because no payload columns exist on table', { table: this.table });
+        return { data: [], error: null, count: 0 };
+      }
       const values = [...this.values];
       const assignments = columns.map((column) => {
         values.push(prepareColumnValue(row[column], columnTypes.get(column)));
@@ -415,7 +489,7 @@ export function createPostgresSupabaseAdapter(connectionString: string): any {
         };
       }
 
-      const sql = `SELECT ${this.selectList()} FROM ${quoteQualifiedIdentifier(this.table)}${this.whereClause()}${this.orderLimitClause()}`;
+      const sql = `SELECT ${await this.selectList()} FROM ${quoteQualifiedIdentifier(this.table)}${this.whereClause()}${this.orderLimitClause()}`;
       const result = await query(sql, this.values);
       return this.shapeRows(result);
     }

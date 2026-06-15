@@ -273,7 +273,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
                 .eq('tenant_id', tenantId),
             dbClient
                 .from('evidence_documents')
-                .select('id, processing_status, parser_confidence, updated_at, created_at')
+                .select('id, parser_status, parser_confidence, updated_at, created_at')
                 .eq('tenant_id', tenantId),
             dbClient
                 .from('evidence_sources')
@@ -355,11 +355,11 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
         });
         const billedTransactions = billingTransactions.filter(isBilledRecord);
 
-        const parsedDocuments = documents.filter((document: any) => normalize(document.processing_status) === 'completed');
-        const failedDocuments = documents.filter((document: any) => normalize(document.processing_status) === 'failed');
-        const processingDocuments = documents.filter((document: any) => normalize(document.processing_status) === 'processing');
+        const parsedDocuments = documents.filter((document: any) => normalize(document.parser_status) === 'completed');
+        const failedDocuments = documents.filter((document: any) => normalize(document.parser_status) === 'failed');
+        const processingDocuments = documents.filter((document: any) => normalize(document.parser_status) === 'processing');
         const needsReviewDocuments = documents.filter((document: any) => {
-            const status = normalize(document.processing_status);
+            const status = normalize(document.parser_status);
             const confidence = document.parser_confidence;
             return status === 'failed' || (status === 'completed' && typeof confidence === 'number' && confidence < 0.75);
         });
