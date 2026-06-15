@@ -16,7 +16,7 @@ It targets the demo tenant slug `demo-workspace`, names it `Acme Operations`, fi
 ## Safety Guards
 
 - Requires `ALLOW_DEMO_SEED=true`.
-- Requires a real Supabase service-role connection.
+- Requires a real PostgreSQL connection through `DATABASE_URL` or Neon `Host`/`Database`/`Role`/`Password` environment variables.
 - Defaults to `demo-workspace` and refuses other slugs unless `ALLOW_NON_STANDARD_ACME_DEMO_SLUG=true`.
 - Only proceeds against an existing tenant if it is the canonical demo slug or is explicitly marked with `metadata.is_demo_workspace=true`.
 - Temporarily sets the tenant to `active` while writing, then always attempts to return it to `read_only`.
@@ -44,6 +44,14 @@ npm run seed:acme-demo
 Use the profile upsert flag only when you intentionally want the seed to update that user's demo profile fields for the Acme workspace.
 
 If you also want the seed to replace that user's demo OAuth token rows for Gmail, Google Drive, and Dropbox, set `ALLOW_DEMO_TOKEN_OVERWRITE=true`. Leave it unset for a real user if you want to preserve their existing provider tokens.
+
+For the current Neon demo bypass, the default `demo-user` identity is enough. To make the UI show the familiar launch/demo account email, set:
+
+```powershell
+$env:ALLOW_DEMO_SEED = "true"
+$env:ACME_DEMO_USER_EMAIL = "mvelo@margin-finance.com"
+npm run seed:acme-demo
+```
 
 ## Expected Result
 

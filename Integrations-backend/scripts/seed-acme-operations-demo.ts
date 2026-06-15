@@ -1,5 +1,6 @@
 import 'dotenv/config';
-import { supabaseAdmin, isRealDatabaseConfigured, convertUserIdToUuid } from '../src/database/supabaseClient';
+import crypto from 'crypto';
+import { Client } from 'pg';
 
 type DbError = {
   code?: string;
@@ -12,6 +13,17 @@ type WriteOptions = {
   onConflict?: string;
   optional?: boolean;
   optionalColumns?: string[];
+};
+
+type DbResult<T = any> = {
+  data: T | null;
+  error: DbError | null;
+  count?: number | null;
+};
+
+type DbLike = {
+  from: (table: string) => any;
+  close?: () => Promise<void>;
 };
 
 const DEMO_TENANT_ID = '00000000-0000-0000-0000-0000000000d0';
@@ -37,7 +49,323 @@ const syncId = 'acme-sync-20260420';
 
 let resolvedTenantId = DEMO_TENANT_ID;
 
-const db = supabaseAdmin;
+function convertUserIdToUuid(userId: string): string {
+  const uuidRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+  const uuidMatch = userId.match(uuidRegex);
+  if (uuidMatch) return uuidMatch[0];
+
+  const hash = crypto.createHash('sha256').update(`clario-user-${userId}`).digest('hex');
+  return `${hash.substring(0, 8)}-${hash.substring(8, 12)}-4${hash.substring(13, 16)}-a${hash.substring(17, 20)}-${hash.substring(20, 32)}`;
+}
+
+function getConnectionString(): string | undefined {
+  if (process.env.DATABASE_URL) {
+    return process.env.DATABASE_URL;
+  }
+
+  const host = process.env.Host || process.env.NEON_HOST;
+  const database = process.env.Database || process.env.NEON_DATABASE;
+  const role = process.env.Role || process.env.NEON_ROLE;
+  const password = process.env.Password || process.env.DB_PASSWORD || process.env.NEON_PASSWORD;
+
+  if (!host || !database || !role || !password) {
+    return undefined;
+  }
+
+  const encodedRole = encodeURIComponent(role.toLowerCase());
+  const encodedPassword = encodeURIComponent(password);
+  return `postgresql://${encodedRole}:${encodedPassword}@${host}/${database}?sslmode=require`;
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function quoteQualifiedIdentifier(value: string): string {
+  return value.split('.').map(quoteIdentifier).join('.');
+}
+
+function pgError(error: any): DbError {
+  return {
+    code: error?.code,
+    message: error?.message || String(error),
+    details: error?.detail,
+    hint: error?.hint
+  };
+}
+
+function normalizeRows(data: any): Record<string, any>[] {
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === 'object') return [data];
+  return [];
+}
+
+function createPgDb(connectionString: string): DbLike {
+  const client = new Client({
+    connectionString,
+    ssl: connectionString.includes('sslmode=require') ? undefined : { rejectUnauthorized: false }
+  });
+  let connectPromise: Promise<void> | null = null;
+  const columnTypeCache = new Map<string, Promise<Map<string, { dataType: string; udtName: string }>>>();
+
+  async function query<T = any>(sql: string, values: any[] = []): Promise<DbResult<T[]>> {
+    try {
+      if (!connectPromise) {
+        connectPromise = client.connect();
+      }
+      await connectPromise;
+      const result = await client.query(sql, values);
+      return { data: result.rows as T[], error: null, count: result.rowCount };
+    } catch (error: any) {
+      return { data: null, error: pgError(error), count: null };
+    }
+  }
+
+  async function getColumnTypes(table: string): Promise<Map<string, { dataType: string; udtName: string }>> {
+    const [schemaName, tableName] = table.includes('.')
+      ? table.split('.', 2)
+      : ['public', table];
+    const cacheKey = `${schemaName}.${tableName}`;
+
+    if (!columnTypeCache.has(cacheKey)) {
+      columnTypeCache.set(cacheKey, (async () => {
+        const result = await query<{ column_name: string; data_type: string; udt_name: string }>(
+          `
+            SELECT column_name, data_type, udt_name
+            FROM information_schema.columns
+            WHERE table_schema = $1
+              AND table_name = $2
+          `,
+          [schemaName, tableName]
+        );
+
+        const types = new Map<string, { dataType: string; udtName: string }>();
+        for (const row of result.data || []) {
+          types.set(row.column_name, {
+            dataType: String(row.data_type || '').toLowerCase(),
+            udtName: String(row.udt_name || '').toLowerCase()
+          });
+        }
+        return types;
+      })());
+    }
+
+    return columnTypeCache.get(cacheKey)!;
+  }
+
+  function prepareColumnValue(
+    value: any,
+    columnType?: { dataType: string; udtName: string }
+  ): any {
+    if (value === null || typeof value === 'undefined') return null;
+
+    const isJsonColumn = columnType?.dataType === 'json' ||
+      columnType?.dataType === 'jsonb' ||
+      columnType?.udtName === 'json' ||
+      columnType?.udtName === 'jsonb';
+
+    if (isJsonColumn) {
+      return JSON.stringify(value);
+    }
+
+    return value;
+  }
+
+  class QueryBuilder {
+    private filters: string[] = [];
+    private values: any[] = [];
+    private mode: 'select' | 'insert' | 'upsert' | 'update' | 'delete' = 'select';
+    private payload: any = null;
+    private selectedColumns = '*';
+    private conflictColumns: string[] = [];
+    private singleMode: 'none' | 'single' | 'maybeSingle' = 'none';
+
+    constructor(private readonly table: string) {}
+
+    select(columns?: string) {
+      this.mode = 'select';
+      this.selectedColumns = columns || '*';
+      return this;
+    }
+
+    insert(data: any) {
+      this.mode = 'insert';
+      this.payload = data;
+      return this;
+    }
+
+    upsert(data: any, options?: { onConflict?: string }) {
+      this.mode = 'upsert';
+      this.payload = data;
+      this.conflictColumns = String(options?.onConflict || '')
+        .split(',')
+        .map((column) => column.trim())
+        .filter(Boolean);
+      return this;
+    }
+
+    update(data: any) {
+      this.mode = 'update';
+      this.payload = data;
+      return this;
+    }
+
+    delete() {
+      this.mode = 'delete';
+      return this;
+    }
+
+    eq(field: string, value: any) {
+      this.values.push(value);
+      this.filters.push(`${quoteIdentifier(field)} = $${this.values.length}`);
+      return this;
+    }
+
+    neq(field: string, value: any) {
+      this.values.push(value);
+      this.filters.push(`${quoteIdentifier(field)} <> $${this.values.length}`);
+      return this;
+    }
+
+    in(field: string, values: any[]) {
+      this.values.push(values);
+      this.filters.push(`${quoteIdentifier(field)} = ANY($${this.values.length})`);
+      return this;
+    }
+
+    is(field: string, value: any) {
+      if (value === null) {
+        this.filters.push(`${quoteIdentifier(field)} IS NULL`);
+      } else {
+        this.values.push(value);
+        this.filters.push(`${quoteIdentifier(field)} IS NOT DISTINCT FROM $${this.values.length}`);
+      }
+      return this;
+    }
+
+    single() {
+      this.singleMode = 'single';
+      return this;
+    }
+
+    maybeSingle() {
+      this.singleMode = 'maybeSingle';
+      return this;
+    }
+
+    private whereClause(): string {
+      return this.filters.length ? ` WHERE ${this.filters.join(' AND ')}` : '';
+    }
+
+    private selectList(): string {
+      if (!this.selectedColumns || this.selectedColumns === '*') return '*';
+      if (/[()]/.test(this.selectedColumns)) return '*';
+      return this.selectedColumns
+        .split(',')
+        .map((column) => column.trim())
+        .filter(Boolean)
+        .map(quoteIdentifier)
+        .join(', ') || '*';
+    }
+
+    private async executeInsert(upsert: boolean): Promise<DbResult> {
+      const rows = normalizeRows(this.payload);
+      if (!rows.length) return { data: [], error: null, count: 0 };
+
+      const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+      const columnTypes = await getColumnTypes(this.table);
+      const values = [...this.values];
+      const tuples = rows.map((row) => {
+        const placeholders = columns.map((column) => {
+          values.push(prepareColumnValue(row[column], columnTypes.get(column)));
+          return `$${values.length}`;
+        });
+        return `(${placeholders.join(', ')})`;
+      });
+
+      const quotedColumns = columns.map(quoteIdentifier).join(', ');
+      let sql = `INSERT INTO ${quoteQualifiedIdentifier(this.table)} (${quotedColumns}) VALUES ${tuples.join(', ')}`;
+
+      if (upsert && this.conflictColumns.length) {
+        const quotedConflict = this.conflictColumns.map(quoteIdentifier).join(', ');
+        const updateColumns = columns.filter((column) => !this.conflictColumns.includes(column));
+        if (updateColumns.length) {
+          const assignments = updateColumns
+            .map((column) => `${quoteIdentifier(column)} = EXCLUDED.${quoteIdentifier(column)}`)
+            .join(', ');
+          sql += ` ON CONFLICT (${quotedConflict}) DO UPDATE SET ${assignments}`;
+        } else {
+          sql += ` ON CONFLICT (${quotedConflict}) DO NOTHING`;
+        }
+      }
+
+      sql += ' RETURNING *';
+      return query(sql, values);
+    }
+
+    private async executeUpdate(): Promise<DbResult> {
+      const row = this.payload || {};
+      const columns = Object.keys(row);
+      if (!columns.length) return { data: [], error: null, count: 0 };
+
+      const columnTypes = await getColumnTypes(this.table);
+      const values = [...this.values];
+      const assignments = columns.map((column) => {
+        values.push(prepareColumnValue(row[column], columnTypes.get(column)));
+        return `${quoteIdentifier(column)} = $${values.length}`;
+      });
+      const sql = `UPDATE ${quoteQualifiedIdentifier(this.table)} SET ${assignments.join(', ')}${this.whereClause()} RETURNING *`;
+      return query(sql, values);
+    }
+
+    private async executeDelete(): Promise<DbResult> {
+      const sql = `DELETE FROM ${quoteQualifiedIdentifier(this.table)}${this.whereClause()}`;
+      return query(sql, this.values);
+    }
+
+    private async executeSelect(): Promise<DbResult> {
+      const sql = `SELECT ${this.selectList()} FROM ${quoteQualifiedIdentifier(this.table)}${this.whereClause()}`;
+      const result = await query(sql, this.values);
+      if (result.error) return result;
+
+      const rows = result.data || [];
+      if (this.singleMode === 'single' && rows.length !== 1) {
+        return { data: null, error: { code: 'PGRST116', message: rows.length ? 'Multiple rows returned' : 'No rows returned' } };
+      }
+      if (this.singleMode === 'maybeSingle') {
+        return { data: rows[0] || null, error: null, count: rows.length };
+      }
+      return result;
+    }
+
+    async execute(): Promise<DbResult> {
+      if (this.mode === 'insert') return this.executeInsert(false);
+      if (this.mode === 'upsert') return this.executeInsert(true);
+      if (this.mode === 'update') return this.executeUpdate();
+      if (this.mode === 'delete') return this.executeDelete();
+      return this.executeSelect();
+    }
+
+    then(resolve: any, reject: any) {
+      return this.execute().then(resolve, reject);
+    }
+  }
+
+  return {
+    from(table: string) {
+      return new QueryBuilder(table);
+    },
+    async close() {
+      if (connectPromise) {
+        await connectPromise.catch(() => undefined);
+        await client.end().catch(() => undefined);
+      }
+    }
+  };
+}
+
+const connectionString = getConnectionString();
+const db = connectionString ? createPgDb(connectionString) : null;
 
 function iso(daysOffset = 0, hoursOffset = 0): string {
   const date = new Date();
@@ -55,12 +383,8 @@ function requireGuards(): void {
     throw new Error('Refusing to seed. Set ALLOW_DEMO_SEED=true to confirm this is intentional.');
   }
 
-  if (!isRealDatabaseConfigured || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    throw new Error('A real Supabase service-role database connection is required for this seed.');
-  }
-
   if (!db || typeof db.from !== 'function') {
-    throw new Error('Supabase admin client is unavailable.');
+    throw new Error('A real PostgreSQL DATABASE_URL is required for this seed.');
   }
 
   if (tenantSlug !== 'demo-workspace' && process.env.ALLOW_NON_STANDARD_ACME_DEMO_SLUG !== 'true') {
@@ -921,8 +1245,8 @@ const disputes = [
     id: '00000000-0000-0000-0000-000000003012',
     detection_result_id: detections[8].id,
     case_number: 'ACME-CASE-2009',
-    status: 'processing',
-    case_state: 'submitting',
+    status: 'submitted',
+    case_state: 'pending',
     claim_amount: 311.28,
     approved_amount: null,
     actual_payout_amount: null,
@@ -953,13 +1277,13 @@ const disputes = [
     id: '00000000-0000-0000-0000-000000003013',
     detection_result_id: detections[9].id,
     case_number: 'ACME-CASE-2010',
-    status: 'under_review',
+    status: 'open',
     case_state: 'pending',
     claim_amount: 96.7,
     approved_amount: null,
     actual_payout_amount: null,
     recovered_amount: null,
-    filing_status: 'submitted',
+    filing_status: 'filed',
     recovery_status: 'pending',
     billing_status: 'pending',
     eligibility_status: 'SAFETY_HOLD',
@@ -1302,10 +1626,18 @@ const evidenceDocQuantities: Record<string, number> = {
   'BOL-ACME-2010': 4
 };
 
+function normalizeEvidenceDocType(docType: string): 'invoice' | 'shipping' | 'po' | 'other' {
+  if (docType === 'invoice' || docType === 'shipping' || docType === 'po') {
+    return docType;
+  }
+  return 'other';
+}
+
 function evidenceDocuments() {
   return evidenceDocSpecs.map(([id, sourceId, provider, docType, supplier, invoiceNumber, sku, asin, amount, days]) => {
     const quantity = evidenceDocQuantities[invoiceNumber] || Math.max(1, Math.round(Number(amount) / 80));
     const unitCost = Number((Number(amount) / quantity).toFixed(2));
+    const normalizedDocType = normalizeEvidenceDocType(String(docType));
 
     return {
       id,
@@ -1315,7 +1647,7 @@ function evidenceDocuments() {
       source_id: sourceId,
       external_id: `acme-doc-${invoiceNumber.toLowerCase()}`,
       provider,
-      doc_type: docType,
+      doc_type: normalizedDocType,
       supplier_name: supplier,
       invoice_number: invoiceNumber,
       purchase_order_number: invoiceNumber.startsWith('PO') ? invoiceNumber : null,
@@ -1351,6 +1683,7 @@ function evidenceDocuments() {
         demo_seed: true,
         ingestion_method: 'acme_operations_demo_seed',
         evidence_title: `${String(docType).replace(/[_-]+/g, ' ')} ${invoiceNumber} - ${supplier}`,
+        original_doc_type: docType,
         original_filename: `${invoiceNumber}.pdf`,
         supplier,
         invoice_number: invoiceNumber,
@@ -2276,7 +2609,7 @@ function agentEvents() {
     },
     {
       id: '00000000-0000-0000-0000-000000014516',
-      agent: 'amazon_case_sync',
+      agent: 'notifications',
       event_type: 'review_acknowledged',
       dispute: disputes[10],
       document_id: '00000000-0000-0000-0000-000000004117',
@@ -2917,8 +3250,12 @@ async function seedAcmeOperations(): Promise<void> {
 
     console.log('Acme Operations demo seed complete.');
   } finally {
-    await finalizeTenantReadOnly();
-    console.log(`Tenant "${tenantSlug}" returned to read_only mode.`);
+    try {
+      await finalizeTenantReadOnly();
+      console.log(`Tenant "${tenantSlug}" returned to read_only mode.`);
+    } finally {
+      await db?.close?.();
+    }
   }
 }
 
