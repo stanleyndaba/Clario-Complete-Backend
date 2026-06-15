@@ -82,7 +82,9 @@ BEGIN
   -- Recoveries & System
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'recoveries') THEN
     CREATE INDEX IF NOT EXISTS idx_recoveries_tenant ON recoveries(tenant_id);
-    CREATE INDEX IF NOT EXISTS idx_recoveries_tenant_status ON recoveries(tenant_id, status);
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'recoveries' AND column_name = 'status') THEN
+      CREATE INDEX IF NOT EXISTS idx_recoveries_tenant_status ON recoveries(tenant_id, status);
+    END IF;
   END IF;
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'agent_events') THEN
     CREATE INDEX IF NOT EXISTS idx_agent_events_tenant ON agent_events(tenant_id);

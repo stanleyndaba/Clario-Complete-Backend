@@ -3,6 +3,8 @@
 
 BEGIN;
 
+ALTER TABLE dispute_cases DISABLE TRIGGER enforce_tenant_active_dispute_cases;
+
 ALTER TABLE dispute_cases
   ADD COLUMN IF NOT EXISTS amazon_case_id TEXT,
   ADD COLUMN IF NOT EXISTS estimated_recovery_amount DECIMAL(12,2),
@@ -105,5 +107,7 @@ COMMENT ON COLUMN dispute_cases.block_reasons IS 'Canonical array of explicit re
 COMMENT ON COLUMN dispute_cases.eligible_to_file IS 'Canonical Agent 7 gate result for whether this case may leave the system';
 COMMENT ON COLUMN dispute_cases.amazon_case_id IS 'Canonical external Amazon case identifier for the dispute case';
 COMMENT ON COLUMN dispute_cases.filing_status IS 'Canonical filing state: pending, blocked, filing, submitting, recovering, payment_required, filed, retrying, failed, quarantined_dangerous_doc, duplicate_blocked, already_reimbursed, pending_approval';
+
+ALTER TABLE dispute_cases ENABLE TRIGGER enforce_tenant_active_dispute_cases;
 
 COMMIT;

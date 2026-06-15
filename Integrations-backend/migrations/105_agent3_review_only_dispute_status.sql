@@ -9,6 +9,7 @@ ALTER TABLE dispute_cases
   CHECK (status IN (
     'pending',
     'submitted',
+    'open',
     'approved',
     'rejected',
     'closed',
@@ -18,4 +19,3 @@ ALTER TABLE dispute_cases
 
 COMMENT ON COLUMN dispute_cases.status IS
   'Case lifecycle status. Review-only Agent 3 findings use review_needed/do_not_file and must not be promoted to submitted or approved.';
-

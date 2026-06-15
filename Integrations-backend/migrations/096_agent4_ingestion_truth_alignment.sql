@@ -2,6 +2,7 @@
 -- Purpose: align Agent 4 ingestion truth on tenant-bound source resolution and a single ingestion timestamp.
 
 ALTER TABLE evidence_sources
+  ADD COLUMN IF NOT EXISTS last_sync_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS last_ingested_at TIMESTAMPTZ;
 
 UPDATE evidence_sources

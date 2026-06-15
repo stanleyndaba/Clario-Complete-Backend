@@ -1,6 +1,22 @@
 -- Migration: Add missing columns to claims table for detection-to-claims flow
 -- The current Supabase claims table is missing columns expected by the code
 
+CREATE TABLE IF NOT EXISTS claims (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID,
+    claim_type TEXT DEFAULT 'reimbursement',
+    provider TEXT DEFAULT 'amazon',
+    reference_id TEXT,
+    amount NUMERIC(12,2) DEFAULT 0,
+    currency TEXT DEFAULT 'USD',
+    status TEXT DEFAULT 'pending',
+    reason TEXT,
+    evidence TEXT[],
+    submitted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- First, check if columns exist and add if missing
 DO $$
 BEGIN

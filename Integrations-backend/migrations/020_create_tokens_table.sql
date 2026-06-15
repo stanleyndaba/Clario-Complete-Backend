@@ -67,6 +67,3 @@ CREATE POLICY "Users can delete their own tokens" ON tokens
 
 -- Add comment
 COMMENT ON TABLE tokens IS 'OAuth tokens stored with encrypted IV+data format';
-
-
-okay

@@ -204,6 +204,8 @@ BEGIN
 END $$;
 
 -- Log constraint application
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS event_type TEXT;
+
 INSERT INTO audit_logs (tenant_id, actor_type, action, resource_type, event_type, metadata)
 VALUES (
   '00000000-0000-0000-0000-000000000001',

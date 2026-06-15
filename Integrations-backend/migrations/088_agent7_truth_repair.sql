@@ -34,6 +34,13 @@ ALTER TABLE dispute_submissions
   ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+ALTER TABLE dispute_cases DISABLE TRIGGER enforce_tenant_active_dispute_cases;
+
+ALTER TABLE dispute_cases DROP CONSTRAINT IF EXISTS dispute_cases_status_check;
+ALTER TABLE dispute_cases
+  ADD CONSTRAINT dispute_cases_status_check
+  CHECK (status IN ('pending', 'submitted', 'open', 'approved', 'rejected', 'closed'));
+
 UPDATE dispute_submissions ds
 SET
   tenant_id = dc.tenant_id,
@@ -176,3 +183,5 @@ WHERE LOWER(COALESCE(dc.status, '')) = 'approved'
   );
 
 COMMENT ON TABLE dispute_submissions IS 'Authoritative Agent 7 filing proof ledger with request/response submission artifacts.';
+
+ALTER TABLE dispute_cases ENABLE TRIGGER enforce_tenant_active_dispute_cases;

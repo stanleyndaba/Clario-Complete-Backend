@@ -1,21 +1,13 @@
 -- Migration: Evidence Engine DB layer extras (triggers, constraints, indexes, RLS updates)
 
 -- Helper function for updated_at (idempotent)
-DO $$
+CREATE OR REPLACE FUNCTION public.update_updated_at_column()
+RETURNS TRIGGER AS $fn$
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid
-    WHERE p.proname = 'update_updated_at_column' AND n.nspname = 'public'
-  ) THEN
-    CREATE OR REPLACE FUNCTION public.update_updated_at_column()
-    RETURNS TRIGGER AS $$
-    BEGIN
-      NEW.updated_at = NOW();
-      RETURN NEW;
-    END;
-    $$ LANGUAGE plpgsql;
-  END IF;
-END$$;
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$fn$ LANGUAGE plpgsql;
 
 -- Triggers for updated_at
 DO $$
@@ -69,7 +61,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_dispute_evidence_link ON dispute_evidence_l
 DO $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE polname = 'evidence_line_items_owner_update'
+    SELECT 1 FROM pg_policies WHERE policyname = 'evidence_line_items_owner_update'
   ) THEN
     CREATE POLICY evidence_line_items_owner_update ON evidence_line_items FOR UPDATE USING (auth.uid()::text = seller_id);
   END IF;

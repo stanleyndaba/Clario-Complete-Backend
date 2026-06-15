@@ -4,6 +4,16 @@
 
 BEGIN;
 
+ALTER TABLE evidence_documents ADD COLUMN IF NOT EXISTS external_id TEXT;
+ALTER TABLE evidence_documents ADD COLUMN IF NOT EXISTS size_bytes BIGINT;
+ALTER TABLE evidence_documents ADD COLUMN IF NOT EXISTS content_type TEXT;
+ALTER TABLE evidence_documents ADD COLUMN IF NOT EXISTS doc_type TEXT;
+ALTER TABLE evidence_documents ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'USD';
+ALTER TABLE evidence_documents ADD COLUMN IF NOT EXISTS total_amount NUMERIC(12,2);
+ALTER TABLE evidence_documents ADD COLUMN IF NOT EXISTS file_url TEXT;
+ALTER TABLE evidence_documents ADD COLUMN IF NOT EXISTS raw_text TEXT;
+ALTER TABLE evidence_documents ADD COLUMN IF NOT EXISTS extracted JSONB DEFAULT '{}'::jsonb;
+
 WITH existing_demo_tenant AS (
   SELECT id
   FROM tenants
@@ -261,7 +271,7 @@ SELECT
   seed_rows.external_id,
   seed_rows.size_bytes,
   seed_rows.content_type,
-  seed_rows.provider::evidence_provider,
+  seed_rows.provider,
   seed_rows.doc_type,
   seed_rows.supplier_name,
   seed_rows.invoice_number,
