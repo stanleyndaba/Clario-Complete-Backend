@@ -1,6 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import config from '../config/env';
 import logger from '../utils/logger';
+import { createPostgresSupabaseAdapter } from './postgresSupabaseAdapter';
 
 const supabaseUrl = config.SUPABASE_URL;
 const supabaseAnonKey = config.SUPABASE_ANON_KEY;
@@ -17,7 +18,11 @@ let supabaseAdmin: SupabaseClient | any; // Service role client for admin operat
 // Multi-tenant defaults
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
-if (!isRealDatabaseConfigured) {
+if (config.DATABASE_URL) {
+  logger.info('Using PostgreSQL adapter for backend data access via DATABASE_URL');
+  supabase = createPostgresSupabaseAdapter(config.DATABASE_URL);
+  supabaseAdmin = supabase;
+} else if (!isRealDatabaseConfigured) {
   logger.warn('Using demo Supabase client - no real database connection');
 
   // In-memory store for demo mode
