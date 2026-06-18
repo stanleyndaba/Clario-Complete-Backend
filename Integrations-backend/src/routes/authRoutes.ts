@@ -37,7 +37,8 @@ router.post('/bootstrap', async (req, res) => {
       userId: decoded.id,
       email: decoded.email || null,
       preferredWorkspaceName: typeof req.body?.workspaceName === 'string' ? req.body.workspaceName : null,
-      preferredTenantSlug: typeof req.body?.preferredTenantSlug === 'string' ? req.body.preferredTenantSlug : null
+      preferredTenantSlug: typeof req.body?.preferredTenantSlug === 'string' ? req.body.preferredTenantSlug : null,
+      foundingReservation: req.body?.foundingReservation === true
     });
 
     const welcomeEmailPayload = {
@@ -69,10 +70,14 @@ router.post('/bootstrap', async (req, res) => {
         slug: result.tenant.slug,
         plan: result.tenant.plan,
         status: result.tenant.status,
-        role: result.role
+        role: result.role,
+        foundingReservation: result.foundingReservation,
+        foundingActivationReady: result.foundingActivationReady
       },
       createdUser: result.createdUser,
-      createdTenant: result.createdTenant
+      createdTenant: result.createdTenant,
+      foundingReservation: result.foundingReservation,
+      foundingActivationReady: result.foundingActivationReady
     });
   } catch (error: any) {
     res.status(500).json({

@@ -9,6 +9,7 @@ interface BootstrapTenant {
   slug: string;
   plan?: string;
   status?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface BootstrapWorkspaceResult {
@@ -18,6 +19,8 @@ export interface BootstrapWorkspaceResult {
   role: TenantRole;
   createdUser: boolean;
   createdTenant: boolean;
+  foundingReservation: boolean;
+  foundingActivationReady: boolean;
 }
 
 interface BootstrapOptions {
@@ -25,6 +28,7 @@ interface BootstrapOptions {
   email?: string | null;
   preferredWorkspaceName?: string | null;
   preferredTenantSlug?: string | null;
+  foundingReservation?: boolean;
 }
 
 function deriveWorkspaceName(email?: string | null): string {
@@ -50,6 +54,20 @@ function slugifyWorkspace(value?: string | null): string {
     .slice(0, 50);
 
   return slug || 'workspace';
+}
+
+function readFoundingActivationState(tenant: BootstrapTenant | null, fallbackReserved: boolean) {
+  const metadata = tenant?.metadata && typeof tenant.metadata === 'object' ? tenant.metadata : {};
+  const founding = metadata.founding_500 && typeof metadata.founding_500 === 'object'
+    ? metadata.founding_500 as Record<string, unknown>
+    : null;
+  const reserved = fallbackReserved || founding?.status === 'reserved' || founding?.status === 'activated';
+  const activationReady = founding?.activation_ready === true || founding?.status === 'activated';
+
+  return {
+    reserved,
+    activationReady
+  };
 }
 
 async function ensureUniqueTenantSlug(baseSlug: string) {
@@ -98,7 +116,7 @@ export async function ensureAuthenticatedUserWorkspace(options: BootstrapOptions
       id,
       role,
       tenant_id,
-      tenants (id, name, slug, plan, status)
+      tenants (id, name, slug, plan, status, metadata)
     `)
     .eq('user_id', safeUserId)
     .eq('is_active', true)
@@ -125,7 +143,7 @@ export async function ensureAuthenticatedUserWorkspace(options: BootstrapOptions
   if (!tenant && existingUser?.tenant_id) {
     const { data: tenantRecord, error: tenantError } = await adminClient
       .from('tenants')
-      .select('id, name, slug, plan, status')
+      .select('id, name, slug, plan, status, metadata')
       .eq('id', existingUser.tenant_id)
       .is('deleted_at', null)
       .maybeSingle();
@@ -164,6 +182,19 @@ export async function ensureAuthenticatedUserWorkspace(options: BootstrapOptions
     const slugBase = preferredTenantSlug || slugifyWorkspace(workspaceName);
     const tenantSlug = await ensureUniqueTenantSlug(slugBase);
 
+    const tenantMetadata: Record<string, unknown> = {
+      created_by_user_id: safeUserId,
+      origin: 'auth_bootstrap'
+    };
+
+    if (options.foundingReservation) {
+      tenantMetadata.founding_500 = {
+        status: 'reserved',
+        activation_ready: false,
+        reserved_at: new Date().toISOString()
+      };
+    }
+
     const { data: createdWorkspace, error: createTenantError } = await adminClient
       .from('tenants')
       .insert({
@@ -171,12 +202,9 @@ export async function ensureAuthenticatedUserWorkspace(options: BootstrapOptions
         slug: tenantSlug,
         plan: 'free',
         status: 'active',
-        metadata: {
-          created_by_user_id: safeUserId,
-          origin: 'auth_bootstrap'
-        }
+        metadata: tenantMetadata
       })
-      .select('id, name, slug, plan, status')
+      .select('id, name, slug, plan, status, metadata')
       .single();
 
     if (createTenantError || !createdWorkspace?.id) {
@@ -201,6 +229,36 @@ export async function ensureAuthenticatedUserWorkspace(options: BootstrapOptions
     tenant = createdWorkspace as BootstrapTenant;
     role = 'owner';
     createdTenant = true;
+  }
+
+  if (tenant && options.foundingReservation) {
+    const foundingState = readFoundingActivationState(tenant, true);
+
+    if (!foundingState.activationReady) {
+      const currentMetadata = tenant.metadata && typeof tenant.metadata === 'object' ? tenant.metadata : {};
+      const nextMetadata = {
+        ...currentMetadata,
+        founding_500: {
+          status: 'reserved',
+          activation_ready: false,
+          reserved_at: new Date().toISOString()
+        }
+      };
+
+      const { error: updateTenantMetadataError } = await adminClient
+        .from('tenants')
+        .update({ metadata: nextMetadata })
+        .eq('id', tenant.id);
+
+      if (updateTenantMetadataError) {
+        throw new Error(`Failed to mark Founding 500 reservation state: ${updateTenantMetadataError.message}`);
+      }
+
+      tenant = {
+        ...tenant,
+        metadata: nextMetadata
+      };
+    }
   }
 
   const now = new Date().toISOString();
@@ -268,12 +326,16 @@ export async function ensureAuthenticatedUserWorkspace(options: BootstrapOptions
     createdUser = true;
   }
 
+  const foundingState = readFoundingActivationState(tenant, Boolean(options.foundingReservation));
+
   return {
     userId: safeUserId,
     email: normalizedEmail,
     tenant,
     role,
     createdUser,
-    createdTenant
+    createdTenant,
+    foundingReservation: foundingState.reserved,
+    foundingActivationReady: foundingState.activationReady
   };
 }

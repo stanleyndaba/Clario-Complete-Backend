@@ -60,27 +60,28 @@ export function buildWelcomeEmail(
   const workspaceName = input.tenantName?.trim() || 'your Margin workspace';
   const safeWorkspaceName = escapeHtml(workspaceName);
   const subject = 'Welcome to Margin';
-  const intro = 'Your workspace is ready.';
+  const intro = 'Your Founding 500 seat is secured.';
   const setupLine = setupState.amazonConnected && setupState.reliable
-    ? 'Your Amazon connection is already in place. Margin will use that connection to keep the workspace current as account activity changes.'
-    : 'When you are ready, start with one setup path: connect Amazon for the most complete setup, or upload FBA reports if you prefer to begin manually.';
+    ? 'Your Amazon connection is already recorded. Margin will review activation readiness before any founder-led setup continues.'
+    : 'Founder pricing is locked, priority activation is included, and founder onboarding begins soon. A founder or team member will contact you with the next setup step.';
   const text = [
     'Welcome to Margin',
     '=================',
     '',
     intro,
     '',
-    `Workspace: ${workspaceName}`,
+    `Reservation workspace: ${workspaceName}`,
     '',
-    'Margin is here to give your Amazon operations a calmer place to see what needs attention, what is already moving, and what requires action next.',
+    'Your reservation puts you in the Founding 500 activation queue. Platform access begins after onboarding readiness and infrastructure preparation are confirmed.',
     '',
     setupLine,
     '',
-    'A good first step:',
-    '- Connect Amazon SP-API if you want the workspace to stay current automatically.',
-    '- Upload FBA reports if you would rather start with files you already have.',
+    'What happens next:',
+    '- Margin reconciles the reservation and confirms founder activation readiness.',
+    '- A founder or team member contacts you for onboarding and setup scheduling.',
+    '- Marketplace connection and platform access begin after activation preparation is complete.',
     '',
-    'You do not need to solve everything today. Start with the setup path that is easiest for you. Margin will organize the next steps from there.',
+    'You do not need to connect Amazon or upload reports yet. Margin will guide setup during founder onboarding.',
     '',
     'If anything feels unclear, reply to this email and we will help.',
     '',
@@ -114,12 +115,12 @@ export function buildWelcomeEmail(
 
           <div style="padding-top:24px;">
             <p style="margin:0; color:#525252; font-size:14px; line-height:1.7;">
-              Workspace: <strong style="color:#171717; font-weight:600;">${safeWorkspaceName}</strong>
+              Reservation workspace: <strong style="color:#171717; font-weight:600;">${safeWorkspaceName}</strong>
             </p>
 
             <p style="margin:20px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              Margin is here to give your Amazon operations a calmer place to see what needs attention,
-              what is already moving, and what requires action next.
+              Your reservation puts you in the Founding 500 activation queue. Platform access begins
+              after onboarding readiness and infrastructure preparation are confirmed.
             </p>
 
             <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
@@ -128,17 +129,17 @@ export function buildWelcomeEmail(
 
             <div style="margin-top:24px; padding-top:20px; border-top:1px solid #eeeeee;">
               <p style="margin:0; color:#111827; font-size:14px; line-height:1.7; font-weight:600;">
-                A good first step
+                What happens next
               </p>
               <ol style="margin:12px 0 0 20px; padding:0; color:#333333; font-size:14px; line-height:1.8;">
-                <li style="margin-bottom:8px;">Connect Amazon SP-API if you want the workspace to stay current automatically.</li>
-                <li>Upload FBA reports if you would rather start with files you already have.</li>
+                <li style="margin-bottom:8px;">Margin reconciles the reservation and confirms founder activation readiness.</li>
+                <li style="margin-bottom:8px;">A founder or team member contacts you for onboarding and setup scheduling.</li>
+                <li>Marketplace connection and platform access begin after activation preparation is complete.</li>
               </ol>
             </div>
 
             <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              You do not need to solve everything today. Start with the setup path that is easiest for you.
-              Margin will organize the next steps from there.
+              You do not need to connect Amazon or upload reports yet. Margin will guide setup during founder onboarding.
             </p>
 
             <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">

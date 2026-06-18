@@ -31,26 +31,33 @@ function buildEarlyAccessLeadEmail(input: EarlyAccessCaptureInput): {
   text: string;
 } {
   const normalizedEmail = input.email.trim().toLowerCase();
-  const subject = `New free FBA recovery audit request: ${normalizedEmail}`;
+  const intent = input.intent || 'request_free_pre_audit_report';
+  const isPaidIntent = /founding|paid|payment|checkout|pass/i.test(`${intent} ${input.offer || ''} ${input.price || ''}`);
+  const subject = isPaidIntent
+    ? `URGENT: Founding 500 payment handoff needs reconciliation: ${normalizedEmail}`
+    : `New free FBA recovery audit request: ${normalizedEmail}`;
   const capturedAt = new Date().toISOString();
   const detailLines = [
     ['Email', normalizedEmail],
     ['Offer', input.offer || 'Early Access'],
     ['Price', input.price || 'Free pre-audit'],
-    ['Intent', input.intent || 'request_free_pre_audit_report'],
+    ['Intent', intent],
     ['Source page', input.source_page || '/early-access'],
     ['IP', input.ip || 'Not provided'],
     ['User agent', input.user_agent || 'Not provided'],
     ['Captured at', capturedAt],
   ];
+  const actionCopy = isPaidIntent
+    ? 'Action: reconcile PayPal/Wise payment logs, mark the Founding 500 reservation as confirmed, and prepare founder onboarding. Do not treat this as immediate platform entitlement. Target SLA: 15 minutes from this alert.'
+    : 'Action: review this seller for a free pre-audit report, then send the report within the promised 48-hour window or follow up if more context is needed.';
 
   const text = [
-    'New Margin free FBA recovery audit request',
-    '==========================================',
+    isPaidIntent ? 'Urgent Margin Founding 500 payment handoff' : 'New Margin free FBA recovery audit request',
+    isPaidIntent ? '=========================================' : '==========================================',
     '',
     ...detailLines.map(([label, value]) => `${label}: ${value}`),
     '',
-    'Action: review this seller for a free pre-audit report, then send the report within the promised 48-hour window or follow up if more context is needed.',
+    actionCopy,
   ].join('\n');
 
   const rows = detailLines
@@ -81,7 +88,7 @@ function buildEarlyAccessLeadEmail(input: EarlyAccessCaptureInput): {
               Margin Free Audit
             </div>
             <h1 style="margin:22px 0 0 0; font-size:26px; line-height:1.2; font-weight:600; color:#111827;">
-              New free audit request captured
+              ${isPaidIntent ? 'Payment handoff needs reconciliation' : 'New free audit request captured'}
             </h1>
           </div>
           <div style="padding-top:24px;">
@@ -89,7 +96,7 @@ function buildEarlyAccessLeadEmail(input: EarlyAccessCaptureInput): {
               ${rows}
             </table>
             <div style="margin-top:22px; padding:16px; border-radius:12px; background:#f8fafc; color:#111827; font-size:14px; line-height:1.7;">
-              Review this seller for a free pre-audit report, then send the report within the promised 48-hour window or follow up if more context is needed.
+              ${escapeHtml(actionCopy)}
             </div>
           </div>
         </div>
@@ -208,14 +215,14 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
   html: string;
   text: string;
 } {
-  const subject = 'Your Founding Recovery Audit is confirmed';
-  const preheader = 'Your Founding Recovery Audit is confirmed.';
+  const subject = 'Your Founding 500 reservation is confirmed';
+  const preheader = 'Your Founding 500 seat is secured.';
   const text = [
     'Hi {{first_name}},',
     '',
-    'Your Founding Recovery Audit is confirmed.',
+    'Your Founding 500 reservation is confirmed.',
     '',
-    'Your $99 payment activates Founding 500 access through December 31, 2026. You keep 100% of every recovery during Early Access. You can upgrade to Pro or Scale anytime and your $99 is credited toward the new plan. Founding 500 closes June 30 or when 500 slots are filled – you\'ve secured your spot.',
+    'Your $99 payment secures your Founding 500 seat, locks founder pricing through December 31, 2026, and reserves priority activation. You keep 100% of every recovery during Early Access. You can upgrade to Pro or Scale anytime and your $99 is credited toward the new plan.',
     '',
     'Next step: complete your intake form so we can prepare your workspace:',
     '',
@@ -225,7 +232,7 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
     '',
     FOUNDING_RECOVERY_BOOKING_URL,
     '',
-    'Founding 500 is onboarded in controlled batches so each workspace can be prepared carefully before read-only setup begins. In some cases, setup can begin within 24 hours after payment confirmation and intake completion. During heavier onboarding batches, setup may take up to 3–5 business days.',
+    'Founding 500 is onboarded in controlled batches so infrastructure, marketplace coverage, and read-only setup can be prepared carefully. Platform access begins after onboarding readiness is confirmed.',
     '',
     'Margin charges no recovery commissions. Sellers pay for ongoing recovery management, and approved recoveries stay with the seller.',
     '',
@@ -253,10 +260,10 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
               Founding 500 Recovery Audit
             </div>
             <h1 style="margin:28px 0 0 0; font-size:28px; line-height:1.18; font-weight:600; color:#111827;">
-              Your Founding Recovery Audit is confirmed.
+              Your Founding 500 reservation is confirmed.
             </h1>
             <p style="margin:14px 0 0 0; color:#404040; font-size:16px; line-height:1.7;">
-              Your $99 payment activates Founding 500 access through December 31, 2026. You keep 100% of every recovery during Early Access. You can upgrade to Pro or Scale anytime and your $99 is credited toward the new plan. Founding 500 closes June 30 or when 500 slots are filled &ndash; you've secured your spot.
+              Your $99 payment secures your Founding 500 seat, locks founder pricing through December 31, 2026, and reserves priority activation. You keep 100% of every recovery during Early Access. You can upgrade to Pro or Scale anytime and your $99 is credited toward the new plan.
             </p>
           </div>
 
@@ -282,7 +289,7 @@ export function buildEarlyAccessPaymentConfirmedEmail(): {
             </div>
 
             <p style="margin:22px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              Founding 500 is onboarded in controlled batches so each workspace can be prepared carefully before read-only setup begins. In some cases, setup can begin within 24 hours after payment confirmation and intake completion. During heavier onboarding batches, setup may take up to 3&ndash;5 business days.
+              Founding 500 is onboarded in controlled batches so infrastructure, marketplace coverage, and read-only setup can be prepared carefully. Platform access begins after onboarding readiness is confirmed.
             </p>
 
             <p style="margin:18px 0 0 0; color:#525252; font-size:13px; line-height:1.7;">
