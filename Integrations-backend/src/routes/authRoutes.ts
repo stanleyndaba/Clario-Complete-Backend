@@ -1,16 +1,90 @@
+import crypto from 'crypto';
 import { Router } from 'express';
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifier';
 import { ensureAuthenticatedUserWorkspace } from '../services/userWorkspaceBootstrap';
 import { normalizeResolvedAmazonSellerId } from '../utils/sellerIdentity';
 import { welcomeEmailService } from '../services/welcomeEmailService';
+import { createRedisRateLimiter } from '../security/rateLimiter';
 import type { BootstrapWorkspaceResult } from '../services/userWorkspaceBootstrap';
 
 const router = Router();
 
+const DEMO_TENANT_ID = '00000000-0000-0000-0000-0000000000d0';
+const DEMO_TENANT_SLUG = 'demo-workspace';
+const DEMO_SESSION_TOKEN = 'demo-session-local';
+const DEMO_USER_ID = 'demo-user';
+const DEFAULT_PAYSTACK_REVIEW_EMAIL = 'paystack-review@margin-finance.com';
+const demoReviewerLoginRateLimiter = createRedisRateLimiter({
+  windowSec: 15 * 60,
+  maxHits: 20,
+  keyPrefix: 'demo-reviewer-auth'
+});
+
+function normalizeEmail(value: unknown) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function safeCredentialMatch(provided: unknown, expected: string) {
+  const providedBuffer = Buffer.from(String(provided || ''), 'utf8');
+  const expectedBuffer = Buffer.from(expected, 'utf8');
+
+  if (!expectedBuffer.length || providedBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(providedBuffer, expectedBuffer);
+}
+
 export function shouldSendFreshWorkspaceWelcomeEmail(result: Pick<BootstrapWorkspaceResult, 'createdTenant'>): boolean {
   return result.createdTenant;
 }
+
+router.post('/demo-reviewer/login', demoReviewerLoginRateLimiter, (req, res) => {
+  const enabled = process.env.PAYSTACK_REVIEW_LOGIN_ENABLED === 'true';
+  const allowDemoUser = process.env.ALLOW_DEMO_USER === 'true';
+  const configuredEmail = normalizeEmail(process.env.PAYSTACK_REVIEW_EMAIL || DEFAULT_PAYSTACK_REVIEW_EMAIL);
+  const configuredPassword = process.env.PAYSTACK_REVIEW_PASSWORD || '';
+
+  if (!enabled || !allowDemoUser || !configuredPassword) {
+    res.status(503).json({
+      success: false,
+      message: 'Demo reviewer access is unavailable'
+    });
+    return;
+  }
+
+  const requestedEmail = normalizeEmail(req.body?.email);
+  const emailMatches = requestedEmail === configuredEmail;
+  const passwordMatches = safeCredentialMatch(req.body?.password, configuredPassword);
+
+  if (!emailMatches || !passwordMatches) {
+    res.status(401).json({
+      success: false,
+      message: 'Invalid reviewer credentials'
+    });
+    return;
+  }
+
+  res.json({
+    success: true,
+    token: DEMO_SESSION_TOKEN,
+    user: {
+      id: DEMO_USER_ID,
+      email: configuredEmail,
+      role: 'viewer'
+    },
+    tenant: {
+      id: DEMO_TENANT_ID,
+      name: 'Acme Operations',
+      slug: DEMO_TENANT_SLUG,
+      plan: 'professional',
+      status: 'read_only',
+      role: 'viewer'
+    },
+    redirectPath: `/app/${DEMO_TENANT_SLUG}/dashboard`
+  });
+});
 
 router.post('/bootstrap', async (req, res) => {
   try {
