@@ -94,6 +94,13 @@ export function buildWaitlistConfirmationEmail(): {
 
 export interface WaitlistLeadCaptureInput {
   email: string;
+  full_name?: string | null;
+  amazon_marketplace?: string | null;
+  monthly_revenue?: string | null;
+  recovery_challenge?: string | null;
+  seller_central_email?: string | null;
+  priority_onboarding?: string | null;
+  notes?: string | null;
   user_type?: string | null;
   brand_count?: string | null;
   annual_revenue?: string | null;
@@ -113,7 +120,14 @@ function buildWaitlistLeadCaptureEmail(input: WaitlistLeadCaptureInput): {
 } {
   const subject = `New waitlist lead: ${input.email.trim().toLowerCase()}`;
   const detailLines = [
+    ['Full name', input.full_name || 'Not provided'],
     ['Email', input.email],
+    ['Amazon marketplace', input.amazon_marketplace || input.brand_count || 'Not provided'],
+    ['Monthly Amazon revenue', input.monthly_revenue || input.annual_revenue || 'Not provided'],
+    ['Biggest recovery challenge', input.recovery_challenge || input.primary_goal || 'Not provided'],
+    ['Seller Central email', input.seller_central_email || input.contact_handle || 'Not provided'],
+    ['Priority onboarding', input.priority_onboarding || 'Not provided'],
+    ['Anything we should know', input.notes || 'Not provided'],
     ['User type', input.user_type || 'Not provided'],
     ['Brand count', input.brand_count || 'Not provided'],
     ['Annual revenue', input.annual_revenue || 'Not provided'],

@@ -104,6 +104,42 @@ router.post('/', async (req: Request, res: Response) => {
 
         logger.info('✅ [WAITLIST] Successfully registered email', { email, id: data.id });
 
+        void waitlistEmailService.sendWaitlistLeadCaptureEmail({
+            email,
+            full_name,
+            amazon_marketplace,
+            monthly_revenue: monthly_revenue || annual_revenue || monthly_volume || null,
+            recovery_challenge: recovery_challenge || primary_goal || null,
+            seller_central_email,
+            priority_onboarding,
+            notes,
+            user_type,
+            brand_count,
+            annual_revenue,
+            contact_handle,
+            primary_goal,
+            source_page: source_page || '/waitlist',
+            intent: intent || null,
+            reason: reason || null,
+            user_agent: req.headers['user-agent'] ? String(req.headers['user-agent']) : null,
+            ip: req.ip || null
+        })
+            .then((sendResult) => {
+                logger.info('✅ [WAITLIST] Internal lead notification sent', {
+                    email,
+                    id: data.id,
+                    recipient: 'waitlist_capture',
+                    providerMessageId: sendResult.providerMessageId || null
+                });
+            })
+            .catch((emailError: any) => {
+                logger.warn('⚠️ [WAITLIST] Internal lead notification failed after successful signup', {
+                    email,
+                    id: data.id,
+                    error: emailError?.message || String(emailError)
+                });
+            });
+
         // Do not block the user-facing success response on email delivery.
         // The waitlist record is the source of truth; the confirmation email is a background follow-up.
         void waitlistEmailService.sendWaitlistConfirmationEmail(email)
