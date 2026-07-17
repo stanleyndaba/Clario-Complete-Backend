@@ -21,28 +21,27 @@ export function buildWaitlistConfirmationEmail(): {
   const text = [
     'Welcome to Margin.',
     '',
-    'Your place on the waitlist has been reserved.',
+    'Your place has been reserved for the next onboarding batch.',
     '',
-    "You're now in line for the next onboarding batch opening Monday.",
+    "Over the next few days we'll be preparing new accounts and onboarding sellers in small batches to ensure every account gets the attention it deserves.",
     '',
-    'Margin helps Amazon FBA sellers prepare claim-ready evidence for reimbursement cases - bringing together invoices, shipment records, proof of delivery, case history, payout data, and supporting documents before Amazon reviews a claim.',
+    "You'll receive another email the moment your batch opens.",
     '',
-    "As we get closer to launch, we'll email you with:",
+    'What happens next?',
     '',
-    'Your onboarding invitation',
-    'Early access updates',
-    'Product improvements',
-    'Launch instructions',
+    'Your place has been secured.',
+    "We'll notify you as soon as your onboarding batch opens.",
+    "You'll receive instructions for connecting your Amazon seller account.",
     '',
-    'Want to be considered for priority onboarding?',
+    'Want priority onboarding?',
     '',
     'Simply reply to this email and tell us:',
     '',
-    'Which Amazon marketplace you sell on',
-    'Approximately how many orders you process each month',
-    "The biggest reimbursement challenge you're facing today",
+    'Which Amazon marketplace you sell on.',
+    'Roughly how many orders you process each month.',
+    'The reimbursement challenge that costs you the most time today.',
     '',
-    "We'll use this to prioritize onboarding for the next batch.",
+    'We read every reply.',
     '',
     'Thank you for joining Margin.',
     '',
@@ -72,45 +71,44 @@ export function buildWaitlistConfirmationEmail(): {
               Welcome to Margin.
             </h1>
             <p style="margin:14px 0 0 0; color:#404040; font-size:16px; line-height:1.7;">
-              Your place on the waitlist has been reserved.
+              Your place has been reserved for the next onboarding batch.
             </p>
           </div>
 
           <div style="padding-top:24px;">
             <p style="margin:0; color:#262626; font-size:15px; line-height:1.8;">
-              You're now in line for the next onboarding batch opening Monday.
+              Over the next few days we'll be preparing new accounts and onboarding sellers in small batches to ensure every account gets the attention it deserves.
             </p>
 
             <p style="margin:20px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              Margin helps Amazon FBA sellers prepare claim-ready evidence for reimbursement cases - bringing together invoices, shipment records, proof of delivery, case history, payout data, and supporting documents before Amazon reviews a claim.
+              You'll receive another email the moment your batch opens.
             </p>
 
             <div style="margin-top:24px; padding-top:20px; border-top:1px solid #eeeeee;">
               <p style="margin:0; color:#111827; font-size:14px; line-height:1.7; font-weight:600;">
-                As we get closer to launch, we'll email you with:
+                What happens next?
               </p>
               <ul style="margin:12px 0 0 0; padding-left:20px; color:#262626; font-size:15px; line-height:1.8;">
-                <li>Your onboarding invitation</li>
-                <li>Early access updates</li>
-                <li>Product improvements</li>
-                <li>Launch instructions</li>
+                <li>Your place has been secured.</li>
+                <li>We'll notify you as soon as your onboarding batch opens.</li>
+                <li>You'll receive instructions for connecting your Amazon seller account.</li>
               </ul>
             </div>
 
             <div style="margin-top:24px; padding-top:20px; border-top:1px solid #eeeeee;">
               <p style="margin:0; color:#111827; font-size:14px; line-height:1.7; font-weight:600;">
-                Want to be considered for priority onboarding?
+                Want priority onboarding?
               </p>
               <p style="margin:10px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
                 Simply reply to this email and tell us:
               </p>
               <ul style="margin:12px 0 0 0; padding-left:20px; color:#262626; font-size:15px; line-height:1.8;">
-                <li>Which Amazon marketplace you sell on</li>
-                <li>Approximately how many orders you process each month</li>
-                <li>The biggest reimbursement challenge you're facing today</li>
+                <li>Which Amazon marketplace you sell on.</li>
+                <li>Roughly how many orders you process each month.</li>
+                <li>The reimbursement challenge that costs you the most time today.</li>
               </ul>
               <p style="margin:14px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-                We'll use this to prioritize onboarding for the next batch.
+                We read every reply.
               </p>
             </div>
 
