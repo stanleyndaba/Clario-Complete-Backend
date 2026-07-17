@@ -24,7 +24,16 @@ router.post('/', async (req: Request, res: Response) => {
         full_name,
         company_name,
         monthly_volume,
-        referral_source
+        referral_source,
+        amazon_marketplace,
+        monthly_revenue,
+        recovery_challenge,
+        seller_central_email,
+        priority_onboarding,
+        notes,
+        source_page,
+        intent,
+        reason
     } = req.body;
 
     if (!email) {
@@ -63,7 +72,16 @@ router.post('/', async (req: Request, res: Response) => {
                     ip: req.ip,
                     priority,
                     is_whale: isWhale,
-                    redesign_version: 'velvet_rope_v1'
+                    redesign_version: 'waitlist_list_form_v2',
+                    amazon_marketplace: amazon_marketplace || brand_count || null,
+                    monthly_revenue: monthly_revenue || annual_revenue || monthly_volume || null,
+                    recovery_challenge: recovery_challenge || primary_goal || null,
+                    seller_central_email: seller_central_email || contact_handle || null,
+                    priority_onboarding: priority_onboarding || null,
+                    notes: notes || null,
+                    source_page: source_page || '/waitlist',
+                    intent: intent || null,
+                    reason: reason || null
                 }
             })
             .select()
