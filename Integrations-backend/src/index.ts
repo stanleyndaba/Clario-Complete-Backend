@@ -72,6 +72,7 @@ import supportRoutes from './routes/supportRoutes';
 import productUpdateRoutes from './routes/productUpdateRoutes';
 import manualUserBroadcastRoutes from './routes/manualUserBroadcastRoutes';
 import resendWebhookRoutes from './routes/resendWebhookRoutes';
+import { recordPublicAnalyticsEvent } from './services/publicAnalyticsService';
 
 // Consolidated service routes (merged from separate microservices)
 import consolidatedStripeRoutes from './routes/consolidated/stripeRoutes';
@@ -252,8 +253,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 // Public metrics endpoint (no auth required)
 app.post('/api/metrics/track', (req, res) => {
-  // Accept metrics but don't require auth
-  console.log('Metrics received:', req.body);
+  void recordPublicAnalyticsEvent(req.body, req);
   res.status(204).send(); // No content
 });
 
