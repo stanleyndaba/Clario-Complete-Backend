@@ -91,6 +91,7 @@
   "license": "MIT",
   "dependencies": {
     "@aws-sdk/client-sts": "^3.968.0",
+    "@clerk/express": "^2.1.43",
     "@sentry/node": "^7.120.4",
     "@supabase/supabase-js": "^2.80.0",
     "@types/bull": "^3.15.9",
