@@ -52,6 +52,7 @@ const TENANT_EXEMPT_PATHS = [
     '/api/v1/integrations/adobe_sign/callback',
     '/api/v1/integrations/slack/callback',
     '/api/admin/revenue',
+    '/api/admin/analytics',
     '/api/admin/users',
     '/api/admin/queue',
     '/api/admin/user-broadcasts',

@@ -71,6 +71,7 @@ import earlyAccessRoutes from './routes/earlyAccessRoutes';
 import supportRoutes from './routes/supportRoutes';
 import productUpdateRoutes from './routes/productUpdateRoutes';
 import manualUserBroadcastRoutes from './routes/manualUserBroadcastRoutes';
+import adminAnalyticsRoutes from './routes/adminAnalyticsRoutes';
 import resendWebhookRoutes from './routes/resendWebhookRoutes';
 import { recordPublicAnalyticsEvent } from './services/publicAnalyticsService';
 
@@ -496,6 +497,8 @@ logger.info('Store routes registered at /api/v1/stores');
 // Admin revenue routes (internal metrics)
 import adminRevenueRoutes from './routes/adminRevenueRoutes';
 app.use('/api/admin', requirePlatformAdmin);
+app.use('/api/admin/analytics', adminAnalyticsRoutes);
+logger.info('Admin analytics routes registered at /api/admin/analytics');
 app.use('/api/admin/revenue', adminRevenueRoutes);
 logger.info('Admin revenue routes registered at /api/admin/revenue');
 
