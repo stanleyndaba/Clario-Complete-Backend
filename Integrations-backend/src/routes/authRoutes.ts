@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { Router } from 'express';
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
-import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifier';
+import { extractRequestToken, resolveClerkPrimaryEmail, verifyAccessToken } from '../utils/authTokenVerifier';
 import { ensureAuthenticatedUserWorkspace } from '../services/userWorkspaceBootstrap';
 import { normalizeResolvedAmazonSellerId } from '../utils/sellerIdentity';
 import { welcomeEmailService } from '../services/welcomeEmailService';
@@ -107,9 +107,13 @@ router.post('/bootstrap', async (req, res) => {
       return;
     }
 
+    const resolvedEmail = decoded.source === 'clerk'
+      ? await resolveClerkPrimaryEmail(decoded.id)
+      : decoded.email || null;
+
     const result = await ensureAuthenticatedUserWorkspace({
       userId: decoded.id,
-      email: decoded.email || null,
+      email: resolvedEmail,
       preferredWorkspaceName: typeof req.body?.workspaceName === 'string' ? req.body.workspaceName : null,
       preferredTenantSlug: typeof req.body?.preferredTenantSlug === 'string' ? req.body.preferredTenantSlug : null,
       foundingReservation: req.body?.foundingReservation === true
