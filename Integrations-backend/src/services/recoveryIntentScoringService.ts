@@ -70,6 +70,12 @@ function isEarlyAccessPageEvent(eventName: string, pagePath?: string | null, rou
   return false;
 }
 
+function isAuditPageEvent(eventName: string, pagePath?: string | null, routeGroup?: string | null) {
+  if (eventName === 'audit_page_viewed') return true;
+  if (eventName === 'page_view' && (routeGroup === 'audit' || pagePath?.startsWith('/audit'))) return true;
+  return false;
+}
+
 export function getRecoveryIntentSignals(input: {
   eventName: string;
   payload: Record<string, unknown>;
@@ -113,6 +119,18 @@ export function getRecoveryIntentSignals(input: {
     signals.push({ reason: 'early_access_viewed', score: 10 });
   }
 
+  if (isAuditPageEvent(eventName, pagePath, routeGroup)) {
+    signals.push({ reason: 'audit_page_viewed', score: 10 });
+  }
+
+  if (eventName === 'audit_started') {
+    signals.push({ reason: 'audit_started', score: 25 });
+  }
+
+  if (eventName === 'audit_completed') {
+    signals.push({ reason: 'audit_completed', score: 50 });
+  }
+
   if ([
     'cta_clicked',
     'early_access_cta_clicked',
@@ -120,6 +138,7 @@ export function getRecoveryIntentSignals(input: {
     'app_gate_early_access_clicked',
     'payment_button_clicked',
     'paystack_cta_seen',
+    'audit_activation_clicked',
   ].includes(eventName)) {
     signals.push({ reason: 'cta_clicked', score: 10 });
   }
@@ -137,6 +156,7 @@ export function getRecoveryIntentSignals(input: {
     'oauth_started',
     'oauth_connect_started',
     'provider_connect_started',
+    'audit_amazon_connect_started',
   ].includes(eventName)) {
     signals.push({ reason: 'oauth_started', score: 30 });
   }

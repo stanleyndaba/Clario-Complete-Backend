@@ -159,6 +159,7 @@ function getRouteGroup(pagePath: string | null) {
   if (pathname.startsWith('/app/')) return 'app';
   if (pathname === '/login') return 'login';
   if (pathname === '/early-access') return 'early_access';
+  if (pathname === '/audit') return 'audit';
   if (pathname === '/pricing') return 'pricing';
   if (pathname === '/payment-success') return 'payment_success';
   if (pathname === '/waitlist') return 'waitlist';
@@ -414,6 +415,7 @@ async function ensurePublicAnalyticsSchema() {
             WHEN split_part(page_path, '?', 1) LIKE '/app/%' THEN 'app'
             WHEN split_part(page_path, '?', 1) = '/login' THEN 'login'
             WHEN split_part(page_path, '?', 1) = '/early-access' THEN 'early_access'
+            WHEN split_part(page_path, '?', 1) = '/audit' THEN 'audit'
             WHEN split_part(page_path, '?', 1) = '/pricing' THEN 'pricing'
             WHEN split_part(page_path, '?', 1) = '/payment-success' THEN 'payment_success'
             WHEN split_part(page_path, '?', 1) = '/waitlist' THEN 'waitlist'
