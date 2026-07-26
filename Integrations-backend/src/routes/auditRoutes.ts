@@ -20,6 +20,20 @@ router.post('/start', async (req: AuthenticatedRequest, res) => {
   }
 });
 
+router.get('/latest', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+
+    const audit = await auditRunService.getLatestAudit(userId);
+    return res.json({ success: true, audit });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error?.message || 'Failed to load latest audit' });
+  }
+});
+
 router.post('/:id/connect-amazon', async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user?.id;

@@ -115,6 +115,20 @@ class AuditRunService {
     return data;
   }
 
+  async getLatestAudit(userId: string) {
+    const safeUserId = convertUserIdToUuid(userId);
+    const { data, error } = await supabaseAdmin
+      .from('audit_runs')
+      .select('*')
+      .eq('user_id', safeUserId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw new Error(`Failed to load latest audit run: ${error.message}`);
+    return data || null;
+  }
+
   async runAudit(auditId: string, userId: string) {
     const audit = await this.getAudit(auditId, userId);
     const connection = await this.getAmazonConnection(audit.user_id, audit.tenant_id);
