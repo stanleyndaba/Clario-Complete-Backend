@@ -31,6 +31,24 @@ const EMPTY_SUMMARY: AuditSummary = {
   message: 'Connect Amazon to run your free recovery audit.'
 };
 
+const SYNC_BACKLOG_SUMMARY: AuditSummary = {
+  scopeValue: 0,
+  findingsCount: 0,
+  categories: [],
+  evidenceReadyCount: 0,
+  locked: true,
+  message: 'Amazon is connected. Margin will resume the audit when sync capacity is available.'
+};
+
+function isTemporarySyncAdmissionBlock(error: any) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return message.includes('sync temporarily paused') ||
+    message.includes('downstream backlog') ||
+    message.includes('filing_circuit_breaker_open') ||
+    message.includes('capacity_blocked') ||
+    message.includes('operator_disabled');
+}
+
 function getCountedValue(row: any): number {
   const countedValue = row?.evidence?.economic_rollup?.counted_value;
   return typeof countedValue === 'number' && Number.isFinite(countedValue)
@@ -75,6 +93,38 @@ class AuditRunService {
     const workspace = await this.getWorkspace(userId, email);
     const connection = await this.getAmazonConnection(workspace.userId, workspace.tenant.id);
     const status: AuditRunStatus = connection ? 'created' : 'amazon_connection_required';
+
+    const { data: latestAudit } = await supabaseAdmin
+      .from('audit_runs')
+      .select('*')
+      .eq('user_id', workspace.userId)
+      .eq('tenant_id', workspace.tenant.id)
+      .neq('activation_status', 'activated')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (latestAudit && ['created', 'amazon_connection_required', 'syncing', 'detecting', 'completed', 'failed'].includes(latestAudit.status)) {
+      const shouldResumeFailedAudit =
+        latestAudit.status === 'failed' &&
+        String(latestAudit.summary?.message || '').toLowerCase().includes('sync');
+
+      if (latestAudit.status !== 'failed' || shouldResumeFailedAudit) {
+        const resumedAudit = shouldResumeFailedAudit
+          ? await this.updateAudit(latestAudit.id, {
+              status,
+              store_id: connection?.store_id || latestAudit.store_id || null,
+              summary: connection ? SYNC_BACKLOG_SUMMARY : EMPTY_SUMMARY
+            })
+          : latestAudit;
+
+        return {
+          audit: resumedAudit,
+          tenant: workspace.tenant,
+          amazonConnected: Boolean(connection)
+        };
+      }
+    }
 
     const { data, error } = await supabaseAdmin
       .from('audit_runs')
@@ -164,6 +214,14 @@ class AuditRunService {
         }
 
         logger.warn('[AUDIT] Failed to start Amazon sync', { auditId, userId: audit.user_id, error: error?.message });
+        if (isTemporarySyncAdmissionBlock(error)) {
+          return this.updateAudit(audit.id, {
+            status: 'created',
+            store_id: connection.store_id || null,
+            summary: SYNC_BACKLOG_SUMMARY
+          });
+        }
+
         return this.updateAudit(audit.id, {
           status: 'failed',
           summary: {
