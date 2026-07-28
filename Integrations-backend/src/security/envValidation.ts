@@ -74,6 +74,19 @@ const RECOMMENDED_ENV_VARS: EnvValidationRule[] = [
     validator: (value) => value.startsWith('https://') || value.startsWith('http://localhost'),
     errorMessage: 'FRONTEND_URL should use HTTPS in production',
   },
+  {
+    name: 'PAYSTACK_SECRET_KEY',
+    required: false,
+    validator: (value) => value.startsWith('sk_') && value.length > 20,
+    errorMessage: 'PAYSTACK_SECRET_KEY should be a valid Paystack secret key',
+    sensitive: true,
+  },
+  {
+    name: 'PAYSTACK_CALLBACK_URL',
+    required: false,
+    validator: (value) => value.startsWith('https://') || value.startsWith('http://localhost'),
+    errorMessage: 'PAYSTACK_CALLBACK_URL should use HTTPS in production',
+  },
 ];
 
 export interface ValidationResult {

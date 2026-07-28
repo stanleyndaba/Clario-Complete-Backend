@@ -105,6 +105,10 @@ const config = {
   PAYPAL_CLIENT_SECRET: process.env.PAYPAL_CLIENT_SECRET,
   PAYPAL_WEBHOOK_ID: process.env.PAYPAL_WEBHOOK_ID,
 
+  // Paystack one-time activation payments
+  PAYSTACK_SECRET_KEY: process.env.PAYSTACK_SECRET_KEY,
+  PAYSTACK_CALLBACK_URL: process.env.PAYSTACK_CALLBACK_URL,
+
   // Sync configuration
   SYNC_TIMEOUT_MS: toInt(process.env.SYNC_TIMEOUT_MS, 10 * 60 * 1000),
 

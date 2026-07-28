@@ -74,6 +74,7 @@ import productUpdateRoutes from './routes/productUpdateRoutes';
 import manualUserBroadcastRoutes from './routes/manualUserBroadcastRoutes';
 import adminAnalyticsRoutes from './routes/adminAnalyticsRoutes';
 import resendWebhookRoutes from './routes/resendWebhookRoutes';
+import paystackRoutes from './routes/paystackRoutes';
 import { recordPublicAnalyticsEvent } from './services/publicAnalyticsService';
 
 // Consolidated service routes (merged from separate microservices)
@@ -247,6 +248,9 @@ app.use(express.json({
   verify: (req: any, _res, buf) => {
     if (req.originalUrl?.startsWith('/api/webhooks/resend')) {
       req.rawBody = buf.toString('utf8');
+    }
+    if (req.originalUrl?.startsWith('/api/paystack/webhook')) {
+      req.rawBody = Buffer.from(buf);
     }
   }
 }));
@@ -460,6 +464,8 @@ logger.info('AI explainer routes registered at /api/ai');
 import billingRoutes from './routes/billingRoutes';
 app.use('/api/billing', billingRoutes);
 logger.info('Billing routes registered at /api/billing');
+app.use('/api/paystack', paystackRoutes);
+logger.info('Paystack payment routes registered at /api/paystack');
 
 import exportRoutes from './routes/exportRoutes';
 app.use('/api/export-claims', exportRoutes);

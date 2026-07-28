@@ -23,6 +23,7 @@ import {
 import { hasRole, requireRole } from '../middleware/tenantMiddleware';
 import { resolveYocoCheckoutLink } from '../services/yocoCheckoutLinkService';
 import { createSubscriptionSubscribeIntent } from '../services/billingSubscribeIntentService';
+import paystackPaymentFlowService from '../services/paystackPaymentFlowService';
 
 const router = Router();
 
@@ -173,6 +174,22 @@ function dateSortValue(value: string | null | undefined): number {
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
 }
+
+router.get('/workspace-status', async (req, res) => {
+  try {
+    const scope = await resolveBillingScope(req);
+    const status = await paystackPaymentFlowService.getWorkspaceStatus(scope.tenantId);
+    return res.json({ success: true, ...status });
+  } catch (error: any) {
+    logger.error('Failed to load workspace billing status', {
+      error: error?.message || error,
+    });
+    return res.status(400).json({
+      success: false,
+      message: error?.message || 'Failed to load workspace billing status',
+    });
+  }
+});
 
 async function buildBillingProofMap(
   rows: Array<{ id: string; dispute_id?: string | null; recovery_id?: string | null }>,
