@@ -27,7 +27,7 @@ function buildInvoice(overrides: Partial<Row> = {}): Row {
     billing_model: 'flat_subscription',
     plan_tier: 'starter',
     billing_interval: 'monthly',
-    billing_amount_cents: 4900,
+    billing_amount_cents: 7900,
     amount_charged_cents: null,
     currency: 'USD',
     billing_period_start: '2026-04-01T00:00:00.000Z',
@@ -162,7 +162,7 @@ describe('billingInvoiceConfirmationService', () => {
 
     expect(result.alreadyConfirmed).toBe(false);
     expect(result.invoice.status).toBe('paid');
-    expect(result.invoice.amount_charged_cents).toBe(4900);
+    expect(result.invoice.amount_charged_cents).toBe(7900);
     expect(result.invoice.paid_at).toBeTruthy();
     expect(result.invoice.payment_confirmation_source).toBe('manual_dashboard');
     expect(result.invoice.payment_confirmed_by_user_id).toBe('owner-1');

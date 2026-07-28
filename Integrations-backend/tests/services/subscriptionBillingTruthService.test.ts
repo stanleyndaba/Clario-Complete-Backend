@@ -18,9 +18,9 @@ function buildSubscription(overrides: Partial<BillingSubscriptionRow> = {}): Bil
     billing_model: 'flat_subscription',
     plan_tier: 'starter',
     billing_interval: 'monthly',
-    monthly_price_cents: 4900,
-    annual_monthly_equivalent_price_cents: 3900,
-    billing_amount_cents: 4900,
+    monthly_price_cents: 7900,
+    annual_monthly_equivalent_price_cents: 7900,
+    billing_amount_cents: 7900,
     billing_currency: 'USD',
     promo_start_at: '2026-01-01T00:00:00.000Z',
     promo_end_at: '2026-03-02T00:00:00.000Z',
@@ -40,8 +40,8 @@ function buildSubscription(overrides: Partial<BillingSubscriptionRow> = {}): Bil
   };
 }
 
-describe('subscriptionBillingTruthService', () => {
-  test('Test 1 - New tenant on Starter monthly: pricing and promo truth bootstrap correctly', () => {
+describe('legacy YOCO subscriptionBillingTruthService', () => {
+  test('Test 1 - Legacy Starter monthly: pricing and promo truth bootstrap correctly', () => {
     const pricing = getPlanPricingCents('starter', 'monthly');
     const promoWindow = buildPromoWindow('2026-01-01T00:00:00.000Z');
     const subscription = buildSubscription({
@@ -49,9 +49,9 @@ describe('subscriptionBillingTruthService', () => {
       promo_end_at: promoWindow.promoEndAt,
     });
 
-    expect(pricing.monthlyPriceCents).toBe(4900);
-    expect(pricing.annualMonthlyEquivalentPriceCents).toBe(3900);
-    expect(pricing.billingAmountCents).toBe(4900);
+    expect(pricing.monthlyPriceCents).toBe(7900);
+    expect(pricing.annualMonthlyEquivalentPriceCents).toBe(7900);
+    expect(pricing.billingAmountCents).toBe(7900);
     expect(promoWindow.promoEndAt).toBe('2026-03-02T00:00:00.000Z');
     expect(isPromoActive(subscription, '2026-01-15T00:00:00.000Z')).toBe(true);
     expect(buildPromoNote(subscription, '2026-01-15T00:00:00.000Z')).toContain('First 60 days');
@@ -94,7 +94,7 @@ describe('subscriptionBillingTruthService', () => {
     });
 
     expect(isPromoActive(expiredPromoSubscription, '2026-04-15T00:00:00.000Z')).toBe(false);
-    expect(buildPromoNote(expiredPromoSubscription, '2026-04-15T00:00:00.000Z')).toContain('Flat subscription pricing');
+    expect(buildPromoNote(expiredPromoSubscription, '2026-04-15T00:00:00.000Z')).toContain('monthly recovery management');
     expect(disabled.created).toBe(false);
     expect(disabled.item.status).toBe('quarantined');
   });
@@ -103,25 +103,25 @@ describe('subscriptionBillingTruthService', () => {
     const proAnnual = getPlanPricingCents('pro', 'annual');
     const enterpriseAnnual = getPlanPricingCents('enterprise', 'annual');
 
-    expect(proAnnual.monthlyPriceCents).toBe(9900);
-    expect(proAnnual.annualMonthlyEquivalentPriceCents).toBe(7900);
-    expect(proAnnual.billingAmountCents).toBe(94800);
-    expect(enterpriseAnnual.monthlyPriceCents).toBe(19900);
-    expect(enterpriseAnnual.annualMonthlyEquivalentPriceCents).toBe(15900);
-    expect(enterpriseAnnual.billingAmountCents).toBe(190800);
+    expect(proAnnual.monthlyPriceCents).toBe(19900);
+    expect(proAnnual.annualMonthlyEquivalentPriceCents).toBe(19900);
+    expect(proAnnual.billingAmountCents).toBe(238800);
+    expect(enterpriseAnnual.monthlyPriceCents).toBe(39900);
+    expect(enterpriseAnnual.annualMonthlyEquivalentPriceCents).toBe(39900);
+    expect(enterpriseAnnual.billingAmountCents).toBe(478800);
   });
 
   test('Test 5 - Legacy recovery-fee data present: legacy rows stay isolated from subscription summaries', () => {
     const currentSummary = summarizeSubscriptionInvoices([
       {
-        billing_amount_cents: 9900,
-        amount_charged_cents: 9900,
+        billing_amount_cents: 19900,
+        amount_charged_cents: 19900,
         status: 'paid',
         invoice_date: '2026-04-01T00:00:00.000Z',
         paid_at: '2026-04-03T00:00:00.000Z',
       },
       {
-        billing_amount_cents: 9900,
+        billing_amount_cents: 19900,
         amount_charged_cents: null,
         status: 'sent',
         invoice_date: '2026-05-01T00:00:00.000Z',
@@ -134,8 +134,8 @@ describe('subscriptionBillingTruthService', () => {
     ]);
 
     expect(currentSummary.invoicesTotal).toBe(2);
-    expect(currentSummary.paidInvoiceTotalCents).toBe(9900);
-    expect(currentSummary.pendingInvoiceTotalCents).toBe(9900);
+    expect(currentSummary.paidInvoiceTotalCents).toBe(19900);
+    expect(currentSummary.pendingInvoiceTotalCents).toBe(19900);
     expect(currentSummary.paidInvoiceCount).toBe(1);
     expect(currentSummary.pendingInvoiceCount).toBe(1);
     expect(currentSummary.lastPaidInvoiceDate).toBe('2026-04-03T00:00:00.000Z');

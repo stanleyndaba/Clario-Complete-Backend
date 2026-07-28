@@ -28,9 +28,9 @@ function buildSubscription(overrides: Partial<BillingSubscriptionRow> = {}): Bil
     billing_model: 'flat_subscription',
     plan_tier: 'starter',
     billing_interval: 'monthly',
-    monthly_price_cents: 4900,
-    annual_monthly_equivalent_price_cents: 3900,
-    billing_amount_cents: 4900,
+    monthly_price_cents: 7900,
+    annual_monthly_equivalent_price_cents: 7900,
+    billing_amount_cents: 7900,
     billing_currency: 'USD',
     promo_start_at: '2026-01-01T00:00:00.000Z',
     promo_end_at: '2026-03-02T00:00:00.000Z',
@@ -59,18 +59,18 @@ afterEach(() => {
   process.env.YOCO_ENTERPRISE_ANNUAL_URL = ORIGINAL_ENV.YOCO_ENTERPRISE_ANNUAL_URL;
 });
 
-describe('yocoCheckoutLinkService', () => {
-  test('Test 1 — Starter monthly resolves to the starter_monthly YOCO link', () => {
+describe('legacy YOCO yocoCheckoutLinkService', () => {
+  test('Test 1 — Legacy Starter monthly resolves to the starter_monthly YOCO link', () => {
     setAllLinks();
 
     const resolved = resolveYocoCheckoutLink({
       planTier: 'starter',
       billingInterval: 'monthly',
-      billingAmountCents: 4900,
+      billingAmountCents: 7900,
     });
 
     expect(resolved.paymentLinkKey).toBe('starter_monthly');
-    expect(resolved.expectedAmountCents).toBe(4900);
+    expect(resolved.expectedAmountCents).toBe(7900);
     expect(resolved.paymentLinkUrl).toBe('https://pay.yoco.com/r/7XalBE');
     expect(resolved.mappingStatus).toBe('resolved');
   });
@@ -81,11 +81,11 @@ describe('yocoCheckoutLinkService', () => {
     const resolved = resolveYocoCheckoutLink({
       planTier: 'starter',
       billingInterval: 'annual',
-      billingAmountCents: 46800,
+      billingAmountCents: 94800,
     });
 
     expect(resolved.paymentLinkKey).toBe('starter_annual');
-    expect(resolved.expectedAmountCents).toBe(46800);
+    expect(resolved.expectedAmountCents).toBe(94800);
     expect(resolved.paymentLinkUrl).toBe('https://pay.yoco.com/r/m6VjDE');
     expect(resolved.mappingStatus).toBe('resolved');
   });
@@ -96,11 +96,11 @@ describe('yocoCheckoutLinkService', () => {
     const resolved = resolveYocoCheckoutLink({
       planTier: 'pro',
       billingInterval: 'monthly',
-      billingAmountCents: 9900,
+      billingAmountCents: 19900,
     });
 
     expect(resolved.paymentLinkKey).toBe('pro_monthly');
-    expect(resolved.expectedAmountCents).toBe(9900);
+    expect(resolved.expectedAmountCents).toBe(19900);
     expect(resolved.paymentLinkUrl).toBe('https://pay.yoco.com/r/4aKRkd');
     expect(resolved.mappingStatus).toBe('resolved');
   });
@@ -111,11 +111,11 @@ describe('yocoCheckoutLinkService', () => {
     const resolved = resolveYocoCheckoutLink({
       planTier: 'enterprise',
       billingInterval: 'annual',
-      billingAmountCents: 190800,
+      billingAmountCents: 478800,
     });
 
     expect(resolved.paymentLinkKey).toBe('enterprise_annual');
-    expect(resolved.expectedAmountCents).toBe(190800);
+    expect(resolved.expectedAmountCents).toBe(478800);
     expect(resolved.paymentLinkUrl).toBe('https://pay.yoco.com/r/73rNRK');
     expect(resolved.mappingStatus).toBe('resolved');
   });
@@ -127,7 +127,7 @@ describe('yocoCheckoutLinkService', () => {
     const resolved = resolveYocoCheckoutLink({
       planTier: 'pro',
       billingInterval: 'annual',
-      billingAmountCents: 94800,
+      billingAmountCents: 238800,
     });
 
     expect(resolved.paymentLinkKey).toBe('pro_annual');
@@ -140,7 +140,7 @@ describe('yocoCheckoutLinkService', () => {
     const promoSubscription = buildSubscription({
       plan_tier: 'starter',
       billing_interval: 'monthly',
-      billing_amount_cents: 4900,
+      billing_amount_cents: 7900,
     });
 
     const promoNote = buildPromoNote(promoSubscription, '2026-01-15T00:00:00.000Z');
@@ -152,7 +152,7 @@ describe('yocoCheckoutLinkService', () => {
 
     expect(promoNote).toContain('keep 100% of recoveries');
     expect(resolved.paymentLinkKey).toBe('starter_monthly');
-    expect(resolved.expectedAmountCents).toBe(4900);
+    expect(resolved.expectedAmountCents).toBe(7900);
     expect(resolved.mappingStatus).toBe('resolved');
   });
 });
