@@ -26,6 +26,16 @@ export type PaystackVerifyData = {
   gateway_response?: string | null;
   channel?: string | null;
   fees?: number | null;
+  customer?: {
+    customer_code?: string;
+    email?: string;
+  } | null;
+  plan?: string | { plan_code?: string; amount?: number; currency?: string; interval?: string } | null;
+  authorization?: {
+    authorization_code?: string;
+    reusable?: boolean;
+    signature?: string;
+  } | null;
 };
 
 export type InitializePaystackTransactionInput = {
@@ -35,6 +45,33 @@ export type InitializePaystackTransactionInput = {
   reference: string;
   callbackUrl: string;
   metadata: Record<string, unknown>;
+  planCode?: string;
+};
+
+export type PaystackPlanData = {
+  id?: number | string;
+  name?: string;
+  plan_code: string;
+  amount: number;
+  currency: string;
+  interval: string;
+  is_deleted?: boolean;
+  is_archived?: boolean;
+};
+
+export type PaystackSubscriptionData = {
+  id?: number | string;
+  subscription_code?: string;
+  email_token?: string;
+  status?: string;
+  next_payment_date?: string | null;
+  amount?: number;
+  cron_expression?: string;
+  plan?: string | PaystackPlanData | null;
+  customer?: {
+    customer_code?: string;
+    email?: string;
+  } | null;
 };
 
 function getSecretKey(): string {
@@ -65,6 +102,12 @@ function safeProviderData<T extends Record<string, any>>(data: T | undefined): P
     'fees',
     'authorization_url',
     'access_code',
+    'plan_code',
+    'subscription_code',
+    'email_token',
+    'next_payment_date',
+    'customer',
+    'plan',
   ];
 
   return allowedKeys.reduce((safe, key) => {
@@ -97,16 +140,22 @@ async function paystackRequest<T>(path: string, init: RequestInit): Promise<Pays
 export async function initializePaystackTransaction(
   input: InitializePaystackTransactionInput
 ): Promise<{ data: PaystackInitializeData; safeResponse: Record<string, unknown> }> {
+  const body: Record<string, unknown> = {
+    email: input.email,
+    amount: input.amountSubunits,
+    currency: input.currency,
+    reference: input.reference,
+    callback_url: input.callbackUrl,
+    metadata: input.metadata,
+  };
+
+  if (input.planCode) {
+    body.plan = input.planCode;
+  }
+
   const response = await paystackRequest<PaystackInitializeData>('/transaction/initialize', {
     method: 'POST',
-    body: JSON.stringify({
-      email: input.email,
-      amount: input.amountSubunits,
-      currency: input.currency,
-      reference: input.reference,
-      callback_url: input.callbackUrl,
-      metadata: input.metadata,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!response.data?.authorization_url || !response.data?.access_code) {
@@ -119,6 +168,71 @@ export async function initializePaystackTransaction(
       message: response.message,
       data: safeProviderData(response.data),
     },
+  };
+}
+
+export async function fetchPaystackPlan(
+  planCode: string
+): Promise<{ data: PaystackPlanData; safeResponse: Record<string, unknown> }> {
+  const response = await paystackRequest<PaystackPlanData>(
+    `/plan/${encodeURIComponent(planCode)}`,
+    { method: 'GET' }
+  );
+
+  if (!response.data?.plan_code) {
+    throw new Error('Paystack plan response was incomplete');
+  }
+
+  return {
+    data: response.data,
+    safeResponse: {
+      message: response.message,
+      data: safeProviderData(response.data),
+    },
+  };
+}
+
+export async function disablePaystackSubscription(input: {
+  subscriptionCode: string;
+  emailToken: string;
+}): Promise<{ safeResponse: Record<string, unknown> }> {
+  const response = await paystackRequest<Record<string, unknown>>('/subscription/disable', {
+    method: 'POST',
+    body: JSON.stringify({
+      code: input.subscriptionCode,
+      token: input.emailToken,
+    }),
+  });
+
+  return { safeResponse: { message: response.message, data: safeProviderData(response.data) } };
+}
+
+export async function enablePaystackSubscription(input: {
+  subscriptionCode: string;
+  emailToken: string;
+}): Promise<{ safeResponse: Record<string, unknown> }> {
+  const response = await paystackRequest<Record<string, unknown>>('/subscription/enable', {
+    method: 'POST',
+    body: JSON.stringify({
+      code: input.subscriptionCode,
+      token: input.emailToken,
+    }),
+  });
+
+  return { safeResponse: { message: response.message, data: safeProviderData(response.data) } };
+}
+
+export async function generatePaystackSubscriptionManageLink(input: {
+  subscriptionCode: string;
+}): Promise<{ url: string | null; safeResponse: Record<string, unknown> }> {
+  const response = await paystackRequest<{ link?: string; url?: string }>(
+    `/subscription/${encodeURIComponent(input.subscriptionCode)}/manage/link`,
+    { method: 'GET' }
+  );
+
+  return {
+    url: response.data?.link || response.data?.url || null,
+    safeResponse: { message: response.message, data: safeProviderData(response.data) },
   };
 }
 

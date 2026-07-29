@@ -106,6 +106,7 @@ import { schedulerService } from './services/schedulerService';
 import { ensureAgent10NotificationSchema } from './services/agent10NotificationSchemaService';
 import productUpdateService from './services/productUpdateService';
 import manualUserBroadcastService from './services/manualUserBroadcastService';
+import { requireRecoveryWorkspaceEntitlement } from './services/workspaceEntitlementService';
 
 const app = express();
 const server = createServer(app);
@@ -428,23 +429,23 @@ app.use('/api/early-access', earlyAccessRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/v1/integrations/sync', syncAliasRoutes);
 app.use('/api/v1/integrations', integrationRoutes);
-app.use('/api/detections', detectionRoutes);
-app.use('/api/claims', timelineRoutes);
+app.use('/api/detections', requireRecoveryWorkspaceEntitlement, detectionRoutes);
+app.use('/api/claims', requireRecoveryWorkspaceEntitlement, timelineRoutes);
 logger.info('Timeline routes registered at /api/claims/:id/timeline');
-app.use('/api/disputes', disputeRoutes);
-app.use('/api/dispute-cases', disputeCaseQueueRoutes);
-app.use('/api/autoclaim', autoclaimRoutes);
+app.use('/api/disputes', requireRecoveryWorkspaceEntitlement, disputeRoutes);
+app.use('/api/dispute-cases', requireRecoveryWorkspaceEntitlement, disputeCaseQueueRoutes);
+app.use('/api/autoclaim', requireRecoveryWorkspaceEntitlement, autoclaimRoutes);
 app.use('/api/internal-events', internalEventsRoutes);
 app.use('/api/stripe-webhook', stripeWebhookRoutes);
 app.use('/api/paypal-webhook', paypalWebhookRoutes);
 app.use('/api/v1/payments', paymentRoutes);
-app.use('/api/v1/workflow', workflowRoutes);
+app.use('/api/v1/workflow', requireRecoveryWorkspaceEntitlement, workflowRoutes);
 logger.info('Workflow routes registered at /api/v1/workflow');
-app.use('/api/evidence', evidenceRoutes);
+app.use('/api/evidence', requireRecoveryWorkspaceEntitlement, evidenceRoutes);
 // Also mount at /api for /api/v1/evidence/* endpoints (like /api/v1/evidence/documents/:id)
 app.use('/api', evidenceRoutes);
 logger.info('Evidence routes registered at /api/evidence and /api (for v1 endpoints)');
-app.use('/api/documents', documentsRoutes);
+app.use('/api/documents', requireRecoveryWorkspaceEntitlement, documentsRoutes);
 logger.info('Documents routes registered at /api/documents');
 
 // CSV Upload routes (data ingestion from CSV files — bypass SP-API)
@@ -456,7 +457,7 @@ logger.info('CSV Upload routes registered at /api/csv-upload');
 import revenueRoutes from './routes/revenueRoutes';
 app.use('/api/revenue', revenueRoutes);
 logger.info('Revenue routes registered at /api/revenue');
-app.use('/api/recoveries', recoveryRoutes);
+app.use('/api/recoveries', requireRecoveryWorkspaceEntitlement, recoveryRoutes);
 logger.info('Recovery routes registered at /api/recoveries');
 app.use('/api/ai', aiRoutes);
 logger.info('AI explainer routes registered at /api/ai');

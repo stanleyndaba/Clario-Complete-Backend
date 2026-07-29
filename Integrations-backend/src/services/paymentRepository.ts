@@ -29,6 +29,11 @@ export type PaymentRow = {
   verified_at: string | null;
   metadata: Record<string, unknown>;
   provider_response: Record<string, unknown>;
+  billing_subscription_id: string | null;
+  provider_invoice_code: string | null;
+  billing_period_start: string | null;
+  billing_period_end: string | null;
+  payment_kind: 'subscription_initial' | 'subscription_renewal' | null;
   created_at: string;
   updated_at: string;
 };
@@ -59,6 +64,7 @@ export function toCustomerSafePayment(payment: PaymentRow) {
     currency: payment.currency,
     paid_at: payment.paid_at,
     created_at: payment.created_at,
+    payment_kind: payment.payment_kind,
   };
 }
 
@@ -72,6 +78,8 @@ export async function createInitializedPayment(input: {
   amountSubunits: number;
   currency: string;
   metadata: Record<string, unknown>;
+  billingSubscriptionId?: string | null;
+  paymentKind?: 'subscription_initial' | 'subscription_renewal' | null;
 }): Promise<PaymentRow> {
   const { data, error } = await supabaseAdmin
     .from('payments')
@@ -88,12 +96,62 @@ export async function createInitializedPayment(input: {
       status: 'initialized',
       metadata: input.metadata,
       provider_response: {},
+      billing_subscription_id: input.billingSubscriptionId || null,
+      payment_kind: input.paymentKind || null,
     })
     .select('*')
     .single();
 
   if (error || !data) {
     throw new Error(`Failed to create payment: ${error?.message || 'Unknown error'}`);
+  }
+
+  return data;
+}
+
+export async function createOrGetRenewalPayment(input: {
+  reference: string;
+  userId: string;
+  tenantId: string;
+  billingSubscriptionId: string;
+  productKey: string;
+  amountSubunits: number;
+  currency: string;
+  providerInvoiceCode?: string | null;
+  billingPeriodStart?: string | null;
+  billingPeriodEnd?: string | null;
+  metadata: Record<string, unknown>;
+}): Promise<PaymentRow> {
+  const existing = await getPaymentByReference(input.reference);
+  if (existing) return existing;
+  if (!input.userId) {
+    throw new Error('Renewal payment requires a subscription owner');
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('payments')
+    .insert({
+      provider: 'paystack',
+      reference: input.reference,
+      user_id: input.userId,
+      tenant_id: input.tenantId,
+      billing_subscription_id: input.billingSubscriptionId,
+      product_key: input.productKey,
+      amount_subunits: input.amountSubunits,
+      currency: input.currency,
+      status: 'initialized',
+      payment_kind: 'subscription_renewal',
+      provider_invoice_code: input.providerInvoiceCode || null,
+      billing_period_start: input.billingPeriodStart || null,
+      billing_period_end: input.billingPeriodEnd || null,
+      metadata: input.metadata,
+      provider_response: {},
+    })
+    .select('*')
+    .single();
+
+  if (error || !data) {
+    throw new Error(`Failed to create renewal payment: ${error?.message || 'Unknown error'}`);
   }
 
   return data;
@@ -119,7 +177,7 @@ export async function getCurrentPaidActivationPayment(auditRunId: string): Promi
     .select('*')
     .eq('audit_run_id', auditRunId)
     .eq('provider', 'paystack')
-    .eq('product_key', 'recovery_workspace_activation')
+    .in('product_key', ['recovery_workspace_activation', 'recovery_workspace_monthly'])
     .eq('status', 'paid')
     .order('paid_at', { ascending: false })
     .limit(1)
@@ -205,6 +263,36 @@ export async function markPaymentFailed(input: {
   return data || null;
 }
 
+export async function markPaymentPaid(input: {
+  reference: string;
+  providerTransactionId?: string | null;
+  providerStatus?: string | null;
+  paidAt?: string | null;
+  providerResponse: Record<string, unknown>;
+}): Promise<PaymentRow> {
+  const paidAt = input.paidAt || nowIso();
+  const { data, error } = await supabaseAdmin
+    .from('payments')
+    .update({
+      status: 'paid',
+      provider_transaction_id: input.providerTransactionId || null,
+      provider_status: input.providerStatus || 'success',
+      paid_at: paidAt,
+      verified_at: nowIso(),
+      provider_response: input.providerResponse,
+      updated_at: nowIso(),
+    })
+    .eq('reference', input.reference)
+    .select('*')
+    .single();
+
+  if (error || !data) {
+    throw new Error(`Failed to mark payment paid: ${error?.message || 'Unknown error'}`);
+  }
+
+  return data;
+}
+
 export async function listTenantPaymentHistory(tenantId: string): Promise<PaymentRow[]> {
   const { data, error } = await supabaseAdmin
     .from('payments')
@@ -226,7 +314,7 @@ export async function getLatestActivatedWorkspacePayment(tenantId: string): Prom
     .select('*')
     .eq('tenant_id', tenantId)
     .eq('provider', 'paystack')
-    .eq('product_key', 'recovery_workspace_activation')
+    .in('product_key', ['recovery_workspace_activation', 'recovery_workspace_monthly'])
     .eq('status', 'paid')
     .order('paid_at', { ascending: false })
     .limit(1)

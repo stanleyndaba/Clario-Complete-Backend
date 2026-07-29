@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { authenticateToken } from '../middleware/authMiddleware';
-import paystackPaymentFlowService from '../services/paystackPaymentFlowService';
+import paystackSubscriptionService from '../services/paystackSubscriptionService';
 import { verifyPaystackWebhookSignature } from '../services/paystackService';
 
 const router = Router();
@@ -17,7 +17,7 @@ function getUser(req: Request): { id: string; email?: string | null } {
   };
 }
 
-router.post('/checkout/initialize', authenticateToken, async (req: Request, res: Response) => {
+async function initializeSubscriptionCheckout(req: Request, res: Response) {
   try {
     const user = getUser(req);
     if (!user.id) {
@@ -29,7 +29,7 @@ router.post('/checkout/initialize', authenticateToken, async (req: Request, res:
       return res.status(400).json({ success: false, message: 'audit_run_id is required' });
     }
 
-    const result = await paystackPaymentFlowService.initializeCheckout({
+    const result = await paystackSubscriptionService.initializeSubscription({
       userId: user.id,
       email: user.email,
       auditRunId,
@@ -42,7 +42,13 @@ router.post('/checkout/initialize', authenticateToken, async (req: Request, res:
     const status = /not found/i.test(message) ? 404 : /membership|required|eligible/i.test(message) ? 400 : 500;
     return res.status(status).json({ success: false, message });
   }
-});
+}
+
+router.post('/subscription/initialize', authenticateToken, initializeSubscriptionCheckout);
+
+router.post('/checkout/initialize', authenticateToken, initializeSubscriptionCheckout);
+
+router.post('/subscription/recover', authenticateToken, initializeSubscriptionCheckout);
 
 router.get('/verify/:reference', authenticateToken, async (req: Request, res: Response) => {
   try {
@@ -56,7 +62,7 @@ router.get('/verify/:reference', authenticateToken, async (req: Request, res: Re
       return res.status(400).json({ success: false, message: 'Payment reference is required' });
     }
 
-    const result = await paystackPaymentFlowService.verifyCheckout({
+    const result = await paystackSubscriptionService.verifyCheckout({
       reference,
       userId: user.id,
       tenantId: getTenantId(req),
@@ -89,14 +95,23 @@ router.post('/webhook', async (req: Request, res: Response) => {
       ? req.body
       : JSON.parse(Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : String(rawBody));
 
-    const signatureHash = paystackPaymentFlowService.computeWebhookSignatureHash(rawBody);
-    const result = await paystackPaymentFlowService.processWebhook(payload, signatureHash);
+    const signatureHash = paystackSubscriptionService.computeWebhookSignatureHash(rawBody);
+    const result = await paystackSubscriptionService.processWebhook(payload, signatureHash);
     return res.json(result);
   } catch (error: any) {
     return res.status(500).json({
       success: false,
       message: error?.message || 'Failed to process Paystack webhook',
     });
+  }
+});
+
+router.get('/subscription/validate-plan', authenticateToken, async (_req: Request, res: Response) => {
+  try {
+    const result = await paystackSubscriptionService.validateConfiguredPlan();
+    return res.json(result);
+  } catch (error: any) {
+    return res.status(400).json({ success: false, message: error?.message || 'Paystack plan validation failed' });
   }
 });
 

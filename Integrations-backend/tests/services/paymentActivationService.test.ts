@@ -25,7 +25,7 @@ describe('paymentActivationService', () => {
               user_id: 'user-1',
               tenant_id: 'tenant-1',
               audit_run_id: 'audit-1',
-              product_key: 'recovery_workspace_activation',
+              product_key: 'recovery_workspace_monthly',
               amount_subunits: 179900,
               currency: 'ZAR',
               status: 'redirected',
@@ -81,6 +81,7 @@ describe('paymentActivationService', () => {
       activated: true,
       audit_run_id: 'audit-1',
       activated_at: '2026-07-28T10:00:01.000Z',
+      subscription_id: null,
     });
     expect(queries.join('\n')).toContain('FOR UPDATE');
     expect(queries.join('\n')).toContain("SET status = 'paid'");

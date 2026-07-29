@@ -23,7 +23,12 @@ import {
 import { hasRole, requireRole } from '../middleware/tenantMiddleware';
 import { resolveYocoCheckoutLink } from '../services/yocoCheckoutLinkService';
 import { createSubscriptionSubscribeIntent } from '../services/billingSubscribeIntentService';
-import paystackPaymentFlowService from '../services/paystackPaymentFlowService';
+import paystackSubscriptionService from '../services/paystackSubscriptionService';
+import {
+  getTenantRecoverySubscription,
+  toCustomerSafeSubscription,
+} from '../services/billingSubscriptionRepository';
+import workspaceEntitlementService from '../services/workspaceEntitlementService';
 
 const router = Router();
 
@@ -178,7 +183,7 @@ function dateSortValue(value: string | null | undefined): number {
 router.get('/workspace-status', async (req, res) => {
   try {
     const scope = await resolveBillingScope(req);
-    const status = await paystackPaymentFlowService.getWorkspaceStatus(scope.tenantId);
+    const status = await paystackSubscriptionService.getBillingStatus(scope.tenantId);
     return res.json({ success: true, ...status });
   } catch (error: any) {
     logger.error('Failed to load workspace billing status', {
@@ -188,6 +193,73 @@ router.get('/workspace-status', async (req, res) => {
       success: false,
       message: error?.message || 'Failed to load workspace billing status',
     });
+  }
+});
+
+router.get('/subscription', async (req, res) => {
+  try {
+    const { tenantId } = await resolveBillingScope(req);
+    const status = await paystackSubscriptionService.getBillingStatus(tenantId);
+    return res.json({ success: true, ...status });
+  } catch (error: any) {
+    logger.error('Failed to load Recovery Workspace subscription', { error: error?.message || error });
+    return res.status(400).json({ success: false, message: error?.message || 'Failed to load subscription' });
+  }
+});
+
+router.post('/subscription/cancel', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const { tenantId } = await resolveBillingScope(req);
+    const subscription = await getTenantRecoverySubscription(tenantId);
+    if (!subscription) {
+      return res.status(404).json({ success: false, message: 'Recovery Workspace subscription not found' });
+    }
+    const updated = await paystackSubscriptionService.cancelSubscription(subscription);
+    const { entitlement } = await workspaceEntitlementService.getTenantEntitlement(tenantId);
+    return res.json({
+      success: true,
+      subscription: toCustomerSafeSubscription(updated),
+      entitlement,
+    });
+  } catch (error: any) {
+    logger.error('Failed to cancel Recovery Workspace subscription', { error: error?.message || error });
+    return res.status(400).json({ success: false, message: error?.message || 'Failed to cancel subscription' });
+  }
+});
+
+router.post('/subscription/resume', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const { tenantId } = await resolveBillingScope(req);
+    const subscription = await getTenantRecoverySubscription(tenantId);
+    if (!subscription) {
+      return res.status(404).json({ success: false, message: 'Recovery Workspace subscription not found' });
+    }
+    const result = await paystackSubscriptionService.resumeSubscription(subscription);
+    const { entitlement } = await workspaceEntitlementService.getTenantEntitlement(tenantId);
+    return res.json({
+      success: true,
+      subscription: toCustomerSafeSubscription(result.subscription),
+      entitlement,
+      new_checkout_required: result.new_checkout_required,
+    });
+  } catch (error: any) {
+    logger.error('Failed to resume Recovery Workspace subscription', { error: error?.message || error });
+    return res.status(400).json({ success: false, message: error?.message || 'Failed to resume subscription' });
+  }
+});
+
+router.post('/subscription/manage-link', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const { tenantId } = await resolveBillingScope(req);
+    const subscription = await getTenantRecoverySubscription(tenantId);
+    if (!subscription) {
+      return res.status(404).json({ success: false, message: 'Recovery Workspace subscription not found' });
+    }
+    const result = await paystackSubscriptionService.getManageLink(subscription);
+    return res.json({ success: true, url: result.url });
+  } catch (error: any) {
+    logger.error('Failed to create subscription manage link', { error: error?.message || error });
+    return res.status(400).json({ success: false, message: error?.message || 'Failed to create manage link' });
   }
 });
 

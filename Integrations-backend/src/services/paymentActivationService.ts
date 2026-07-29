@@ -1,4 +1,4 @@
-import { RECOVERY_WORKSPACE_ACTIVATION_PRODUCT } from '../config/paystackProducts';
+import { RECOVERY_WORKSPACE_MONTHLY_PRODUCT } from '../config/paystackProducts';
 import { withPostgresTransaction } from '../database/postgresTransaction';
 import {
   getSafePaystackProviderData,
@@ -18,6 +18,7 @@ export type ActivationResult = {
     activated: true;
     audit_run_id: string;
     activated_at: string | null;
+    subscription_id?: string | null;
   };
   alreadyActivated: boolean;
 };
@@ -29,10 +30,10 @@ function assertVerifiedPaystackPayment(reference: string, providerData: Paystack
   if (providerData.status !== 'success') {
     throw new Error(`Paystack transaction is not successful: ${providerData.status}`);
   }
-  if (Number(providerData.amount) !== RECOVERY_WORKSPACE_ACTIVATION_PRODUCT.amountSubunits) {
+  if (Number(providerData.amount) !== RECOVERY_WORKSPACE_MONTHLY_PRODUCT.amountSubunits) {
     throw new Error('Paystack amount mismatch');
   }
-  if (String(providerData.currency || '').toUpperCase() !== RECOVERY_WORKSPACE_ACTIVATION_PRODUCT.currency) {
+  if (String(providerData.currency || '').toUpperCase() !== RECOVERY_WORKSPACE_MONTHLY_PRODUCT.currency) {
     throw new Error('Paystack currency mismatch');
   }
 }
@@ -61,9 +62,9 @@ export async function applyVerifiedPaystackActivation(
     }
 
     if (
-      payment.product_key !== RECOVERY_WORKSPACE_ACTIVATION_PRODUCT.key ||
-      Number(payment.amount_subunits) !== RECOVERY_WORKSPACE_ACTIVATION_PRODUCT.amountSubunits ||
-      String(payment.currency || '').toUpperCase() !== RECOVERY_WORKSPACE_ACTIVATION_PRODUCT.currency
+      payment.product_key !== RECOVERY_WORKSPACE_MONTHLY_PRODUCT.key ||
+      Number(payment.amount_subunits) !== RECOVERY_WORKSPACE_MONTHLY_PRODUCT.amountSubunits ||
+      String(payment.currency || '').toUpperCase() !== RECOVERY_WORKSPACE_MONTHLY_PRODUCT.currency
     ) {
       throw new Error('Internal payment truth does not match product configuration');
     }
@@ -83,7 +84,44 @@ export async function applyVerifiedPaystackActivation(
       );
       const audit = auditResult.rows[0];
       if (audit?.activation_status !== 'activated') {
-        throw new Error('Paid payment found without activated audit');
+        const activationTime = providerData.paid_at || payment.paid_at || new Date().toISOString();
+        const updatedAuditResult = await client.query(
+          `
+            UPDATE audit_runs
+            SET activation_status = 'activated',
+                status = 'activated',
+                activated_at = COALESCE(activated_at, $2),
+                activated_by_payment_id = $3,
+                updated_at = $2
+            WHERE id = $1
+              AND user_id = $4
+              AND tenant_id = $5
+            RETURNING id, activation_status, activated_at
+          `,
+          [payment.audit_run_id, activationTime, payment.id, payment.user_id, payment.tenant_id]
+        );
+        const updatedAudit = updatedAuditResult.rows[0];
+        if (!updatedAudit || updatedAudit.activation_status !== 'activated') {
+          throw new Error('Failed to activate audit workspace');
+        }
+
+        return {
+          payment: {
+            reference: payment.reference,
+            status: 'paid',
+            amount_subunits: payment.amount_subunits,
+            currency: payment.currency,
+            paid_at: payment.paid_at,
+            created_at: payment.created_at,
+          },
+          workspace: {
+            activated: true,
+            audit_run_id: payment.audit_run_id,
+            activated_at: updatedAudit.activated_at,
+            subscription_id: payment.billing_subscription_id || null,
+          },
+          alreadyActivated: false,
+        };
       }
 
       return {
@@ -99,6 +137,7 @@ export async function applyVerifiedPaystackActivation(
           activated: true,
           audit_run_id: payment.audit_run_id,
           activated_at: audit.activated_at,
+          subscription_id: payment.billing_subscription_id || null,
         },
         alreadyActivated: true,
       };
@@ -160,6 +199,32 @@ export async function applyVerifiedPaystackActivation(
       throw new Error('Failed to activate audit workspace');
     }
 
+    if (payment.billing_subscription_id) {
+      await client.query(
+        `
+          UPDATE billing_subscriptions
+          SET latest_payment_id = $2,
+              current_period_start = COALESCE(current_period_start, $3),
+              current_period_end = COALESCE(current_period_end, $4),
+              status = CASE
+                WHEN provider_subscription_code IS NULL THEN status
+                ELSE 'active'
+              END,
+              grace_expires_at = NULL,
+              cancel_at_period_end = false,
+              updated_at = $5
+          WHERE id = $1
+        `,
+        [
+          payment.billing_subscription_id,
+          updatedPayment.id,
+          updatedPayment.billing_period_start || paidAt,
+          updatedPayment.billing_period_end,
+          verifiedAt,
+        ]
+      );
+    }
+
     return {
       payment: {
         reference: updatedPayment.reference,
@@ -173,6 +238,7 @@ export async function applyVerifiedPaystackActivation(
         activated: true,
         audit_run_id: updatedAudit.id,
         activated_at: updatedAudit.activated_at,
+        subscription_id: payment.billing_subscription_id || null,
       },
       alreadyActivated: false,
     };

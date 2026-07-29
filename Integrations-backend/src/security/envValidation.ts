@@ -87,6 +87,13 @@ const RECOMMENDED_ENV_VARS: EnvValidationRule[] = [
     validator: (value) => value.startsWith('https://') || value.startsWith('http://localhost'),
     errorMessage: 'PAYSTACK_CALLBACK_URL should use HTTPS in production',
   },
+  {
+    name: 'PAYSTACK_RECOVERY_WORKSPACE_PLAN_CODE',
+    required: false,
+    validator: (value) => value.startsWith('PLN_') || value.length > 5,
+    errorMessage: 'PAYSTACK_RECOVERY_WORKSPACE_PLAN_CODE should be a valid Paystack plan code',
+    sensitive: true,
+  },
 ];
 
 export interface ValidationResult {
