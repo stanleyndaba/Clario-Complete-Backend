@@ -20,6 +20,11 @@ type AuditSummary = {
   evidenceReadyCount: number;
   locked: boolean;
   message: string;
+  finalStatus?: 'complete_with_findings' | 'complete_no_findings' | 'partial_with_findings' | 'partial_no_findings' | 'failed';
+  recordsReviewed?: number;
+  sourcesReviewed?: string[];
+  sourcesUnavailable?: string[];
+  retryable?: boolean;
 };
 
 const EMPTY_SUMMARY: AuditSummary = {
@@ -115,6 +120,38 @@ function normalizeCategory(row: any): string {
     .replace(/[_-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function numberFrom(value: unknown): number {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function getSyncMetadata(syncStatus: any): Record<string, any> {
+  if (!syncStatus?.metadata) return {};
+  if (typeof syncStatus.metadata === 'string') {
+    try {
+      return JSON.parse(syncStatus.metadata);
+    } catch {
+      return {};
+    }
+  }
+  return syncStatus.metadata;
+}
+
+function getRecordsReviewedFromMetadata(metadata: Record<string, any>): number {
+  const explicitTotal = numberFrom(metadata.totalItemsSynced);
+  if (explicitTotal > 0) return explicitTotal;
+
+  return [
+    metadata.ordersProcessed,
+    metadata.totalOrders,
+    metadata.inventoryCount,
+    metadata.shipmentsCount,
+    metadata.returnsCount,
+    metadata.settlementsCount,
+    metadata.feesCount
+  ].reduce((sum, value) => sum + numberFrom(value), 0);
 }
 
 class AuditRunService {
@@ -344,7 +381,7 @@ class AuditRunService {
       });
     }
 
-    const summary = await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id);
+    const summary = await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus);
     return this.updateAudit(audit.id, {
       status: 'completed',
       completed_at: new Date().toISOString(),
@@ -354,8 +391,11 @@ class AuditRunService {
 
   async getResults(auditId: string, userId: string) {
     const audit = await this.getAudit(auditId, userId);
+    const syncStatus = audit.sync_id
+      ? await this.getSyncStatus(audit.sync_id, audit.user_id, audit.tenant_id, audit.store_id)
+      : null;
     const summary = audit.status === 'completed' && audit.sync_id
-      ? await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id)
+      ? await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus)
       : (audit.summary || EMPTY_SUMMARY);
 
     if (audit.status === 'completed') {
@@ -379,7 +419,7 @@ class AuditRunService {
     };
   }
 
-  private async buildSummary(userId: string, tenantId: string, syncId: string): Promise<AuditSummary> {
+  private async buildSummary(userId: string, tenantId: string, syncId: string, syncStatus?: any): Promise<AuditSummary> {
     const { data, error } = await supabaseAdmin
       .from('detection_results')
       .select('estimated_value, evidence, anomaly_type, coverage_family, detector_key, claim_readiness')
@@ -403,6 +443,36 @@ class AuditRunService {
       row?.evidence?.claim_readiness === 'claim_ready' ||
       row?.evidence?.evidence_ready === true
     ).length;
+    const metadata = getSyncMetadata(syncStatus);
+    const recordsReviewed = getRecordsReviewedFromMetadata(metadata);
+    const hasFindings = rows.length > 0;
+    const sourcesReviewed = [
+      numberFrom(metadata.ordersProcessed) || numberFrom(metadata.totalOrders) ? 'Orders' : null,
+      numberFrom(metadata.inventoryCount) ? 'Inventory' : null,
+      numberFrom(metadata.shipmentsCount) ? 'Shipments' : null,
+      numberFrom(metadata.returnsCount) ? 'Returns' : null,
+      numberFrom(metadata.settlementsCount) ? 'Settlements' : null,
+      numberFrom(metadata.feesCount) ? 'Fees' : null
+    ].filter((source): source is string => Boolean(source));
+    const sourceWarnings = Array.isArray(metadata.sourceWarnings)
+      ? metadata.sourceWarnings
+      : Array.isArray(metadata.warnings)
+        ? metadata.warnings
+        : [];
+    const sourcesUnavailable = sourceWarnings
+      .map((warning: any) => String(warning?.source || warning?.name || warning || '').trim())
+      .filter(Boolean);
+    const isPartial = sourcesUnavailable.length > 0 || recordsReviewed === 0;
+    const finalStatus: AuditSummary['finalStatus'] = hasFindings
+      ? (isPartial ? 'partial_with_findings' : 'complete_with_findings')
+      : (isPartial ? 'partial_no_findings' : 'complete_no_findings');
+    const message = hasFindings
+      ? (isPartial
+          ? 'Margin found recovery candidates from the Amazon data available. Some datasets were unavailable, so the audit is limited.'
+          : 'Margin found recovery candidates. Activate Margin to open the recovery workflow.')
+      : (isPartial
+          ? 'Margin completed the audit with limited Amazon data. No recovery candidates were found in the records available for review.'
+          : 'Margin reviewed the available Amazon activity and did not identify recovery opportunities in that audit window.');
 
     return {
       scopeValue,
@@ -410,16 +480,19 @@ class AuditRunService {
       categories,
       evidenceReadyCount,
       locked: true,
-      message: rows.length
-        ? 'Margin found recovery candidates. Activate Margin to open the recovery workflow.'
-        : 'Margin completed the audit. No recovery candidates are ready yet.'
+      message,
+      finalStatus,
+      recordsReviewed,
+      sourcesReviewed,
+      sourcesUnavailable,
+      retryable: isPartial
     };
   }
 
   private async getSyncStatus(syncId: string, userId: string, tenantId: string, storeId?: string | null) {
     let query = supabaseAdmin
       .from('sync_progress')
-      .select('sync_id, status, current_step, error_code, updated_at')
+      .select('sync_id, status, current_step, error_code, updated_at, metadata')
       .eq('sync_id', syncId)
       .eq('user_id', userId)
       .eq('tenant_id', tenantId)
