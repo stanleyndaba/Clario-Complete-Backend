@@ -7,6 +7,7 @@ import oauthStateStore from '../utils/oauthStateStore';
 import { syncJobManager } from '../services/syncJobManager';
 import onboardingCapacityService from '../services/onboardingCapacityService';
 import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifier';
+import { convertUserIdToUuid } from '../database/supabaseClient';
 
 const UUID_IN_TEXT_REGEX = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const AGENT1_SUCCESS_TRAP = 'AGENT1_SUCCESS_TRAP';
@@ -49,7 +50,7 @@ async function extractVerifiedAppUserId(req: Request): Promise<string | null> {
       return null;
     }
 
-    return extractUuid(verified.id);
+    return convertUserIdToUuid(verified.id);
   }
 
   if (!hasTrustedInternalApiKey(req)) {
