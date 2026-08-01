@@ -25,8 +25,8 @@ export const integrationsApiController = {
 
       // Exchange code for tokens (Amazon LWA)
       // Use AMAZON_SPAPI_CLIENT_ID as fallback if AMAZON_CLIENT_ID not set (for consistency)
-      const client_id = (process.env as any)['AMAZON_CLIENT_ID'] || (process.env as any)['AMAZON_SPAPI_CLIENT_ID'] || '';
-      const client_secret = (process.env as any)['AMAZON_CLIENT_SECRET'] || (process.env as any)['AMAZON_SPAPI_CLIENT_SECRET'] || '';
+      const client_id = (process.env as any)['AMAZON_CLIENT_ID'] || (process.env as any)['AMAZON_SPAPI_CLIENT_ID'] || (process.env as any)['SP_API_CLIENT_ID'] || '';
+      const client_secret = (process.env as any)['AMAZON_CLIENT_SECRET'] || (process.env as any)['AMAZON_SPAPI_CLIENT_SECRET'] || (process.env as any)['SP_API_CLIENT_SECRET'] || '';
       const redirect_uri = (process.env as any)['AMAZON_REDIRECT_URI'] || '';
       if (!client_id || !client_secret || !redirect_uri) {
         return res.status(500).json({ success: false, error: 'server_misconfigured' });

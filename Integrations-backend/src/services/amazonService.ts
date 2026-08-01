@@ -337,9 +337,9 @@ export class AmazonService {
         }
       }
 
-      // Use AMAZON_SPAPI_CLIENT_ID as fallback if AMAZON_CLIENT_ID not set (for consistency)
-      const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
-      const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET;
+      // Support both legacy Amazon env names and the current SP-API naming used by diagnostics.
+      const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID || process.env.SP_API_CLIENT_ID;
+      const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET || process.env.SP_API_CLIENT_SECRET;
 
       if (!clientId || !clientSecret || !refreshToken) {
         throw new Error('Amazon SP-API credentials not configured. Please connect your Amazon account first.');
@@ -455,8 +455,8 @@ export class AmazonService {
     try {
       // Get Application ID and Client ID
       const applicationId = process.env.AMAZON_APP_ID || process.env.AMAZON_APPLICATION_ID;
-      const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
-      const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET;
+      const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID || process.env.SP_API_CLIENT_ID;
+      const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET || process.env.SP_API_CLIENT_SECRET;
 
       if (!clientId || !clientSecret) {
         throw new Error('Amazon OAuth client credentials are not configured.');
@@ -521,8 +521,8 @@ export class AmazonService {
 
   async handleCallback(code: string, state?: string): Promise<any> {
     // Get client credentials (declare outside try block so available in catch)
-    const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID;
-    const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET;
+    const clientId = process.env.AMAZON_CLIENT_ID || process.env.AMAZON_SPAPI_CLIENT_ID || process.env.SP_API_CLIENT_ID;
+    const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.AMAZON_SPAPI_CLIENT_SECRET || process.env.SP_API_CLIENT_SECRET;
     const redirectUri = process.env.AMAZON_REDIRECT_URI ||
       process.env.AMAZON_SPAPI_REDIRECT_URI ||
       `${process.env.INTEGRATIONS_URL || 'http://localhost:3001'}/api/v1/integrations/amazon/auth/callback`;
