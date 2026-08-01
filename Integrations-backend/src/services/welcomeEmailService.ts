@@ -57,35 +57,32 @@ export function buildWelcomeEmail(
   input: WorkspaceWelcomeEmailInput,
   setupState: WelcomeSetupState
 ): { subject: string; html: string; text: string } {
-  const workspaceName = input.tenantName?.trim() || 'your Margin workspace';
-  const safeWorkspaceName = escapeHtml(workspaceName);
   const subject = 'Welcome to Margin';
-  const intro = 'Your Founding 500 seat is secured.';
-  const setupLine = setupState.amazonConnected && setupState.reliable
-    ? 'Your Amazon connection is already recorded. Margin will review activation readiness before any founder-led setup continues.'
-    : 'Founder pricing is locked, priority activation is included, and founder onboarding begins soon. A founder or team member will contact you with the next setup step.';
+  const intro = 'Your Recovery Audit is ready.';
+  
   const text = [
     'Welcome to Margin',
     '=================',
     '',
-    intro,
+    'Your account is ready.',
     '',
-    `Reservation workspace: ${workspaceName}`,
+    'Next, connect your Amazon seller account and run your free Recovery Audit.',
     '',
-    'Your reservation puts you in the Founding 500 activation queue. Platform access begins after onboarding readiness and infrastructure preparation are confirmed.',
+    'Margin will review your shipment, inventory, reimbursement, fee, and settlement activity and show you what may require attention.',
     '',
-    setupLine,
+    'What happens next',
+    '- Connect Amazon.',
+    '- Run your Recovery Audit.',
+    '- Review your results.',
     '',
-    'What happens next:',
-    '- Margin reconciles the reservation and confirms founder activation readiness.',
-    '- A founder or team member contacts you for onboarding and setup scheduling.',
-    '- Marketplace connection and platform access begin after activation preparation is complete.',
+    'You do not need to upload reports or documents yet. Margin will tell you when additional evidence is needed.',
     '',
-    'You do not need to connect Amazon or upload reports yet. Margin will guide setup during founder onboarding.',
+    'The audit is read-only, and nothing is filed without your approval.',
     '',
-    'If anything feels unclear, reply to this email and we will help.',
+    'Questions? Reply to this email and we will help.',
     '',
-    'Margin Team'
+    'Margin Team',
+    'support@margin-finance.com'
   ].join('\n');
 
   const html = `
@@ -108,23 +105,19 @@ export function buildWelcomeEmail(
             <h1 style="margin:28px 0 0 0; font-size:28px; line-height:1.18; font-weight:600; color:#111827;">
               Welcome to Margin
             </h1>
-            <p style="margin:14px 0 0 0; color:#404040; font-size:16px; line-height:1.7;">
-              ${escapeHtml(intro)}
-            </p>
           </div>
 
           <div style="padding-top:24px;">
-            <p style="margin:0; color:#525252; font-size:14px; line-height:1.7;">
-              Reservation workspace: <strong style="color:#171717; font-weight:600;">${safeWorkspaceName}</strong>
-            </p>
-
-            <p style="margin:20px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              Your reservation puts you in the Founding 500 activation queue. Platform access begins
-              after onboarding readiness and infrastructure preparation are confirmed.
+            <p style="margin:0; color:#262626; font-size:15px; line-height:1.8;">
+              Your account is ready.
             </p>
 
             <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              ${escapeHtml(setupLine)}
+              Next, connect your Amazon seller account and run your free Recovery Audit.
+            </p>
+            
+            <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
+              Margin will review your shipment, inventory, reimbursement, fee, and settlement activity and show you what may require attention.
             </p>
 
             <div style="margin-top:24px; padding-top:20px; border-top:1px solid #eeeeee;">
@@ -132,23 +125,28 @@ export function buildWelcomeEmail(
                 What happens next
               </p>
               <ol style="margin:12px 0 0 20px; padding:0; color:#333333; font-size:14px; line-height:1.8;">
-                <li style="margin-bottom:8px;">Margin reconciles the reservation and confirms founder activation readiness.</li>
-                <li style="margin-bottom:8px;">A founder or team member contacts you for onboarding and setup scheduling.</li>
-                <li>Marketplace connection and platform access begin after activation preparation is complete.</li>
+                <li style="margin-bottom:8px;">Connect Amazon.</li>
+                <li style="margin-bottom:8px;">Run your Recovery Audit.</li>
+                <li>Review your results.</li>
               </ol>
             </div>
 
             <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              You do not need to connect Amazon or upload reports yet. Margin will guide setup during founder onboarding.
+              You do not need to upload reports or documents yet. Margin will tell you when additional evidence is needed.
+            </p>
+            
+            <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
+              The audit is read-only, and nothing is filed without your approval.
             </p>
 
             <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              If anything feels unclear, reply to this email and we will help.
+              Questions? Reply to this email and we will help.
             </p>
 
-            <p style="margin:28px 0 0 0; color:#171717; font-size:15px; line-height:1.7;">
-              Margin Team
-            </p>
+            <div style="margin:28px 0 0 0; color:#171717; font-size:15px; line-height:1.7;">
+              <div>Margin Team</div>
+              <div style="color:#666666; font-size:14px;">support@margin-finance.com</div>
+            </div>
           </div>
         </div>
       </body>
