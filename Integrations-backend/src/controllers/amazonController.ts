@@ -12,6 +12,25 @@ import { convertUserIdToUuid } from '../database/supabaseClient';
 const UUID_IN_TEXT_REGEX = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const AGENT1_SUCCESS_TRAP = 'AGENT1_SUCCESS_TRAP';
 
+class AmazonConnectionConflictError extends Error {
+  readonly code = 'amazon_seller_connected_elsewhere';
+
+  constructor() {
+    super('This Amazon seller account is already connected to another Margin workspace.');
+    this.name = 'AmazonConnectionConflictError';
+  }
+}
+
+function isUniqueConstraintError(error: any, constraintName?: string): boolean {
+  const message = String(error?.message || error || '').toLowerCase();
+  const code = String(error?.code || '');
+  return (
+    code === '23505' ||
+    message.includes('duplicate key value violates unique constraint') ||
+    Boolean(constraintName && message.includes(constraintName.toLowerCase()))
+  );
+}
+
 function trapState(state?: string | null): string | null {
   if (!state) return null;
   return state.length <= 12 ? state : `${state.slice(0, 8)}...${state.slice(-4)}`;
@@ -717,55 +736,38 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         throw new Error('Amazon returned a sandbox/demo seller profile for a live workspace. Check that AMAZON_SPAPI_BASE_URL is using production SP-API and restart the Amazon connection flow.');
       }
 
-      const { data: conflictingUser, error: conflictingUserError } = await supabaseAdmin
+      const { data: sellerOwnerUser, error: sellerOwnerError } = await supabaseAdmin
         .from('users')
         .select('id, tenant_id, email')
         .or(`seller_id.eq.${profile.sellerId},amazon_seller_id.eq.${profile.sellerId}`)
-        .neq('id', authenticatedUserId)
         .maybeSingle();
 
-      if (conflictingUserError) {
-        throw new Error(`Failed to validate seller ownership: ${conflictingUserError.message}`);
+      if (sellerOwnerError) {
+        throw new Error(`Failed to validate seller ownership: ${sellerOwnerError.message}`);
       }
 
-      if (conflictingUser?.id) {
-        const { data: conflictingTenant } = await supabaseAdmin
-          .from('tenants')
-          .select('slug, metadata')
-          .eq('id', conflictingUser.tenant_id)
-          .maybeSingle();
+      const sellerOwnerTenantId = sellerOwnerUser?.tenant_id || null;
+      const sellerOwnedBySameTenant = Boolean(sellerOwnerUser?.id && sellerOwnerTenantId === tenantIdToUse);
+      const sellerOwnedByCurrentUser = sellerOwnerUser?.id === authenticatedUserId;
+      const shouldAssignCanonicalAmazonSellerId = !sellerOwnerUser?.id || sellerOwnedByCurrentUser;
 
-        const conflictIsDemoWorkspace =
-          conflictingTenant?.slug === 'demo-workspace' ||
-          conflictingTenant?.metadata?.is_demo_workspace === true ||
-          String(conflictingUser.email || '').toLowerCase().includes('demo');
+      if (sellerOwnerUser?.id && !sellerOwnedBySameTenant && !sellerOwnedByCurrentUser) {
+        trapWarn('amazon_connection_conflict', {
+          tenantId: tenantIdToUse,
+          userId: authenticatedUserId,
+          sellerId: profile.sellerId,
+          ownerTenantKnown: Boolean(sellerOwnerTenantId)
+        });
+        throw new AmazonConnectionConflictError();
+      }
 
-        if (!isDemoTenantConnection) {
-          const { error: clearDemoBindingError } = await supabaseAdmin
-            .from('users')
-            .update({
-              amazon_seller_id: null,
-              seller_id: null,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', conflictingUser.id);
-
-          if (clearDemoBindingError) {
-            throw new Error(`Failed to clear stale Amazon seller binding: ${clearDemoBindingError.message}`);
-          }
-
-          logger.info('Cleared stale Amazon seller binding before live OAuth bind', {
-            previousUserId: conflictingUser.id,
-            tenantId: conflictingUser.tenant_id
-          });
-          trapInfo('stale_user_binding_cleared', {
-            previousUserId: conflictingUser.id,
-            tenantId: conflictingUser.tenant_id,
-            conflictWasDemoWorkspace: conflictIsDemoWorkspace
-          });
-        } else {
-          throw new Error('This Amazon seller account is already linked to a different authenticated app user.');
-        }
+      if (sellerOwnedBySameTenant && !sellerOwnedByCurrentUser) {
+        trapInfo('amazon_connection_reused', {
+          tenantId: tenantIdToUse,
+          userId: authenticatedUserId,
+          ownerUserId: sellerOwnerUser?.id,
+          sellerId: profile.sellerId
+        });
       }
 
       const { data: existingUser, error: existingUserError } = await supabaseAdmin
@@ -781,20 +783,61 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       if (existingUser?.id) {
         userEmail = existingUser.email || placeholderEmail;
 
+        const userBindingUpdate: Record<string, any> = {
+          company_name: profile.companyName || profile.sellerName || existingUser.company_name || null,
+          seller_id: profile.sellerId,
+          tenant_id: tenantIdToUse,
+          last_active_tenant_id: tenantIdToUse,
+          updated_at: new Date().toISOString()
+        };
+
+        if (shouldAssignCanonicalAmazonSellerId) {
+          userBindingUpdate.amazon_seller_id = profile.sellerId;
+        }
+
         const { error: updateUserError } = await supabaseAdmin
           .from('users')
-          .update({
-            company_name: profile.companyName || profile.sellerName || existingUser.company_name || null,
-            seller_id: profile.sellerId,
-            amazon_seller_id: profile.sellerId,
-            tenant_id: tenantIdToUse,
-            last_active_tenant_id: tenantIdToUse,
-            updated_at: new Date().toISOString()
-          })
+          .update(userBindingUpdate)
           .eq('id', authenticatedUserId);
 
         if (updateUserError) {
-          throw new Error(`Failed to bind Amazon seller to authenticated user: ${updateUserError.message}`);
+          if (isUniqueConstraintError(updateUserError, 'users_amazon_seller_id_key')) {
+            const { data: concurrentOwner } = await supabaseAdmin
+              .from('users')
+              .select('id, tenant_id')
+              .or(`seller_id.eq.${profile.sellerId},amazon_seller_id.eq.${profile.sellerId}`)
+              .maybeSingle();
+
+            if (concurrentOwner?.tenant_id === tenantIdToUse) {
+              const retryPayload = { ...userBindingUpdate };
+              delete retryPayload.amazon_seller_id;
+              const { error: retryUserUpdateError } = await supabaseAdmin
+                .from('users')
+                .update(retryPayload)
+                .eq('id', authenticatedUserId);
+
+              if (retryUserUpdateError) {
+                throw new Error(`Failed to reuse Amazon seller connection for authenticated user: ${retryUserUpdateError.message}`);
+              }
+
+              trapInfo('amazon_connection_reused_after_unique_conflict', {
+                tenantId: tenantIdToUse,
+                userId: authenticatedUserId,
+                ownerUserId: concurrentOwner.id,
+                sellerId: profile.sellerId
+              });
+            } else {
+              trapWarn('amazon_connection_conflict_after_unique_conflict', {
+                tenantId: tenantIdToUse,
+                userId: authenticatedUserId,
+                sellerId: profile.sellerId,
+                ownerTenantKnown: Boolean(concurrentOwner?.tenant_id)
+              });
+              throw new AmazonConnectionConflictError();
+            }
+          } else {
+            throw new Error(`Failed to bind Amazon seller to authenticated user: ${updateUserError.message}`);
+          }
         }
 
         logger.info('Bound Amazon seller to authenticated app user', {
@@ -1277,17 +1320,28 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         }
       }
 
+      const isConnectionConflict = callbackError instanceof AmazonConnectionConflictError ||
+        callbackError?.code === 'amazon_seller_connected_elsewhere';
+      const safeErrorCode = isConnectionConflict ? 'amazon_seller_connected_elsewhere' : 'amazon_oauth_failed';
+      const safeErrorMessage = isConnectionConflict
+        ? 'This Amazon seller account is already connected to another Margin workspace.'
+        : 'Amazon connection could not be completed. Return to the audit and connect again.';
+      const safeErrorDescription = isConnectionConflict
+        ? 'Sign in to the workspace that originally connected it, or contact Margin support if the connection needs to be reviewed.'
+        : 'Your Amazon connection session did not finish cleanly. No seller data was changed.';
+
       // For POST requests, return JSON error
       if (req.method === 'POST') {
         const origin = req.headers.origin || '*';
         res.header('Access-Control-Allow-Origin', origin);
         res.header('Access-Control-Allow-Credentials', 'true');
-        return res.status(500).json({
+        return res.status(isConnectionConflict ? 409 : 500).json({
           ok: false,
           connected: false,
           success: false,
-          error: 'Connection failed',
-          message: callbackError.message || 'OAuth callback failed. Please retry. Contact support if issue persists.'
+          error: safeErrorCode,
+          message: safeErrorMessage,
+          support_message: safeErrorDescription
         });
       }
 
@@ -1300,7 +1354,17 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           frontendUrl = storedState.frontendUrl;
         }
       }
-      const errorUrl = `${frontendUrl}/auth/success?status=error&error=${encodeURIComponent(callbackError.message || 'oauth_failed')}&amazon_error=true&auth_bridge=true`;
+      const cleanBase = frontendUrl.endsWith('/') ? frontendUrl.slice(0, -1) : frontendUrl;
+      const errorUrlBuilder = new URL('/auth/success', cleanBase);
+      errorUrlBuilder.searchParams.append('status', 'error');
+      errorUrlBuilder.searchParams.append('error', safeErrorMessage);
+      errorUrlBuilder.searchParams.append('error_code', safeErrorCode);
+      errorUrlBuilder.searchParams.append('error_description', safeErrorDescription);
+      errorUrlBuilder.searchParams.append('amazon_error', 'true');
+      errorUrlBuilder.searchParams.append('auth_bridge', 'true');
+      if (tenantSlug) errorUrlBuilder.searchParams.append('tenant_slug', tenantSlug);
+      errorUrlBuilder.searchParams.append('return_to', '/audit');
+      const errorUrl = errorUrlBuilder.toString();
       trapInfo('callback_error_redirect_emitted', {
         userId,
         tenantSlug,
