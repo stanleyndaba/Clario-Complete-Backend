@@ -1,6 +1,4 @@
 import axios, { AxiosError, Method } from 'axios';
-import aws4 from 'aws4';
-import { STSClient, AssumeRoleCommand } from '@aws-sdk/client-sts';
 import * as dotenv from 'dotenv';
 import path from 'path';
 
@@ -156,46 +154,22 @@ async function getLwaAccessToken(): Promise<string> {
   return response.data.access_token;
 }
 
-async function getAwsCredentials() {
-  const accessKeyId = requireEnv('AWS_ACCESS_KEY_ID', 'AMAZON_ACCESS_KEY_ID');
-  const secretAccessKey = requireEnv('AWS_SECRET_ACCESS_KEY', 'AMAZON_SECRET_ACCESS_KEY');
-  const roleArn = requireEnv('SP_API_ROLE_ARN', 'AWS_ROLE_ARN');
+// NOTE: STS/SigV4 auth removed — Amazon deprecated it for SP-API.
+// Using LWA access token directly (same auth path as production amazonService.ts).
 
-  const sts = new STSClient({ region, credentials: { accessKeyId, secretAccessKey } });
-  const assumed = await sts.send(new AssumeRoleCommand({
-    RoleArn: roleArn,
-    RoleSessionName: 'SpApiAccessProbe',
-  }));
-
-  return {
-    accessKeyId: assumed.Credentials!.AccessKeyId!,
-    secretAccessKey: assumed.Credentials!.SecretAccessKey!,
-    sessionToken: assumed.Credentials!.SessionToken!,
+async function callProbe(probe: Probe, accessToken: string) {
+  const headers: Record<string, string> = {
+    'Authorization': `Bearer ${accessToken}`,
+    'x-amz-access-token': accessToken,
+    'user-agent': 'Margin/SPAPIAccessProbe/1.0 (Language=TypeScript)',
+    'content-type': 'application/json',
   };
-}
-
-async function callProbe(probe: Probe, accessToken: string, credentials: any) {
-  const opts: any = {
-    host,
-    path: probe.path,
-    method: probe.method.toUpperCase(),
-    region,
-    service: 'execute-api',
-    headers: {
-      'x-amz-access-token': accessToken,
-      'user-agent': 'Margin/SPAPIAccessProbe/1.0 (Language=TypeScript)',
-      'content-type': 'application/json',
-    },
-    body: probe.body ? JSON.stringify(probe.body) : undefined,
-  };
-
-  aws4.sign(opts, credentials);
 
   try {
     const response = await axios.request({
       method: probe.method,
       url: `${endpointUrl.origin}${probe.path}`,
-      headers: opts.headers,
+      headers,
       data: probe.body,
       timeout: 20_000,
       validateStatus: () => true,
@@ -222,7 +196,6 @@ async function callProbe(probe: Probe, accessToken: string, credentials: any) {
 
 async function main() {
   const accessToken = await getLwaAccessToken();
-  const credentials = await getAwsCredentials();
   const now = new Date();
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
@@ -324,7 +297,7 @@ async function main() {
     endpoint: endpointUrl.origin,
     region,
     marketplaceId,
-    probes: await Promise.all(probes.map((probe) => callProbe(probe, accessToken, credentials))),
+    probes: await Promise.all(probes.map((probe) => callProbe(probe, accessToken))),
   }, null, 2));
 }
 
