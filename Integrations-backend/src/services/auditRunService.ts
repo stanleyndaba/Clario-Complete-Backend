@@ -40,6 +40,24 @@ const SYNC_BACKLOG_SUMMARY: AuditSummary = {
   message: 'Amazon is connected. Margin will resume the audit when sync capacity is available.'
 };
 
+const SYNC_IN_PROGRESS_SUMMARY: AuditSummary = {
+  scopeValue: 0,
+  findingsCount: 0,
+  categories: [],
+  evidenceReadyCount: 0,
+  locked: true,
+  message: 'Amazon data is still syncing. Continue the audit again once the sync finishes.'
+};
+
+const SAFE_AUDIT_FAILURE_SUMMARY: AuditSummary = {
+  scopeValue: 0,
+  findingsCount: 0,
+  categories: [],
+  evidenceReadyCount: 0,
+  locked: true,
+  message: 'Margin could not complete the audit automatically. Retry after the Amazon connection settles.'
+};
+
 function isTemporarySyncAdmissionBlock(error: any) {
   const message = String(error?.message || error || '').toLowerCase();
   return message.includes('sync temporarily paused') ||
@@ -47,6 +65,28 @@ function isTemporarySyncAdmissionBlock(error: any) {
     message.includes('filing_circuit_breaker_open') ||
     message.includes('capacity_blocked') ||
     message.includes('operator_disabled');
+}
+
+function isUnsafePipelineMessage(message: string): boolean {
+  const normalized = String(message || '').toLowerCase();
+  return normalized.includes('supabase') ||
+    normalized.includes('duplicate key') ||
+    normalized.includes('constraint') ||
+    normalized.includes('is not a function') ||
+    normalized.includes('typeerror') ||
+    normalized.includes('syntaxerror') ||
+    normalized.includes('pipeline failed');
+}
+
+function safeFailureSummary(message?: string | null): AuditSummary {
+  if (!message || isUnsafePipelineMessage(message)) {
+    return SAFE_AUDIT_FAILURE_SUMMARY;
+  }
+
+  return {
+    ...SAFE_AUDIT_FAILURE_SUMMARY,
+    message
+  };
 }
 
 function getCountedValue(row: any): number {
@@ -232,6 +272,21 @@ class AuditRunService {
       }
     }
 
+    const syncStatus = await this.getSyncStatus(audit.sync_id, audit.user_id, audit.tenant_id, audit.store_id);
+    if (!syncStatus || ['running', 'in_progress', 'detecting'].includes(String(syncStatus.status || '').toLowerCase())) {
+      return this.updateAudit(audit.id, {
+        status: 'syncing',
+        summary: SYNC_IN_PROGRESS_SUMMARY
+      });
+    }
+
+    if (['failed', 'cancelled'].includes(String(syncStatus.status || '').toLowerCase())) {
+      return this.updateAudit(audit.id, {
+        status: 'failed',
+        summary: safeFailureSummary(syncStatus.current_step || syncStatus.error_code || 'Amazon sync did not complete.')
+      });
+    }
+
     await this.updateAudit(audit.id, { status: 'detecting' });
     const result = await enhancedDetectionService.triggerDetectionPipeline(
       audit.user_id,
@@ -243,10 +298,7 @@ class AuditRunService {
     if (!result.success) {
       return this.updateAudit(audit.id, {
         status: 'failed',
-        summary: {
-          ...EMPTY_SUMMARY,
-          message: result.message || 'Detection could not be completed.'
-        }
+        summary: safeFailureSummary(result.message || 'Detection could not be completed.')
       });
     }
 
@@ -320,6 +372,34 @@ class AuditRunService {
         ? 'Margin found recovery candidates. Activate Margin to open the recovery workflow.'
         : 'Margin completed the audit. No recovery candidates are ready yet.'
     };
+  }
+
+  private async getSyncStatus(syncId: string, userId: string, tenantId: string, storeId?: string | null) {
+    let query = supabaseAdmin
+      .from('sync_progress')
+      .select('sync_id, status, current_step, error_code, updated_at')
+      .eq('sync_id', syncId)
+      .eq('user_id', userId)
+      .eq('tenant_id', tenantId)
+      .order('updated_at', { ascending: false })
+      .limit(1);
+
+    if (storeId) {
+      query = query.eq('store_id', storeId);
+    }
+
+    const { data, error } = await query.maybeSingle();
+    if (error) {
+      logger.warn('[AUDIT] Failed to read sync status before detection', {
+        syncId,
+        userId,
+        tenantId,
+        error: error.message
+      });
+      return null;
+    }
+
+    return data || null;
   }
 
   private async updateAudit(id: string, updates: Record<string, unknown>) {

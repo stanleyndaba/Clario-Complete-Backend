@@ -325,6 +325,33 @@ export function createPostgresSupabaseAdapter(connectionString: string): any {
       return this;
     }
 
+    filter(field: string, operator: string, value: any) {
+      const op = String(operator || '').toLowerCase();
+
+      if (op === 'eq') return this.eq(field, value);
+      if (op === 'neq') return this.neq(field, value);
+      if (op === 'gt') return this.gt(field, value);
+      if (op === 'gte') return this.gte(field, value);
+      if (op === 'lt') return this.lt(field, value);
+      if (op === 'lte') return this.lte(field, value);
+      if (op === 'like') return this.like(field, value);
+      if (op === 'ilike') return this.ilike(field, value);
+      if (op === 'is') return this.is(field, value);
+      if (op === 'in') {
+        const values = Array.isArray(value)
+          ? value
+          : String(value || '')
+            .replace(/^\(|\)$/g, '')
+            .split(',')
+            .map((item) => item.trim())
+            .filter(Boolean);
+        return this.in(field, values);
+      }
+
+      logger.warn('[PG_ADAPTER] Unsupported .filter ignored', { table: this.table, field, operator });
+      return this;
+    }
+
     or(filter: string) {
       logger.warn('[PG_ADAPTER] Unsupported .or filter ignored', { table: this.table, filter });
       return this;
