@@ -137,6 +137,21 @@ export class Agent2DataSyncService {
     });
   }
 
+  private isNonFatalSyncError(message: string): boolean {
+    const normalized = String(message || '').toLowerCase();
+    const isOptionalDataset =
+      normalized.includes('failed to sync inventory') ||
+      normalized.includes('failed to sync inventory ledger') ||
+      normalized.includes('failed to sync catalog');
+    const isProviderAccessLimit =
+      normalized.includes('access to requested resource is denied') ||
+      normalized.includes('unauthorized') ||
+      normalized.includes('forbidden') ||
+      normalized.includes('not authorized');
+
+    return isOptionalDataset && isProviderAccessLimit;
+  }
+
   private async resolveTenantId(userId: string, providedTenantId?: string): Promise<string> {
     const { data: membership, error } = await supabaseAdmin
       .from('tenant_memberships')
@@ -861,7 +876,8 @@ export class Agent2DataSyncService {
       // Calculate duration
       result.duration = Date.now() - startTime;
       result.errors = errors;
-      result.success = errors.length === 0;
+      const fatalErrors = errors.filter((message) => !this.isNonFatalSyncError(message));
+      result.success = fatalErrors.length === 0;
 
       // 🎯 AGENT 11 FEED: Log sync event via agentEventLogger
       try {

@@ -89,6 +89,20 @@ function safeFailureSummary(message?: string | null): AuditSummary {
   };
 }
 
+function isRetryableSyncFailure(syncStatus: any): boolean {
+  const details = [
+    syncStatus?.current_step,
+    syncStatus?.error_code,
+    typeof syncStatus?.error_details === 'string' ? syncStatus.error_details : JSON.stringify(syncStatus?.error_details || {}),
+    typeof syncStatus?.metadata === 'string' ? syncStatus.metadata : JSON.stringify(syncStatus?.metadata || {})
+  ].join(' ').toLowerCase();
+
+  return details.includes('access to requested resource is denied') ||
+    details.includes('temporary issue while updating your amazon records') ||
+    details.includes('sync timeout') ||
+    details.includes('timeout');
+}
+
 function getCountedValue(row: any): number {
   const countedValue = row?.evidence?.economic_rollup?.counted_value;
   return typeof countedValue === 'number' && Number.isFinite(countedValue)
@@ -281,6 +295,34 @@ class AuditRunService {
     }
 
     if (['failed', 'cancelled'].includes(String(syncStatus.status || '').toLowerCase())) {
+      if (isRetryableSyncFailure(syncStatus)) {
+        try {
+          const sync = await syncJobManager.startSync(audit.user_id, audit.tenant_id, connection.store_id || undefined);
+          return this.updateAudit(audit.id, {
+            status: 'syncing',
+            sync_id: sync.syncId,
+            store_id: connection.store_id || null,
+            summary: {
+              ...SYNC_IN_PROGRESS_SUMMARY,
+              message: 'Margin restarted the Amazon data sync and is rebuilding the audit.'
+            }
+          });
+        } catch (error: any) {
+          logger.warn('[AUDIT] Failed to restart audit sync after retryable failure', {
+            auditId: audit.id,
+            syncId: audit.sync_id,
+            userId: audit.user_id,
+            error: error?.message
+          });
+          if (isTemporarySyncAdmissionBlock(error)) {
+            return this.updateAudit(audit.id, {
+              status: 'created',
+              summary: SYNC_BACKLOG_SUMMARY
+            });
+          }
+        }
+      }
+
       return this.updateAudit(audit.id, {
         status: 'failed',
         summary: safeFailureSummary(syncStatus.current_step || syncStatus.error_code || 'Amazon sync did not complete.')
