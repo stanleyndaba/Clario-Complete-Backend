@@ -740,7 +740,7 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
           conflictingTenant?.metadata?.is_demo_workspace === true ||
           String(conflictingUser.email || '').toLowerCase().includes('demo');
 
-        if (conflictIsDemoWorkspace && !isDemoTenantConnection) {
+        if (!isDemoTenantConnection) {
           const { error: clearDemoBindingError } = await supabaseAdmin
             .from('users')
             .update({
@@ -751,12 +751,17 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
             .eq('id', conflictingUser.id);
 
           if (clearDemoBindingError) {
-            throw new Error(`Failed to clear stale demo seller binding: ${clearDemoBindingError.message}`);
+            throw new Error(`Failed to clear stale Amazon seller binding: ${clearDemoBindingError.message}`);
           }
 
-          logger.info('Cleared stale demo Amazon seller binding before live OAuth bind', {
-            demoUserId: conflictingUser.id,
+          logger.info('Cleared stale Amazon seller binding before live OAuth bind', {
+            previousUserId: conflictingUser.id,
             tenantId: conflictingUser.tenant_id
+          });
+          trapInfo('stale_user_binding_cleared', {
+            previousUserId: conflictingUser.id,
+            tenantId: conflictingUser.tenant_id,
+            conflictWasDemoWorkspace: conflictIsDemoWorkspace
           });
         } else {
           throw new Error('This Amazon seller account is already linked to a different authenticated app user.');
