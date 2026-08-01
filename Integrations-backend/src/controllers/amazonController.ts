@@ -710,9 +710,16 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
         throw new Error('Authenticated user is not an active member of the tenant requested for Amazon OAuth.');
       }
 
+      const isDemoSellerProfile = /^ACME-/i.test(profile.sellerId);
+      const isDemoTenantConnection = tenantSlug === 'demo-workspace';
+
+      if (isDemoSellerProfile && !isDemoTenantConnection) {
+        throw new Error('Amazon returned a sandbox/demo seller profile for a live workspace. Check that AMAZON_SPAPI_BASE_URL is using production SP-API and restart the Amazon connection flow.');
+      }
+
       const { data: conflictingUser, error: conflictingUserError } = await supabaseAdmin
         .from('users')
-        .select('id')
+        .select('id, tenant_id, email')
         .or(`seller_id.eq.${profile.sellerId},amazon_seller_id.eq.${profile.sellerId}`)
         .neq('id', authenticatedUserId)
         .maybeSingle();
@@ -722,7 +729,38 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       }
 
       if (conflictingUser?.id) {
-        throw new Error('This Amazon seller account is already linked to a different authenticated app user.');
+        const { data: conflictingTenant } = await supabaseAdmin
+          .from('tenants')
+          .select('slug, metadata')
+          .eq('id', conflictingUser.tenant_id)
+          .maybeSingle();
+
+        const conflictIsDemoWorkspace =
+          conflictingTenant?.slug === 'demo-workspace' ||
+          conflictingTenant?.metadata?.is_demo_workspace === true ||
+          String(conflictingUser.email || '').toLowerCase().includes('demo');
+
+        if (conflictIsDemoWorkspace && !isDemoTenantConnection) {
+          const { error: clearDemoBindingError } = await supabaseAdmin
+            .from('users')
+            .update({
+              amazon_seller_id: null,
+              seller_id: null,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', conflictingUser.id);
+
+          if (clearDemoBindingError) {
+            throw new Error(`Failed to clear stale demo seller binding: ${clearDemoBindingError.message}`);
+          }
+
+          logger.info('Cleared stale demo Amazon seller binding before live OAuth bind', {
+            demoUserId: conflictingUser.id,
+            tenantId: conflictingUser.tenant_id
+          });
+        } else {
+          throw new Error('This Amazon seller account is already linked to a different authenticated app user.');
+        }
       }
 
       const { data: existingUser, error: existingUserError } = await supabaseAdmin
