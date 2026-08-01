@@ -76,23 +76,82 @@ class OnboardingCapacityService {
       return { allowed: true, active: await this.getActiveCount(), max: this.getMaxActive() };
     }
 
-    const { data, error } = await supabaseAdmin.rpc('reserve_onboarding_slot', {
-      p_user_id: normalizedUserId,
-      p_tenant_id: tenantId,
-      p_max: this.getMaxActive(),
-      p_ttl_minutes: DEFAULT_TTL_MINUTES
-    });
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const expiresAt = new Date(now.getTime() + DEFAULT_TTL_MINUTES * 60 * 1000).toISOString();
 
-    if (error) {
-      logger.error('Failed to reserve onboarding slot', { error: error.message, userId: normalizedUserId, tenantId });
+    const expireResult = await supabaseAdmin
+      .from('onboarding_slots')
+      .update({
+        status: 'expired',
+        released_at: nowIso,
+        updated_at: nowIso
+      })
+      .eq('status', 'active')
+      .lte('expires_at', nowIso);
+
+    if (expireResult.error) {
+      logger.warn('Failed to expire stale onboarding slots before reservation', {
+        error: expireResult.error.message,
+        userId: normalizedUserId,
+        tenantId
+      });
+    }
+
+    const existingResult = await supabaseAdmin
+      .from('onboarding_slots')
+      .select('user_id')
+      .eq('user_id', normalizedUserId)
+      .eq('status', 'active')
+      .gt('expires_at', nowIso)
+      .maybeSingle();
+
+    if (existingResult.error) {
+      logger.error('Failed to read existing onboarding slot', {
+        error: existingResult.error.message,
+        userId: normalizedUserId,
+        tenantId
+      });
       return { allowed: false, active: await this.getActiveCount(), max: this.getMaxActive() };
     }
 
-    const payload = Array.isArray(data) ? data[0] : data;
+    if (existingResult.data) {
+      return { allowed: true, active: await this.getActiveCount(), max: this.getMaxActive() };
+    }
+
+    const active = await this.getActiveCount();
+    const max = this.getMaxActive();
+    if (active >= max) {
+      return { allowed: false, active, max };
+    }
+
+    const reserveResult = await supabaseAdmin
+      .from('onboarding_slots')
+      .upsert({
+        user_id: normalizedUserId,
+        tenant_id: tenantId,
+        status: 'active',
+        started_at: nowIso,
+        expires_at: expiresAt,
+        updated_at: nowIso,
+        released_at: null,
+        completed_at: null,
+        metadata: { reserved_at: nowIso }
+      }, { onConflict: 'user_id' });
+
+    if (reserveResult.error) {
+      logger.error('Failed to reserve onboarding slot', {
+        error: reserveResult.error.message,
+        userId: normalizedUserId,
+        tenantId
+      });
+      return { allowed: false, active: await this.getActiveCount(), max: this.getMaxActive() };
+    }
+
     return {
-      allowed: Boolean(payload?.allowed),
-      active: Number(payload?.active_count || 0),
-      max: this.getMaxActive()
+      allowed: true,
+      active: await this.getActiveCount(),
+      max
     };
   }
 
@@ -101,7 +160,16 @@ class OnboardingCapacityService {
     if (!normalizedUserId) return;
 
     if (outcome === 'completed') {
-      const { error } = await supabaseAdmin.rpc('complete_onboarding_slot', { p_user_id: normalizedUserId });
+      const { error } = await supabaseAdmin
+        .from('onboarding_slots')
+        .update({
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+          released_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq('user_id', normalizedUserId)
+        .eq('status', 'active');
       if (error) {
         logger.warn('Failed to complete onboarding slot', { error: error.message, userId: normalizedUserId });
       }
