@@ -353,7 +353,39 @@ export function createPostgresSupabaseAdapter(connectionString: string): any {
     }
 
     or(filter: string) {
-      logger.warn('[PG_ADAPTER] Unsupported .or filter ignored', { table: this.table, filter });
+      const clauses = String(filter || '')
+        .split(',')
+        .map((clause) => clause.trim())
+        .filter(Boolean);
+      const orFilters: string[] = [];
+
+      for (const clause of clauses) {
+        const match = clause.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-z]+)\.(.*)$/);
+        if (!match) {
+          logger.warn('[PG_ADAPTER] Unsupported .or clause ignored', { table: this.table, clause });
+          continue;
+        }
+
+        const [, field, operator, rawValue] = match;
+        const op = operator.toLowerCase();
+        const value = rawValue;
+
+        if (op === 'eq') {
+          this.values.push(value);
+          orFilters.push(`${quoteIdentifier(field)} = $${this.values.length}`);
+        } else if (op === 'neq') {
+          this.values.push(value);
+          orFilters.push(`${quoteIdentifier(field)} <> $${this.values.length}`);
+        } else {
+          logger.warn('[PG_ADAPTER] Unsupported .or operator ignored', { table: this.table, field, operator });
+        }
+      }
+
+      if (orFilters.length) {
+        this.filters.push(`(${orFilters.join(' OR ')})`);
+      } else {
+        logger.warn('[PG_ADAPTER] Unsupported .or filter ignored', { table: this.table, filter });
+      }
       return this;
     }
 
