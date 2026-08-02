@@ -33,7 +33,7 @@ export type PaymentRow = {
   provider_invoice_code: string | null;
   billing_period_start: string | null;
   billing_period_end: string | null;
-  payment_kind: 'subscription_initial' | 'subscription_renewal' | null;
+  payment_kind: 'subscription_initial' | 'subscription_renewal' | 'recover_once' | null;
   created_at: string;
   updated_at: string;
 };
@@ -79,7 +79,7 @@ export async function createInitializedPayment(input: {
   currency: string;
   metadata: Record<string, unknown>;
   billingSubscriptionId?: string | null;
-  paymentKind?: 'subscription_initial' | 'subscription_renewal' | null;
+  paymentKind?: 'subscription_initial' | 'subscription_renewal' | 'recover_once' | null;
 }): Promise<PaymentRow> {
   const { data, error } = await supabaseAdmin
     .from('payments')

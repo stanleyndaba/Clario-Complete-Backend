@@ -1,5 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { authenticateToken } from '../middleware/authMiddleware';
+import { getPaymentByReference } from '../services/paymentRepository';
+import recoverOnceService from '../services/recoverOnceService';
 import paystackSubscriptionService from '../services/paystackSubscriptionService';
 import { verifyPaystackWebhookSignature } from '../services/paystackService';
 
@@ -50,6 +52,141 @@ router.post('/checkout/initialize', authenticateToken, initializeSubscriptionChe
 
 router.post('/subscription/recover', authenticateToken, initializeSubscriptionCheckout);
 
+router.post('/recover-once/quotes', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const user = getUser(req);
+    if (!user.id) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+
+    const auditRunId = String(req.body?.audit_run_id || '').trim();
+    if (!auditRunId) {
+      return res.status(400).json({ success: false, message: 'audit_run_id is required' });
+    }
+
+    const result = await recoverOnceService.generateOrResolveQuote({
+      auditRunId,
+      userId: user.id,
+      tenantId: getTenantId(req),
+    });
+
+    return res.json(result);
+  } catch (error: any) {
+    const message = error?.message || 'Failed to prepare Recover Once quote';
+    const status = /not found/i.test(message) ? 404 : /membership|required|available|completed|expired/i.test(message) ? 400 : 500;
+    return res.status(status).json({ success: false, message });
+  }
+});
+
+router.get('/recover-once/quotes/:quoteId', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const user = getUser(req);
+    if (!user.id) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+
+    const quoteId = String(req.params.quoteId || '').trim();
+    if (!quoteId) {
+      return res.status(400).json({ success: false, message: 'quoteId is required' });
+    }
+
+    const result = await recoverOnceService.getQuote({
+      quoteId,
+      userId: user.id,
+      tenantId: getTenantId(req),
+    });
+
+    return res.json(result);
+  } catch (error: any) {
+    const message = error?.message || 'Failed to load Recover Once quote';
+    const status = /not found/i.test(message) ? 404 : /membership|required/i.test(message) ? 400 : 500;
+    return res.status(status).json({ success: false, message });
+  }
+});
+
+router.post('/recover-once/quotes/:quoteId/accept', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const user = getUser(req);
+    if (!user.id) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+
+    const quoteId = String(req.params.quoteId || '').trim();
+    if (!quoteId) {
+      return res.status(400).json({ success: false, message: 'quoteId is required' });
+    }
+
+    const result = await recoverOnceService.acceptQuote({
+      quoteId,
+      userId: user.id,
+      tenantId: getTenantId(req),
+    });
+
+    return res.json(result);
+  } catch (error: any) {
+    const message = error?.message || 'Failed to accept Recover Once quote';
+    const status = /not found/i.test(message) ? 404 : /membership|required|available|expired/i.test(message) ? 400 : 500;
+    return res.status(status).json({ success: false, message });
+  }
+});
+
+router.post('/recover-once/checkout/initialize', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const user = getUser(req);
+    if (!user.id) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+
+    const quoteId = String(req.body?.quote_id || '').trim();
+    if (!quoteId) {
+      return res.status(400).json({ success: false, message: 'quote_id is required' });
+    }
+
+    const result = await recoverOnceService.initializeCheckout({
+      quoteId,
+      userId: user.id,
+      email: user.email,
+      tenantId: getTenantId(req),
+    });
+
+    return res.json(result);
+  } catch (error: any) {
+    const message = error?.message || 'Failed to initialize Recover Once checkout';
+    const status = /not found/i.test(message) ? 404 : /membership|required|available|expired/i.test(message) ? 400 : 500;
+    return res.status(status).json({ success: false, message });
+  }
+});
+
+router.get('/recover-once/verify/:reference', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const user = getUser(req);
+    if (!user.id) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+
+    const reference = String(req.params.reference || '').trim();
+    if (!reference) {
+      return res.status(400).json({ success: false, message: 'Payment reference is required' });
+    }
+
+    const result = await recoverOnceService.verifyCheckout({
+      reference,
+      userId: user.id,
+      tenantId: getTenantId(req),
+    });
+
+    if (!result.success && (result as any).status) {
+      return res.status((result as any).status).json(result);
+    }
+
+    return res.json(result);
+  } catch (error: any) {
+    const message = error?.message || 'Failed to verify Recover Once checkout';
+    const status = /not found/i.test(message) ? 404 : /mismatch|membership|required/i.test(message) ? 400 : 500;
+    return res.status(status).json({ success: false, message });
+  }
+});
+
 router.get('/verify/:reference', authenticateToken, async (req: Request, res: Response) => {
   try {
     const user = getUser(req);
@@ -96,7 +233,11 @@ router.post('/webhook', async (req: Request, res: Response) => {
       : JSON.parse(Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : String(rawBody));
 
     const signatureHash = paystackSubscriptionService.computeWebhookSignatureHash(rawBody);
-    const result = await paystackSubscriptionService.processWebhook(payload, signatureHash);
+    const reference = typeof payload?.data?.reference === 'string' ? payload.data.reference : null;
+    const payment = reference ? await getPaymentByReference(reference) : null;
+    const result = payment?.product_key === 'recover_once'
+      ? await recoverOnceService.processWebhook(payload, signatureHash)
+      : await paystackSubscriptionService.processWebhook(payload, signatureHash);
     return res.json(result);
   } catch (error: any) {
     return res.status(500).json({
