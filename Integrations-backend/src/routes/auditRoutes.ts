@@ -70,13 +70,14 @@ router.put('/schedule', async (req: AuthenticatedRequest, res) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
+    const body = (req as any).body || {};
     const result = await auditRunService.saveSchedule(userId, {
-      cadence: req.body?.cadence,
-      preferredDayOfWeek: req.body?.preferred_day_of_week,
-      preferredDayOfMonth: req.body?.preferred_day_of_month,
-      preferredTime: req.body?.preferred_time,
-      timezone: req.body?.timezone,
-      isPaused: req.body?.is_paused,
+      cadence: body.cadence,
+      preferredDayOfWeek: body.preferred_day_of_week,
+      preferredDayOfMonth: body.preferred_day_of_month,
+      preferredTime: body.preferred_time,
+      timezone: body.timezone,
+      isPaused: body.is_paused,
     });
     return res.json({ success: true, ...result });
   } catch (error: any) {
