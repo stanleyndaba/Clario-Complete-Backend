@@ -101,6 +101,7 @@ import recoveriesWorker from './workers/recoveriesWorker';
 import billingWorker from './workers/billingWorker';
 import learningWorker from './workers/learningWorker';
 import weeklySummaryWorker from './workers/weeklySummaryWorker';
+import auditScheduleWorker from './workers/auditScheduleWorker';
 import scheduledSyncJob from './jobs/scheduledSyncJob';
 import { schedulerService } from './services/schedulerService';
 import { ensureAgent10NotificationSchema } from './services/agent10NotificationSchemaService';
@@ -707,6 +708,13 @@ function startBackgroundJobs(): void {
       logger.info('Weekly summary worker initialized');
     } else {
       logger.info('Weekly summary worker disabled (ENABLE_WEEKLY_SUMMARY=false)');
+    }
+
+    if (process.env.ENABLE_AUDIT_SCHEDULE_WORKER === 'true') {
+      auditScheduleWorker.start();
+      logger.info('Audit schedule worker initialized');
+    } else {
+      logger.info('Audit schedule worker disabled (ENABLE_AUDIT_SCHEDULE_WORKER is not true)');
     }
 
     if (process.env.ENABLE_ONBOARDING_WORKER !== 'false') {

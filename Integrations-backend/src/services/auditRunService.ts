@@ -3,6 +3,8 @@ import { ensureAuthenticatedUserWorkspace } from './userWorkspaceBootstrap';
 import { syncJobManager } from './syncJobManager';
 import enhancedDetectionService from './enhancedDetectionService';
 import logger from '../utils/logger';
+import workspaceEntitlementService from './workspaceEntitlementService';
+import { withPostgresTransaction } from '../database/postgresTransaction';
 
 type AuditRunStatus =
   | 'created'
@@ -154,6 +156,127 @@ function getRecordsReviewedFromMetadata(metadata: Record<string, any>): number {
   ].reduce((sum, value) => sum + numberFrom(value), 0);
 }
 
+function sanitizeStatus(value: unknown): string {
+  return String(value || 'unknown')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function monthKey(value?: string | null): string {
+  const date = value ? new Date(value) : new Date();
+  const safe = Number.isNaN(date.getTime()) ? new Date() : date;
+  return `${safe.getUTCFullYear()}-${String(safe.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function monthLabel(value?: string | null): string {
+  const date = value ? new Date(value) : new Date();
+  const safe = Number.isNaN(date.getTime()) ? new Date() : date;
+  return safe.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+}
+
+function auditHistoryLabel(value?: string | null): string {
+  const date = value ? new Date(value) : new Date();
+  const safe = Number.isNaN(date.getTime()) ? new Date() : date;
+  return safe.toLocaleString('en-US', {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'UTC',
+    timeZoneName: 'short',
+  });
+}
+
+function nextScheduleRun(input: {
+  cadence: string;
+  preferredDayOfWeek?: number | null;
+  preferredDayOfMonth?: number | null;
+  preferredTime?: string | null;
+  timezone?: string | null;
+  from?: Date;
+}): string | null {
+  if (input.cadence === 'off') return null;
+  const timezone = normalizeTimezone(input.timezone);
+  const [hourRaw, minuteRaw] = String(input.preferredTime || '09:00').split(':');
+  const hour = Math.min(Math.max(Number(hourRaw) || 9, 0), 23);
+  const minute = Math.min(Math.max(Number(minuteRaw) || 0, 0), 59);
+  const from = input.from || new Date();
+  const local = getZonedParts(from, timezone);
+
+  if (input.cadence === 'weekly' || input.cadence === 'biweekly') {
+    const desiredDow = Number.isInteger(input.preferredDayOfWeek) ? Number(input.preferredDayOfWeek) : 1;
+    for (let offset = 0; offset <= 21; offset++) {
+      const localCandidate = addUtcDays(new Date(Date.UTC(local.year, local.month - 1, local.day)), offset);
+      const candidateParts = getZonedParts(localCandidate, timezone);
+      if (candidateParts.weekday !== desiredDow) continue;
+      const candidate = wallTimeToUtc(candidateParts.year, candidateParts.month, candidateParts.day, hour, minute, timezone);
+      if (candidate > from) return candidate.toISOString();
+      const fallback = wallTimeToUtc(candidateParts.year, candidateParts.month, candidateParts.day + (input.cadence === 'biweekly' ? 14 : 7), hour, minute, timezone);
+      return fallback.toISOString();
+    }
+  }
+
+  const desiredDom = Math.min(Math.max(Number(input.preferredDayOfMonth) || 1, 1), 28);
+  let candidate = wallTimeToUtc(local.year, local.month, desiredDom, hour, minute, timezone);
+  if (candidate <= from) {
+    const nextMonth = local.month === 12 ? 1 : local.month + 1;
+    const nextYear = local.month === 12 ? local.year + 1 : local.year;
+    candidate = wallTimeToUtc(nextYear, nextMonth, desiredDom, hour, minute, timezone);
+  }
+  return candidate.toISOString();
+}
+
+function normalizeTimezone(timezone?: string | null): string {
+  const value = String(timezone || 'Africa/Johannesburg').trim();
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value }).format(new Date());
+    return value;
+  } catch {
+    throw new Error('Invalid timezone');
+  }
+}
+
+function getZonedParts(date: Date, timezone: string) {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  const values = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
+  const weekdayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return {
+    year: Number(values.year),
+    month: Number(values.month),
+    day: Number(values.day),
+    hour: Number(values.hour === '24' ? '0' : values.hour),
+    minute: Number(values.minute),
+    second: Number(values.second),
+    weekday: weekdayMap[values.weekday] ?? 0,
+  };
+}
+
+function wallTimeToUtc(year: number, month: number, day: number, hour: number, minute: number, timezone: string): Date {
+  const naive = new Date(Date.UTC(year, month - 1, day, hour, minute, 0, 0));
+  const parts = getZonedParts(naive, timezone);
+  const actualAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second, 0);
+  const desiredAsUtc = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+  return new Date(naive.getTime() + (desiredAsUtc - actualAsUtc));
+}
+
+function addUtcDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+}
+
 class AuditRunService {
   private async getWorkspace(userId: string, email?: string | null) {
     return ensureAuthenticatedUserWorkspace({ userId, email });
@@ -268,6 +391,39 @@ class AuditRunService {
 
     if (error) throw new Error(`Failed to load latest audit run: ${error.message}`);
     return data || null;
+  }
+
+  async getAuditHistory(userId: string, limit = 18) {
+    const safeUserId = convertUserIdToUuid(userId);
+    const cutoff = new Date();
+    cutoff.setUTCMonth(cutoff.getUTCMonth() - 18);
+    const { data, error } = await supabaseAdmin
+      .from('audit_runs')
+      .select('id, tenant_id, store_id, sync_id, status, source_type, started_at, completed_at, created_at, updated_at, summary, activation_status')
+      .eq('user_id', safeUserId)
+      .gte('created_at', cutoff.toISOString())
+      .order('created_at', { ascending: false })
+      .limit(Math.min(Math.max(limit, 1), 100));
+
+    if (error) throw new Error(`Failed to load audit history: ${error.message}`);
+
+    return (data || []).map((audit, index) => {
+      const timestamp = audit.completed_at || audit.started_at || audit.created_at;
+      return {
+        id: audit.id,
+        month: monthKey(timestamp),
+        monthLabel: monthLabel(timestamp),
+        label: auditHistoryLabel(timestamp),
+        status: audit.status,
+        finalStatus: audit.summary?.finalStatus || null,
+        created_at: audit.created_at,
+        completed_at: audit.completed_at,
+        recordsReviewed: audit.summary?.recordsReviewed ?? null,
+        findingsCount: audit.summary?.findingsCount ?? 0,
+        scopeValue: audit.summary?.scopeValue ?? 0,
+        isLatest: index === 0,
+      };
+    });
   }
 
   async runAudit(auditId: string, userId: string) {
@@ -419,6 +575,390 @@ class AuditRunService {
     };
   }
 
+  async getExportSummary(auditId: string, userId: string) {
+    const audit = await this.getAudit(auditId, userId);
+    const result = await this.getResults(auditId, userId);
+    const summary = result.teaser;
+    const findings = audit.sync_id
+      ? await this.getFindingSummaries(audit.user_id, audit.tenant_id, audit.sync_id)
+      : [];
+
+    return {
+      audit: {
+        id: audit.id,
+        status: audit.status,
+        started_at: audit.started_at,
+        completed_at: audit.completed_at,
+        selected_period: monthLabel(audit.completed_at || audit.started_at || audit.created_at),
+        source_type: audit.source_type || 'sp_api',
+      },
+      summary: {
+        completion_state: summary.finalStatus || audit.status,
+        records_reviewed: summary.recordsReviewed || 0,
+        sources_reviewed: summary.sourcesReviewed || [],
+        sources_unavailable: summary.sourcesUnavailable || [],
+        estimated_recoverable_value: summary.scopeValue || 0,
+        actionable_findings: summary.findingsCount || 0,
+        evidence_ready: summary.evidenceReadyCount || 0,
+        evidence_required: Math.max(0, (summary.findingsCount || 0) - (summary.evidenceReadyCount || 0)),
+        categories: summary.categories || [],
+        limitations: summary.sourcesUnavailable?.length
+          ? `Some sources were unavailable: ${summary.sourcesUnavailable.join(', ')}.`
+          : null,
+        recommended_next_actions: this.getRecommendedNextActions(summary),
+      },
+      findings,
+      generated_at: new Date().toISOString(),
+      disclaimer: 'Estimated values are not guaranteed recoveries. Margin prepares recovery evidence and seller approval remains required before filing.',
+    };
+  }
+
+  async getActivity(auditId: string, userId: string) {
+    const audit = await this.getAudit(auditId, userId);
+    const summary = audit.summary || EMPTY_SUMMARY;
+    const events: Array<{ timestamp: string; category: string; status: string; message: string }> = [];
+    const started = audit.started_at || audit.created_at || new Date().toISOString();
+
+    events.push({
+      timestamp: started,
+      category: 'Amazon',
+      status: 'completed',
+      message: audit.status === 'amazon_connection_required'
+        ? 'Margin is waiting for Amazon authorization before it can review account activity.'
+        : 'Margin prepared the audit workspace for this Amazon account.',
+    });
+
+    if (audit.sync_id) {
+      events.push({
+        timestamp: audit.updated_at || started,
+        category: 'Amazon',
+        status: ['syncing', 'detecting', 'completed', 'activated'].includes(audit.status) ? 'completed' : 'pending',
+        message: 'Margin started reviewing Amazon activity for the selected audit period.',
+      });
+    }
+
+    if (summary.recordsReviewed != null) {
+      events.push({
+        timestamp: audit.completed_at || audit.updated_at || started,
+        category: 'Amazon',
+        status: 'completed',
+        message: `Margin reviewed ${Number(summary.recordsReviewed || 0).toLocaleString()} Amazon record${Number(summary.recordsReviewed || 0) === 1 ? '' : 's'}.`,
+      });
+    }
+
+    if (Array.isArray(summary.sourcesReviewed) && summary.sourcesReviewed.length) {
+      events.push({
+        timestamp: audit.completed_at || audit.updated_at || started,
+        category: 'Evidence',
+        status: 'completed',
+        message: `Sources reviewed: ${summary.sourcesReviewed.join(', ')}.`,
+      });
+    }
+
+    if (Array.isArray(summary.sourcesUnavailable) && summary.sourcesUnavailable.length) {
+      events.push({
+        timestamp: audit.completed_at || audit.updated_at || started,
+        category: 'Evidence',
+        status: 'limited',
+        message: 'Some Amazon datasets were unavailable for this audit.',
+      });
+    }
+
+    if (audit.status === 'detecting') {
+      events.push({
+        timestamp: audit.updated_at || started,
+        category: 'Findings',
+        status: 'running',
+        message: 'Margin is evaluating synced activity for recovery opportunities.',
+      });
+    }
+
+    if (audit.status === 'completed') {
+      events.push({
+        timestamp: audit.completed_at || audit.updated_at || started,
+        category: 'Findings',
+        status: 'completed',
+        message: summary.findingsCount > 0
+          ? `Margin identified ${summary.findingsCount} actionable finding${summary.findingsCount === 1 ? '' : 's'}.`
+          : 'Margin completed the audit without identifying actionable recoveries in the available records.',
+      });
+    }
+
+    if (audit.activation_status === 'activated') {
+      events.push({
+        timestamp: audit.updated_at || started,
+        category: 'Payment',
+        status: 'completed',
+        message: 'Recovery Workspace access is active for this audit workspace.',
+      });
+    }
+
+    return events.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  }
+
+  async getSchedule(userId: string) {
+    const latestAudit = await this.getLatestAudit(userId);
+    const safeUserId = convertUserIdToUuid(userId);
+    const tenantId = latestAudit?.tenant_id || null;
+    if (!tenantId) {
+      return { schedule: null, entitlement: { entitled: false, state: 'none' } };
+    }
+
+    const { entitlement } = await workspaceEntitlementService.getTenantEntitlement(tenantId);
+    const { data, error } = await supabaseAdmin
+      .from('audit_schedules')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .eq('user_id', safeUserId)
+      .maybeSingle();
+
+    if (error) throw new Error(`Failed to load audit schedule: ${error.message}`);
+    return { schedule: data || null, entitlement };
+  }
+
+  async saveSchedule(userId: string, input: {
+    cadence: string;
+    preferredDayOfWeek?: number | null;
+    preferredDayOfMonth?: number | null;
+    preferredTime?: string | null;
+    timezone?: string | null;
+    isPaused?: boolean;
+  }) {
+    const latestAudit = await this.getLatestAudit(userId);
+    if (!latestAudit?.tenant_id) throw new Error('Audit workspace required before scheduling audits');
+    const { entitlement } = await workspaceEntitlementService.getTenantEntitlement(latestAudit.tenant_id);
+    if (!entitlement.entitled) throw new Error('Recovery Workspace subscription required');
+
+    const cadence = String(input.cadence || 'off');
+    if (!['off', 'weekly', 'biweekly', 'monthly'].includes(cadence)) throw new Error('Unsupported audit schedule frequency');
+    const timezone = normalizeTimezone(input.timezone);
+    const preferredTime = String(input.preferredTime || '09:00');
+    if (!/^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(preferredTime)) throw new Error('Invalid preferred time');
+
+    const safeUserId = convertUserIdToUuid(userId);
+    const payload = {
+      tenant_id: latestAudit.tenant_id,
+      user_id: safeUserId,
+      cadence,
+      preferred_day_of_week: cadence === 'weekly' || cadence === 'biweekly' ? Number(input.preferredDayOfWeek ?? 1) : null,
+      preferred_day_of_month: cadence === 'monthly' ? Math.min(Math.max(Number(input.preferredDayOfMonth || 1), 1), 28) : null,
+      preferred_time: preferredTime,
+      timezone,
+      is_paused: Boolean(input.isPaused),
+      next_run_at: Boolean(input.isPaused) ? null : nextScheduleRun({
+        cadence,
+        preferredDayOfWeek: Number(input.preferredDayOfWeek ?? 1),
+        preferredDayOfMonth: Number(input.preferredDayOfMonth || 1),
+        preferredTime,
+        timezone,
+      }),
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabaseAdmin
+      .from('audit_schedules')
+      .upsert(payload, { onConflict: 'tenant_id' })
+      .select('*')
+      .single();
+
+    if (error || !data) throw new Error(`Failed to save audit schedule: ${error?.message || 'Unknown error'}`);
+    return { schedule: data, entitlement };
+  }
+
+  async processDueSchedules(limit = 10) {
+    const results = { processed: 0, succeeded: 0, skipped: 0, failed: 0, errors: [] as string[] };
+    const workerId = `audit-schedule:${process.pid}:${Date.now()}`;
+    const maxRuns = Math.min(Math.max(limit, 1), 50);
+
+    for (let index = 0; index < maxRuns; index++) {
+      const schedule = await this.claimDueSchedule(workerId);
+      if (!schedule) break;
+
+      results.processed++;
+      try {
+        const { entitlement } = await workspaceEntitlementService.getTenantEntitlement(schedule.tenant_id);
+        const nextRunAt = nextScheduleRun({
+          cadence: schedule.cadence,
+          preferredDayOfWeek: schedule.preferred_day_of_week,
+          preferredDayOfMonth: schedule.preferred_day_of_month,
+          preferredTime: schedule.preferred_time,
+          timezone: schedule.timezone,
+        });
+
+        if (!entitlement.entitled) {
+          const pausedAt = new Date().toISOString();
+          await supabaseAdmin
+            .from('audit_schedules')
+            .update({
+              is_paused: true,
+              next_run_at: null,
+              lease_owner: null,
+              lease_acquired_at: null,
+              lease_expires_at: null,
+              metadata: {
+                ...(schedule.metadata || {}),
+                paused_reason: 'recovery_workspace_entitlement_inactive',
+                paused_at: pausedAt,
+              },
+              updated_at: pausedAt,
+            })
+            .eq('id', schedule.id);
+          results.skipped++;
+          continue;
+        }
+
+        const runningAudit = await this.getRunningAuditForSchedule(schedule.user_id, schedule.tenant_id);
+        if (runningAudit) {
+          await this.completeScheduleClaim(schedule.id, {
+            lastRunAt: new Date().toISOString(),
+            nextRunAt,
+            metadata: {
+              ...(schedule.metadata || {}),
+              last_audit_id: runningAudit.id,
+              last_run_status: 'skipped_existing_audit_in_progress',
+            },
+          });
+          results.skipped++;
+          continue;
+        }
+
+        const connection = await this.getAmazonConnection(schedule.user_id, schedule.tenant_id);
+        if (!connection) {
+          await this.completeScheduleClaim(schedule.id, {
+            lastRunAt: new Date().toISOString(),
+            nextRunAt,
+            metadata: {
+              ...(schedule.metadata || {}),
+              last_run_status: 'amazon_connection_required',
+            },
+          });
+          results.skipped++;
+          continue;
+        }
+
+        const audit = await this.createScheduledAudit(schedule.user_id, schedule.tenant_id, connection.store_id);
+        await this.runAudit(audit.id, schedule.user_id);
+        results.succeeded++;
+
+        await this.completeScheduleClaim(schedule.id, {
+          lastRunAt: new Date().toISOString(),
+          nextRunAt,
+          metadata: {
+            ...(schedule.metadata || {}),
+            last_audit_id: audit.id,
+            last_run_status: 'audit_started',
+          },
+        });
+      } catch (scheduleError: any) {
+        results.failed++;
+        results.errors.push(scheduleError?.message || 'Unknown audit schedule error');
+        logger.error('[AUDIT SCHEDULE] Failed to process scheduled audit', {
+          scheduleId: schedule.id,
+          tenantId: schedule.tenant_id,
+          error: scheduleError?.message,
+        });
+      }
+    }
+
+    return results;
+  }
+
+  private async claimDueSchedule(workerId: string) {
+    try {
+      return await withPostgresTransaction(async (client) => {
+        const result = await client.query(
+          `
+            WITH candidate AS (
+              SELECT *
+              FROM audit_schedules
+              WHERE cadence <> 'off'
+                AND is_paused = false
+                AND next_run_at IS NOT NULL
+                AND next_run_at <= now()
+                AND (lease_expires_at IS NULL OR lease_expires_at < now())
+              ORDER BY next_run_at ASC
+              LIMIT 1
+              FOR UPDATE SKIP LOCKED
+            )
+            UPDATE audit_schedules schedule
+            SET lease_owner = $1,
+                lease_acquired_at = now(),
+                lease_expires_at = now() + interval '10 minutes',
+                updated_at = now()
+            FROM candidate
+            WHERE schedule.id = candidate.id
+            RETURNING schedule.*
+          `,
+          [workerId]
+        );
+        return result.rows[0] || null;
+      });
+    } catch (error: any) {
+      if (error?.code === '42P01' || /audit_schedules/i.test(error?.message || '')) {
+        logger.warn('[AUDIT SCHEDULE] audit_schedules table unavailable; worker will retry after migration', {
+          error: error?.message,
+        });
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  private async completeScheduleClaim(scheduleId: string, input: {
+    lastRunAt: string;
+    nextRunAt: string | null;
+    metadata: Record<string, any>;
+  }) {
+    const { error } = await supabaseAdmin
+      .from('audit_schedules')
+      .update({
+        last_run_at: input.lastRunAt,
+        next_run_at: input.nextRunAt,
+        lease_owner: null,
+        lease_acquired_at: null,
+        lease_expires_at: null,
+        metadata: input.metadata,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', scheduleId);
+
+    if (error) throw new Error(`Failed to complete audit schedule claim: ${error.message}`);
+  }
+
+  private async getRunningAuditForSchedule(userId: string, tenantId: string) {
+    const { data, error } = await supabaseAdmin
+      .from('audit_runs')
+      .select('id, status')
+      .eq('user_id', userId)
+      .eq('tenant_id', tenantId)
+      .in('status', ['created', 'amazon_connection_required', 'syncing', 'detecting'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw new Error(`Failed to check running audit: ${error.message}`);
+    return data || null;
+  }
+
+  private async createScheduledAudit(userId: string, tenantId: string, storeId?: string | null) {
+    const { data, error } = await supabaseAdmin
+      .from('audit_runs')
+      .insert({
+        user_id: userId,
+        tenant_id: tenantId,
+        store_id: storeId || null,
+        status: 'created',
+        source_type: 'sp_api',
+        summary: EMPTY_SUMMARY,
+        activation_status: 'not_activated'
+      })
+      .select('*')
+      .single();
+
+    if (error || !data) throw new Error(`Failed to create scheduled audit: ${error?.message || 'Unknown error'}`);
+    return data;
+  }
+
   private async buildSummary(userId: string, tenantId: string, syncId: string, syncStatus?: any): Promise<AuditSummary> {
     const { data, error } = await supabaseAdmin
       .from('detection_results')
@@ -487,6 +1027,33 @@ class AuditRunService {
       sourcesUnavailable,
       retryable: isPartial
     };
+  }
+
+  private async getFindingSummaries(userId: string, tenantId: string, syncId: string) {
+    const { data, error } = await supabaseAdmin
+      .from('detection_results')
+      .select('estimated_value, anomaly_type, coverage_family, detector_key, claim_readiness')
+      .eq('seller_id', userId)
+      .eq('tenant_id', tenantId)
+      .eq('sync_id', syncId)
+      .limit(25);
+
+    if (error) throw new Error(`Failed to load audit finding summaries: ${error.message}`);
+    return (data || []).map((row: any) => ({
+      category: normalizeCategory(row),
+      estimated_value: getCountedValue(row),
+      readiness: sanitizeStatus(row.claim_readiness || 'evidence review required'),
+    }));
+  }
+
+  private getRecommendedNextActions(summary: AuditSummary): string[] {
+    if (summary.finalStatus === 'partial_no_findings' && Number(summary.recordsReviewed || 0) === 0) {
+      return ['Retry the audit after Amazon activity becomes available.', 'Keep monitoring enabled if Recovery Workspace is active.'];
+    }
+    if (summary.findingsCount > 0) {
+      return ['Review the locked recovery summary.', 'Choose Recover Once or activate Recovery Workspace before filing.'];
+    }
+    return ['Check again as new shipments, reimbursements, refunds, fees, and settlements appear.'];
   }
 
   private async getSyncStatus(syncId: string, userId: string, tenantId: string, storeId?: string | null) {
