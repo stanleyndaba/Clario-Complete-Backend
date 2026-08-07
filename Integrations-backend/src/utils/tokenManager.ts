@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import config from '../config/env';
 import logger from './logger';
 import { tokenManager as dbTokenManager, TokenRecord } from '../database/supabaseClient';
+import { deriveCredentialKey, TokenCredentialError, TokenEnvelopeCrypto, validateCredentialKeyConfiguration } from './tokenEnvelopeCrypto';
 
 export interface TokenData {
   accessToken: string;
@@ -21,46 +22,33 @@ export interface EncryptedToken {
 
 export class TokenManager {
   private encryptionKey: Buffer;
+  private credentialCrypto: TokenEnvelopeCrypto;
 
   constructor() {
-    const keyHex = process.env.ENCRYPTION_KEY;
-    let encryptionKey: Buffer;
-
-    if (keyHex && keyHex.length >= 64) {
-      // Use provided hex key
-      encryptionKey = Buffer.from(keyHex, 'hex');
-    } else {
-      // Derive from JWT_SECRET with PBKDF2 for deterministic fallback (not recommended for prod)
-      const jwtSecret = process.env.JWT_SECRET || 'fallback-secret-please-set';
-      encryptionKey = crypto.pbkdf2Sync(jwtSecret, 'clario-salt', 100000, 32, 'sha256');
-      logger.warn('ENCRYPTION_KEY missing or too short; using derived key from JWT_SECRET. Set ENCRYPTION_KEY for production.');
-    }
-
-    this.encryptionKey = encryptionKey;
+    this.encryptionKey = deriveCredentialKey();
+    this.credentialCrypto = new TokenEnvelopeCrypto(this.encryptionKey);
   }
 
   private encrypt(text: string): EncryptedToken {
     try {
-      const iv = crypto.randomBytes(16);
-      const cipher = crypto.createCipheriv('aes-256-cbc', this.encryptionKey, iv);
-      let encrypted = cipher.update(text, 'utf8', 'base64');
-      encrypted += cipher.final('base64');
-      return { iv: iv.toString('base64'), data: encrypted };
+      const encrypted = this.credentialCrypto.encrypt(text);
+      const inspection = this.credentialCrypto.inspect(encrypted);
+      if (inspection.result !== 'valid_current_format') {
+        throw new TokenCredentialError(inspection.result);
+      }
+      return encrypted;
     } catch (err: any) {
-      logger.error('Encryption failed', { error: err.message });
+      logger.error('Credential encryption failed', { errorCode: err?.code || 'encrypt_failed' });
       throw err;
     }
   }
 
   private decrypt(ivBase64: string, data: string): string {
     try {
-      const iv = Buffer.from(ivBase64, 'base64');
-      const decipher = crypto.createDecipheriv('aes-256-cbc', this.encryptionKey, iv);
-      let dec = decipher.update(data, 'base64', 'utf8');
-      dec += decipher.final('utf8');
-      return dec;
+      return this.credentialCrypto.decrypt({ iv: ivBase64, data });
     } catch (err: any) {
-      logger.error('Decryption failed', { error: err.message });
+      const errorCode = err instanceof TokenCredentialError ? err.code : 'decrypt_failed';
+      logger.warn('Credential decryption unavailable', { errorCode });
       throw err;
     }
   }
@@ -154,7 +142,30 @@ export class TokenManager {
         return null;
       }
 
-      const tokenData = this.decryptTokenRecord(tokenRecord);
+      if (tokenRecord.credential_status === 'reconnect_required') {
+        logger.warn('Provider credential requires reconnection', {
+          userId,
+          provider,
+          tokenId: tokenRecord.id,
+          reasonCode: tokenRecord.credential_error_code || 'credential_reconnect_required'
+        });
+        return null;
+      }
+
+      let tokenData: TokenData;
+      try {
+        tokenData = this.decryptTokenRecord(tokenRecord);
+      } catch (error: any) {
+        const reasonCode = error instanceof TokenCredentialError ? error.code : 'decrypt_failed';
+        await dbTokenManager.markReconnectRequired(tokenRecord.id, provider, reasonCode);
+        logger.warn('Provider credential marked reconnect-required', {
+          userId,
+          provider,
+          tokenId: tokenRecord.id,
+          reasonCode
+        });
+        return null;
+      }
       const isExpired = await dbTokenManager.isTokenExpired(tokenRecord);
 
       return {
@@ -176,6 +187,7 @@ export class TokenManager {
       // Old format: colon-separated IV:data
       const textParts = tokenRecord.access_token.split(':');
       const iv = Buffer.from(textParts.shift()!, 'hex');
+      if (iv.length !== 16) throw new TokenCredentialError('invalid_iv_length');
       const encrypted = textParts.join(':');
       const decipher = crypto.createDecipheriv('aes-256-cbc', this.encryptionKey, iv);
       let dec = decipher.update(encrypted, 'hex', 'utf8');
@@ -195,6 +207,7 @@ export class TokenManager {
         // Old format
         const textParts = tokenRecord.refresh_token.split(':');
         const iv = Buffer.from(textParts.shift()!, 'hex');
+        if (iv.length !== 16) throw new TokenCredentialError('invalid_iv_length');
         const encrypted = textParts.join(':');
         const decipher = crypto.createDecipheriv('aes-256-cbc', this.encryptionKey, iv);
         let dec = decipher.update(encrypted, 'hex', 'utf8');
@@ -284,6 +297,8 @@ export class TokenManager {
     }
   }
 }
+
+export { TokenCredentialError, validateCredentialKeyConfiguration };
 
 export const tokenManager = new TokenManager();
 export default tokenManager; 

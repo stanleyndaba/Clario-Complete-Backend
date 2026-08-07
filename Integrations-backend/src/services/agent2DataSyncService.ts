@@ -182,7 +182,7 @@ export class Agent2DataSyncService {
   private async assertValidAmazonTenantToken(userId: string, tenantId: string, storeId?: string): Promise<void> {
     let query = supabaseAdmin
       .from('tokens')
-      .select('id, expires_at, refresh_token_iv, refresh_token_data')
+      .select('id, store_id, credential_status')
       .eq('user_id', userId)
       .eq('tenant_id', tenantId)
       .eq('provider', 'amazon')
@@ -197,9 +197,13 @@ export class Agent2DataSyncService {
     if (error) {
       throw new Error(`Failed to validate tenant token: ${error.message}`);
     }
-    const hasRefreshToken = !!data?.refresh_token_iv && !!data?.refresh_token_data;
-    const hasLiveAccessToken = !!data?.expires_at && new Date(data.expires_at).getTime() > Date.now();
-    if (!data || (!hasLiveAccessToken && !hasRefreshToken)) {
+
+    if (!data || data.credential_status === 'reconnect_required') {
+      throw new Error('No valid Amazon token found for tenant context');
+    }
+
+    const isConnected = await tokenManager.isTokenValid(userId, 'amazon', data.store_id || storeId);
+    if (!isConnected) {
       throw new Error('No valid Amazon token found for tenant context');
     }
   }
@@ -211,7 +215,7 @@ export class Agent2DataSyncService {
 
     const { data, error } = await supabaseAdmin
       .from('tokens')
-      .select('store_id, expires_at, refresh_token_iv, refresh_token_data')
+      .select('store_id, credential_status')
       .eq('user_id', userId)
       .eq('tenant_id', tenantId)
       .eq('provider', 'amazon')
@@ -223,11 +227,13 @@ export class Agent2DataSyncService {
       throw new Error(`Failed to resolve Amazon store binding: ${error.message}`);
     }
 
-    const usableRows = (data || []).filter((row: any) => {
-      const hasRefreshToken = !!row?.refresh_token_iv && !!row?.refresh_token_data;
-      const hasLiveAccessToken = !!row?.expires_at && new Date(row.expires_at).getTime() > Date.now();
-      return hasLiveAccessToken || hasRefreshToken;
-    });
+    const usableRows = [];
+    for (const row of data || []) {
+      if ((row as any).credential_status === 'reconnect_required') continue;
+      if (await tokenManager.isTokenValid(userId, 'amazon', (row as any).store_id || undefined)) {
+        usableRows.push(row);
+      }
+    }
 
     const uniqueStoreIds = [...new Set(usableRows.map((row: any) => row.store_id).filter((value): value is string => typeof value === 'string' && value.length > 0))];
     if (uniqueStoreIds.length === 1) {

@@ -306,6 +306,9 @@ export interface TokenRecord {
   refresh_token?: string | EncryptedToken;
   expires_at: string;
   store_id?: string;
+  tenant_id?: string;
+  credential_status?: 'active' | 'reconnect_required';
+  credential_error_code?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -418,6 +421,10 @@ export const tokenManager = {
           access_token_data: accessTokenEnc.data,
           refresh_token_iv: refreshTokenEnc?.iv || null,
           refresh_token_data: refreshTokenEnc?.data || null,
+          credential_status: 'active',
+          credential_error_code: null,
+          credential_checked_at: new Date().toISOString(),
+          credential_reconnect_required_at: null,
           expires_at: expiresAt ? expiresAt.toISOString() : null,
           updated_at: new Date().toISOString()
         };
@@ -451,6 +458,10 @@ export const tokenManager = {
           access_token_data: accessTokenEnc.data,
           refresh_token_iv: refreshTokenEnc?.iv || null,
           refresh_token_data: refreshTokenEnc?.data || null,
+          credential_status: 'active',
+          credential_error_code: null,
+          credential_checked_at: new Date().toISOString(),
+          credential_reconnect_required_at: null,
           expires_at: expiresAt ? expiresAt.toISOString() : null,
           updated_at: new Date().toISOString()
         };
@@ -521,6 +532,10 @@ export const tokenManager = {
         access_token_data: data.access_token_data,
         refresh_token_iv: data.refresh_token_iv,
         refresh_token_data: data.refresh_token_data,
+        tenant_id: data.tenant_id,
+        store_id: data.store_id,
+        credential_status: data.credential_status,
+        credential_error_code: data.credential_error_code,
         expires_at: data.expires_at,
         created_at: data.created_at,
         updated_at: data.updated_at
@@ -563,6 +578,10 @@ export const tokenManager = {
           access_token_data: accessTokenEnc.data,
           refresh_token_iv: refreshTokenEnc?.iv || null,
           refresh_token_data: refreshTokenEnc?.data || null,
+          credential_status: 'active',
+          credential_error_code: null,
+          credential_checked_at: new Date().toISOString(),
+          credential_reconnect_required_at: null,
           expires_at: expiresAt ? expiresAt.toISOString() : null,
           tenant_id: tenantId || DEFAULT_TENANT_ID,
           store_id: storeId || null,
@@ -630,6 +649,44 @@ export const tokenManager = {
     } catch (error) {
       logger.error('Error in deleteToken', { error, userId, provider });
       throw error;
+    }
+  },
+
+  async markReconnectRequired(
+    tokenId: string,
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    reasonCode: string
+  ): Promise<void> {
+    try {
+      const adminClient = supabaseAdmin || supabase;
+      const now = new Date().toISOString();
+      const { error } = await adminClient
+        .from('tokens')
+        .update({
+          credential_status: 'reconnect_required',
+          credential_error_code: reasonCode,
+          credential_checked_at: now,
+          credential_reconnect_required_at: now,
+          updated_at: now
+        })
+        .eq('id', tokenId)
+        .eq('provider', provider);
+
+      if (error) {
+        logger.warn('Could not mark provider credential reconnect-required', {
+          tokenId,
+          provider,
+          reasonCode,
+          error: error.message
+        });
+      }
+    } catch (error: any) {
+      logger.warn('Reconnect-required marker failed', {
+        tokenId,
+        provider,
+        reasonCode,
+        error: error?.message || String(error)
+      });
     }
   },
 
