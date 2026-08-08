@@ -22,6 +22,7 @@ import { securityHeadersMiddleware, enforceHttpsMiddleware, validateTlsMiddlewar
 import { validateRedirectMiddleware } from './security/validateRedirect';
 import { validateEnvironmentOrFail } from './security/envValidation';
 import { warnIfAgent7UnpaidFilingOverrideEnabledOnBoot } from './services/agent7UnpaidFilingOverride';
+import { validateCredentialKeyConfiguration } from './utils/tokenManager';
 
 // Import middleware
 import { userIdMiddleware } from './middleware/userIdMiddleware';
@@ -111,6 +112,9 @@ import { requireRecoveryWorkspaceEntitlement } from './services/workspaceEntitle
 
 const app = express();
 const server = createServer(app);
+
+validateCredentialKeyConfiguration();
+logger.info('Credential encryption configuration validated');
 
 // Behind Render/other proxies we trust the first hop to read TLS headers
 app.set('trust proxy', 1);

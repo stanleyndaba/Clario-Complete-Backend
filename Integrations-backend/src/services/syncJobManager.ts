@@ -16,6 +16,7 @@ import capacityGovernanceService from './capacityGovernanceService';
 import operationalControlService from './operationalControlService';
 import runtimeCapacityService from './runtimeCapacityService';
 import onboardingCapacityService from './onboardingCapacityService';
+import tokenManager from '../utils/tokenManager';
 
 // Standardized status values - use database values consistently
 export type SyncStatus = 'idle' | 'running' | 'detecting' | 'completed' | 'failed' | 'cancelled';
@@ -182,7 +183,7 @@ class SyncJobManager {
   private async assertTenantScopedAmazonConnection(userId: string, tenantId: string, storeId?: string): Promise<void> {
     let query = supabaseAdmin
       .from('tokens')
-      .select('id, expires_at, refresh_token_iv, refresh_token_data')
+      .select('id, store_id, credential_status')
       .eq('user_id', userId)
       .eq('tenant_id', tenantId)
       .eq('provider', 'amazon')
@@ -199,11 +200,13 @@ class SyncJobManager {
       throw new Error(`Failed to validate Amazon connection scope: ${error.message}`);
     }
 
-    const usableRows = (data || []).filter((row: any) => {
-      const hasRefreshToken = !!row?.refresh_token_iv && !!row?.refresh_token_data;
-      const hasLiveAccessToken = !!row?.expires_at && new Date(row.expires_at).getTime() > Date.now();
-      return hasLiveAccessToken || hasRefreshToken;
-    });
+    const usableRows = [];
+    for (const row of data || []) {
+      if ((row as any).credential_status === 'reconnect_required') continue;
+      if (await tokenManager.isTokenValid(userId, 'amazon', (row as any).store_id || undefined)) {
+        usableRows.push(row);
+      }
+    }
 
     if (!usableRows.length) {
       throw new Error(

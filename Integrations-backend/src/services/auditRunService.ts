@@ -5,6 +5,7 @@ import enhancedDetectionService from './enhancedDetectionService';
 import logger from '../utils/logger';
 import workspaceEntitlementService from './workspaceEntitlementService';
 import { withPostgresTransaction } from '../database/postgresTransaction';
+import tokenManager from '../utils/tokenManager';
 
 type AuditRunStatus =
   | 'created'
@@ -286,7 +287,7 @@ class AuditRunService {
     const safeUserId = convertUserIdToUuid(userId);
     const { data } = await supabaseAdmin
       .from('tokens')
-      .select('id, store_id, expires_at')
+      .select('id, store_id, expires_at, credential_status')
       .eq('user_id', safeUserId)
       .eq('tenant_id', tenantId)
       .eq('provider', 'amazon')
@@ -295,7 +296,9 @@ class AuditRunService {
       .maybeSingle();
 
     if (!data?.id) return null;
-    if (data.expires_at && new Date(data.expires_at) <= new Date()) return null;
+    if (data.credential_status === 'reconnect_required') return null;
+    const usable = await tokenManager.isTokenValid(userId, 'amazon', data.store_id || undefined);
+    if (!usable) return null;
     return data;
   }
 
