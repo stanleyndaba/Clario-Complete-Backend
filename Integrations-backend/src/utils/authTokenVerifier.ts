@@ -86,8 +86,31 @@ async function verifyClerkAccessToken(token: string): Promise<VerifiedAuthUser |
       return null;
     }
 
+    let appUserId = userId;
+    try {
+      const authClient = supabaseAdmin || supabase;
+      const { data: linkedUser, error: linkedUserError } = await authClient
+        .from('users')
+        .select('id, email')
+        .eq('clerk_user_id', userId)
+        .is('deleted_at', null)
+        .maybeSingle();
+
+      if (!linkedUserError && linkedUser?.id) {
+        appUserId = linkedUser.id;
+      } else if (linkedUserError && linkedUserError.code !== '42703') {
+        logger.debug('Clerk identity mapping lookup failed', {
+          error: linkedUserError.message || 'Unknown mapping lookup error'
+        });
+      }
+    } catch (mappingError: any) {
+      logger.debug('Clerk identity mapping lookup failed', {
+        error: mappingError?.message || 'Unknown mapping lookup error'
+      });
+    }
+
     return {
-      id: userId,
+      id: appUserId,
       email: typeof verifiedToken?.email === 'string' ? verifiedToken.email : '',
       role: typeof verifiedToken?.role === 'string' ? verifiedToken.role : undefined,
       source: 'clerk'

@@ -29,6 +29,7 @@ interface BootstrapOptions {
   preferredWorkspaceName?: string | null;
   preferredTenantSlug?: string | null;
   foundingReservation?: boolean;
+  authProvider?: 'backend_jwt' | 'clerk' | 'supabase';
 }
 
 function deriveWorkspaceName(email?: string | null): string {
@@ -97,18 +98,56 @@ async function ensureUniqueTenantSlug(baseSlug: string) {
 
 export async function ensureAuthenticatedUserWorkspace(options: BootstrapOptions): Promise<BootstrapWorkspaceResult> {
   const adminClient = supabaseAdmin || supabase;
-  const safeUserId = convertUserIdToUuid(options.userId);
+  const requestedSafeUserId = convertUserIdToUuid(options.userId);
   const normalizedEmail = options.email?.trim().toLowerCase() || null;
+  const isClerkIdentity = options.authProvider === 'clerk';
+  const clerkUserId = isClerkIdentity ? String(options.userId || '').trim() : null;
 
-  const { data: existingUser, error: existingUserError } = await adminClient
+  let { data: existingUser, error: existingUserError } = await adminClient
     .from('users')
-    .select('id, email, company_name, tenant_id, last_active_tenant_id, amazon_seller_id, seller_id')
-    .eq('id', safeUserId)
+    .select('id, email, company_name, tenant_id, last_active_tenant_id, amazon_seller_id, seller_id, clerk_user_id')
+    .eq('id', requestedSafeUserId)
     .maybeSingle();
 
   if (existingUserError) {
     throw new Error(`Failed to load authenticated app user: ${existingUserError.message}`);
   }
+
+  if (!existingUser?.id && clerkUserId) {
+    const lookupByClerk = await adminClient
+      .from('users')
+      .select('id, email, company_name, tenant_id, last_active_tenant_id, amazon_seller_id, seller_id, clerk_user_id')
+      .eq('clerk_user_id', clerkUserId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (lookupByClerk.error && lookupByClerk.error.code !== '42703') {
+      throw new Error(`Failed to load Clerk-linked app user: ${lookupByClerk.error.message}`);
+    }
+
+    if (lookupByClerk.data?.id) {
+      existingUser = lookupByClerk.data;
+    }
+  }
+
+  if (!existingUser?.id && normalizedEmail) {
+    const lookupByEmail = await adminClient
+      .from('users')
+      .select('id, email, company_name, tenant_id, last_active_tenant_id, amazon_seller_id, seller_id, clerk_user_id')
+      .eq('email', normalizedEmail)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (lookupByEmail.error) {
+      throw new Error(`Failed to load app user by verified email: ${lookupByEmail.error.message}`);
+    }
+
+    if (lookupByEmail.data?.id) {
+      existingUser = lookupByEmail.data;
+    }
+  }
+
+  const safeUserId = existingUser?.id || requestedSafeUserId;
 
   const { data: activeMemberships, error: membershipsError } = await adminClient
     .from('tenant_memberships')
@@ -274,6 +313,10 @@ export async function ensureAuthenticatedUserWorkspace(options: BootstrapOptions
       updated_at: now
     };
 
+    if (clerkUserId) {
+      updatePayload.clerk_user_id = clerkUserId;
+    }
+
     const { error: updateUserError } = await adminClient
       .from('users')
       .update(updatePayload)
@@ -293,6 +336,10 @@ export async function ensureAuthenticatedUserWorkspace(options: BootstrapOptions
       created_at: now,
       updated_at: now
     };
+
+    if (clerkUserId) {
+      (baseUserPayload as Record<string, unknown>).clerk_user_id = clerkUserId;
+    }
 
     const initialInsert = await adminClient
       .from('users')

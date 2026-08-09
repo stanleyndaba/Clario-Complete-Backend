@@ -116,7 +116,8 @@ router.post('/bootstrap', async (req, res) => {
       email: resolvedEmail,
       preferredWorkspaceName: typeof req.body?.workspaceName === 'string' ? req.body.workspaceName : null,
       preferredTenantSlug: typeof req.body?.preferredTenantSlug === 'string' ? req.body.preferredTenantSlug : null,
-      foundingReservation: req.body?.foundingReservation === true
+      foundingReservation: req.body?.foundingReservation === true,
+      authProvider: decoded.source
     });
 
     const welcomeEmailPayload = {
