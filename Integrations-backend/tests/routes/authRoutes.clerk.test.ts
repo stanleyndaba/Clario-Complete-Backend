@@ -104,7 +104,8 @@ describe('authRoutes Clerk bootstrap bridge', () => {
       email: 'primary@example.com',
       preferredWorkspaceName: 'Primary Workspace',
       preferredTenantSlug: 'primary-workspace',
-      foundingReservation: true
+      foundingReservation: true,
+      authProvider: 'clerk'
     });
     expect(response.body).toEqual({
       success: true,
