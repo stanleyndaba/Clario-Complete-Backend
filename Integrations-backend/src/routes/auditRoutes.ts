@@ -174,6 +174,53 @@ router.get('/:id/results', async (req: AuthenticatedRequest, res) => {
   }
 });
 
+router.get('/:id/commercial', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+
+    const auditId = String((req as any).params?.id || '');
+    const result = await auditRunService.getAudit(auditId, userId);
+    return res.json({
+      success: true,
+      commercial: {
+        state: result.commercial_state || null,
+        route: result.commercial_route || null,
+        reason: result.commercial_reason || null,
+        eligibility: result.commercial_eligibility || null,
+        evidence_basis: result.commercial_evidence_basis || {},
+        decided_at: result.commercial_decided_at || null,
+        previous_audit_id: result.previous_audit_id || null,
+        last_audit_at: result.last_audit_at || null,
+        next_eligible_at: result.next_eligible_at || null,
+        comparison: result.commercial_comparison || {},
+        control_statement_id: result.control_statement_id || null,
+      }
+    });
+  } catch (error: any) {
+    const status = error?.message === 'Audit run not found' ? 404 : 500;
+    return res.status(status).json({ success: false, message: error?.message || 'Failed to load commercial decision' });
+  }
+});
+
+router.get('/:id/control-statement', async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+
+    const auditId = String((req as any).params?.id || '');
+    const result = await auditRunService.getControlStatement(auditId, userId);
+    return res.json({ success: true, controlStatement: result.controlStatement, audit: result.audit });
+  } catch (error: any) {
+    const status = error?.message === 'Audit run not found' ? 404 : 500;
+    return res.status(status).json({ success: false, message: error?.message || 'Failed to load control statement' });
+  }
+});
+
 router.get('/:id', async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user?.id;

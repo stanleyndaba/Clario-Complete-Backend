@@ -6,6 +6,13 @@ import logger from '../utils/logger';
 import workspaceEntitlementService from './workspaceEntitlementService';
 import { withPostgresTransaction } from '../database/postgresTransaction';
 import tokenManager from '../utils/tokenManager';
+import {
+  buildControlStatement,
+  classifyCommercialDecision,
+  type AuditRecordLike,
+  type AuditSummaryLike,
+  type CommercialDecision,
+} from './auditCommercialDecisionService';
 
 type AuditRunStatus =
   | 'created'
@@ -28,6 +35,17 @@ type AuditSummary = {
   sourcesReviewed?: string[];
   sourcesUnavailable?: string[];
   retryable?: boolean;
+  commercialState?: string;
+  commercialRoute?: string;
+  commercialReason?: string;
+  commercialEligibility?: string;
+  commercialEvidenceBasis?: Record<string, unknown>;
+  commercialDecidedAt?: string | null;
+  previousAuditId?: string | null;
+  lastAuditAt?: string | null;
+  nextEligibleAt?: string | null;
+  commercialComparison?: Record<string, unknown>;
+  controlStatementId?: string | null;
 };
 
 const EMPTY_SUMMARY: AuditSummary = {
@@ -306,6 +324,8 @@ class AuditRunService {
     audit: any;
     tenant: any;
     amazonConnected: boolean;
+    commercialEligibility?: string | null;
+    nextEligibleAt?: string | null;
   }> {
     const workspace = await this.getWorkspace(userId, email);
     const connection = await this.getAmazonConnection(workspace.userId, workspace.tenant.id);
@@ -338,10 +358,28 @@ class AuditRunService {
         return {
           audit: resumedAudit,
           tenant: workspace.tenant,
-          amazonConnected: Boolean(connection)
+          amazonConnected: Boolean(connection),
+          commercialEligibility: resumedAudit.commercial_eligibility || null,
+          nextEligibleAt: resumedAudit.next_eligible_at || null
+        };
+      }
+
+      if (
+        latestAudit.status === 'completed' &&
+        latestAudit.next_eligible_at &&
+        new Date(latestAudit.next_eligible_at).getTime() > Date.now()
+      ) {
+        return {
+          audit: latestAudit,
+          tenant: workspace.tenant,
+          amazonConnected: Boolean(connection),
+          commercialEligibility: latestAudit.commercial_eligibility || null,
+          nextEligibleAt: latestAudit.next_eligible_at
         };
       }
     }
+
+    const previousCompletedAudit = await this.getLatestCompletedAudit(workspace.userId, workspace.tenant.id, latestAudit?.id || null);
 
     const { data, error } = await supabaseAdmin
       .from('audit_runs')
@@ -352,7 +390,9 @@ class AuditRunService {
         status,
         source_type: 'sp_api',
         summary: EMPTY_SUMMARY,
-        activation_status: 'not_activated'
+        activation_status: 'not_activated',
+        previous_audit_id: previousCompletedAudit?.id || null,
+        last_audit_at: previousCompletedAudit?.completed_at || previousCompletedAudit?.started_at || null,
       })
       .select('*')
       .single();
@@ -364,7 +404,9 @@ class AuditRunService {
     return {
       audit: data,
       tenant: workspace.tenant,
-      amazonConnected: Boolean(connection)
+      amazonConnected: Boolean(connection),
+      commercialEligibility: data.commercial_eligibility || null,
+      nextEligibleAt: data.next_eligible_at || null
     };
   }
 
@@ -396,13 +438,119 @@ class AuditRunService {
     return data || null;
   }
 
+  private async getLatestCompletedAudit(userId: string, tenantId: string, excludeAuditId?: string | null) {
+    const safeUserId = convertUserIdToUuid(userId);
+    let query = supabaseAdmin
+      .from('audit_runs')
+      .select('*')
+      .eq('user_id', safeUserId)
+      .eq('tenant_id', tenantId)
+      .eq('status', 'completed')
+      .order('completed_at', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (excludeAuditId) {
+      query = query.neq('id', excludeAuditId);
+    }
+
+    const { data, error } = await query.maybeSingle();
+    if (error) throw new Error(`Failed to load previous completed audit: ${error.message}`);
+    return data || null;
+  }
+
+  private async getControlStatementByAuditId(auditId: string) {
+    const { data, error } = await supabaseAdmin
+      .from('audit_control_statements')
+      .select('*')
+      .eq('audit_run_id', auditId)
+      .maybeSingle();
+
+    if (error) throw new Error(`Failed to load audit control statement: ${error.message}`);
+    return data || null;
+  }
+
+  private async persistCommercialOutcome(input: {
+    audit: any;
+    summary: AuditSummaryLike | null;
+    previousAudit: any | null;
+    hasRecoveryWorkspace: boolean;
+  }) {
+    const decision: CommercialDecision = classifyCommercialDecision({
+      currentAudit: input.audit as AuditRecordLike,
+      currentSummary: input.summary,
+      previousAudit: input.previousAudit as AuditRecordLike | null | undefined,
+      hasRecoveryWorkspace: input.hasRecoveryWorkspace,
+    });
+    const controlStatement = buildControlStatement({
+      currentAudit: input.audit as AuditRecordLike,
+      commercialDecision: decision,
+    });
+
+    const persisted = await this.updateAudit(input.audit.id, {
+      previous_audit_id: decision.previous_audit_id,
+      last_audit_at: decision.last_audit_at,
+      next_eligible_at: decision.next_eligible_at,
+      commercial_state: decision.commercial_state,
+      commercial_route: decision.commercial_route,
+      commercial_reason: decision.commercial_reason,
+      commercial_eligibility: decision.commercial_eligibility,
+      commercial_evidence_basis: decision.commercial_evidence_basis,
+      commercial_decided_at: decision.commercial_decided_at,
+      commercial_comparison: decision.comparison,
+    });
+
+    const { data: controlData, error: controlError } = await supabaseAdmin
+      .from('audit_control_statements')
+      .upsert({
+        audit_run_id: input.audit.id,
+        tenant_id: input.audit.tenant_id,
+        user_id: input.audit.user_id,
+        coverage_start: controlStatement.coverage_start,
+        coverage_end: controlStatement.coverage_end,
+        generated_at: controlStatement.generated_at,
+        data_freshness: controlStatement.data_freshness,
+        event_population: controlStatement.event_population,
+        automatic_reimbursements: controlStatement.automatic_reimbursements,
+        manual_reimbursements: controlStatement.manual_reimbursements,
+        reversals: controlStatement.reversals,
+        exceptions_investigated: controlStatement.exceptions_investigated,
+        unresolved_recoveries: controlStatement.unresolved_recoveries,
+        evidence_gaps: controlStatement.evidence_gaps,
+        deadlines_approaching: controlStatement.deadlines_approaching,
+        open_cases: controlStatement.open_cases,
+        control_status: controlStatement.control_status,
+        source_lineage: controlStatement.source_lineage,
+        payload: controlStatement.payload,
+      }, { onConflict: 'audit_run_id' })
+      .select('*')
+      .single();
+
+    if (controlError) {
+      logger.warn('[AUDIT] Failed to persist control statement', {
+        auditId: input.audit.id,
+        error: controlError.message,
+      });
+    }
+
+    if (controlData?.id) {
+      await this.updateAudit(input.audit.id, { control_statement_id: controlData.id });
+    }
+
+    return {
+      audit: persisted,
+      decision,
+      controlStatement: controlData || null,
+    };
+  }
+
   async getAuditHistory(userId: string, limit = 18) {
     const safeUserId = convertUserIdToUuid(userId);
     const cutoff = new Date();
     cutoff.setUTCMonth(cutoff.getUTCMonth() - 18);
     const { data, error } = await supabaseAdmin
       .from('audit_runs')
-      .select('id, tenant_id, store_id, sync_id, status, source_type, started_at, completed_at, created_at, updated_at, summary, activation_status')
+      .select('id, tenant_id, store_id, sync_id, status, source_type, started_at, completed_at, created_at, updated_at, summary, activation_status, commercial_state, commercial_route')
       .eq('user_id', safeUserId)
       .gte('created_at', cutoff.toISOString())
       .order('created_at', { ascending: false })
@@ -424,6 +572,8 @@ class AuditRunService {
         recordsReviewed: audit.summary?.recordsReviewed ?? null,
         findingsCount: audit.summary?.findingsCount ?? 0,
         scopeValue: audit.summary?.scopeValue ?? 0,
+        commercialState: audit.commercial_state || null,
+        commercialRoute: audit.commercial_route || null,
         isLatest: index === 0,
       };
     });
@@ -431,6 +581,22 @@ class AuditRunService {
 
   async runAudit(auditId: string, userId: string) {
     const audit = await this.getAudit(auditId, userId);
+    if (audit.status === 'completed') {
+      if (audit.commercial_state) {
+        return audit;
+      }
+
+      const previousAudit = await this.getLatestCompletedAudit(audit.user_id, audit.tenant_id, audit.id);
+      const workspaceEntitlement = await workspaceEntitlementService.getTenantEntitlement(audit.tenant_id);
+      const { audit: commercialAudit } = await this.persistCommercialOutcome({
+        audit,
+        summary: audit.summary || EMPTY_SUMMARY,
+        previousAudit,
+        hasRecoveryWorkspace: workspaceEntitlement.entitlement.entitled,
+      });
+      return commercialAudit;
+    }
+
     const connection = await this.getAmazonConnection(audit.user_id, audit.tenant_id);
 
     if (!connection) {
@@ -541,11 +707,22 @@ class AuditRunService {
     }
 
     const summary = await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus);
-    return this.updateAudit(audit.id, {
+    const completedAudit = await this.updateAudit(audit.id, {
       status: 'completed',
       completed_at: new Date().toISOString(),
       summary
     });
+
+    const previousAudit = await this.getLatestCompletedAudit(audit.user_id, audit.tenant_id, audit.id);
+    const workspaceEntitlement = await workspaceEntitlementService.getTenantEntitlement(audit.tenant_id);
+    const { audit: commercialAudit } = await this.persistCommercialOutcome({
+      audit: completedAudit,
+      summary,
+      previousAudit,
+      hasRecoveryWorkspace: workspaceEntitlement.entitlement.entitled,
+    });
+
+    return commercialAudit;
   }
 
   async getResults(auditId: string, userId: string) {
@@ -556,9 +733,52 @@ class AuditRunService {
     const summary = audit.status === 'completed' && audit.sync_id
       ? await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus)
       : (audit.summary || EMPTY_SUMMARY);
+    const teaserSummary = {
+      ...summary,
+      commercialState: audit.commercial_state || summary.commercialState,
+      commercialRoute: audit.commercial_route || summary.commercialRoute,
+      commercialReason: audit.commercial_reason || summary.commercialReason,
+      commercialEligibility: audit.commercial_eligibility || summary.commercialEligibility,
+      commercialEvidenceBasis: audit.commercial_evidence_basis || summary.commercialEvidenceBasis,
+      commercialDecidedAt: audit.commercial_decided_at || summary.commercialDecidedAt,
+      previousAuditId: audit.previous_audit_id || summary.previousAuditId,
+      lastAuditAt: audit.last_audit_at || summary.lastAuditAt,
+      nextEligibleAt: audit.next_eligible_at || summary.nextEligibleAt,
+      commercialComparison: audit.commercial_comparison || summary.commercialComparison,
+      controlStatementId: audit.control_statement_id || summary.controlStatementId,
+    };
 
     if (audit.status === 'completed') {
-      await this.updateAudit(audit.id, { summary });
+      if (!audit.commercial_state) {
+        const previousAudit = await this.getLatestCompletedAudit(audit.user_id, audit.tenant_id, audit.id);
+        const workspaceEntitlement = await workspaceEntitlementService.getTenantEntitlement(audit.tenant_id);
+        const commercial = await this.persistCommercialOutcome({
+          audit,
+          summary: teaserSummary,
+          previousAudit,
+          hasRecoveryWorkspace: workspaceEntitlement.entitlement.entitled,
+        });
+        return {
+          audit: {
+            id: commercial.audit.id,
+            status: commercial.audit.status,
+            activation_status: commercial.audit.activation_status,
+            sync_id: commercial.audit.sync_id,
+            started_at: commercial.audit.started_at,
+            completed_at: commercial.audit.completed_at
+          },
+          teaser: {
+            ...teaserSummary,
+            locked: commercial.audit.activation_status !== 'activated',
+            activationRequired: commercial.audit.activation_status !== 'activated',
+          },
+          commercial: {
+            decision: commercial.decision,
+            controlStatement: commercial.controlStatement,
+          }
+        };
+      }
+      await this.updateAudit(audit.id, { summary: teaserSummary });
     }
 
     return {
@@ -571,10 +791,94 @@ class AuditRunService {
         completed_at: audit.completed_at
       },
       teaser: {
-        ...summary,
+        ...teaserSummary,
         locked: audit.activation_status !== 'activated',
         activationRequired: audit.activation_status !== 'activated'
+      },
+      commercial: {
+        state: audit.commercial_state || null,
+        route: audit.commercial_route || null,
+        reason: audit.commercial_reason || null,
+        eligibility: audit.commercial_eligibility || null,
+        decidedAt: audit.commercial_decided_at || null,
+        previousAuditId: audit.previous_audit_id || null,
+        lastAuditAt: audit.last_audit_at || null,
+        nextEligibleAt: audit.next_eligible_at || null,
+        comparison: audit.commercial_comparison || {},
+        controlStatementId: audit.control_statement_id || null,
+        controlStatement: await this.getControlStatementByAuditId(audit.id),
       }
+    };
+  }
+
+  async getControlStatement(auditId: string, userId: string) {
+    const audit = await this.getAudit(auditId, userId);
+    const controlStatement = await this.getControlStatementByAuditId(audit.id);
+
+    if (!controlStatement) {
+      const summary = audit.summary || EMPTY_SUMMARY;
+      const decision = audit.commercial_state
+        ? {
+            commercial_state: audit.commercial_state,
+            commercial_route: audit.commercial_route,
+            commercial_reason: audit.commercial_reason,
+            commercial_eligibility: audit.commercial_eligibility,
+            commercial_evidence_basis: audit.commercial_evidence_basis || {},
+            commercial_decided_at: audit.commercial_decided_at || new Date().toISOString(),
+            previous_audit_id: audit.previous_audit_id || null,
+            last_audit_at: audit.last_audit_at || null,
+            next_eligible_at: audit.next_eligible_at || null,
+            comparison: audit.commercial_comparison || {},
+          }
+        : null;
+
+      return {
+        audit,
+        controlStatement: decision
+          ? buildControlStatement({
+              currentAudit: audit as any,
+              commercialDecision: decision as CommercialDecision,
+            })
+          : {
+              coverage_start: audit.started_at || audit.created_at || new Date().toISOString(),
+              coverage_end: audit.completed_at || audit.updated_at || new Date().toISOString(),
+              generated_at: audit.updated_at || audit.completed_at || new Date().toISOString(),
+              data_freshness: summary.recordsReviewed === 0 ? 'DATA_INCOMPLETE' : 'UNDER_CONTROL',
+              event_population: {
+                records_reviewed: summary.recordsReviewed || 0,
+                findings_count: summary.findingsCount || 0,
+                scope_value: summary.scopeValue || 0,
+                evidence_ready_count: summary.evidenceReadyCount || 0,
+                sources_reviewed: summary.sourcesReviewed || [],
+                sources_unavailable: summary.sourcesUnavailable || [],
+              },
+              automatic_reimbursements: 0,
+              manual_reimbursements: 0,
+              reversals: 0,
+              exceptions_investigated: 0,
+              unresolved_recoveries: summary.findingsCount || 0,
+              evidence_gaps: summary.sourcesUnavailable || [],
+              deadlines_approaching: [],
+              open_cases: summary.findingsCount || 0,
+              control_status: summary.recordsReviewed === 0 ? 'DATA_INCOMPLETE' : 'UNDER_CONTROL',
+              source_lineage: {
+                previous_audit_id: audit.previous_audit_id || null,
+                current_audit_id: audit.id,
+                comparison_available: Boolean(audit.commercial_comparison),
+                recurring_burden: false,
+              },
+              payload: {
+                summary,
+                commercial_state: audit.commercial_state || null,
+                commercial_route: audit.commercial_route || null,
+              },
+            },
+      };
+    }
+
+    return {
+      audit,
+      controlStatement,
     };
   }
 
@@ -605,6 +909,10 @@ class AuditRunService {
         evidence_ready: summary.evidenceReadyCount || 0,
         evidence_required: Math.max(0, (summary.findingsCount || 0) - (summary.evidenceReadyCount || 0)),
         categories: summary.categories || [],
+        commercial_state: audit.commercial_state || null,
+        commercial_route: audit.commercial_route || null,
+        commercial_reason: audit.commercial_reason || null,
+        commercial_eligibility: audit.commercial_eligibility || null,
         limitations: summary.sourcesUnavailable?.length
           ? `Some sources were unavailable: ${summary.sourcesUnavailable.join(', ')}.`
           : null,
@@ -685,6 +993,15 @@ class AuditRunService {
           ? `Margin identified ${summary.findingsCount} actionable finding${summary.findingsCount === 1 ? '' : 's'}.`
           : 'Margin completed the audit without identifying actionable recoveries in the available records.',
       });
+
+      if (audit.commercial_route || audit.commercial_state) {
+        events.push({
+          timestamp: audit.commercial_decided_at || audit.completed_at || audit.updated_at || started,
+          category: 'Commercial',
+          status: 'completed',
+          message: `Commercial route resolved to ${audit.commercial_route || 'NO_SALE'} (${audit.commercial_state || 'unclassified'}).`,
+        });
+      }
     }
 
     if (audit.activation_status === 'activated') {

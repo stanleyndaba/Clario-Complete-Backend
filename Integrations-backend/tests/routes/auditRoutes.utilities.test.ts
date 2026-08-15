@@ -21,6 +21,7 @@ jest.mock('../../src/services/auditRunService', () => ({
     getExportSummary: jest.fn(),
     getActivity: jest.fn(),
     getResults: jest.fn(),
+    getControlStatement: jest.fn(),
   },
 }));
 
@@ -68,17 +69,45 @@ describe('audit utility routes', () => {
     expect(auditRunService.getAudit).toHaveBeenCalledWith('audit-123', 'user-1');
   });
 
+  it('routes audit commercial lookups without treating them as audit ids', async () => {
+    (auditRunService.getAudit as any).mockResolvedValue({
+      id: 'audit-123',
+      status: 'completed',
+      commercial_state: 'VERIFIED_RECOVERY',
+      commercial_route: 'RECOVER_ONCE',
+      commercial_reason: 'Verified recovery opportunity.',
+      commercial_eligibility: 'eligible',
+      commercial_evidence_basis: {},
+      commercial_decided_at: '2026-08-01T00:00:00.000Z',
+      previous_audit_id: null,
+      last_audit_at: '2026-08-01T00:00:00.000Z',
+      next_eligible_at: '2026-08-31T00:00:00.000Z',
+      commercial_comparison: {},
+      control_statement_id: null,
+    });
+
+    const response = await request(app).get('/api/audits/audit-123/commercial');
+
+    expect(response.status).toBe(200);
+    expect(response.body.commercial.route).toBe('RECOVER_ONCE');
+    expect(auditRunService.getAudit).toHaveBeenCalledWith('audit-123', 'user-1');
+  });
+
   it('returns a controlled 404 for audit ids outside the authenticated user scope', async () => {
     (auditRunService.getExportSummary as any).mockRejectedValue(new Error('Audit run not found'));
     (auditRunService.getActivity as any).mockRejectedValue(new Error('Audit run not found'));
+    (auditRunService.getControlStatement as any).mockRejectedValue(new Error('Audit run not found'));
 
     const exportResponse = await request(app).get('/api/audits/other-audit/export-summary');
     const activityResponse = await request(app).get('/api/audits/other-audit/activity');
+    const controlResponse = await request(app).get('/api/audits/other-audit/control-statement');
 
     expect(exportResponse.status).toBe(404);
     expect(activityResponse.status).toBe(404);
+    expect(controlResponse.status).toBe(404);
     expect(exportResponse.body.message).toBe('Audit run not found');
     expect(activityResponse.body.message).toBe('Audit run not found');
+    expect(controlResponse.body.message).toBe('Audit run not found');
   });
 
   it('requires Recovery Workspace entitlement when saving a schedule', async () => {
