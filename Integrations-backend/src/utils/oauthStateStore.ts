@@ -46,9 +46,10 @@ class InMemoryOAuthStateStore {
     this.states.set(state, stateData);
 
     // Auto-cleanup memory after TTL
-    setTimeout(() => {
+    const cleanupTimer = setTimeout(() => {
       this.states.delete(state);
     }, this.TTL_MS);
+    cleanupTimer.unref?.();
 
     // Store in Redis if available (Persistence for production)
     try {
@@ -219,9 +220,10 @@ class InMemoryOAuthStateStore {
 const oauthStateStore = new InMemoryOAuthStateStore();
 
 // Cleanup expired states every 5 minutes
-setInterval(() => {
+const cleanupInterval = setInterval(() => {
   oauthStateStore.cleanup();
 }, 5 * 60 * 1000);
+cleanupInterval.unref?.();
 
 export default oauthStateStore;
 

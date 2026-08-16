@@ -10,6 +10,7 @@ router.post('/', optionalAuth, async (req: AuthenticatedRequest, res) => {
     const intent = await auditIntentService.createIntent({
       sourceType: body.source_type || body.sourceType,
       returnPath: body.return_path || body.returnPath,
+      idempotencyKey: body.idempotency_key || body.idempotencyKey || (req as any).headers?.['idempotency-key'],
       metadata: {
         created_from: 'public_audit_entry',
       }

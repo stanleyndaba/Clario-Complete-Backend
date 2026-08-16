@@ -122,6 +122,28 @@ export interface ControlStatement {
   payload: Record<string, unknown>;
 }
 
+export type FirstUsefulResultKind =
+  | 'verified_recovery'
+  | 'material_data_limitation'
+  | 'coverage_verified'
+  | 'r0_explanation';
+
+export interface FirstUsefulResult {
+  milestone: 'FIRST_USEFUL_RESULT';
+  kind: FirstUsefulResultKind;
+  message: string;
+  evidence_basis: {
+    scope_value: number;
+    findings_count: number;
+    evidence_ready_count: number;
+    records_reviewed: number;
+    categories: string[];
+    sources_reviewed: string[];
+    sources_unavailable: string[];
+    final_status: string;
+  };
+}
+
 function numberFrom(value: unknown): number {
   const parsed = Number(value || 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -320,6 +342,41 @@ export function classifyCommercialDecision(input: {
     last_audit_at: input.currentAudit.completed_at || input.currentAudit.started_at || input.currentAudit.created_at || now,
     next_eligible_at: new Date(new Date(input.currentAudit.completed_at || now).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString(),
     comparison,
+  };
+}
+
+export function deriveFirstUsefulResult(summary: AuditSummaryLike | null | undefined): FirstUsefulResult {
+  const current = analyzeAuditSummary(summary);
+  let kind: FirstUsefulResultKind = 'r0_explanation';
+  let message = 'Margin completed the audit and produced an honest recovery-control explanation.';
+
+  if (current.findingsCount > 0 && current.scopeValue > 0) {
+    kind = 'verified_recovery';
+    message = `Margin identified ${current.findingsCount} recovery candidate${current.findingsCount === 1 ? '' : 's'} with ${current.evidenceReadyCount} evidence-ready item${current.evidenceReadyCount === 1 ? '' : 's'}.`;
+  } else if (current.recordsReviewed === 0 || current.sourcesUnavailable.length > 0) {
+    kind = 'material_data_limitation';
+    message = current.recordsReviewed === 0
+      ? 'Margin connected the audit path, but no usable Amazon records were available for review.'
+      : `Margin reviewed available records and found coverage limitations: ${current.sourcesUnavailable.join(', ')}.`;
+  } else if (current.recordsReviewed > 0) {
+    kind = 'coverage_verified';
+    message = `Margin reviewed ${current.recordsReviewed.toLocaleString()} Amazon record${current.recordsReviewed === 1 ? '' : 's'} and did not identify a paid recovery route from the available activity.`;
+  }
+
+  return {
+    milestone: 'FIRST_USEFUL_RESULT',
+    kind,
+    message,
+    evidence_basis: {
+      scope_value: current.scopeValue,
+      findings_count: current.findingsCount,
+      evidence_ready_count: current.evidenceReadyCount,
+      records_reviewed: current.recordsReviewed,
+      categories: current.categories,
+      sources_reviewed: current.sourcesReviewed,
+      sources_unavailable: current.sourcesUnavailable,
+      final_status: current.finalStatus,
+    },
   };
 }
 

@@ -10,6 +10,7 @@ import tokenManager from '../utils/tokenManager';
 import {
   buildControlStatement,
   classifyCommercialDecision,
+  deriveFirstUsefulResult,
   type AuditRecordLike,
   type AuditSummaryLike,
   type CommercialDecision,
@@ -47,6 +48,8 @@ type AuditSummary = {
   nextEligibleAt?: string | null;
   commercialComparison?: Record<string, unknown>;
   controlStatementId?: string | null;
+  firstUsefulResult?: Record<string, unknown> | null;
+  firstUsefulResultAt?: string | null;
 };
 
 const EMPTY_SUMMARY: AuditSummary = {
@@ -330,9 +333,9 @@ class AuditRunService {
   }> {
     const workspace = await this.getWorkspace(userId, email);
     if (auditIntentId) {
-      const intent = await auditIntentService.getOwnedIntent(auditIntentId, workspace.userId);
+      const intent = await auditIntentService.getOwnedActiveIntent(auditIntentId, workspace.userId);
       if (!intent) {
-        throw new Error('Audit intent not found for this user.');
+        throw new Error('Audit intent is no longer active. Restart the audit from the current page.');
       }
       if (intent.source_type !== 'sp_api') {
         throw new Error('This audit intent is for manual report upload, not Amazon connection.');
@@ -641,9 +644,9 @@ class AuditRunService {
     }
 
     if (input.auditIntentId) {
-      const intent = await auditIntentService.getOwnedIntent(input.auditIntentId, safeUserId);
+      const intent = await auditIntentService.getOwnedActiveIntent(input.auditIntentId, safeUserId);
       if (!intent) {
-        throw new Error('Audit intent not found for this manual report upload.');
+        throw new Error('Audit intent is no longer active. Restart the manual report audit from the current page.');
       }
       if (intent.source_type !== 'csv_upload') {
         throw new Error('This audit intent is for connected Amazon audit, not manual report upload.');
@@ -710,6 +713,12 @@ class AuditRunService {
           ...SYNC_IN_PROGRESS_SUMMARY,
           message: 'Manual report detection is still running. Margin will finish the recovery audit when processing completes.',
         };
+    const firstUsefulResult = auditStatus === 'completed'
+      ? deriveFirstUsefulResult(summary)
+      : null;
+    const firstUsefulResultAt = auditStatus === 'completed'
+      ? (existing?.first_useful_result_at || detection.completedAt || uploadRun.completed_at || new Date().toISOString())
+      : null;
 
     const previousAudit = await this.getLatestCompletedAudit(safeUserId, input.tenantId, existing?.id || null);
     const basePayload = {
@@ -727,6 +736,8 @@ class AuditRunService {
       completed_at: auditStatus === 'completed'
         ? (existing?.completed_at || detection.completedAt || uploadRun.completed_at || new Date().toISOString())
         : null,
+      first_useful_result_at: firstUsefulResultAt,
+      first_useful_result: firstUsefulResult || {},
     };
 
     const audit = existing?.id
@@ -822,10 +833,13 @@ class AuditRunService {
 
     const syncStatus = this.buildCsvSyncStatus(uploadRun);
     const summary = await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus);
+    const completedAt = audit.completed_at || detection.completedAt || uploadRun.completed_at || new Date().toISOString();
     const completedAudit = await this.updateAudit(audit.id, {
       status: 'completed',
-      completed_at: audit.completed_at || detection.completedAt || uploadRun.completed_at || new Date().toISOString(),
-      summary
+      completed_at: completedAt,
+      summary,
+      first_useful_result_at: audit.first_useful_result_at || completedAt,
+      first_useful_result: deriveFirstUsefulResult(summary),
     });
 
     const previousAudit = await this.getLatestCompletedAudit(audit.user_id, audit.tenant_id, audit.id);
@@ -1092,10 +1106,14 @@ class AuditRunService {
     }
 
     const summary = await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus);
+    const completedAt = new Date().toISOString();
+    const firstUsefulResult = deriveFirstUsefulResult(summary);
     const completedAudit = await this.updateAudit(audit.id, {
       status: 'completed',
-      completed_at: new Date().toISOString(),
-      summary
+      completed_at: completedAt,
+      summary,
+      first_useful_result_at: audit.first_useful_result_at || completedAt,
+      first_useful_result: firstUsefulResult,
     });
 
     const previousAudit = await this.getLatestCompletedAudit(audit.user_id, audit.tenant_id, audit.id);
@@ -1131,9 +1149,22 @@ class AuditRunService {
       nextEligibleAt: audit.next_eligible_at || summary.nextEligibleAt,
       commercialComparison: audit.commercial_comparison || summary.commercialComparison,
       controlStatementId: audit.control_statement_id || summary.controlStatementId,
+      firstUsefulResult: audit.first_useful_result || summary.firstUsefulResult || null,
+      firstUsefulResultAt: audit.first_useful_result_at || summary.firstUsefulResultAt || null,
     };
 
     if (audit.status === 'completed') {
+      if (!audit.first_useful_result_at) {
+        const firstUsefulResult = deriveFirstUsefulResult(teaserSummary);
+        const firstUsefulResultAt = audit.completed_at || new Date().toISOString();
+        await this.updateAudit(audit.id, {
+          first_useful_result_at: firstUsefulResultAt,
+          first_useful_result: firstUsefulResult,
+        });
+        teaserSummary.firstUsefulResult = firstUsefulResult;
+        teaserSummary.firstUsefulResultAt = firstUsefulResultAt;
+      }
+
       if (!audit.commercial_state) {
         const previousAudit = await this.getLatestCompletedAudit(audit.user_id, audit.tenant_id, audit.id);
         const workspaceEntitlement = await workspaceEntitlementService.getTenantEntitlement(audit.tenant_id);
@@ -1150,7 +1181,8 @@ class AuditRunService {
             activation_status: commercial.audit.activation_status,
             sync_id: commercial.audit.sync_id,
             started_at: commercial.audit.started_at,
-            completed_at: commercial.audit.completed_at
+            completed_at: commercial.audit.completed_at,
+            first_useful_result_at: commercial.audit.first_useful_result_at || teaserSummary.firstUsefulResultAt || null,
           },
           teaser: {
             ...teaserSummary,
@@ -1173,7 +1205,8 @@ class AuditRunService {
         activation_status: audit.activation_status,
         sync_id: audit.sync_id,
         started_at: audit.started_at,
-        completed_at: audit.completed_at
+        completed_at: audit.completed_at,
+        first_useful_result_at: audit.first_useful_result_at || teaserSummary.firstUsefulResultAt || null,
       },
       teaser: {
         ...teaserSummary,

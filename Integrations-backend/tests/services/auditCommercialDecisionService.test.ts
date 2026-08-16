@@ -3,6 +3,7 @@ import {
   buildControlStatement,
   classifyCommercialDecision,
   compareAuditPeriods,
+  deriveFirstUsefulResult,
 } from '../../src/services/auditCommercialDecisionService';
 
 describe('auditCommercialDecisionService', () => {
@@ -176,5 +177,41 @@ describe('auditCommercialDecisionService', () => {
     expect(statement.control_status).toBe('DATA_INCOMPLETE');
     expect(statement.event_population.records_reviewed).toBe(0);
     expect(statement.evidence_gaps).toContain('Shipments');
+  });
+
+  it('derives a first useful result from verified recovery truth', () => {
+    const result = deriveFirstUsefulResult({
+      scopeValue: 4200,
+      findingsCount: 2,
+      evidenceReadyCount: 1,
+      recordsReviewed: 180,
+      categories: ['Inbound shortage'],
+      sourcesReviewed: ['Shipments', 'Settlements'],
+      sourcesUnavailable: [],
+      finalStatus: 'complete_with_findings',
+    });
+
+    expect(result.milestone).toBe('FIRST_USEFUL_RESULT');
+    expect(result.kind).toBe('verified_recovery');
+    expect(result.evidence_basis.scope_value).toBe(4200);
+    expect(result.evidence_basis.findings_count).toBe(2);
+  });
+
+  it('derives a first useful result from a material data limitation', () => {
+    const result = deriveFirstUsefulResult({
+      scopeValue: 0,
+      findingsCount: 0,
+      evidenceReadyCount: 0,
+      recordsReviewed: 0,
+      categories: [],
+      sourcesReviewed: [],
+      sourcesUnavailable: ['Shipments'],
+      finalStatus: 'partial_no_findings',
+    });
+
+    expect(result.milestone).toBe('FIRST_USEFUL_RESULT');
+    expect(result.kind).toBe('material_data_limitation');
+    expect(result.evidence_basis.records_reviewed).toBe(0);
+    expect(result.evidence_basis.sources_unavailable).toContain('Shipments');
   });
 });
