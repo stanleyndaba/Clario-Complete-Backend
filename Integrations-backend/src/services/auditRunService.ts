@@ -459,6 +459,16 @@ class AuditRunService {
     return data || null;
   }
 
+  private assertFreeAuditEligible(previousAudit: any | null, sourceType: 'sp_api' | 'csv_upload') {
+    if (!previousAudit?.next_eligible_at) return;
+
+    const nextEligibleAt = new Date(previousAudit.next_eligible_at).getTime();
+    if (!Number.isFinite(nextEligibleAt) || nextEligibleAt <= Date.now()) return;
+
+    const sourceLabel = sourceType === 'csv_upload' ? 'manual report' : 'connected Amazon';
+    throw new Error(`Your next complimentary ${sourceLabel} audit is available on ${previousAudit.next_eligible_at}.`);
+  }
+
   private buildCsvSyncStatus(uploadRun: any) {
     const filesSummary = Array.isArray(uploadRun?.files_summary)
       ? uploadRun.files_summary
@@ -623,6 +633,11 @@ class AuditRunService {
       throw new Error(`Failed to load manual report audit: ${existingError.message}`);
     }
 
+    if (!existing?.id) {
+      const latestCompletedAudit = await this.getLatestCompletedAudit(safeUserId, input.tenantId, null);
+      this.assertFreeAuditEligible(latestCompletedAudit, 'csv_upload');
+    }
+
     const syncStatus = this.buildCsvSyncStatus(uploadRun);
     const summary = auditStatus === 'completed'
       ? await this.buildSummary(safeUserId, input.tenantId, syncId, syncStatus)
@@ -687,6 +702,60 @@ class AuditRunService {
     }
 
     return audit;
+  }
+
+  private async refreshCsvAudit(audit: any) {
+    if (!audit.sync_id) {
+      return this.updateAudit(audit.id, {
+        status: 'failed',
+        summary: safeFailureSummary('Manual report audit is missing its upload sync reference.')
+      });
+    }
+
+    const uploadRun = await this.getCsvUploadRunForAudit(audit.user_id, audit.tenant_id, audit.sync_id);
+    if (!uploadRun) {
+      return this.updateAudit(audit.id, {
+        status: 'failed',
+        summary: safeFailureSummary('Manual report upload could not be found.')
+      });
+    }
+
+    const detection = await this.getCsvDetectionStatusForAudit(audit.user_id, audit.tenant_id, audit.sync_id);
+    if (detection.status === 'failed') {
+      return this.updateAudit(audit.id, {
+        status: 'failed',
+        summary: safeFailureSummary('Detection failed for this manual report upload.')
+      });
+    }
+
+    if (detection.status !== 'completed') {
+      return this.updateAudit(audit.id, {
+        status: 'detecting',
+        summary: {
+          ...SYNC_IN_PROGRESS_SUMMARY,
+          message: 'Manual report detection is still running. Margin will finish the recovery audit when processing completes.',
+        }
+      });
+    }
+
+    const syncStatus = this.buildCsvSyncStatus(uploadRun);
+    const summary = await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus);
+    const completedAudit = await this.updateAudit(audit.id, {
+      status: 'completed',
+      completed_at: audit.completed_at || detection.completedAt || uploadRun.completed_at || new Date().toISOString(),
+      summary
+    });
+
+    const previousAudit = await this.getLatestCompletedAudit(audit.user_id, audit.tenant_id, audit.id);
+    const workspaceEntitlement = await workspaceEntitlementService.getTenantEntitlement(audit.tenant_id);
+    const { audit: commercialAudit } = await this.persistCommercialOutcome({
+      audit: completedAudit,
+      summary,
+      previousAudit,
+      hasRecoveryWorkspace: workspaceEntitlement.entitlement.entitled,
+    });
+
+    return commercialAudit;
   }
 
   private async getControlStatementByAuditId(auditId: string) {
@@ -825,6 +894,10 @@ class AuditRunService {
         hasRecoveryWorkspace: workspaceEntitlement.entitlement.entitled,
       });
       return commercialAudit;
+    }
+
+    if (audit.source_type === 'csv_upload') {
+      return this.refreshCsvAudit(audit);
     }
 
     const connection = await this.getAmazonConnection(audit.user_id, audit.tenant_id);
