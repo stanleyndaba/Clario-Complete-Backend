@@ -20,9 +20,35 @@ import { requireActiveTenant } from '../middleware/tenantMiddleware';
 import capacityGovernanceService from '../services/capacityGovernanceService';
 import operationalControlService from '../services/operationalControlService';
 import runtimeCapacityService from '../services/runtimeCapacityService';
+import auditRunService from '../services/auditRunService';
 
 const router = Router();
 const CSV_UPLOAD_BREAKER_BYPASS = ['filing-auto-dispatch'] as const;
+
+async function resolveManualAuditForCsvRun(input: {
+    userId: string;
+    tenantId: string;
+    syncId?: string | null;
+    storeId?: string | null;
+}) {
+    if (!input.syncId) return null;
+    try {
+        return await auditRunService.createOrResumeCsvAuditFromSync({
+            userId: input.userId,
+            tenantId: input.tenantId,
+            syncId: input.syncId,
+            storeId: input.storeId || null,
+        });
+    } catch (error: any) {
+        logger.info('ℹ️ [CSV UPLOAD] Manual report audit not created for this upload yet', {
+            tenantId: input.tenantId,
+            userId: input.userId,
+            syncId: input.syncId,
+            reason: error?.message || 'Unknown reason',
+        });
+        return null;
+    }
+}
 
 // Multer config: memory storage, 50MB limit, CSV files only
 const upload = multer({
@@ -129,7 +155,10 @@ router.post('/ingest', requireActiveTenant, upload.array('files', 10), async (re
         });
 
         const statusCode = result.success ? 200 : 207; // 207 Multi-Status if partial
-        return res.status(statusCode).json(result);
+        const manualAudit = result.success
+            ? await resolveManualAuditForCsvRun({ userId, tenantId, syncId: result.syncId, storeId })
+            : null;
+        return res.status(statusCode).json({ ...result, manualAudit });
     } catch (error: any) {
         logger.error('❌ [CSV UPLOAD] Upload request failed', { error: error.message });
 
@@ -241,7 +270,10 @@ router.post('/ingest/:type', requireActiveTenant, upload.array('files', 10), asy
         });
 
         const statusCode = result.success ? 200 : 207;
-        return res.status(statusCode).json(result);
+        const manualAudit = result.success
+            ? await resolveManualAuditForCsvRun({ userId, tenantId, syncId: result.syncId, storeId })
+            : null;
+        return res.status(statusCode).json({ ...result, manualAudit });
     } catch (error: any) {
         logger.error('❌ [CSV UPLOAD] Typed upload request failed', {
             error: error.message,
@@ -286,10 +318,14 @@ router.get('/latest-run', requireActiveTenant, async (req: Request, res: Respons
         }
 
         const run = await csvIngestionService.getLatestCsvUploadRun(userId, tenantId);
+        const manualAudit = run?.syncId
+            ? await resolveManualAuditForCsvRun({ userId, tenantId, syncId: run.syncId })
+            : null;
 
         return res.json({
             success: true,
             run,
+            manualAudit,
         });
     } catch (error: any) {
         logger.error('❌ [CSV UPLOAD] Failed to restore latest CSV run', {

@@ -459,6 +459,236 @@ class AuditRunService {
     return data || null;
   }
 
+  private buildCsvSyncStatus(uploadRun: any) {
+    const filesSummary = Array.isArray(uploadRun?.files_summary)
+      ? uploadRun.files_summary
+      : Array.isArray(uploadRun?.ingestion_results)
+        ? uploadRun.ingestion_results
+        : [];
+    const byType: Record<string, number> = {};
+    let totalItemsSynced = 0;
+
+    filesSummary.forEach((file: any) => {
+      const csvType = String(file?.csvType || file?.csv_type || '').trim();
+      const inserted = numberFrom(file?.rowsInserted ?? file?.rows_inserted);
+      const processed = numberFrom(file?.rowsProcessed ?? file?.rows_processed);
+      const reviewed = inserted || processed;
+      if (reviewed > 0) {
+        totalItemsSynced += reviewed;
+        if (csvType) {
+          byType[csvType] = (byType[csvType] || 0) + reviewed;
+        }
+      }
+    });
+
+    const sourceMap: Record<string, string> = {
+      orders: 'Orders',
+      shipments: 'Shipments',
+      returns: 'Returns',
+      settlements: 'Settlements',
+      inventory: 'Inventory',
+      financial_events: 'Financial events',
+      fees: 'Fees',
+      transfers: 'Transfers',
+    };
+    const suppliedTypes = new Set(Object.keys(byType));
+    const sourceWarnings = Object.keys(sourceMap)
+      .filter((csvType) => !suppliedTypes.has(csvType))
+      .map((csvType) => ({ source: sourceMap[csvType], reason: 'not_uploaded' }));
+
+    return {
+      sync_id: uploadRun?.sync_id,
+      status: uploadRun?.status === 'failed' ? 'failed' : 'completed',
+      current_step: 'manual_report_audit',
+      updated_at: uploadRun?.updated_at || uploadRun?.completed_at || uploadRun?.created_at || new Date().toISOString(),
+      metadata: {
+        sourceType: 'csv_upload',
+        totalItemsSynced,
+        ordersProcessed: byType.orders || 0,
+        totalOrders: byType.orders || 0,
+        inventoryCount: byType.inventory || 0,
+        shipmentsCount: byType.shipments || 0,
+        returnsCount: byType.returns || 0,
+        settlementsCount: (byType.settlements || 0) + (byType.financial_events || 0),
+        feesCount: byType.fees || 0,
+        transfersCount: byType.transfers || 0,
+        sourceWarnings,
+        csvTypesUploaded: Array.from(suppliedTypes),
+      },
+    };
+  }
+
+  private async getCsvUploadRunForAudit(userId: string, tenantId: string, syncId: string) {
+    const { data, error } = await supabaseAdmin
+      .from('csv_upload_runs')
+      .select('sync_id, tenant_id, user_id, seller_id, success, total_files, file_count, detection_triggered, detection_job_id, ingestion_results, files_summary, created_at, updated_at, started_at, completed_at, status, error, is_sandbox')
+      .eq('tenant_id', tenantId)
+      .eq('seller_id', userId)
+      .eq('sync_id', syncId)
+      .maybeSingle();
+
+    if (error?.code === '42P01') {
+      throw new Error('CSV upload run table is not deployed.');
+    }
+
+    if (error && error.code !== 'PGRST116') {
+      throw new Error(`Failed to load CSV upload run: ${error.message}`);
+    }
+
+    return data || null;
+  }
+
+  private async getCsvDetectionStatusForAudit(userId: string, tenantId: string, syncId: string) {
+    const [{ data: queueRows, error: queueError }, { count: resultCount, error: resultError }] = await Promise.all([
+      supabaseAdmin
+        .from('detection_queue')
+        .select('status, processed_at, error_message, created_at, updated_at')
+        .eq('tenant_id', tenantId)
+        .eq('seller_id', userId)
+        .eq('sync_id', syncId)
+        .order('updated_at', { ascending: false })
+        .limit(1),
+      supabaseAdmin
+        .from('detection_results')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenant_id', tenantId)
+        .eq('seller_id', userId)
+        .eq('sync_id', syncId),
+    ]);
+
+    if (queueError) throw new Error(`Failed to load CSV detection queue: ${queueError.message}`);
+    if (resultError) throw new Error(`Failed to load CSV detection results: ${resultError.message}`);
+
+    const queue = Array.isArray(queueRows) && queueRows.length > 0 ? queueRows[0] : null;
+    const status = String(queue?.status || (Number(resultCount || 0) > 0 ? 'completed' : '')).toLowerCase();
+    return {
+      status,
+      resultCount: Number(resultCount || 0),
+      error: queue?.error_message || null,
+      completedAt: queue?.processed_at || queue?.updated_at || null,
+    };
+  }
+
+  async createOrResumeCsvAuditFromSync(input: {
+    userId: string;
+    tenantId: string;
+    syncId: string;
+    storeId?: string | null;
+  }) {
+    const safeUserId = convertUserIdToUuid(input.userId);
+    const syncId = String(input.syncId || '').trim();
+    if (!syncId || !syncId.startsWith('csv_')) {
+      throw new Error('A valid CSV sync is required for a manual report audit.');
+    }
+
+    const uploadRun = await this.getCsvUploadRunForAudit(safeUserId, input.tenantId, syncId);
+    if (!uploadRun) {
+      throw new Error('CSV upload run was not found.');
+    }
+
+    const filesSummary = Array.isArray(uploadRun.files_summary)
+      ? uploadRun.files_summary
+      : Array.isArray(uploadRun.ingestion_results)
+        ? uploadRun.ingestion_results
+        : [];
+    const rowsInserted = filesSummary.reduce((sum: number, file: any) => sum + numberFrom(file?.rowsInserted ?? file?.rows_inserted), 0);
+    const rowsProcessed = filesSummary.reduce((sum: number, file: any) => sum + numberFrom(file?.rowsProcessed ?? file?.rows_processed), 0);
+    if (rowsInserted <= 0 && rowsProcessed <= 0) {
+      throw new Error('No usable Amazon report rows were available for a manual audit.');
+    }
+
+    if (!uploadRun.detection_triggered) {
+      throw new Error('Detection has not been started for this manual report upload.');
+    }
+
+    const detection = await this.getCsvDetectionStatusForAudit(safeUserId, input.tenantId, syncId);
+    if (detection.status === 'failed') {
+      throw new Error('Detection failed for this manual report upload.');
+    }
+
+    const auditStatus: AuditRunStatus = detection.status === 'completed'
+      ? 'completed'
+      : 'detecting';
+
+    const { data: existing, error: existingError } = await supabaseAdmin
+      .from('audit_runs')
+      .select('*')
+      .eq('user_id', safeUserId)
+      .eq('tenant_id', input.tenantId)
+      .eq('source_type', 'csv_upload')
+      .eq('sync_id', syncId)
+      .maybeSingle();
+
+    if (existingError && existingError.code !== 'PGRST116') {
+      throw new Error(`Failed to load manual report audit: ${existingError.message}`);
+    }
+
+    const syncStatus = this.buildCsvSyncStatus(uploadRun);
+    const summary = auditStatus === 'completed'
+      ? await this.buildSummary(safeUserId, input.tenantId, syncId, syncStatus)
+      : {
+          ...SYNC_IN_PROGRESS_SUMMARY,
+          message: 'Manual report detection is still running. Margin will finish the recovery audit when processing completes.',
+        };
+
+    const previousAudit = await this.getLatestCompletedAudit(safeUserId, input.tenantId, existing?.id || null);
+    const basePayload = {
+      user_id: safeUserId,
+      tenant_id: input.tenantId,
+      store_id: input.storeId || existing?.store_id || null,
+      sync_id: syncId,
+      status: auditStatus,
+      source_type: 'csv_upload',
+      summary,
+      activation_status: existing?.activation_status || 'not_activated',
+      previous_audit_id: existing?.previous_audit_id || previousAudit?.id || null,
+      last_audit_at: existing?.last_audit_at || previousAudit?.completed_at || previousAudit?.started_at || null,
+      started_at: existing?.started_at || uploadRun.started_at || uploadRun.created_at || new Date().toISOString(),
+      completed_at: auditStatus === 'completed'
+        ? (existing?.completed_at || detection.completedAt || uploadRun.completed_at || new Date().toISOString())
+        : null,
+    };
+
+    const audit = existing?.id
+      ? await this.updateAudit(existing.id, basePayload)
+      : await (async () => {
+          const { data, error } = await supabaseAdmin
+            .from('audit_runs')
+            .insert(basePayload)
+            .select('*')
+            .single();
+
+          if (error || !data) {
+            if (error?.code === '23505') {
+              const { data: racedAudit, error: raceLoadError } = await supabaseAdmin
+                .from('audit_runs')
+                .select('*')
+                .eq('user_id', safeUserId)
+                .eq('tenant_id', input.tenantId)
+                .eq('source_type', 'csv_upload')
+                .eq('sync_id', syncId)
+                .maybeSingle();
+              if (!raceLoadError && racedAudit) return racedAudit;
+            }
+            throw new Error(`Failed to create manual report audit: ${error?.message || 'Unknown error'}`);
+          }
+          return data;
+        })();
+
+    if (audit.status === 'completed' && !audit.commercial_state) {
+      const workspaceEntitlement = await workspaceEntitlementService.getTenantEntitlement(audit.tenant_id);
+      const { audit: commercialAudit } = await this.persistCommercialOutcome({
+        audit,
+        summary,
+        previousAudit,
+        hasRecoveryWorkspace: workspaceEntitlement.entitlement.entitled,
+      });
+      return commercialAudit;
+    }
+
+    return audit;
+  }
+
   private async getControlStatementByAuditId(auditId: string) {
     const { data, error } = await supabaseAdmin
       .from('audit_control_statements')
