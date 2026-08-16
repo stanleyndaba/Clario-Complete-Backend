@@ -7,6 +7,7 @@ import { normalizeResolvedAmazonSellerId } from '../utils/sellerIdentity';
 import { welcomeEmailService } from '../services/welcomeEmailService';
 import { createRedisRateLimiter } from '../security/rateLimiter';
 import type { BootstrapWorkspaceResult } from '../services/userWorkspaceBootstrap';
+import auditIntentService from '../services/auditIntentService';
 
 const router = Router();
 
@@ -137,6 +138,16 @@ router.post('/bootstrap', async (req, res) => {
       });
     }
 
+    let auditIntent: any = null;
+    const auditIntentId = typeof req.body?.auditIntentId === 'string' ? req.body.auditIntentId.trim() : '';
+    if (auditIntentId) {
+      auditIntent = await auditIntentService.attachIntent({
+        intentId: auditIntentId,
+        userId: result.userId,
+        tenantId: result.tenant.id,
+      });
+    }
+
     res.json({
       success: true,
       user: {
@@ -156,7 +167,15 @@ router.post('/bootstrap', async (req, res) => {
       createdUser: result.createdUser,
       createdTenant: result.createdTenant,
       foundingReservation: result.foundingReservation,
-      foundingActivationReady: result.foundingActivationReady
+      foundingActivationReady: result.foundingActivationReady,
+      auditIntent: auditIntent ? {
+        id: auditIntent.id,
+        source_type: auditIntent.source_type,
+        status: auditIntent.status,
+        return_path: auditIntent.return_path,
+        audit_run_id: auditIntent.audit_run_id,
+        expires_at: auditIntent.expires_at,
+      } : null
     });
   } catch (error: any) {
     res.status(500).json({

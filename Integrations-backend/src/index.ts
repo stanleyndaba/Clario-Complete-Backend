@@ -44,6 +44,7 @@ import { amazonNotificationAuditRouter, amazonNotificationWebhookRouter } from '
 import enhancedSyncRoutes from './routes/enhancedSyncRoutes';
 import authRoutes from './routes/authRoutes';
 import auditRoutes from './routes/auditRoutes';
+import auditIntentRoutes from './routes/auditIntentRoutes';
 import syncAliasRoutes from './routes/syncAliasRoutes';
 import detectionRoutes from './routes/detectionRoutes';
 import timelineRoutes from './routes/timelineRoutes';
@@ -428,6 +429,7 @@ import phase1DiagnosticRoutes from './routes/phase1DiagnosticRoutes';
 app.use('/api/phase1', phase1DiagnosticRoutes);
 logger.info('Phase 1 diagnostic routes registered at /api/phase1');
 app.use('/api/auth', authRoutes);
+app.use('/api/audit-intents', auditIntentRoutes);
 app.use('/api/audits', auditRoutes);
 app.use('/api/waitlist', waitlistRoutes);
 app.use('/api/early-access', earlyAccessRoutes);

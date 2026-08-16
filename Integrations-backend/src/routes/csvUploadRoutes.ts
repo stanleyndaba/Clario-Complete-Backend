@@ -30,6 +30,7 @@ async function resolveManualAuditForCsvRun(input: {
     tenantId: string;
     syncId?: string | null;
     storeId?: string | null;
+    auditIntentId?: string | null;
 }) {
     if (!input.syncId) return null;
     try {
@@ -38,6 +39,7 @@ async function resolveManualAuditForCsvRun(input: {
             tenantId: input.tenantId,
             syncId: input.syncId,
             storeId: input.storeId || null,
+            auditIntentId: input.auditIntentId || null,
         });
     } catch (error: any) {
         logger.info('ℹ️ [CSV UPLOAD] Manual report audit not created for this upload yet', {
@@ -155,8 +157,14 @@ router.post('/ingest', requireActiveTenant, upload.array('files', 10), async (re
         });
 
         const statusCode = result.success ? 200 : 207; // 207 Multi-Status if partial
+        const auditIntentId = typeof req.body?.auditIntentId === 'string'
+            ? req.body.auditIntentId.trim()
+            : typeof req.query?.auditIntentId === 'string'
+                ? req.query.auditIntentId.trim()
+                : null;
+
         const manualAudit = result.success
-            ? await resolveManualAuditForCsvRun({ userId, tenantId, syncId: result.syncId, storeId })
+            ? await resolveManualAuditForCsvRun({ userId, tenantId, syncId: result.syncId, storeId, auditIntentId })
             : null;
         return res.status(statusCode).json({ ...result, manualAudit });
     } catch (error: any) {
@@ -270,8 +278,14 @@ router.post('/ingest/:type', requireActiveTenant, upload.array('files', 10), asy
         });
 
         const statusCode = result.success ? 200 : 207;
+        const auditIntentId = typeof req.body?.auditIntentId === 'string'
+            ? req.body.auditIntentId.trim()
+            : typeof req.query?.auditIntentId === 'string'
+                ? req.query.auditIntentId.trim()
+                : null;
+
         const manualAudit = result.success
-            ? await resolveManualAuditForCsvRun({ userId, tenantId, syncId: result.syncId, storeId })
+            ? await resolveManualAuditForCsvRun({ userId, tenantId, syncId: result.syncId, storeId, auditIntentId })
             : null;
         return res.status(statusCode).json({ ...result, manualAudit });
     } catch (error: any) {

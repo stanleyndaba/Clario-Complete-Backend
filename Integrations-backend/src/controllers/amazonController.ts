@@ -157,6 +157,12 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
     }
 
     const marketplaceId = (req as any).query?.marketplaceId as string;
+    const auditIntentId = typeof (req as any).query?.auditIntentId === 'string'
+      ? String((req as any).query.auditIntentId).trim()
+      : undefined;
+    const auditRunId = typeof (req as any).query?.auditRunId === 'string'
+      ? String((req as any).query.auditRunId).trim()
+      : undefined;
     const tenantSlug = resolveTenantSlug(req);
     if (!tenantSlug) {
       return res.status(400).json({
@@ -390,13 +396,15 @@ export const startAmazonOAuth = async (req: Request, res: Response) => {
 
     // Store frontend URL and user ID with OAuth state for later redirect
     if (result.state) {
-      await oauthStateStore.setState(result.state, userId, frontendUrl, tenantSlug, marketplaceId, undefined, undefined, adminOverride);
+      await oauthStateStore.setState(result.state, userId, frontendUrl, tenantSlug, marketplaceId, undefined, undefined, adminOverride, auditIntentId, auditRunId);
       logger.info('Stored context with OAuth state', {
         state: result.state,
         frontendUrl,
         userId,
         tenantSlug,
-        marketplaceId
+        marketplaceId,
+        auditIntentId: auditIntentId || null,
+        auditRunId: auditRunId || null
       });
     }
 
@@ -554,6 +562,8 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     let syncIdForResponse: string | null = null;
     let normalizedUserId: string | null = null;
     let adminOverride = false;
+    let auditIntentIdForResponse: string | null = null;
+    let auditRunIdForResponse: string | null = null;
 
     if (!state) {
       trapError('state_validation_failed', {
@@ -581,11 +591,15 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
     tenantSlug = storedState.tenantSlug;
     userId = storedState.userId;
     adminOverride = Boolean(storedState.adminOverride);
+    auditIntentIdForResponse = storedState.auditIntentId || null;
+    auditRunIdForResponse = storedState.auditRunId || null;
 
     logger.info('Retrieved trusted context from OAuth state', {
       tenantSlug,
       userId,
-      marketplaceId: marketplaceIdFromState
+      marketplaceId: marketplaceIdFromState,
+      auditIntentId: auditIntentIdForResponse,
+      auditRunId: auditRunIdForResponse
     });
     trapInfo('state_validation_succeeded', {
       state: trapState(state),
@@ -1363,6 +1377,8 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       errorUrlBuilder.searchParams.append('amazon_error', 'true');
       errorUrlBuilder.searchParams.append('auth_bridge', 'true');
       if (tenantSlug) errorUrlBuilder.searchParams.append('tenant_slug', tenantSlug);
+      if (auditIntentIdForResponse) errorUrlBuilder.searchParams.append('auditIntentId', auditIntentIdForResponse);
+      if (auditRunIdForResponse) errorUrlBuilder.searchParams.append('auditId', auditRunIdForResponse);
       errorUrlBuilder.searchParams.append('return_to', '/audit');
       const errorUrl = errorUrlBuilder.toString();
       trapInfo('callback_error_redirect_emitted', {
@@ -1435,6 +1451,8 @@ export const handleAmazonCallback = async (req: Request, res: Response) => {
       if (marketplaceIdForRedirect) url.searchParams.append('marketplaceId', marketplaceIdForRedirect);
       url.searchParams.append('sync_start_mode', syncStartMode);
       if (syncIdForResponse) url.searchParams.append('sync_id', syncIdForResponse);
+      if (auditIntentIdForResponse) url.searchParams.append('auditIntentId', auditIntentIdForResponse);
+      if (auditRunIdForResponse) url.searchParams.append('auditId', auditRunIdForResponse);
 
       finalRedirectUrl = url.toString();
     } catch (urlErr) {

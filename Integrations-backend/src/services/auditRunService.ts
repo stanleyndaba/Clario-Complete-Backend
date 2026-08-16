@@ -1,4 +1,5 @@
 import { supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
+import auditIntentService from './auditIntentService';
 import { ensureAuthenticatedUserWorkspace } from './userWorkspaceBootstrap';
 import { syncJobManager } from './syncJobManager';
 import enhancedDetectionService from './enhancedDetectionService';
@@ -320,7 +321,7 @@ class AuditRunService {
     return data;
   }
 
-  async startAudit(userId: string, email?: string | null): Promise<{
+  async startAudit(userId: string, email?: string | null, auditIntentId?: string | null): Promise<{
     audit: any;
     tenant: any;
     amazonConnected: boolean;
@@ -328,6 +329,26 @@ class AuditRunService {
     nextEligibleAt?: string | null;
   }> {
     const workspace = await this.getWorkspace(userId, email);
+    if (auditIntentId) {
+      const intent = await auditIntentService.getOwnedIntent(auditIntentId, workspace.userId);
+      if (!intent) {
+        throw new Error('Audit intent not found for this user.');
+      }
+      if (intent.source_type !== 'sp_api') {
+        throw new Error('This audit intent is for manual report upload, not Amazon connection.');
+      }
+      if (intent.audit_run_id) {
+        const existingAudit = await this.getAudit(intent.audit_run_id, workspace.userId);
+        return {
+          audit: existingAudit,
+          tenant: workspace.tenant,
+          amazonConnected: Boolean(await this.getAmazonConnection(workspace.userId, workspace.tenant.id)),
+          commercialEligibility: existingAudit.commercial_eligibility || null,
+          nextEligibleAt: existingAudit.next_eligible_at || null
+        };
+      }
+    }
+
     const connection = await this.getAmazonConnection(workspace.userId, workspace.tenant.id);
     const status: AuditRunStatus = connection ? 'created' : 'amazon_connection_required';
 
@@ -355,6 +376,15 @@ class AuditRunService {
             })
           : latestAudit;
 
+        if (auditIntentId) {
+          await auditIntentService.linkAuditRun({
+            intentId: auditIntentId,
+            userId: workspace.userId,
+            tenantId: workspace.tenant.id,
+            auditRunId: resumedAudit.id,
+          });
+        }
+
         return {
           audit: resumedAudit,
           tenant: workspace.tenant,
@@ -369,6 +399,15 @@ class AuditRunService {
         latestAudit.next_eligible_at &&
         new Date(latestAudit.next_eligible_at).getTime() > Date.now()
       ) {
+        if (auditIntentId) {
+          await auditIntentService.linkAuditRun({
+            intentId: auditIntentId,
+            userId: workspace.userId,
+            tenantId: workspace.tenant.id,
+            auditRunId: latestAudit.id,
+          });
+        }
+
         return {
           audit: latestAudit,
           tenant: workspace.tenant,
@@ -399,6 +438,15 @@ class AuditRunService {
 
     if (error || !data) {
       throw new Error(`Failed to create audit run: ${error?.message || 'Unknown error'}`);
+    }
+
+    if (auditIntentId) {
+      await auditIntentService.linkAuditRun({
+        intentId: auditIntentId,
+        userId: workspace.userId,
+        tenantId: workspace.tenant.id,
+        auditRunId: data.id,
+      });
     }
 
     return {
@@ -584,11 +632,28 @@ class AuditRunService {
     tenantId: string;
     syncId: string;
     storeId?: string | null;
+    auditIntentId?: string | null;
   }) {
     const safeUserId = convertUserIdToUuid(input.userId);
     const syncId = String(input.syncId || '').trim();
     if (!syncId || !syncId.startsWith('csv_')) {
       throw new Error('A valid CSV sync is required for a manual report audit.');
+    }
+
+    if (input.auditIntentId) {
+      const intent = await auditIntentService.getOwnedIntent(input.auditIntentId, safeUserId);
+      if (!intent) {
+        throw new Error('Audit intent not found for this manual report upload.');
+      }
+      if (intent.source_type !== 'csv_upload') {
+        throw new Error('This audit intent is for connected Amazon audit, not manual report upload.');
+      }
+      if (intent.tenant_id && intent.tenant_id !== input.tenantId) {
+        throw new Error('Audit intent belongs to a different workspace.');
+      }
+      if (intent.audit_run_id) {
+        return this.getAudit(intent.audit_run_id, safeUserId);
+      }
     }
 
     const uploadRun = await this.getCsvUploadRunForAudit(safeUserId, input.tenantId, syncId);
@@ -698,7 +763,24 @@ class AuditRunService {
         previousAudit,
         hasRecoveryWorkspace: workspaceEntitlement.entitlement.entitled,
       });
+      if (input.auditIntentId) {
+        await auditIntentService.linkAuditRun({
+          intentId: input.auditIntentId,
+          userId: safeUserId,
+          tenantId: input.tenantId,
+          auditRunId: commercialAudit.id,
+        });
+      }
       return commercialAudit;
+    }
+
+    if (input.auditIntentId) {
+      await auditIntentService.linkAuditRun({
+        intentId: input.auditIntentId,
+        userId: safeUserId,
+        tenantId: input.tenantId,
+        auditRunId: audit.id,
+      });
     }
 
     return audit;

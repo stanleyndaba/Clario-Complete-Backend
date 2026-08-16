@@ -13,7 +13,10 @@ router.post('/start', async (req: AuthenticatedRequest, res) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
-    const result = await auditRunService.startAudit(userId, req.user?.email || null);
+    const auditIntentId = typeof (req as any).body?.auditIntentId === 'string'
+      ? (req as any).body.auditIntentId.trim()
+      : null;
+    const result = await auditRunService.startAudit(userId, req.user?.email || null, auditIntentId);
     return res.json({ success: true, ...result });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error?.message || 'Failed to start audit' });
