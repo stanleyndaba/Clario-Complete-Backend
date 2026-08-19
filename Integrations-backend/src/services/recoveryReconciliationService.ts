@@ -275,9 +275,20 @@ class RecoveryReconciliationService {
       };
     }
 
-    // Determine status based on amount match, ratio, and confidence
+    // Determine status based on amount match, ratio, currency, and confidence
     const bestRatio = expectedAmount > 0 ? (best.diff || 0) / expectedAmount : 0;
-    if ((best.diff === 0 || (best.diff! <= 5.0 && bestRatio <= 0.005)) && best.score >= 0.65) {
+    const isCurrencyMatch = !best.artifact.currency || !expectedCurrency || 
+                           best.artifact.currency.toUpperCase() === expectedCurrency.toUpperCase();
+
+    // FINAL RECONCILIATION RULES:
+    // 1. Exact amount match (diff === 0)
+    // 2. Minor variance (diff <= 5.0 AND ratio <= 0.5%)
+    // 3. MUST be same currency (Hard stop for RECONCILED and PARTIAL_MATCH)
+    
+    const isMinorVariance = best.diff! <= 5.0 && bestRatio <= 0.005;
+    const canAutoReconcile = (best.diff === 0 || isMinorVariance) && isCurrencyMatch && best.score >= 0.65;
+
+    if (canAutoReconcile) {
       return {
         status: "RECONCILED",
         expectedAmount,
@@ -289,7 +300,7 @@ class RecoveryReconciliationService {
         transactionDate: best.artifact.transactionDate,
         providerRecordId: best.artifact.providerRecordId
       };
-    } else if (best.diff !== undefined && best.diff <= 100.0 && bestRatio <= 0.10) {
+    } else if (isCurrencyMatch && best.diff !== undefined && best.diff <= 100.0 && bestRatio <= 0.10) {
       return {
         status: "PARTIAL_MATCH",
         expectedAmount,

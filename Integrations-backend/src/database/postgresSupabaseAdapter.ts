@@ -138,7 +138,7 @@ export function createPostgresSupabaseAdapter(connectionString: string): any {
     ssl: connectionString.includes('sslmode=require') ? undefined : { rejectUnauthorized: false }
   });
 
-  let connectPromise: Promise<void> | null = null;
+  let connectPromise: Promise<any> | null = null;
   const columnTypeCache = new Map<string, Promise<Map<string, ColumnType>>>();
 
   async function ensureConnected(): Promise<void> {

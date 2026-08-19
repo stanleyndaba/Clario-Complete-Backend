@@ -16,7 +16,7 @@ router.get('/auth', (req, res, next) => {
     }
     return authenticateToken(req, res, next);
 }, (req, res) => {
-    req.params.provider = 'quickbooks';
+    (req.params as any).provider = 'quickbooks';
     return connectEvidenceSource(req, res);
 });
 
@@ -28,7 +28,7 @@ router.get('/auth/start', (req, res, next) => {
     }
     return authenticateToken(req, res, next);
 }, (req, res) => {
-    req.params.provider = 'quickbooks';
+    (req.params as any).provider = 'quickbooks';
     return connectEvidenceSource(req, res);
 });
 

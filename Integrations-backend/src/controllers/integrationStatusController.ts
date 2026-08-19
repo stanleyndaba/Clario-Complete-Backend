@@ -280,6 +280,8 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         slack: { connected: boolean; lastIngest?: string; scopes?: string[]; email?: string; error?: string };
         adobe_sign: { connected: boolean; lastIngest?: string; scopes?: string[]; email?: string; error?: string };
         onedrive: { connected: boolean; lastIngest?: string; scopes?: string[]; email?: string; error?: string };
+        quickbooks: { connected: boolean; lastIngest?: string; scopes?: string[]; email?: string; error?: string };
+        xero: { connected: boolean; lastIngest?: string; scopes?: string[]; email?: string; error?: string };
       };
     } = {
       tenantId: tenant.id,
@@ -304,7 +306,9 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         dropbox: { provider: 'dropbox', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false },
         slack: { provider: 'slack', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false },
         adobe_sign: { provider: 'adobe_sign', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false },
-        onedrive: { provider: 'onedrive', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false }
+        onedrive: { provider: 'onedrive', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false },
+        quickbooks: { provider: 'quickbooks', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false },
+        xero: { provider: 'xero', connected: false, auth_valid: false, needs_reconnect: false, ingestion_state: 'disconnected', has_data: false }
       },
       providerIngest: {
         gmail: { connected: false },
@@ -313,7 +317,9 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         dropbox: { connected: false },
         slack: { connected: false },
         adobe_sign: { connected: false },
-        onedrive: { connected: false }
+        onedrive: { connected: false },
+        quickbooks: { connected: false },
+        xero: { connected: false }
       }
     };
 

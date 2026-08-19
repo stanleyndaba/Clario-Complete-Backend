@@ -1,3 +1,4 @@
+import { describe, test, expect } from '@jest/globals';
 import { recoveryReconciliationService, AccountingFinancialArtifact } from '../recoveryReconciliationService';
 
 describe('RecoveryReconciliationService Matching V0', () => {
@@ -155,7 +156,7 @@ describe('RecoveryReconciliationService Matching V0', () => {
     expect(result.status).toBe('UNMATCHED');
   });
 
-  test('G. Currency conflict -> UNMATCHED / rejected', () => {
+  test('G. Currency conflict -> UNMATCHED / rejected (Hard Stop)', () => {
     const date = new Date('2026-08-15T00:00:00Z');
     const artifact: AccountingFinancialArtifact = {
       provider: 'quickbooks',
@@ -179,5 +180,60 @@ describe('RecoveryReconciliationService Matching V0', () => {
     );
 
     expect(result.status).toBe('UNMATCHED');
+  });
+
+  test('K. Small absolute / large percentage discrepancy -> NEEDS_REVIEW (Not Reconciled)', () => {
+    const date = new Date('2026-08-15T00:00:00Z');
+    const artifact: AccountingFinancialArtifact = {
+      provider: 'quickbooks',
+      tenantId,
+      providerRecordId: 'rec-7',
+      recordType: 'Bill',
+      transactionDate: date,
+      amount: 46.00,
+      currency: 'USD',
+      reference: null,
+      description: 'Discrepant bill',
+      counterpartyName: 'Sup X'
+    };
+
+    const result = recoveryReconciliationService.reconcileArtifacts(
+      50.00,
+      'USD',
+      date,
+      null,
+      [artifact]
+    );
+
+    // diff = 4 (<= 5), but ratio = 8% (> 0.5%)
+    expect(result.status).not.toBe('RECONCILED');
+    expect(result.status).toBe('PARTIAL_MATCH'); // ratio 8% is <= 10%
+  });
+
+  test('L. Legitimate minor variance -> RECONCILED', () => {
+    const date = new Date('2026-08-15T00:00:00Z');
+    const artifact: AccountingFinancialArtifact = {
+      provider: 'quickbooks',
+      tenantId,
+      providerRecordId: 'rec-8',
+      recordType: 'Bill',
+      transactionDate: date,
+      amount: 996.00,
+      currency: 'USD',
+      reference: null,
+      description: 'Minor variance bill',
+      counterpartyName: 'Sup Y'
+    };
+
+    const result = recoveryReconciliationService.reconcileArtifacts(
+      1000.00,
+      'USD',
+      date,
+      null,
+      [artifact]
+    );
+
+    // diff = 4 (<= 5), ratio = 0.4% (<= 0.5%)
+    expect(result.status).toBe('RECONCILED');
   });
 });

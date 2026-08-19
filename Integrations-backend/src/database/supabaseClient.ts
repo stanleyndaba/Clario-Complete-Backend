@@ -296,7 +296,7 @@ export interface EncryptedToken {
 export interface TokenRecord {
   id: string;
   user_id: string;
-  provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox';
+  provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero';
   access_token_iv?: string;
   access_token_data?: string;
   refresh_token_iv?: string;
@@ -371,7 +371,7 @@ function isAgent1AmazonToken(provider: string): boolean {
 export const tokenManager = {
   async saveToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
     accessTokenEnc: { iv: string; data: string },
     refreshTokenEnc?: { iv: string; data: string },
     expiresAt?: Date,
@@ -485,7 +485,7 @@ export const tokenManager = {
 
   async getToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
     storeId?: string
   ): Promise<TokenRecord | null> {
     try {
@@ -548,7 +548,7 @@ export const tokenManager = {
 
   async updateToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
     accessTokenEnc: { iv: string; data: string },
     refreshTokenEnc?: { iv: string; data: string },
     expiresAt?: Date,
@@ -614,7 +614,7 @@ export const tokenManager = {
 
   async deleteToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
     storeId?: string
   ): Promise<void> {
     try {
@@ -654,8 +654,8 @@ export const tokenManager = {
 
   async markReconnectRequired(
     tokenId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
-    reasonCode: string
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
+    reasonCode?: string
   ): Promise<void> {
     try {
       const adminClient = supabaseAdmin || supabase;
