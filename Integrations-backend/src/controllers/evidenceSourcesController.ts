@@ -73,6 +73,25 @@ const OAUTH_URLS = {
       'users:read',
       'users:read.email'
     ]
+  },
+  quickbooks: {
+    auth: config.QUICKBOOKS_ENVIRONMENT === 'production' 
+      ? 'https://appcenter.intuit.com/connect/oauth2' 
+      : 'https://appcenter.intuit.com/connect/oauth2',
+    token: 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer',
+    scopes: ['com.intuit.quickbooks.accounting', 'openid', 'profile', 'email']
+  },
+  xero: {
+    auth: 'https://login.xero.com/identity/connect/authorize',
+    token: 'https://identity.xero.com/connect/token',
+    scopes: [
+      'openid', 'profile', 'email', 
+      'accounting.invoices.read', 
+      'accounting.payments.read', 
+      'accounting.banktransactions.read', 
+      'accounting.settings.read', 
+      'offline_access'
+    ]
   }
 };
 
@@ -84,6 +103,10 @@ function getProviderRedirectUri(provider: string, req: Request): string {
     configuredRedirectUri = config.DROPBOX_REDIRECT_URI || process.env.DROPBOX_REDIRECT_URI || '';
   } else if (provider === 'adobe_sign') {
     configuredRedirectUri = config.ADOBESIGN_REDIRECT_URI || process.env.ADOBESIGN_REDIRECT_URI || '';
+  } else if (provider === 'quickbooks') {
+    configuredRedirectUri = config.QUICKBOOKS_REDIRECT_URI || process.env.QUICKBOOKS_REDIRECT_URI || '';
+  } else if (provider === 'xero') {
+    configuredRedirectUri = config.XERO_REDIRECT_URI || process.env.XERO_REDIRECT_URI || '';
   }
   configuredRedirectUri = configuredRedirectUri.trim();
 
@@ -116,7 +139,7 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
     }
 
     // Validate provider
-    const validProviders = ['gmail', 'outlook', 'gdrive', 'dropbox', 'onedrive', 'adobe_sign', 'slack'];
+    const validProviders = ['gmail', 'outlook', 'gdrive', 'dropbox', 'onedrive', 'adobe_sign', 'slack', 'quickbooks', 'xero'];
     if (!validProviders.includes(provider)) {
       return res.status(400).json({
         ok: false,
@@ -221,6 +244,24 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
       authUrl = `${OAUTH_URLS[provider].auth}?` +
         `client_id=${encodeURIComponent(oauthConfig.clientId)}&` +
         `redirect_uri=${encodeURIComponent(defaultRedirectUri)}&` +
+        `scope=${encodeURIComponent(scopes)}&` +
+        `state=${state}`;
+    } else if (provider === 'quickbooks') {
+      // QuickBooks OAuth
+      const scopes = OAUTH_URLS[provider].scopes.join(' ');
+      authUrl = `${OAUTH_URLS[provider].auth}?` +
+        `client_id=${encodeURIComponent(oauthConfig.clientId)}&` +
+        `redirect_uri=${encodeURIComponent(defaultRedirectUri)}&` +
+        `response_type=code&` +
+        `scope=${encodeURIComponent(scopes)}&` +
+        `state=${state}`;
+    } else if (provider === 'xero') {
+      // Xero OAuth
+      const scopes = OAUTH_URLS[provider].scopes.join(' ');
+      authUrl = `${OAUTH_URLS[provider].auth}?` +
+        `client_id=${encodeURIComponent(oauthConfig.clientId)}&` +
+        `redirect_uri=${encodeURIComponent(defaultRedirectUri)}&` +
+        `response_type=code&` +
         `scope=${encodeURIComponent(scopes)}&` +
         `state=${state}`;
     } else {
@@ -409,6 +450,33 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
             'Content-Type': 'application/x-www-form-urlencoded'
           }
         });
+      } else if (provider === 'quickbooks') {
+        // QuickBooks OAuth token exchange
+        tokenResponse = await axios.post(OAUTH_URLS[provider].token, new URLSearchParams({
+          client_id: oauthConfig.clientId,
+          client_secret: oauthConfig.clientSecret,
+          code: code as string,
+          grant_type: 'authorization_code',
+          redirect_uri: redirectUri
+        }), {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json'
+          }
+        });
+      } else if (provider === 'xero') {
+        // Xero OAuth token exchange
+        const basicAuth = Buffer.from(`${oauthConfig.clientId}:${oauthConfig.clientSecret}`).toString('base64');
+        tokenResponse = await axios.post(OAUTH_URLS[provider].token, new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code as string,
+          redirect_uri: redirectUri
+        }), {
+          headers: {
+            'Authorization': `Basic ${basicAuth}`,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        });
       } else {
         return res.redirect(`${frontendUrl}${tenantSuccessPath}?status=error&provider=${encodeURIComponent(provider)}&error=unsupported_provider${tenantSlug ? `&tenant_slug=${encodeURIComponent(tenantSlug)}` : ''}`);
       }
@@ -460,6 +528,13 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
 
       // Get user account info (email, etc.)
       let accountEmail: string | undefined;
+      let xeroTenantId: string | undefined;
+      let qboRealmId: string | undefined;
+
+      if (provider === 'quickbooks') {
+        qboRealmId = req.query.realmId as string;
+      }
+
       try {
         if (provider === 'gmail' || provider === 'gdrive') {
           const profileResponse = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
@@ -498,6 +573,28 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
               logger.warn('Failed to fetch Slack user profile', { error: slackProfileError });
             }
           }
+        } else if (provider === 'quickbooks') {
+          // QuickBooks profile
+          const profileResponse = await axios.get('https://sandbox-accounts.platform.intuit.com/v1/openid_connect/userinfo', {
+            headers: { 'Authorization': `Bearer ${access_token}` }
+          });
+          accountEmail = profileResponse.data.email;
+        } else if (provider === 'xero') {
+          // Xero profile and connections
+          const profileResponse = await axios.get('https://api.xero.com/api.xro/2.0/Organisation', {
+            headers: { 
+              'Authorization': `Bearer ${access_token}`,
+              'Accept': 'application/json'
+            }
+          });
+          // Note: Xero needs a tenant-id to call Organisation, but we get it from /connections
+          const connectionsResponse = await axios.get('https://api.xero.com/connections', {
+            headers: { 'Authorization': `Bearer ${access_token}` }
+          });
+          if (connectionsResponse.data && connectionsResponse.data.length > 0) {
+            xeroTenantId = connectionsResponse.data[0].tenantId;
+            accountEmail = connectionsResponse.data[0].tenantName; // Use tenant name as email fallback
+          }
         }
       } catch (profileError) {
         logger.warn('Failed to fetch user profile', { provider, error: profileError });
@@ -532,7 +629,9 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
             : {}),
           ...(provider === 'adobe_sign' && typeof web_access_point === 'string' && web_access_point
             ? { web_access_point }
-            : {})
+            : {}),
+          ...(qboRealmId ? { realm_id: qboRealmId } : {}),
+          ...(xeroTenantId ? { xero_tenant_id: xeroTenantId } : {})
         };
 
         if (existingSource) {
@@ -654,6 +753,14 @@ function getOAuthConfig(provider: string): { clientId: string; clientSecret: str
     slack: {
       clientId: config.SLACK_CLIENT_ID || process.env.SLACK_CLIENT_ID || '',
       clientSecret: config.SLACK_CLIENT_SECRET || process.env.SLACK_CLIENT_SECRET || ''
+    },
+    quickbooks: {
+      clientId: config.QUICKBOOKS_CLIENT_ID || process.env.QUICKBOOKS_CLIENT_ID || '',
+      clientSecret: config.QUICKBOOKS_CLIENT_SECRET || process.env.QUICKBOOKS_CLIENT_SECRET || ''
+    },
+    xero: {
+      clientId: config.XERO_CLIENT_ID || process.env.XERO_CLIENT_ID || '',
+      clientSecret: config.XERO_CLIENT_SECRET || process.env.XERO_CLIENT_SECRET || ''
     }
   };
 

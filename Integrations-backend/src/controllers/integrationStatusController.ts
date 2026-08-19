@@ -12,8 +12,8 @@ import { normalizeResolvedAmazonSellerId } from '../utils/sellerIdentity';
 import { getManagedTokenSourceFields } from '../utils/evidenceSourceRecordShape';
 import { buildEvidenceUserFilter } from '../services/evidenceSourceTruthService';
 
-type ProviderKey = 'amazon' | 'gmail' | 'outlook' | 'gdrive' | 'dropbox' | 'slack' | 'adobe_sign' | 'onedrive';
-const DOC_TOKEN_PROVIDERS: ProviderKey[] = ['gmail', 'outlook', 'gdrive', 'dropbox'];
+type ProviderKey = 'amazon' | 'gmail' | 'outlook' | 'gdrive' | 'dropbox' | 'slack' | 'adobe_sign' | 'onedrive' | 'quickbooks' | 'xero';
+const DOC_TOKEN_PROVIDERS: ProviderKey[] = ['gmail', 'outlook', 'gdrive', 'dropbox', 'quickbooks', 'xero'];
 
 interface EvidenceFilters {
   senderPatterns: string[];

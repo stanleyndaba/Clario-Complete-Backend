@@ -55,7 +55,7 @@ export class TokenManager {
 
   async saveToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
     tokenData: TokenData,
     tenantId?: string,
     storeId?: string
@@ -83,7 +83,7 @@ export class TokenManager {
 
   async getToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
     storeId?: string
   ): Promise<TokenData | null> {
     try {
@@ -107,7 +107,7 @@ export class TokenManager {
 
   async getRefreshableToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
     storeId?: string
   ): Promise<TokenData | null> {
     try {
@@ -132,7 +132,7 @@ export class TokenManager {
 
   async getTokenWithStatus(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
     storeId?: string
   ): Promise<TokenWithStatus | null> {
     try {
@@ -194,7 +194,7 @@ export class TokenManager {
 
   private async migrateLegacyTokenRecordToCurrentEnvelope(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
     tokenRecord: TokenRecord,
     tokenData: TokenData
   ): Promise<void> {
@@ -285,7 +285,7 @@ export class TokenManager {
 
   async refreshToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
     newTokenData: TokenData,
     tenantId?: string,
     storeId?: string
@@ -313,7 +313,7 @@ export class TokenManager {
 
   async revokeToken(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
     storeId?: string
   ): Promise<void> {
     try {
@@ -327,7 +327,7 @@ export class TokenManager {
 
   async isTokenValid(
     userId: string,
-    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox',
+    provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
     storeId?: string
   ): Promise<boolean> {
     try {
