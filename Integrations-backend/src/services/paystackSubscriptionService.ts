@@ -78,6 +78,29 @@ function normalizeDate(value: unknown): string | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
+export type WorkspaceBillingActions = {
+  cancel: boolean;
+  resume: boolean;
+  manage: boolean;
+};
+
+export function deriveWorkspaceBillingActions(subscription: BillingSubscriptionRecord | null): WorkspaceBillingActions {
+  if (!subscription) {
+    return { cancel: false, resume: false, manage: false };
+  }
+
+  const providerConfirmed = Boolean(subscription.provider_subscription_code && subscription.provider_email_token);
+  const paidPeriodRemaining = Boolean(
+    subscription.current_period_end && new Date(subscription.current_period_end).getTime() > Date.now()
+  );
+
+  return {
+    cancel: subscription.status === 'active' && providerConfirmed,
+    resume: subscription.status === 'non_renewing' && providerConfirmed && paidPeriodRemaining,
+    manage: Boolean(subscription.provider_subscription_code),
+  };
+}
+
 function getPlanCodeFromValue(value: any): string | null {
   if (!value) return null;
   if (typeof value === 'string') return value;
@@ -607,6 +630,7 @@ class PaystackSubscriptionService {
         active: entitlement.entitled,
         ...entitlement,
       },
+      actions: deriveWorkspaceBillingActions(subscription),
       latest_payment: payments[0] ? toCustomerSafePayment(payments[0]) : null,
       payments: payments.map(toCustomerSafePayment),
     };

@@ -85,6 +85,7 @@ jest.mock('../../src/services/workspaceEntitlementService', () => ({
 
 import paystackSubscriptionService, {
   WorkspaceCommercialEligibilityError,
+  deriveWorkspaceBillingActions,
   evaluateWorkspaceCommercialEligibility,
 } from '../../src/services/paystackSubscriptionService';
 
@@ -112,6 +113,17 @@ beforeEach(() => {
     entitlement: { entitled: false, active: false, state: 'none', access_until: null, subscription_id: null },
   });
 });
+
+function workspaceSubscription(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'sub-1',
+    status: 'active',
+    provider_subscription_code: 'SUB_code',
+    provider_email_token: 'EMAIL_token',
+    current_period_end: '2099-01-01T00:00:00.000Z',
+    ...overrides,
+  } as any;
+}
 
 describe('Workspace commercial eligibility contract', () => {
   test.each([
@@ -198,5 +210,47 @@ describe('Workspace commercial eligibility contract', () => {
 
     expect(mockGetTenantRecoverySubscription).not.toHaveBeenCalled();
     expect(mockCreatePendingSubscription).not.toHaveBeenCalled();
+  });
+});
+
+describe('Workspace Billing action availability', () => {
+  test('allows cancel and manage only for a provider-confirmed active subscription', () => {
+    expect(deriveWorkspaceBillingActions(workspaceSubscription())).toEqual({
+      cancel: true,
+      resume: false,
+      manage: true,
+    });
+  });
+
+  test('allows resume only for a provider-confirmed non-renewing subscription with paid time remaining', () => {
+    expect(deriveWorkspaceBillingActions(workspaceSubscription({ status: 'non_renewing' }))).toEqual({
+      cancel: false,
+      resume: true,
+      manage: true,
+    });
+  });
+
+  test.each(['pending', 'past_due', 'suspended', 'cancelled', 'expired'])('does not expose unsupported actions for %s', (status) => {
+    expect(deriveWorkspaceBillingActions(workspaceSubscription({ status }))).toEqual({
+      cancel: false,
+      resume: false,
+      manage: true,
+    });
+  });
+
+  test('does not expose resume after the paid period ends or when provider details are missing', () => {
+    expect(deriveWorkspaceBillingActions(workspaceSubscription({
+      status: 'non_renewing',
+      current_period_end: '2000-01-01T00:00:00.000Z',
+    }))).toEqual({ cancel: false, resume: false, manage: true });
+
+    expect(deriveWorkspaceBillingActions(workspaceSubscription({
+      status: 'non_renewing',
+      provider_email_token: null,
+    }))).toEqual({ cancel: false, resume: false, manage: true });
+  });
+
+  test('does not expose any action when no current subscription exists', () => {
+    expect(deriveWorkspaceBillingActions(null)).toEqual({ cancel: false, resume: false, manage: false });
   });
 });
