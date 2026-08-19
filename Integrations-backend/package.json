@@ -114,8 +114,10 @@
     "express-rate-limit": "^7.1.5",
     "express-validator": "^7.0.1",
     "fast-glob": "^3.3.3",
+    "form-data": "^4.0.6",
     "helmet": "^7.1.0",
     "https-proxy-agent": "^7.0.2",
+    "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.2",
     "knex": "^3.1.0",
     "morgan": "^1.10.0",
@@ -129,6 +131,7 @@
     "resend": "^6.9.3",
     "socket.io": "^4.8.1",
     "stripe": "^14.5.0",
+    "svix": "^2.0.0",
     "uuid": "^9.0.1",
     "winston": "^3.11.0",
     "winston-daily-rotate-file": "^5.0.0"

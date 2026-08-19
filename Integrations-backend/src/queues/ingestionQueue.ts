@@ -131,6 +131,14 @@ export const ingestionQueue = {
 // HEALTH CHECK
 // ============================================================================
 
+interface PingCapableQueueClient {
+    ping(): Promise<string>;
+}
+
+function supportsPing(client: unknown): client is PingCapableQueueClient {
+    return typeof (client as Partial<PingCapableQueueClient> | null)?.ping === 'function';
+}
+
 /**
  * ✅ 1.1: Redis Health Check
  * Returns true if Redis is responding, false if down or queue not initialized.
@@ -144,6 +152,10 @@ export async function isQueueHealthy(): Promise<boolean> {
         }
 
         const client = await queue.client;
+        if (!supportsPing(client)) {
+            logger.error('[QUEUE] Redis client does not expose ping()');
+            return false;
+        }
         const ping = await client.ping();
         return ping === 'PONG';
     } catch (error: any) {
