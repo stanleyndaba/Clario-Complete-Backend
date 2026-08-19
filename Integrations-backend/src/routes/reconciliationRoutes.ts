@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticateToken } from '../middleware/authMiddleware';
 import { recoveryReconciliationService } from '../services/recoveryReconciliationService';
 import { supabaseAdmin, supabase } from '../database/supabaseClient';
+import tokenManager from '../utils/tokenManager';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -16,15 +17,26 @@ router.post('/:recoveryId/reconcile', authenticateToken, async (req: any, res) =
 
     const adminClient = supabaseAdmin || supabase;
 
-    // Fetch recovery / dispute case
+    // Strict Tenant Isolation: fetch recovery and enforce tenant ownership
     const { data: recovery, error: recoveryError } = await adminClient
       .from('dispute_cases')
       .select('*')
       .eq('id', recoveryId)
-      .single();
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
 
     if (recoveryError || !recovery) {
-      return res.status(404).json({ success: false, error: 'Recovery case not found' });
+      logger.warn('Tenant isolation blocked recovery access or recovery not found', { tenantId, recoveryId });
+      return res.status(404).json({ success: false, error: 'Recovery case not found or access denied' });
+    }
+
+    // Verify token presence before attempting retrieval to catch disconnect/auth errors cleanly
+    const token = await tokenManager.getToken(userId, provider as any);
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        error: `Provider ${provider} is disconnected or requires re-authentication.`
+      });
     }
 
     const expectedAmount = parseFloat(recovery.claim_amount || recovery.amount || 842.17);
@@ -32,28 +44,36 @@ router.post('/:recoveryId/reconcile', authenticateToken, async (req: any, res) =
     const expectedDate = recovery.created_at ? new Date(recovery.created_at) : new Date();
     const expectedReference = recovery.case_id || recovery.reference || null;
 
-    // Fetch artifacts from provider
+    // Fetch artifacts from provider with explicit error boundary
     let artifacts = [];
-    if (provider === 'quickbooks') {
-      const { data: src } = await adminClient
-        .from('evidence_sources')
-        .select('metadata')
-        .eq('provider', 'quickbooks')
-        .eq('tenant_id', tenantId)
-        .maybeSingle();
+    try {
+      if (provider === 'quickbooks') {
+        const { data: src } = await adminClient
+          .from('evidence_sources')
+          .select('metadata')
+          .eq('provider', 'quickbooks')
+          .eq('tenant_id', tenantId)
+          .maybeSingle();
 
-      const realmId = src?.metadata?.realm_id || '934145392231';
-      artifacts = await recoveryReconciliationService.fetchQuickBooksArtifacts(userId, tenantId, realmId);
-    } else {
-      const { data: src } = await adminClient
-        .from('evidence_sources')
-        .select('metadata')
-        .eq('provider', 'xero')
-        .eq('tenant_id', tenantId)
-        .maybeSingle();
+        const realmId = src?.metadata?.realm_id || '934145392231';
+        artifacts = await recoveryReconciliationService.fetchQuickBooksArtifacts(userId, tenantId, realmId);
+      } else {
+        const { data: src } = await adminClient
+          .from('evidence_sources')
+          .select('metadata')
+          .eq('provider', 'xero')
+          .eq('tenant_id', tenantId)
+          .maybeSingle();
 
-      const xeroTenantId = src?.metadata?.xero_tenant_id || 'demo-tenant-id';
-      artifacts = await recoveryReconciliationService.fetchXeroArtifacts(userId, tenantId, xeroTenantId);
+        const xeroTenantId = src?.metadata?.xero_tenant_id || 'demo-tenant-id';
+        artifacts = await recoveryReconciliationService.fetchXeroArtifacts(userId, tenantId, xeroTenantId);
+      }
+    } catch (fetchErr: any) {
+      logger.error('Provider API failure during artifact fetch', { provider, error: fetchErr?.message });
+      return res.status(502).json({
+        success: false,
+        error: `Failed to retrieve accounting records from ${provider}: ${fetchErr?.message || 'Provider error'}`
+      });
     }
 
     // Perform reconciliation matching
@@ -82,7 +102,7 @@ router.post('/:recoveryId/reconcile', authenticateToken, async (req: any, res) =
       reconciled_at: new Date().toISOString()
     };
 
-    // Upsert into recovery_reconciliations table
+    // Upsert into recovery_reconciliations table (Idempotent upsert on recovery_id, provider)
     await adminClient
       .from('recovery_reconciliations')
       .upsert(recordPayload, { onConflict: 'recovery_id,provider' });
@@ -103,6 +123,18 @@ router.get('/:recoveryId/reconciliation', authenticateToken, async (req: any, re
     const { recoveryId } = req.params;
     const tenantId = req.tenantId || req.tenant?.id || '00000000-0000-0000-0000-000000000001';
     const adminClient = supabaseAdmin || supabase;
+
+    // Strict tenant isolation check on dispute case
+    const { data: recovery, error: recoveryError } = await adminClient
+      .from('dispute_cases')
+      .select('id')
+      .eq('id', recoveryId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+
+    if (recoveryError || !recovery) {
+      return res.status(404).json({ success: false, error: 'Recovery case not found or access denied' });
+    }
 
     const { data, error } = await adminClient
       .from('recovery_reconciliations')

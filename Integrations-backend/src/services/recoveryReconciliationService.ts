@@ -198,16 +198,21 @@ class RecoveryReconciliationService {
         reasons.push("SAME_CURRENCY");
       }
 
-      // Amount Check
+      // Amount Check (Currency-neutral deterministic threshold: absolute + percentage)
       const diff = Math.abs(art.amount - expectedAmount);
+      const diffRatio = expectedAmount > 0 ? diff / expectedAmount : 0;
+
       if (diff === 0) {
         score += 0.5;
         reasons.push("EXACT_AMOUNT");
-      } else if (diff <= 25.0) {
-        score += 0.3;
+      } else if (diff <= 5.0 || diffRatio <= 0.005) {
+        score += 0.4;
         reasons.push("AMOUNT_WITHIN_TOLERANCE");
-      } else if (diff <= 100.0) {
-        score += 0.1;
+      } else if (diff <= 50.0 && diffRatio <= 0.05) {
+        score += 0.2;
+        reasons.push("AMOUNT_DIFFERENCE_MINOR");
+      } else if (diff <= 200.0 && diffRatio <= 0.15) {
+        score += 0.05;
         reasons.push("AMOUNT_DIFFERENCE");
       } else {
         score -= 0.5;
@@ -270,20 +275,21 @@ class RecoveryReconciliationService {
       };
     }
 
-    // Determine status based on amount match and confidence
-    if (best.diff === 0 && best.score >= 0.7) {
+    // Determine status based on amount match, ratio, and confidence
+    const bestRatio = expectedAmount > 0 ? (best.diff || 0) / expectedAmount : 0;
+    if ((best.diff === 0 || (best.diff! <= 5.0 && bestRatio <= 0.005)) && best.score >= 0.65) {
       return {
         status: "RECONCILED",
         expectedAmount,
         matchedAmount: best.artifact.amount,
-        difference: 0,
+        difference: best.diff!,
         currency: expectedCurrency,
         confidenceScore: best.score,
         matchReasons: best.reasons,
         transactionDate: best.artifact.transactionDate,
         providerRecordId: best.artifact.providerRecordId
       };
-    } else if (best.diff !== undefined && best.diff <= 50.0) {
+    } else if (best.diff !== undefined && best.diff <= 100.0 && bestRatio <= 0.10) {
       return {
         status: "PARTIAL_MATCH",
         expectedAmount,
