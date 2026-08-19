@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { authenticateToken } from '../middleware/authMiddleware';
 import { getPaymentByReference } from '../services/paymentRepository';
 import recoverOnceService from '../services/recoverOnceService';
-import paystackSubscriptionService from '../services/paystackSubscriptionService';
+import paystackSubscriptionService, { WorkspaceCommercialEligibilityError } from '../services/paystackSubscriptionService';
 import { verifyPaystackWebhookSignature } from '../services/paystackService';
 
 const router = Router();
@@ -40,6 +40,15 @@ async function initializeSubscriptionCheckout(req: Request, res: Response) {
 
     return res.json(result);
   } catch (error: any) {
+    if (error instanceof WorkspaceCommercialEligibilityError) {
+      return res.status(error.status).json({
+        success: false,
+        code: error.code,
+        message: error.message,
+        commercial: error.commercial,
+      });
+    }
+
     const message = error?.message || 'Failed to initialize Paystack checkout';
     const status = /not found/i.test(message) ? 404 : /membership|required|eligible/i.test(message) ? 400 : 500;
     return res.status(status).json({ success: false, message });

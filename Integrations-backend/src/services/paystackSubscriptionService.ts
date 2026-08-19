@@ -140,6 +140,61 @@ function assertEligibleAudit(audit: any) {
   }
 }
 
+export type WorkspaceCommercialDecision = {
+  route: string | null;
+  eligibility: string | null;
+};
+
+export type WorkspaceCommercialEligibility = {
+  allowed: boolean;
+  code?: 'workspace_not_eligible';
+  commercial: WorkspaceCommercialDecision;
+};
+
+export class WorkspaceCommercialEligibilityError extends Error {
+  readonly code = 'workspace_not_eligible' as const;
+  readonly status = 409;
+  readonly commercial: WorkspaceCommercialDecision;
+
+  constructor(commercial: WorkspaceCommercialDecision) {
+    super('This audit does not qualify for Recovery Workspace checkout.');
+    this.name = 'WorkspaceCommercialEligibilityError';
+    this.commercial = commercial;
+  }
+}
+
+/**
+ * Workspace checkout is allowed only when persisted Audit truth explicitly
+ * authorizes the current recurring Workspace product. Missing and unknown
+ * commercial decisions fail closed; Recover Once qualification is not a
+ * substitute for Workspace qualification.
+ */
+export function evaluateWorkspaceCommercialEligibility(audit: {
+  commercial_route?: unknown;
+  commercial_eligibility?: unknown;
+}): WorkspaceCommercialEligibility {
+  const commercial: WorkspaceCommercialDecision = {
+    route: typeof audit.commercial_route === 'string' ? audit.commercial_route : null,
+    eligibility: typeof audit.commercial_eligibility === 'string' ? audit.commercial_eligibility : null,
+  };
+
+  const allowed = commercial.eligibility === 'eligible' && (
+    commercial.route === 'WORKSPACE' || commercial.route === 'RECOVERY_CONTROL'
+  );
+
+  return allowed
+    ? { allowed: true, commercial }
+    : { allowed: false, code: 'workspace_not_eligible', commercial };
+}
+
+function assertWorkspaceCommercialEligibility(audit: any): WorkspaceCommercialDecision {
+  const eligibility = evaluateWorkspaceCommercialEligibility(audit);
+  if (!eligibility.allowed) {
+    throw new WorkspaceCommercialEligibilityError(eligibility.commercial);
+  }
+  return eligibility.commercial;
+}
+
 async function activateIfReady(subscription: BillingSubscriptionRecord) {
   if (!subscription.provider_subscription_code) return subscription;
 
@@ -202,7 +257,17 @@ class PaystackSubscriptionService {
     const existing = await getTenantRecoverySubscription(audit.tenant_id);
     if (existing) {
       const { entitlement } = await workspaceEntitlementService.getTenantEntitlement(audit.tenant_id);
-      if (existing.status === 'pending' || entitlement.entitled) {
+      if (entitlement.entitled) {
+        return {
+          success: true,
+          already_exists: true,
+          already_entitled: true,
+          subscription: toCustomerSafeSubscription(existing),
+          entitlement,
+          workspace: { tenant_id: audit.tenant_id },
+        };
+      }
+      if (existing.status === 'pending') {
         return {
           success: true,
           already_exists: true,
@@ -213,6 +278,7 @@ class PaystackSubscriptionService {
       throw new Error('Subscription recovery is required before creating a new checkout');
     }
 
+    assertWorkspaceCommercialEligibility(audit);
     await ensurePaystackPlanValid();
     const reference = generateReference();
     const metadata = {
