@@ -4,6 +4,7 @@ import { recoveryReconciliationService } from '../services/recoveryReconciliatio
 import { supabaseAdmin, supabase } from '../database/supabaseClient';
 import tokenManager from '../utils/tokenManager';
 import logger from '../utils/logger';
+import { systemSignalService } from '../notifications/services/system_signal_service';
 
 const router = Router();
 
@@ -103,9 +104,67 @@ router.post('/:recoveryId/reconcile', authenticateToken, async (req: any, res) =
     };
 
     // Upsert into recovery_reconciliations table (Idempotent upsert on recovery_id, provider)
-    await adminClient
+    const { error: reconciliationPersistError } = await adminClient
       .from('recovery_reconciliations')
       .upsert(recordPayload, { onConflict: 'recovery_id,provider' });
+
+    if (reconciliationPersistError) {
+      logger.error('Unable to persist reconciliation result', {
+        tenantId,
+        recoveryId,
+        provider,
+        error: reconciliationPersistError.message
+      });
+      return res.status(500).json({ success: false, error: 'Unable to persist reconciliation result.' });
+    }
+
+    const normalizedStatus = String(result.status || '').trim().toUpperCase();
+    const signalEventByStatus: Record<string, 'reconciliation.completed' | 'reconciliation.partial_match' | 'reconciliation.review_required' | 'reconciliation.unmatched'> = {
+      RECONCILED: 'reconciliation.completed',
+      PARTIAL_MATCH: 'reconciliation.partial_match',
+      NEEDS_REVIEW: 'reconciliation.review_required',
+      UNMATCHED: 'reconciliation.unmatched'
+    };
+    const signalEventType = signalEventByStatus[normalizedStatus];
+
+    if (signalEventType && userId) {
+      try {
+        await systemSignalService.accept({
+          tenantId,
+          recipientUserId: userId,
+          eventType: signalEventType,
+          objectType: 'recovery',
+          objectId: recoveryId,
+          businessTransitionKey: `${provider}:${normalizedStatus}:${result.providerRecordId || 'no_record'}`,
+          causationId: result.providerRecordId || undefined,
+          privateTitle: signalEventType === 'reconciliation.completed'
+            ? 'Recovery reconciled'
+            : signalEventType === 'reconciliation.unmatched'
+              ? 'No credible accounting match found'
+              : 'Recovery reconciliation requires review',
+          privateBody: signalEventType === 'reconciliation.completed'
+            ? 'Margin matched this recovery to an accounting record.'
+            : signalEventType === 'reconciliation.unmatched'
+              ? 'Margin completed the search and found no supported accounting match.'
+              : 'Margin needs a decision on this reconciliation result.',
+          detailedBody: `Accounting reconciliation completed with status ${normalizedStatus.replace(/_/g, ' ').toLowerCase()}.`,
+          payload: {
+            entity_type: 'recovery',
+            entity_id: recoveryId,
+            provider,
+            reconciliation_status: normalizedStatus,
+            reconciliation_record_id: result.providerRecordId || null
+          }
+        });
+      } catch (signalError: any) {
+        logger.warn('Reconciliation persisted but System Signal could not be accepted', {
+          tenantId,
+          recoveryId,
+          provider,
+          error: signalError?.message || String(signalError)
+        });
+      }
+    }
 
     return res.json({
       success: true,

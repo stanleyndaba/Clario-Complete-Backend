@@ -39,6 +39,7 @@ import {
   buildOperationalDecision
 } from '../utils/operationalContinuity';
 import { getRedisClient, handleRedisRuntimeError, isRedisQuotaExceededError } from '../utils/redisClient';
+import { systemSignalService } from '../notifications/services/system_signal_service';
 
 
 /**
@@ -521,6 +522,37 @@ class RefundFilingWorker {
 
     if (error) {
       throw new Error(`Failed to persist filing decision: ${error.message}`);
+    }
+
+    // This is the durable domain transition for seller approval. Emit only after
+    // the tenant-scoped case state is stored; retries dedupe on the same reason set.
+    if (filingStatus === 'pending_approval' && disputeCase?.seller_id && disputeCase?.id) {
+      try {
+        const approvalReasons = Array.from(new Set((decision.blockReasons || []).map((reason) => String(reason)))).sort();
+        await systemSignalService.acceptForTarget({
+          tenantId,
+          recipientTargetId: String(disputeCase.seller_id),
+          eventType: 'case.approval_required',
+          objectType: 'dispute_case',
+          objectId: String(disputeCase.id),
+          businessTransitionKey: `pending_approval:${approvalReasons.join('|') || 'review_required'}`,
+          privateTitle: 'Approval required',
+          privateBody: 'This case is ready for your filing decision.',
+          detailedBody: decision.explanationPayload?.justification || 'Margin needs your decision before this case can proceed to filing.',
+          payload: {
+            entity_type: 'dispute_case',
+            entity_id: String(disputeCase.id),
+            filing_status: 'pending_approval',
+            approval_reason_count: approvalReasons.length
+          }
+        });
+      } catch (signalError: any) {
+        logger.warn('[REFUND FILING] Case persisted but approval System Signal could not be accepted', {
+          tenantId,
+          disputeId: disputeCase.id,
+          error: signalError?.message || String(signalError)
+        });
+      }
     }
   }
 

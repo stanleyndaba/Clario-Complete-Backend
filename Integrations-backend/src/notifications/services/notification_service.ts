@@ -13,8 +13,37 @@ import sseHub from '../../utils/sseHub';
 import { supabaseAdmin } from '../../database/supabaseClient';
 import { normalizeAgent10EventPayload } from '../../utils/agent10Event';
 import { DEFAULT_NOTIFICATION_PREFERENCES, normalizeNotificationPreferences } from '../preferencesConfig';
+import { systemSignalDeliveryService } from './system_signal_delivery_service';
 
 const logger = getLogger('NotificationService');
+
+export interface CanonicalSignalMetadata {
+  signalId: string;
+  eventType: string;
+  eventVersion: number;
+  domain: string;
+  severity: 'critical' | 'action_required' | 'informational';
+  sensitivity: 'operational_private' | 'financial_sensitive' | 'security_sensitive';
+  providerState: 'provider_outage' | 'seller_auth_failure' | 'business_outcome' | 'none';
+  occurredAt: Date;
+  correlationId?: string;
+  causationId?: string;
+  objectType: string;
+  objectId: string;
+  actionType: string;
+  actionRoute: Record<string, any>;
+  deliveryPolicy: string;
+  signalState: 'open' | 'resolved' | 'expired' | 'superseded' | 'cancelled';
+  sellerState: 'unseen' | 'seen' | 'read' | 'acknowledged';
+  actionState: 'none' | 'pending' | 'completed' | 'no_longer_needed' | 'expired';
+  privateTitle: string;
+  privateBody: string;
+  detailedBody?: string;
+  externalTitle: string;
+  externalBody?: string;
+  dedupeKey: string;
+  forceInApp?: boolean;
+}
 
 export interface NotificationEvent {
   type: NotificationType;
@@ -27,6 +56,7 @@ export interface NotificationEvent {
   payload?: Record<string, any>;
   expires_at?: Date;
   immediate?: boolean;
+  canonicalSignal?: CanonicalSignalMetadata;
 }
 
 export interface NotificationStats {
@@ -82,12 +112,23 @@ export class NotificationService {
         immediate: event.immediate
       });
 
-      const effectiveChannel = await this.resolveEffectiveChannel(
+      let effectiveChannel = await this.resolveEffectiveChannel(
         event.user_id,
         event.tenant_id,
         event.type,
         event.channel || NotificationChannel.IN_APP
       );
+
+      // Critical and action-required System Signals retain a durable in-app record
+      // even when a legacy preference disables the in-app toggle. External channel
+      // eligibility remains subject to the existing preference model.
+      if (event.canonicalSignal?.forceInApp) {
+        if (effectiveChannel === NotificationChannel.EMAIL) {
+          effectiveChannel = NotificationChannel.BOTH;
+        } else if (!effectiveChannel) {
+          effectiveChannel = NotificationChannel.IN_APP;
+        }
+      }
 
       if (!effectiveChannel) {
         logger.info('Notification suppressed by user preference', {
@@ -130,8 +171,31 @@ export class NotificationService {
           dedupe_key: dedupeKey || null
         },
         dedupe_key: dedupeKey,
-        expires_at: event.expires_at
+        expires_at: event.expires_at,
+        system_signal_id: event.canonicalSignal?.signalId,
+        signal_event_type: event.canonicalSignal?.eventType,
+        signal_event_version: event.canonicalSignal?.eventVersion,
+        signal_domain: event.canonicalSignal?.domain,
+        signal_severity: event.canonicalSignal?.severity,
+        signal_sensitivity: event.canonicalSignal?.sensitivity,
+        signal_provider_state: event.canonicalSignal?.providerState,
+        signal_occurred_at: event.canonicalSignal?.occurredAt,
+        signal_correlation_id: event.canonicalSignal?.correlationId,
+        signal_causation_id: event.canonicalSignal?.causationId,
+        signal_object_type: event.canonicalSignal?.objectType,
+        signal_object_id: event.canonicalSignal?.objectId,
+        signal_action_type: event.canonicalSignal?.actionType,
+        signal_action_route: event.canonicalSignal?.actionRoute,
+        signal_delivery_policy: event.canonicalSignal?.deliveryPolicy,
+        signal_state: event.canonicalSignal?.signalState,
+        seller_state: event.canonicalSignal?.sellerState,
+        action_state: event.canonicalSignal?.actionState,
+        detailed_body: event.canonicalSignal?.detailedBody,
+        external_title: event.canonicalSignal?.externalTitle,
+        external_body: event.canonicalSignal?.externalBody
       });
+
+      await systemSignalDeliveryService.recordInAppPersisted(notification);
 
       // Immediate delivery is the single authoritative execution path.
       await this.deliverNotification(notification);
@@ -438,14 +502,19 @@ export class NotificationService {
       const errors: string[] = [];
 
       if (inAppRequested) {
-        deliveryState.realtime_success = await this.deliverViaWebSocket(notification);
+        const realtimeResult = await this.deliverViaWebSocket(notification);
+        deliveryState.realtime_success = realtimeResult.success;
+        await systemSignalDeliveryService.recordRealtimeAttempt(notification, realtimeResult.success, realtimeResult.error);
       }
 
       if (emailRequested) {
         const emailResult = await this.deliverViaEmail(notification);
         deliveryState.email_success = emailResult.success;
-        if (emailResult.error) {
+        if (emailResult.success) {
+          await systemSignalDeliveryService.recordEmailAccepted(notification, emailResult.providerMessageId || null);
+        } else if (emailResult.error) {
           errors.push(emailResult.error);
+          await systemSignalDeliveryService.recordEmailFailure(notification, emailResult.error);
         }
       }
 
@@ -489,7 +558,7 @@ export class NotificationService {
   /**
    * Deliver notification via WebSocket and SSE
    */
-  private async deliverViaWebSocket(notification: Notification): Promise<boolean> {
+  private async deliverViaWebSocket(notification: Notification): Promise<{ success: boolean; error?: string }> {
     try {
       const tenantSlug = await this.resolveTenantSlug(notification.tenant_id);
       const websocketPayload = {
@@ -527,11 +596,11 @@ export class NotificationService {
         id: notification.id,
         userId: notification.user_id
       });
-      return true;
+      return { success: true };
 
-    } catch (error) {
+    } catch (error: any) {
       logger.error('Error sending notification via Realtime:', error);
-      return false;
+      return { success: false, error: error?.message || 'realtime_emit_failed' };
     }
   }
 
@@ -609,10 +678,10 @@ export class NotificationService {
     return baseParts.length >= 4 ? baseParts.join(':') : undefined;
   }
 
-  private async deliverViaEmail(notification: Notification): Promise<{ success: boolean; error?: string }> {
+  private async deliverViaEmail(notification: Notification): Promise<{ success: boolean; providerMessageId?: string | null; error?: string }> {
     try {
-      await this.emailService.sendNotification(notification);
-      return { success: true };
+      const result = await this.emailService.sendNotification(notification);
+      return { success: true, providerMessageId: result.providerMessageId };
     } catch (error: any) {
       logger.error('Error sending notification via email:', error);
       return {

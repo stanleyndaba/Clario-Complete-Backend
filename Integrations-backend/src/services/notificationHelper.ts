@@ -9,6 +9,7 @@ import { notificationService, NotificationEvent } from '../notifications/service
 import { NotificationType, NotificationPriority, NotificationChannel } from '../notifications/models/notification';
 import { supabaseAdmin } from '../database/supabaseClient';
 import { normalizeAgent10EventPayload } from '../utils/agent10Event';
+import { systemSignalService } from '../notifications/services/system_signal_service';
 
 export interface ClaimDetectedData {
   tenantId: string;
@@ -258,38 +259,31 @@ class NotificationHelper {
       ].filter(Boolean).join(' · ');
       const message = `${countSummary} ${valueSummary}.${readinessSummary ? ` ${readinessSummary}.` : ''}${data.syncId ? ` Sync ${compactIdentifier(data.syncId, 20)} completed.` : ''}`;
 
-      const event: Omit<NotificationEvent, 'user_id'> = {
-        type: NotificationType.CLAIM_DETECTED,
-        tenant_id: data.tenantId,
-        title,
-        message,
-        priority: NotificationPriority.HIGH,
-        channel: NotificationChannel.BOTH,
-        payload: normalizeAgent10EventPayload(NotificationType.CLAIM_DETECTED, {
-          claimId: data.claimId,
-          count,
-          amount,
-          totalValue: amount,
-          currency,
-          confidence: data.confidence,
-          orderId: data.orderId,
-          sku: data.sku,
-          isBulk,
-          syncId: data.syncId,
-          claimReadyCount,
-          reviewNeededCount,
-          monitoringCount: data.monitoringCount || 0,
-          caseNumber: data.caseNumber,
-          status: claimReadyCount > 0 ? 'claim_ready' : 'review_needed'
-        }, {
-          tenantId: data.tenantId,
-          entityType: data.claimId ? 'detection_result' : 'unknown',
-          entityId: data.claimId || data.syncId
-        }),
-        immediate: true
-      };
+      const detectionId = data.claimId || data.syncId;
+      if (!detectionId) {
+        throw new Error('SYSTEM_SIGNAL_OBJECT_REQUIRED');
+      }
 
-      await this.dispatchNotification(userId, event, 'claim_detected');
+      await systemSignalService.acceptForTarget({
+        tenantId: data.tenantId,
+        recipientTargetId: userId,
+        eventType: 'recovery.opportunity_identified',
+        objectType: 'detection_result',
+        objectId: detectionId,
+        businessTransitionKey: `${detectionId}:${claimReadyCount > 0 ? 'claim_ready' : 'review_needed'}`,
+        correlationId: data.syncId,
+        privateTitle: 'Recovery opportunity identified',
+        privateBody: 'Margin identified a recovery opportunity that is ready for review.',
+        detailedBody: message,
+        payload: {
+          entity_type: 'detection_result',
+          entity_id: detectionId,
+          detection_count: count,
+          claim_ready_count: claimReadyCount,
+          review_needed_count: reviewNeededCount,
+          sync_id: data.syncId || null
+        }
+      });
 
     } catch (error: any) {
       logger.error('❌ [NOTIFICATIONS] Failed to notify claim detected', {
@@ -379,16 +373,34 @@ class NotificationHelper {
 
       const identifier = data.caseNumber || data.amazonCaseId || data.caseId || data.disputeId;
       const amountLabel = formatMoney(data.claimAmount, data.currency || 'USD');
-      const title = data.status === 'filed'
-        ? `${parentheticalIdentifier(identifier)}Filed`.trim()
-        : data.status === 'in_progress'
-          ? `${parentheticalIdentifier(identifier)}Queued for filing`.trim()
-          : `${parentheticalIdentifier(identifier)}Preparing case`.trim();
-      const message = data.status === 'filed'
-        ? `Margin submitted this case to Amazon${data.amazonCaseId ? ` as ${data.amazonCaseId}` : ''}. Current tracked value: ${amountLabel}.`
-        : data.status === 'in_progress'
-          ? `Margin queued this case for Amazon filing once the submission worker reaches it.`
-          : `Margin is preparing this case for filing and checking the final supporting record.`;
+      if (data.status === 'filed') {
+        await systemSignalService.acceptForTarget({
+          tenantId: data.tenantId,
+          recipientTargetId: userId,
+          eventType: 'filing.submitted',
+          objectType: 'dispute_case',
+          objectId: data.disputeId,
+          businessTransitionKey: data.amazonCaseId || data.caseId || data.syncId || 'filed',
+          correlationId: data.syncId,
+          causationId: data.amazonCaseId,
+          privateTitle: 'Filing submitted',
+          privateBody: 'Margin submitted this case for Amazon review.',
+          detailedBody: `Margin submitted this case to Amazon. Current tracked value: ${amountLabel}.`,
+          payload: {
+            entity_type: 'dispute_case',
+            entity_id: data.disputeId,
+            sync_id: data.syncId || null,
+            filing_status: 'filed'
+          }
+        });
+        return;
+      }
+      const title = data.status === 'in_progress'
+        ? `${parentheticalIdentifier(identifier)}Queued for filing`.trim()
+        : `${parentheticalIdentifier(identifier)}Preparing case`.trim();
+      const message = data.status === 'in_progress'
+        ? 'Margin queued this case for Amazon filing once the submission worker reaches it.'
+        : 'Margin is preparing this case for filing and checking the final supporting record.';
 
       const event: Omit<NotificationEvent, 'user_id'> = {
         type: NotificationType.CASE_FILED,
@@ -501,33 +513,25 @@ class NotificationHelper {
       const title = `${parentheticalIdentifier(identifier)}Payout confirmed`.trim();
       const message = `Amazon recorded ${formattedAmount} as deposited${data.payoutId ? ` under payout ${compactIdentifier(data.payoutId)}` : ''}. Margin is keeping the payout record in sync.`;
 
-      const event: Omit<NotificationEvent, 'user_id'> = {
-        type: NotificationType.FUNDS_DEPOSITED,
-        tenant_id: data.tenantId,
-        title,
-        message,
-        priority: NotificationPriority.URGENT,
-        channel: NotificationChannel.BOTH,
-        payload: normalizeAgent10EventPayload(NotificationType.FUNDS_DEPOSITED, {
-          disputeId: data.disputeId,
-          recoveryId: data.recoveryId,
-          amount: data.amount,
-          currency: data.currency || 'usd',
-          sellerPayout: data.sellerPayout ?? data.amount,
-          billingStatus: data.billingStatus,
-          caseNumber: data.caseNumber,
-          payoutId: data.payoutId,
-          payoutTruthSource: data.payoutTruthSource,
-          payout_truth_source: data.payoutTruthSource
-        }, {
-          tenantId: data.tenantId,
-          entityType: 'recovery',
-          entityId: data.recoveryId
-        }),
-        immediate: true
-      };
-
-      await this.dispatchNotification(userId, event, 'funds_deposited');
+      await systemSignalService.acceptForTarget({
+        tenantId: data.tenantId,
+        recipientTargetId: userId,
+        eventType: 'payout.confirmed',
+        objectType: 'recovery',
+        objectId: data.recoveryId,
+        businessTransitionKey: data.payoutId || `${data.disputeId}:recovery_reconciliation`,
+        causationId: data.payoutId,
+        privateTitle: 'Payout confirmed',
+        privateBody: 'Margin matched a payout record to this recovery.',
+        detailedBody: message,
+        payload: {
+          entity_type: 'recovery',
+          entity_id: data.recoveryId,
+          dispute_case_id: data.disputeId,
+          payout_truth_source: data.payoutTruthSource,
+          payout_id: data.payoutId || null
+        }
+      });
 
     } catch (error: any) {
       logger.error('❌ [NOTIFICATIONS] Failed to notify funds deposited', {

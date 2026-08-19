@@ -21,6 +21,30 @@ export interface NotificationData {
   read_at?: Date;
   delivered_at?: Date;
   expires_at?: Date;
+  system_signal_id?: string | null;
+  signal_event_type?: string | null;
+  signal_event_version?: number | null;
+  signal_domain?: string | null;
+  signal_severity?: 'critical' | 'action_required' | 'informational' | null;
+  signal_sensitivity?: 'operational_private' | 'financial_sensitive' | 'security_sensitive' | null;
+  signal_provider_state?: 'provider_outage' | 'seller_auth_failure' | 'business_outcome' | 'none' | null;
+  signal_occurred_at?: Date | null;
+  signal_correlation_id?: string | null;
+  signal_causation_id?: string | null;
+  signal_object_type?: string | null;
+  signal_object_id?: string | null;
+  signal_action_type?: string | null;
+  signal_action_route?: Record<string, any> | null;
+  signal_delivery_policy?: string | null;
+  signal_state?: 'open' | 'resolved' | 'expired' | 'superseded' | 'cancelled' | null;
+  seller_state?: 'unseen' | 'seen' | 'read' | 'acknowledged' | null;
+  action_state?: 'none' | 'pending' | 'completed' | 'no_longer_needed' | 'expired' | null;
+  detailed_body?: string | null;
+  external_title?: string | null;
+  external_body?: string | null;
+  resolved_at?: Date | null;
+  resolution_reason?: string | null;
+  acknowledged_at?: Date | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -87,6 +111,27 @@ export interface CreateNotificationRequest {
   payload?: Record<string, any>;
   dedupe_key?: string;
   expires_at?: Date;
+  system_signal_id?: string;
+  signal_event_type?: string;
+  signal_event_version?: number;
+  signal_domain?: string;
+  signal_severity?: 'critical' | 'action_required' | 'informational';
+  signal_sensitivity?: 'operational_private' | 'financial_sensitive' | 'security_sensitive';
+  signal_provider_state?: 'provider_outage' | 'seller_auth_failure' | 'business_outcome' | 'none';
+  signal_occurred_at?: Date;
+  signal_correlation_id?: string;
+  signal_causation_id?: string;
+  signal_object_type?: string;
+  signal_object_id?: string;
+  signal_action_type?: string;
+  signal_action_route?: Record<string, any>;
+  signal_delivery_policy?: string;
+  signal_state?: 'open' | 'resolved' | 'expired' | 'superseded' | 'cancelled';
+  seller_state?: 'unseen' | 'seen' | 'read' | 'acknowledged';
+  action_state?: 'none' | 'pending' | 'completed' | 'no_longer_needed' | 'expired';
+  detailed_body?: string;
+  external_title?: string;
+  external_body?: string;
 }
 
 export interface UpdateNotificationRequest {
@@ -96,6 +141,12 @@ export interface UpdateNotificationRequest {
   payload?: Record<string, any>;
   delivery_state?: Record<string, any>;
   last_delivery_error?: string | null;
+  seller_state?: 'unseen' | 'seen' | 'read' | 'acknowledged';
+  action_state?: 'none' | 'pending' | 'completed' | 'no_longer_needed' | 'expired';
+  signal_state?: 'open' | 'resolved' | 'expired' | 'superseded' | 'cancelled';
+  resolved_at?: Date;
+  resolution_reason?: string;
+  acknowledged_at?: Date;
 }
 
 export interface NotificationFilters {
@@ -127,6 +178,30 @@ export class Notification {
   read_at?: Date;
   delivered_at?: Date;
   expires_at?: Date;
+  system_signal_id?: string | null;
+  signal_event_type?: string | null;
+  signal_event_version?: number | null;
+  signal_domain?: string | null;
+  signal_severity?: 'critical' | 'action_required' | 'informational' | null;
+  signal_sensitivity?: 'operational_private' | 'financial_sensitive' | 'security_sensitive' | null;
+  signal_provider_state?: 'provider_outage' | 'seller_auth_failure' | 'business_outcome' | 'none' | null;
+  signal_occurred_at?: Date | null;
+  signal_correlation_id?: string | null;
+  signal_causation_id?: string | null;
+  signal_object_type?: string | null;
+  signal_object_id?: string | null;
+  signal_action_type?: string | null;
+  signal_action_route?: Record<string, any> | null;
+  signal_delivery_policy?: string | null;
+  signal_state?: 'open' | 'resolved' | 'expired' | 'superseded' | 'cancelled' | null;
+  seller_state?: 'unseen' | 'seen' | 'read' | 'acknowledged' | null;
+  action_state?: 'none' | 'pending' | 'completed' | 'no_longer_needed' | 'expired' | null;
+  detailed_body?: string | null;
+  external_title?: string | null;
+  external_body?: string | null;
+  resolved_at?: Date | null;
+  resolution_reason?: string | null;
+  acknowledged_at?: Date | null;
   created_at: Date;
   updated_at: Date;
 
@@ -147,6 +222,30 @@ export class Notification {
     this.read_at = data.read_at;
     this.delivered_at = data.delivered_at;
     this.expires_at = data.expires_at;
+    this.system_signal_id = data.system_signal_id;
+    this.signal_event_type = data.signal_event_type;
+    this.signal_event_version = data.signal_event_version;
+    this.signal_domain = data.signal_domain;
+    this.signal_severity = data.signal_severity;
+    this.signal_sensitivity = data.signal_sensitivity;
+    this.signal_provider_state = data.signal_provider_state;
+    this.signal_occurred_at = data.signal_occurred_at;
+    this.signal_correlation_id = data.signal_correlation_id;
+    this.signal_causation_id = data.signal_causation_id;
+    this.signal_object_type = data.signal_object_type;
+    this.signal_object_id = data.signal_object_id;
+    this.signal_action_type = data.signal_action_type;
+    this.signal_action_route = data.signal_action_route;
+    this.signal_delivery_policy = data.signal_delivery_policy;
+    this.signal_state = data.signal_state;
+    this.seller_state = data.seller_state;
+    this.action_state = data.action_state;
+    this.detailed_body = data.detailed_body;
+    this.external_title = data.external_title;
+    this.external_body = data.external_body;
+    this.resolved_at = data.resolved_at;
+    this.resolution_reason = data.resolution_reason;
+    this.acknowledged_at = data.acknowledged_at;
     this.created_at = data.created_at;
     this.updated_at = data.updated_at;
   }
@@ -365,7 +464,8 @@ export class Notification {
   async markAsRead(): Promise<Notification> {
     return this.update({
       status: NotificationStatus.READ,
-      read_at: new Date()
+      read_at: new Date(),
+      seller_state: this.system_signal_id ? 'read' : undefined
     });
   }
 

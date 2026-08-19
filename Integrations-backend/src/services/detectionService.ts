@@ -1997,7 +1997,45 @@ export class DetectionService {
           : `Claim expires in ${daysRemaining} day${daysRemaining > 1 ? 's' : ''}. File soon to avoid missing the deadline.`
       });
 
-      // Mark alert as sent
+      // Resolve a tenant-backed seller recipient before emitting a durable signal.
+      // The existing SSE alert remains intact; it is transient and not treated as
+      // seller acknowledgement or delivery truth.
+      const { supabaseAdmin, supabase: supabaseClient } = await import('../database/supabaseClient');
+      const identityClient = supabaseAdmin || supabaseClient;
+      const sellerLookup = await identityClient
+        .from('users')
+        .select('id, tenant_id')
+        .or(`id.eq.${sellerId},amazon_seller_id.eq.${sellerId}`)
+        .maybeSingle();
+      const tenantId = String((claim as any).tenant_id || sellerLookup.data?.tenant_id || '').trim();
+      if (!tenantId || sellerLookup.error) {
+        throw new Error(`SYSTEM_SIGNAL_TENANT_RESOLUTION_FAILED:${sellerLookup.error?.message || 'missing_tenant'}`);
+      }
+
+      const { systemSignalService } = await import('../notifications/services/system_signal_service');
+      await systemSignalService.acceptForTarget({
+        tenantId,
+        recipientTargetId: sellerId,
+        eventType: 'deadline.critical',
+        objectType: 'detection_result',
+        objectId: String(claim.id),
+        businessTransitionKey: `deadline:${daysRemaining}:${String(claim.deadline_date || '')}`,
+        policyWindowKey: String(claim.deadline_date || '').slice(0, 10),
+        privateTitle: 'Claim deadline requires attention',
+        privateBody: 'This recovery deadline requires immediate review.',
+        detailedBody: daysRemaining === 0
+          ? 'This claim deadline is today and requires immediate review.'
+          : `This claim deadline is in ${daysRemaining} day${daysRemaining === 1 ? '' : 's'} and requires immediate review.`,
+        payload: {
+          entity_type: 'detection_result',
+          entity_id: String(claim.id),
+          deadline_date: claim.deadline_date || null,
+          days_remaining: daysRemaining
+        }
+      });
+
+      // Mark alert as sent only after the durable System Signal acceptance path
+      // succeeds; a failure will be retried by the existing scheduler.
       await supabase
         .from('detection_results')
         .update({ expiration_alert_sent: true })

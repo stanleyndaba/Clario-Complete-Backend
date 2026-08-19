@@ -67,7 +67,7 @@ export class EmailService {
   /**
    * Send a notification via email
    */
-  async sendNotification(notification: Notification): Promise<void> {
+  async sendNotification(notification: Notification): Promise<EmailSendResult> {
     try {
       if (!this.isInitialized) {
         await this.initialize();
@@ -86,7 +86,7 @@ export class EmailService {
         throw new Error(`No email found for user: ${notification.user_id}`);
       }
 
-      await this.sendEmail({
+      const result = await this.sendEmail({
         to: recipientEmail,
         subject: emailTemplate.subject,
         html: emailTemplate.html,
@@ -95,8 +95,10 @@ export class EmailService {
 
       logger.info('Email notification sent successfully', { 
         id: notification.id, 
-        recipient: recipientEmail 
+        recipient: recipientEmail,
+        providerMessageId: result.providerMessageId
       });
+      return result;
     } catch (error) {
       logger.error('Error sending email notification:', error);
       throw error;

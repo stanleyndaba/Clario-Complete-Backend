@@ -197,6 +197,45 @@ export class NotificationController {
   }
 
   /**
+   * Acknowledge a canonical System Signal without resolving its underlying work.
+   * POST /notifications/:id/acknowledge
+   */
+  async acknowledgeSignal(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const userId = req.user?.id;
+      if (!userId) {
+        res.status(401).json({ error: 'User not authenticated' });
+        return;
+      }
+      const tenantId = this.requireTenantId(req, res);
+      if (!tenantId) return;
+
+      const { id } = (req as any).params;
+      const notification = await notificationService.getNotificationById(id);
+      if (!notification) {
+        res.status(404).json({ error: 'Notification not found' });
+        return;
+      }
+      if (notification.user_id !== userId || notification.tenant_id !== tenantId) {
+        res.status(403).json({ error: 'Access denied' });
+        return;
+      }
+
+      const { systemSignalService } = await import('../services/system_signal_service');
+      const updated = await systemSignalService.acknowledge(notification, tenantId, userId);
+      res.json({ success: true, data: updated });
+    } catch (error: any) {
+      const code = String(error?.message || '');
+      const status = code === 'SYSTEM_SIGNAL_NOT_CANONICAL' ? 409 : 500;
+      logger.error('Error acknowledging System Signal:', error);
+      res.status(status).json({
+        error: status === 409 ? 'Notification is not a canonical System Signal' : 'Failed to acknowledge signal',
+        message: code || 'Unknown error'
+      });
+    }
+  }
+
+  /**
    * Mark all notifications as read (bulk)
    * POST /notifications/mark-all-read
    */

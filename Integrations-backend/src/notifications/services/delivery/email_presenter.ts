@@ -832,12 +832,66 @@ function buildFallbackEmailViewModel(
   };
 }
 
+function buildSystemSignalEmailViewModel(
+  notification: Notification,
+  payload: FlattenedPayload,
+  frontendUrl: string
+): NotificationEmailViewModel {
+  const fallback = buildFallbackEmailViewModel(notification, payload, frontendUrl);
+  const signal = payload.system_signal && typeof payload.system_signal === 'object'
+    ? payload.system_signal as Record<string, any>
+    : {};
+  const sensitivity = notification.signal_sensitivity || signal.sensitivity;
+  const externalTitle = normalizeSentence(notification.external_title || signal.external_title) || 'Margin update';
+  const externalBody = normalizeSentence(notification.external_body || signal.external_body) || 'An operational update is available in Margin.';
+  const actionType = normalizeSentence(notification.signal_action_type || signal.action_type) || 'none';
+  const actionLabel = actionType === 'none' ? 'View in Margin' : 'Review in Margin';
+
+  // Financial and security-sensitive signals deliberately omit the existing
+  // fallback details, Amazon preview, identifiers, and monetary fields.
+  if (sensitivity === 'financial_sensitive' || sensitivity === 'security_sensitive') {
+    return {
+      email_subject: externalTitle,
+      email_heading: externalTitle,
+      email_summary: externalBody,
+      email_detail_lines: [],
+      why_this_matters: null,
+      amazon_said_preview: null,
+      trust_line: null,
+      what_to_do_next: actionType === 'none' ? null : 'Review this update securely in Margin.',
+      seller_action_text: null,
+      disclaimer_text: null,
+      action_label: actionLabel,
+      action_url: fallback.action_url
+    };
+  }
+
+  return {
+    email_subject: externalTitle,
+    email_heading: externalTitle,
+    email_summary: externalBody,
+    email_detail_lines: [],
+    why_this_matters: null,
+    amazon_said_preview: null,
+    trust_line: null,
+    what_to_do_next: actionType === 'none' ? null : 'Review this update in Margin.',
+    seller_action_text: null,
+    disclaimer_text: null,
+    action_label: actionLabel,
+    action_url: fallback.action_url
+  };
+}
+
 export function buildNotificationEmailViewModel(
   notification: Notification,
   options?: { frontendUrl?: string }
 ): NotificationEmailViewModel {
   const payload = flattenPayload(notification.payload || {});
   const frontendUrl = options?.frontendUrl || 'https://app.margin-finance.com';
+
+  if (notification.system_signal_id) {
+    return buildSystemSignalEmailViewModel(notification, payload, frontendUrl);
+  }
 
   switch (notification.type) {
     case NotificationType.PRODUCT_UPDATE:

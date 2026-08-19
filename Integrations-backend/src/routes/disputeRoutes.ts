@@ -1663,6 +1663,24 @@ router.post('/approve-filing', async (req, res) => {
 
     console.log(`[approve-filing] User ${userId} approved claim ${dispute_id}`);
 
+    try {
+      const { systemSignalService } = await import('../notifications/services/system_signal_service');
+      await systemSignalService.resolveOpenSignalsForObject({
+        tenantId,
+        objectType: 'dispute_case',
+        objectId: dispute_id,
+        actionType: 'approve_filing',
+        actionState: 'completed',
+        resolutionReason: 'seller_approved_filing'
+      });
+    } catch (signalResolutionError: any) {
+      console.warn('[approve-filing] Filing approval persisted but System Signal resolution failed', {
+        tenantId,
+        disputeId: dispute_id,
+        error: signalResolutionError?.message || String(signalResolutionError)
+      });
+    }
+
     const job = await refundFilingWorker.addJob(dispute_id, caseSellerId);
     const queued = job.mode === 'queued';
     const blocked = job.mode === 'blocked';

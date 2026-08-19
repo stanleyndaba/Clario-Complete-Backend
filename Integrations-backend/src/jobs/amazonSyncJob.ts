@@ -7,6 +7,7 @@ import tokenManager from '../utils/tokenManager';
 import { supabase } from '../database/supabaseClient';
 import financialEventsService from '../services/financialEventsService';
 import detectionService from '../services/detectionService';
+import { systemSignalService } from '../notifications/services/system_signal_service';
 
 export class AmazonSyncJob {
   private isRunning = false;
@@ -305,18 +306,34 @@ export class AmazonSyncJob {
       return { syncId, summary };
     } catch (error: any) {
       logger.error('Error during Amazon sync', { userId, syncId, error: error?.message });
-      if (error.status === 401) {
-        await notificationService.createNotification({
-          type: NotificationType.SYSTEM_ALERT,
-          user_id: userId,
-          tenant_id: tenantId || undefined,
-          title: 'Amazon connection needs attention',
-          message: 'Your Amazon connection appears to be revoked or expired. Please reconnect to continue syncing.',
-          priority: NotificationPriority.HIGH,
-          channel: NotificationChannel.IN_APP,
-          payload: { provider: 'amazon' },
-          immediate: true,
-        });
+      if (error.status === 401 && tenantId) {
+        try {
+          await systemSignalService.accept({
+            tenantId,
+            recipientUserId: userId,
+            eventType: 'integration.amazon.authentication_invalid',
+            objectType: 'integration_connection',
+            objectId: 'amazon',
+            businessTransitionKey: `sync_unauthorized:${syncId}`,
+            causationId: syncId,
+            privateTitle: 'Amazon connection requires attention',
+            privateBody: 'Recovery monitoring is paused until Amazon access is restored.',
+            detailedBody: 'Margin could not refresh Amazon records because the current connection is no longer authorized.',
+            payload: {
+              entity_type: 'integration_connection',
+              entity_id: 'amazon',
+              provider: 'amazon',
+              sync_id: syncId
+            }
+          });
+        } catch (signalError: any) {
+          logger.warn('Unable to persist Amazon authorization System Signal', {
+            userId,
+            tenantId,
+            syncId,
+            error: signalError?.message || String(signalError)
+          });
+        }
       }
       return { 
         syncId, 
