@@ -63,6 +63,7 @@ import evidenceSourcesRoutes from './routes/evidenceSourcesRoutes';
 import healthRoutes from './routes/healthRoutes';
 import notificationRoutes from './notifications/routes/notification_routes';
 import recoveryRoutes from './routes/recoveryRoutes';
+import reconciliationRoutes from './routes/reconciliationRoutes';
 import aiRoutes from './routes/aiRoutes';
 import learningRoutes from './routes/learningRoutes';
 import inviteRoutes from './routes/inviteRoutes';
@@ -469,7 +470,8 @@ import revenueRoutes from './routes/revenueRoutes';
 app.use('/api/revenue', revenueRoutes);
 logger.info('Revenue routes registered at /api/revenue');
 app.use('/api/recoveries', requireRecoveryWorkspaceEntitlement, recoveryRoutes);
-logger.info('Recovery routes registered at /api/recoveries');
+app.use('/api/recoveries', requireRecoveryWorkspaceEntitlement, reconciliationRoutes);
+logger.info('Recovery reconciliation routes registered at /api/recoveries/:recoveryId/reconcile');
 app.use('/api/ai', aiRoutes);
 logger.info('AI explainer routes registered at /api/ai');
 
