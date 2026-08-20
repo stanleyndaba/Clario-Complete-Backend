@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { Webhook } from 'svix';
 import { supabaseAdmin } from '../database/supabaseClient';
 import logger from '../utils/logger';
+import { systemSignalDeliveryService } from '../notifications/services/system_signal_delivery_service';
 
 const router = Router();
 
@@ -179,7 +180,13 @@ router.post('/', async (req: any, res) => {
     if (providerMessageId) {
       await Promise.all([
         updateWelcomeEmailState(providerMessageId, status, occurredAt),
-        updateManualBroadcastDeliveryState(providerMessageId, status, occurredAt)
+        updateManualBroadcastDeliveryState(providerMessageId, status, occurredAt),
+        systemSignalDeliveryService.recordEmailProviderConfirmation({
+          providerMessageId,
+          providerEventId,
+          providerStatus: status,
+          occurredAt: new Date(occurredAt)
+        })
       ]);
     }
 

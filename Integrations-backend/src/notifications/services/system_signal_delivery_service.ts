@@ -22,9 +22,12 @@ interface DeliveryPatch {
   attempt?: boolean;
   attemptedAt?: Date;
   acceptedAt?: Date;
+  providerConfirmedAt?: Date;
+  clientReceivedAt?: Date;
   failedAt?: Date;
   lastError?: string | null;
   providerMessageId?: string | null;
+  providerEventId?: string | null;
 }
 
 function getPolicySnapshot(notification: Notification) {
@@ -82,6 +85,94 @@ export class SystemSignalDeliveryService {
     });
   }
 
+  /**
+   * Receipt is transport truth only. It never changes seller, action, or signal state.
+   * The caller must already have verified notification ownership through the authenticated route.
+   */
+  async recordClientReceipt(notification: Notification, tenantId: string, recipientUserId: string): Promise<{ idempotent: boolean }> {
+    if (!this.isCanonical(notification)) throw new Error('SYSTEM_SIGNAL_NOT_CANONICAL');
+    if (notification.tenant_id !== tenantId || notification.user_id !== recipientUserId) {
+      throw new Error('SYSTEM_SIGNAL_ACCESS_DENIED');
+    }
+
+    const { data: existing, error: lookupError } = await supabaseAdmin
+      .from('notification_signal_deliveries')
+      .select('id, client_received_at')
+      .eq('notification_id', notification.id)
+      .eq('tenant_id', tenantId)
+      .eq('recipient_user_id', recipientUserId)
+      .eq('channel', 'realtime')
+      .maybeSingle();
+    if (lookupError) throw new Error(`SYSTEM_SIGNAL_DELIVERY_LOOKUP_FAILED:${lookupError.message}`);
+    if (existing?.client_received_at) return { idempotent: true };
+
+    await this.upsert(notification, 'realtime', {
+      // A receipt can legitimately race the asynchronous ledger attempt write.
+      // The received event itself proves a transport attempt, so create the row safely if absent.
+      status: 'client_received',
+      attempt: !existing,
+      attemptedAt: existing ? undefined : new Date(),
+      clientReceivedAt: new Date(),
+      lastError: null
+    });
+    return { idempotent: false };
+  }
+
+  /**
+   * Updates only the matching persisted email delivery after an already-verified Resend webhook.
+   * Provider-confirmed transport truth remains independent from seller read or action state.
+   */
+  async recordEmailProviderConfirmation(input: {
+    providerMessageId: string;
+    providerEventId: string;
+    providerStatus: string;
+    occurredAt: Date;
+  }): Promise<number> {
+    const providerMessageId = String(input.providerMessageId || '').trim();
+    const providerEventId = String(input.providerEventId || '').trim();
+    if (!providerMessageId || !providerEventId) return 0;
+
+    const { data: deliveries, error } = await supabaseAdmin
+      .from('notification_signal_deliveries')
+      .select('id, provider_event_id')
+      .eq('channel', 'email')
+      .eq('provider_message_id', providerMessageId);
+    if (error) throw new Error(`SYSTEM_SIGNAL_PROVIDER_DELIVERY_LOOKUP_FAILED:${error.message}`);
+
+    let updated = 0;
+    const normalizedStatus = String(input.providerStatus || '').toLowerCase();
+    const terminalFailure = normalizedStatus === 'bounced' || normalizedStatus === 'complained';
+    const nextStatus: DeliveryStatus = terminalFailure ? 'failed_permanent' : 'provider_confirmed';
+
+    for (const delivery of deliveries || []) {
+      if (String((delivery as any).provider_event_id || '') === providerEventId) continue;
+      const priorEventId = String((delivery as any).provider_event_id || '').trim();
+      if (priorEventId === providerEventId) continue;
+
+      // Guard the write at the database boundary as well as in memory. If two copies of
+      // the same provider event race, only the first may materialize delivery truth.
+      let updateQuery: any = supabaseAdmin
+        .from('notification_signal_deliveries')
+        .update({
+          status: nextStatus,
+          provider_event_id: providerEventId,
+          provider_confirmed_at: input.occurredAt.toISOString(),
+          failed_at: terminalFailure ? input.occurredAt.toISOString() : null,
+          last_error: terminalFailure ? `resend_${normalizedStatus}` : null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', (delivery as any).id);
+
+      updateQuery = priorEventId
+        ? updateQuery.neq('provider_event_id', providerEventId)
+        : updateQuery.is('provider_event_id', null);
+      const { error: updateError } = await updateQuery;
+      if (updateError) throw new Error(`SYSTEM_SIGNAL_PROVIDER_DELIVERY_UPDATE_FAILED:${updateError.message}`);
+      updated += 1;
+    }
+    return updated;
+  }
+
   private async upsert(notification: Notification, channel: DeliveryChannel, patch: DeliveryPatch): Promise<void> {
     if (!this.isCanonical(notification)) return;
 
@@ -114,9 +205,12 @@ export class SystemSignalDeliveryService {
       attempt_count: (existing?.attempt_count || 0) + (patch.attempt ? 1 : 0),
       attempted_at: patch.attemptedAt ? patch.attemptedAt.toISOString() : undefined,
       accepted_at: patch.acceptedAt ? patch.acceptedAt.toISOString() : undefined,
+      provider_confirmed_at: patch.providerConfirmedAt ? patch.providerConfirmedAt.toISOString() : undefined,
+      client_received_at: patch.clientReceivedAt ? patch.clientReceivedAt.toISOString() : undefined,
       failed_at: patch.failedAt ? patch.failedAt.toISOString() : undefined,
       last_error: patch.lastError,
       provider_message_id: patch.providerMessageId || undefined,
+      provider_event_id: patch.providerEventId || undefined,
       updated_at: now
     };
 

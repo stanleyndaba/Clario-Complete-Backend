@@ -748,6 +748,7 @@ router.put('/preferences/filing', async (req: any, res) => {
  *         description: Internal server error
  */
 router.post('/:id/acknowledge', notificationController.acknowledgeSignal.bind(notificationController));
+router.post('/:id/receipt', notificationController.recordClientReceipt.bind(notificationController));
 router.get('/:id', notificationController.getNotificationById.bind(notificationController));
 
 /**

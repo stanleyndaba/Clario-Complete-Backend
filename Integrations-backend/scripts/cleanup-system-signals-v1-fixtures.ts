@@ -16,7 +16,13 @@ async function main(): Promise<void> {
   await client.connect();
   try {
     const fixtures = await client.query<{ id: string; slug: string }>(
-      `SELECT id, slug FROM tenants WHERE slug LIKE 'ssv1_cert_%' ORDER BY created_at`
+      `SELECT id, slug
+         FROM tenants
+         WHERE slug LIKE 'ssv1_cert_%'
+            OR slug LIKE 'ssv1_http_%'
+            OR slug LIKE 'ssv1_sse_%'
+            OR slug LIKE 'ssv1_resend_%'
+         ORDER BY created_at`
     );
     const tenantIds = fixtures.rows.map((row) => row.id);
     console.log(`fixture_cleanup.tenants_found=${tenantIds.length}`);
@@ -46,7 +52,12 @@ async function main(): Promise<void> {
     const tenantResult = await client.query(`DELETE FROM tenants WHERE id = ANY($1::uuid[])`, [tenantIds]);
     console.log(`fixture_cleanup.deleted.tenants=${tenantResult.rowCount}`);
 
-    const remaining = await client.query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM tenants WHERE slug LIKE 'ssv1_cert_%'`);
+    const remaining = await client.query<{ count: string }>(`SELECT COUNT(*)::text AS count
+         FROM tenants
+         WHERE slug LIKE 'ssv1_cert_%'
+            OR slug LIKE 'ssv1_http_%'
+            OR slug LIKE 'ssv1_sse_%'
+            OR slug LIKE 'ssv1_resend_%'`);
     console.log(`fixture_cleanup.remaining_tenants=${remaining.rows[0]?.count || '0'}`);
     if (remaining.rows[0]?.count !== '0') throw new Error('Synthetic certification fixtures remain after cleanup');
   } finally {
