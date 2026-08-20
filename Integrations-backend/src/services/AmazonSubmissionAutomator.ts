@@ -649,6 +649,25 @@ export class AmazonSubmissionAutomator {
         }
 
         try {
+            const { systemSignalService } = await import('../notifications/services/system_signal_service');
+            await systemSignalService.resolveOpenSignalsForObject({
+                tenantId,
+                objectType: 'dispute_case',
+                objectId: caseId,
+                actionType: 'review_case',
+                eventType: 'filing.failed',
+                actionState: 'completed',
+                resolutionReason: 'filing_submitted_after_failure'
+            });
+        } catch (signalResolutionError: any) {
+            logger.warn('[AGENT 7] Filing succeeded but terminal failure signal resolution did not complete', {
+                caseId,
+                tenantId,
+                error: signalResolutionError?.message || String(signalResolutionError)
+            });
+        }
+
+        try {
             const notificationHelper = (await import('./notificationHelper')).default;
             await notificationHelper.notifyCaseFiled(sellerId, {
                 tenantId,

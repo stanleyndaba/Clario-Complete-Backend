@@ -5,6 +5,7 @@ import gmailService, { GmailEmail, GmailMessageResponse } from './gmailService';
 import notificationHelper from './notificationHelper';
 import { NotificationChannel, NotificationPriority, NotificationType } from '../notifications/models/notification';
 import { normalizeAgent10EventPayload } from '../utils/agent10Event';
+import { systemSignalService } from '../notifications/services/system_signal_service';
 
 type CaseThreadState = 'unlinked' | 'pending' | 'needs_evidence' | 'approved' | 'rejected' | 'paid';
 
@@ -627,18 +628,79 @@ class AmazonCaseThreadService {
       return;
     }
 
+    // The inbound Gmail message is already persisted with provider-message dedupe,
+    // and the case state has been written before this branch. Only the two states
+    // with complete System Signal lifecycles are migrated in this pass.
+    try {
+      if (params.nextState === 'pending') {
+        await systemSignalService.acceptForTarget({
+          tenantId: params.tenantId,
+          recipientTargetId: targetId,
+          eventType: 'case.amazon_response_received',
+          objectType: 'dispute_case',
+          objectId: String(params.disputeCase.id),
+          businessTransitionKey: `amazon_message:${params.providerMessageId}`,
+          causationId: params.providerMessageId,
+          correlationId: params.amazonCaseId,
+          privateTitle: 'Amazon response received',
+          privateBody: 'A case response is ready for review.',
+          detailedBody: 'Margin recorded an Amazon case response for this case.',
+          payload: {
+            entity_type: 'dispute_case',
+            entity_id: String(params.disputeCase.id),
+            amazon_case_id: params.amazonCaseId,
+            provider_message_id: params.providerMessageId,
+            case_state: params.nextState,
+          }
+        });
+        return;
+      }
+
+      if (params.nextState === 'needs_evidence') {
+        const requestedDocuments = extractRequestedDocuments(params.subject, params.bodyText);
+        const requestType = requestedDocuments[0] || 'additional evidence';
+        await systemSignalService.acceptForTarget({
+          tenantId: params.tenantId,
+          recipientTargetId: targetId,
+          eventType: 'case.evidence_requested',
+          objectType: 'dispute_case',
+          objectId: String(params.disputeCase.id),
+          businessTransitionKey: `amazon_message:${params.providerMessageId}:needs_evidence`,
+          causationId: params.providerMessageId,
+          correlationId: params.amazonCaseId,
+          privateTitle: 'Evidence required',
+          privateBody: 'Amazon requested additional evidence for this case.',
+          detailedBody: `Amazon requested ${requestType} for this case.`,
+          payload: {
+            entity_type: 'dispute_case',
+            entity_id: String(params.disputeCase.id),
+            amazon_case_id: params.amazonCaseId,
+            provider_message_id: params.providerMessageId,
+            case_state: params.nextState,
+            request_type: requestType,
+            requested_documents: requestedDocuments,
+          }
+        });
+        return;
+      }
+    } catch (signalError: any) {
+      logger.warn('[AGENT 7 THREAD] Case state persisted but canonical System Signal could not be accepted', {
+        tenantId: params.tenantId,
+        disputeCaseId: params.disputeCase?.id,
+        providerMessageId: params.providerMessageId,
+        nextState: params.nextState,
+        error: signalError?.message || String(signalError)
+      });
+    }
+
+    // Preserve existing legacy communications for states deliberately not wired
+    // during this pass, including rejected cases without a lifecycle resolution.
     const notificationMap: Record<string, {
       type: NotificationType;
       title: string;
       message: string;
       priority: NotificationPriority;
     }> = {
-      needs_evidence: {
-        type: NotificationType.NEEDS_EVIDENCE,
-        title: 'Amazon Needs More Evidence',
-        message: `Amazon requested additional information for Case ${params.amazonCaseId}. Margin linked the thread and is ready for your next response.`,
-        priority: NotificationPriority.URGENT
-      },
       approved: {
         type: NotificationType.APPROVED,
         title: 'Amazon Approved Your Case',
@@ -660,31 +722,20 @@ class AmazonCaseThreadService {
     };
 
     const descriptor = notificationMap[params.nextState];
-    if (!descriptor) {
-      return;
-    }
+    if (!descriptor) return;
 
-    const requestedDocuments = params.nextState === 'needs_evidence'
-      ? extractRequestedDocuments(params.subject, params.bodyText)
-      : [];
-    const requestType = requestedDocuments[0] || (params.nextState === 'needs_evidence' ? 'additional evidence' : null);
     const identifier = buildNotificationIdentifier(params.disputeCase, params.amazonCaseId);
-    const title = params.nextState === 'needs_evidence'
-      ? `(${titleCaseToken(requestType || 'additional evidence')}) Amazon requested`
-      : params.nextState === 'approved'
-        ? `(${identifier}) Approved`
-        : params.nextState === 'rejected'
-          ? `(${identifier}) Rejected`
-          : `(${identifier}) Payout issued`;
-    const message = params.nextState === 'needs_evidence'
-      ? `Amazon requested ${requestType || 'additional evidence'} for ${identifier}. Margin linked the thread and is keeping the response trail ready.`
-      : descriptor.message;
+    const title = params.nextState === 'approved'
+      ? `(${identifier}) Approved`
+      : params.nextState === 'rejected'
+        ? `(${identifier}) Rejected`
+        : `(${identifier}) Payout issued`;
 
     await notificationHelper.notifyUser(
       targetId,
       descriptor.type,
       title,
-      message,
+      descriptor.message,
       descriptor.priority,
       NotificationChannel.BOTH,
       normalizeAgent10EventPayload(descriptor.type, {
@@ -695,8 +746,6 @@ class AmazonCaseThreadService {
         provider_message_id: params.providerMessageId,
         subject: params.subject,
         body_preview: trimOrNull(params.bodyText)?.slice(0, 500) || null,
-        request_type: requestType,
-        requested_documents: requestedDocuments
       }, {
         tenantId: params.tenantId,
         entityType: 'dispute_case',
@@ -1639,6 +1688,29 @@ class AmazonCaseThreadService {
 
     if (insertError || !insertedMessage) {
       throw insertError || new Error('Failed to persist outbound case reply');
+    }
+
+    // A durable response with selected evidence is the only corrective action in
+    // the current product that can complete an Amazon evidence-request signal.
+    if ((params.attachmentDocumentIds || []).length > 0) {
+      try {
+        await systemSignalService.resolveOpenSignalsForObject({
+          tenantId: params.tenantId,
+          objectType: 'dispute_case',
+          objectId: params.disputeCaseId,
+          actionType: 'review_evidence',
+          eventType: 'case.evidence_requested',
+          actionState: 'completed',
+          resolutionReason: 'evidence_response_sent'
+        });
+      } catch (signalError: any) {
+        logger.warn('[AGENT 7 THREAD] Evidence reply persisted but System Signal resolution failed', {
+          tenantId: params.tenantId,
+          disputeCaseId: params.disputeCaseId,
+          caseMessageId: insertedMessage.id,
+          error: signalError?.message || String(signalError)
+        });
+      }
     }
 
     return {

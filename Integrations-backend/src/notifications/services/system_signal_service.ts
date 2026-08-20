@@ -280,6 +280,7 @@ export class SystemSignalService {
     objectType: string;
     objectId: string;
     actionType?: SignalActionType;
+    eventType?: SystemSignalEventType;
     resolutionReason: string;
     actionState?: Extract<SignalActionState, 'completed' | 'no_longer_needed' | 'expired'>;
   }): Promise<number> {
@@ -305,6 +306,9 @@ export class SystemSignalService {
 
     if (input.actionType) {
       query = query.eq('signal_action_type', input.actionType);
+    }
+    if (input.eventType) {
+      query = query.eq('signal_event_type', input.eventType);
     }
 
     const { data, error } = await query.select('id, system_signal_id');

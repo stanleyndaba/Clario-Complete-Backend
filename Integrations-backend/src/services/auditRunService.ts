@@ -15,6 +15,7 @@ import {
   type AuditSummaryLike,
   type CommercialDecision,
 } from './auditCommercialDecisionService';
+import { systemSignalService } from '../notifications/services/system_signal_service';
 
 type AuditRunStatus =
   | 'created'
@@ -782,6 +783,7 @@ class AuditRunService {
           auditRunId: commercialAudit.id,
         });
       }
+      await this.emitCompletedAuditSignal(commercialAudit, summary);
       return commercialAudit;
     }
 
@@ -850,6 +852,7 @@ class AuditRunService {
       previousAudit,
       hasRecoveryWorkspace: workspaceEntitlement.entitlement.entitled,
     });
+    await this.emitCompletedAuditSignal(commercialAudit, summary);
 
     return commercialAudit;
   }
@@ -863,6 +866,57 @@ class AuditRunService {
 
     if (error) throw new Error(`Failed to load audit control statement: ${error.message}`);
     return data || null;
+  }
+
+  /**
+   * Emits only a completed, non-limited audit outcome after the audit and its
+   * commercial decision are durable. Partial coverage stays deliberately silent
+   * until the product has an authoritative seller-remediation lifecycle.
+   */
+  private async emitCompletedAuditSignal(audit: any, summary: AuditSummary) {
+    const finalStatus = String(summary?.finalStatus || '');
+    if (!audit?.id || audit?.status !== 'completed') return;
+    if (finalStatus !== 'complete_with_findings' && finalStatus !== 'complete_no_findings') return;
+
+    const eventType = finalStatus === 'complete_with_findings'
+      ? 'audit.completed_findings' as const
+      : 'audit.completed_no_findings' as const;
+    const completedAt = audit.completed_at || audit.updated_at || audit.created_at;
+
+    try {
+      await systemSignalService.accept({
+        tenantId: String(audit.tenant_id),
+        recipientUserId: String(audit.user_id),
+        eventType,
+        objectType: 'audit_run',
+        objectId: String(audit.id),
+        businessTransitionKey: `completed:${finalStatus}:${completedAt || 'persisted'}`,
+        occurredAt: completedAt || undefined,
+        correlationId: audit.sync_id || undefined,
+        causationId: String(audit.id),
+        privateTitle: 'Audit complete',
+        privateBody: eventType === 'audit.completed_findings'
+          ? 'Your recovery audit has findings ready for review.'
+          : 'Margin completed this audit with no supported findings.',
+        detailedBody: eventType === 'audit.completed_findings'
+          ? 'Margin completed this audit and prepared findings for authenticated review.'
+          : 'Margin completed this audit without identifying supported findings in the available records.',
+        payload: {
+          entity_type: 'audit_run',
+          entity_id: String(audit.id),
+          audit_source_type: audit.source_type || null,
+          audit_final_status: finalStatus,
+        }
+      });
+    } catch (signalError: any) {
+      // Signal delivery cannot roll back an already durable audit result.
+      logger.warn('[AUDIT] Completed audit persisted but System Signal could not be accepted', {
+        auditId: audit.id,
+        tenantId: audit.tenant_id,
+        eventType,
+        error: signalError?.message || String(signalError),
+      });
+    }
   }
 
   private async persistCommercialOutcome(input: {
@@ -989,6 +1043,7 @@ class AuditRunService {
         previousAudit,
         hasRecoveryWorkspace: workspaceEntitlement.entitlement.entitled,
       });
+      await this.emitCompletedAuditSignal(commercialAudit, audit.summary || EMPTY_SUMMARY);
       return commercialAudit;
     }
 
@@ -1124,6 +1179,7 @@ class AuditRunService {
       previousAudit,
       hasRecoveryWorkspace: workspaceEntitlement.entitlement.entitled,
     });
+    await this.emitCompletedAuditSignal(commercialAudit, summary);
 
     return commercialAudit;
   }

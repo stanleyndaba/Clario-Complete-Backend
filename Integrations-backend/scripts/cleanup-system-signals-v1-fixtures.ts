@@ -22,6 +22,7 @@ async function main(): Promise<void> {
             OR slug LIKE 'ssv1_http_%'
             OR slug LIKE 'ssv1_sse_%'
             OR slug LIKE 'ssv1_resend_%'
+            OR slug LIKE 'ssv1_launch_%'
          ORDER BY created_at`
     );
     const tenantIds = fixtures.rows.map((row) => row.id);
@@ -57,7 +58,8 @@ async function main(): Promise<void> {
          WHERE slug LIKE 'ssv1_cert_%'
             OR slug LIKE 'ssv1_http_%'
             OR slug LIKE 'ssv1_sse_%'
-            OR slug LIKE 'ssv1_resend_%'`);
+            OR slug LIKE 'ssv1_resend_%'
+            OR slug LIKE 'ssv1_launch_%'`);
     console.log(`fixture_cleanup.remaining_tenants=${remaining.rows[0]?.count || '0'}`);
     if (remaining.rows[0]?.count !== '0') throw new Error('Synthetic certification fixtures remain after cleanup');
   } finally {

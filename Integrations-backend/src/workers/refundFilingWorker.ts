@@ -3021,7 +3021,7 @@ class RefundFilingWorker {
 
     const { data: disputeCase } = await supabaseAdmin
       .from('dispute_cases')
-      .select('id, evidence_attachments')
+      .select('id, tenant_id, seller_id, evidence_attachments')
       .eq('id', disputeId)
       .maybeSingle();
 
@@ -3090,6 +3090,39 @@ class RefundFilingWorker {
         disputeId,
         retryCount: newRetryCount
       });
+
+      if (disputeCase?.tenant_id && disputeCase?.seller_id) {
+        try {
+          const attemptIdentity = result.idempotency_key || result.submission_id || result.external_reference || 'terminal_failure';
+          await systemSignalService.acceptForTarget({
+            tenantId: String(disputeCase.tenant_id),
+            recipientTargetId: String(disputeCase.seller_id),
+            eventType: 'filing.failed',
+            objectType: 'dispute_case',
+            objectId: disputeId,
+            businessTransitionKey: `terminal_failure:${attemptIdentity}`,
+            causationId: String(attemptIdentity),
+            correlationId: result.amazon_case_id || undefined,
+            privateTitle: 'Filing failed',
+            privateBody: 'Margin could not complete this filing. Review the case to continue.',
+            detailedBody: 'Margin exhausted the existing filing retry policy for this case and needs a case review before it can continue.',
+            payload: {
+              entity_type: 'dispute_case',
+              entity_id: disputeId,
+              filing_status: 'failed',
+              operational_state: 'FAILED_DURABLE',
+              retry_count: newRetryCount,
+              filing_attempt_id: String(attemptIdentity),
+            }
+          });
+        } catch (signalError: any) {
+          logger.warn('[REFUND FILING] Terminal failure persisted but System Signal could not be accepted', {
+            disputeId,
+            tenantId: disputeCase.tenant_id,
+            error: signalError?.message || String(signalError)
+          });
+        }
+      }
     }
 
     await this.logError(disputeId, userId, result.error_message || 'Filing failed', newRetryCount, maxRetries);
