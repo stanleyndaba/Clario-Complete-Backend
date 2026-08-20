@@ -31,7 +31,6 @@ import {
   PaystackSubscriptionData,
   computePaystackSignature,
   disablePaystackSubscription,
-  enablePaystackSubscription,
   fetchPaystackPlan,
   generatePaystackSubscriptionManageLink,
   getSafePaystackProviderData,
@@ -92,13 +91,12 @@ export function deriveWorkspaceBillingActions(subscription: BillingSubscriptionR
   }
 
   const providerConfirmed = Boolean(subscription.provider_subscription_code && subscription.provider_email_token);
-  const paidPeriodRemaining = Boolean(
-    subscription.current_period_end && new Date(subscription.current_period_end).getTime() > Date.now()
-  );
-
   return {
     cancel: subscription.status === 'active' && providerConfirmed,
-    resume: subscription.status === 'non_renewing' && providerConfirmed && paidPeriodRemaining,
+    // Paystack Disable produces a provider non-renewing state that may reject
+    // same-subscription Enable. Do not promise a Resume action until a new
+    // qualified checkout creates a provider subscription that can renew.
+    resume: false,
     manage: Boolean(subscription.provider_subscription_code),
   };
 }
@@ -725,24 +723,12 @@ class PaystackSubscriptionService {
     if (subscription.status !== 'non_renewing') {
       return { subscription, new_checkout_required: false };
     }
-    if (!subscription.current_period_end || new Date(subscription.current_period_end).getTime() <= Date.now()) {
-      return { subscription, new_checkout_required: true };
-    }
-    if (!subscription.provider_subscription_code || !subscription.provider_email_token) {
-      return { subscription, new_checkout_required: true };
-    }
-    await enablePaystackSubscription({
-      subscriptionCode: subscription.provider_subscription_code,
-      emailToken: subscription.provider_email_token,
-    });
-    const active = await updateSubscriptionStatus({
-      subscriptionId: subscription.id,
-      status: 'active',
-      cancelAtPeriodEnd: false,
-      cancelRequestedAt: null,
-      cancelledAt: null,
-    });
-    return { subscription: active, new_checkout_required: false };
+
+    // A provider Disable creates a non-renewing subscription, but the observed
+    // Paystack TEST provider record rejected a later Enable for that same code.
+    // Preserve provider truth: do not attempt an irreversible/unsupported
+    // same-subscription reactivation or alter local entitlement state.
+    return { subscription, new_checkout_required: true };
   }
 
   async getManageLink(subscription: BillingSubscriptionRecord) {

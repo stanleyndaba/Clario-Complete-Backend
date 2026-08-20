@@ -8,6 +8,7 @@ const mockGetByProviderCode = jest.fn();
 const mockFetchPlan = jest.fn();
 const mockInitializeTransaction = jest.fn();
 const mockListSubscriptions = jest.fn();
+const mockEnablePaystackSubscription = jest.fn();
 const mockMembershipMaybeSingle = jest.fn();
 const mockSupabaseQuery = {
   select: jest.fn(),
@@ -62,7 +63,7 @@ jest.mock('../../src/services/paymentRepository', () => ({
 jest.mock('../../src/services/paystackService', () => ({
   computePaystackSignature: jest.fn(),
   disablePaystackSubscription: jest.fn(),
-  enablePaystackSubscription: jest.fn(),
+  enablePaystackSubscription: mockEnablePaystackSubscription,
   fetchPaystackPlan: mockFetchPlan,
   generatePaystackSubscriptionManageLink: jest.fn(),
   getSafePaystackProviderData: (value: unknown) => value,
@@ -237,5 +238,31 @@ describe('P4-PAY-002 verified provider subscription reconciliation', () => {
       .rejects.toThrow('already attached to a different Margin subscription');
 
     expect(mockAttach).not.toHaveBeenCalled();
+  });
+
+  it('does not advertise or attempt same-subscription resume for a provider non-renewing subscription', async () => {
+    const nonRenewingSubscription = {
+      id: 'local-subscription-1',
+      tenant_id: 'tenant-1',
+      status: 'non_renewing',
+      provider_subscription_code: 'SUB_provider_truth',
+      provider_email_token: 'email-token-for-test-only',
+      current_period_end: '2099-09-20T09:24:14.000Z',
+    };
+
+    const { deriveWorkspaceBillingActions, paystackSubscriptionService } = await import('../../src/services/paystackSubscriptionService');
+
+    expect(deriveWorkspaceBillingActions(nonRenewingSubscription as any)).toEqual({
+      cancel: false,
+      resume: false,
+      manage: true,
+    });
+
+    await expect(paystackSubscriptionService.resumeSubscription(nonRenewingSubscription as any)).resolves.toEqual({
+      subscription: nonRenewingSubscription,
+      new_checkout_required: true,
+    });
+
+    expect(mockEnablePaystackSubscription).not.toHaveBeenCalled();
   });
 });
