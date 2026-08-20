@@ -36,6 +36,8 @@ import {
   generatePaystackSubscriptionManageLink,
   getSafePaystackProviderData,
   initializePaystackTransaction,
+  listPaystackSubscriptions,
+  PaystackVerifyData,
   verifyPaystackTransaction,
 } from './paystackService';
 import { applyVerifiedPaystackActivation } from './paymentActivationService';
@@ -218,6 +220,67 @@ function assertWorkspaceCommercialEligibility(audit: any): WorkspaceCommercialDe
   return eligibility.commercial;
 }
 
+export function isMatchingVerifiedProviderSubscription(
+  candidate: PaystackSubscriptionData,
+  verified: PaystackVerifyData,
+  configuredPlan: PaystackPlanData
+): boolean {
+  const candidatePlan = typeof candidate.plan === 'object' && candidate.plan ? candidate.plan : null;
+  const candidateCode = String(candidate.subscription_code || '').trim();
+  const candidateCustomerCode = String(candidate.customer?.customer_code || '').trim();
+  const verifiedCustomerCode = String(verified.customer?.customer_code || '').trim();
+  const candidateAuthorizationSignature = String(candidate.authorization?.signature || '').trim();
+  const verifiedAuthorizationSignature = String(verified.authorization?.signature || '').trim();
+
+  return Boolean(
+    candidateCode &&
+    String(candidate.status || '').toLowerCase() === 'active' &&
+    candidatePlan &&
+    candidatePlan.plan_code === configuredPlan.plan_code &&
+    Number(candidatePlan.amount) === PRODUCT.amountSubunits &&
+    String(candidatePlan.currency || '').toUpperCase() === PRODUCT.currency &&
+    String(candidatePlan.interval || '').toLowerCase() === PRODUCT.interval &&
+    candidateCustomerCode &&
+    candidateCustomerCode === verifiedCustomerCode &&
+    candidateAuthorizationSignature &&
+    candidateAuthorizationSignature === verifiedAuthorizationSignature
+  );
+}
+
+export async function reconcileVerifiedProviderSubscription(
+  subscription: BillingSubscriptionRecord,
+  verified: PaystackVerifyData
+): Promise<BillingSubscriptionRecord> {
+  if (subscription.provider_subscription_code) return subscription;
+
+  const configuredPlan = await fetchPaystackPlan(getPlanCode());
+  assertPlanMatches(configuredPlan.data);
+  if (configuredPlan.data.id === undefined || configuredPlan.data.id === null) {
+    throw new Error('Configured Paystack plan identifier is unavailable for subscription reconciliation');
+  }
+
+  const providerSubscriptions = await listPaystackSubscriptions({ planId: configuredPlan.data.id });
+  const match = providerSubscriptions.data.find((candidate) =>
+    isMatchingVerifiedProviderSubscription(candidate, verified, configuredPlan.data)
+  );
+  if (!match?.subscription_code) return subscription;
+
+  const existing = await getSubscriptionByProviderCode(match.subscription_code);
+  if (existing && existing.id !== subscription.id) {
+    throw new Error('Paystack subscription is already attached to a different Margin subscription');
+  }
+
+  return attachPaystackSubscriptionIdentifiers({
+    subscriptionId: subscription.id,
+    providerSubscriptionCode: match.subscription_code,
+    providerCustomerCode: getCustomerCode(match),
+    providerPlanCode: configuredPlan.data.plan_code,
+    providerEmailToken: match.email_token || null,
+    nextPaymentAt: normalizeDate(match.next_payment_date),
+    providerResponse: safeProviderResponse(match as Record<string, any>),
+  });
+}
+
 async function activateIfReady(subscription: BillingSubscriptionRecord) {
   if (!subscription.provider_subscription_code) return subscription;
 
@@ -395,7 +458,10 @@ class PaystackSubscriptionService {
     });
 
     const subscription = payment.billing_subscription_id ? await getSubscriptionById(payment.billing_subscription_id) : null;
-    const reconciled = subscription ? await activateIfReady(subscription) : null;
+    const providerReconciled = subscription
+      ? await reconcileVerifiedProviderSubscription(subscription, verified.data)
+      : null;
+    const reconciled = providerReconciled ? await activateIfReady(providerReconciled) : null;
     const { entitlement } = await workspaceEntitlementService.getTenantEntitlement(payment.tenant_id);
 
     return {

@@ -61,6 +61,32 @@ describe('paystackService', () => {
     });
   });
 
+  it('lists plan-filtered subscriptions through the server-side Paystack API without exposing the secret key', async () => {
+    const fetchMock = jest.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        status: true,
+        message: 'Subscriptions retrieved',
+        data: [{
+          subscription_code: 'SUB_provider_truth',
+          status: 'active',
+          customer: { customer_code: 'CUS_margin_customer' },
+          plan: { plan_code: 'PLN_margin_recovery_workspace', amount: 179900, currency: 'ZAR', interval: 'monthly' },
+        }],
+      }),
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const { listPaystackSubscriptions } = await import('../../src/services/paystackService');
+    const result = await listPaystackSubscriptions({ planId: 123 });
+
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0].subscription_code).toBe('SUB_provider_truth');
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/subscription?plan=123');
+    expect(JSON.stringify(result.safeResponse)).not.toContain(process.env.PAYSTACK_SECRET_KEY!);
+  });
+
   it('fetches a Paystack plan by code without exposing the secret key', async () => {
     const fetchMock = jest.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => ({
       ok: true,

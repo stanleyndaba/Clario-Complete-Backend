@@ -66,12 +66,26 @@ export type PaystackSubscriptionData = {
   status?: string;
   next_payment_date?: string | null;
   amount?: number;
+  currency?: string;
   cron_expression?: string;
+  createdAt?: string;
+  updatedAt?: string;
   plan?: string | PaystackPlanData | null;
   customer?: {
     customer_code?: string;
     email?: string;
   } | null;
+  authorization?: {
+    authorization_code?: string;
+    reusable?: boolean;
+    signature?: string;
+  } | null;
+};
+
+export type ListPaystackSubscriptionsInput = {
+  planId?: number | string;
+  perPage?: number;
+  page?: number;
 };
 
 function getSecretKey(): string {
@@ -188,6 +202,30 @@ export async function fetchPaystackPlan(
     safeResponse: {
       message: response.message,
       data: safeProviderData(response.data),
+    },
+  };
+}
+
+export async function listPaystackSubscriptions(
+  input: ListPaystackSubscriptionsInput = {}
+): Promise<{ data: PaystackSubscriptionData[]; safeResponse: Record<string, unknown> }> {
+  const query = new URLSearchParams();
+  if (input.planId !== undefined && input.planId !== null) query.set('plan', String(input.planId));
+  query.set('perPage', String(input.perPage || 100));
+  query.set('page', String(input.page || 1));
+
+  const response = await paystackRequest<PaystackSubscriptionData[]>(
+    `/subscription?${query.toString()}`,
+    { method: 'GET' }
+  );
+
+  const subscriptions = Array.isArray(response.data) ? response.data : [];
+  return {
+    data: subscriptions,
+    safeResponse: {
+      message: response.message,
+      count: subscriptions.length,
+      data: subscriptions.map((subscription) => safeProviderData(subscription)),
     },
   };
 }
