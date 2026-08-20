@@ -108,12 +108,14 @@ router.post('/bootstrap', async (req, res) => {
       return;
     }
 
+    const clerkUserId = decoded.source === 'clerk' ? decoded.clerkUserId || decoded.id : null;
     const resolvedEmail = decoded.source === 'clerk'
-      ? await resolveClerkPrimaryEmail(decoded.id)
+      ? await resolveClerkPrimaryEmail(clerkUserId || decoded.id)
       : decoded.email || null;
 
     const result = await ensureAuthenticatedUserWorkspace({
       userId: decoded.id,
+      clerkUserId,
       email: resolvedEmail,
       preferredWorkspaceName: typeof req.body?.workspaceName === 'string' ? req.body.workspaceName : null,
       preferredTenantSlug: typeof req.body?.preferredTenantSlug === 'string' ? req.body.preferredTenantSlug : null,

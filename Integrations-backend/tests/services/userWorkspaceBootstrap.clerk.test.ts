@@ -148,6 +148,7 @@ describe('ensureAuthenticatedUserWorkspace Clerk identity reconciliation', () =>
   it('reuses an existing Neon user when a recreated Clerk identity has the same verified email', async () => {
     const result = await ensureAuthenticatedUserWorkspace({
       userId: 'user_new',
+      clerkUserId: 'user_new',
       email: 'seller@example.com',
       preferredWorkspaceName: 'Seller',
       authProvider: 'clerk',
@@ -160,5 +161,24 @@ describe('ensureAuthenticatedUserWorkspace Clerk identity reconciliation', () =>
     expect(operations.insertedUsers).toBe(0);
     expect(state.users).toHaveLength(1);
     expect(state.users[0].clerk_user_id).toBe('user_new');
+  });
+
+  it('preserves the raw Clerk subject when bootstrap receives an already-resolved Margin UUID', async () => {
+    const result = await ensureAuthenticatedUserWorkspace({
+      userId: 'neon-user-existing',
+      clerkUserId: 'user_clerk_current',
+      email: 'seller@example.com',
+      preferredTenantSlug: 'existing-workspace',
+      authProvider: 'clerk',
+    });
+
+    expect(result.userId).toBe('neon-user-existing');
+    expect(result.tenant.id).toBe('tenant-existing');
+    expect(result.createdUser).toBe(false);
+    expect(result.createdTenant).toBe(false);
+    expect(operations.insertedUsers).toBe(0);
+    expect(state.users).toHaveLength(1);
+    expect(state.users[0].clerk_user_id).toBe('user_clerk_current');
+    expect(state.users[0].clerk_user_id).not.toBe('neon-user-existing');
   });
 });

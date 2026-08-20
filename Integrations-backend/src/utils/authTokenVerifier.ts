@@ -10,6 +10,10 @@ export interface VerifiedAuthUser {
   email: string;
   role?: string;
   source: 'backend_jwt' | 'clerk' | 'supabase';
+  // Present only for Clerk-authenticated requests. `id` may be the resolved
+  // canonical Margin UUID, so callers must use this raw subject for Clerk API
+  // operations and `users.clerk_user_id` persistence.
+  clerkUserId?: string;
 }
 
 function normalizeVerifiedUser(decoded: any, source: VerifiedAuthUser['source']): VerifiedAuthUser | null {
@@ -72,6 +76,68 @@ function getClerkSecretKey(): string | null {
   return secretKey || null;
 }
 
+async function resolveCanonicalClerkLinkedUser(clerkUserId: string): Promise<{ id: string } | null> {
+  const authClient = supabaseAdmin || supabase;
+  const { data: candidates, error: candidatesError } = await authClient
+    .from('users')
+    .select('id')
+    .eq('clerk_user_id', clerkUserId)
+    .is('deleted_at', null);
+
+  if (candidatesError) {
+    if (candidatesError.code !== '42703') {
+      logger.debug('Clerk identity mapping lookup failed', {
+        error: candidatesError.message || 'Unknown Clerk mapping lookup error'
+      });
+    }
+    return null;
+  }
+
+  const linkedUsers = (Array.isArray(candidates) ? candidates : candidates ? [candidates] : [])
+    .filter((candidate) => typeof candidate?.id === 'string' && candidate.id.length > 0);
+  if (linkedUsers.length <= 1) {
+    return linkedUsers[0] || null;
+  }
+
+  const candidateIds = linkedUsers.map((candidate) => candidate.id);
+  const { data: memberships, error: membershipsError } = await authClient
+    .from('tenant_memberships')
+    .select('user_id')
+    .in('user_id', candidateIds)
+    .eq('is_active', true)
+    .is('deleted_at', null);
+
+  if (membershipsError) {
+    logger.debug('Clerk identity membership ranking failed', {
+      error: membershipsError.message || 'Unknown Clerk membership ranking error'
+    });
+    return null;
+  }
+
+  const membershipCounts = new Map<string, number>();
+  for (const membership of Array.isArray(memberships) ? memberships : []) {
+    if (typeof membership?.user_id === 'string') {
+      membershipCounts.set(membership.user_id, (membershipCounts.get(membership.user_id) || 0) + 1);
+    }
+  }
+
+  const rankedUsers = linkedUsers
+    .map((candidate) => ({ candidate, memberships: membershipCounts.get(candidate.id) || 0 }))
+    .sort((left, right) => right.memberships - left.memberships);
+  const top = rankedUsers[0];
+  const tied = rankedUsers.filter((entry) => entry.memberships === top.memberships);
+
+  if (!top.memberships || tied.length !== 1) {
+    logger.warn('Ambiguous Clerk identity mapping failed closed', {
+      candidateCount: linkedUsers.length,
+      activeMembershipCounts: rankedUsers.map((entry) => entry.memberships)
+    });
+    return null;
+  }
+
+  return top.candidate;
+}
+
 async function verifyClerkAccessToken(token: string): Promise<VerifiedAuthUser | null> {
   const secretKey = getClerkSecretKey();
   if (!secretKey) {
@@ -88,20 +154,9 @@ async function verifyClerkAccessToken(token: string): Promise<VerifiedAuthUser |
 
     let appUserId = userId;
     try {
-      const authClient = supabaseAdmin || supabase;
-      const { data: linkedUser, error: linkedUserError } = await authClient
-        .from('users')
-        .select('id, email')
-        .eq('clerk_user_id', userId)
-        .is('deleted_at', null)
-        .maybeSingle();
-
-      if (!linkedUserError && linkedUser?.id) {
+      const linkedUser = await resolveCanonicalClerkLinkedUser(userId);
+      if (linkedUser?.id) {
         appUserId = linkedUser.id;
-      } else if (linkedUserError && linkedUserError.code !== '42703') {
-        logger.debug('Clerk identity mapping lookup failed', {
-          error: linkedUserError.message || 'Unknown mapping lookup error'
-        });
       }
     } catch (mappingError: any) {
       logger.debug('Clerk identity mapping lookup failed', {
@@ -111,6 +166,7 @@ async function verifyClerkAccessToken(token: string): Promise<VerifiedAuthUser |
 
     return {
       id: appUserId,
+      clerkUserId: userId,
       email: typeof verifiedToken?.email === 'string' ? verifiedToken.email : '',
       role: typeof verifiedToken?.role === 'string' ? verifiedToken.role : undefined,
       source: 'clerk'

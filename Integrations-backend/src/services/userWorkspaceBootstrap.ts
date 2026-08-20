@@ -24,7 +24,10 @@ export interface BootstrapWorkspaceResult {
 }
 
 interface BootstrapOptions {
+  // Canonical Margin UUID resolved from verified authentication.
   userId: string;
+  // Raw Clerk subject, retained separately so it is never replaced by `userId`.
+  clerkUserId?: string | null;
   email?: string | null;
   preferredWorkspaceName?: string | null;
   preferredTenantSlug?: string | null;
@@ -101,7 +104,7 @@ export async function ensureAuthenticatedUserWorkspace(options: BootstrapOptions
   const requestedSafeUserId = convertUserIdToUuid(options.userId);
   const normalizedEmail = options.email?.trim().toLowerCase() || null;
   const isClerkIdentity = options.authProvider === 'clerk';
-  const clerkUserId = isClerkIdentity ? String(options.userId || '').trim() : null;
+  const clerkUserId = isClerkIdentity ? String(options.clerkUserId || '').trim() || null : null;
 
   let { data: existingUser, error: existingUserError } = await adminClient
     .from('users')

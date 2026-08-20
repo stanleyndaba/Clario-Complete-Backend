@@ -2,11 +2,24 @@ import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 const mockVerifyClerkToken = jest.fn();
 const mockGetUser = jest.fn();
-const mockCreateClerkClient = jest.fn(() => ({
+const mockCreateClerkClient = jest.fn((_config?: unknown) => ({
   users: {
     getUser: mockGetUser
   }
 }));
+const mockFrom = jest.fn();
+
+function createQuery(data: unknown, error: unknown = null) {
+  const query: any = {
+    select: () => query,
+    eq: () => query,
+    is: () => query,
+    in: () => query,
+    then: (resolve: (value: unknown) => unknown, reject: (reason?: unknown) => unknown) =>
+      Promise.resolve({ data, error }).then(resolve, reject),
+  };
+  return query;
+}
 
 jest.mock('@clerk/express', () => ({
   __esModule: true,
@@ -18,7 +31,8 @@ jest.mock('../../src/database/supabaseClient', () => ({
   supabase: {
     auth: {
       getUser: jest.fn(async () => ({ data: { user: null }, error: null }))
-    }
+    },
+    from: mockFrom,
   },
   supabaseAdmin: null
 }));
@@ -53,6 +67,7 @@ describe('authTokenVerifier Clerk bridge', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.CLERK_SECRET_KEY = 'test_clerk_secret';
+    mockFrom.mockImplementation(() => createQuery([]));
   });
 
   it('keeps existing internal JWT verification first', async () => {
@@ -90,9 +105,60 @@ describe('authTokenVerifier Clerk bridge', () => {
     });
     expect(verified).toEqual({
       id: 'user_clerk123',
+      clerkUserId: 'user_clerk123',
       email: 'seller@example.com',
       role: 'member',
       source: 'clerk'
+    });
+  });
+
+  it('selects the unique active-membership holder when legacy duplicate Clerk mappings exist', async () => {
+    (jwt.verify as jest.Mock).mockImplementation(() => {
+      throw new Error('not an internal token');
+    });
+    mockVerifyClerkToken.mockResolvedValue({
+      sub: 'user_clerk123',
+      email: 'seller@example.com',
+    } as never);
+    mockFrom
+      .mockReturnValueOnce(createQuery([
+        { id: 'margin-user-without-membership' },
+        { id: 'margin-user-with-membership' },
+      ]))
+      .mockReturnValueOnce(createQuery([
+        { user_id: 'margin-user-with-membership' },
+      ]));
+
+    await expect(verifyAccessToken('clerk-session-token')).resolves.toEqual({
+      id: 'margin-user-with-membership',
+      clerkUserId: 'user_clerk123',
+      email: 'seller@example.com',
+      role: undefined,
+      source: 'clerk',
+    });
+  });
+
+  it('fails closed rather than selecting an arbitrary duplicate Clerk mapping with no active memberships', async () => {
+    (jwt.verify as jest.Mock).mockImplementation(() => {
+      throw new Error('not an internal token');
+    });
+    mockVerifyClerkToken.mockResolvedValue({
+      sub: 'user_clerk123',
+      email: 'seller@example.com',
+    } as never);
+    mockFrom
+      .mockReturnValueOnce(createQuery([
+        { id: 'margin-user-a' },
+        { id: 'margin-user-b' },
+      ]))
+      .mockReturnValueOnce(createQuery([]));
+
+    await expect(verifyAccessToken('clerk-session-token')).resolves.toEqual({
+      id: 'user_clerk123',
+      clerkUserId: 'user_clerk123',
+      email: 'seller@example.com',
+      role: undefined,
+      source: 'clerk',
     });
   });
 

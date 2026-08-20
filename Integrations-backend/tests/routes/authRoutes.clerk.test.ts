@@ -61,7 +61,7 @@ describe('authRoutes Clerk bootstrap bridge', () => {
     delete process.env.PAYSTACK_REVIEW_PASSWORD;
 
     mockEnsureAuthenticatedUserWorkspace.mockResolvedValue({
-      userId: 'user_clerk123',
+      userId: 'margin-user-uuid',
       email: 'primary@example.com',
       tenant: {
         id: 'tenant-123',
@@ -80,7 +80,8 @@ describe('authRoutes Clerk bootstrap bridge', () => {
 
   it('resolves Clerk primary email once during bootstrap and preserves response shape', async () => {
     mockVerifyAccessToken.mockResolvedValue({
-      id: 'user_clerk123',
+      id: 'margin-user-uuid',
+      clerkUserId: 'user_clerk123',
       email: '',
       source: 'clerk'
     } as never);
@@ -100,7 +101,8 @@ describe('authRoutes Clerk bootstrap bridge', () => {
     expect(mockResolveClerkPrimaryEmail).toHaveBeenCalledTimes(1);
     expect(mockResolveClerkPrimaryEmail).toHaveBeenCalledWith('user_clerk123');
     expect(mockEnsureAuthenticatedUserWorkspace).toHaveBeenCalledWith({
-      userId: 'user_clerk123',
+      userId: 'margin-user-uuid',
+      clerkUserId: 'user_clerk123',
       email: 'primary@example.com',
       preferredWorkspaceName: 'Primary Workspace',
       preferredTenantSlug: 'primary-workspace',
@@ -110,7 +112,7 @@ describe('authRoutes Clerk bootstrap bridge', () => {
     expect(response.body).toEqual({
       success: true,
       user: {
-        id: 'user_clerk123',
+        id: 'margin-user-uuid',
         email: 'primary@example.com'
       },
       tenant: {
@@ -126,7 +128,8 @@ describe('authRoutes Clerk bootstrap bridge', () => {
       createdUser: true,
       createdTenant: true,
       foundingReservation: false,
-      foundingActivationReady: false
+      foundingActivationReady: false,
+      auditIntent: null
     });
   });
 
