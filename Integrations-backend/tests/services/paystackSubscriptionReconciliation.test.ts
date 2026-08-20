@@ -1,9 +1,21 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 const mockAttach = jest.fn();
+const mockGetAudit = jest.fn();
+const mockGetTenantSubscription = jest.fn();
+const mockGetTenantEntitlement = jest.fn();
 const mockGetByProviderCode = jest.fn();
 const mockFetchPlan = jest.fn();
+const mockInitializeTransaction = jest.fn();
 const mockListSubscriptions = jest.fn();
+const mockMembershipMaybeSingle = jest.fn();
+const mockSupabaseQuery = {
+  select: jest.fn(),
+  eq: jest.fn(),
+  is: jest.fn(),
+  maybeSingle: mockMembershipMaybeSingle,
+};
+const mockSupabaseFrom = jest.fn();
 
 jest.mock('../../src/config/env', () => ({
   __esModule: true,
@@ -14,13 +26,13 @@ jest.mock('../../src/config/env', () => ({
 }));
 
 jest.mock('../../src/database/supabaseClient', () => ({
-  supabaseAdmin: {},
+  supabaseAdmin: { from: mockSupabaseFrom },
   convertUserIdToUuid: (value: string) => value,
 }));
 
 jest.mock('../../src/services/auditRunService', () => ({
   __esModule: true,
-  default: { getAudit: jest.fn() },
+  default: { getAudit: mockGetAudit },
 }));
 
 jest.mock('../../src/services/billingSubscriptionRepository', () => ({
@@ -28,7 +40,7 @@ jest.mock('../../src/services/billingSubscriptionRepository', () => ({
   createPendingSubscription: jest.fn(),
   getSubscriptionById: jest.fn(),
   getSubscriptionByProviderCode: mockGetByProviderCode,
-  getTenantRecoverySubscription: jest.fn(),
+  getTenantRecoverySubscription: mockGetTenantSubscription,
   toCustomerSafeSubscription: (value: unknown) => value,
   updateSubscriptionStatus: jest.fn(),
   upsertSubscriptionInvoice: jest.fn(),
@@ -54,7 +66,7 @@ jest.mock('../../src/services/paystackService', () => ({
   fetchPaystackPlan: mockFetchPlan,
   generatePaystackSubscriptionManageLink: jest.fn(),
   getSafePaystackProviderData: (value: unknown) => value,
-  initializePaystackTransaction: jest.fn(),
+  initializePaystackTransaction: mockInitializeTransaction,
   listPaystackSubscriptions: mockListSubscriptions,
   verifyPaystackTransaction: jest.fn(),
 }));
@@ -65,7 +77,7 @@ jest.mock('../../src/services/paymentActivationService', () => ({
 
 jest.mock('../../src/services/workspaceEntitlementService', () => ({
   __esModule: true,
-  default: { getTenantEntitlement: jest.fn() },
+  default: { getTenantEntitlement: mockGetTenantEntitlement },
 }));
 
 const configuredPlan = {
@@ -106,8 +118,56 @@ const pendingSubscription = {
 describe('P4-PAY-002 verified provider subscription reconciliation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSupabaseFrom.mockReturnValue(mockSupabaseQuery as never);
+    mockSupabaseQuery.select.mockReturnValue(mockSupabaseQuery as never);
+    mockSupabaseQuery.eq.mockReturnValue(mockSupabaseQuery as never);
+    mockSupabaseQuery.is.mockReturnValue(mockSupabaseQuery as never);
+    mockMembershipMaybeSingle.mockResolvedValue({ data: { id: 'membership-1' }, error: null } as never);
     mockFetchPlan.mockResolvedValue({ data: configuredPlan } as never);
     mockGetByProviderCode.mockResolvedValue(null as never);
+  });
+
+  it('returns the existing active entitlement for an already-activated Audit without initializing another provider checkout', async () => {
+    const activatedAudit = {
+      id: 'audit-1',
+      user_id: 'user-1',
+      tenant_id: 'tenant-1',
+      status: 'activated',
+    };
+    const activeSubscription = {
+      id: 'local-subscription-1',
+      tenant_id: 'tenant-1',
+      status: 'active',
+      provider_subscription_code: 'SUB_provider_truth',
+    };
+    const entitlement = {
+      entitled: true,
+      state: 'active',
+      access_until: '2026-09-20T09:24:14.000Z',
+      subscription_id: 'local-subscription-1',
+    };
+
+    mockGetAudit.mockResolvedValue(activatedAudit as never);
+    mockGetTenantSubscription.mockResolvedValue(activeSubscription as never);
+    mockGetTenantEntitlement.mockResolvedValue({ subscription: activeSubscription, entitlement } as never);
+
+    const { paystackSubscriptionService } = await import('../../src/services/paystackSubscriptionService');
+    await expect(paystackSubscriptionService.initializeSubscription({
+      userId: 'user-1',
+      email: 'customer@margin-finance.com',
+      auditRunId: 'audit-1',
+      tenantId: 'tenant-1',
+    })).resolves.toEqual({
+      success: true,
+      already_exists: true,
+      already_entitled: true,
+      subscription: activeSubscription,
+      entitlement,
+      workspace: { tenant_id: 'tenant-1' },
+    });
+
+    expect(mockInitializeTransaction).not.toHaveBeenCalled();
+    expect(mockFetchPlan).not.toHaveBeenCalled();
   });
 
   it('accepts only an active provider subscription with the exact verified customer, plan, price, interval, currency, and authorization signature', async () => {

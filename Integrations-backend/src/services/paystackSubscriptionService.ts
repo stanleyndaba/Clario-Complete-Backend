@@ -338,7 +338,6 @@ class PaystackSubscriptionService {
     if (input.tenantId && audit.tenant_id !== input.tenantId) throw new Error('Audit run not found');
 
     await ensureTenantMembership(input.userId, audit.tenant_id);
-    assertEligibleAudit(audit);
 
     const existing = await getTenantRecoverySubscription(audit.tenant_id);
     if (existing) {
@@ -364,6 +363,7 @@ class PaystackSubscriptionService {
       throw new Error('Subscription recovery is required before creating a new checkout');
     }
 
+    assertEligibleAudit(audit);
     assertWorkspaceCommercialEligibility(audit);
     await ensurePaystackPlanValid();
     const reference = generateReference();
