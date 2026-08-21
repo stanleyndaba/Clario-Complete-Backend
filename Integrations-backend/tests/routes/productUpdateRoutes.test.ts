@@ -3,10 +3,11 @@ import request from 'supertest';
 import { afterAll, beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 type Row = Record<string, any>;
-type TableName = 'users' | 'product_updates' | 'product_update_broadcast_jobs';
+type TableName = 'users' | 'platform_admins' | 'product_updates' | 'product_update_broadcast_jobs';
 
 const state = {
   users: [] as Row[],
+  platform_admins: [] as Row[],
   product_updates: [] as Row[],
   product_update_broadcast_jobs: [] as Row[],
   failNextJobInsert: false,
@@ -144,10 +145,15 @@ describe('Product updates publication contract', () => {
     idCounter = 0;
     state.failNextJobInsert = false;
     state.users = [
-      { id: 'admin-active', email: 'admin@margin.test', role: 'admin', status: 'active', deleted_at: null },
-      { id: 'seller', email: 'seller@margin.test', role: 'seller', status: 'active', deleted_at: null },
-      { id: 'admin-disabled', email: 'disabled@margin.test', role: 'admin', status: 'disabled', deleted_at: null },
-      { id: 'admin-deleted', email: 'deleted@margin.test', role: 'admin', status: 'active', deleted_at: '2026-08-21T00:00:00.000Z' },
+      { id: 'admin-active', email: 'admin@margin.test', deleted_at: null },
+      { id: 'seller', email: 'seller@margin.test', deleted_at: null },
+      { id: 'admin-disabled', email: 'disabled@margin.test', deleted_at: null },
+      { id: 'admin-deleted', email: 'deleted@margin.test', deleted_at: '2026-08-21T00:00:00.000Z' },
+    ];
+    state.platform_admins = [
+      { user_id: 'admin-active', status: 'active', revoked_at: null },
+      { user_id: 'admin-disabled', status: 'disabled', revoked_at: null },
+      { user_id: 'admin-deleted', status: 'active', revoked_at: null },
     ];
     state.product_updates = [];
     state.product_update_broadcast_jobs = [];

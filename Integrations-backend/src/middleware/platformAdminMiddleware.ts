@@ -32,36 +32,44 @@ export async function requirePlatformAdmin(req: Request, res: Response, next: Ne
       return;
     }
 
-    const { data, error } = await supabaseAdmin
-      .from('users')
-      .select('id, email, role, status, deleted_at')
-      .eq('id', userId)
-      .maybeSingle();
+    const [{ data: authority, error: authorityError }, { data: user, error: userError }] = await Promise.all([
+      supabaseAdmin
+        .from('platform_admins')
+        .select('user_id, status, revoked_at')
+        .eq('user_id', userId)
+        .maybeSingle(),
+      supabaseAdmin
+        .from('users')
+        .select('id, email, deleted_at')
+        .eq('id', userId)
+        .maybeSingle()
+    ]);
 
-    if (error) {
-      logger.warn('[ADMIN] Failed to verify platform admin role', {
+    if (authorityError || userError) {
+      logger.warn('[ADMIN] Failed to verify platform administrator authority', {
         userId,
         path: req.originalUrl,
-        error: error.message
+        authorityError: authorityError?.message || null,
+        userError: userError?.message || null
       });
       res.status(500).json({
         success: false,
-        error: 'ADMIN_ROLE_LOOKUP_FAILED'
+        error: 'ADMIN_AUTHORITY_LOOKUP_FAILED'
       });
       return;
     }
 
-    const role = String(data?.role || '').toLowerCase();
-    const status = String(data?.status || 'active').toLowerCase();
-    const isDeleted = Boolean(data?.deleted_at);
-    const isLocked = ['locked', 'disabled', 'suspended', 'deleted'].includes(status);
+    const authorityStatus = String(authority?.status || '').toLowerCase();
+    const isActiveAuthority = authorityStatus === 'active' && !authority?.revoked_at;
+    const isDeleted = Boolean(user?.deleted_at);
 
-    if (role !== 'admin' || isDeleted || isLocked) {
+    if (!isActiveAuthority || isDeleted) {
       logger.warn('[ADMIN] Non-admin request blocked', {
         userId,
-        email: data?.email || null,
-        role: data?.role || null,
-        status: data?.status || null,
+        email: user?.email || null,
+        authorityStatus: authority?.status || null,
+        revokedAt: authority?.revoked_at || null,
+        deletedAt: user?.deleted_at || null,
         path: req.originalUrl
       });
       res.status(403).json({
