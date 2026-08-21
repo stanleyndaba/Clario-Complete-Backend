@@ -127,7 +127,10 @@ function createApp() {
   app.use(express.json());
   app.use((req: any, _res, next) => {
     const testUser = req.headers['x-test-user'];
-    if (typeof testUser === 'string' && testUser) req.userId = testUser;
+    if (typeof testUser === 'string' && testUser) {
+      req.userId = testUser;
+      req.authIdentitySource = String(req.headers['x-test-identity-source'] || 'verified-backend-jwt');
+    }
     next();
   });
   app.use('/api/product-updates', productUpdateRoutes);
@@ -154,9 +157,14 @@ describe('Product updates publication contract', () => {
     immediateSpy.mockRestore();
   });
 
-  it('rejects unauthenticated seller retrieval at the product-update route boundary', async () => {
+  it('rejects unauthenticated and demo-fallback seller retrieval at the product-update route boundary', async () => {
     const app = createApp();
     await request(app).get('/api/product-updates').expect(401);
+    await request(app)
+      .get('/api/product-updates')
+      .set('x-test-user', 'demo-user')
+      .set('x-test-identity-source', 'default-demo-user')
+      .expect(401);
   });
 
   it('allows only active platform admins to use the publication authority endpoint and mutations', async () => {

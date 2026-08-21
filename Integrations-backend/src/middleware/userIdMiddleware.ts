@@ -218,6 +218,10 @@ export async function userIdMiddleware(req: Request, res: Response, next: NextFu
       return;
     }
 
+    // Preserve the trusted identity provenance for routes that must reject a
+    // development/demo fallback even when that fallback has a mapped user ID.
+    (req as any).authIdentitySource = identitySource;
+
     // Set userId on request object for use in route handlers
     (req as any).userId = userId;
 

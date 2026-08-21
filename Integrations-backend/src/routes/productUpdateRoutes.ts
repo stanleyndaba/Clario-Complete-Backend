@@ -10,7 +10,17 @@ function getActorUserId(req: any): string | null {
 }
 
 function requireAuthenticatedProductUpdateReader(req: any, res: any, next: any) {
-  if (getActorUserId(req)) {
+  const identitySource = String(req.authIdentitySource || '');
+  const hasVerifiedOrTrustedIdentity = [
+    'verified-supabase-token',
+    'verified-backend-jwt',
+    'trusted-req-user-id',
+    'trusted-req-user-user_id',
+    'trusted-x-user-id',
+    'trusted-x-forwarded-user-id'
+  ].includes(identitySource);
+
+  if (getActorUserId(req) && hasVerifiedOrTrustedIdentity) {
     return next();
   }
 
