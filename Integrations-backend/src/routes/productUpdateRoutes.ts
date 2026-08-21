@@ -1,60 +1,23 @@
 import express from 'express';
-import { supabaseAdmin } from '../database/supabaseClient';
 import productUpdateService, { type ProductUpdateInput } from '../services/productUpdateService';
 import logger from '../utils/logger';
+import { requirePlatformAdmin } from '../middleware/platformAdminMiddleware';
 
 const router = express.Router();
 
-function hasTrustedInternalApiKey(req: any): boolean {
-  const configuredKey = process.env.INTERNAL_API_KEY;
-  if (!configuredKey || configuredKey.trim().length === 0) {
-    return false;
-  }
-
-  const providedKey = req.headers['x-internal-api-key'] || req.headers['x-api-key'];
-  return typeof providedKey === 'string' && providedKey === configuredKey;
+function getActorUserId(req: any): string | null {
+  return req.userId || req.user?.id || req.user?.user_id || null;
 }
 
-async function canManageProductUpdates(req: any): Promise<boolean> {
-  if (hasTrustedInternalApiKey(req)) {
-    return true;
-  }
-
-  const userId = getActorUserId(req);
-  if (!userId) {
-    return false;
-  }
-
-  const { data, error } = await supabaseAdmin
-    .from('users')
-    .select('role')
-    .eq('id', userId)
-    .maybeSingle();
-
-  if (error) {
-    logger.warn('[PRODUCT UPDATES] Failed to verify platform admin role', {
-      userId,
-      error: error.message
-    });
-    return false;
-  }
-
-  return String(data?.role || '').toLowerCase() === 'admin';
-}
-
-async function requireProductUpdateAdmin(req: any, res: any, next: any) {
-  if (await canManageProductUpdates(req)) {
+function requireAuthenticatedProductUpdateReader(req: any, res: any, next: any) {
+  if (getActorUserId(req)) {
     return next();
   }
 
-  return res.status(403).json({
+  return res.status(401).json({
     success: false,
-    error: 'PRODUCT_UPDATE_ADMIN_REQUIRED'
+    error: 'PRODUCT_UPDATE_AUTH_REQUIRED'
   });
-}
-
-function getActorUserId(req: any): string | null {
-  return req.userId || req.user?.id || req.user?.user_id || null;
 }
 
 function normalizeError(error: unknown): { status: number; code: string; message: string } {
@@ -62,9 +25,7 @@ function normalizeError(error: unknown): { status: number; code: string; message
   const code = message.split(':')[0] || 'PRODUCT_UPDATE_ERROR';
 
   if (
-    code === 'TITLE_REQUIRED' ||
-    code === 'SUMMARY_REQUIRED' ||
-    code === 'SLUG_REQUIRED' ||
+    /^(TITLE|SUMMARY|SLUG|BODY|TAG|HIGHLIGHT|HIGHLIGHTS|CTA_TEXT|CTA_HREF)_/.test(code) ||
     code === 'ARCHIVED_UPDATE_CANNOT_PUBLISH' ||
     code === 'PUBLISHED_UPDATE_EDIT_BLOCKED'
   ) {
@@ -86,7 +47,7 @@ function normalizeError(error: unknown): { status: number; code: string; message
   return { status: 500, code, message };
 }
 
-router.get('/', async (_req, res) => {
+router.get('/', requireAuthenticatedProductUpdateReader, async (_req, res) => {
   try {
     const updates = await productUpdateService.listPublishedUpdates();
     res.json({ success: true, data: updates });
@@ -97,7 +58,11 @@ router.get('/', async (_req, res) => {
   }
 });
 
-router.get('/:slug', async (req, res) => {
+router.get('/admin-access', requirePlatformAdmin, async (_req, res) => {
+  return res.json({ success: true, data: { allowed: true } });
+});
+
+router.get('/:slug', requireAuthenticatedProductUpdateReader, async (req, res) => {
   try {
     const update = await productUpdateService.getPublishedUpdateBySlug(req.params.slug);
     if (!update) {
@@ -115,7 +80,7 @@ router.get('/:slug', async (req, res) => {
   }
 });
 
-router.post('/', requireProductUpdateAdmin, async (req: any, res) => {
+router.post('/', requirePlatformAdmin, async (req: any, res) => {
   try {
     const update = await productUpdateService.createDraft(req.body as ProductUpdateInput, getActorUserId(req));
     return res.status(201).json({ success: true, data: update });
@@ -126,7 +91,7 @@ router.post('/', requireProductUpdateAdmin, async (req: any, res) => {
   }
 });
 
-router.patch('/:id', requireProductUpdateAdmin, async (req: any, res) => {
+router.patch('/:id', requirePlatformAdmin, async (req: any, res) => {
   try {
     const update = await productUpdateService.updateDraftOrArchived(req.params.id, req.body as ProductUpdateInput);
     return res.json({ success: true, data: update });
@@ -140,7 +105,7 @@ router.patch('/:id', requireProductUpdateAdmin, async (req: any, res) => {
   }
 });
 
-router.post('/:id/publish', requireProductUpdateAdmin, async (req: any, res) => {
+router.post('/:id/publish', requirePlatformAdmin, async (req: any, res) => {
   try {
     const result = await productUpdateService.publish(req.params.id, getActorUserId(req));
     return res.json({
@@ -158,7 +123,7 @@ router.post('/:id/publish', requireProductUpdateAdmin, async (req: any, res) => 
   }
 });
 
-router.post('/:id/archive', requireProductUpdateAdmin, async (req, res) => {
+router.post('/:id/archive', requirePlatformAdmin, async (req, res) => {
   try {
     const update = await productUpdateService.archive(req.params.id);
     return res.json({ success: true, data: update });

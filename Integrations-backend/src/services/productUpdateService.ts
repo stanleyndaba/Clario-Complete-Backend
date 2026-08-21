@@ -32,10 +32,43 @@ interface BroadcastTarget {
   tenantSlug: string | null;
 }
 
+const PRODUCT_UPDATE_LIMITS = {
+  slug: 90,
+  title: 200,
+  summary: 500,
+  body: 5000,
+  tag: 80,
+  highlight: 280,
+  highlights: 5,
+  ctaText: 100,
+  ctaHref: 2048
+} as const;
+
 function trimString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const normalized = value.trim();
   return normalized || null;
+}
+
+function hasControlCharacters(value: string): boolean {
+  return /[\u0000-\u001F\u007F]/.test(value);
+}
+
+function normalizeBoundedString(value: unknown, fieldCode: string, maxLength: number): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') throw new Error(`${fieldCode}_INVALID`);
+
+  const normalized = value.trim();
+  if (!normalized) return null;
+  if (hasControlCharacters(normalized)) throw new Error(`${fieldCode}_INVALID`);
+  if (normalized.length > maxLength) throw new Error(`${fieldCode}_TOO_LONG`);
+  return normalized;
+}
+
+function requireBoundedString(value: unknown, fieldCode: string, maxLength: number): string {
+  const normalized = normalizeBoundedString(value, fieldCode, maxLength);
+  if (!normalized) throw new Error(`${fieldCode}_REQUIRED`);
+  return normalized;
 }
 
 function slugify(value: string): string {
@@ -43,15 +76,61 @@ function slugify(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 90);
+    .slice(0, PRODUCT_UPDATE_LIMITS.slug);
+}
+
+function normalizeSlug(value: unknown): string | null {
+  const raw = normalizeBoundedString(value, 'SLUG', PRODUCT_UPDATE_LIMITS.slug);
+  if (!raw) return null;
+  const slug = slugify(raw);
+  if (!slug) throw new Error('SLUG_INVALID');
+  return slug;
 }
 
 function normalizeHighlights(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
+  if (value === null || value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error('HIGHLIGHTS_INVALID');
+  if (value.length > PRODUCT_UPDATE_LIMITS.highlights) throw new Error('HIGHLIGHTS_TOO_MANY');
+
   return value
-    .map((item) => trimString(String(item || '')))
-    .filter((item): item is string => Boolean(item))
-    .slice(0, 5);
+    .map((item) => normalizeBoundedString(item, 'HIGHLIGHT', PRODUCT_UPDATE_LIMITS.highlight))
+    .filter((item): item is string => Boolean(item));
+}
+
+function normalizeCtaHref(value: unknown): string | null {
+  const href = normalizeBoundedString(value, 'CTA_HREF', PRODUCT_UPDATE_LIMITS.ctaHref);
+  if (!href) return null;
+
+  if (href.startsWith('//') || href.includes('\\')) {
+    throw new Error('CTA_HREF_INVALID');
+  }
+
+  if (href.startsWith('/')) {
+    return href;
+  }
+
+  if (/^mailto:/i.test(href)) {
+    try {
+      const parsed = new URL(href);
+      const address = parsed.pathname;
+      if (!address || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) {
+        throw new Error('invalid mailto recipient');
+      }
+      return href;
+    } catch {
+      throw new Error('CTA_HREF_INVALID');
+    }
+  }
+
+  try {
+    const parsed = new URL(href);
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) {
+      throw new Error('unsupported URL');
+    }
+    return href;
+  } catch {
+    throw new Error('CTA_HREF_INVALID');
+  }
 }
 
 function throwProductUpdateDbError(operation: string, error: any, context: Record<string, unknown> = {}): never {
@@ -218,6 +297,7 @@ class ProductUpdateService {
       .select('*')
       .eq('slug', normalizedSlug)
       .eq('status', 'published')
+      .not('published_at', 'is', null)
       .maybeSingle();
 
     if (error) {
@@ -228,24 +308,20 @@ class ProductUpdateService {
   }
 
   async createDraft(input: ProductUpdateInput, actorUserId?: string | null) {
-    const title = trimString(input.title);
-    const summary = trimString(input.summary);
-
-    if (!title) throw new Error('TITLE_REQUIRED');
-    if (!summary) throw new Error('SUMMARY_REQUIRED');
-
-    const slug = slugify(trimString(input.slug) || title);
+    const title = requireBoundedString(input.title, 'TITLE', PRODUCT_UPDATE_LIMITS.title);
+    const summary = requireBoundedString(input.summary, 'SUMMARY', PRODUCT_UPDATE_LIMITS.summary);
+    const slug = normalizeSlug(input.slug) || slugify(title);
     if (!slug) throw new Error('SLUG_REQUIRED');
 
     const payload = {
       slug,
       title,
       summary,
-      body: trimString(input.body) || null,
-      tag: trimString(input.tag) || null,
+      body: normalizeBoundedString(input.body, 'BODY', PRODUCT_UPDATE_LIMITS.body),
+      tag: normalizeBoundedString(input.tag, 'TAG', PRODUCT_UPDATE_LIMITS.tag),
       highlights: normalizeHighlights(input.highlights),
-      cta_text: trimString(input.cta_text) || null,
-      cta_href: trimString(input.cta_href) || null,
+      cta_text: normalizeBoundedString(input.cta_text, 'CTA_TEXT', PRODUCT_UPDATE_LIMITS.ctaText),
+      cta_href: normalizeCtaHref(input.cta_href),
       audience_scope: 'all_users',
       notify_in_app: input.notify_in_app !== false,
       notify_email: input.notify_email !== false,
@@ -274,20 +350,22 @@ class ProductUpdateService {
     }
 
     const patch: Record<string, any> = {};
-    const title = trimString(input.title);
-    const summary = trimString(input.summary);
-    const explicitSlug = trimString(input.slug);
+    const hasField = (field: keyof ProductUpdateInput) => Object.prototype.hasOwnProperty.call(input, field);
 
-    if (title) patch.title = title;
-    if (summary) patch.summary = summary;
-    if (explicitSlug) patch.slug = slugify(explicitSlug);
-    if (Object.prototype.hasOwnProperty.call(input, 'body')) patch.body = trimString(input.body) || null;
-    if (Object.prototype.hasOwnProperty.call(input, 'tag')) patch.tag = trimString(input.tag) || null;
-    if (Object.prototype.hasOwnProperty.call(input, 'highlights')) patch.highlights = normalizeHighlights(input.highlights);
-    if (Object.prototype.hasOwnProperty.call(input, 'cta_text')) patch.cta_text = trimString(input.cta_text) || null;
-    if (Object.prototype.hasOwnProperty.call(input, 'cta_href')) patch.cta_href = trimString(input.cta_href) || null;
-    if (Object.prototype.hasOwnProperty.call(input, 'notify_in_app')) patch.notify_in_app = input.notify_in_app !== false;
-    if (Object.prototype.hasOwnProperty.call(input, 'notify_email')) patch.notify_email = input.notify_email !== false;
+    if (hasField('title')) patch.title = requireBoundedString(input.title, 'TITLE', PRODUCT_UPDATE_LIMITS.title);
+    if (hasField('summary')) patch.summary = requireBoundedString(input.summary, 'SUMMARY', PRODUCT_UPDATE_LIMITS.summary);
+    if (hasField('slug')) {
+      const slug = normalizeSlug(input.slug);
+      if (!slug) throw new Error('SLUG_REQUIRED');
+      patch.slug = slug;
+    }
+    if (hasField('body')) patch.body = normalizeBoundedString(input.body, 'BODY', PRODUCT_UPDATE_LIMITS.body);
+    if (hasField('tag')) patch.tag = normalizeBoundedString(input.tag, 'TAG', PRODUCT_UPDATE_LIMITS.tag);
+    if (hasField('highlights')) patch.highlights = normalizeHighlights(input.highlights);
+    if (hasField('cta_text')) patch.cta_text = normalizeBoundedString(input.cta_text, 'CTA_TEXT', PRODUCT_UPDATE_LIMITS.ctaText);
+    if (hasField('cta_href')) patch.cta_href = normalizeCtaHref(input.cta_href);
+    if (hasField('notify_in_app')) patch.notify_in_app = input.notify_in_app !== false;
+    if (hasField('notify_email')) patch.notify_email = input.notify_email !== false;
 
     const { data, error } = await supabaseAdmin
       .from('product_updates')
@@ -307,6 +385,12 @@ class ProductUpdateService {
     const existing = await this.getUpdateById(id);
     if (!existing) throw new Error('PRODUCT_UPDATE_NOT_FOUND');
     if (existing.status === 'archived') throw new Error('ARCHIVED_UPDATE_CANNOT_PUBLISH');
+
+    // A seller can only see a record after both publication truths exist: the
+    // canonical published state and its durable broadcast job. Create/recover
+    // the job first without dispatching it; an enqueue error therefore leaves
+    // the record as a non-visible draft.
+    const job = await this.enqueueBroadcast(id, { dispatch: false });
 
     const now = new Date().toISOString();
     const patch: Record<string, any> = {
@@ -329,7 +413,7 @@ class ProductUpdateService {
       throw new Error(`PRODUCT_UPDATE_PUBLISH_FAILED:${error.message}`);
     }
 
-    const job = await this.enqueueBroadcast(id);
+    this.processBroadcastJobSoon(job.id);
     return { update: serializeUpdate(data), job };
   }
 
@@ -348,7 +432,8 @@ class ProductUpdateService {
     return serializeUpdate(data);
   }
 
-  async enqueueBroadcast(productUpdateId: string) {
+  async enqueueBroadcast(productUpdateId: string, options: { dispatch?: boolean } = {}) {
+    const dispatch = options.dispatch !== false;
     const { data: existing, error: existingError } = await supabaseAdmin
       .from('product_update_broadcast_jobs')
       .select('*')
@@ -360,7 +445,7 @@ class ProductUpdateService {
     }
 
     if (existing && ['queued', 'running', 'completed'].includes(existing.status)) {
-      if (existing.status === 'queued') {
+      if (dispatch && existing.status === 'queued') {
         this.processBroadcastJobSoon(existing.id);
       }
       return existing;
@@ -382,7 +467,9 @@ class ProductUpdateService {
       throw new Error(`PRODUCT_UPDATE_JOB_ENQUEUE_FAILED:${error.message}`);
     }
 
-    this.processBroadcastJobSoon(data.id);
+    if (dispatch) {
+      this.processBroadcastJobSoon(data.id);
+    }
     return data;
   }
 
@@ -422,7 +509,17 @@ class ProductUpdateService {
     try {
       const update = await this.getUpdateById(job.product_update_id);
       if (!update) throw new Error('PRODUCT_UPDATE_NOT_FOUND');
-      if (update.status !== 'published') throw new Error('PRODUCT_UPDATE_NOT_PUBLISHED');
+      if (update.status !== 'published') {
+        // A recovery sweep may claim the durable job between job creation and
+        // the succeeding publish-state write. Keep it eligible for the
+        // publish path’s post-commit dispatch rather than delivering a draft
+        // or marking the job permanently failed.
+        await supabaseAdmin
+          .from('product_update_broadcast_jobs')
+          .update({ status: 'queued', started_at: null, error: null })
+          .eq('id', jobId);
+        return;
+      }
 
       const channels = requestedDeliveryChannels(update);
       if (channels.length === 0) {
