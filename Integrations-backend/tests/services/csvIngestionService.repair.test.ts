@@ -524,6 +524,46 @@ describe('CSV ingestion repair', () => {
     });
   });
 
+  it('rejects blank required Manual Transfer quantities but preserves explicit zero', async () => {
+    const blankReceived = [
+      'transfer_id,sku,from_fc,to_fc,quantity_sent,quantity_received,transfer_date,unit_value',
+      'XFER-BLANK-RECEIVED,SKU-1,PHX6,MDW2,10,,2026-03-18T00:00:00Z,25',
+    ].join('\n');
+    const blankSent = [
+      'transfer_id,sku,from_fc,to_fc,quantity_sent,quantity_received,transfer_date,unit_value',
+      'XFER-BLANK-SENT,SKU-1,PHX6,MDW2,,8,2026-03-18T00:00:00Z,25',
+    ].join('\n');
+    const explicitZero = [
+      'transfer_id,sku,from_fc,to_fc,quantity_sent,quantity_received,transfer_date,unit_value',
+      'XFER-EXPLICIT-ZERO,SKU-1,PHX6,MDW2,10,0,2026-03-18T00:00:00Z,25',
+    ].join('\n');
+
+    const blankReceivedResult = await service.ingestFiles(userId, [
+      { buffer: Buffer.from(blankReceived), originalname: 'transfer-blank-received.csv', mimetype: 'text/csv' },
+    ], { explicitType: 'transfers', triggerDetection: true, tenantId });
+    const blankSentResult = await service.ingestFiles(userId, [
+      { buffer: Buffer.from(blankSent), originalname: 'transfer-blank-sent.csv', mimetype: 'text/csv' },
+    ], { explicitType: 'transfers', triggerDetection: true, tenantId });
+
+    expect(blankReceivedResult).toMatchObject({ success: false, detectionTriggered: false });
+    expect(blankReceivedResult.results[0].errors[0]).toContain('Missing required numeric field (quantity_received)');
+    expect(blankSentResult).toMatchObject({ success: false, detectionTriggered: false });
+    expect(blankSentResult.results[0].errors[0]).toContain('Missing required numeric field (quantity_sent)');
+    expect(inserts.inventory_transfers?.find((row) => row.transfer_id === 'XFER-BLANK-RECEIVED')).toBeUndefined();
+    expect(inserts.inventory_transfers?.find((row) => row.transfer_id === 'XFER-BLANK-SENT')).toBeUndefined();
+
+    const zeroResult = await service.ingestFiles(userId, [
+      { buffer: Buffer.from(explicitZero), originalname: 'transfer-explicit-zero.csv', mimetype: 'text/csv' },
+    ], { explicitType: 'transfers', triggerDetection: false, tenantId });
+
+    expect(zeroResult.success).toBe(true);
+    expect(inserts.inventory_transfers?.find((row) => row.transfer_id === 'XFER-EXPLICIT-ZERO')).toMatchObject({
+      quantity_sent: 10,
+      quantity_received: 0,
+      unit_value: 25,
+    });
+  });
+
   it('exposes supported type enablement truth', () => {
     const types = service.getSupportedTypes();
     expect(types.length).toBeGreaterThan(0);

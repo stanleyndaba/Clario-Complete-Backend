@@ -2590,8 +2590,14 @@ export class CSVIngestionService {
                     source_fc: getField(r, 'from_fc', 'source_fc', 'fromFc', 'SourceFC') || null,
                     destination_fc: getField(r, 'to_fc', 'destination_fc', 'toFc', 'DestinationFC') || null,
                     transfer_date: transferDate,
-                    quantity_sent: Number(getField(r, 'quantity_sent', 'QuantitySent')) || 0,
-                    quantity_received: Number(getField(r, 'quantity_received', 'QuantityReceived')) || 0,
+                    quantity_sent: parseRequiredNumericField(
+                        getField(r, 'quantity_sent', 'QuantitySent'),
+                        'quantity_sent'
+                    ),
+                    quantity_received: parseRequiredNumericField(
+                        getField(r, 'quantity_received', 'QuantityReceived'),
+                        'quantity_received'
+                    ),
                     status: 'received',
                     unit_value: Number(getField(r, 'unit_value', 'UnitValue', 'price', 'Price')) || 0,
                     currency: getField(r, 'currency', 'Currency', 'CurrencyCode') || 'USD',
