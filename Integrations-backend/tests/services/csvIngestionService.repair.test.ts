@@ -545,6 +545,50 @@ describe('CSV ingestion repair', () => {
     expect(inserts.inventory_ledger_events?.[0]?.raw_payload?.['Reference ID']).toBe(highPrecisionReference);
   });
 
+  it('rejects invalid required ledger quantities and preserves valid movement quantities', async () => {
+    const makeLedger = (referenceId: string, quantity: string, eventType = 'Receipts') => [
+      'Date\tEvent Type\tFNSKU\tASIN\tMSKU\tQuantity\tReference ID\tFulfillment Center\tDisposition',
+      `2026-03-18T00:00:00Z\t${eventType}\tFNSKU-${referenceId}\tB000000001\tSKU-${referenceId}\t${quantity}\t${referenceId}\tPHX6\tSELLABLE`,
+    ].join('\n');
+    const invalidCases: Array<[string, string]> = [
+      ['LEDGER-BLANK-QUANTITY', ''],
+      ['LEDGER-WHITESPACE-QUANTITY', ' '],
+      ['LEDGER-MALFORMED-QUANTITY', 'unknown'],
+      ['LEDGER-NONFINITE-QUANTITY', 'Infinity'],
+    ];
+
+    for (const [referenceId, quantity] of invalidCases) {
+      const result = await service.ingestFiles(
+        userId,
+        [{ buffer: Buffer.from(makeLedger(referenceId, quantity)), originalname: `${referenceId}.tsv`, mimetype: 'text/tab-separated-values' }],
+        { explicitType: 'inventory', triggerDetection: true, tenantId }
+      );
+      expect(result).toMatchObject({ success: false, detectionTriggered: false });
+      expect(result.results[0]).toMatchObject({ rowsInserted: 0, rowsSkipped: 1 });
+      expect(inserts.inventory_ledger_events?.find((row) => row.reference_id === referenceId)).toBeUndefined();
+    }
+
+    const validCases: Array<[string, string, number, 'in' | 'out']> = [
+      ['LEDGER-ZERO-QUANTITY', '0', 0, 'in'],
+      ['LEDGER-POSITIVE-QUANTITY', '5', 5, 'in'],
+      ['LEDGER-NEGATIVE-QUANTITY', '-7', 7, 'out'],
+      ['LEDGER-LARGE-QUANTITY', '1000000', 1000000, 'in'],
+    ];
+
+    for (const [referenceId, quantity, expectedQuantity, direction] of validCases) {
+      const result = await service.ingestFiles(
+        userId,
+        [{ buffer: Buffer.from(makeLedger(referenceId, quantity, 'Transfer')), originalname: `${referenceId}.tsv`, mimetype: 'text/tab-separated-values' }],
+        { explicitType: 'inventory', triggerDetection: false, tenantId }
+      );
+      expect(result.success).toBe(true);
+      expect(inserts.inventory_ledger_events?.find((row) => row.reference_id === referenceId)).toMatchObject({
+        quantity: expectedQuantity,
+        quantity_direction: direction,
+      });
+    }
+  });
+
   it('rejects a blank required order amount but preserves explicit zero', async () => {
     const emptyAmount = await service.ingestFiles(userId, [
       { buffer: Buffer.from('AmazonOrderId,PurchaseDate,OrderStatus,OrderTotal\nEMPTY-ORDER,2026-03-18T00:00:00Z,Shipped,'), originalname: 'empty-amount.csv', mimetype: 'text/csv' },

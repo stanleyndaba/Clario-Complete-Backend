@@ -2351,18 +2351,21 @@ export class CSVIngestionService {
 
         const ledgerRows: any[] = [];
         const errors: string[] = [];
+        let skipped = 0;
 
         for (let i = 0; i < records.length; i++) {
             try {
                 const r = records[i];
                 const rawEventType = getField(r, 'Event Type', 'event_type', 'EventType', 'type') || 'Adjustment';
-                const rawQuantity = Number(getField(r, 'Quantity', 'quantity', 'qty') || 0);
                 const fnsku = getField(r, 'FNSKU', 'fnsku', 'fn_sku', 'fnSku', 'sku', 'SKU');
 
                 if (!fnsku) {
+                    skipped++;
                     errors.push(`Row ${i + 1}: Missing FNSKU, skipping ledger event`);
                     continue;
                 }
+
+                const rawQuantity = parseRequiredNumericField(getField(r, 'Quantity', 'quantity', 'qty'), 'quantity');
 
                 // Map the CSV event type to our internal type
                 const mapped = EVENT_TYPE_MAP[rawEventType.toLowerCase()] || { eventType: 'Adjustment', direction: rawQuantity >= 0 ? 'in' : 'out' };
@@ -2404,6 +2407,7 @@ export class CSVIngestionService {
                 });
             } catch (error: any) {
                 errors.push(`Ledger Row ${i + 1}: ${error.message}`);
+                skipped++;
             }
         }
 
@@ -2414,7 +2418,7 @@ export class CSVIngestionService {
                 csvType: 'inventory',
                 rowsProcessed: records.length,
                 rowsInserted: 0,
-                rowsSkipped: 0,
+                rowsSkipped: skipped,
                 rowsFailed: 0,
                 errors,
                 detectionTriggered: false,
@@ -2469,7 +2473,7 @@ export class CSVIngestionService {
         }
 
         // Insert into inventory_ledger_events table
-        const result = await this.batchUpsert('inventory_ledger_events', ledgerRows, 'inventory_ledger', errors, 0);
+        const result = await this.batchUpsert('inventory_ledger_events', ledgerRows, 'inventory_ledger', errors, skipped);
 
         logger.info('📊 [CSV INGESTION] Inventory ledger events written', {
             userId,
