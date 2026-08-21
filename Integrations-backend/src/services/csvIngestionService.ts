@@ -381,6 +381,30 @@ function parseRequiredNumericField(raw: unknown, fieldName: string): number {
 }
 
 /**
+ * Parse a required monetary field without turning missing or malformed source
+ * evidence into zero. This retains the existing currency-symbol and
+ * parenthesized-negative support used by Manual Audit amounts.
+ */
+function parseRequiredAmountField(raw: unknown, fieldName: string): number {
+    if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) {
+        throw new Error(`Missing required monetary field (${fieldName})`);
+    }
+    if (typeof raw === 'number') {
+        if (!Number.isFinite(raw)) throw new Error(`Invalid monetary field (${fieldName})`);
+        return raw;
+    }
+
+    const source = String(raw).trim();
+    const cleaned = source.replace(/[^0-9.\-]/g, '');
+    const parsed = parseFloat(cleaned);
+    if (!cleaned || !Number.isFinite(parsed)) {
+        throw new Error(`Invalid monetary field (${fieldName})`);
+    }
+
+    return source.includes('(') && parsed > 0 ? -parsed : parsed;
+}
+
+/**
  * Normalize event type values from CSV to database-compatible values.
  * Maps common synonyms and ensures lowercase.
  */
@@ -2111,6 +2135,11 @@ export class CSVIngestionService {
                     continue;
                 }
 
+                const amount = parseRequiredAmountField(
+                    getField(r, 'Amount', 'amount', 'TotalAmount', 'total_amount'),
+                    'amount'
+                );
+
                 rows.push({
                     id: uuidv4(),
                     tenant_id: tenantId,
@@ -2119,7 +2148,7 @@ export class CSVIngestionService {
                     settlement_id: settlementId,
                     order_id: getField(r, 'AmazonOrderId', 'order_id', 'orderId') || null,
                     transaction_type: transactionType,
-                    amount: parseAmount(getField(r, 'Amount', 'amount', 'TotalAmount', 'total_amount')),
+                    amount,
                     fees: parseAmount(getField(r, 'Fees', 'fees', 'TotalFees', 'total_fees')),
                     currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
                     settlement_date: settlementDate,
@@ -2143,7 +2172,7 @@ export class CSVIngestionService {
                         source: 'csv_upload',
                         eventType: classification.eventType,
                         eventSubtype: classification.eventSubtype || transactionType,
-                        amount: parseAmount(getField(r, 'Amount', 'amount', 'TotalAmount', 'total_amount')),
+                        amount,
                         currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
                         eventDate: settlementDate,
                         referenceId: settlementId,
@@ -2161,7 +2190,7 @@ export class CSVIngestionService {
                             csvType: 'settlements',
                             fees: parseAmount(getField(r, 'Fees', 'fees', 'TotalFees', 'total_fees'))
                         },
-                        isPayoutEvent: classification.isPayoutEvent && parseAmount(getField(r, 'Amount', 'amount', 'TotalAmount', 'total_amount')) > 0
+                        isPayoutEvent: classification.isPayoutEvent && amount > 0
                     })
                 );
             } catch (error: any) {

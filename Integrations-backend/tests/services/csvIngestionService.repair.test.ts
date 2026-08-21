@@ -564,6 +564,48 @@ describe('CSV ingestion repair', () => {
     });
   });
 
+  it('rejects invalid required settlement amounts and preserves valid monetary values', async () => {
+    const makeSettlement = (settlementId: string, amount: string) => [
+      'SettlementId,PostedDate,TransactionType,Amount,Fees,CurrencyCode',
+      `${settlementId},2026-03-18T00:00:00Z,refund,${amount},0,USD`,
+    ].join('\n');
+    const invalidCases: Array<[string, string]> = [
+      ['SETTLEMENT-BLANK-AMOUNT', ''],
+      ['SETTLEMENT-WHITESPACE-AMOUNT', '" "'],
+      ['SETTLEMENT-MALFORMED-AMOUNT', 'not-money'],
+      ['SETTLEMENT-NONFINITE-AMOUNT', 'Infinity'],
+    ];
+
+    for (const [settlementId, amount] of invalidCases) {
+      const result = await service.ingestFiles(userId, [
+        { buffer: Buffer.from(makeSettlement(settlementId, amount)), originalname: `${settlementId}.csv`, mimetype: 'text/csv' },
+      ], { explicitType: 'settlements', triggerDetection: true, tenantId });
+
+      expect(result).toMatchObject({ success: false, detectionTriggered: false });
+      expect(result.results[0]).toMatchObject({ rowsInserted: 0, rowsSkipped: 1 });
+      expect(inserts.settlements?.find((row) => row.settlement_id === settlementId)).toBeUndefined();
+      expect(inserts.financial_events?.find((row) => row.settlement_id === settlementId)).toBeUndefined();
+    }
+
+    const validCases: Array<[string, string, number]> = [
+      ['SETTLEMENT-ZERO', '0', 0],
+      ['SETTLEMENT-ZERO-DECIMAL', '0.00', 0],
+      ['SETTLEMENT-POSITIVE', '$12.50', 12.5],
+      ['SETTLEMENT-NEGATIVE', '(12.50)', -12.5],
+      ['SETTLEMENT-LARGE', '9000000000.25', 9000000000.25],
+    ];
+
+    for (const [settlementId, amount, expectedAmount] of validCases) {
+      const result = await service.ingestFiles(userId, [
+        { buffer: Buffer.from(makeSettlement(settlementId, amount)), originalname: `${settlementId}.csv`, mimetype: 'text/csv' },
+      ], { explicitType: 'settlements', triggerDetection: false, tenantId });
+
+      expect(result.success).toBe(true);
+      expect(inserts.settlements?.find((row) => row.settlement_id === settlementId)).toMatchObject({ amount: expectedAmount });
+      expect(inserts.financial_events?.find((row) => row.settlement_id === settlementId)).toMatchObject({ amount: expectedAmount });
+    }
+  });
+
   it('exposes supported type enablement truth', () => {
     const types = service.getSupportedTypes();
     expect(types.length).toBeGreaterThan(0);
