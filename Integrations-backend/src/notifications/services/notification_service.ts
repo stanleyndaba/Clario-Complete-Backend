@@ -7,7 +7,7 @@ import Notification, {
   NotificationPriority,
   NotificationChannel
 } from '../models/notification';
-import { EmailService } from './delivery/email_service';
+import { EmailService, type EmailSendResult } from './delivery/email_service';
 import websocketService from '../../services/websocketService';
 import sseHub from '../../utils/sseHub';
 import { supabaseAdmin } from '../../database/supabaseClient';
@@ -97,8 +97,9 @@ export class NotificationService {
     html: string;
     text: string;
     replyTo?: string;
-  }): Promise<void> {
-    await this.emailService.sendEmail(emailData);
+    idempotencyKey?: string;
+  }): Promise<EmailSendResult> {
+    return this.emailService.sendEmail(emailData);
   }
 
   /**

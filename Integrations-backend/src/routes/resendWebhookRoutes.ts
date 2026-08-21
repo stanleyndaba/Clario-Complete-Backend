@@ -4,6 +4,7 @@ import { Webhook } from 'svix';
 import { supabaseAdmin } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import { systemSignalDeliveryService } from '../notifications/services/system_signal_delivery_service';
+import { supportRequestService, type SupportDeliveryStatus } from '../services/supportRequestService';
 
 const router = Router();
 
@@ -44,6 +45,13 @@ function normalizeStatus(eventType: string): string {
   if (normalized.includes('clicked')) return 'clicked';
   if (normalized.includes('delivery_delayed') || normalized.includes('delayed')) return 'delayed';
   return normalized || 'received';
+}
+
+function normalizeSupportDeliveryStatus(status: string): SupportDeliveryStatus {
+  if (status === 'delivered' || status === 'bounced' || status === 'complained') return status;
+  // Non-terminal provider events (accepted, opened, clicked, delayed) do not negate a
+  // previously accepted send; the support record keeps its last durable accepted state.
+  return 'accepted';
 }
 
 function extractProviderMessageId(payload: ResendEventPayload): string | null {
@@ -181,6 +189,7 @@ router.post('/', async (req: any, res) => {
       await Promise.all([
         updateWelcomeEmailState(providerMessageId, status, occurredAt),
         updateManualBroadcastDeliveryState(providerMessageId, status, occurredAt),
+        supportRequestService.recordProviderEvent(providerMessageId, normalizeSupportDeliveryStatus(status), occurredAt),
         systemSignalDeliveryService.recordEmailProviderConfirmation({
           providerMessageId,
           providerEventId,

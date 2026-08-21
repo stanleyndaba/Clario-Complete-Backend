@@ -114,6 +114,7 @@ export class EmailService {
     html: string;
     text: string;
     replyTo?: string;
+    idempotencyKey?: string;
   }): Promise<EmailSendResult> {
     try {
       if (!this.isInitialized) {
@@ -136,6 +137,7 @@ export class EmailService {
     html: string;
     text: string;
     replyTo?: string;
+    idempotencyKey?: string;
   }): Promise<EmailSendResult> {
     if (!this.resend) {
       throw new Error('Resend client not initialized');
@@ -149,7 +151,7 @@ export class EmailService {
         html: emailData.html,
         text: emailData.text,
         replyTo: emailData.replyTo || this.config.replyTo
-      });
+      }, emailData.idempotencyKey ? { idempotencyKey: emailData.idempotencyKey } : undefined);
 
       if (error) {
         logger.error('Resend error:', error);
