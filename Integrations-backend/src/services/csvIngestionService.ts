@@ -364,6 +364,23 @@ function parseAmount(raw: any): number {
 }
 
 /**
+ * Parse a required numeric field without treating a blank or malformed provider
+ * cell as zero. An explicit textual "0" remains a valid numeric zero.
+ */
+function parseRequiredNumericField(raw: unknown, fieldName: string): number {
+    if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) {
+        throw new Error(`Missing required numeric field (${fieldName})`);
+    }
+
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) {
+        throw new Error(`Invalid numeric field (${fieldName})`);
+    }
+
+    return parsed;
+}
+
+/**
  * Normalize event type values from CSV to database-compatible values.
  * Maps common synonyms and ensures lowercase.
  */
@@ -1872,7 +1889,10 @@ export class CSVIngestionService {
                     order_date: orderDate,
                     order_status: getField(r, 'OrderStatus', 'order_status', 'orderStatus', 'Status') || 'Shipped',
                     fulfillment_channel: getField(r, 'FulfillmentChannel', 'fulfillment_channel', 'fulfillmentChannel') || 'FBA',
-                    total_amount: Number(getField(r, 'OrderTotal', 'total_amount', 'totalAmount', 'Amount', 'amount')) || 0,
+                    total_amount: parseRequiredNumericField(
+                        getField(r, 'OrderTotal', 'total_amount', 'totalAmount', 'Amount', 'amount'),
+                        'total_amount'
+                    ),
                     currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
                     items: [],
                     quantities: {},

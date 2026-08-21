@@ -503,6 +503,27 @@ describe('CSV ingestion repair', () => {
     expect(inserts.inventory_ledger_events?.[0]?.raw_payload?.['Reference ID']).toBe(highPrecisionReference);
   });
 
+  it('rejects a blank required order amount but preserves explicit zero', async () => {
+    const emptyAmount = await service.ingestFiles(userId, [
+      { buffer: Buffer.from('AmazonOrderId,PurchaseDate,OrderStatus,OrderTotal\nEMPTY-ORDER,2026-03-18T00:00:00Z,Shipped,'), originalname: 'empty-amount.csv', mimetype: 'text/csv' },
+    ], { explicitType: 'orders', triggerDetection: true, tenantId });
+
+    expect(emptyAmount).toMatchObject({ success: false, detectionTriggered: false });
+    expect(emptyAmount.results[0]).toMatchObject({ rowsInserted: 0, rowsSkipped: 1 });
+    expect(emptyAmount.results[0].errors[0]).toContain('Missing required numeric field (total_amount)');
+    expect(inserts.orders?.find((row) => row.order_id === 'EMPTY-ORDER')).toBeUndefined();
+
+    const zeroAmount = await service.ingestFiles(userId, [
+      { buffer: Buffer.from('AmazonOrderId,PurchaseDate,OrderStatus,OrderTotal\nZERO-ORDER,2026-03-18T00:00:00Z,Shipped,0'), originalname: 'zero-amount.csv', mimetype: 'text/csv' },
+    ], { explicitType: 'orders', triggerDetection: false, tenantId });
+
+    expect(zeroAmount.success).toBe(true);
+    expect(inserts.orders?.find((row) => row.order_id === 'ZERO-ORDER')).toMatchObject({
+      order_id: 'ZERO-ORDER',
+      total_amount: 0,
+    });
+  });
+
   it('exposes supported type enablement truth', () => {
     const types = service.getSupportedTypes();
     expect(types.length).toBeGreaterThan(0);
