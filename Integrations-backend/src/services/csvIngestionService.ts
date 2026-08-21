@@ -2549,11 +2549,12 @@ export class CSVIngestionService {
                 const r = records[i];
                 const feeAmount = getField(r, 'FeeAmount', 'fee_amount', 'feeAmount', 'Amount', 'amount');
                 const eventDate = getField(r, 'PostedDate', 'event_date', 'postedDate', 'posted_date', 'date');
-                if (feeAmount === null || feeAmount === undefined || feeAmount === '' || !eventDate) {
+                if (!eventDate) {
                     skipped++;
-                    errors.push(`Row ${i + 1}: Missing required fields (fee_amount/event_date)`);
+                    errors.push(`Row ${i + 1}: Missing required field (event_date)`);
                     continue;
                 }
+                const amount = parseRequiredAmountField(feeAmount, 'fee_amount');
                 const sku = getField(r, 'SellerSKU', 'sku', 'SKU', 'seller_sku') || null;
                 rows.push({
                     ...buildCanonicalFinancialEventRow({
@@ -2564,7 +2565,7 @@ export class CSVIngestionService {
                         source: 'csv_upload',
                         eventType: 'fee',
                         eventSubtype: getField(r, 'FeeType', 'fee_type', 'feeType', 'Description') || 'service_fee',
-                        amount: parseAmount(feeAmount),
+                        amount,
                         currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
                         eventDate,
                         referenceId: getField(r, 'Reference ID', 'reference_id', 'ReferenceId') || getField(r, 'AmazonOrderId', 'amazon_order_id', 'orderId', 'order_id') || sku,

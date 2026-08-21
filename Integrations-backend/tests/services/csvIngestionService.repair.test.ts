@@ -649,6 +649,49 @@ describe('CSV ingestion repair', () => {
     }
   });
 
+  it('rejects invalid required fee amounts and preserves valid monetary values', async () => {
+    const makeFee = (eventId: string, amount: string) => [
+      'FeeType,FeeAmount,PostedDate,CurrencyCode,EventId',
+      `FBAFee,${amount},2026-03-18T00:00:00Z,USD,${eventId}`,
+    ].join('\n');
+    const invalidCases: Array<[string, string]> = [
+      ['FEE-BLANK-AMOUNT', ''],
+      ['FEE-WHITESPACE-AMOUNT', '" "'],
+      ['FEE-MALFORMED-AMOUNT', 'not-money'],
+      ['FEE-NONFINITE-AMOUNT', 'Infinity'],
+    ];
+
+    for (const [eventId, amount] of invalidCases) {
+      const result = await service.ingestFiles(userId, [
+        { buffer: Buffer.from(makeFee(eventId, amount)), originalname: `${eventId}.csv`, mimetype: 'text/csv' },
+      ], { explicitType: 'fees', triggerDetection: true, tenantId });
+
+      expect(result).toMatchObject({ success: false, detectionTriggered: false });
+      expect(result.results[0]).toMatchObject({ rowsInserted: 0, rowsSkipped: 1 });
+      expect(inserts.financial_events?.find((row) => row.amazon_event_id === eventId)).toBeUndefined();
+    }
+
+    const validCases: Array<[string, string, number]> = [
+      ['FEE-ZERO', '0', 0],
+      ['FEE-ZERO-DECIMAL', '0.00', 0],
+      ['FEE-POSITIVE', '$12.50', 12.5],
+      ['FEE-NEGATIVE', '(12.50)', -12.5],
+      ['FEE-LARGE', '9000000000.25', 9000000000.25],
+    ];
+
+    for (const [eventId, amount, expectedAmount] of validCases) {
+      const result = await service.ingestFiles(userId, [
+        { buffer: Buffer.from(makeFee(eventId, amount)), originalname: `${eventId}.csv`, mimetype: 'text/csv' },
+      ], { explicitType: 'fees', triggerDetection: false, tenantId });
+
+      expect(result.success).toBe(true);
+      expect(inserts.financial_events?.find((row) => row.amazon_event_id === eventId)).toMatchObject({
+        amount: expectedAmount,
+        event_type: 'fee',
+      });
+    }
+  });
+
   it('exposes supported type enablement truth', () => {
     const types = service.getSupportedTypes();
     expect(types.length).toBeGreaterThan(0);
