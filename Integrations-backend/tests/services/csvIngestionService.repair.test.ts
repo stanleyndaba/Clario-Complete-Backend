@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { CSVIngestionService } from '../../src/services/csvIngestionService';
+import {
+  CSVIngestionService,
+  detectManualAuditDelimiter,
+  parseManualAuditDelimitedRecords,
+} from '../../src/services/csvIngestionService';
 
 type Row = Record<string, any>;
 
@@ -344,6 +348,112 @@ describe('CSV ingestion repair', () => {
     expect(result.results[0].rowsInserted).toBe(0);
     expect(result.results[0].rowsProcessed).toBeGreaterThan(0);
     expect(result.results[0].errors[0]).toContain('Missing required fields');
+  });
+
+  it('detects tab-delimited Amazon-style headers and retains comma-delimited CSV detection', () => {
+    expect(detectManualAuditDelimiter('Date\tEvent Type\tReference ID')).toBe('\t');
+    expect(detectManualAuditDelimiter('AmazonOrderId,PurchaseDate,OrderTotal')).toBe(',');
+  });
+
+  it('does not treat commas inside quoted TSV fields as delimiters', () => {
+    const tsv = [
+      'Date\t"Event, Type"\tReference ID',
+      '2026-03-18T00:00:00Z\t"Receipt, received"\tREF-001',
+    ].join('\n');
+
+    expect(detectManualAuditDelimiter(tsv.split('\n')[0])).toBe('\t');
+    expect(parseManualAuditDelimitedRecords(tsv)).toEqual([
+      {
+        Date: '2026-03-18T00:00:00Z',
+        'Event, Type': 'Receipt, received',
+        'Reference ID': 'REF-001',
+      },
+    ]);
+  });
+
+  it('parses Amazon Ledger-style TSV records as text at the shared parser boundary', () => {
+    const tsv = [
+      'Date\tEvent Type\tFNSKU\tReference ID\tQuantity',
+      '2026-03-18T00:00:00Z\tReceipts\tFNSKU-001\t0123456789\t5',
+    ].join('\n');
+
+    expect(parseManualAuditDelimitedRecords(tsv)).toEqual([
+      {
+        Date: '2026-03-18T00:00:00Z',
+        'Event Type': 'Receipts',
+        FNSKU: 'FNSKU-001',
+        'Reference ID': '0123456789',
+        Quantity: '5',
+      },
+    ]);
+  });
+
+  it('preserves leading-zero and high-precision numeric identifiers exactly as strings', () => {
+    const leadingZeroReference = '0123456789';
+    const highPrecisionReference = '900719925474099312345';
+    const records = parseManualAuditDelimitedRecords([
+      'order_id,reference_id',
+      `${leadingZeroReference},${highPrecisionReference}`,
+    ].join('\n'));
+
+    expect(records[0].order_id).toBe(leadingZeroReference);
+    expect(typeof records[0].order_id).toBe('string');
+    expect(records[0].reference_id).toBe(highPrecisionReference);
+    expect(typeof records[0].reference_id).toBe('string');
+  });
+
+  it('keeps CSV parsing compatible while converting money only in its explicit ingestion mapping', async () => {
+    const csv = [
+      'AmazonOrderId,PurchaseDate,OrderStatus,OrderTotal',
+      '0000123456,2026-03-18T00:00:00Z,Shipped,9.99',
+    ].join('\n');
+
+    expect(parseManualAuditDelimitedRecords(csv)).toEqual([
+      {
+        AmazonOrderId: '0000123456',
+        PurchaseDate: '2026-03-18T00:00:00Z',
+        OrderStatus: 'Shipped',
+        OrderTotal: '9.99',
+      },
+    ]);
+
+    const result = await service.ingestFiles(
+      userId,
+      [{ buffer: Buffer.from(csv), originalname: 'orders.csv', mimetype: 'text/csv' }],
+      { explicitType: 'orders', triggerDetection: false, tenantId }
+    );
+
+    expect(result.success).toBe(true);
+    expect(inserts.orders?.[0]?.order_id).toBe('0000123456');
+    expect(inserts.orders?.[0]?.total_amount).toBe(9.99);
+  });
+
+  it('ingests an Amazon Ledger TSV end-to-end with lossless reference and SKU identifiers', async () => {
+    const highPrecisionReference = '900719925474099312345';
+    const tsv = [
+      'Date\tEvent Type\tFNSKU\tASIN\tMSKU\tQuantity\tReference ID\tFulfillment Center\tDisposition',
+      `2026-03-18T00:00:00Z\tReceipts\tFNSKU-001\tB000000001\t0000123456\t5\t${highPrecisionReference}\tPHX6\tSELLABLE`,
+    ].join('\n');
+
+    const result = await service.ingestFiles(
+      userId,
+      [{ buffer: Buffer.from(tsv), originalname: 'amazon_inventory_ledger.tsv', mimetype: 'text/tab-separated-values' }],
+      { explicitType: 'inventory', triggerDetection: false, tenantId }
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.results[0].csvType).toBe('inventory');
+    expect(inserts.inventory_ledger_events?.length).toBe(2);
+    expect(inserts.inventory_ledger_events?.[0]).toMatchObject({
+      tenant_id: tenantId,
+      fnsku: 'FNSKU-001',
+      sku: '0000123456',
+      reference_id: highPrecisionReference,
+      quantity: 5,
+      fulfillment_center: 'PHX6',
+    });
+    expect(typeof inserts.inventory_ledger_events?.[0]?.reference_id).toBe('string');
+    expect(inserts.inventory_ledger_events?.[0]?.raw_payload?.['Reference ID']).toBe(highPrecisionReference);
   });
 
   it('exposes supported type enablement truth', () => {

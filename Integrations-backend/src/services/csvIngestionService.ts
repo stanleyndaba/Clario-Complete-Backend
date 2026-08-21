@@ -20,43 +20,89 @@ import {
 } from '../utils/financialEventCanonical';
 
 // ============================================================================
-// CSV Parser (adapted from mockSPAPIService.ts)
+// Delimited Manual-Audit Parser
 // ============================================================================
 
+export type ManualAuditDelimiter = ',' | '\t';
+
 /**
- * Parse a single CSV line, handling quoted fields
+ * Count a delimiter outside CSV-style quoted fields. This is intentionally shared
+ * by delimiter detection and parsing so a comma within a quoted TSV/CSV value
+ * cannot make the file appear comma-delimited.
  */
-function parseCSVLine(line: string, trim: boolean = true): string[] {
+function countUnquotedDelimiter(line: string, delimiter: ManualAuditDelimiter): number {
+    let count = 0;
+    let inQuotes = false;
+
+    for (let index = 0; index < line.length; index++) {
+        const char = line[index];
+        const nextChar = line[index + 1];
+
+        if (char === '"') {
+            if (inQuotes && nextChar === '"') {
+                index++;
+                continue;
+            }
+            inQuotes = !inQuotes;
+            continue;
+        }
+
+        if (char === delimiter && !inQuotes) {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+/**
+ * Detect the delimiter from the header. Amazon Ledger documents are TSV, while
+ * existing Manual Audit CSV uploads remain comma-delimited. A tab wins whenever
+ * the header contains an unquoted tab; embedded commas never override it.
+ */
+export function detectManualAuditDelimiter(headerLine: string): ManualAuditDelimiter {
+    return countUnquotedDelimiter(headerLine, '\t') > 0 ? '\t' : ',';
+}
+
+/**
+ * Parse one CSV or TSV line, preserving every field as text. Identifier-looking
+ * values must remain strings: numeric conversion is performed only by explicit
+ * downstream money/quantity mappings, never at file-boundary parsing time.
+ */
+function parseDelimitedLine(
+    line: string,
+    delimiter: ManualAuditDelimiter,
+    trim: boolean = true
+): string[] {
     const values: string[] = [];
     let current = '';
     let inQuotes = false;
-    let i = 0;
+    let index = 0;
 
-    while (i < line.length) {
-        const char = line[i];
-        const nextChar = line[i + 1];
+    while (index < line.length) {
+        const char = line[index];
+        const nextChar = line[index + 1];
 
         if (char === '"') {
             if (inQuotes && nextChar === '"') {
                 current += '"';
-                i += 2;
-                continue;
-            } else {
-                inQuotes = !inQuotes;
-                i++;
+                index += 2;
                 continue;
             }
+            inQuotes = !inQuotes;
+            index++;
+            continue;
         }
 
-        if (char === ',' && !inQuotes) {
+        if (char === delimiter && !inQuotes) {
             values.push(trim ? current.trim() : current);
             current = '';
-            i++;
+            index++;
             continue;
         }
 
         current += char;
-        i++;
+        index++;
     }
 
     values.push(trim ? current.trim() : current);
@@ -64,31 +110,28 @@ function parseCSVLine(line: string, trim: boolean = true): string[] {
 }
 
 /**
- * Parse CSV content into array of objects
+ * Parse CSV or TSV content into records. The parser does not auto-cast any field;
+ * doing so corrupts leading-zero and high-precision Amazon identifiers before the
+ * type-specific Manual Audit mapper can decide which fields are numeric.
  */
-function parseCSV(content: string): any[] {
+export function parseManualAuditDelimitedRecords(content: string): Record<string, string | null>[] {
     const lines = content
         .split(/\r?\n/)
-        .map(line => line.replace(/^\uFEFF/, '').trim())
-        .filter(line => line.length > 0 && !line.startsWith('#'));
-    if (lines.length < 2) return []; // Need header + at least 1 data row
+        .map((line) => line.replace(/^\uFEFF/, ''))
+        .filter((line) => line.trim().length > 0 && !line.trimStart().startsWith('#'));
 
-    const headers = parseCSVLine(lines[0]);
-    const records: any[] = [];
+    if (lines.length < 2) return [];
 
-    for (let i = 1; i < lines.length; i++) {
-        const values = parseCSVLine(lines[i]);
-        const record: any = {};
+    const delimiter = detectManualAuditDelimiter(lines[0]);
+    const headers = parseDelimitedLine(lines[0], delimiter);
+    const records: Record<string, string | null>[] = [];
 
-        headers.forEach((header, index) => {
-            let value: any = values[index] !== undefined ? values[index] : null;
+    for (let index = 1; index < lines.length; index++) {
+        const values = parseDelimitedLine(lines[index], delimiter);
+        const record: Record<string, string | null> = {};
 
-            // Auto-cast numbers
-            if (value !== null && value !== '' && !isNaN(Number(value))) {
-                value = Number(value);
-            }
-
-            record[header] = value;
+        headers.forEach((header, columnIndex) => {
+            record[header] = values[columnIndex] !== undefined ? values[columnIndex] : null;
         });
 
         records.push(record);
@@ -1602,7 +1645,7 @@ export class CSVIngestionService {
         }
 
         const content = file.buffer.toString('utf-8');
-        const records = parseCSV(content);
+        const records = parseManualAuditDelimitedRecords(content);
 
         if (records.length === 0) {
             return {
