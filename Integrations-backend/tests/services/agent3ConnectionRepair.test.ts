@@ -176,34 +176,66 @@ describe('Agent 3 production connection repair', () => {
     expect(data.inventory_ledger[0].fnsku).toBe('FNSKU-1');
   });
 
-  it('Inbound Inspector maps shipped_quantity and received_quantity from live rows', async () => {
+  it('Inbound Inspector reads only tenant-scoped canonical inbound rows, never legacy customer shipments', async () => {
     tables.tenant_memberships = [{ user_id: 'user-1', tenant_id: 'tenant-a' }];
     tables.shipments = [
       {
         tenant_id: 'tenant-a',
         user_id: 'user-1',
-        shipment_id: 'SHP-1',
-        shipped_quantity: 7,
-        received_quantity: 5,
-        status: 'CLOSED',
-        created_at: '2026-01-01T00:00:00Z',
-      },
-      {
-        tenant_id: 'tenant-b',
-        user_id: 'user-1',
-        shipment_id: 'SHP-2',
-        shipped_quantity: 10,
+        shipment_id: 'LEGACY-CUSTOMER-SHIPMENT',
+        shipped_quantity: 999,
         received_quantity: 0,
         status: 'CLOSED',
         created_at: '2026-01-01T00:00:00Z',
       },
     ];
+    tables.inbound_shipment_items = [
+      {
+        id: 'item-1',
+        tenant_id: 'tenant-a',
+        user_id: 'user-1',
+        sync_id: 'sync-1',
+        provider_shipment_id: 'SHP-1',
+        sku: 'SKU-1',
+        fnsku: 'FNSKU-1',
+        quantity_shipped: 7,
+        quantity_received: 5,
+        created_at: '2026-01-01T00:00:00Z',
+        inbound_shipments: {
+          provider_shipment_id: 'SHP-1',
+          shipment_status_canonical: 'CLOSED',
+          shipment_created_at: '2025-12-01T00:00:00Z',
+          status_observed_at: '2026-01-01T00:00:00Z',
+        },
+      },
+      {
+        id: 'item-other-tenant',
+        tenant_id: 'tenant-b',
+        user_id: 'user-1',
+        sync_id: 'sync-1',
+        provider_shipment_id: 'SHP-2',
+        sku: 'SKU-2',
+        quantity_shipped: 10,
+        quantity_received: 0,
+        created_at: '2026-01-01T00:00:00Z',
+        inbound_shipments: {
+          provider_shipment_id: 'SHP-2',
+          shipment_status_canonical: 'CLOSED',
+          status_observed_at: '2026-01-01T00:00:00Z',
+        },
+      },
+    ];
 
-    const items = await fetchInboundShipmentItems('user-1');
+    const items = await fetchInboundShipmentItems('user-1', 'sync-1');
 
     expect(items).toHaveLength(1);
-    expect(items[0].quantity_shipped).toBe(7);
-    expect(items[0].quantity_received).toBe(5);
+    expect(items[0]).toEqual(expect.objectContaining({
+      shipment_id: 'SHP-1',
+      quantity_shipped: 7,
+      quantity_received: 5,
+      shipment_status: 'CLOSED',
+    }));
+    expect(items[0].shipment_id).not.toBe('LEGACY-CUSTOMER-SHIPMENT');
   });
 
   it('Broken Goods Hunter only derives damage from returns with minimum required fields', async () => {

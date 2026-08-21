@@ -18,6 +18,13 @@ import logger from '../../../../utils/logger';
 import { requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
 import { buildSellerValuationContext, getUnitValue, type SellerValuationContext } from './shared/valuationService';
 import { buildReviewAnomalyEvidence } from './shared/reviewAnomaly';
+import { featureFlagService } from '../../../featureFlagService';
+
+const INBOUND_V0_PRIMARY_FLAG = 'connected_inbound_v0_primary';
+const CLAIM_CAPABLE_INBOUND_SOURCE_HEALTH = new Set([
+    'AVAILABLE_DATA',
+    'AVAILABLE_ZERO_QUALIFYING_DATA',
+]);
 
 // ============================================================================
 // Types
@@ -37,7 +44,7 @@ export type InboundAnomalyType =
 export interface InboundShipmentItem {
     id: string; seller_id: string; shipment_id: string;
     sku: string; fnsku?: string; asin?: string; product_name?: string;
-    quantity_shipped: number; quantity_received: number;
+    quantity_shipped: number; quantity_received: number | null;
     quantity_in_case?: number; cases_shipped?: number;
     shipment_status: string; shipment_created_date: string; shipment_closed_date?: string;
     receiving_discrepancy?: string; discrepancy_reason?: string;
@@ -242,7 +249,7 @@ function getStatusMode(item: InboundShipmentItem, now: Date): { status_mode: str
         return { status_mode: 'STAMPED_CLOSED', should_process: true };
     }
 
-    if (status === 'RECEIVING' || status === 'WORKING' || status === 'SHIPPED' || status === 'CREATED') {
+    if (status === 'RECEIVING' || status === 'PLANNED' || status === 'IN_TRANSIT' || status === 'DELIVERED_OR_CHECKED_IN') {
         if (daysSinceCreated >= 120) {
             // Check for dormancy (assume stale if created >= 120 days ago)
             return { status_mode: 'MATURE_LIMBO_STALLED', should_process: true };
@@ -286,9 +293,10 @@ export function detectShipmentMissing(sellerId: string, syncId: string, data: In
         const threshold = status_mode === 'STAMPED_CLOSED' ? 90 : 45;
         if (daysSinceTrigger < threshold) continue;
 
-        // Check if ALL items have 0 received
+        // A missing provider receipt is unknown, not zero. Never turn it into a shortage claim.
+        if (items.some(item => item.quantity_received === null)) continue;
         const totalShipped = items.reduce((s, i) => s + i.quantity_shipped, 0);
-        const totalReceived = items.reduce((s, i) => s + i.quantity_received, 0);
+        const totalReceived = items.reduce((s, i) => s + (i.quantity_received ?? 0), 0);
 
         if (totalReceived > 0) continue; // Not fully missing
 
@@ -376,9 +384,10 @@ export function detectShipmentShortage(sellerId: string, syncId: string, data: I
         const { status_mode, should_process } = getStatusMode(first, now);
         if (!should_process) continue;
 
-        // Split receipt resolution: aggregate quantities across all items in group
+        // A missing provider receipt is unknown, not zero. Never turn it into a shortage claim.
+        if (items.some(item => item.quantity_received === null)) continue;
         const totalShipped = items.reduce((s, i) => s + i.quantity_shipped, 0);
-        const totalReceived = items.reduce((s, i) => s + i.quantity_received, 0);
+        const totalReceived = items.reduce((s, i) => s + (i.quantity_received ?? 0), 0);
         const shortage = totalShipped - totalReceived;
 
         // Skip if no shortage or if fully missing (handled by detectShipmentMissing)
@@ -484,7 +493,7 @@ export function detectCarrierDamage(sellerId: string, syncId: string, data: Inbo
     const reimbLookup = buildReimbLookup(data.reimbursement_events || [], data.inbound_shipment_items || [], sellerId);
 
     for (const item of data.inbound_shipment_items || []) {
-        if (!item.discrepancy_reason) continue;
+        if (!item.discrepancy_reason || item.quantity_received === null) continue;
 
         const reason = item.discrepancy_reason.toLowerCase();
         const isCarrierDamage = reason.includes('carrier') || reason.includes('transit') ||
@@ -587,7 +596,7 @@ export function detectReceivingError(sellerId: string, syncId: string, data: Inb
     const errorKeywords = ['miscount', 'scan error', 'receiving error', 'count discrepancy', 'quantity error'];
 
     for (const item of data.inbound_shipment_items || []) {
-        if (!item.receiving_discrepancy && !item.discrepancy_reason) continue;
+        if ((!item.receiving_discrepancy && !item.discrepancy_reason) || item.quantity_received === null) continue;
 
         const discrepancy = String(item.receiving_discrepancy || item.discrepancy_reason || '').toLowerCase();
         const isReceivingError = errorKeywords.some(k => discrepancy.includes(k));
@@ -685,7 +694,7 @@ export function detectCaseBreakError(sellerId: string, syncId: string, data: Inb
     const reimbLookup = buildReimbLookup(data.reimbursement_events || [], data.inbound_shipment_items || [], sellerId);
 
     for (const item of data.inbound_shipment_items || []) {
-        if (!item.cases_shipped || !item.quantity_in_case) continue;
+        if (!item.cases_shipped || !item.quantity_in_case || item.quantity_received === null) continue;
 
         const expectedUnits = item.cases_shipped * item.quantity_in_case;
         if (item.quantity_shipped !== expectedUnits) continue; 
@@ -822,7 +831,7 @@ export function detectPrepFeeError(sellerId: string, syncId: string, data: Inbou
 export function detectInboundReviewStates(sellerId: string, syncId: string, data: InboundSyncedData): InboundDetectionResult[] {
     const results: InboundDetectionResult[] = [];
     const now = new Date();
-    const nonTerminalStatuses = new Set(['OPEN', 'RECEIVING', 'WORKING', 'SHIPPED', 'CREATED']);
+    const nonTerminalStatuses = new Set(['PLANNED', 'IN_TRANSIT', 'DELIVERED_OR_CHECKED_IN', 'RECEIVING']);
     const groups = new Map<string, InboundShipmentItem[]>();
 
     for (const item of data.inbound_shipment_items || []) {
@@ -833,8 +842,10 @@ export function detectInboundReviewStates(sellerId: string, syncId: string, data
     for (const [, items] of groups) {
         const first = items[0];
         const status = String(first.shipment_status || '').toUpperCase();
+        // A missing provider receipt is unknown, not zero, even for review states.
+        if (items.some(item => item.quantity_received === null)) continue;
         const totalShipped = items.reduce((sum, item) => sum + Number(item.quantity_shipped || 0), 0);
-        const totalReceived = items.reduce((sum, item) => sum + Number(item.quantity_received || 0), 0);
+        const totalReceived = items.reduce((sum, item) => sum + Number(item.quantity_received ?? 0), 0);
         const shortage = totalShipped - totalReceived;
         if (shortage <= 0) continue;
 
@@ -944,15 +955,13 @@ export function detectInboundAnomalies(sellerId: string, syncId: string, data: I
         claimedMap.set(key, (claimedMap.get(key) || 0) + (r.evidence.claimable_units || 0));
     }
 
-    // Secondary detectors only handle residual forensic units
-    const carrierDamage = detectCarrierDamage(sellerId, syncId, dedupData, claimedMap);
-    const receivingError = detectReceivingError(sellerId, syncId, dedupData, claimedMap);
-    const caseBreak = detectCaseBreakError(sellerId, syncId, dedupData, claimedMap);
-    const prepFee = detectPrepFeeError(sellerId, syncId, dedupData);
+    // Fulfillment Inbound v0 does not evidence carrier damage, receiving errors,
+    // case-break errors, or prep-fee charges. Keep those branches disabled until their
+    // own provider contracts are proven; do not infer evidence from receiving quantities.
     const reviewStates = detectInboundReviewStates(sellerId, syncId, dedupData);
 
-    // Combine results and enrich with dedup metadata
-    const all = [...missing, ...shortage, ...carrierDamage, ...receivingError, ...caseBreak, ...prepFee, ...reviewStates].map(res => ({
+    // Combine only the provider-supported canonical inbound branches.
+    const all = [...missing, ...shortage, ...reviewStates].map(res => ({
         ...res,
         evidence: {
             ...res.evidence,
@@ -962,9 +971,10 @@ export function detectInboundAnomalies(sellerId: string, syncId: string, data: I
 
     const counters = getInboundCounters();
     logger.info('📦 [INBOUND] Detection complete', {
-        missing: missing.length, shortage: shortage.length, carrierDamage: carrierDamage.length,
-        receivingError: receivingError.length, caseBreak: caseBreak.length, prepFee: prepFee.length,
+        missing: missing.length,
+        shortage: shortage.length,
         reviewStates: reviewStates.length,
+        disabledUnsupportedBranches: ['carrier_damage', 'receiving_error', 'case_break_error', 'prep_fee_error'],
         total: all.length, recovery: all.reduce((s, r) => s + r.estimated_value, 0),
         ...counters
     });
@@ -977,66 +987,81 @@ export function detectInboundAnomalies(sellerId: string, syncId: string, data: I
 /**
  * Fetch inbound shipment items
  */
-export async function fetchInboundShipmentItems(sellerId: string, syncId?: string): Promise<InboundShipmentItem[]> {
+export async function fetchInboundShipmentItems(
+    sellerId: string,
+    syncId?: string,
+    scope?: { storeId?: string | null; marketplaceId?: string | null },
+): Promise<InboundShipmentItem[]> {
     try {
         const tenantId = await resolveTenantId(sellerId);
         let query = supabaseAdmin
-            .from('shipments')
-            .select('*')
+            .from('inbound_shipment_items')
+            .select(`
+                id, sku, fnsku, asin, quantity_shipped, quantity_received,
+                quantity_in_case, label_owner, created_at, provider_shipment_id,
+                inbound_shipments!inner(
+                    provider_shipment_id, shipment_status_canonical, shipment_created_at,
+                    status_observed_at, closed_at, carrier, tracking_number
+                )
+            `)
             .eq('tenant_id', tenantId)
             .eq('user_id', sellerId)
-            .order('shipped_date', { ascending: false })
+            .order('created_at', { ascending: false })
             .limit(1000);
         if (syncId) {
             query = query.eq('sync_id', syncId);
         }
+        if (scope?.storeId) {
+            query = query.eq('store_id', scope.storeId);
+        }
+        if (scope?.marketplaceId) {
+            query = query.eq('marketplace_id', scope.marketplaceId);
+        }
         const { data, error } = await query;
 
         if (error) {
-            logger.error('📦 [INBOUND] Error fetching shipments', { sellerId, error: error.message });
+            logger.error('📦 [INBOUND] Error fetching canonical inbound shipment items', { sellerId, error: error.message });
             return [];
         }
 
-        const items: InboundShipmentItem[] = (data || [])
-            .filter(s =>
-                s.shipment_type === 'INBOUND' ||
-                s.metadata?.shipmentType === 'INBOUND' ||
-                s.destination_fc ||
-                s.warehouse_location ||
-                s.status?.includes('INBOUND') ||
-                (!s.shipment_type && !s.metadata?.shipmentType)
-            )
-            .map(s => ({
-                id: s.id || s.shipment_id,
-                seller_id: sellerId,
-                shipment_id: s.shipment_id,
-                sku: s.sku || s.items?.[0]?.sku || '',
-                fnsku: s.fnsku || s.items?.[0]?.fnsku || s.items?.[0]?.asin || 'UNKNOWN',
-                asin: s.asin || s.items?.[0]?.asin,
-                product_name: s.product_name || s.items?.[0]?.title,
-                quantity_shipped: s.quantity_shipped || s.shipped_quantity || s.expected_quantity || s.quantity || 0,
-                quantity_received: s.quantity_received || s.received_quantity || 0,
-                quantity_in_case: s.metadata?.quantity_in_case,
-                cases_shipped: s.metadata?.cases_shipped,
-                shipment_status: s.status || 'UNKNOWN',
-                shipment_created_date: s.shipped_date || s.created_at,
-                shipment_closed_date: s.status?.toUpperCase() === 'CLOSED'
-                    ? (s.received_date || s.sync_timestamp || s.shipped_date || s.created_at)
-                    : undefined,
-                receiving_discrepancy: s.metadata?.receiving_discrepancy || (s.missing_quantity > 0),
-                discrepancy_reason: s.metadata?.discrepancy_reason,
-                carrier: s.carrier || s.metadata?.carrier,
-                tracking_id: s.tracking_number || s.tracking_id,
-                prep_fee_charged: s.metadata?.prep_fee,
-                prep_instructions: s.metadata?.prep_instructions,
-                label_owner: s.metadata?.label_owner,
-                expected_fnsku: s.fnsku || s.items?.[0]?.fnsku,
-                created_at: s.created_at
-            }));
+        return (data || [])
+            .map((row: any) => {
+                const shipment = Array.isArray(row.inbound_shipments)
+                    ? row.inbound_shipments[0]
+                    : row.inbound_shipments;
+                if (!shipment?.provider_shipment_id) {
+                    logger.warn('📦 [INBOUND] Suppressed canonical item with missing parent shipment', {
+                        sellerId,
+                        inboundShipmentItemId: row.id,
+                    });
+                    return null;
+                }
 
-        return items;
+                return {
+                    id: row.id,
+                    seller_id: sellerId,
+                    shipment_id: shipment.provider_shipment_id,
+                    sku: row.sku,
+                    fnsku: row.fnsku || undefined,
+                    asin: row.asin || undefined,
+                    quantity_shipped: row.quantity_shipped,
+                    quantity_received: row.quantity_received,
+                    quantity_in_case: row.quantity_in_case || undefined,
+                    shipment_status: shipment.shipment_status_canonical,
+                    shipment_created_date: shipment.shipment_created_at || shipment.status_observed_at || row.created_at,
+                    shipment_closed_date: shipment.shipment_status_canonical === 'CLOSED'
+                        ? (shipment.closed_at || shipment.status_observed_at)
+                        : undefined,
+                    carrier: shipment.carrier || undefined,
+                    tracking_id: shipment.tracking_number || undefined,
+                    label_owner: row.label_owner || undefined,
+                    expected_fnsku: row.fnsku || undefined,
+                    created_at: row.created_at,
+                } as InboundShipmentItem;
+            })
+            .filter((item: InboundShipmentItem | null): item is InboundShipmentItem => item !== null);
     } catch (err: any) {
-        logger.error('📦 [INBOUND] Exception fetching shipments', { sellerId, error: err.message });
+        logger.error('📦 [INBOUND] Exception fetching canonical inbound shipment items', { sellerId, error: err.message });
         return [];
     }
 }
@@ -1085,9 +1110,70 @@ export async function fetchInboundReimbursements(sellerId: string, syncId?: stri
     }
 }
 
+async function fetchCanonicalInboundSourceHealth(
+    sellerId: string,
+    syncId: string,
+): Promise<{ healthStatus: string; storeId: string | null; marketplaceId: string | null } | null> {
+    try {
+        const tenantId = await resolveTenantId(sellerId);
+        const { data, error } = await supabaseAdmin
+            .from('inbound_source_runs')
+            .select('health_status, store_id, marketplace_id, completed_at')
+            .eq('tenant_id', tenantId)
+            .eq('user_id', sellerId)
+            .eq('sync_id', syncId)
+            .order('completed_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+        if (error) {
+            logger.error('📦 [INBOUND] Failed to read canonical source health', { sellerId, syncId, error: error.message });
+            return null;
+        }
+        return data?.health_status
+            ? {
+                healthStatus: data.health_status,
+                storeId: data.store_id || null,
+                marketplaceId: data.marketplace_id || null,
+            }
+            : null;
+    } catch (error: any) {
+        logger.error('📦 [INBOUND] Exception reading canonical source health', { sellerId, syncId, error: error.message });
+        return null;
+    }
+}
+
 export async function runInboundDetection(sellerId: string, syncId: string): Promise<InboundDetectionResult[]> {
+    const flag = await featureFlagService.evaluate(INBOUND_V0_PRIMARY_FLAG, sellerId);
+    const mode = String(flag.payload?.mode || (flag.enabled ? 'ON' : 'OFF')).trim().toUpperCase();
+    if (!flag.enabled || mode === 'OFF') {
+        logger.info('📦 [INBOUND] Canonical inbound detector is disabled by feature flag', { sellerId, syncId, reason: flag.reason, mode });
+        return [];
+    }
+
+    const sourceHealth = await fetchCanonicalInboundSourceHealth(sellerId, syncId);
+    if (!sourceHealth || !CLAIM_CAPABLE_INBOUND_SOURCE_HEALTH.has(sourceHealth.healthStatus)) {
+        logger.info('📦 [INBOUND] Canonical inbound source is not claim-capable for this sync', {
+            sellerId,
+            syncId,
+            sourceHealth: sourceHealth?.healthStatus || null,
+        });
+        return [];
+    }
+
+    if (mode === 'SHADOW') {
+        logger.info('📦 [INBOUND] Canonical inbound detector completed source-health validation in shadow mode; claim output is suppressed', {
+            sellerId,
+            syncId,
+            sourceHealth: sourceHealth.healthStatus,
+        });
+        return [];
+    }
+
     const [items, reimbs, valuationContext] = await Promise.all([
-        fetchInboundShipmentItems(sellerId, syncId),
+        fetchInboundShipmentItems(sellerId, syncId, {
+            storeId: sourceHealth.storeId,
+            marketplaceId: sourceHealth.marketplaceId,
+        }),
         fetchInboundReimbursements(sellerId, syncId),
         buildSellerValuationContext(sellerId, syncId),
     ]);

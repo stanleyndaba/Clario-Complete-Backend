@@ -39,6 +39,10 @@ import { withRetry, toSyncError } from '../utils/retryUtils';
 import { createCoverageReport, SyncCoverageReport } from '../utils/syncFingerprint';
 import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import { buildDetectionQueuePayload } from './detectionQueueContract';
+import { featureFlagService } from './featureFlagService';
+import { inboundReceivingSyncService } from './inboundReceivingSyncService';
+
+const INBOUND_V0_PRIMARY_FLAG = 'connected_inbound_v0_primary';
 
 export interface SyncResult {
   success: boolean;
@@ -245,6 +249,26 @@ export class Agent2DataSyncService {
     }
 
     throw new Error('Multiple Amazon store bindings found. A specific storeId is required to run a truthful sync.');
+  }
+
+  private async resolveInboundMarketplaceId(tenantId: string, storeId: string): Promise<string> {
+    const { data, error } = await supabaseAdmin
+      .from('stores')
+      .select('marketplace')
+      .eq('id', storeId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to resolve inbound marketplace scope: ${error.message}`);
+    }
+
+    const marketplaceId = typeof data?.marketplace === 'string' ? data.marketplace.trim() : '';
+    if (!marketplaceId) {
+      throw new Error('The Amazon store has no marketplace scope for canonical inbound sync.');
+    }
+
+    return marketplaceId;
   }
 
   private async persistInventoryItems(
@@ -671,7 +695,55 @@ export class Agent2DataSyncService {
         logger.error('❌ [AGENT 2] Settlements sync failed', { userId, syncId, error: error.message });
       }
 
-      // 5. Sync Inventory
+      // 5. P1 Inbound Inspector: canonical Fulfillment Inbound v0 receiving rail.
+      // This is intentionally independent of the legacy customer-fulfillment shipments sync above.
+      try {
+        const inboundFlag = await featureFlagService.evaluate(INBOUND_V0_PRIMARY_FLAG, userId);
+        const inboundMode = String(inboundFlag.payload?.mode || (inboundFlag.enabled ? 'ON' : 'OFF')).trim().toUpperCase();
+        if (inboundFlag.enabled && inboundMode !== 'OFF') {
+          const marketplaceId = await this.resolveInboundMarketplaceId(resolvedTenantId, resolvedStoreId);
+          const inboundResult = await inboundReceivingSyncService.synchronize({
+            userId,
+            tenantId: resolvedTenantId,
+            storeId: resolvedStoreId,
+            // Detector orchestration uses the parent Connected Audit sync ID.
+            syncId: detectionSyncId,
+            marketplaceId,
+            lastUpdatedAfter: syncStartDate,
+            lastUpdatedBefore: syncEndDate,
+          });
+
+          logger.info('✅ [AGENT 2] Canonical inbound receiving sync completed', {
+            userId,
+            tenantId: resolvedTenantId,
+            storeId: resolvedStoreId,
+            syncId: detectionSyncId,
+            mode: inboundMode,
+            marketplaceId,
+            healthStatus: inboundResult.healthStatus,
+            historyCoverageStatus: inboundResult.historyCoverageStatus,
+            shipmentCount: inboundResult.shipmentCount,
+            itemCount: inboundResult.itemCount,
+            claimCapable: inboundResult.claimCapable,
+          });
+        } else {
+          logger.info('ℹ️ [AGENT 2] Canonical inbound receiving sync disabled by feature flag', {
+            userId,
+            syncId: detectionSyncId,
+            reason: inboundFlag.reason,
+            mode: inboundMode,
+          });
+        }
+      } catch (inboundError: any) {
+        // Inbound source failure must never terminate the Connected Audit or other six families.
+        logger.error('❌ [AGENT 2] Canonical inbound receiving sync failed (non-critical)', {
+          error: inboundError?.message || String(inboundError),
+          userId,
+          syncId: detectionSyncId,
+        });
+      }
+
+      // 6. Sync Inventory
       try {
         this.sendSyncLog(userId, syncId, {
           type: 'thinking',

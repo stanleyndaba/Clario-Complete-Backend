@@ -134,24 +134,29 @@ describe('Agent 3 final closure repair', () => {
     expect(refunds[0].order_id).toBe('ORDER-1');
   });
 
-  it('Inbound Inspector uses business shipment dates so mature shortages can qualify', async () => {
+  it('Inbound Inspector uses canonical inbound business dates so mature shortages can qualify', async () => {
     tables.tenant_memberships = [{ user_id: 'user-1', tenant_id: 'tenant-a' }];
-    tables.shipments = [
+    tables.inbound_shipment_items = [
       {
+        id: 'item-1',
         tenant_id: 'tenant-a',
         user_id: 'user-1',
-        shipment_id: 'SHP-1',
+        sync_id: 'sync-1',
+        provider_shipment_id: 'SHP-1',
         sku: 'SKU-1',
-        shipped_date: '2025-01-20T00:00:00Z',
+        quantity_shipped: 120,
+        quantity_received: 119,
         created_at: '2026-03-18T00:00:00Z',
-        status: 'RECEIVING',
-        shipped_quantity: 120,
-        received_quantity: 119,
-        metadata: {},
+        inbound_shipments: {
+          provider_shipment_id: 'SHP-1',
+          shipment_status_canonical: 'RECEIVING',
+          shipment_created_at: '2025-01-20T00:00:00Z',
+          status_observed_at: '2026-03-18T00:00:00Z',
+        },
       },
     ];
 
-    const items = await fetchInboundShipmentItems('user-1');
+    const items = await fetchInboundShipmentItems('user-1', 'sync-1');
     const results = detectShipmentShortage('user-1', 'sync-1', {
       seller_id: 'user-1',
       sync_id: 'sync-1',
