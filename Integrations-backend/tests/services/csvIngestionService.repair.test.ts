@@ -203,6 +203,48 @@ describe('CSV ingestion repair', () => {
     expect(inserts.shipments[0].metadata?.sku).toBe('SKU-1');
   });
 
+  it('preserves optional shipment quantity absence and rejects invalid supplied quantities', async () => {
+    const makeShipment = (shipmentId: string, shipped: string, received: string, missing: string) => [
+      'ShipmentId,ShipmentDate,ShipmentStatus,SKU,ASIN,FNSKU,QuantityShipped,QuantityReceived,QuantityMissing',
+      `${shipmentId},2026-03-18T00:00:00Z,RECEIVED,SKU-1,ASIN-1,FNSKU-1,${shipped},${received},${missing}`,
+    ].join('\n');
+
+    const blankResult = await service.ingestFiles(
+      userId,
+      [{ buffer: Buffer.from(makeShipment('SHIP-BLANK-QUANTITIES', '', '', '')), originalname: 'shipment-blank-quantities.csv', mimetype: 'text/csv' }],
+      { explicitType: 'shipments', triggerDetection: false, tenantId }
+    );
+    expect(blankResult.success).toBe(true);
+    expect(inserts.shipments?.find((row) => row.shipment_id === 'SHIP-BLANK-QUANTITIES')).toMatchObject({
+      shipped_quantity: null,
+      received_quantity: null,
+      missing_quantity: null,
+    });
+
+    const zeroResult = await service.ingestFiles(
+      userId,
+      [{ buffer: Buffer.from(makeShipment('SHIP-EXPLICIT-ZERO', '0', '0', '0')), originalname: 'shipment-explicit-zero.csv', mimetype: 'text/csv' }],
+      { explicitType: 'shipments', triggerDetection: false, tenantId }
+    );
+    expect(zeroResult.success).toBe(true);
+    expect(inserts.shipments?.find((row) => row.shipment_id === 'SHIP-EXPLICIT-ZERO')).toMatchObject({
+      shipped_quantity: 0,
+      received_quantity: 0,
+      missing_quantity: 0,
+    });
+
+    for (const [shipmentId, quantity] of [['SHIP-MALFORMED-QUANTITY', 'unknown'], ['SHIP-NONFINITE-QUANTITY', 'Infinity']] as Array<[string, string]>) {
+      const result = await service.ingestFiles(
+        userId,
+        [{ buffer: Buffer.from(makeShipment(shipmentId, '10', quantity, '')), originalname: `${shipmentId}.csv`, mimetype: 'text/csv' }],
+        { explicitType: 'shipments', triggerDetection: true, tenantId }
+      );
+      expect(result).toMatchObject({ success: false, detectionTriggered: false });
+      expect(result.results[0]).toMatchObject({ rowsInserted: 0, rowsSkipped: 1 });
+      expect(inserts.shipments?.find((row) => row.shipment_id === shipmentId)).toBeUndefined();
+    }
+  });
+
   it('uses real tenant semantics for financial events', async () => {
     const csv = ['EventType,PostedDate,Amount', 'AdjustmentEvent,2026-03-18T00:00:00Z,5.25'].join('\n');
     const result = await service.ingestFiles(

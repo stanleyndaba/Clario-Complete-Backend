@@ -381,6 +381,24 @@ function parseRequiredNumericField(raw: unknown, fieldName: string): number {
 }
 
 /**
+ * Preserve optional numeric absence as null rather than fabricating zero. Explicit
+ * numeric zero remains valid; malformed or non-finite supplied values invalidate
+ * the row that supplied them.
+ */
+function parseOptionalNumericField(raw: unknown, fieldName: string): number | null {
+    if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) {
+        return null;
+    }
+
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) {
+        throw new Error(`Invalid numeric field (${fieldName})`);
+    }
+
+    return parsed;
+}
+
+/**
  * Parse a required monetary field without turning missing or malformed source
  * evidence into zero. This retains the existing currency-symbol and
  * parenthesized-negative support used by Manual Audit amounts.
@@ -2037,9 +2055,9 @@ export class CSVIngestionService {
                         asin: getField(r, 'asin', 'ASIN') || null,
                         fnsku: getField(r, 'fnsku', 'FNSKU', 'fnSku', 'fn_sku') || null,
                     }],
-                    shipped_quantity: Number(getField(r, 'QuantityShipped', 'shipped_quantity', 'quantityShipped', 'Units Shipped')) || 0,
-                    received_quantity: Number(getField(r, 'QuantityReceived', 'received_quantity', 'quantityReceived', 'Units Received')) || 0,
-                    missing_quantity: Number(getField(r, 'QuantityMissing', 'missing_quantity', 'quantityMissing')) || 0,
+                    shipped_quantity: parseOptionalNumericField(getField(r, 'QuantityShipped', 'shipped_quantity', 'quantityShipped', 'Units Shipped'), 'shipped_quantity'),
+                    received_quantity: parseOptionalNumericField(getField(r, 'QuantityReceived', 'received_quantity', 'quantityReceived', 'Units Received'), 'received_quantity'),
+                    missing_quantity: parseOptionalNumericField(getField(r, 'QuantityMissing', 'missing_quantity', 'quantityMissing'), 'missing_quantity'),
                     metadata: {
                         sku: getField(r, 'sku', 'SKU', 'sellerSku', 'seller_sku') || null,
                         asin: getField(r, 'asin', 'ASIN') || null,
