@@ -41,6 +41,10 @@ import { resolveTenantSlug } from '../utils/tenantEventRouting';
 import { buildDetectionQueuePayload } from './detectionQueueContract';
 import { featureFlagService } from './featureFlagService';
 import { inboundReceivingSyncService } from './inboundReceivingSyncService';
+import {
+  TRANSFER_LEDGER_OBSERVATION_FLAG,
+  transferLedgerObservationService,
+} from './transferLedgerObservationService';
 
 const INBOUND_V0_PRIMARY_FLAG = 'connected_inbound_v0_primary';
 
@@ -266,6 +270,26 @@ export class Agent2DataSyncService {
     const marketplaceId = typeof data?.marketplace === 'string' ? data.marketplace.trim() : '';
     if (!marketplaceId) {
       throw new Error('The Amazon store has no marketplace scope for canonical inbound sync.');
+    }
+
+    return marketplaceId;
+  }
+
+  private async resolveTransferObservationMarketplaceId(tenantId: string, storeId: string): Promise<string> {
+    const { data, error } = await supabaseAdmin
+      .from('stores')
+      .select('marketplace')
+      .eq('id', storeId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to resolve transfer observation marketplace scope: ${error.message}`);
+    }
+
+    const marketplaceId = typeof data?.marketplace === 'string' ? data.marketplace.trim() : '';
+    if (!marketplaceId) {
+      throw new Error('The Amazon store has no marketplace scope for transfer observation.');
     }
 
     return marketplaceId;
@@ -863,6 +887,11 @@ export class Agent2DataSyncService {
       }
 
       // 7. Sync Inventory Ledger (needed for lost/damaged inventory detection)
+      let ledgerResult: { success: boolean; count: number; message: string } = {
+        success: false,
+        count: 0,
+        message: 'Inventory Ledger sync did not start.',
+      };
       try {
         this.sendSyncLog(userId, syncId, {
           type: 'thinking',
@@ -872,7 +901,7 @@ export class Agent2DataSyncService {
         logger.info('📋 [AGENT 2] Syncing inventory ledger...', { userId, syncId });
 
         const { inventoryLedgerSyncService } = await import('./inventoryLedgerSyncService');
-        const ledgerResult = await inventoryLedgerSyncService.syncInventoryLedger(
+        ledgerResult = await inventoryLedgerSyncService.syncInventoryLedger(
           userId,
           syncStartDate,
           syncEndDate,
@@ -898,8 +927,72 @@ export class Agent2DataSyncService {
 
         logger.info('✅ [AGENT 2] Inventory ledger synced', { userId, syncId, count: ledgerResult.count });
       } catch (error: any) {
-        errors.push(`Failed to sync inventory ledger: ${error.message}`);
-        logger.error('❌ [AGENT 2] Inventory ledger sync failed', { userId, syncId, error: error.message });
+        ledgerResult = {
+          success: false,
+          count: 0,
+          message: error?.message || 'Inventory Ledger sync failed.',
+        };
+        errors.push(`Failed to sync inventory ledger: ${ledgerResult.message}`);
+        logger.error('❌ [AGENT 2] Inventory ledger sync failed', { userId, syncId, error: ledgerResult.message });
+      }
+
+      // 7b. P1 Transfer Auditor: existing-Ledger, zero-claim WhseTransfers observation rail.
+      // It has no Amazon acquisition path, never writes inventory_transfers, and cannot invoke a detector.
+      try {
+        const transferObservationFlag = await featureFlagService.evaluate(TRANSFER_LEDGER_OBSERVATION_FLAG, userId);
+        const transferObservationMode = String(
+          transferObservationFlag.payload?.mode || (transferObservationFlag.enabled ? 'INVALID' : 'OFF')
+        ).trim().toUpperCase();
+
+        if (transferObservationFlag.enabled && transferObservationMode === 'SHADOW') {
+          const marketplaceId = await this.resolveTransferObservationMarketplaceId(resolvedTenantId, resolvedStoreId);
+          const observationResult = await transferLedgerObservationService.observe({
+            userId,
+            tenantId: resolvedTenantId,
+            storeId: resolvedStoreId,
+            // Parent audit sync remains the source-health/observation scope.
+            syncId: detectionSyncId,
+            // Existing Ledger persistence remains owned by Agent 2's own sync ID.
+            ledgerSyncId: syncId,
+            marketplaceId,
+            historyCoverageStart: syncStartDate,
+            historyCoverageEnd: syncEndDate,
+            // Coverage means only whether the requested Ledger window reaches
+            // the current 18-month source horizon; it is never a transfer
+            // maturity or pairing-window inference.
+            historyCoverageStatus: syncStartDate.getTime() <= Date.now() - ((this.ONBOARDING_BACKFILL_DAYS - 1) * 24 * 60 * 60 * 1000)
+              ? 'FULL'
+              : 'PARTIAL',
+            ledgerResult,
+          });
+          logger.info('✅ [AGENT 2] Transfer Ledger observation SHADOW completed without claims', {
+            userId,
+            tenantId: resolvedTenantId,
+            storeId: resolvedStoreId,
+            marketplaceId,
+            syncId: detectionSyncId,
+            ledgerSyncId: syncId,
+            healthStatus: observationResult.healthStatus,
+            observationCount: observationResult.observationCount,
+            ambiguityCount: observationResult.ambiguityCount,
+            claimCapable: observationResult.claimCapable,
+          });
+        } else {
+          logger.info('ℹ️ [AGENT 2] Transfer Ledger observation rail disabled or non-SHADOW', {
+            userId,
+            syncId: detectionSyncId,
+            reason: transferObservationFlag.reason,
+            mode: transferObservationMode,
+            enabled: transferObservationFlag.enabled,
+          });
+        }
+      } catch (transferObservationError: any) {
+        // Observation failure is non-critical and cannot terminate the Connected Audit.
+        logger.error('❌ [AGENT 2] Transfer Ledger observation SHADOW failed (non-critical)', {
+          userId,
+          syncId: detectionSyncId,
+          error: transferObservationError?.message || String(transferObservationError),
+        });
       }
 
       // 8. Sync Claims (from financial events)

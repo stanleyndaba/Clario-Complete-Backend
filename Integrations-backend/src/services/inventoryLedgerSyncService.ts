@@ -10,6 +10,7 @@
  * - Reconciliation between inbound shipments and received quantities
  */
 
+import crypto from 'crypto';
 import logger from '../utils/logger';
 import { supabase } from '../database/supabaseClient';
 import { logAuditEvent } from '../security/auditLogger';
@@ -32,6 +33,14 @@ export interface InventoryLedgerEvent {
     disposition?: string;        // SELLABLE, DEFECTIVE, CUSTOMER_DAMAGED, etc.
     reason_code?: string;        // Damage reason, adjustment reason
     country?: string;
+    marketplace_id?: string;
+    provider_event_type_raw?: string;
+    raw_quantity?: number;
+    event_datetime?: string;
+    provider_store?: string;
+    reconciled_quantity?: number | null;
+    unreconciled_quantity?: number | null;
+    provider_row_fingerprint?: string;
     raw_payload?: Record<string, any>;
 }
 
@@ -47,7 +56,8 @@ class InventoryLedgerSyncService {
         endDate?: Date,
         storeId?: string,
         tenantId?: string,
-        syncId?: string
+        syncId?: string,
+        marketplaceId?: string
     ): Promise<{ success: boolean; count: number; message: string }> {
         try {
             logger.info('📋 [INVENTORY LEDGER] Starting sync', { userId, storeId });
@@ -77,7 +87,7 @@ class InventoryLedgerSyncService {
             }
 
             // Convert report records
-            const ledgerEvents = this.convertReportRecords(records, userId, tenantId, storeId, syncId);
+            const ledgerEvents = this.convertReportRecords(records, userId, tenantId, storeId, syncId, marketplaceId);
 
             // Save to database
             await this.saveLedgerToDatabase(userId, ledgerEvents, tenantId, storeId, syncId);
@@ -119,30 +129,91 @@ class InventoryLedgerSyncService {
         userId: string,
         tenantId?: string,
         storeId?: string,
-        syncId?: string
+        syncId?: string,
+        marketplaceId?: string
     ): InventoryLedgerEvent[] {
         return records
-            .filter(r => (r['FNSKU'] || r['fnsku']) && (r['Event Type'] || r['event_type'] || r['event-type']))
-            .map(record => ({
-                seller_id: userId,
-                user_id: userId,
-                tenant_id: tenantId,
-                store_id: storeId,
-                sync_id: syncId,
-                event_date: record['Date'] || record['date'] || new Date().toISOString(),
-                fnsku: record['FNSKU'] || record['fnsku'] || '',
-                asin: record['ASIN'] || record['asin'] || '',
-                sku: record['MSKU'] || record['msku'] || record['sku'] || '',
-                title: record['Title'] || record['title'] || undefined,
-                event_type: record['Event Type'] || record['event_type'] || record['event-type'] || 'Unknown',
-                reference_id: record['Reference ID'] || record['reference_id'] || record['reference-id'] || undefined,
-                quantity: parseInt(record['Quantity'] || record['quantity'] || '0', 10),
-                fulfillment_center: record['Fulfillment Center'] || record['fulfillment_center'] || record['fulfillment-center'] || undefined,
-                disposition: record['Disposition'] || record['disposition'] || undefined,
-                reason_code: record['Reason'] || record['reason'] || record['reason_code'] || undefined,
-                country: record['Country'] || record['country'] || undefined,
-                raw_payload: record
-            }));
+            .filter(r =>
+                (r['FNSKU'] || r['fnsku']) &&
+                (r['Event Type'] || r['event_type'] || r['event-type']) &&
+                (r['Date'] || r['date'])
+            )
+            .map(record => {
+                const rawEventType = record['Event Type'] || record['event_type'] || record['event-type'] || 'Unknown';
+                const rawDate = record['Date'] || record['date'] || '';
+                const rawDateTime = record['Date and Time'] || record['date_and_time'] || record['date-time'] || undefined;
+                const rawQuantityText = record['Quantity'] || record['quantity'] || '0';
+                const rawQuantity = Number.parseInt(rawQuantityText, 10);
+                const quantity = Number.isFinite(rawQuantity) ? rawQuantity : 0;
+                const fingerprint = this.buildProviderRowFingerprint({
+                    tenantId,
+                    userId,
+                    storeId,
+                    marketplaceId,
+                    providerSource: 'amazon_inventory_ledger',
+                    rawEventType,
+                    rawDate,
+                    rawDateTime,
+                    fnsku: record['FNSKU'] || record['fnsku'] || '',
+                    asin: record['ASIN'] || record['asin'] || '',
+                    sku: record['MSKU'] || record['msku'] || record['sku'] || '',
+                    referenceId: record['Reference ID'] || record['reference_id'] || record['reference-id'] || '',
+                    rawQuantity: rawQuantityText,
+                    fulfillmentCenter: record['Fulfillment Center'] || record['fulfillment_center'] || record['fulfillment-center'] || '',
+                    country: record['Country'] || record['country'] || '',
+                    disposition: record['Disposition'] || record['disposition'] || '',
+                    reason: record['Reason'] || record['reason'] || record['reason_code'] || '',
+                    reconciledQuantity: record['Reconciled Quantity'] || record['reconciled_quantity'] || '',
+                    unreconciledQuantity: record['Unreconciled Quantity'] || record['unreconciled_quantity'] || '',
+                    providerStore: record['Store'] || record['store'] || '',
+                });
+
+                return {
+                    seller_id: userId,
+                    user_id: userId,
+                    tenant_id: tenantId,
+                    store_id: storeId,
+                    sync_id: syncId,
+                    event_date: rawDate,
+                    event_datetime: rawDateTime,
+                    fnsku: record['FNSKU'] || record['fnsku'] || '',
+                    asin: record['ASIN'] || record['asin'] || '',
+                    sku: record['MSKU'] || record['msku'] || record['sku'] || '',
+                    title: record['Title'] || record['title'] || undefined,
+                    event_type: rawEventType,
+                    provider_event_type_raw: rawEventType,
+                    reference_id: record['Reference ID'] || record['reference_id'] || record['reference-id'] || undefined,
+                    quantity,
+                    raw_quantity: quantity,
+                    fulfillment_center: record['Fulfillment Center'] || record['fulfillment_center'] || record['fulfillment-center'] || undefined,
+                    disposition: record['Disposition'] || record['disposition'] || undefined,
+                    reason_code: record['Reason'] || record['reason'] || record['reason_code'] || undefined,
+                    country: record['Country'] || record['country'] || undefined,
+                    marketplace_id: marketplaceId,
+                    provider_store: record['Store'] || record['store'] || undefined,
+                    reconciled_quantity: this.parseOptionalInteger(record['Reconciled Quantity'] || record['reconciled_quantity']),
+                    unreconciled_quantity: this.parseOptionalInteger(record['Unreconciled Quantity'] || record['unreconciled_quantity']),
+                    provider_row_fingerprint: fingerprint,
+                    raw_payload: record
+                };
+            });
+    }
+
+    private parseOptionalInteger(value: unknown): number | null {
+        if (value === undefined || value === null || String(value).trim() === '') return null;
+        const parsed = Number.parseInt(String(value), 10);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    /**
+     * Hash immutable provider facts and explicit scope only. Ingestion timestamps
+     * are intentionally excluded so the same source row is idempotent on retry.
+     */
+    private buildProviderRowFingerprint(input: Record<string, unknown>): string {
+        const canonical = Object.fromEntries(
+            Object.entries(input).map(([key, value]) => [key, value === undefined || value === null ? '' : String(value).trim()])
+        );
+        return crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
     }
 
     /**
@@ -202,7 +273,21 @@ class InventoryLedgerSyncService {
             throw new Error('tenantId is required to persist inventory ledger');
         }
 
-        const toInsert = events.map(event => ({
+        const providerRowsByFingerprint = new Map<string, InventoryLedgerEvent>();
+        const nonProviderEvents: InventoryLedgerEvent[] = [];
+        for (const event of events) {
+            if (event.provider_row_fingerprint) {
+                providerRowsByFingerprint.set(event.provider_row_fingerprint, event);
+            } else {
+                nonProviderEvents.push(event);
+            }
+        }
+        // Exact provider duplicates share every immutable fingerprint fact and
+        // are intentionally written once. Distinct provider rows have distinct
+        // fingerprints and remain independently preserved.
+        const persistableEvents = [...providerRowsByFingerprint.values(), ...nonProviderEvents];
+
+        const toInsert = persistableEvents.map(event => ({
             seller_id: event.seller_id,
             tenant_id: tenantId,
             event_date: event.event_date,
@@ -217,12 +302,23 @@ class InventoryLedgerSyncService {
             disposition: event.disposition || null,
             reason_code: event.reason_code || null,
             country: event.country || null,
+            provider_event_type_raw: event.provider_event_type_raw || event.event_type,
+            raw_quantity: event.raw_quantity ?? event.quantity,
+            event_datetime: event.event_datetime || null,
+            provider_store: event.provider_store || null,
+            reconciled_quantity: event.reconciled_quantity ?? null,
+            unreconciled_quantity: event.unreconciled_quantity ?? null,
+            marketplace_id: event.marketplace_id || null,
+            provider_row_fingerprint: event.provider_row_fingerprint || null,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         }));
 
-        const ledgerEventRows = events.map((event) => {
+        const ledgerEventRows = persistableEvents.map((event) => {
             const mapped = this.mapCanonicalEventType(event.event_type);
+            // Compatibility-only Margin derivation. For WhseTransfers, this
+            // sign-based direction is deliberately not treated as Amazon-proven
+            // transfer-out/transfer-in evidence by the observation rail.
             const direction = mapped.eventType === 'Transfer'
                 ? (event.quantity >= 0 ? 'in' : 'out')
                 : (event.quantity >= 0 ? 'in' : mapped.direction);
@@ -248,6 +344,14 @@ class InventoryLedgerSyncService {
                 unit_cost: null,
                 average_sales_price: null,
                 country: event.country || 'US',
+                marketplace_id: event.marketplace_id || null,
+                provider_event_type_raw: event.provider_event_type_raw || event.event_type,
+                raw_quantity: event.raw_quantity ?? event.quantity,
+                event_datetime: event.event_datetime || null,
+                provider_store: event.provider_store || null,
+                reconciled_quantity: event.reconciled_quantity ?? null,
+                unreconciled_quantity: event.unreconciled_quantity ?? null,
+                provider_row_fingerprint: event.provider_row_fingerprint || null,
                 raw_payload: event.raw_payload || null,
                 source: 'sp_api',
                 created_at: new Date().toISOString(),
@@ -289,18 +393,28 @@ class InventoryLedgerSyncService {
                 unit_cost: null,
                 average_sales_price: null,
                 country: lastEvent?.country || 'US',
+                marketplace_id: lastEvent?.marketplace_id || null,
+                provider_event_type_raw: 'Snapshot',
+                raw_quantity: Math.max(0, balance),
+                event_datetime: snapshotDate,
+                provider_store: null,
+                reconciled_quantity: null,
+                unreconciled_quantity: null,
+                provider_row_fingerprint: null,
                 raw_payload: { type: 'calculated_snapshot', balance, fnsku },
-                source: 'sp_api',
+                source: 'sp_api_snapshot',
                 created_at: snapshotDate,
                 updated_at: snapshotDate
             });
         }
 
-        // Upsert on composite key to avoid duplicates
+        // Provider rows upsert only on their immutable fingerprint. This preserves
+        // materially distinct same-day Ledger events that the legacy business key
+        // could collapse (for example different FCs or raw quantities).
         const { error } = await supabase
             .from('inventory_ledger')
             .upsert(toInsert, {
-                onConflict: 'tenant_id,seller_id,event_date,fnsku,event_type,reference_id',
+                onConflict: 'tenant_id,seller_id,provider_row_fingerprint',
                 ignoreDuplicates: false
             });
 
@@ -318,12 +432,30 @@ class InventoryLedgerSyncService {
             }
         }
 
-        const { error: eventError } = await supabase
-            .from('inventory_ledger_events')
-            .upsert(ledgerEventRows, {
-                onConflict: 'tenant_id,user_id,fnsku,event_type,event_date,reference_id',
-                ignoreDuplicates: false
-            });
+        const providerLedgerEventRows = ledgerEventRows.filter((row) => Boolean(row.provider_row_fingerprint));
+        const calculatedSnapshotRows = ledgerEventRows.filter((row) => !row.provider_row_fingerprint);
+
+        const { error: eventError } = providerLedgerEventRows.length
+            ? await supabase
+                .from('inventory_ledger_events')
+                .upsert(providerLedgerEventRows, {
+                    onConflict: 'tenant_id,user_id,provider_row_fingerprint',
+                    ignoreDuplicates: false
+                })
+            : { error: null };
+
+        if (!eventError && calculatedSnapshotRows.length) {
+            // Legacy/snapshot rows retain a partial legacy uniqueness index. A
+            // partial index is not a valid PostgREST upsert conflict target, so
+            // use duplicate-tolerant insertion instead of reviving the former
+            // collision-prone provider business key.
+            const { error: snapshotError } = await supabase
+                .from('inventory_ledger_events')
+                .insert(calculatedSnapshotRows);
+            if (snapshotError && !String(snapshotError.message || '').toLowerCase().includes('duplicate')) {
+                throw new Error(`Inventory ledger snapshot save failed: ${snapshotError.message}`);
+            }
+        }
 
         if (eventError) {
             throw new Error(`Inventory ledger events save failed: ${eventError.message}`);
