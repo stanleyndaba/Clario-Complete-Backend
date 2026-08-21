@@ -57,12 +57,26 @@ function countUnquotedDelimiter(line: string, delimiter: ManualAuditDelimiter): 
 
 /**
  * Detect the delimiter from the header. Amazon Ledger documents are TSV, while
- * existing Manual Audit CSV uploads remain comma-delimited. A tab wins whenever
- * the header contains an unquoted tab; embedded commas never override it.
+ * existing Manual Audit CSV uploads remain comma-delimited. A tab selects TSV
+ * only when the header has no unquoted comma candidates; mixed unquoted comma
+ * and tab evidence is rejected rather than guessed. Embedded quoted commas do
+ * not affect delimiter selection.
  */
 export function detectManualAuditDelimiter(headerLine: string): ManualAuditDelimiter {
-    return countUnquotedDelimiter(headerLine, '\t') > 0 ? '\t' : ',';
+    const tabCount = countUnquotedDelimiter(headerLine, '\t');
+    const commaCount = countUnquotedDelimiter(headerLine, ',');
+
+    if (tabCount > 0 && commaCount > 0) {
+        throw new Error('Ambiguous delimiter in header: both unquoted comma and tab delimiters are present.');
+    }
+
+    return tabCount > 0 ? '\t' : ',';
 }
+
+type ParsedDelimitedLine = {
+    values: string[];
+    terminated: boolean;
+};
 
 /**
  * Parse one CSV or TSV line, preserving every field as text. Identifier-looking
@@ -73,7 +87,7 @@ function parseDelimitedLine(
     line: string,
     delimiter: ManualAuditDelimiter,
     trim: boolean = true
-): string[] {
+): ParsedDelimitedLine {
     const values: string[] = [];
     let current = '';
     let inQuotes = false;
@@ -106,13 +120,34 @@ function parseDelimitedLine(
     }
 
     values.push(trim ? current.trim() : current);
-    return values;
+    return { values, terminated: !inQuotes };
+}
+
+function normalizeManualAuditHeader(header: string): string {
+    return header.toLowerCase().replace(/[_\-\s]/g, '');
+}
+
+function validateManualAuditHeaders(headers: string[]): void {
+    const normalizedHeaders = new Set<string>();
+
+    headers.forEach((header, index) => {
+        if (!header) {
+            throw new Error(`Invalid header at column ${index + 1}: header names must not be empty.`);
+        }
+
+        const normalized = normalizeManualAuditHeader(header);
+        if (normalizedHeaders.has(normalized)) {
+            throw new Error(`Duplicate normalized header: "${header}".`);
+        }
+        normalizedHeaders.add(normalized);
+    });
 }
 
 /**
  * Parse CSV or TSV content into records. The parser does not auto-cast any field;
  * doing so corrupts leading-zero and high-precision Amazon identifiers before the
- * type-specific Manual Audit mapper can decide which fields are numeric.
+ * type-specific Manual Audit mapper can decide which fields are numeric. Structural
+ * uncertainty fails closed before source recognition or persistence.
  */
 export function parseManualAuditDelimitedRecords(content: string): Record<string, string | null>[] {
     const lines = content
@@ -123,15 +158,31 @@ export function parseManualAuditDelimitedRecords(content: string): Record<string
     if (lines.length < 2) return [];
 
     const delimiter = detectManualAuditDelimiter(lines[0]);
-    const headers = parseDelimitedLine(lines[0], delimiter);
+    const parsedHeader = parseDelimitedLine(lines[0], delimiter);
+    if (!parsedHeader.terminated) {
+        throw new Error('Malformed header: unterminated quoted field.');
+    }
+
+    const headers = parsedHeader.values;
+    validateManualAuditHeaders(headers);
+
     const records: Record<string, string | null>[] = [];
 
     for (let index = 1; index < lines.length; index++) {
-        const values = parseDelimitedLine(lines[index], delimiter);
-        const record: Record<string, string | null> = {};
+        const parsedRow = parseDelimitedLine(lines[index], delimiter);
+        const rowNumber = index + 1;
+        if (!parsedRow.terminated) {
+            throw new Error(`Malformed row ${rowNumber}: unterminated quoted field.`);
+        }
+        if (parsedRow.values.length !== headers.length) {
+            throw new Error(
+                `Malformed row ${rowNumber}: expected ${headers.length} columns but received ${parsedRow.values.length}.`
+            );
+        }
 
+        const record: Record<string, string | null> = {};
         headers.forEach((header, columnIndex) => {
-            record[header] = values[columnIndex] !== undefined ? values[columnIndex] : null;
+            record[header] = parsedRow.values[columnIndex];
         });
 
         records.push(record);

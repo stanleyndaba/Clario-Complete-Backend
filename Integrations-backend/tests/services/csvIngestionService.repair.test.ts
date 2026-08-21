@@ -355,6 +355,12 @@ describe('CSV ingestion repair', () => {
     expect(detectManualAuditDelimiter('AmazonOrderId,PurchaseDate,OrderTotal')).toBe(',');
   });
 
+  it('fails closed when an upload header contains both unquoted delimiter candidates', () => {
+    expect(() => detectManualAuditDelimiter('Date\tEvent Type,Reference ID')).toThrow(
+      'Ambiguous delimiter in header'
+    );
+  });
+
   it('does not treat commas inside quoted TSV fields as delimiters', () => {
     const tsv = [
       'Date\t"Event, Type"\tReference ID',
@@ -386,6 +392,47 @@ describe('CSV ingestion repair', () => {
         Quantity: '5',
       },
     ]);
+  });
+
+  it('rejects malformed quoted rows, inconsistent column counts, and duplicate normalized headers', () => {
+    expect(() => parseManualAuditDelimitedRecords([
+      'AmazonOrderId,PurchaseDate',
+      'A-1,"2026-03-18T00:00:00Z',
+    ].join('\n'))).toThrow('Malformed row 2: unterminated quoted field');
+
+    expect(() => parseManualAuditDelimitedRecords([
+      'AmazonOrderId,PurchaseDate',
+      'A-1,2026-03-18T00:00:00Z,unexpected',
+    ].join('\n'))).toThrow('Malformed row 2: expected 2 columns but received 3');
+
+    expect(() => parseManualAuditDelimitedRecords([
+      'AmazonOrderId,amazon_order_id,PurchaseDate',
+      'A-1,A-1,2026-03-18T00:00:00Z',
+    ].join('\n'))).toThrow('Duplicate normalized header');
+  });
+
+  it('fails malformed Manual Audit files before persistence or detection', async () => {
+    const malformedCsv = [
+      'AmazonOrderId,PurchaseDate,OrderStatus,OrderTotal',
+      'A-1,2026-03-18T00:00:00Z,Shipped,9.99,unexpected',
+    ].join('\n');
+
+    const result = await service.ingestFiles(
+      userId,
+      [{ buffer: Buffer.from(malformedCsv), originalname: 'malformed_orders.csv', mimetype: 'text/csv' }],
+      { explicitType: 'orders', triggerDetection: true, tenantId }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.detectionTriggered).toBe(false);
+    expect(result.results[0]).toMatchObject({
+      success: false,
+      rowsProcessed: 0,
+      rowsInserted: 0,
+      detectionTriggered: false,
+    });
+    expect(result.results[0].errors[0]).toContain('Malformed row 2: expected 4 columns but received 5');
+    expect(inserts.orders).toBeUndefined();
   });
 
   it('preserves leading-zero and high-precision numeric identifiers exactly as strings', () => {
