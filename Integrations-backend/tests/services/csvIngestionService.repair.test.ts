@@ -606,6 +606,49 @@ describe('CSV ingestion repair', () => {
     }
   });
 
+  it('rejects invalid required Financial Event amounts and preserves valid monetary values', async () => {
+    const makeFinancialEvent = (eventId: string, amount: string) => [
+      'EventType,PostedDate,Amount,CurrencyCode,AdjustmentEventId',
+      `Reimbursement,2026-03-18T00:00:00Z,${amount},USD,${eventId}`,
+    ].join('\n');
+    const invalidCases: Array<[string, string]> = [
+      ['FINANCIAL-BLANK-AMOUNT', ''],
+      ['FINANCIAL-WHITESPACE-AMOUNT', '" "'],
+      ['FINANCIAL-MALFORMED-AMOUNT', 'not-money'],
+      ['FINANCIAL-NONFINITE-AMOUNT', 'Infinity'],
+    ];
+
+    for (const [eventId, amount] of invalidCases) {
+      const result = await service.ingestFiles(userId, [
+        { buffer: Buffer.from(makeFinancialEvent(eventId, amount)), originalname: `${eventId}.csv`, mimetype: 'text/csv' },
+      ], { explicitType: 'financial_events', triggerDetection: true, tenantId });
+
+      expect(result).toMatchObject({ success: false, detectionTriggered: false });
+      expect(result.results[0]).toMatchObject({ rowsInserted: 0, rowsSkipped: 1 });
+      expect(inserts.financial_events?.find((row) => row.amazon_event_id === eventId)).toBeUndefined();
+    }
+
+    const validCases: Array<[string, string, number]> = [
+      ['FINANCIAL-ZERO', '0', 0],
+      ['FINANCIAL-ZERO-DECIMAL', '0.00', 0],
+      ['FINANCIAL-POSITIVE', '$12.50', 12.5],
+      ['FINANCIAL-NEGATIVE', '(12.50)', -12.5],
+      ['FINANCIAL-LARGE', '9000000000.25', 9000000000.25],
+    ];
+
+    for (const [eventId, amount, expectedAmount] of validCases) {
+      const result = await service.ingestFiles(userId, [
+        { buffer: Buffer.from(makeFinancialEvent(eventId, amount)), originalname: `${eventId}.csv`, mimetype: 'text/csv' },
+      ], { explicitType: 'financial_events', triggerDetection: false, tenantId });
+
+      expect(result.success).toBe(true);
+      expect(inserts.financial_events?.find((row) => row.amazon_event_id === eventId)).toMatchObject({
+        amount: expectedAmount,
+        event_type: 'reimbursement',
+      });
+    }
+  });
+
   it('exposes supported type enablement truth', () => {
     const types = service.getSupportedTypes();
     expect(types.length).toBeGreaterThan(0);

@@ -2485,10 +2485,11 @@ export class CSVIngestionService {
                     errors.push(`Row ${i + 1}: Missing required fields (event_type/event_date)`);
                     continue;
                 }
+                const amount = parseRequiredAmountField(rawAmount, 'amount');
                 const feeType = getField(r, 'fee_type', 'FeeType', 'feeType');
                 const classification = classifyFinancialEventType(feeType || rawEventType, getField(r, 'Description', 'description', 'AdjustmentType'));
                 const amountInfo = parseCurrencyAmount({
-                    amount: parseAmount(rawAmount),
+                    amount,
                     currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD'
                 });
                 const referenceId =
