@@ -206,6 +206,7 @@ describe('authRoutes /me tenant truth', () => {
       display_name: 'Tenant A Seller',
       email: 'seller-a@example.com',
     });
+    expect(response.body).not.toHaveProperty('paypal_payment_token');
   });
 
   it('does not leak connected status into another tenant', async () => {

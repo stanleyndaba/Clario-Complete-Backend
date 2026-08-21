@@ -910,7 +910,7 @@ class RefundFilingWorker {
       }
 
       const enabled = (data?.preferences as any)?.auto_file_cases?.enabled;
-      return typeof enabled === 'boolean' ? enabled : true;
+      return typeof enabled === 'boolean' ? enabled : false;
     } catch (error: any) {
       logger.warn(' [REFUND FILING] Error loading auto-file preference, defaulting to disabled', {
         userId,

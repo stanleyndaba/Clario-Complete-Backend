@@ -69,7 +69,7 @@ async function isAutoFileEnabledForUser(userId: string, tenantId: string): Promi
     }
 
     const enabled = (data?.preferences as any)?.auto_file_cases?.enabled;
-    return typeof enabled === 'boolean' ? enabled : true;
+    return typeof enabled === 'boolean' ? enabled : false;
   } catch (error: any) {
     logger.warn('[AGENT7 RESUME] Error loading auto-file preference', {
       userId,

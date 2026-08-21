@@ -381,7 +381,6 @@ router.get('/me', async (req, res) => {
       stripe_connected: false,
       paypal_connected: !!userRecord?.paypal_payment_token,
       paypal_email: userRecord?.paypal_email || null,
-      paypal_payment_token: userRecord?.paypal_payment_token || null,
       billing_provider: 'paypal',
       created_at: userRecord?.created_at || null,
       last_login: userRecord?.last_login_at || null,

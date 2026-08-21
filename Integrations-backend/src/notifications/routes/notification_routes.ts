@@ -47,7 +47,7 @@ async function getStoredUserPreferences(userId: string, tenantId: string): Promi
 
 function getAutoFilePreferenceValue(preferences: Record<string, any>): boolean {
     const storedValue = preferences?.auto_file_cases?.enabled;
-    return typeof storedValue === 'boolean' ? storedValue : true;
+    return typeof storedValue === 'boolean' ? storedValue : false;
 }
 
 function normalizeFilingValue(value: unknown): string {
