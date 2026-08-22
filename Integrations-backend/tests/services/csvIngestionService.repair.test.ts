@@ -747,6 +747,28 @@ describe('CSV ingestion repair', () => {
     }
   });
 
+  it('preserves supplied settlement reimbursement identity evidence for FNSKU-scoped reconciliation', async () => {
+    const settlement = [
+      'SettlementId,PostedDate,TransactionType,Amount,Fees,CurrencyCode,AmazonOrderId,FNSKU,SellerSKU,Quantity,FulfillmentCenterId,ASIN,Reason',
+      'SETTLEMENT-REIMB-EVIDENCE-1,2026-03-18T00:00:00Z,reimbursement,20,0,USD,ORDER-REIMB-EVIDENCE-1,FNSKU-REIMB-EVIDENCE-1,SKU-REIMB-EVIDENCE-1,1,PHX6,ASIN-REIMB-EVIDENCE-1,DAMAGED',
+    ].join('\n');
+
+    const result = await service.ingestFiles(userId, [
+      { buffer: Buffer.from(settlement), originalname: 'settlement-reimbursement-evidence.csv', mimetype: 'text/csv' },
+    ], { explicitType: 'settlements', triggerDetection: false, tenantId });
+
+    expect(result.success).toBe(true);
+    const persistedSettlement = inserts.settlements?.find((row) => row.settlement_id === 'SETTLEMENT-REIMB-EVIDENCE-1');
+    expect(persistedSettlement?.metadata).toMatchObject({
+      fnsku: 'FNSKU-REIMB-EVIDENCE-1',
+      sku: 'SKU-REIMB-EVIDENCE-1',
+      quantity: 1,
+      fulfillmentCenterId: 'PHX6',
+      asin: 'ASIN-REIMB-EVIDENCE-1',
+      reason: 'DAMAGED',
+    });
+  });
+
   it('rejects invalid required Financial Event amounts and preserves valid monetary values', async () => {
     const makeFinancialEvent = (eventId: string, amount: string) => [
       'EventType,PostedDate,Amount,CurrencyCode,AdjustmentEventId',

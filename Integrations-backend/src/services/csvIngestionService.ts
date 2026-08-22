@@ -2157,6 +2157,17 @@ export class CSVIngestionService {
                     getField(r, 'Amount', 'amount', 'TotalAmount', 'total_amount'),
                     'amount'
                 );
+                const reimbursementEvidence = {
+                    fnsku: getField(r, 'FNSKU', 'fnsku', 'FulfillmentNetworkSKU', 'fulfillmentNetworkSku') || null,
+                    sku: getField(r, 'SellerSKU', 'seller_sku', 'sku', 'SKU') || null,
+                    asin: getField(r, 'ASIN', 'asin') || null,
+                    quantity: parseOptionalNumericField(
+                        getField(r, 'Quantity', 'quantity', 'QuantityReimbursed', 'quantity_reimbursed'),
+                        'quantity'
+                    ),
+                    fulfillmentCenterId: getField(r, 'FulfillmentCenterId', 'fulfillment_center_id', 'Fulfillment Center', 'fulfillment_center', 'FC') || null,
+                    reason: getField(r, 'Reason', 'reason', 'ReasonCode', 'reason_code') || null,
+                };
 
                 rows.push({
                     id: uuidv4(),
@@ -2171,7 +2182,7 @@ export class CSVIngestionService {
                     currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
                     settlement_date: settlementDate,
                     fee_breakdown: {},
-                    metadata: {},
+                    metadata: reimbursementEvidence,
                     sync_id: syncId,
                     sync_timestamp: new Date().toISOString(),
                     source: 'csv_upload',
@@ -2206,7 +2217,8 @@ export class CSVIngestionService {
                         rawPayload: r,
                         metadata: {
                             csvType: 'settlements',
-                            fees: parseAmount(getField(r, 'Fees', 'fees', 'TotalFees', 'total_fees'))
+                            fees: parseAmount(getField(r, 'Fees', 'fees', 'TotalFees', 'total_fees')),
+                            ...reimbursementEvidence,
                         },
                         isPayoutEvent: classification.isPayoutEvent && amount > 0
                     })
