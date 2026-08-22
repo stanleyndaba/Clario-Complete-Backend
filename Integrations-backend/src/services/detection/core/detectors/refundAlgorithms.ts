@@ -182,6 +182,17 @@ function daysBetween(date1: Date, date2: Date): number {
     return Math.floor(diffTime / (1000 * 60 * 60 * 24));
 }
 
+/**
+ * Preserve observed FNSKU contradiction as stronger evidence than SKU fallback.
+ * Absence remains absent: this guard rejects only when both source particles are
+ * present after normalization and explicitly disagree.
+ */
+function hasConflictingObservedFnsku(left?: string, right?: string): boolean {
+    const normalizedLeft = String(left || '').trim().toUpperCase();
+    const normalizedRight = String(right || '').trim().toUpperCase();
+    return Boolean(normalizedLeft && normalizedRight && normalizedLeft !== normalizedRight);
+}
+
 // ============================================================================
 // Main Detection Algorithm
 // ============================================================================
@@ -247,6 +258,10 @@ export function detectRefundWithoutReturn(
 
         const totalReturnedQty = returns
             .filter(ret => {
+                // An explicit observed FNSKU contradiction is stronger than SKU/ASIN
+                // fallback identity and cannot offset this refund.
+                if (hasConflictingObservedFnsku(refund.fnsku, ret.fnsku)) return false;
+
                 // SKU isolation: only filter out if BOTH have SKUs and they mismatch
                 if (refund.sku && ret.sku && ret.sku !== refund.sku) return false;
                 
@@ -606,7 +621,7 @@ export async function fetchRefundEvents(sellerId: string, options?: { startDate?
         .filter((s: any) => String(s.transaction_type || '').toLowerCase() === 'refund')
         .map((s: any) => ({
         id: s.id, seller_id: sellerId, order_id: s.order_id || '',
-        sku: s.metadata?.sku, asin: s.metadata?.asin,
+        sku: s.metadata?.sku, asin: s.metadata?.asin, fnsku: s.metadata?.fnsku,
         refund_amount: Math.abs(s.amount), currency: s.currency || 'USD',
         refund_date: s.settlement_date, created_at: s.created_at,
         quantity_refunded: s.metadata?.quantity || 1
@@ -630,7 +645,7 @@ export async function fetchReturnEvents(sellerId: string, options?: { startDate?
     if (error) return [];
     return data.map(r => ({
         id: r.id, seller_id: sellerId, order_id: r.order_id || '',
-        sku: r.items?.[0]?.sku, asin: r.items?.[0]?.asin,
+        sku: r.items?.[0]?.sku, asin: r.items?.[0]?.asin, fnsku: r.items?.[0]?.fnsku,
         return_date: r.returned_date, return_status: r.status || 'received',
         quantity_returned: r.items?.[0]?.quantity || 1,
         refund_amount: Number(r.refund_amount || 0),

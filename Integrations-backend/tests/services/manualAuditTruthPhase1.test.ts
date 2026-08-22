@@ -1891,7 +1891,7 @@ describe('Manual Audit truth test phase 1', () => {
     expect(tables.financial_events || []).toEqual([]);
   });
 
-  it.skip('RF-FNSKU-CONFLICT: conflicting return FNSKU must not suppress a same-order, same-SKU refund residual (documented no-detector-change boundary)', async () => {
+  it('RF-FNSKU-CONFLICT: conflicting observed return FNSKU must not suppress a same-order, same-SKU refund residual', async () => {
     const ingestion = await service.ingestFiles(SELLER_A, [
       file('rf-fnsku-conflict-settlement.csv', [
         'SettlementId,PostedDate,TransactionType,Amount,Fees,CurrencyCode,AmazonOrderId,SellerSKU,FNSKU,Quantity',
@@ -1925,6 +1925,78 @@ describe('Manual Audit truth test phase 1', () => {
         unresolved_units: 1,
       }),
     });
+  });
+
+  it('RF-FNSKU-MATCH: matching observed FNSKU preserves existing valid same-order, same-SKU return reconciliation', async () => {
+    const ingestion = await service.ingestFiles(SELLER_A, [
+      file('rf-fnsku-match-settlement.csv', [
+        'SettlementId,PostedDate,TransactionType,Amount,Fees,CurrencyCode,AmazonOrderId,SellerSKU,FNSKU,Quantity',
+        'RF-FNSKU-MATCH-REFUND-1,2026-06-01T00:00:00Z,refund,(100),0,USD,RF-FNSKU-MATCH-ORDER-1,SHARED-SKU,FNSKU-MATCH,1',
+      ].join('\n')),
+      file('rf-fnsku-match-return.csv', [
+        'ReturnId,ReturnDate,ReturnReason,RefundAmount,Quantity,AmazonOrderId,SellerSKU,FNSKU',
+        'RF-FNSKU-MATCH-RETURN-1,2026-06-02T00:00:00Z,CUSTOMER_REQUEST,100,1,RF-FNSKU-MATCH-ORDER-1,SHARED-SKU,FNSKU-MATCH',
+      ].join('\n')),
+    ], { tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+
+    expect(ingestion.success).toBe(true);
+    const actual = await enhancedDetectionService.triggerDetectionPipeline(
+      SELLER_A,
+      ingestion.syncId,
+      'manual',
+      { tenantId: TENANT_A, source: 'manual_truth_test' },
+    );
+
+    expect(actual).toMatchObject({ success: true, detectionsFound: 0, estimatedRecovery: 0 });
+    expect((tables.detection_results || []).filter((row) => row.anomaly_type === 'refund_no_return')).toEqual([]);
+  });
+
+  it('RF-FNSKU-MISSING-REFUND: an absent refund FNSKU is not fabricated and preserves existing weaker return matching', async () => {
+    const ingestion = await service.ingestFiles(SELLER_A, [
+      file('rf-fnsku-missing-refund-settlement.csv', [
+        'SettlementId,PostedDate,TransactionType,Amount,Fees,CurrencyCode,AmazonOrderId,SellerSKU,FNSKU,Quantity',
+        'RF-FNSKU-MISSING-REFUND-1,2026-06-01T00:00:00Z,refund,(100),0,USD,RF-FNSKU-MISSING-REFUND-ORDER-1,SHARED-SKU,,1',
+      ].join('\n')),
+      file('rf-fnsku-missing-refund-return.csv', [
+        'ReturnId,ReturnDate,ReturnReason,RefundAmount,Quantity,AmazonOrderId,SellerSKU,FNSKU',
+        'RF-FNSKU-MISSING-REFUND-RETURN-1,2026-06-02T00:00:00Z,CUSTOMER_REQUEST,100,1,RF-FNSKU-MISSING-REFUND-ORDER-1,SHARED-SKU,FNSKU-RETURN',
+      ].join('\n')),
+    ], { tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+
+    expect(ingestion.success).toBe(true);
+    const actual = await enhancedDetectionService.triggerDetectionPipeline(
+      SELLER_A,
+      ingestion.syncId,
+      'manual',
+      { tenantId: TENANT_A, source: 'manual_truth_test' },
+    );
+
+    expect(actual).toMatchObject({ success: true, detectionsFound: 0, estimatedRecovery: 0 });
+    expect((tables.detection_results || []).filter((row) => row.anomaly_type === 'refund_no_return')).toEqual([]);
+  });
+
+  it('RF-FNSKU-MISSING-RETURN: an absent return FNSKU is not fabricated and preserves existing weaker return matching', async () => {
+    const ingestion = await service.ingestFiles(SELLER_A, [
+      file('rf-fnsku-missing-return-settlement.csv', [
+        'SettlementId,PostedDate,TransactionType,Amount,Fees,CurrencyCode,AmazonOrderId,SellerSKU,FNSKU,Quantity',
+        'RF-FNSKU-MISSING-RETURN-1,2026-06-01T00:00:00Z,refund,(100),0,USD,RF-FNSKU-MISSING-RETURN-ORDER-1,SHARED-SKU,FNSKU-REFUND,1',
+      ].join('\n')),
+      file('rf-fnsku-missing-return-return.csv', [
+        'ReturnId,ReturnDate,ReturnReason,RefundAmount,Quantity,AmazonOrderId,SellerSKU,FNSKU',
+        'RF-FNSKU-MISSING-RETURN-RETURN-1,2026-06-02T00:00:00Z,CUSTOMER_REQUEST,100,1,RF-FNSKU-MISSING-RETURN-ORDER-1,SHARED-SKU,',
+      ].join('\n')),
+    ], { tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+
+    expect(ingestion.success).toBe(true);
+    const actual = await enhancedDetectionService.triggerDetectionPipeline(
+      SELLER_A,
+      ingestion.syncId,
+      'manual',
+      { tenantId: TENANT_A, source: 'manual_truth_test' },
+    );
+
+    expect(actual).toMatchObject({ success: true, detectionsFound: 0, estimatedRecovery: 0 });
+    expect((tables.detection_results || []).filter((row) => row.anomaly_type === 'refund_no_return')).toEqual([]);
   });
 
   it('FT-SKU-COLLISION: a same-SKU reimbursement for Order B must not verify payment for distinct Order A', async () => {
