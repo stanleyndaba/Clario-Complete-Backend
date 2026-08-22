@@ -778,6 +778,40 @@ describe('CSV ingestion repair', () => {
     }
   });
 
+  it('rejects invalid required Manual Return quantities and preserves explicit zero', async () => {
+    const makeReturn = (returnId: string, quantity: string) => [
+      'ReturnId,ReturnDate,ReturnReason,RefundAmount,Quantity,AmazonOrderId',
+      `${returnId},2026-03-18T00:00:00Z,CUSTOMER_REQUEST,100,${quantity},ORDER-${returnId}`,
+    ].join('\n');
+    const invalidCases: Array<[string, string]> = [
+      ['RETURN-BLANK-QUANTITY', ''],
+      ['RETURN-WHITESPACE-QUANTITY', '" "'],
+      ['RETURN-MALFORMED-QUANTITY', 'unknown'],
+      ['RETURN-NONFINITE-QUANTITY', 'Infinity'],
+    ];
+
+    for (const [returnId, quantity] of invalidCases) {
+      const result = await service.ingestFiles(userId, [
+        { buffer: Buffer.from(makeReturn(returnId, quantity)), originalname: `${returnId}.csv`, mimetype: 'text/csv' },
+      ], { explicitType: 'returns', triggerDetection: true, tenantId });
+
+      expect(result).toMatchObject({ success: false, detectionTriggered: false });
+      expect(result.results[0]).toMatchObject({ rowsInserted: 0, rowsSkipped: 1 });
+      expect(result.results[0].errors[0]).toMatch(/required numeric field \(quantity\)|Invalid numeric field \(quantity\)/);
+      expect(inserts.returns?.find((row) => row.return_id === returnId)).toBeUndefined();
+    }
+
+    const zeroResult = await service.ingestFiles(userId, [
+      { buffer: Buffer.from(makeReturn('RETURN-EXPLICIT-ZERO', '0')), originalname: 'return-explicit-zero.csv', mimetype: 'text/csv' },
+    ], { explicitType: 'returns', triggerDetection: false, tenantId });
+
+    expect(zeroResult.success).toBe(true);
+    expect(inserts.returns?.find((row) => row.return_id === 'RETURN-EXPLICIT-ZERO')).toMatchObject({
+      refund_amount: 100,
+      items: [{ quantity: 0 }],
+    });
+  });
+
   it('exposes supported type enablement truth', () => {
     const types = service.getSupportedTypes();
     expect(types.length).toBeGreaterThan(0);
