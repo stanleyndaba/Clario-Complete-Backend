@@ -893,7 +893,8 @@ function buildCaseResponse(
         case_messages: any[];
     },
     findingTruth?: any | null,
-    sourceDetection?: any | null
+    sourceDetection?: any | null,
+    financialSummary?: { verified_paid_amount?: number | null; payout_status?: string | null; proof_of_payment?: any | null } | null
 ) {
     const recordEvidence = parseJsonObject(record?.evidence);
     const detectionEvidence = parseJsonObject(sourceDetection?.evidence);
@@ -934,13 +935,16 @@ function buildCaseResponse(
         ? proofSnapshot.filingRecommendation
         : null;
     const missingRequirements = evidenceTruth?.missingRequirements || (entityTruth.entity_type === 'detection' ? ['case_creation_required'] : []);
-    const payoutProofStatus = actualPayoutAmount != null && actualPayoutAmount > 0
+    const verifiedPaidAmount = toOptionalAmount(financialSummary?.verified_paid_amount);
+    const payoutProofStatus = verifiedPaidAmount != null && verifiedPaidAmount > 0
         ? 'verified'
-        : normalize(record?.recovery_status) === 'quarantined'
-            ? 'quarantined'
-            : hasApprovalTruth
-                ? 'awaiting_payout'
-                : 'not_applicable';
+        : actualPayoutAmount != null && actualPayoutAmount > 0
+            ? 'recorded_unverified'
+            : normalize(record?.recovery_status) === 'quarantined'
+                ? 'quarantined'
+                : hasApprovalTruth
+                    ? 'awaiting_payout'
+                    : 'not_applicable';
     const manualReviewReason = Array.isArray(record?.block_reasons) && record.block_reasons.length > 0
         ? record.block_reasons[0]
         : Array.isArray(proofSnapshot?.riskFlags) && proofSnapshot.riskFlags.length > 0
@@ -1101,6 +1105,9 @@ function buildCaseResponse(
         requested_amount: requestedAmount,
         approved_amount: approvedAmount,
         actual_payout_amount: actualPayoutAmount,
+        verified_paid_amount: verifiedPaidAmount,
+        financial_payout_status: financialSummary?.payout_status || null,
+        financial_payout_proof: financialSummary?.proof_of_payment || null,
         billed_amount: typeof record.billed_amount === 'number'
             ? record.billed_amount
             : (typeof record.platform_fee_cents === 'number' && record.platform_fee_cents > 0 ? Number((record.platform_fee_cents / 100).toFixed(2)) : null),
@@ -1887,6 +1894,24 @@ router.get('/:id', async (req: Request, res: Response) => {
                     ? disputeCase.actual_payout_amount
                     : null);
 
+            let financialSummary: any | null = null;
+            try {
+                const financialTruth = await recoveryFinancialTruthService.getFinancialTruth({
+                    tenantId,
+                    caseIds: [disputeCase.id],
+                    storeId: disputeCase.store_id || linkedDetection?.store_id || null
+                });
+                financialSummary = (financialTruth.summaries || []).find((summary: any) =>
+                    summary.dispute_case_id === disputeCase.id || summary.input_id === disputeCase.id
+                ) || null;
+            } catch (financialTruthError: any) {
+                logger.warn('Failed to enrich Case Detail with canonical financial truth', {
+                    disputeCaseId: disputeCase.id,
+                    tenantId,
+                    error: financialTruthError?.message || String(financialTruthError)
+                });
+            }
+
             const events = includeEvents
                 ? await fetchEventsForRecovery(disputeCase.id, userId, tenantId)
                 : [];
@@ -1909,7 +1934,8 @@ router.get('/:id', async (req: Request, res: Response) => {
                     case_messages: caseMessages
                 },
                 findingTruth,
-                linkedDetection
+                linkedDetection,
+                financialSummary
             ));
         }
 
