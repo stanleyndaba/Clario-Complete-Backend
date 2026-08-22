@@ -382,7 +382,8 @@ function analyzeRecoveryCohort(
                 seller_id: sellerId,
                 sync_id: syncId,
                 anomaly_type: detection_type,
-                estimated_value: overValue,
+                // An orphan reimbursement is a clawback-risk review, not a new seller recovery.
+                estimated_value: 0,
                 detection_type,
                 sku: baseSku,
                 loss_count: cohort.loss_events.length,
@@ -750,7 +751,12 @@ export async function storeSentinelResults(results: SentinelDetectionResult[]): 
             source_type: sourceType,
             anomaly_type: 'reimbursement_duplicate_missed',
             severity: r.severity,
-            estimated_value: r.detection_type === 'missed_reimbursement' ? r.estimated_recovery : r.clawback_risk_value,
+            // A proven orphan-reimbursement clawback risk is review-only exposure, not recovery.
+            estimated_value: r.detection_type === 'clawback_risk'
+                ? 0
+                : r.detection_type === 'missed_reimbursement'
+                    ? r.estimated_recovery
+                    : r.clawback_risk_value,
             currency: r.currency,
             confidence_score: r.confidence_score,
             evidence: {
@@ -761,6 +767,10 @@ export async function storeSentinelResults(results: SentinelDetectionResult[]): 
                 sku: r.sku,
                 quantity_gap: r.quantity_gap,
                 value_gap: r.value_gap,
+                potential_exposure_value: r.detection_type === 'clawback_risk' ? r.clawback_risk_value : 0,
+                value_label: r.detection_type === 'clawback_risk' ? 'potential_exposure' : 'estimated_recovery',
+                review_tier: r.detection_type === 'clawback_risk' ? 'review_only' : undefined,
+                claim_readiness: r.detection_type === 'clawback_risk' ? 'not_claim_ready' : 'claim_candidate',
                 unmatched_loss_ids: r.unmatched_loss_ids,
                 duplicate_reimbursement_ids: r.duplicate_reimbursement_ids,
                 recommended_action: r.recommended_action,
