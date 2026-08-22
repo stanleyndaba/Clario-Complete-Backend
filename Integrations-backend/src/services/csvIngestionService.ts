@@ -2397,7 +2397,10 @@ export class CSVIngestionService {
                     disposition: getField(r, 'Disposition', 'disposition') || null,
                     reason: getField(r, 'Reason', 'reason') || null,
                     reference_id: getField(r, 'Reference ID', 'reference_id', 'ReferenceId', 'ref_id', 'event_id', 'EventId', 'eventId') || null,
-                    unit_cost: null,
+                    unit_cost: parseOptionalNumericField(
+                        getField(r, 'Unit Cost', 'unit_cost', 'UnitCost', 'Unit Price', 'unit_price', 'UnitPrice', 'Price', 'price'),
+                        'unit cost'
+                    ),
                     average_sales_price: null,
                     country: getField(r, 'Country', 'country') || 'US',
                     raw_payload: r,

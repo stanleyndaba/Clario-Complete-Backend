@@ -574,8 +574,8 @@ describe('CSV ingestion repair', () => {
   it('ingests an Amazon Ledger TSV end-to-end with lossless reference and SKU identifiers', async () => {
     const highPrecisionReference = '900719925474099312345';
     const tsv = [
-      'Date\tEvent Type\tFNSKU\tASIN\tMSKU\tQuantity\tReference ID\tFulfillment Center\tDisposition',
-      `2026-03-18T00:00:00Z\tReceipts\tFNSKU-001\tB000000001\t0000123456\t5\t${highPrecisionReference}\tPHX6\tSELLABLE`,
+      'Date\tEvent Type\tFNSKU\tASIN\tMSKU\tQuantity\tReference ID\tFulfillment Center\tDisposition\tUnit Cost',
+      `2026-03-18T00:00:00Z\tReceipts\tFNSKU-001\tB000000001\t0000123456\t5\t${highPrecisionReference}\tPHX6\tSELLABLE\t15.75`,
     ].join('\n');
 
     const result = await service.ingestFiles(
@@ -594,6 +594,7 @@ describe('CSV ingestion repair', () => {
       reference_id: highPrecisionReference,
       quantity: 5,
       fulfillment_center: 'PHX6',
+      unit_cost: 15.75,
     });
     expect(typeof inserts.inventory_ledger_events?.[0]?.reference_id).toBe('string');
     expect(inserts.inventory_ledger_events?.[0]?.raw_payload?.['Reference ID']).toBe(highPrecisionReference);
