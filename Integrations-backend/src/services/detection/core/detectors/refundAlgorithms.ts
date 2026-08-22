@@ -216,7 +216,21 @@ export function detectRefundWithoutReturn(
         reimbursementsByOrderId.set(reimb.order_id, existing);
     }
 
-    for (const refund of data.refund_events) {
+    const remainingReimbursementById = new Map(
+        (data.reimbursement_events || []).map((reimb) => [
+            reimb.id,
+            {
+                quantity: Math.max(0, Number(reimb.quantity_reimbursed || 0)),
+                value: Math.max(0, Number(reimb.reimbursement_amount || 0)),
+            },
+        ])
+    );
+    const refunds = [...data.refund_events].sort((left, right) => {
+        const byDate = new Date(left.refund_date).getTime() - new Date(right.refund_date).getTime();
+        return byDate || String(left.id).localeCompare(String(right.id));
+    });
+
+    for (const refund of refunds) {
         const refundDate = new Date(refund.refund_date);
         const daysSinceRefund = daysBetween(refundDate, now);
         
@@ -276,8 +290,25 @@ export function detectRefundWithoutReturn(
         });
 
         const currencyMatchMode: RefundWithoutReturnEvidence['currency_match_mode'] = currencyMismatchDetected ? 'mismatch' : 'parity';
-        const totalReimbursedQty = matchingReimbs.reduce((sum, r) => sum + (r.quantity_reimbursed || 0), 0);
-        const totalReimbursedValue = matchingReimbs.reduce((sum, r) => sum + (r.reimbursement_amount || 0), 0);
+        let totalReimbursedQty = 0;
+        let totalReimbursedValue = 0;
+        for (const reimb of matchingReimbs.sort((left, right) => {
+            const byDate = new Date(left.reimbursement_date).getTime() - new Date(right.reimbursement_date).getTime();
+            return byDate || String(left.id).localeCompare(String(right.id));
+        })) {
+            const remaining = remainingReimbursementById.get(reimb.id);
+            if (!remaining) continue;
+
+            const quantityNeeded = Math.max(0, quantityRefunded - totalReturnedQty - totalReimbursedQty);
+            const valueNeeded = Math.max(0, refund.refund_amount - (totalReturnedQty * (refund.refund_amount / quantityRefunded)) - totalReimbursedValue);
+            const allocatedQuantity = Math.min(quantityNeeded, remaining.quantity);
+            const allocatedValue = Math.min(valueNeeded, remaining.value);
+
+            totalReimbursedQty += allocatedQuantity;
+            totalReimbursedValue += allocatedValue;
+            remaining.quantity -= allocatedQuantity;
+            remaining.value -= allocatedValue;
+        }
 
         // Reconciliation Math
         const unresolvedUnits = Math.max(0, quantityRefunded - totalReturnedQty - totalReimbursedQty);

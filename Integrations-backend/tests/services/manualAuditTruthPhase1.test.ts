@@ -800,6 +800,29 @@ describe('Manual Audit truth test phase 1', () => {
     });
   });
 
+  it('ADVERSARIAL-RF-ONE-REIMB-TWO-REFUNDS: one reimbursement cannot suppress two distinct mature refunds', async () => {
+    const ingestion = await service.ingestFiles(SELLER_A, [
+      file('adversarial-two-refunds-one-reimbursement.csv', [
+        'SettlementId,PostedDate,TransactionType,Amount,Fees,CurrencyCode,AmazonOrderId,Quantity',
+        'ADVERSARIAL-RF-ONE-REIMB-REFUND-1,2026-06-01T00:00:00Z,refund,(100),0,USD,ADVERSARIAL-RF-ONE-REIMB-ORDER-1,1',
+        'ADVERSARIAL-RF-ONE-REIMB-REFUND-2,2026-06-02T00:00:00Z,refund,(100),0,USD,ADVERSARIAL-RF-ONE-REIMB-ORDER-1,1',
+        'ADVERSARIAL-RF-ONE-REIMB-REIMB-1,2026-06-05T00:00:00Z,reimbursement,100,0,USD,ADVERSARIAL-RF-ONE-REIMB-ORDER-1,1',
+      ].join('\n')),
+    ], { explicitType: 'settlements', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+
+    expect(ingestion.success).toBe(true);
+    const actual = await enhancedDetectionService.triggerDetectionPipeline(
+      SELLER_A,
+      ingestion.syncId,
+      'manual',
+      { tenantId: TENANT_A, source: 'manual_truth_test' },
+    );
+
+    expect(actual).toMatchObject({ success: true, estimatedRecovery: 100 });
+    const refunds = (tables.detection_results || []).filter((row) => row.anomaly_type === 'refund_no_return');
+    expect(refunds.reduce((sum, row) => sum + Number(row.estimated_value || 0), 0)).toBe(100);
+  });
+
   it('OVL-REFUND-SENTINEL: Refund Trap owns the USD 60 refund residual while Sentinel stays zero-value integrity evidence', async () => {
     const ingestion = await service.ingestFiles(SELLER_A, [
       file('ovl-refund-sentinel-settlements.csv', [
