@@ -49,6 +49,7 @@ function toOptionalAmount(value: unknown): number | null {
 }
 
 function toNullableFiniteAmount(value: unknown): number | null {
+    if (value === null || value === undefined || value === '') return null;
     const parsed = Number(value);
     return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
 }
@@ -670,7 +671,12 @@ function deriveNextStepContext(
     record: any,
     documents: any[],
     entityType: 'dispute_case' | 'detection',
-    evidenceTruth?: CanonicalEvidenceTruth | null
+    evidenceTruth?: CanonicalEvidenceTruth | null,
+    financialSummary?: {
+        verified_paid_amount?: number | null;
+        outstanding_amount?: number | null;
+        payout_status?: string | null;
+    } | null
 ) {
     const status = String(record?.status || '').toLowerCase();
     const filingStatus = String(record?.filing_status || '').toLowerCase();
@@ -685,7 +691,15 @@ function deriveNextStepContext(
     const rejectionReason = record?.rejection_reason || null;
     const evidenceCount = evidenceTruth?.linkedDocumentCount ?? getEvidenceDocumentCount(documents);
     const hasEvidence = evidenceCount > 0;
-    const actualPayoutAmount = toOptionalAmount(record?.recovered_amount ?? record?.actual_payout_amount);
+    const recordedPayoutAmount = toOptionalAmount(record?.recovered_amount ?? record?.actual_payout_amount);
+    const verifiedPaidAmount = toNullableFiniteAmount(financialSummary?.verified_paid_amount) ?? 0;
+    const outstandingAmount = toNullableFiniteAmount(financialSummary?.outstanding_amount);
+    const canonicalPayoutStatus = String(financialSummary?.payout_status || '').trim().toLowerCase();
+    const hasCanonicalPayment = Boolean(financialSummary && (
+        canonicalPayoutStatus ||
+        financialSummary?.verified_paid_amount != null ||
+        financialSummary?.outstanding_amount != null
+    ));
 
     if (entityType === 'detection') {
         return hasEvidence
@@ -730,12 +744,23 @@ function deriveNextStepContext(
         };
     }
 
-    if (actualPayoutAmount !== null && actualPayoutAmount > 0) {
+    if (hasCanonicalPayment && canonicalPayoutStatus === 'partially_paid') {
+        return {
+            key: 'partial_payout_review',
+            title: 'Partial payout received',
+            description: outstandingAmount !== null
+                ? `Margin verified a partial payment. ${outstandingAmount.toFixed(2)} remains outstanding.`
+                : 'Margin verified a partial payment. The remaining balance needs review.',
+            generated: false
+        };
+    }
+
+    if (hasCanonicalPayment && canonicalPayoutStatus === 'paid' && outstandingAmount !== null && outstandingAmount <= 0.01) {
         if (BILLING_COMPLETE_STATUSES.has(billingStatus)) {
             return {
                 key: 'billing_completed',
                 title: 'Billing completed',
-                description: 'Recovery payout has been reconciled and billing is complete.',
+                description: 'Payment has been verified from financial evidence and billing is complete.',
                 generated: false
             };
         }
@@ -743,20 +768,27 @@ function deriveNextStepContext(
         if (billingStatus === 'pending') {
             return {
                 key: 'billing_pending',
-                title: 'Billing pending',
-                description: 'Payout is reconciled. Billing is the next system step.',
+                title: 'Verified payout; billing pending',
+                description: 'Payment has been verified from financial evidence. Billing is the next system step.',
                 generated: false
             };
         }
 
-        if (recoveryStatus === 'reconciled') {
-            return {
-                key: 'payout_reconciled',
-                title: 'Payout reconciled',
-                description: 'Funds were detected and reconciled against this case.',
-                generated: false
-            };
-        }
+        return {
+            key: 'payout_reconciled',
+            title: 'Payout reconciled',
+            description: 'Payment has been verified from financial evidence and reconciled against this case.',
+            generated: false
+        };
+    }
+
+    if (recordedPayoutAmount !== null && recordedPayoutAmount > 0 && (!hasCanonicalPayment || canonicalPayoutStatus === 'not_paid')) {
+        return {
+            key: 'recorded_payout_unverified',
+            title: 'Recorded payout needs verification',
+            description: 'A payout is recorded on this case, but Margin has not verified matching financial payment evidence yet.',
+            generated: false
+        };
     }
 
     if (status === 'approved' || toOptionalAmount(record?.approved_amount) !== null || ['approved', 'paid'].includes(normalize(record?.case_state))) {
@@ -775,33 +807,6 @@ function deriveNextStepContext(
             description: evidenceTruth.missingRequirements.includes('proof_snapshot')
                 ? 'Evidence is linked, but Margin cannot verify the canonical filing requirements for this case yet.'
                 : 'Linked evidence exists, but the required filing documents for this claim type are still incomplete.',
-            generated: false
-        };
-    }
-
-    if (billingStatus === 'completed') {
-        return {
-            key: 'billing_completed',
-            title: 'Billing completed',
-            description: 'Recovery payout has been reconciled and billing is complete.',
-            generated: false
-        };
-    }
-
-    if (billingStatus === 'pending' && recoveryStatus === 'reconciled' && actualPayoutAmount !== null && actualPayoutAmount > 0) {
-        return {
-            key: 'billing_pending',
-            title: 'Billing pending',
-            description: 'Payout is reconciled. Billing is the next system step.',
-            generated: false
-        };
-    }
-
-    if (recoveryStatus === 'reconciled' && actualPayoutAmount !== null && actualPayoutAmount > 0) {
-        return {
-            key: 'payout_reconciled',
-            title: 'Payout reconciled',
-            description: 'Funds were detected and reconciled against this case.',
             generated: false
         };
     }
@@ -894,7 +899,14 @@ function buildCaseResponse(
     },
     findingTruth?: any | null,
     sourceDetection?: any | null,
-    financialSummary?: { verified_paid_amount?: number | null; payout_status?: string | null; proof_of_payment?: any | null } | null
+    financialSummary?: {
+        approved_amount?: number | null;
+        verified_paid_amount?: number | null;
+        outstanding_amount?: number | null;
+        variance_amount?: number | null;
+        payout_status?: string | null;
+        proof_of_payment?: any | null;
+    } | null
 ) {
     const recordEvidence = parseJsonObject(record?.evidence);
     const detectionEvidence = parseJsonObject(sourceDetection?.evidence);
@@ -913,7 +925,7 @@ function buildCaseResponse(
         ? record.claim_amount
         : (typeof record?.estimated_recovery_amount === 'number'
             ? record.estimated_recovery_amount
-            : (typeof record?.estimated_value === 'number' ? record.estimated_value : 0)));
+            : (typeof record?.estimated_value === 'number' ? record.estimated_value : null)));
     const hasApprovalTruth = record?.has_approval_truth === true;
     const approvedAmount = hasApprovalTruth ? toOptionalAmount(record?.approved_amount) : null;
     const actualPayoutAmount = typeof record?.recovered_amount === 'number'
@@ -955,6 +967,14 @@ function buildCaseResponse(
         : null;
     const resolvedSku = firstString(record?.sku, combinedEvidence?.sku, sourceDetection?.sku, 'N/A');
     const resolvedAsin = firstString(record?.asin, combinedEvidence?.asin, sourceDetection?.asin);
+    const resolvedFnsku = firstString(
+        record?.fnsku,
+        combinedEvidence?.fnsku,
+        combinedEvidence?.FNSKU,
+        sourceDetection?.fnsku,
+        detectionEvidence?.fnsku,
+        detectionEvidence?.FNSKU
+    );
     const resolvedFacility = firstString(
         record?.facility,
         record?.warehouse,
@@ -1006,6 +1026,7 @@ function buildCaseResponse(
         ...combinedEvidence,
         sku: resolvedSku,
         asin: resolvedAsin,
+        fnsku: resolvedFnsku,
         fulfillment_center: resolvedFacility || combinedEvidence?.fulfillment_center || null,
         quantity_gap: resolvedUnitsLost ?? combinedEvidence?.quantity_gap ?? null,
         missing_quantity: resolvedUnitsLost ?? combinedEvidence?.missing_quantity ?? null,
@@ -1069,6 +1090,7 @@ function buildCaseResponse(
         expectedPayoutDate: record.expected_payout_date || null,
         sku: resolvedSku || 'N/A',
         asin: resolvedAsin,
+        fnsku: resolvedFnsku,
         productName: resolvedProductName || 'Unknown Product',
         amazonCaseId: record.amazon_case_id || record.provider_case_id || null,
         case_state: threadTruth?.case_state || record.case_state || (record.amazon_case_id ? 'pending' : 'unlinked'),
@@ -1090,7 +1112,8 @@ function buildCaseResponse(
         facility: resolvedFacility,
         order_id: record.order_id || combinedEvidence?.order_id || sourceDetection?.order_id || null,
         units_lost: resolvedUnitsLost,
-        units_is_verified: record.units_is_verified === true || resolvedUnitsLost !== null,
+        units_is_verified: record.units_is_verified === true,
+        unit_quantity_source: record.units_is_verified === true ? 'observed_case_quantity' : (resolvedUnitsLost !== null ? 'derived_evidence_quantity' : 'unavailable'),
         unit_cost: resolvedUnitCost,
         value_per_unit: resolvedValuePerUnit,
         confidence_score: firstNumber(record?.confidence_score, record?.confidence, sourceDetection?.confidence_score, sourceDetection?.confidence, evidenceAttachments?.match_confidence),
@@ -1104,8 +1127,11 @@ function buildCaseResponse(
             : requestedAmount),
         requested_amount: requestedAmount,
         approved_amount: approvedAmount,
+        recorded_payout_amount: actualPayoutAmount,
         actual_payout_amount: actualPayoutAmount,
-        verified_paid_amount: verifiedPaidAmount,
+        verified_paid_amount: verifiedPaidAmount ?? 0,
+        outstanding_amount: toNullableFiniteAmount(financialSummary?.outstanding_amount),
+        variance_amount: toNullableFiniteAmount(financialSummary?.variance_amount),
         financial_payout_status: financialSummary?.payout_status || null,
         financial_payout_proof: financialSummary?.proof_of_payment || null,
         billed_amount: typeof record.billed_amount === 'number'
@@ -1135,7 +1161,7 @@ function buildCaseResponse(
         safety_audit: record?.safety_audit || evidenceAttachments?.safety_audit || combinedEvidence?.safety_audit || null,
         autonomous_logic_summary: record?.autonomous_logic_summary || combinedEvidence?.autonomous_logic_summary || null,
         generated_context: buildGeneratedContext(record),
-        next_step_context: deriveNextStepContext(record, documents, entityTruth.entity_type, evidenceTruth),
+        next_step_context: deriveNextStepContext(record, documents, entityTruth.entity_type, evidenceTruth, financialSummary),
         events,
         ...generateCaseStrategy(strategyRecord)
     };
