@@ -211,7 +211,14 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
                 if (e.event_type === 'Adjustment' && (['F', 'P'].includes(e.reason || '') || !e.reason)) resolveAdj += q;
             } else {
                 warehouseOut += q;
-                if (e.event_type === 'Adjustment' && (['M', 'E', 'D', 'N'].includes(e.reason || '') || !e.reason)) claimAdj += q;
+                const ageDays = (syncTime - new Date(e.event_date).getTime()) / (1000 * 60 * 60 * 24);
+                if (
+                    e.event_type === 'Adjustment'
+                    && ageDays >= MATURITY_WINDOW_DAYS
+                    && (['M', 'E', 'D', 'N'].includes(e.reason || '') || !e.reason)
+                ) {
+                    claimAdj += q;
+                }
             }
         }
 
