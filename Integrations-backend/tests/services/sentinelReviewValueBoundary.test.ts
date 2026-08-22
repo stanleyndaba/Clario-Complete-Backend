@@ -123,4 +123,65 @@ describe('Sentinel review value boundary', () => {
       claim_readiness: 'not_claim_ready',
     });
   });
+
+  it('keeps an asymmetric reimbursement reversal as zero-value review exposure', async () => {
+    tables.settlements = [
+      {
+        id: 'reimb-asymmetric-1',
+        tenant_id: 'tenant-sentinel',
+        user_id: 'seller-sentinel',
+        sync_id: 'csv_sentinel_asymmetric_1',
+        settlement_id: 'SETTLEMENT-ASYMMETRIC-1',
+        transaction_type: 'reimbursement',
+        amount: 100,
+        currency: 'USD',
+        order_id: 'ORDER-ASYMMETRIC-1',
+        settlement_date: '2026-08-01T00:00:00.000Z',
+        metadata: {},
+        source: 'csv_upload',
+        created_at: '2026-08-01T00:00:00.000Z',
+      },
+      {
+        id: 'reversal-asymmetric-1',
+        tenant_id: 'tenant-sentinel',
+        user_id: 'seller-sentinel',
+        sync_id: 'csv_sentinel_asymmetric_1',
+        settlement_id: 'SETTLEMENT-ASYMMETRIC-2',
+        transaction_type: 'reimbursement',
+        amount: -120,
+        currency: 'USD',
+        order_id: 'ORDER-ASYMMETRIC-1',
+        settlement_date: '2026-08-02T00:00:00.000Z',
+        metadata: {},
+        source: 'csv_upload',
+        created_at: '2026-08-02T00:00:00.000Z',
+      },
+    ];
+
+    const results = await runSentinelDetection('seller-sentinel', 'csv_sentinel_asymmetric_1');
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      detection_type: 'ASYMMETRIC_CLAWBACK',
+      estimated_value: 0,
+      estimated_recovery: 0,
+      clawback_risk_value: 20,
+      recommended_action: 'escalate',
+    });
+    expect(tables.detection_results).toHaveLength(1);
+    expect(tables.detection_results[0]).toMatchObject({
+      anomaly_type: 'reimbursement_duplicate_missed',
+      estimated_value: 0,
+      tenant_id: 'tenant-sentinel',
+      seller_id: 'seller-sentinel',
+      source_type: 'csv_upload',
+    });
+    expect(tables.detection_results[0].evidence).toMatchObject({
+      detection_type: 'ASYMMETRIC_CLAWBACK',
+      potential_exposure_value: 20,
+      value_label: 'potential_exposure',
+      review_tier: 'review_only',
+      claim_readiness: 'not_claim_ready',
+    });
+  });
 });

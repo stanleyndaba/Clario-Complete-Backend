@@ -424,7 +424,8 @@ function analyzeRecoveryCohort(
                 seller_id: sellerId,
                 sync_id: syncId,
                 anomaly_type: 'ASYMMETRIC_CLAWBACK',
-                estimated_value: delta,
+                // An asymmetric reimbursement reversal is review-only exposure, not a new seller recovery.
+                estimated_value: 0,
                 detection_type: 'ASYMMETRIC_CLAWBACK',
                 sku: baseSku,
                 loss_count: cohort.loss_events.length,
@@ -433,7 +434,7 @@ function analyzeRecoveryCohort(
                 value_gap: -delta,
                 unmatched_loss_ids: [],
                 duplicate_reimbursement_ids: [...cohort.reimbursement_events.map(r=>r.id), ...cohort.reversal_events.map(r=>r.id)],
-                estimated_recovery: delta,
+                estimated_recovery: 0,
                 clawback_risk_value: delta,
                 currency: 'USD',
                 severity: 'high',
@@ -744,15 +745,17 @@ export async function storeSentinelResults(results: SentinelDetectionResult[]): 
 
             return Array.from(fingerprints);
         };
-        const records = results.map(r => ({
+        const records = results.map(r => {
+            const isReviewOnlyRisk = r.detection_type === 'clawback_risk' || r.detection_type === 'ASYMMETRIC_CLAWBACK';
+            return ({
             seller_id: r.seller_id,
             tenant_id: tenantId,
             sync_id: r.sync_id,
             source_type: sourceType,
             anomaly_type: 'reimbursement_duplicate_missed',
             severity: r.severity,
-            // A proven orphan-reimbursement clawback risk is review-only exposure, not recovery.
-            estimated_value: r.detection_type === 'clawback_risk'
+            // Clawback-related Sentinel signals are review-only exposure, not seller recovery.
+            estimated_value: isReviewOnlyRisk
                 ? 0
                 : r.detection_type === 'missed_reimbursement'
                     ? r.estimated_recovery
@@ -767,10 +770,10 @@ export async function storeSentinelResults(results: SentinelDetectionResult[]): 
                 sku: r.sku,
                 quantity_gap: r.quantity_gap,
                 value_gap: r.value_gap,
-                potential_exposure_value: r.detection_type === 'clawback_risk' ? r.clawback_risk_value : 0,
-                value_label: r.detection_type === 'clawback_risk' ? 'potential_exposure' : 'estimated_recovery',
-                review_tier: r.detection_type === 'clawback_risk' ? 'review_only' : undefined,
-                claim_readiness: r.detection_type === 'clawback_risk' ? 'not_claim_ready' : 'claim_candidate',
+                potential_exposure_value: isReviewOnlyRisk ? r.clawback_risk_value : 0,
+                value_label: isReviewOnlyRisk ? 'potential_exposure' : 'estimated_recovery',
+                review_tier: isReviewOnlyRisk ? 'review_only' : undefined,
+                claim_readiness: isReviewOnlyRisk ? 'not_claim_ready' : 'claim_candidate',
                 unmatched_loss_ids: r.unmatched_loss_ids,
                 duplicate_reimbursement_ids: r.duplicate_reimbursement_ids,
                 recommended_action: r.recommended_action,
@@ -782,7 +785,8 @@ export async function storeSentinelResults(results: SentinelDetectionResult[]): 
             deadline_date: deadlineIso,
             days_remaining: daysRemaining,
             updated_at: nowIso
-        }));
+        });
+        });
 
         const { data: existing, error: existingError } = await supabaseAdmin
             .from('detection_results')
