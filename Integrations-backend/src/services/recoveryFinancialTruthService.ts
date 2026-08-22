@@ -350,9 +350,18 @@ class RecoveryFinancialTruthService {
     }
 
     const references = buildReferenceSet(context);
+    const contextOrderId = normalize(context.order_id);
+    const eventOrderId = normalize(event?.amazon_order_id);
+
+    // An event with an explicit, conflicting order identity cannot become payment
+    // truth through the weaker shared SKU/ASIN fallback path.
+    if (contextOrderId && eventOrderId && eventOrderId !== contextOrderId) {
+      return false;
+    }
+
     let score = 0;
 
-    if (context.order_id && normalize(event?.amazon_order_id) === normalize(context.order_id)) {
+    if (contextOrderId && eventOrderId === contextOrderId) {
       score += 6;
     }
 

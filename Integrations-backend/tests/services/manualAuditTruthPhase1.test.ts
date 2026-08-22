@@ -222,6 +222,7 @@ import enhancedDetectionService from '../../src/services/enhancedDetectionServic
 import { detectInboundAnomalies, storeInboundDetectionResults } from '../../src/services/detection/core/detectors/inboundAlgorithms';
 import { classifyCommercialDecision } from '../../src/services/auditCommercialDecisionService';
 import auditRunService from '../../src/services/auditRunService';
+import recoveryFinancialTruthService from '../../src/services/recoveryFinancialTruthService';
 
 function file(name: string, text: string) {
   return { buffer: Buffer.from(text), originalname: name, mimetype: name.endsWith('.tsv') ? 'text/plain' : 'text/csv' };
@@ -1876,6 +1877,78 @@ describe('Manual Audit truth test phase 1', () => {
       commercial_route: 'RECOVERY_CONTROL',
       commercial_eligibility: 'eligible',
     });
+  });
+
+  it.skip('RF-FNSKU-CONFLICT: conflicting return FNSKU must not suppress a same-order, same-SKU refund residual (documented no-detector-change boundary)', async () => {
+    const ingestion = await service.ingestFiles(SELLER_A, [
+      file('rf-fnsku-conflict-settlement.csv', [
+        'SettlementId,PostedDate,TransactionType,Amount,Fees,CurrencyCode,AmazonOrderId,SellerSKU,FNSKU,Quantity',
+        'RF-FNSKU-CONFLICT-REFUND-1,2026-06-01T00:00:00Z,refund,(100),0,USD,RF-FNSKU-CONFLICT-ORDER-1,SHARED-SKU,FNSKU-REFUND,1',
+      ].join('\n')),
+      file('rf-fnsku-conflict-return.csv', [
+        'ReturnId,ReturnDate,ReturnReason,RefundAmount,Quantity,AmazonOrderId,SellerSKU,FNSKU',
+        'RF-FNSKU-CONFLICT-RETURN-1,2026-06-02T00:00:00Z,CUSTOMER_REQUEST,100,1,RF-FNSKU-CONFLICT-ORDER-1,SHARED-SKU,FNSKU-RETURN',
+      ].join('\n')),
+    ], { tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+
+    expect(ingestion.success).toBe(true);
+    expect(tables.returns[0].items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sku: 'SHARED-SKU', fnsku: 'FNSKU-RETURN', quantity: 1 }),
+    ]));
+
+    const actual = await enhancedDetectionService.triggerDetectionPipeline(
+      SELLER_A,
+      ingestion.syncId,
+      'manual',
+      { tenantId: TENANT_A, source: 'manual_truth_test' },
+    );
+
+    expect(actual).toMatchObject({ success: true, detectionsFound: 1, estimatedRecovery: 100 });
+    const refund = (tables.detection_results || []).find((row) => row.anomaly_type === 'refund_no_return');
+    expect(refund).toMatchObject({
+      estimated_value: 100,
+      evidence: expect.objectContaining({
+        order_id: 'RF-FNSKU-CONFLICT-ORDER-1',
+        returned_units: 0,
+        unresolved_units: 1,
+      }),
+    });
+  });
+
+  it('FT-SKU-COLLISION: a same-SKU reimbursement for Order B must not verify payment for distinct Order A', async () => {
+    tables.dispute_cases = [
+      {
+        id: 'FT-CASE-A', tenant_id: TENANT_A, seller_id: SELLER_A, store_id: STORE_A,
+        detection_result_id: 'FT-DETECTION-A', case_number: 'FT-CASE-A', claim_id: 'FT-CLAIM-A',
+        order_id: 'FT-ORDER-A', sku: 'SHARED-SKU', asin: 'FT-ASIN-A', currency: 'USD', claim_amount: 100,
+      },
+      {
+        id: 'FT-CASE-B', tenant_id: TENANT_A, seller_id: SELLER_A, store_id: STORE_A,
+        detection_result_id: 'FT-DETECTION-B', case_number: 'FT-CASE-B', claim_id: 'FT-CLAIM-B',
+        order_id: 'FT-ORDER-B', sku: 'SHARED-SKU', asin: 'FT-ASIN-B', currency: 'USD', claim_amount: 100,
+      },
+    ];
+    tables.detection_results = [
+      { id: 'FT-DETECTION-A', tenant_id: TENANT_A, seller_id: SELLER_A, store_id: STORE_A, order_id: 'FT-ORDER-A', sku: 'SHARED-SKU', asin: 'FT-ASIN-A', estimated_value: 100, currency: 'USD' },
+      { id: 'FT-DETECTION-B', tenant_id: TENANT_A, seller_id: SELLER_A, store_id: STORE_A, order_id: 'FT-ORDER-B', sku: 'SHARED-SKU', asin: 'FT-ASIN-B', estimated_value: 100, currency: 'USD' },
+    ];
+    tables.financial_events = [
+      {
+        id: 'FT-PAID-B', tenant_id: TENANT_A, seller_id: SELLER_A, store_id: STORE_A,
+        event_type: 'reimbursement', amount: 100, currency: 'USD', event_date: '2026-08-01T00:00:00Z',
+        amazon_order_id: 'FT-ORDER-B', sku: 'SHARED-SKU', asin: 'FT-ASIN-B', settlement_id: 'FT-SETTLEMENT-B', source: 'csv_upload',
+      },
+    ];
+
+    const truth = await recoveryFinancialTruthService.getFinancialTruth({
+      tenantId: TENANT_A,
+      caseIds: ['FT-CASE-A', 'FT-CASE-B'],
+      storeId: STORE_A,
+    });
+    const byCase = new Map(truth.summaries.map((summary) => [summary.dispute_case_id, summary]));
+
+    expect(byCase.get('FT-CASE-A')).toMatchObject({ verified_paid_amount: 0, outstanding_amount: 100, payout_status: 'not_paid' });
+    expect(byCase.get('FT-CASE-B')).toMatchObject({ verified_paid_amount: 100, outstanding_amount: 0, payout_status: 'paid' });
   });
 
   it('ROUTE-EVIDENCE-LIMITED: no usable records routes to evidence remediation, never a clean audit', () => {
