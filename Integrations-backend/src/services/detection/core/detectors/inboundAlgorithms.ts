@@ -433,7 +433,8 @@ export function detectShipmentShortage(sellerId: string, syncId: string, data: I
         if (claimableUnits <= 0) continue;
 
         // Round 4: Selective Dust Floor (Only for approximation-heavy residuals)
-        const isApproximation = totalReimbValue > 0;
+        const isApproximation = totalReimbValue > 0 &&
+            Math.abs(totalReimbValue % valuation.value) > (valuation.value * 0.5);
         const dustFloorSuppressed = claimableUnits < 2 && isApproximation;
         if (dustFloorSuppressed) continue;
 

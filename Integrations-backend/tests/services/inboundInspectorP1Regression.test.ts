@@ -87,6 +87,42 @@ describe('Inbound Inspector P1 Connected Audit regression', () => {
     },
   );
 
+  it('retains an exact one-unit inbound shortage residual after one exact reimbursed unit', () => {
+    const results = detectInboundAnomalies('manual-user', 'manual-partial-reimb-sync', {
+      seller_id: 'manual-user',
+      sync_id: 'manual-partial-reimb-sync',
+      inbound_shipment_items: [{
+        id: 'manual-partial-reimb-item-1',
+        seller_id: 'manual-user',
+        shipment_id: 'MANUAL-PARTIAL-REIMB-SHP-1',
+        sku: 'SKU-PARTIAL-REIMB-1',
+        quantity_shipped: 10,
+        quantity_received: 8,
+        shipment_status: 'CLOSED',
+        shipment_created_date: '2026-04-01T00:00:00.000Z',
+        shipment_closed_date: '2026-05-01T00:00:00.000Z',
+        created_at: '2026-05-01T00:00:00.000Z',
+      }],
+      reimbursement_events: [{
+        seller_id: 'manual-user',
+        shipment_id: 'MANUAL-PARTIAL-REIMB-SHP-1',
+        sku: 'SKU-PARTIAL-REIMB-1',
+        reimbursement_amount: 20,
+        reimbursement_date: '2026-05-05T00:00:00.000Z',
+      }],
+    } as any);
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ anomaly_type: 'shipment_shortage', estimated_value: 20 });
+    expect(results[0].evidence).toMatchObject({
+      reimbursed_value: 20,
+      estimated_reimbursed_units_equivalent: 1,
+      unresolved_units: 2,
+      claimable_units: 1,
+      dust_floor_suppressed: false,
+    });
+  });
+
   it('keeps direct manual evidence evaluation available without invoking the Connected Audit source gate', () => {
     const results = detectInboundAnomalies('manual-user', 'manual-sync', {
       seller_id: 'manual-user',
