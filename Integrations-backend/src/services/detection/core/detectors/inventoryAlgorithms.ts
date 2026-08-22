@@ -230,7 +230,7 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
 
         if (physicalLoss > 0.1) {
             const firstLossDate = sorted.find(e => e.quantity_direction === 'out')?.event_date || new Date().toISOString();
-            const reData = findReimbursements(fnsku, data.financial_events || [], firstLossDate, sellerId, [...fcs][0]);
+            const reData = findReimbursements(fnsku, sorted[0].sku, data.financial_events || [], firstLossDate, sellerId, [...fcs][0]);
             
             let nettingFactor = 0;
             if (['DIRECT_ID', 'CAUSAL'].includes(reData.linkage)) nettingFactor = 1.0;
@@ -397,15 +397,20 @@ function deduplicateLedger(events: InventoryLedgerEvent[]): InventoryLedgerEvent
     return [...results.values()];
 }
 
-function findReimbursements(fnsku: string, events: any[], lossDate: string, sellerId: string, fc?: string): { 
+function findReimbursements(fnsku: string, sku: string | undefined, events: any[], lossDate: string, sellerId: string, fc?: string): { 
     totalMatched: number, fullNetUnits: number, partialNetUnits: number, linkage: ReimbursementLinkageType, modifier: number 
 } {
     let totalMatched = 0; let fullNetUnits = 0; let partialNetUnits = 0; let best: ReimbursementLinkageType = 'NONE';
-    const target = fnsku.trim().toUpperCase();
+    const targetFnsku = fnsku.trim().toUpperCase();
+    const targetSku = String(sku || '').trim().toUpperCase();
     for (const re of events) {
         if (re.seller_id && re.seller_id !== sellerId) continue;
-        const reFnsku = (re.fnsku || re.sku || '').trim().toUpperCase();
-        if (reFnsku !== target) continue;
+        const reimbursementFnsku = String(re.fnsku || '').trim().toUpperCase();
+        const reimbursementSku = String(re.sku || '').trim().toUpperCase();
+        const matchesIdentity = reimbursementFnsku
+            ? reimbursementFnsku === targetFnsku
+            : Boolean(targetSku && reimbursementSku && reimbursementSku === targetSku);
+        if (!matchesIdentity) continue;
         const reDate = new Date(re.approval_date || re.created_at || re.date); const lDate = new Date(lossDate);
         const diff = Math.abs(reDate.getTime() - lDate.getTime()) / (1000 * 3600 * 24);
         const qty = (re.quantity || 4);
