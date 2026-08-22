@@ -2111,6 +2111,7 @@ export class CSVIngestionService {
                     items: [{
                         sku: getField(r, 'sku', 'SKU', 'sellerSku', 'seller_sku') || null,
                         asin: getField(r, 'asin', 'ASIN') || null,
+                        fnsku: getField(r, 'FNSKU', 'fnsku', 'FulfillmentNetworkSKU', 'fulfillmentNetworkSku') || null,
                         quantity: parseRequiredNumericField(getField(r, 'quantity', 'Quantity'), 'quantity'),
                     }],
                     is_partial: false,

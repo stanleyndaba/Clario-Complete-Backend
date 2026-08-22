@@ -855,6 +855,27 @@ describe('CSV ingestion repair', () => {
     }
   });
 
+  it('preserves supplied Manual Return FNSKU for damaged-return reimbursement reconciliation', async () => {
+    const returnCsv = [
+      'ReturnId,ReturnDate,ReturnReason,RefundAmount,Quantity,AmazonOrderId,SKU,ASIN,FNSKU,Disposition',
+      'RETURN-FNSKU-EVIDENCE-1,2026-03-18T00:00:00Z,DAMAGED,20,1,ORDER-RETURN-FNSKU-EVIDENCE-1,SKU-RETURN-FNSKU-EVIDENCE-1,ASIN-RETURN-FNSKU-EVIDENCE-1,FNSKU-RETURN-FNSKU-EVIDENCE-1,DAMAGED',
+    ].join('\n');
+
+    const result = await service.ingestFiles(userId, [
+      { buffer: Buffer.from(returnCsv), originalname: 'return-fnsku-evidence.csv', mimetype: 'text/csv' },
+    ], { explicitType: 'returns', triggerDetection: false, tenantId });
+
+    expect(result.success).toBe(true);
+    expect(inserts.returns?.find((row) => row.return_id === 'RETURN-FNSKU-EVIDENCE-1')).toMatchObject({
+      items: [{
+        sku: 'SKU-RETURN-FNSKU-EVIDENCE-1',
+        asin: 'ASIN-RETURN-FNSKU-EVIDENCE-1',
+        fnsku: 'FNSKU-RETURN-FNSKU-EVIDENCE-1',
+        quantity: 1,
+      }],
+    });
+  });
+
   it('rejects invalid required Manual Return quantities and preserves explicit zero', async () => {
     const makeReturn = (returnId: string, quantity: string) => [
       'ReturnId,ReturnDate,ReturnReason,RefundAmount,Quantity,AmazonOrderId',
