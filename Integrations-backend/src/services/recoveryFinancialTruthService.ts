@@ -44,10 +44,11 @@ type FinancialTruthSummary = {
   detection_result_id: string | null;
   requested_amount: number | null;
   approved_amount: number | null;
-  verified_paid_amount: number;
+  verified_paid_amount: number | null;
   outstanding_amount: number | null;
   variance_amount: number | null;
   payout_status: 'not_paid' | 'partially_paid' | 'paid';
+  reversal_state: 'none_observed' | 'reversed' | 'review_required' | 'unavailable';
   financial_event_count: number;
   reimbursement_event_count: number;
   settlement_event_count: number;
@@ -102,6 +103,36 @@ function isReimbursementEvent(row: any): boolean {
 function isSettlementEvent(row: any): boolean {
   const eventType = normalizeEventType(row?.event_type);
   return eventType.includes('settlement') || row?.is_payout_event === true;
+}
+
+function financialEventDescriptor(row: any): string {
+  return [row?.event_type, row?.event_subtype, row?.reference_type]
+    .map((value) => normalizeEventType(value))
+    .filter(Boolean)
+    .join(' ');
+}
+
+function isReversalEquivalentEvent(row: any): boolean {
+  const descriptor = financialEventDescriptor(row);
+  return descriptor.includes('reversal') || descriptor.includes('chargeback');
+}
+
+function isConclusiveReimbursementReversal(row: any): boolean {
+  const descriptor = financialEventDescriptor(row);
+  return descriptor.includes('reimbursement') && descriptor.includes('reversal');
+}
+
+function sharedPaymentReference(left: FinancialTruthEvent, right: FinancialTruthEvent): boolean {
+  const leftReferences = [left.reference_id, left.settlement_id, left.payout_batch_id, left.amazon_event_id]
+    .map((value) => normalize(value))
+    .filter(Boolean);
+  const rightReferences = new Set(
+    [right.reference_id, right.settlement_id, right.payout_batch_id, right.amazon_event_id]
+      .map((value) => normalize(value))
+      .filter(Boolean)
+  );
+
+  return leftReferences.some((reference) => rightReferences.has(reference));
 }
 
 function extractComparableSku(row: any): string {
@@ -408,18 +439,51 @@ class RecoveryFinancialTruthService {
 
   private buildSummary(context: FinancialContext, events: FinancialTruthEvent[]): FinancialTruthSummary {
     const sortedEvents = [...events].sort((left, right) => new Date(right.event_date || 0).getTime() - new Date(left.event_date || 0).getTime());
-    const reimbursementEvents = sortedEvents.filter((event) => isReimbursementEvent(event) && event.amount > 0);
+    const reimbursementEvents = sortedEvents.filter((event) => isReimbursementEvent(event) && event.amount > 0 && !isReversalEquivalentEvent(event));
     const settlementEvents = sortedEvents.filter((event) => isSettlementEvent(event));
-    const verifiedPaidAmount = Number(reimbursementEvents.reduce((sum, event) => sum + toAmount(event.amount), 0).toFixed(2));
+    const reversalEvents = sortedEvents.filter((event) => isReversalEquivalentEvent(event));
+    const conclusiveReversals = reversalEvents.filter((event) => isConclusiveReimbursementReversal(event));
+    const conclusivelyReversedPaymentIds = new Set<string>();
+
+    for (const reversal of conclusiveReversals) {
+      for (const payment of reimbursementEvents) {
+        if (!sharedPaymentReference(payment, reversal)) continue;
+        if (Math.abs(reversal.amount) + 0.01 >= payment.amount) {
+          conclusivelyReversedPaymentIds.add(payment.event_id);
+        }
+      }
+    }
+
+    const allPaymentsConclusiveReversed = reimbursementEvents.length > 0 && reimbursementEvents.every((event) => conclusivelyReversedPaymentIds.has(event.event_id));
+    const hasReversalReview = reversalEvents.length > 0 && !allPaymentsConclusiveReversed;
     const targetAmount = context.approved_amount ?? context.requested_amount;
-    const outstandingAmount = targetAmount == null ? null : Number(Math.max(targetAmount - verifiedPaidAmount, 0).toFixed(2));
-    const varianceAmount = targetAmount == null ? null : Number((verifiedPaidAmount - targetAmount).toFixed(2));
-    const payoutStatus: 'not_paid' | 'partially_paid' | 'paid' =
-      verifiedPaidAmount <= 0
-        ? 'not_paid'
-        : targetAmount != null && verifiedPaidAmount + 0.01 < targetAmount
-          ? 'partially_paid'
-          : 'paid';
+
+    let verifiedPaidAmount: number | null = null;
+    let outstandingAmount: number | null = null;
+    let varianceAmount: number | null = null;
+    let payoutStatus: FinancialTruthSummary['payout_status'] = 'not_paid';
+    let reversalState: FinancialTruthSummary['reversal_state'] = reversalEvents.length > 0 ? 'review_required' : 'unavailable';
+
+    if (allPaymentsConclusiveReversed) {
+      verifiedPaidAmount = 0;
+      payoutStatus = 'not_paid';
+      reversalState = 'reversed';
+      if (targetAmount !== null) {
+        outstandingAmount = Number(targetAmount.toFixed(2));
+        varianceAmount = Number((-targetAmount).toFixed(2));
+      }
+    } else if (hasReversalReview) {
+      payoutStatus = 'not_paid';
+      reversalState = 'review_required';
+    } else if (reimbursementEvents.length > 0) {
+      verifiedPaidAmount = Number(reimbursementEvents.reduce((sum, event) => sum + toAmount(event.amount), 0).toFixed(2));
+      reversalState = 'none_observed';
+      if (targetAmount !== null) {
+        outstandingAmount = Number(Math.max(targetAmount - verifiedPaidAmount, 0).toFixed(2));
+        varianceAmount = Number((verifiedPaidAmount - targetAmount).toFixed(2));
+        payoutStatus = verifiedPaidAmount + 0.01 < targetAmount ? 'partially_paid' : 'paid';
+      }
+    }
 
     const proofEvent = reimbursementEvents.find((event) => event.settlement_id || event.payout_batch_id)
       || reimbursementEvents[0]
@@ -437,20 +501,21 @@ class RecoveryFinancialTruthService {
       outstanding_amount: outstandingAmount,
       variance_amount: varianceAmount,
       payout_status: payoutStatus,
+      reversal_state: reversalState,
       financial_event_count: sortedEvents.length,
       reimbursement_event_count: reimbursementEvents.length,
       settlement_event_count: settlementEvents.length,
       latest_event_date: sortedEvents[0]?.event_date || null,
       proof_of_payment: proofEvent
         ? {
-            amount: proofEvent.amount,
-            currency: proofEvent.currency,
-            event_date: proofEvent.event_date,
-            reference_id: proofEvent.reference_id,
-            settlement_id: proofEvent.settlement_id,
-            payout_batch_id: proofEvent.payout_batch_id,
-            source: proofEvent.source
-          }
+          amount: proofEvent.amount,
+          currency: proofEvent.currency,
+          event_date: proofEvent.event_date,
+          reference_id: proofEvent.reference_id,
+          settlement_id: proofEvent.settlement_id,
+          payout_batch_id: proofEvent.payout_batch_id,
+          source: proofEvent.source
+        }
         : null,
       source_types: Array.from(new Set(sortedEvents.map((event) => String(event.source || '').trim()).filter(Boolean)))
     };

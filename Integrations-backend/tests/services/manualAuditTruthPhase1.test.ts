@@ -2031,7 +2031,7 @@ describe('Manual Audit truth test phase 1', () => {
     });
     const byCase = new Map(truth.summaries.map((summary) => [summary.dispute_case_id, summary]));
 
-    expect(byCase.get('FT-CASE-A')).toMatchObject({ verified_paid_amount: 0, outstanding_amount: 100, payout_status: 'not_paid' });
+    expect(byCase.get('FT-CASE-A')).toMatchObject({ verified_paid_amount: null, outstanding_amount: null, payout_status: 'not_paid' });
     expect(byCase.get('FT-CASE-B')).toMatchObject({ verified_paid_amount: 100, outstanding_amount: 0, payout_status: 'paid' });
   });
 

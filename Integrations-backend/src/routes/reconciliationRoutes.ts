@@ -40,10 +40,26 @@ router.post('/:recoveryId/reconcile', authenticateToken, async (req: any, res) =
       });
     }
 
-    const expectedAmount = parseFloat(recovery.claim_amount || recovery.amount || 842.17);
+    const expectedAmountCandidate = recovery.claim_amount ?? recovery.amount ?? null;
+    const expectedAmount = expectedAmountCandidate === null || expectedAmountCandidate === undefined || expectedAmountCandidate === ''
+      ? null
+      : Number(expectedAmountCandidate);
     const expectedCurrency = recovery.currency || 'USD';
     const expectedDate = recovery.created_at ? new Date(recovery.created_at) : new Date();
     const expectedReference = recovery.case_id || recovery.reference || null;
+
+    if (expectedAmount === null || !Number.isFinite(expectedAmount)) {
+      return res.status(422).json({
+        success: false,
+        error: 'expected_amount_unavailable',
+        message: 'Accounting reconciliation cannot proceed because the recovery expected amount is unavailable.',
+        data: {
+          expected_amount: null,
+          currency: expectedCurrency,
+          reconciliation_status: 'unavailable'
+        }
+      });
+    }
 
     // Fetch artifacts from provider with explicit error boundary
     let artifacts = [];

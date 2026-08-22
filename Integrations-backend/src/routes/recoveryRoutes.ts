@@ -676,6 +676,7 @@ function deriveNextStepContext(
         verified_paid_amount?: number | null;
         outstanding_amount?: number | null;
         payout_status?: string | null;
+        reversal_state?: string | null;
     } | null
 ) {
     const status = String(record?.status || '').toLowerCase();
@@ -692,14 +693,10 @@ function deriveNextStepContext(
     const evidenceCount = evidenceTruth?.linkedDocumentCount ?? getEvidenceDocumentCount(documents);
     const hasEvidence = evidenceCount > 0;
     const recordedPayoutAmount = toOptionalAmount(record?.recovered_amount ?? record?.actual_payout_amount);
-    const verifiedPaidAmount = toNullableFiniteAmount(financialSummary?.verified_paid_amount) ?? 0;
+    const verifiedPaidAmount = toNullableFiniteAmount(financialSummary?.verified_paid_amount);
     const outstandingAmount = toNullableFiniteAmount(financialSummary?.outstanding_amount);
     const canonicalPayoutStatus = String(financialSummary?.payout_status || '').trim().toLowerCase();
-    const hasCanonicalPayment = Boolean(financialSummary && (
-        canonicalPayoutStatus ||
-        financialSummary?.verified_paid_amount != null ||
-        financialSummary?.outstanding_amount != null
-    ));
+    const hasCanonicalPayment = Boolean(financialSummary && canonicalPayoutStatus && canonicalPayoutStatus !== 'unavailable');
 
     if (entityType === 'detection') {
         return hasEvidence
@@ -744,6 +741,17 @@ function deriveNextStepContext(
         };
     }
 
+    if (financialSummary && ['reversed', 'review_required'].includes(String(financialSummary.reversal_state || '').trim().toLowerCase())) {
+        return {
+            key: 'reversal_review',
+            title: String(financialSummary.reversal_state || '').trim().toLowerCase() === 'reversed' ? 'Payment reversed' : 'Payment reversal needs review',
+            description: String(financialSummary.reversal_state || '').trim().toLowerCase() === 'reversed'
+                ? 'A reimbursement reversal is established. Margin must reconcile the reversal before this recovery can close.'
+                : 'A reversal-equivalent financial event needs relationship review before this recovery can be treated as paid or closed.',
+            generated: false
+        };
+    }
+
     if (hasCanonicalPayment && canonicalPayoutStatus === 'partially_paid') {
         return {
             key: 'partial_payout_review',
@@ -756,28 +764,10 @@ function deriveNextStepContext(
     }
 
     if (hasCanonicalPayment && canonicalPayoutStatus === 'paid' && outstandingAmount !== null && outstandingAmount <= 0.01) {
-        if (BILLING_COMPLETE_STATUSES.has(billingStatus)) {
-            return {
-                key: 'billing_completed',
-                title: 'Billing completed',
-                description: 'Payment has been verified from financial evidence and billing is complete.',
-                generated: false
-            };
-        }
-
-        if (billingStatus === 'pending') {
-            return {
-                key: 'billing_pending',
-                title: 'Verified payout; billing pending',
-                description: 'Payment has been verified from financial evidence. Billing is the next system step.',
-                generated: false
-            };
-        }
-
         return {
-            key: 'payout_reconciled',
-            title: 'Payout reconciled',
-            description: 'Payment has been verified from financial evidence and reconciled against this case.',
+            key: 'verified_payout_accounting_review',
+            title: 'Verified payout; accounting review required',
+            description: 'Payment has been verified from financial evidence. Financial closure still requires explicit accounting reconciliation and reversal-safe review.',
             generated: false
         };
     }
@@ -880,6 +870,222 @@ function buildGeneratedContext(record: any) {
     };
 }
 
+type CaseDetailAccountingTruth = {
+    status: 'not_connected' | 'not_run' | 'reconciled' | 'partial_match' | 'needs_review' | 'unmatched' | 'unavailable';
+    provider: string | null;
+    matched_amount: number | null;
+    difference: number | null;
+    reconciled_at: string | null;
+    limitation: string | null;
+};
+
+function triStateSafetyEvaluation(value: unknown, basis: string) {
+    if (value === true) return { state: 'yes', basis, evaluated_at: null };
+    if (value === false) return { state: 'no', basis, evaluated_at: null };
+    return { state: 'not_assessed', basis: 'No safety evaluation recorded', evaluated_at: null };
+}
+
+function resolveSafetyFlag(...values: unknown[]): boolean | null {
+    if (values.some((value) => value === true)) return true;
+    if (values.some((value) => value === false)) return false;
+    return null;
+}
+
+function deriveClosureTruth(
+    record: any,
+    financialSummary: {
+        verified_paid_amount?: number | null;
+        outstanding_amount?: number | null;
+        payout_status?: string | null;
+        reversal_state?: string | null;
+    } | null | undefined,
+    accountingTruth: CaseDetailAccountingTruth
+) {
+    const payoutStatus = normalize(financialSummary?.payout_status);
+    const reversalState = normalize(financialSummary?.reversal_state);
+    const verifiedPaid = toNullableFiniteAmount(financialSummary?.verified_paid_amount);
+    const outstanding = toNullableFiniteAmount(financialSummary?.outstanding_amount);
+    const approvalExists = record?.has_approval_truth === true || toOptionalAmount(record?.approved_amount) !== null || normalize(record?.status) === 'approved';
+    const requirementsMet: string[] = [];
+    const requirementsOpen: string[] = [];
+
+    if (!financialSummary) {
+        return {
+            state: 'unavailable',
+            financially_closed: false,
+            requirements_met: requirementsMet,
+            requirements_open: ['Canonical financial evaluation is unavailable'],
+            closed_at: null,
+            closed_by: null,
+            reason: 'Margin cannot assess financial closure without canonical financial evaluation.'
+        };
+    }
+
+    if (payoutStatus === 'reversed' || payoutStatus === 'reversal_review' || reversalState === 'reversed' || reversalState === 'review_required') {
+        return {
+            state: 'reversal_review',
+            financially_closed: false,
+            requirements_met: requirementsMet,
+            requirements_open: ['Reversal evidence must be reconciled before closure'],
+            closed_at: null,
+            closed_by: null,
+            reason: payoutStatus === 'reversed'
+                ? 'A reimbursement reversal is established on the financial evidence.'
+                : 'A reversal-equivalent financial event requires relationship review before closure.'
+        };
+    }
+
+    if (payoutStatus === 'partially_paid') {
+        return {
+            state: 'partial_payment',
+            financially_closed: false,
+            requirements_met: verifiedPaid !== null ? ['Canonical verified payment exists'] : requirementsMet,
+            requirements_open: ['Outstanding balance remains'],
+            closed_at: null,
+            closed_by: null,
+            reason: 'Only a partial canonical payment has been established.'
+        };
+    }
+
+    if (payoutStatus !== 'paid' || verifiedPaid === null || outstanding === null) {
+        return {
+            state: approvalExists ? 'pending_payment' : 'payment_verification_pending',
+            financially_closed: false,
+            requirements_met: requirementsMet,
+            requirements_open: [approvalExists ? 'Canonical payout evidence is still required' : 'Canonical payment and target reconciliation are still required'],
+            closed_at: null,
+            closed_by: null,
+            reason: approvalExists
+                ? 'Amazon approval may exist, but canonical payment has not been established.'
+                : 'Canonical payment truth is not established for this record.'
+        };
+    }
+
+    requirementsMet.push('Canonical verified payment exists', 'Outstanding balance is established as zero', 'No reimbursement reversal is observed');
+    if (outstanding > 0.01) {
+        return {
+            state: 'partial_payment',
+            financially_closed: false,
+            requirements_met: requirementsMet.slice(0, 1),
+            requirements_open: ['Outstanding balance remains'],
+            closed_at: null,
+            closed_by: null,
+            reason: 'Payment is verified, but the established outstanding balance is not zero.'
+        };
+    }
+
+    if (accountingTruth.status !== 'reconciled') {
+        return {
+            state: 'accounting_review',
+            financially_closed: false,
+            requirements_met: requirementsMet,
+            requirements_open: [accountingTruth.limitation || 'Accounting reconciliation disposition is required'],
+            closed_at: null,
+            closed_by: null,
+            reason: 'Payment is verified, but financial closure remains open until accounting reconciliation is explicitly reconciled.'
+        };
+    }
+
+    requirementsMet.push('Accounting reconciliation is explicitly reconciled');
+    return {
+        state: 'financially_closed',
+        financially_closed: true,
+        requirements_met: requirementsMet,
+        requirements_open: [],
+        closed_at: accountingTruth.reconciled_at,
+        closed_by: accountingTruth.provider ? `${accountingTruth.provider} reconciliation` : 'Accounting reconciliation',
+        reason: 'Canonical payment is fully reconciled, reversal-safe, and explicitly matched to accounting evidence.'
+    };
+}
+
+async function loadCaseDetailAccountingTruth(tenantId: string, recoveryId: string): Promise<CaseDetailAccountingTruth> {
+    try {
+        const { data: reconciliation, error } = await supabaseAdmin
+            .from('recovery_reconciliations')
+            .select('provider, status, matched_amount, difference, reconciled_at')
+            .eq('tenant_id', tenantId)
+            .eq('recovery_id', recoveryId)
+            .maybeSingle();
+
+        if (error) {
+            return {
+                status: 'unavailable',
+                provider: null,
+                matched_amount: null,
+                difference: null,
+                reconciled_at: null,
+                limitation: 'Accounting reconciliation status could not be loaded.'
+            };
+        }
+
+        if (reconciliation) {
+            const normalizedStatus = normalize(reconciliation.status);
+            const status: CaseDetailAccountingTruth['status'] = normalizedStatus === 'reconciled'
+                ? 'reconciled'
+                : normalizedStatus === 'partial_match'
+                    ? 'partial_match'
+                    : normalizedStatus === 'needs_review'
+                        ? 'needs_review'
+                        : normalizedStatus === 'unmatched'
+                            ? 'unmatched'
+                            : 'unavailable';
+            return {
+                status,
+                provider: reconciliation.provider || null,
+                matched_amount: toNullableFiniteAmount(reconciliation.matched_amount),
+                difference: toNullableFiniteAmount(reconciliation.difference),
+                reconciled_at: reconciliation.reconciled_at || null,
+                limitation: status === 'reconciled' ? null : 'Accounting reconciliation is not yet reconciled.'
+            };
+        }
+
+        const { data: sources, error: sourcesError } = await supabaseAdmin
+            .from('evidence_sources')
+            .select('provider')
+            .eq('tenant_id', tenantId)
+            .in('provider', ['quickbooks', 'xero']);
+
+        if (sourcesError) {
+            return {
+                status: 'unavailable',
+                provider: null,
+                matched_amount: null,
+                difference: null,
+                reconciled_at: null,
+                limitation: 'Accounting connection status could not be loaded.'
+            };
+        }
+
+        const provider = Array.isArray(sources) && sources.length ? String(sources[0]?.provider || '') || null : null;
+        return provider
+            ? {
+                status: 'not_run',
+                provider,
+                matched_amount: null,
+                difference: null,
+                reconciled_at: null,
+                limitation: 'Accounting is connected, but no reconciliation has been run for this recovery.'
+            }
+            : {
+                status: 'not_connected',
+                provider: null,
+                matched_amount: null,
+                difference: null,
+                reconciled_at: null,
+                limitation: 'No accounting connection is recorded for this recovery.'
+            };
+    } catch {
+        return {
+            status: 'unavailable',
+            provider: null,
+            matched_amount: null,
+            difference: null,
+            reconciled_at: null,
+            limitation: 'Accounting reconciliation status is unavailable.'
+        };
+    }
+}
+
 function buildCaseResponse(
     record: any,
     documents: any[],
@@ -905,8 +1111,17 @@ function buildCaseResponse(
         outstanding_amount?: number | null;
         variance_amount?: number | null;
         payout_status?: string | null;
+        reversal_state?: string | null;
         proof_of_payment?: any | null;
-    } | null
+    } | null,
+    accountingTruth: CaseDetailAccountingTruth = {
+        status: 'unavailable',
+        provider: null,
+        matched_amount: null,
+        difference: null,
+        reconciled_at: null,
+        limitation: 'Accounting reconciliation status is unavailable.'
+    }
 ) {
     const recordEvidence = parseJsonObject(record?.evidence);
     const detectionEvidence = parseJsonObject(sourceDetection?.evidence);
@@ -947,16 +1162,26 @@ function buildCaseResponse(
         ? proofSnapshot.filingRecommendation
         : null;
     const missingRequirements = evidenceTruth?.missingRequirements || (entityTruth.entity_type === 'detection' ? ['case_creation_required'] : []);
-    const verifiedPaidAmount = toOptionalAmount(financialSummary?.verified_paid_amount);
-    const payoutProofStatus = verifiedPaidAmount != null && verifiedPaidAmount > 0
-        ? 'verified'
-        : actualPayoutAmount != null && actualPayoutAmount > 0
-            ? 'recorded_unverified'
-            : normalize(record?.recovery_status) === 'quarantined'
-                ? 'quarantined'
-                : hasApprovalTruth
-                    ? 'awaiting_payout'
-                    : 'not_applicable';
+    const verifiedPaidAmount = toNullableFiniteAmount(financialSummary?.verified_paid_amount);
+    const reversalState = financialSummary?.reversal_state || 'unavailable';
+    const financialPayoutStatus = reversalState === 'reversed'
+        ? 'reversed'
+        : reversalState === 'review_required'
+            ? 'reversal_review'
+            : verifiedPaidAmount === null
+                ? 'unavailable'
+                : (financialSummary?.payout_status || 'unavailable');
+    const payoutProofStatus = ['reversed', 'reversal_review'].includes(financialPayoutStatus)
+        ? 'reversal_review'
+        : verifiedPaidAmount != null && verifiedPaidAmount > 0 && financialPayoutStatus !== 'unavailable'
+            ? 'verified'
+            : actualPayoutAmount != null && actualPayoutAmount > 0
+                ? 'recorded_unverified'
+                : normalize(record?.recovery_status) === 'quarantined'
+                    ? 'quarantined'
+                    : hasApprovalTruth
+                        ? 'awaiting_payout'
+                        : 'unavailable';
     const manualReviewReason = Array.isArray(record?.block_reasons) && record.block_reasons.length > 0
         ? record.block_reasons[0]
         : Array.isArray(proofSnapshot?.riskFlags) && proofSnapshot.riskFlags.length > 0
@@ -1040,6 +1265,25 @@ function buildCaseResponse(
         asin: resolvedAsin,
         evidence: displayEvidence
     };
+    const priorReimbursementDetected = resolveSafetyFlag(record?.prior_reimbursement_detected, combinedEvidence?.prior_reimbursement_detected);
+    const inventoryAdjustmentApplied = resolveSafetyFlag(record?.inventory_adjustment_applied, combinedEvidence?.inventory_adjustment_applied);
+    const duplicateBlocked = resolveSafetyFlag(
+        record?.filing_status === 'duplicate_blocked' ? true : undefined,
+        record?.duplicate_blocked,
+        combinedEvidence?.duplicate_blocked
+    );
+    const safetyEvaluations = {
+        prior_reimbursement: triStateSafetyEvaluation(priorReimbursementDetected, 'Recorded reimbursement relationship evaluation'),
+        inventory_adjustment: triStateSafetyEvaluation(inventoryAdjustmentApplied, 'Recorded inventory adjustment evaluation'),
+        duplicate_claim: triStateSafetyEvaluation(duplicateBlocked, 'Recorded duplicate claim evaluation')
+    };
+    const unitQuantitySource = record?.units_is_verified === true
+        ? 'observed'
+        : (resolvedUnitsLost !== null ? 'derived' : 'unavailable');
+    const unitValueSource = record?.value_per_unit != null || combinedEvidence?.value_per_unit != null
+        ? 'observed'
+        : (unitCostFromDocuments !== null ? 'parsed_document' : (computedValuePerUnit !== null ? 'derived' : 'unavailable'));
+    const closureTruth = deriveClosureTruth(record, financialSummary, accountingTruth);
     const evidenceSummary = {
         matched_document_count: matchedDocumentCount,
         linked_document_count: matchedDocumentCount,
@@ -1113,7 +1357,8 @@ function buildCaseResponse(
         order_id: record.order_id || combinedEvidence?.order_id || sourceDetection?.order_id || null,
         units_lost: resolvedUnitsLost,
         units_is_verified: record.units_is_verified === true,
-        unit_quantity_source: record.units_is_verified === true ? 'observed_case_quantity' : (resolvedUnitsLost !== null ? 'derived_evidence_quantity' : 'unavailable'),
+        unit_quantity_source: unitQuantitySource,
+        unit_value_provenance: unitValueSource,
         unit_cost: resolvedUnitCost,
         value_per_unit: resolvedValuePerUnit,
         confidence_score: firstNumber(record?.confidence_score, record?.confidence, sourceDetection?.confidence_score, sourceDetection?.confidence, evidenceAttachments?.match_confidence),
@@ -1129,11 +1374,17 @@ function buildCaseResponse(
         approved_amount: approvedAmount,
         recorded_payout_amount: actualPayoutAmount,
         actual_payout_amount: actualPayoutAmount,
-        verified_paid_amount: verifiedPaidAmount ?? 0,
+        verified_paid_amount: verifiedPaidAmount,
         outstanding_amount: toNullableFiniteAmount(financialSummary?.outstanding_amount),
         variance_amount: toNullableFiniteAmount(financialSummary?.variance_amount),
-        financial_payout_status: financialSummary?.payout_status || null,
+        financial_payout_status: financialPayoutStatus,
+        financial_reversal_state: reversalState,
+        financial_truth_limitation: financialSummary
+            ? (financialPayoutStatus === 'unavailable' ? 'No canonical reimbursement payment has been established for this record.' : null)
+            : 'Canonical financial evaluation is unavailable for this record.',
         financial_payout_proof: financialSummary?.proof_of_payment || null,
+        accounting_truth: accountingTruth,
+        closure_truth: closureTruth,
         billed_amount: typeof record.billed_amount === 'number'
             ? record.billed_amount
             : (typeof record.platform_fee_cents === 'number' && record.platform_fee_cents > 0 ? Number((record.platform_fee_cents / 100).toFixed(2)) : null),
@@ -1154,9 +1405,10 @@ function buildCaseResponse(
         rejection_reason: record?.rejection_reason || null,
         block_reasons: Array.isArray(record?.block_reasons) ? record.block_reasons : [],
         last_error: record?.last_error || null,
-        duplicate_blocked: record.filing_status === 'duplicate_blocked' || record.duplicate_blocked === true,
-        prior_reimbursement_detected: record?.prior_reimbursement_detected === true || combinedEvidence?.prior_reimbursement_detected === true,
-        inventory_adjustment_applied: record?.inventory_adjustment_applied === true || combinedEvidence?.inventory_adjustment_applied === true,
+        duplicate_blocked: duplicateBlocked,
+        prior_reimbursement_detected: priorReimbursementDetected,
+        inventory_adjustment_applied: inventoryAdjustmentApplied,
+        safety_evaluations: safetyEvaluations,
         warehouse_history: record?.warehouse_history || combinedEvidence?.warehouse_history || null,
         safety_audit: record?.safety_audit || evidenceAttachments?.safety_audit || combinedEvidence?.safety_audit || null,
         autonomous_logic_summary: record?.autonomous_logic_summary || combinedEvidence?.autonomous_logic_summary || null,
@@ -1921,6 +2173,14 @@ router.get('/:id', async (req: Request, res: Response) => {
                     : null);
 
             let financialSummary: any | null = null;
+            let accountingTruth: CaseDetailAccountingTruth = {
+                status: 'unavailable',
+                provider: null,
+                matched_amount: null,
+                difference: null,
+                reconciled_at: null,
+                limitation: 'Accounting reconciliation status is unavailable.'
+            };
             try {
                 const financialTruth = await recoveryFinancialTruthService.getFinancialTruth({
                     tenantId,
@@ -1937,6 +2197,8 @@ router.get('/:id', async (req: Request, res: Response) => {
                     error: financialTruthError?.message || String(financialTruthError)
                 });
             }
+
+            accountingTruth = await loadCaseDetailAccountingTruth(tenantId, disputeCase.id);
 
             const events = includeEvents
                 ? await fetchEventsForRecovery(disputeCase.id, userId, tenantId)
@@ -1961,7 +2223,8 @@ router.get('/:id', async (req: Request, res: Response) => {
                 },
                 findingTruth,
                 linkedDetection,
-                financialSummary
+                financialSummary,
+                accountingTruth
             ));
         }
 

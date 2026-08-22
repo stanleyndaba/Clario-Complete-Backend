@@ -104,8 +104,16 @@ jest.mock('../../src/notifications/models/notification', () => ({
 }));
 jest.mock('../../src/services/financialWorkItemService', () => ({ __esModule: true, default: {} }));
 jest.mock('../../src/utils/tenantEventRouting', () => ({ resolveTenantSlug: jest.fn() }));
+jest.mock('../../src/middleware/authMiddleware', () => ({
+  authenticateToken: (_req: any, _res: any, next: () => void) => next(),
+}));
+jest.mock('../../src/utils/tokenManager', () => ({
+  __esModule: true,
+  default: { getToken: jest.fn(async () => 'controlled-accounting-token') },
+}));
 
 import recoveryRoutes from '../../src/routes/recoveryRoutes';
+import reconciliationRoutes from '../../src/routes/reconciliationRoutes';
 
 function buildCase(overrides: Partial<Row> = {}): Row {
   return {
@@ -145,10 +153,11 @@ function financialSummary(overrides: Partial<Row> = {}) {
     detection_result_id: null,
     requested_amount: 100,
     approved_amount: 100,
-    verified_paid_amount: 0,
-    outstanding_amount: 100,
-    variance_amount: -100,
-    payout_status: 'not_paid',
+      verified_paid_amount: null,
+      outstanding_amount: null,
+      variance_amount: null,
+      payout_status: 'unavailable',
+      reversal_state: 'unavailable',
     financial_event_count: 0,
     reimbursement_event_count: 0,
     settlement_event_count: 0,
@@ -164,10 +173,26 @@ function createApp() {
   app.use(express.json());
   app.use((req: any, _res, next) => {
     req.tenant = { tenantId: TENANT_ID, tenantSlug: TENANT_SLUG };
+    req.tenantId = TENANT_ID;
     req.user = { id: 'seller-case-detail' };
+    req.userId = 'seller-case-detail';
     next();
   });
   app.use('/api/recoveries', recoveryRoutes);
+  return app;
+}
+
+function createReconciliationApp() {
+  const app = express();
+  app.use(express.json());
+  app.use((req: any, _res, next) => {
+    req.tenant = { tenantId: TENANT_ID, tenantSlug: TENANT_SLUG };
+    req.tenantId = TENANT_ID;
+    req.user = { id: 'seller-case-detail' };
+    req.userId = 'seller-case-detail';
+    next();
+  });
+  app.use('/api/recoveries', reconciliationRoutes);
   return app;
 }
 
@@ -179,6 +204,9 @@ describe('Case Detail truth contract', () => {
     tables.evidence_documents = [];
     tables.dispute_submissions = [];
     tables.detection_results = [];
+    tables.financial_events = [];
+    tables.recovery_reconciliations = [];
+    tables.evidence_sources = [];
     financialTruthMock.mockReset();
     financialTruthMock.mockResolvedValue({ summaries: [financialSummary()], eventsByInputId: {} });
   });
@@ -191,14 +219,18 @@ describe('Case Detail truth contract', () => {
     expect(response.body).toMatchObject({
       approved_amount: 100,
       recorded_payout_amount: 100,
-      verified_paid_amount: 0,
-      payout_proof_status: 'recorded_unverified',
-      financial_payout_status: 'not_paid',
-      outstanding_amount: 100,
-      variance_amount: -100,
-      next_step_context: expect.objectContaining({
-        key: 'recorded_payout_unverified',
-      }),
+        verified_paid_amount: null,
+        payout_proof_status: 'recorded_unverified',
+        financial_payout_status: 'unavailable',
+        outstanding_amount: null,
+        variance_amount: null,
+        next_step_context: expect.objectContaining({
+          key: 'recorded_payout_unverified',
+        }),
+        closure_truth: expect.objectContaining({
+          financially_closed: false,
+          state: 'pending_payment',
+        }),
     });
   });
 
@@ -209,6 +241,7 @@ describe('Case Detail truth contract', () => {
         outstanding_amount: 40,
         variance_amount: -40,
         payout_status: 'partially_paid',
+        reversal_state: 'none_observed',
         financial_event_count: 1,
         reimbursement_event_count: 1,
         proof_of_payment: {
@@ -249,6 +282,7 @@ describe('Case Detail truth contract', () => {
         outstanding_amount: 0,
         variance_amount: 0,
         payout_status: 'paid',
+        reversal_state: 'none_observed',
         financial_event_count: 1,
         reimbursement_event_count: 1,
         proof_of_payment: {
@@ -277,7 +311,14 @@ describe('Case Detail truth contract', () => {
       outstanding_amount: 0,
       variance_amount: 0,
       next_step_context: expect.objectContaining({
-        key: 'billing_pending',
+        key: 'verified_payout_accounting_review',
+      }),
+      accounting_truth: expect.objectContaining({
+        status: 'not_connected',
+      }),
+      closure_truth: expect.objectContaining({
+        financially_closed: false,
+        state: 'accounting_review',
       }),
     });
   });
@@ -297,10 +338,11 @@ describe('Case Detail truth contract', () => {
     financialTruthMock.mockResolvedValue({ summaries: [financialSummary({
       requested_amount: null,
       approved_amount: null,
-      verified_paid_amount: 0,
+      verified_paid_amount: null,
       outstanding_amount: null,
       variance_amount: null,
-      payout_status: 'not_paid',
+      payout_status: 'unavailable',
+      reversal_state: 'unavailable',
     })], eventsByInputId: {} });
 
     const response = await request(createApp())
@@ -312,7 +354,7 @@ describe('Case Detail truth contract', () => {
       estimated_claim_value: null,
       approved_amount: null,
       recorded_payout_amount: null,
-      verified_paid_amount: 0,
+      verified_paid_amount: null,
       outstanding_amount: null,
       variance_amount: null,
     });
@@ -328,7 +370,152 @@ describe('Case Detail truth contract', () => {
       evidence: expect.objectContaining({ fnsku: 'FNSKU-DETAIL-1' }),
       units_lost: 3,
       units_is_verified: false,
-      unit_quantity_source: 'derived_evidence_quantity',
+      unit_quantity_source: 'derived',
+      unit_value_provenance: 'derived',
     });
+  });
+
+  it('RTR-10: a reimbursement reversal cannot remain paid or financially closed', async () => {
+    financialTruthMock.mockResolvedValue({
+      summaries: [financialSummary({
+        verified_paid_amount: 0,
+        outstanding_amount: 100,
+        variance_amount: -100,
+        payout_status: 'reversed',
+        reversal_state: 'reversed',
+        financial_event_count: 2,
+        reimbursement_event_count: 1,
+        proof_of_payment: {
+          amount: 100,
+          currency: 'USD',
+          event_date: '2026-08-21T11:00:00.000Z',
+          reference_id: 'ORDER-DETAIL-1',
+          settlement_id: 'SETTLEMENT-DETAIL-100',
+          payout_batch_id: null,
+          source: 'manual',
+        },
+      })],
+      eventsByInputId: {},
+    });
+
+    const response = await request(createApp())
+      .get(`/api/recoveries/${CASE_ID}?tenantSlug=${TENANT_SLUG}&includeEvents=false`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      verified_paid_amount: 0,
+      financial_payout_status: 'reversed',
+      financial_reversal_state: 'reversed',
+      next_step_context: expect.objectContaining({ key: 'reversal_review' }),
+      closure_truth: expect.objectContaining({
+        financially_closed: false,
+        state: 'reversal_review',
+      }),
+    });
+  });
+
+  it('RTR-09: financially closed requires verified payment, a zero established balance, and an explicit reconciled accounting disposition', async () => {
+    tables.recovery_reconciliations = [{
+      tenant_id: TENANT_ID,
+      recovery_id: CASE_ID,
+      provider: 'quickbooks',
+      status: 'RECONCILED',
+      matched_amount: 100,
+      difference: 0,
+      reconciled_at: '2026-08-22T09:00:00.000Z',
+    }];
+    financialTruthMock.mockResolvedValue({
+      summaries: [financialSummary({
+        verified_paid_amount: 100,
+        outstanding_amount: 0,
+        variance_amount: 0,
+        payout_status: 'paid',
+        reversal_state: 'none_observed',
+      })],
+      eventsByInputId: {},
+    });
+
+    const response = await request(createApp())
+      .get(`/api/recoveries/${CASE_ID}?tenantSlug=${TENANT_SLUG}&includeEvents=false`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      accounting_truth: expect.objectContaining({
+        status: 'reconciled',
+        provider: 'quickbooks',
+        reconciled_at: '2026-08-22T09:00:00.000Z',
+      }),
+      closure_truth: expect.objectContaining({
+        financially_closed: true,
+        state: 'financially_closed',
+        closed_at: '2026-08-22T09:00:00.000Z',
+      }),
+    });
+  });
+
+  it('RTR-12: absent safety fields remain not assessed rather than silently becoming negative conclusions', async () => {
+    const response = await request(createApp())
+      .get(`/api/recoveries/${CASE_ID}?tenantSlug=${TENANT_SLUG}&includeEvents=false`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      prior_reimbursement_detected: null,
+      inventory_adjustment_applied: null,
+      duplicate_blocked: null,
+      safety_evaluations: {
+        prior_reimbursement: expect.objectContaining({ state: 'not_assessed' }),
+        inventory_adjustment: expect.objectContaining({ state: 'not_assessed' }),
+        duplicate_claim: expect.objectContaining({ state: 'not_assessed' }),
+      },
+    });
+  });
+
+  it('RTR-10-SERVICE: a matched reimbursement reversal is evaluated as reversed by the canonical financial truth service', async () => {
+    tables.financial_events = [
+      {
+        id: 'payment-100', tenant_id: TENANT_ID, seller_id: 'seller-case-detail', store_id: 'store-case-detail',
+        event_type: 'reimbursement', event_subtype: 'fba_inventory_reimbursement', amount: 100, currency: 'USD',
+        event_date: '2026-08-21T10:00:00.000Z', amazon_order_id: 'ORDER-DETAIL-1', reference_id: 'ORDER-DETAIL-1',
+        settlement_id: 'SETTLEMENT-DETAIL-100', payout_batch_id: null, amazon_event_id: 'payment-100', source: 'manual', raw_payload: {},
+      },
+      {
+        id: 'reversal-100', tenant_id: TENANT_ID, seller_id: 'seller-case-detail', store_id: 'store-case-detail',
+        event_type: 'reimbursement', event_subtype: 'reimbursement_reversal', amount: -100, currency: 'USD',
+        event_date: '2026-08-22T10:00:00.000Z', amazon_order_id: 'ORDER-DETAIL-1', reference_id: 'ORDER-DETAIL-1',
+        settlement_id: 'SETTLEMENT-DETAIL-100', payout_batch_id: null, amazon_event_id: 'reversal-100', source: 'manual', raw_payload: {},
+      },
+    ];
+    const actualModule = jest.requireActual('../../src/services/recoveryFinancialTruthService') as typeof import('../../src/services/recoveryFinancialTruthService');
+    const result = await actualModule.recoveryFinancialTruthService.getFinancialTruth({
+      tenantId: TENANT_ID,
+      caseIds: [CASE_ID],
+      storeId: 'store-case-detail',
+    });
+
+    expect(result.summaries[0]).toMatchObject({
+      verified_paid_amount: 0,
+      outstanding_amount: 100,
+      payout_status: 'not_paid',
+      reversal_state: 'reversed',
+    });
+  });
+
+  it('RTR-RECONCILIATION-MISSING-AMOUNT: reconciliation is blocked without persisting or inventing an expected amount', async () => {
+    tables.dispute_cases = [buildCase({ claim_amount: null, amount: null })];
+
+    const response = await request(createReconciliationApp())
+      .post(`/api/recoveries/${CASE_ID}/reconcile?provider=quickbooks`);
+
+    expect(response.status).toBe(422);
+    expect(response.body).toMatchObject({
+      success: false,
+      error: 'expected_amount_unavailable',
+      data: expect.objectContaining({
+        expected_amount: null,
+        reconciliation_status: 'unavailable',
+      }),
+    });
+    expect(JSON.stringify(response.body)).not.toContain('842.17');
+    expect(tables.recovery_reconciliations).toHaveLength(0);
   });
 });
