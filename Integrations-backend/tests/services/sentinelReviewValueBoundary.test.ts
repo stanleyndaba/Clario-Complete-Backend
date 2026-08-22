@@ -124,6 +124,64 @@ describe('Sentinel review value boundary', () => {
     });
   });
 
+  it('keeps a strictly matched excess reimbursement as zero-value review exposure', async () => {
+    tables.inventory_ledger = [{
+      id: 'loss-excess-1',
+      tenant_id: 'tenant-sentinel',
+      user_id: 'seller-sentinel',
+      sync_id: 'csv_sentinel_excess_1',
+      adjustment_type: 'Lost',
+      event_date: '2026-08-01T00:00:00.000Z',
+      fnsku: 'FNSKU-SENTINEL-EXCESS-1',
+      sku: 'SKU-SENTINEL-EXCESS-1',
+      quantity: 1,
+      unit_price: 20,
+      source: 'csv_upload',
+    }];
+    tables.settlements = [{
+      id: 'reimb-excess-1',
+      tenant_id: 'tenant-sentinel',
+      user_id: 'seller-sentinel',
+      sync_id: 'csv_sentinel_excess_1',
+      settlement_id: 'SETTLEMENT-EXCESS-1',
+      transaction_type: 'reimbursement',
+      amount: 40,
+      currency: 'USD',
+      fnsku: 'FNSKU-SENTINEL-EXCESS-1',
+      quantity: 1,
+      settlement_date: '2026-08-02T00:00:00.000Z',
+      metadata: {},
+      source: 'csv_upload',
+      created_at: '2026-08-02T00:00:00.000Z',
+    }];
+
+    const results = await runSentinelDetection('seller-sentinel', 'csv_sentinel_excess_1');
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      detection_type: 'duplicate_reimbursement',
+      estimated_value: 0,
+      estimated_recovery: 0,
+      clawback_risk_value: 20,
+      recommended_action: 'review',
+    });
+    expect(tables.detection_results).toHaveLength(1);
+    expect(tables.detection_results[0]).toMatchObject({
+      anomaly_type: 'reimbursement_duplicate_missed',
+      estimated_value: 0,
+      tenant_id: 'tenant-sentinel',
+      seller_id: 'seller-sentinel',
+      source_type: 'csv_upload',
+    });
+    expect(tables.detection_results[0].evidence).toMatchObject({
+      detection_type: 'duplicate_reimbursement',
+      potential_exposure_value: 20,
+      value_label: 'potential_exposure',
+      review_tier: 'review_only',
+      claim_readiness: 'not_claim_ready',
+    });
+  });
+
   it('keeps an asymmetric reimbursement reversal as zero-value review exposure', async () => {
     tables.settlements = [
       {

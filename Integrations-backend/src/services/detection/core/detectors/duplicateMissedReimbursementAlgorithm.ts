@@ -582,10 +582,13 @@ export async function fetchLossEvents(sellerId: string, options: { lookbackDays?
 
             if (!ledgerEventsError && ledgerEvents) {
                 for (const row of ledgerEvents) {
+                    const eventType = mapEventType(row.adjustment_type || row.reason || row.event_type);
+                    // Manual ledger rows include receipts and calculated snapshots. Neither is loss evidence.
+                    if (eventType === 'adjustment') continue;
                     events.push({
                         id: row.id || `ledger-event-${row.event_date}-${row.fnsku}`,
                         seller_id: sellerId,
-                        event_type: mapEventType(row.reason || row.event_type),
+                        event_type: eventType,
                         event_date: row.event_date,
                         sku: row.sku,
                         fnsku: row.fnsku,
@@ -746,7 +749,9 @@ export async function storeSentinelResults(results: SentinelDetectionResult[]): 
             return Array.from(fingerprints);
         };
         const records = results.map(r => {
-            const isReviewOnlyRisk = r.detection_type === 'clawback_risk' || r.detection_type === 'ASYMMETRIC_CLAWBACK';
+            const isReviewOnlyRisk = r.detection_type === 'clawback_risk' ||
+                r.detection_type === 'ASYMMETRIC_CLAWBACK' ||
+                r.detection_type === 'duplicate_reimbursement';
             return ({
             seller_id: r.seller_id,
             tenant_id: tenantId,

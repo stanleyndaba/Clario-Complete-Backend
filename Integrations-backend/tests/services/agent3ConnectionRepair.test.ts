@@ -309,22 +309,53 @@ describe('Agent 3 production connection repair', () => {
       {
         tenant_id: 'tenant-a',
         user_id: 'user-1',
-        id: 'EV-1',
+        id: 'EV-RECEIPT',
         fnsku: 'FNSKU-1',
         sku: 'SKU-1',
         asin: 'ASIN-1',
-        event_type: 'Lost',
-        reason: 'Lost',
+        event_type: 'Receipt',
+        reason: null,
         quantity: 2,
         unit_cost: 15,
-        event_date: '2026-01-01T00:00:00Z',
+        event_date: '2026-06-01T00:00:00Z',
+      },
+      {
+        tenant_id: 'tenant-a',
+        user_id: 'user-1',
+        id: 'EV-LOSS',
+        fnsku: 'FNSKU-1',
+        sku: 'SKU-1',
+        asin: 'ASIN-1',
+        event_type: 'Adjustment',
+        reason: 'M',
+        quantity: 2,
+        unit_cost: 15,
+        event_date: '2026-06-02T00:00:00Z',
+      },
+      {
+        tenant_id: 'tenant-a',
+        user_id: 'user-1',
+        id: 'EV-SNAPSHOT',
+        fnsku: 'FNSKU-1',
+        sku: 'SKU-1',
+        asin: 'ASIN-1',
+        event_type: 'Snapshot',
+        reason: 'CSV ledger snapshot',
+        quantity: 0,
+        unit_cost: null,
+        event_date: '2026-06-03T00:00:00Z',
       },
     ];
 
     const lossEvents = await fetchLossEvents('user-1');
 
     expect(lossEvents).toHaveLength(1);
-    expect(lossEvents[0].fnsku).toBe('FNSKU-1');
+    expect(lossEvents[0]).toMatchObject({
+      id: 'EV-LOSS',
+      fnsku: 'FNSKU-1',
+      event_type: 'lost',
+      estimated_value: 30,
+    });
   });
 
   it('Transfer Loss can read tenant-scoped inventory transfers when the rail exists', async () => {
