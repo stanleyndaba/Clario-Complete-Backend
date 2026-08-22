@@ -368,6 +368,10 @@ function isAgent1AmazonToken(provider: string): boolean {
   return provider === 'amazon';
 }
 
+function isTenantScopedAccountingToken(provider: string): boolean {
+  return provider === 'quickbooks' || provider === 'xero';
+}
+
 export const tokenManager = {
   async saveToken(
     userId: string,
@@ -438,12 +442,21 @@ export const tokenManager = {
           throw new Error('Failed to save Amazon token');
         }
       } else {
-        let { data: existingToken, error: existingTokenError } = await adminClient
+        if (isTenantScopedAccountingToken(provider) && !tenantId) {
+          throw new Error(`${provider} token persistence requires tenantId.`);
+        }
+
+        const existingTokenQuery = adminClient
           .from('tokens')
           .select('id')
           .eq('user_id', dbUserId)
-          .eq('provider', provider)
-          .maybeSingle();
+          .eq('provider', provider);
+
+        if (isTenantScopedAccountingToken(provider)) {
+          existingTokenQuery.eq('tenant_id', tenantId!).is('store_id', null);
+        }
+
+        const { data: existingToken, error: existingTokenError } = await existingTokenQuery.maybeSingle();
 
         if (existingTokenError && existingTokenError.code !== 'PGRST116') {
           throw existingTokenError;
@@ -486,7 +499,8 @@ export const tokenManager = {
   async getToken(
     userId: string,
     provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
-    storeId?: string
+    storeId?: string,
+    tenantId?: string
   ): Promise<TokenRecord | null> {
     try {
       if (typeof supabase.from !== 'function') {
@@ -500,13 +514,19 @@ export const tokenManager = {
       // Convert non-UUID user IDs to the same deterministic UUID format used in saveToken
       const dbUserId = convertUserIdToUuid(userId);
 
+      if (isTenantScopedAccountingToken(provider) && !tenantId) {
+        throw new Error(`${provider} token lookup requires tenantId.`);
+      }
+
       const query = adminClient
         .from('tokens')
         .select('*')
         .eq('user_id', dbUserId)
         .eq('provider', provider);
 
-      if (storeId) {
+      if (isTenantScopedAccountingToken(provider)) {
+        query.eq('tenant_id', tenantId!).is('store_id', null);
+      } else if (storeId) {
         query.eq('store_id', storeId);
       } else {
         query.order('updated_at', { ascending: false }).limit(1);
@@ -570,6 +590,9 @@ export const tokenManager = {
       if (isAgent1AmazonToken(provider) && (!tenantId || !storeId)) {
         throw new Error('Amazon token updates require tenantId and storeId.');
       }
+      if (isTenantScopedAccountingToken(provider) && !tenantId) {
+        throw new Error(`${provider} token updates require tenantId.`);
+      }
 
       const query = adminClient
         .from('tokens')
@@ -592,6 +615,8 @@ export const tokenManager = {
 
       if (isAgent1AmazonToken(provider)) {
         query.eq('tenant_id', tenantId!).eq('store_id', storeId!);
+      } else if (isTenantScopedAccountingToken(provider)) {
+        query.eq('tenant_id', tenantId!).is('store_id', null);
       } else if (storeId) {
         query.eq('store_id', storeId);
       } else {
@@ -615,7 +640,8 @@ export const tokenManager = {
   async deleteToken(
     userId: string,
     provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
-    storeId?: string
+    storeId?: string,
+    tenantId?: string
   ): Promise<void> {
     try {
       if (typeof supabase.from !== 'function') {
@@ -625,14 +651,20 @@ export const tokenManager = {
 
       // Convert non-UUID user IDs to deterministic UUID
       const dbUserId = convertUserIdToUuid(userId);
+      if (isTenantScopedAccountingToken(provider) && !tenantId) {
+        throw new Error(`${provider} token deletion requires tenantId.`);
+      }
 
-      const query = supabase
+      const adminClient = supabaseAdmin || supabase;
+      const query = adminClient
         .from('tokens')
         .delete()
         .eq('user_id', dbUserId)
         .eq('provider', provider);
 
-      if (storeId) {
+      if (isTenantScopedAccountingToken(provider)) {
+        query.eq('tenant_id', tenantId!).is('store_id', null);
+      } else if (storeId) {
         query.eq('store_id', storeId);
       } else {
         query.is('store_id', null);

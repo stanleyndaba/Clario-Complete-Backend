@@ -13,7 +13,8 @@ import { getManagedTokenSourceFields } from '../utils/evidenceSourceRecordShape'
 import { buildEvidenceUserFilter } from '../services/evidenceSourceTruthService';
 
 type ProviderKey = 'amazon' | 'gmail' | 'outlook' | 'gdrive' | 'dropbox' | 'slack' | 'adobe_sign' | 'onedrive' | 'quickbooks' | 'xero';
-const DOC_TOKEN_PROVIDERS: ProviderKey[] = ['gmail', 'outlook', 'gdrive', 'dropbox', 'quickbooks', 'xero'];
+const DOC_TOKEN_PROVIDERS: ProviderKey[] = ['gmail', 'outlook', 'gdrive', 'dropbox'];
+const ACCOUNTING_PROVIDERS: ProviderKey[] = ['quickbooks', 'xero'];
 
 interface EvidenceFilters {
   senderPatterns: string[];
@@ -45,6 +46,10 @@ interface ProviderStatus {
   seller_resolved?: boolean;
   store_bound?: boolean;
   connection_truth_basis?: 'stored_token_and_binding';
+  accounting_read_status?: 'pending' | 'verified' | 'no_data' | 'failed' | 'reconnect_required';
+  accounting_last_read_at?: string;
+  accounting_record_count?: number;
+  accounting_record_types?: Array<'bill' | 'purchase' | 'accpay'>;
 }
 
 const DEFAULT_FILTERS: EvidenceFilters = {
@@ -118,6 +123,25 @@ function computeIngestionState(connected: boolean, authValid: boolean, hasData: 
   if (sourceStatus === 'error' || errorMessage) return 'failed';
   if (!authValid) return 'unverified';
   if (!hasData) return 'no_data';
+  return 'current';
+}
+
+function isAccountingProvider(provider: string): provider is 'quickbooks' | 'xero' {
+  return provider === 'quickbooks' || provider === 'xero';
+}
+
+function computeAccountingProviderState(
+  connected: boolean,
+  readStatus: ProviderStatus['accounting_read_status'] | undefined,
+  recordCount: number,
+  sourceStatus: string,
+  errorMessage?: string
+): ProviderStatus['ingestion_state'] {
+  if (!connected) return 'disconnected';
+  if (readStatus === 'failed' || sourceStatus === 'error' || errorMessage) return 'failed';
+  if (readStatus === 'reconnect_required') return 'unverified';
+  if (readStatus === 'pending' || !readStatus) return 'unverified';
+  if (readStatus === 'no_data' || recordCount === 0) return 'no_data';
   return 'current';
 }
 
@@ -376,6 +400,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
 
     // Check evidence sources from database for the resolved tenant only.
     let providerDocumentStats = new Map<string, { count: number; lastDocumentAt?: string }>();
+    let accountingRecordStats = new Map<string, { count: number; recordTypes: Set<'bill' | 'purchase' | 'accpay'> }>();
     let evidenceSources: Array<{
       id: string;
       provider: string;
@@ -386,6 +411,10 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       seller_id?: string;
       display_name?: string;
       metadata?: any;
+      accounting_read_status?: 'pending' | 'verified' | 'no_data' | 'failed' | 'reconnect_required' | null;
+      accounting_last_read_at?: string | null;
+      accounting_last_error?: string | null;
+      accounting_record_count?: number | null;
     }> = [];
 
     try {
@@ -406,9 +435,29 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         providerDocumentStats.set(key, current);
       }
 
+      const { data: accountingRecords, error: accountingRecordsError } = await adminClient
+        .from('accounting_records')
+        .select('provider, record_type')
+        .eq('tenant_id', tenant.id)
+        .eq('user_id', safeUserId);
+
+      if (accountingRecordsError) {
+        logger.warn('Failed to aggregate accounting record truth', { error: accountingRecordsError, tenantId: tenant.id });
+      } else {
+        for (const record of accountingRecords || []) {
+          if (!isAccountingProvider(record.provider)) continue;
+          const current = accountingRecordStats.get(record.provider) || { count: 0, recordTypes: new Set<'bill' | 'purchase' | 'accpay'>() };
+          current.count += 1;
+          if (record.record_type === 'bill' || record.record_type === 'purchase' || record.record_type === 'accpay') {
+            current.recordTypes.add(record.record_type);
+          }
+          accountingRecordStats.set(record.provider, current);
+        }
+      }
+
       const { data: evidenceSourceRows, error: sourcesError } = await adminClient
         .from('evidence_sources')
-        .select('id, provider, status, last_ingested_at, account_email, permissions, seller_id, display_name, metadata')
+        .select('id, provider, status, last_ingested_at, account_email, permissions, seller_id, display_name, metadata, accounting_read_status, accounting_last_read_at, accounting_last_error, accounting_record_count')
         .eq('tenant_id', tenant.id)
         .or(buildEvidenceUserFilter(userId));
 
@@ -444,12 +493,16 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
           response.providers.amazon.account_email = amazonSource.account_email || undefined;
         }
 
-        // Check if any non-Amazon evidence source is connected
-        const hasConnectedSource = productEvidenceSources.some(source => source.provider !== 'amazon' && source.status === 'connected');
+        // Generic document evidence is intentionally separate from accounting evidence.
+        const hasConnectedSource = productEvidenceSources.some(source =>
+          source.provider !== 'amazon' && !isAccountingProvider(source.provider) && source.status === 'connected'
+        );
         response.docs_connected = hasConnectedSource;
 
-        // Get last ingestion time
-        const connectedSources = productEvidenceSources.filter(source => source.provider !== 'amazon' && source.status === 'connected');
+        // Get last generic document-ingestion time without accounting-source leakage.
+        const connectedSources = productEvidenceSources.filter(source =>
+          source.provider !== 'amazon' && !isAccountingProvider(source.provider) && source.status === 'connected'
+        );
         if (connectedSources.length > 0) {
           const lastIngest = connectedSources
             .map(source => source.last_ingested_at)
@@ -466,20 +519,31 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
         for (const source of productEvidenceSources) {
           const provider = source.provider as keyof typeof response.providerIngest;
           const providerKey = source.provider as ProviderKey;
+          const isAccounting = isAccountingProvider(providerKey);
           const documentStats = providerDocumentStats.get(source.provider) || providerDocumentStats.get(source.provider.toLowerCase()) || { count: 0 };
+          const accountingStats = accountingRecordStats.get(providerKey) || { count: 0, recordTypes: new Set<'bill' | 'purchase' | 'accpay'>() };
+          const accountingReadStatus = isAccounting ? (source.accounting_read_status || 'pending') : undefined;
           const expiry = parseExpiry(source);
-          const authValid = source.status === 'connected' && (!expiry || expiry > new Date());
-          const errorMessage = source.metadata?.last_error || source.metadata?.error || undefined;
-          const hasData = (documentStats.count || 0) > 0;
-          const lastSuccessAt = documentStats.lastDocumentAt || source.last_ingested_at || undefined;
-          const ingestionState = computeIngestionState(
-            source.status === 'connected',
-            authValid,
-            hasData,
-            source.last_ingested_at || undefined,
-            source.status,
-            errorMessage
-          );
+          const authValid = isAccounting
+            ? source.status === 'connected' && accountingReadStatus !== 'reconnect_required'
+            : source.status === 'connected' && (!expiry || expiry > new Date());
+          const errorMessage = isAccounting
+            ? source.accounting_last_error || source.metadata?.last_error || source.metadata?.error || undefined
+            : source.metadata?.last_error || source.metadata?.error || undefined;
+          const hasData = isAccounting ? accountingStats.count > 0 : (documentStats.count || 0) > 0;
+          const lastSuccessAt = isAccounting
+            ? source.accounting_last_read_at || undefined
+            : documentStats.lastDocumentAt || source.last_ingested_at || undefined;
+          const ingestionState = isAccounting
+            ? computeAccountingProviderState(source.status === 'connected', accountingReadStatus, accountingStats.count, source.status, errorMessage)
+            : computeIngestionState(
+              source.status === 'connected',
+              authValid,
+              hasData,
+              source.last_ingested_at || undefined,
+              source.status,
+              errorMessage
+            );
 
           if (providerKey in response.providers) {
             response.providers[providerKey] = {
@@ -487,15 +551,27 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
               source_id: source.id,
               connected: source.status === 'connected',
               auth_valid: authValid,
-              needs_reconnect: source.status === 'connected' ? !authValid : source.status === 'error',
-              last_ingest_at: source.last_ingested_at || undefined,
+              needs_reconnect: isAccounting
+                ? accountingReadStatus === 'reconnect_required'
+                : source.status === 'connected' ? !authValid : source.status === 'error',
+              last_ingest_at: isAccounting ? undefined : source.last_ingested_at || undefined,
               last_success_at: lastSuccessAt,
-              error_state: source.status === 'error' ? 'provider_error' : (!authValid && source.status === 'connected' ? 'auth_invalid' : undefined),
+              error_state: isAccounting
+                ? accountingReadStatus === 'failed' ? 'provider_error' : accountingReadStatus === 'reconnect_required' ? 'auth_invalid' : undefined
+                : source.status === 'error' ? 'provider_error' : (!authValid && source.status === 'connected' ? 'auth_invalid' : undefined),
               error_message: errorMessage,
               ingestion_state: ingestionState,
               has_data: hasData,
               account_email: source.account_email || undefined,
-              scopes: parseScopes(source.permissions)
+              scopes: parseScopes(source.permissions),
+              ...(isAccounting
+                ? {
+                    accounting_read_status: accountingReadStatus,
+                    accounting_last_read_at: source.accounting_last_read_at || undefined,
+                    accounting_record_count: accountingStats.count,
+                    accounting_record_types: Array.from(accountingStats.recordTypes)
+                  }
+                : {})
             };
           }
 

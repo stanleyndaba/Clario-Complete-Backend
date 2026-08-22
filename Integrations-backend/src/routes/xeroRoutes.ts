@@ -1,11 +1,17 @@
 import { Router } from 'express';
 import { authenticateToken } from '../middleware/authMiddleware';
 import { connectEvidenceSource, handleEvidenceSourceCallback } from '../controllers/evidenceSourcesController';
+import { disconnectAccountingIntegration, requestAccountingSync } from '../controllers/accountingIntegrationController';
 
 const router = Router();
 
 // OAuth routes
 router.get('/callback', handleEvidenceSourceCallback);
+
+// Financial Evidence Connection actions. The controller verifies active
+// membership of the explicitly supplied workspace before every operation.
+router.post('/sync', requestAccountingSync);
+router.post('/disconnect', disconnectAccountingIntegration);
 
 // OAuth initiation
 router.get('/auth', (req, res, next) => {

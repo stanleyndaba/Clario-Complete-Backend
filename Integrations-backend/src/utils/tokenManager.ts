@@ -84,10 +84,11 @@ export class TokenManager {
   async getToken(
     userId: string,
     provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
-    storeId?: string
+    storeId?: string,
+    tenantId?: string
   ): Promise<TokenData | null> {
     try {
-      const tokenStatus = await this.getTokenWithStatus(userId, provider, storeId);
+      const tokenStatus = await this.getTokenWithStatus(userId, provider, storeId, tenantId);
 
       if (!tokenStatus) {
         return null;
@@ -108,10 +109,11 @@ export class TokenManager {
   async getRefreshableToken(
     userId: string,
     provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
-    storeId?: string
+    storeId?: string,
+    tenantId?: string
   ): Promise<TokenData | null> {
     try {
-      const tokenStatus = await this.getTokenWithStatus(userId, provider, storeId);
+      const tokenStatus = await this.getTokenWithStatus(userId, provider, storeId, tenantId);
 
       if (!tokenStatus) {
         return null;
@@ -133,10 +135,11 @@ export class TokenManager {
   async getTokenWithStatus(
     userId: string,
     provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
-    storeId?: string
+    storeId?: string,
+    tenantId?: string
   ): Promise<TokenWithStatus | null> {
     try {
-      const tokenRecord = await dbTokenManager.getToken(userId, provider, storeId);
+      const tokenRecord = await dbTokenManager.getToken(userId, provider, storeId, tenantId);
 
       if (!tokenRecord) {
         return null;
@@ -314,10 +317,11 @@ export class TokenManager {
   async revokeToken(
     userId: string,
     provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
-    storeId?: string
+    storeId?: string,
+    tenantId?: string
   ): Promise<void> {
     try {
-      await dbTokenManager.deleteToken(userId, provider, storeId);
+      await dbTokenManager.deleteToken(userId, provider, storeId, tenantId);
       logger.info('Token revoked successfully', { userId, provider });
     } catch (error) {
       logger.error('Error revoking token', { error, userId, provider });
@@ -328,13 +332,14 @@ export class TokenManager {
   async isTokenValid(
     userId: string,
     provider: 'amazon' | 'gmail' | 'stripe' | 'outlook' | 'gdrive' | 'dropbox' | 'quickbooks' | 'xero',
-    storeId?: string
+    storeId?: string,
+    tenantId?: string
   ): Promise<boolean> {
     try {
       // Truthfully treat refreshable tokens as usable connections. The access token
       // may expire between sync attempts, but the integration is still connected if
       // we can refresh it from the stored refresh token.
-      const tokenStatus = await this.getTokenWithStatus(userId, provider, storeId);
+      const tokenStatus = await this.getTokenWithStatus(userId, provider, storeId, tenantId);
       if (tokenStatus && (!tokenStatus.isExpired || !!tokenStatus.token.refreshToken)) {
         return true;
       }

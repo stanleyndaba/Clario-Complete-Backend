@@ -75,9 +75,8 @@ const OAUTH_URLS = {
     ]
   },
   quickbooks: {
-    auth: config.QUICKBOOKS_ENVIRONMENT === 'production' 
-      ? 'https://appcenter.intuit.com/connect/oauth2' 
-      : 'https://appcenter.intuit.com/connect/oauth2',
+    // Intuit uses the same authorization endpoint for sandbox and production.
+    auth: 'https://appcenter.intuit.com/connect/oauth2',
     token: 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer',
     scopes: ['com.intuit.quickbooks.accounting', 'openid', 'profile', 'email']
   },
@@ -85,11 +84,8 @@ const OAUTH_URLS = {
     auth: 'https://login.xero.com/identity/connect/authorize',
     token: 'https://identity.xero.com/connect/token',
     scopes: [
-      'openid', 'profile', 'email', 
-      'accounting.invoices.read', 
-      'accounting.payments.read', 
-      'accounting.banktransactions.read', 
-      'accounting.settings.read', 
+      'openid', 'profile', 'email',
+      'accounting.invoices.read',
       'offline_access'
     ]
   }
@@ -574,26 +570,40 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
             }
           }
         } else if (provider === 'quickbooks') {
-          // QuickBooks profile
-          const profileResponse = await axios.get('https://sandbox-accounts.platform.intuit.com/v1/openid_connect/userinfo', {
+          // Intuit uses distinct account hosts for sandbox and production identity.
+          const quickBooksUserInfoEndpoint = config.QUICKBOOKS_ENVIRONMENT === 'sandbox'
+            ? 'https://sandbox-accounts.platform.intuit.com/v1/openid_connect/userinfo'
+            : 'https://accounts.platform.intuit.com/v1/openid_connect/userinfo';
+          const profileResponse = await axios.get(quickBooksUserInfoEndpoint, {
             headers: { 'Authorization': `Bearer ${access_token}` }
           });
           accountEmail = profileResponse.data.email;
         } else if (provider === 'xero') {
-          // Xero profile and connections
-          const profileResponse = await axios.get('https://api.xero.com/api.xro/2.0/Organisation', {
-            headers: { 
-              'Authorization': `Bearer ${access_token}`,
-              'Accept': 'application/json'
-            }
-          });
-          // Note: Xero needs a tenant-id to call Organisation, but we get it from /connections
+          // Xero tenant context must be resolved before any Accounting API request.
           const connectionsResponse = await axios.get('https://api.xero.com/connections', {
             headers: { 'Authorization': `Bearer ${access_token}` }
           });
-          if (connectionsResponse.data && connectionsResponse.data.length > 0) {
-            xeroTenantId = connectionsResponse.data[0].tenantId;
-            accountEmail = connectionsResponse.data[0].tenantName; // Use tenant name as email fallback
+          const xeroConnection = Array.isArray(connectionsResponse.data)
+            ? connectionsResponse.data[0]
+            : undefined;
+
+          if (!xeroConnection?.tenantId) {
+            throw new Error('Xero did not return an accessible organisation connection.');
+          }
+
+          xeroTenantId = xeroConnection.tenantId;
+          accountEmail = xeroConnection.tenantName;
+
+          const organisationResponse = await axios.get('https://api.xero.com/api.xro/2.0/Organisation', {
+            headers: {
+              'Authorization': `Bearer ${access_token}`,
+              'xero-tenant-id': xeroTenantId,
+              'Accept': 'application/json'
+            }
+          });
+          const organisationName = organisationResponse.data?.Organisations?.[0]?.Name;
+          if (typeof organisationName === 'string' && organisationName.trim()) {
+            accountEmail = organisationName;
           }
         }
       } catch (profileError) {
@@ -618,8 +628,8 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
         const { data: existingSource } = await existingSourceQuery.maybeSingle();
 
         const sourceMetadata = {
-          access_token,
-          refresh_token: refresh_token || undefined,
+          // OAuth credentials are stored only by tokenManager in encrypted token columns.
+          // Metadata is intentionally non-secret and may be inspected by connection-status flows.
           expires_at: expires_in ? new Date(Date.now() + expires_in * 1000).toISOString() : undefined,
           connected_at: new Date().toISOString(),
           source: `${provider}_oauth`,
@@ -645,6 +655,14 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
               updated_at: new Date().toISOString(),
               permissions: scopes,
               metadata: sourceMetadata,
+              ...(provider === 'quickbooks' || provider === 'xero'
+                ? {
+                    accounting_read_status: 'pending',
+                    accounting_last_read_at: null,
+                    accounting_last_error: null,
+                    accounting_record_count: 0
+                  }
+                : {}),
               tenant_id: tenantId || null,
               store_id: storeId || null
             })
@@ -664,6 +682,14 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
               ...getManagedTokenSourceFields(!!refresh_token),
               permissions: scopes,
               metadata: sourceMetadata,
+              ...(provider === 'quickbooks' || provider === 'xero'
+                ? {
+                    accounting_read_status: 'pending',
+                    accounting_last_read_at: null,
+                    accounting_last_error: null,
+                    accounting_record_count: 0
+                  }
+                : {}),
               tenant_id: tenantId || null,
               store_id: storeId || null
             });
@@ -674,6 +700,33 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
           provider,
           userId
         });
+        if (provider === 'quickbooks' || provider === 'xero') {
+          return res.redirect(`${frontendUrl}${tenantSuccessPath}?status=error&provider=${encodeURIComponent(provider)}&error=connection_persistence_failed${tenantSlug ? `&tenant_slug=${encodeURIComponent(tenantSlug)}` : ''}`);
+        }
+      }
+
+      if ((provider === 'quickbooks' || provider === 'xero') && tenantId) {
+        const { addAccountingSyncJob } = await import('../queues/ingestionQueue');
+        const jobId = await addAccountingSyncJob(userId, tenantId, provider);
+
+        if (!jobId) {
+          const schedulingError = 'Margin could not schedule the first financial evidence verification. Reconnect or contact support before relying on this source.';
+          await adminClient
+            .from('evidence_sources')
+            .update({
+              accounting_read_status: 'failed',
+              accounting_last_error: schedulingError,
+              updated_at: new Date().toISOString()
+            })
+            .eq('user_id', dbUserId)
+            .eq('tenant_id', tenantId)
+            .eq('provider', provider);
+          logger.error('Accounting connection persisted but initial provider read could not be scheduled', {
+            provider,
+            userId,
+            tenantId
+          });
+        }
       }
 
       logger.info('Evidence source connected successfully', {

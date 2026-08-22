@@ -66,6 +66,54 @@ async function processSyncJob(job: Job<InitialSyncJobData>): Promise<void> {
     });
 
     try {
+        if (jobType === 'accounting-sync') {
+            if (job.data.provider !== 'quickbooks' && job.data.provider !== 'xero') {
+                throw new Error('Accounting sync job is missing a supported provider.');
+            }
+
+            try {
+                const sseHub = (await import('../utils/sseHub')).default;
+                sseHub.sendEvent(userId, 'message', {
+                    type: 'accounting_sync',
+                    status: 'in_progress',
+                    data: { provider: job.data.provider, message: 'Verifying financial evidence access...' },
+                    timestamp: new Date().toISOString()
+                });
+            } catch { /* SSE delivery is non-critical. */ }
+
+            const result = job.data.provider === 'quickbooks'
+                ? await (await import('../services/quickbooksService')).syncQuickBooksFinancialEvidence(userId, tenantId)
+                : await (await import('../services/xeroService')).syncXeroFinancialEvidence(userId, tenantId);
+
+            try {
+                const sseHub = (await import('../utils/sseHub')).default;
+                sseHub.sendEvent(userId, 'message', {
+                    type: 'accounting_sync',
+                    status: 'completed',
+                    data: {
+                        provider: result.provider,
+                        recordCount: result.recordCount,
+                        readStatus: result.status,
+                        message: result.status === 'no_data'
+                            ? 'Financial evidence access was verified. No eligible accounting records were returned.'
+                            : 'Financial evidence access was verified.'
+                    },
+                    timestamp: new Date().toISOString()
+                });
+            } catch { /* SSE delivery is non-critical. */ }
+
+            await job.updateProgress(100);
+            logger.info('[WORKER] Accounting read completed', {
+                jobId: job.id,
+                userId,
+                tenantId,
+                provider: result.provider,
+                recordCount: result.recordCount,
+                readStatus: result.status
+            });
+            return;
+        }
+
         const agent2DataSyncService = (await import('../services/agent2DataSyncService')).default;
 
         // Send SSE event: sync started
@@ -122,9 +170,15 @@ async function processSyncJob(job: Job<InitialSyncJobData>): Promise<void> {
             const sseHub = (await import('../utils/sseHub')).default;
             const isLastAttempt = (job.attemptsMade + 1) >= (job.opts.attempts || 3);
             sseHub.sendEvent(userId, 'message', {
-                type: 'sync',
+                type: jobType === 'accounting-sync' ? 'accounting_sync' : 'sync',
                 status: isLastAttempt ? 'failed' : 'retrying',
-                data: { message: isLastAttempt ? 'Sync failed.' : 'Retrying...', error: error.message },
+                data: {
+                    provider: job.data.provider,
+                    message: isLastAttempt
+                        ? (jobType === 'accounting-sync' ? 'Financial evidence verification failed.' : 'Sync failed.')
+                        : 'Retrying...',
+                    error: error.message
+                },
                 timestamp: new Date().toISOString()
             });
         } catch (e) { /* SSE non-critical */ }

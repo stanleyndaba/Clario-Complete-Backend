@@ -47,6 +47,8 @@ const PUBLIC_PATH_PREFIXES = [
   '/api/v1/integrations/onedrive/callback', // OneDrive OAuth callback
   '/api/v1/integrations/adobe_sign/callback', // Adobe Sign OAuth callback
   '/api/v1/integrations/slack/callback', // Slack OAuth callback
+  '/api/v1/integrations/quickbooks/callback', // QuickBooks OAuth callback
+  '/api/v1/integrations/xero/callback', // Xero OAuth callback
 ];
 
 // Agent 2 ingestion and sync routes must always require a real authenticated identity.

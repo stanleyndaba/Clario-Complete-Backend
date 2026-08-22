@@ -25,8 +25,9 @@ export interface InitialSyncJobData {
     storeId?: string;
     companyName?: string;
     marketplaces?: string[];
+    provider?: 'quickbooks' | 'xero';
     triggeredAt: string;
-    jobType: 'initial-sync' | 'manual-sync';
+    jobType: 'initial-sync' | 'manual-sync' | 'accounting-sync';
 }
 
 // ============================================================================
@@ -232,6 +233,58 @@ export async function addSyncJob(
 }
 
 /**
+ * Enqueue a server-owned QuickBooks/Xero first-read after OAuth persistence.
+ * The job contains no credential material; the worker retrieves an encrypted,
+ * tenant-scoped token only when it starts processing.
+ */
+export async function addAccountingSyncJob(
+    userId: string,
+    tenantId: string,
+    provider: 'quickbooks' | 'xero'
+): Promise<string | null> {
+    try {
+        const queue = getQueue();
+        if (!queue) {
+            logger.warn('[QUEUE] Queue not available, cannot enqueue accounting read', { userId, tenantId, provider });
+            return null;
+        }
+
+        const job = await queue.add('accounting-sync', {
+            userId,
+            tenantId,
+            sellerId: userId,
+            provider,
+            triggeredAt: new Date().toISOString(),
+            jobType: 'accounting-sync'
+        }, {
+            // OAuth state is single-use, while reconnect must remain able to start
+            // a new provider read. Timestamped IDs therefore prevent stale completed
+            // jobs from suppressing a later verified reconnect.
+            jobId: `accounting-sync-${tenantId}-${userId}-${provider}-${Date.now()}`
+        });
+
+        logger.info('[QUEUE] Accounting read enqueued', {
+            jobId: job.id,
+            userId,
+            tenantId,
+            provider
+        });
+        return job.id || null;
+    } catch (error: any) {
+        if (handleRedisRuntimeError(error, 'accounting_queue_add')) {
+            return null;
+        }
+        logger.error('[QUEUE] Failed to enqueue accounting read', {
+            error: error?.message || String(error),
+            userId,
+            tenantId,
+            provider
+        });
+        return null;
+    }
+}
+
+/**
  * Legacy helper - wraps addSyncJob for backward compatibility
  */
 export async function queueInitialSync(
@@ -304,4 +357,4 @@ export async function closeQueue(): Promise<void> {
     }
 }
 
-export default { isQueueHealthy, addSyncJob, queueInitialSync, getQueueMetrics, closeQueue };
+export default { isQueueHealthy, addSyncJob, addAccountingSyncJob, queueInitialSync, getQueueMetrics, closeQueue };
