@@ -2549,7 +2549,20 @@ export class CSVIngestionService {
                             csvType: 'financial_events'
                         },
                         isPayoutEvent: classification.isPayoutEvent && amountInfo.amount > 0
-                    })
+                    }),
+                    quantity: parseOptionalNumericField(
+                        getField(r, 'Quantity', 'quantity', 'Qty', 'qty', 'QuantityReimbursed', 'quantity_reimbursed'),
+                        'quantity'
+                    ),
+                    fulfillment_center_id: getField(
+                        r,
+                        'FulfillmentCenterId',
+                        'fulfillment_center_id',
+                        'FulfillmentCenter',
+                        'fulfillment_center',
+                        'FC',
+                        'warehouse'
+                    ) || null
                 });
             } catch (error: any) {
                 errors.push(`Row ${i + 1}: ${error.message}`);

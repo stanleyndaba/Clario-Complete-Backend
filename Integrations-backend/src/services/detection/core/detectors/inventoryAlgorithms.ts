@@ -413,7 +413,8 @@ function findReimbursements(fnsku: string, sku: string | undefined, events: any[
         if (!matchesIdentity) continue;
         const reDate = new Date(re.approval_date || re.created_at || re.date); const lDate = new Date(lossDate);
         const diff = Math.abs(reDate.getTime() - lDate.getTime()) / (1000 * 3600 * 24);
-        const qty = (re.quantity || 4);
+        const qty = Number(re.quantity);
+        if (!Number.isFinite(qty) || qty <= 0) continue;
 
         let link: ReimbursementLinkageType = 'NONE';
         if (fc && (re.fulfillment_center_id === fc || re.fulfillmentCenterId === fc) && diff <= 90) link = 'CAUSAL';

@@ -259,6 +259,60 @@ describe('CSV ingestion repair', () => {
     expect(inserts.financial_events[0].seller_id).toBe(userId);
   });
 
+  it('preserves Manual financial-event reimbursement quantity without fabricating absent values', async () => {
+    const explicit = await service.ingestFiles(
+      userId,
+      [{
+        buffer: Buffer.from([
+          'EventType,PostedDate,Amount,CurrencyCode,AdjustmentEventId,SellerSKU,Quantity,FulfillmentCenterId',
+          'Reimbursement,2026-03-18T00:00:00Z,20,USD,REIMB-QUANTITY-1,SKU-QUANTITY-1,1,PHX6',
+        ].join('\n')),
+        originalname: 'financial-quantity-explicit.csv',
+        mimetype: 'text/csv',
+      }],
+      { explicitType: 'financial_events', triggerDetection: false, tenantId }
+    );
+    expect(explicit.success).toBe(true);
+    expect(inserts.financial_events?.find((row) => row.amazon_event_id === 'REIMB-QUANTITY-1')).toMatchObject({
+      sku: 'SKU-QUANTITY-1',
+      quantity: 1,
+      fulfillment_center_id: 'PHX6',
+    });
+
+    const absent = await service.ingestFiles(
+      userId,
+      [{
+        buffer: Buffer.from([
+          'EventType,PostedDate,Amount,CurrencyCode,AdjustmentEventId,SellerSKU,Quantity',
+          'Reimbursement,2026-03-18T00:00:00Z,20,USD,REIMB-QUANTITY-ABSENT,SKU-QUANTITY-1,',
+        ].join('\n')),
+        originalname: 'financial-quantity-absent.csv',
+        mimetype: 'text/csv',
+      }],
+      { explicitType: 'financial_events', triggerDetection: false, tenantId }
+    );
+    expect(absent.success).toBe(true);
+    expect(inserts.financial_events?.find((row) => row.amazon_event_id === 'REIMB-QUANTITY-ABSENT')).toMatchObject({
+      quantity: null,
+    });
+
+    const malformed = await service.ingestFiles(
+      userId,
+      [{
+        buffer: Buffer.from([
+          'EventType,PostedDate,Amount,CurrencyCode,AdjustmentEventId,SellerSKU,Quantity',
+          'Reimbursement,2026-03-18T00:00:00Z,20,USD,REIMB-QUANTITY-MALFORMED,SKU-QUANTITY-1,unknown',
+        ].join('\n')),
+        originalname: 'financial-quantity-malformed.csv',
+        mimetype: 'text/csv',
+      }],
+      { explicitType: 'financial_events', triggerDetection: true, tenantId }
+    );
+    expect(malformed).toMatchObject({ success: false, detectionTriggered: false });
+    expect(malformed.results[0]).toMatchObject({ rowsInserted: 0, rowsSkipped: 1 });
+    expect(inserts.financial_events?.find((row) => row.amazon_event_id === 'REIMB-QUANTITY-MALFORMED')).toBeUndefined();
+  });
+
   it('skips duplicate file re-upload', async () => {
     const csv = ['AmazonOrderId,PurchaseDate,OrderStatus,OrderTotal', 'A-1,2026-03-18T00:00:00Z,Shipped,9.99'].join('\n');
     const file = { buffer: Buffer.from(csv), originalname: 'orders.csv', mimetype: 'text/csv' };
