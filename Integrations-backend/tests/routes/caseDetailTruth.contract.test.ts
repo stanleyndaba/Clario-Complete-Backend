@@ -12,6 +12,7 @@ const tables: Record<string, Row[]> = {};
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 
 const financialTruthMock = jest.fn<any>();
+const canonicalEvidenceTruthMock = jest.fn<any>();
 
 jest.mock('../../src/utils/logger', () => ({
   getLogger: jest.fn(() => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() })),
@@ -47,6 +48,7 @@ jest.mock('../../src/database/supabaseClient', () => {
         state.filters.push((row) => values.includes(row[field]));
         return builder;
       },
+      or: () => builder,
       order: (field: string, options?: { ascending?: boolean }) => {
         state.orderBy = { field, ascending: options?.ascending !== false };
         return builder;
@@ -81,12 +83,7 @@ jest.mock('../../src/services/amazonCaseThreadService', () => ({
 }));
 
 jest.mock('../../src/services/canonicalEvidenceService', () => ({
-  evaluateCanonicalEvidenceTruth: jest.fn(() => ({
-    linkedDocumentCount: 0,
-    isEvidenceComplete: false,
-    requiredRequirements: [],
-    missingRequirements: ['proof_snapshot'],
-  })),
+  evaluateCanonicalEvidenceTruth: (...args: any[]) => canonicalEvidenceTruthMock(...args),
 }));
 
 jest.mock('../../src/services/detectionFindingTruthService', () => ({
@@ -208,6 +205,13 @@ describe('Case Detail truth contract', () => {
     tables.recovery_reconciliations = [];
     tables.evidence_sources = [];
     financialTruthMock.mockReset();
+    canonicalEvidenceTruthMock.mockReset();
+    canonicalEvidenceTruthMock.mockReturnValue({
+      linkedDocumentCount: 0,
+      isEvidenceComplete: false,
+      requiredRequirements: [],
+      missingRequirements: ['proof_snapshot'],
+    });
     financialTruthMock.mockResolvedValue({ summaries: [financialSummary()], eventsByInputId: {} });
   });
 
@@ -517,5 +521,210 @@ describe('Case Detail truth contract', () => {
     });
     expect(JSON.stringify(response.body)).not.toContain('842.17');
     expect(tables.recovery_reconciliations).toHaveLength(0);
+  });
+
+  it('A1-CLOSURE-1: billing completion without accounting reconciliation remains accounting review and not closed', async () => {
+    tables.dispute_cases = [buildCase({ billing_status: 'paid' })];
+    financialTruthMock.mockResolvedValue({
+      summaries: [financialSummary({ verified_paid_amount: 100, outstanding_amount: 0, variance_amount: 0, payout_status: 'paid', reversal_state: 'none_observed' })],
+      eventsByInputId: {},
+    });
+
+    const response = await request(createApp()).get(`/api/recoveries/${CASE_ID}?tenantSlug=${TENANT_SLUG}&includeEvents=false`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      billing_status: 'paid',
+      closure_truth: expect.objectContaining({ financially_closed: false, state: 'accounting_review' }),
+    });
+  });
+
+  it('A1-CLOSURE-2: reconciled accounting cannot override an unresolved reversal relationship', async () => {
+    tables.recovery_reconciliations = [{ tenant_id: TENANT_ID, recovery_id: CASE_ID, provider: 'xero', status: 'RECONCILED', matched_amount: 100, difference: 0, reconciled_at: '2026-08-22T09:00:00.000Z' }];
+    financialTruthMock.mockResolvedValue({
+      summaries: [financialSummary({ verified_paid_amount: 100, outstanding_amount: 0, variance_amount: 0, payout_status: 'paid', reversal_state: 'review_required' })],
+      eventsByInputId: {},
+    });
+
+    const response = await request(createApp()).get(`/api/recoveries/${CASE_ID}?tenantSlug=${TENANT_SLUG}&includeEvents=false`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      financial_payout_status: 'reversal_review',
+      closure_truth: expect.objectContaining({ financially_closed: false, state: 'reversal_review' }),
+    });
+  });
+
+  it('A1-CLOSURE-3: unmatched accounting cannot close a fully paid zero-outstanding recovery', async () => {
+    tables.recovery_reconciliations = [{ tenant_id: TENANT_ID, recovery_id: CASE_ID, provider: 'quickbooks', status: 'UNMATCHED', matched_amount: null, difference: null, reconciled_at: null }];
+    financialTruthMock.mockResolvedValue({
+      summaries: [financialSummary({ verified_paid_amount: 100, outstanding_amount: 0, variance_amount: 0, payout_status: 'paid', reversal_state: 'none_observed' })],
+      eventsByInputId: {},
+    });
+
+    const response = await request(createApp()).get(`/api/recoveries/${CASE_ID}?tenantSlug=${TENANT_SLUG}&includeEvents=false`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      accounting_truth: expect.objectContaining({ status: 'unmatched' }),
+      closure_truth: expect.objectContaining({ financially_closed: false, state: 'accounting_review' }),
+    });
+  });
+
+  it('A1-CLOSURE-4: reconciled accounting cannot erase an established partial payment', async () => {
+    tables.recovery_reconciliations = [{ tenant_id: TENANT_ID, recovery_id: CASE_ID, provider: 'quickbooks', status: 'RECONCILED', matched_amount: 60, difference: -40, reconciled_at: '2026-08-22T09:00:00.000Z' }];
+    financialTruthMock.mockResolvedValue({
+      summaries: [financialSummary({ verified_paid_amount: 60, outstanding_amount: 40, variance_amount: -40, payout_status: 'partially_paid', reversal_state: 'none_observed' })],
+      eventsByInputId: {},
+    });
+
+    const response = await request(createApp()).get(`/api/recoveries/${CASE_ID}?tenantSlug=${TENANT_SLUG}&includeEvents=false`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      closure_truth: expect.objectContaining({ financially_closed: false, state: 'partial_payment' }),
+      next_step_context: expect.objectContaining({ key: 'partial_payout_review' }),
+    });
+  });
+
+  it('A1-CLOSURE-5: reconciled accounting cannot resurrect a conclusively reversed recovery', async () => {
+    tables.recovery_reconciliations = [{ tenant_id: TENANT_ID, recovery_id: CASE_ID, provider: 'quickbooks', status: 'RECONCILED', matched_amount: 100, difference: 0, reconciled_at: '2026-08-22T09:00:00.000Z' }];
+    financialTruthMock.mockResolvedValue({
+      summaries: [financialSummary({ verified_paid_amount: 0, outstanding_amount: 100, variance_amount: -100, payout_status: 'not_paid', reversal_state: 'reversed' })],
+      eventsByInputId: {},
+    });
+
+    const response = await request(createApp()).get(`/api/recoveries/${CASE_ID}?tenantSlug=${TENANT_SLUG}&includeEvents=false`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      financial_reversal_state: 'reversed',
+      closure_truth: expect.objectContaining({ financially_closed: false, state: 'reversal_review' }),
+    });
+  });
+
+  it('RTR-01: an unfiled detection without a case remains detection truth and not filed', async () => {
+    tables.dispute_cases = [];
+    tables.detection_results = [{
+      id: CASE_ID, tenant_id: TENANT_ID, seller_id: 'seller-case-detail', store_id: 'store-case-detail',
+      status: 'open', filing_status: null, estimated_value: 100, currency: 'USD', sku: 'SKU-DETECTION-1',
+      evidence: {}, created_at: '2026-08-20T10:00:00.000Z', updated_at: '2026-08-20T10:00:00.000Z',
+    }];
+
+    const response = await request(createApp()).get(`/api/recoveries/${CASE_ID}?tenantSlug=${TENANT_SLUG}&includeEvents=false`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      entity_type: 'detection',
+      has_linked_dispute_case: false,
+      has_filing_truth: false,
+      next_step_context: expect.objectContaining({ key: 'waiting_for_evidence' }),
+    });
+  });
+
+  it('RTR-02: incomplete evidence exposes missing requirements and a responsible evidence action', async () => {
+    tables.dispute_cases = [buildCase({ status: 'open', case_state: 'pending', filing_status: 'pending', approved_amount: null, recovered_amount: null })];
+    canonicalEvidenceTruthMock.mockReturnValue({ linkedDocumentCount: 0, isEvidenceComplete: false, requiredRequirements: ['invoice'], missingRequirements: ['invoice'] });
+
+    const response = await request(createApp()).get(`/api/recoveries/${CASE_ID}?tenantSlug=${TENANT_SLUG}&includeEvents=false`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      evidence_summary: expect.objectContaining({ evidence_complete: false, missing_requirements: ['invoice'] }),
+      next_step_context: expect.objectContaining({ key: 'waiting_for_linked_evidence', generated: false }),
+    });
+  });
+
+  it('RTR-03: linked evidence on a detection is supportable but does not imply filing or create a case', async () => {
+    tables.dispute_cases = [];
+    tables.detection_results = [{ id: CASE_ID, tenant_id: TENANT_ID, seller_id: 'seller-case-detail', store_id: 'store-case-detail', status: 'open', estimated_value: 100, currency: 'USD', matched_document_ids: ['DOC-RTR-03'], evidence: {}, created_at: '2026-08-20T10:00:00.000Z' }];
+    tables.evidence_documents = [{ id: 'DOC-RTR-03', tenant_id: TENANT_ID, filename: 'supporting-invoice.pdf', doc_type: 'invoice', created_at: '2026-08-20T10:00:00.000Z' }];
+    canonicalEvidenceTruthMock.mockReturnValue({ linkedDocumentCount: 1, isEvidenceComplete: true, requiredRequirements: ['invoice'], missingRequirements: [] });
+
+    const response = await request(createApp()).get(`/api/recoveries/${CASE_ID}?tenantSlug=${TENANT_SLUG}&includeEvents=false`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      entity_type: 'detection',
+      has_linked_dispute_case: false,
+      has_filing_truth: false,
+      next_step_context: expect.objectContaining({ key: 'supportable_not_case_eligible', generated: false }),
+    });
+  });
+
+  it('RTR-04: a filed case exposes a durable recorded submission reference and timestamp', async () => {
+    tables.dispute_submissions = [{
+      id: 'SUBMISSION-1', tenant_id: TENANT_ID, dispute_id: CASE_ID, submission_id: 'AMAZON-SUBMISSION-1',
+      amazon_case_id: 'AMAZON-CASE-DETAIL-1', external_reference: 'EXTERNAL-REF-1',
+      submission_timestamp: '2026-08-21T08:00:00.000Z', request_started_at: '2026-08-21T07:59:00.000Z',
+      response_received_at: '2026-08-21T08:01:00.000Z', submission_channel: 'sp_api', status: 'submitted',
+      outcome: null, created_at: '2026-08-21T08:00:00.000Z', updated_at: '2026-08-21T08:01:00.000Z',
+    }];
+
+    const response = await request(createApp()).get(`/api/recoveries/${CASE_ID}?tenantSlug=${TENANT_SLUG}&includeEvents=false`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      has_submission: true,
+      has_submission_proof: true,
+      has_filing_truth: true,
+      submission_proof: expect.objectContaining({
+        submission_id: 'AMAZON-SUBMISSION-1',
+        proof_reference: 'EXTERNAL-REF-1',
+        submitted_at: '2026-08-21T08:00:00.000Z',
+      }),
+    });
+  });
+
+  it('RTR-14-MISSING: missing FNSKU remains unavailable and is not rendered as a negative identity assertion', async () => {
+    tables.dispute_cases = [buildCase({ fnsku: null, evidence: { quantity: 3 } })];
+
+    const response = await request(createApp()).get(`/api/recoveries/${CASE_ID}?tenantSlug=${TENANT_SLUG}&includeEvents=false`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      fnsku: null,
+      evidence: expect.objectContaining({ fnsku: null }),
+      identity_truth: expect.objectContaining({
+        fnsku: expect.objectContaining({ state: 'unavailable', relationship_strength: 'unavailable' }),
+      }),
+    });
+  });
+
+  it('RTR-16: generated context remains explicitly generated and cannot become evidence, payment, or closure proof', async () => {
+    tables.dispute_cases = [buildCase({ status: 'open', filing_status: 'pending', approved_amount: null, recovered_amount: null, evidence_attachments: {} })];
+
+    const response = await request(createApp()).get(`/api/recoveries/${CASE_ID}?tenantSlug=${TENANT_SLUG}&includeEvents=false`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      generated_context: expect.objectContaining({ generated: true }),
+      evidence_summary: expect.objectContaining({ has_documents: false }),
+      verified_paid_amount: null,
+      closure_truth: expect.objectContaining({ financially_closed: false }),
+    });
+  });
+
+  it('RTR-17: fallback history events retain a case-record source instead of claiming a notification or agent-event source', async () => {
+    const response = await request(createApp()).get(`/api/recoveries/${CASE_ID}/events?tenantSlug=${TENANT_SLUG}`);
+
+    expect(response.status).toBe(200);
+    expect(Array.isArray(response.body)).toBe(true);
+    expect(response.body.length).toBeGreaterThan(0);
+    expect(response.body.every((event: any) => event.source === 'case_record')).toBe(true);
+  });
+
+  it('RTR-14-CONFLICT: contradictory observed FNSKUs remain explicit identity conflict, never a silently matched identity', async () => {
+    tables.dispute_cases = [buildCase({ fnsku: 'FNSKU-CASE-1', evidence: { quantity: 3, fnsku: 'FNSKU-EVIDENCE-2' } })];
+
+    const response = await request(createApp()).get(`/api/recoveries/${CASE_ID}?tenantSlug=${TENANT_SLUG}&includeEvents=false`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      fnsku: 'FNSKU-CASE-1',
+      identity_truth: expect.objectContaining({
+        fnsku: expect.objectContaining({ state: 'conflicted' }),
+      }),
+    });
   });
 });

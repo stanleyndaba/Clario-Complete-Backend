@@ -64,6 +64,40 @@ function firstString(...values: unknown[]): string | null {
     return null;
 }
 
+function buildObservedIdentityTruth(...values: unknown[]) {
+    const observedValues = Array.from(new Set(
+        values
+            .map((value) => String(value ?? '').trim())
+            .filter((value) => value && value.toLowerCase() !== 'n/a')
+            .map((value) => value.toUpperCase())
+    ));
+
+    if (observedValues.length === 0) {
+        return {
+            state: 'unavailable',
+            relationship_strength: 'unavailable',
+            observed_values: [],
+            limitation: 'No observed identity value is available for this record.'
+        };
+    }
+
+    if (observedValues.length > 1) {
+        return {
+            state: 'conflicted',
+            relationship_strength: 'conflict',
+            observed_values: observedValues,
+            limitation: 'Observed identity values conflict; Margin cannot treat them as one matched identity.'
+        };
+    }
+
+    return {
+        state: 'observed',
+        relationship_strength: 'direct_observed',
+        observed_values: observedValues,
+        limitation: null
+    };
+}
+
 function firstNumber(...values: unknown[]): number | null {
     for (const value of values) {
         if (value === null || value === undefined || value === '') continue;
@@ -1200,6 +1234,14 @@ function buildCaseResponse(
         detectionEvidence?.fnsku,
         detectionEvidence?.FNSKU
     );
+    const fnskuIdentityTruth = buildObservedIdentityTruth(
+        record?.fnsku,
+        combinedEvidence?.fnsku,
+        combinedEvidence?.FNSKU,
+        sourceDetection?.fnsku,
+        detectionEvidence?.fnsku,
+        detectionEvidence?.FNSKU
+    );
     const resolvedFacility = firstString(
         record?.facility,
         record?.warehouse,
@@ -1335,6 +1377,7 @@ function buildCaseResponse(
         sku: resolvedSku || 'N/A',
         asin: resolvedAsin,
         fnsku: resolvedFnsku,
+        identity_truth: { fnsku: fnskuIdentityTruth },
         productName: resolvedProductName || 'Unknown Product',
         amazonCaseId: record.amazon_case_id || record.provider_case_id || null,
         case_state: threadTruth?.case_state || record.case_state || (record.amazon_case_id ? 'pending' : 'unlinked'),
