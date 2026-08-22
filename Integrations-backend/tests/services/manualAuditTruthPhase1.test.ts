@@ -714,9 +714,51 @@ describe('Manual Audit truth test phase 1', () => {
     });
   });
 
-  it.skip('RF-PARTIAL-RETURN: unsupported via Manual settlement adapter because refund quantity metadata is not preserved beyond one unit', () => {
-    // Documented Phase 1 adapter boundary: ingestSettlements persists no return-quantity evidence for Refund Trap.
-    // This is intentionally not simulated through canonical seeding because the frozen manifest restricts the scenario to the Manual adapter contract.
+  it('RF-PARTIAL-RETURN: a two-unit USD 100 refund with one valid Manual return retains the USD 50 one-unit residual', async () => {
+    const ingestion = await service.ingestFiles(SELLER_A, [
+      file('rf-partial-return-settlement.csv', [
+        'SettlementId,PostedDate,TransactionType,Amount,Fees,CurrencyCode,AmazonOrderId,Quantity',
+        'RF-PARTIAL-RETURN-REFUND-1,2026-06-01T00:00:00Z,refund,(100),0,USD,RF-PARTIAL-RETURN-ORDER-1,2',
+      ].join('\n')),
+      file('rf-partial-return-return.csv', [
+        'ReturnId,ReturnDate,ReturnReason,RefundAmount,Quantity,AmazonOrderId',
+        'RF-PARTIAL-RETURN-RETURN-1,2026-06-02T00:00:00Z,CUSTOMER_REQUEST,100,1,RF-PARTIAL-RETURN-ORDER-1',
+      ].join('\n')),
+    ], { tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+
+    expect(ingestion.success).toBe(true);
+    expect(tables.settlements[0]).toMatchObject({
+      amount: -100,
+      metadata: { quantity: 2 },
+    });
+    expect(tables.returns[0].items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ quantity: 1 }),
+    ]));
+
+    const actual = await enhancedDetectionService.triggerDetectionPipeline(
+      SELLER_A,
+      ingestion.syncId,
+      'manual',
+      { tenantId: TENANT_A, source: 'manual_truth_test' },
+    );
+
+    expect(actual).toMatchObject({ success: true, detectionsFound: 1, estimatedRecovery: 50 });
+    expect(tables.detection_results).toHaveLength(1);
+    expect(tables.detection_results[0]).toMatchObject({
+      anomaly_type: 'refund_no_return',
+      estimated_value: 50,
+      tenant_id: TENANT_A,
+      seller_id: SELLER_A,
+      sync_id: ingestion.syncId,
+    });
+    expect(tables.detection_results[0].evidence).toMatchObject({
+      order_id: 'RF-PARTIAL-RETURN-ORDER-1',
+      quantity_refunded: 2,
+      returned_units: 1,
+      unresolved_units: 1,
+      reimbursed_value: 0,
+      shortfall_delta: 50,
+    });
   });
 
   it('ISO-TENANT-SYNC: Tenant B return evidence with the same external order ID cannot suppress Tenant A refund recovery', async () => {
