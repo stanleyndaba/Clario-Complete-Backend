@@ -572,7 +572,7 @@ export async function fetchRefundEvents(sellerId: string, options?: { startDate?
     
     if (error) return [];
     return (data || [])
-        .filter((s: any) => ['refund', 'fee'].includes(String(s.transaction_type || '').toLowerCase()))
+        .filter((s: any) => String(s.transaction_type || '').toLowerCase() === 'refund')
         .map((s: any) => ({
         id: s.id, seller_id: sellerId, order_id: s.order_id || '',
         sku: s.metadata?.sku, asin: s.metadata?.asin,

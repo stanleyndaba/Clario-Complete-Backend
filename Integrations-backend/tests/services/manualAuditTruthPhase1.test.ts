@@ -382,6 +382,26 @@ describe('Manual Audit truth test phase 1', () => {
     expect((tables.detection_results || []).filter((row) => row.anomaly_type === 'duplicate_fee_error')).toEqual([]);
   });
 
+  it('ADVERSARIAL-SETTLEMENT-FEE-IS-NOT-REFUND: a negative settlement fee never becomes a Refund Trap recovery', async () => {
+    const ingestion = await service.ingestFiles(SELLER_A, [
+      file('adversarial-settlement-fee.csv', [
+        'SettlementId,PostedDate,TransactionType,Amount,Fees,CurrencyCode,AmazonOrderId',
+        'ADVERSARIAL-FEE-SETTLEMENT-1,2026-06-01T00:00:00Z,fee,(100),0,USD,ADVERSARIAL-FEE-ORDER-1',
+      ].join('\n')),
+    ], { explicitType: 'settlements', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+
+    expect(ingestion.success).toBe(true);
+    const actual = await enhancedDetectionService.triggerDetectionPipeline(
+      SELLER_A,
+      ingestion.syncId,
+      'manual',
+      { tenantId: TENANT_A, source: 'manual_truth_test' },
+    );
+
+    expect(actual).toMatchObject({ success: true, estimatedRecovery: 0 });
+    expect((tables.detection_results || []).filter((row) => row.anomaly_type === 'refund_no_return')).toEqual([]);
+  });
+
   it('CLEAN-INBOUND: a mature closed inbound shipment with all units received produces no Inbound Inspector value', () => {
     const direct = detectInboundAnomalies(SELLER_A, 'csv_clean_inbound_1', {
       seller_id: SELLER_A,
