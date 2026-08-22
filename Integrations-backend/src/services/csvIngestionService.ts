@@ -399,6 +399,24 @@ function parseOptionalNumericField(raw: unknown, fieldName: string): number | nu
 }
 
 /**
+ * Parse a required Manual Audit source date. A valid source date is normalized to
+ * ISO time; missing or invalid provider text must not become generated current-time
+ * chronology before Audit reconciliation and maturity rules consume it.
+ */
+function parseRequiredIsoDateField(raw: unknown, fieldName: string): string {
+    if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) {
+        throw new Error(`Missing required date field (${fieldName})`);
+    }
+
+    const parsed = new Date(String(raw));
+    if (Number.isNaN(parsed.getTime())) {
+        throw new Error(`Invalid date field (${fieldName})`);
+    }
+
+    return parsed.toISOString();
+}
+
+/**
  * Parse a required monetary field without turning missing or malformed source
  * evidence into zero. This retains the existing currency-symbol and
  * parenthesized-negative support used by Manual Audit amounts.
@@ -2517,12 +2535,15 @@ export class CSVIngestionService {
                 const r = records[i];
                 const rawEventType = getField(r, 'EventType', 'event_type', 'eventType', 'type', 'Type');
                 const rawAmount = getField(r, 'Amount', 'amount', 'AdjustmentAmount', 'LiquidationProceedsAmount');
-                const eventDate = getField(r, 'PostedDate', 'event_date', 'postedDate', 'posted_date', 'date', 'Date');
-                if (!rawEventType || eventDate === null || eventDate === undefined || eventDate === '') {
+                if (!rawEventType) {
                     skipped++;
-                    errors.push(`Row ${i + 1}: Missing required fields (event_type/event_date)`);
+                    errors.push(`Row ${i + 1}: Missing required field (event_type)`);
                     continue;
                 }
+                const eventDate = parseRequiredIsoDateField(
+                    getField(r, 'PostedDate', 'event_date', 'postedDate', 'posted_date', 'date', 'Date'),
+                    'event_date'
+                );
                 const amount = parseRequiredAmountField(rawAmount, 'amount');
                 const feeType = getField(r, 'fee_type', 'FeeType', 'feeType');
                 const classification = classifyFinancialEventType(feeType || rawEventType, getField(r, 'Description', 'description', 'AdjustmentType'));

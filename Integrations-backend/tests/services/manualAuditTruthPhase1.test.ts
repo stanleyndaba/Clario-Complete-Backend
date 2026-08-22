@@ -1879,6 +1879,18 @@ describe('Manual Audit truth test phase 1', () => {
     });
   });
 
+  it('TIME-INVALID-FINANCIAL: an invalid Manual financial-event date is rejected rather than becoming current-time Audit chronology', async () => {
+    const ingestion = await service.ingestFiles(SELLER_A, [
+      file('time-invalid-financial.csv', [
+        'EventType,PostedDate,Amount,CurrencyCode,AdjustmentEventId',
+        'Reimbursement,not-a-provider-date,100,USD,TIME-INVALID-FINANCIAL-1',
+      ].join('\n')),
+    ], { explicitType: 'financial_events', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+
+    expect(ingestion.success).toBe(false);
+    expect(tables.financial_events || []).toEqual([]);
+  });
+
   it.skip('RF-FNSKU-CONFLICT: conflicting return FNSKU must not suppress a same-order, same-SKU refund residual (documented no-detector-change boundary)', async () => {
     const ingestion = await service.ingestFiles(SELLER_A, [
       file('rf-fnsku-conflict-settlement.csv', [
