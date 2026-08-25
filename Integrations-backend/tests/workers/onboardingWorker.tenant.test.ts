@@ -1,15 +1,16 @@
 // @ts-nocheck
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 const syncUserDataMock = jest.fn().mockResolvedValue({ syncId: 'sync-1', success: true });
 let capturedProcessor: ((job: any) => Promise<void>) | null = null;
+let workerModule: typeof import('../../src/workers/onboardingWorker') | null = null;
 
 jest.mock('bullmq', () => ({
   Worker: jest.fn().mockImplementation((_name: string, processor: (job: any) => Promise<void>) => {
     capturedProcessor = processor;
     return {
       on: jest.fn(),
-      close: jest.fn(),
+      close: jest.fn().mockResolvedValue(undefined),
     };
   }),
 }));
@@ -21,6 +22,13 @@ jest.mock('../../src/services/agent2DataSyncService', () => ({
   },
 }));
 
+jest.mock('../../src/services/cacheService', () => ({
+  __esModule: true,
+  default: {
+    invalidateUserCaches: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
 describe('Agent2 onboarding worker tenant context', () => {
   beforeEach(() => {
     jest.resetModules();
@@ -29,8 +37,13 @@ describe('Agent2 onboarding worker tenant context', () => {
     process.env.REDIS_URL = 'redis://localhost:6379';
   });
 
+  afterEach(async () => {
+    await workerModule?.stopOnboardingWorker();
+    workerModule = null;
+  });
+
   it('invokes sync service with tenant context from job payload', async () => {
-    const workerModule = await import('../../src/workers/onboardingWorker');
+    workerModule = await import('../../src/workers/onboardingWorker');
     workerModule.startOnboardingWorker();
 
     expect(capturedProcessor).not.toBeNull();

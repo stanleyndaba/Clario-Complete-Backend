@@ -39,6 +39,7 @@ export class SPAPIRateLimiter {
   private isProcessingQueue = false;
   private windowDurationMs = 60000; // 1 minute window
   private maxRequestsPerWindow: number;
+  private readonly resetWindowTimer: ReturnType<typeof setInterval>;
   
   constructor(
     private readonly serviceName: string = 'amazon-sp-api',
@@ -46,8 +47,10 @@ export class SPAPIRateLimiter {
   ) {
     this.maxRequestsPerWindow = maxRequestsPerMinute;
     
-    // Reset window periodically
-    setInterval(() => this.resetWindowIfNeeded(), 10000);
+    // Reset the window periodically without making this utility the only
+    // reference that keeps a completed process or test runner alive.
+    this.resetWindowTimer = setInterval(() => this.resetWindowIfNeeded(), 10000);
+    this.resetWindowTimer.unref?.();
   }
   
   /**

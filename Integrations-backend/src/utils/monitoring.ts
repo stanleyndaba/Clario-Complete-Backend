@@ -6,6 +6,7 @@
  * This file provides utility functions to interact with Sentry
  */
 
+import fs from 'fs';
 import logger from './logger';
 
 // Import Sentry (it's already initialized in instrument.ts)
@@ -227,6 +228,82 @@ export function requestMetricsMiddleware(req: any, res: any, next: any): void {
 /**
  * Health check data collector
  */
+type MemoryHealthDetails = {
+  source: 'cgroup' | 'process_rss';
+  usedBytes: number;
+  limitBytes: number | null;
+  utilizationPercent: number | null;
+  rssBytes: number;
+  heapUsedBytes: number;
+  heapTotalBytes: number;
+  externalBytes: number;
+};
+
+function readCgroupMemoryValue(filePath: string): number | null {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8').trim();
+    if (!raw || raw === 'max') return null;
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatMemoryMiB(bytes: number): string {
+  return `${Math.round(bytes / 1024 / 1024)}MB`;
+}
+
+function getMemoryHealthCheck(): {
+  status: 'pass' | 'warn';
+  message: string;
+  details: MemoryHealthDetails;
+} {
+  const memory = process.memoryUsage();
+  const cgroupCurrent = readCgroupMemoryValue('/sys/fs/cgroup/memory.current');
+  const cgroupLimit = readCgroupMemoryValue('/sys/fs/cgroup/memory.max');
+  const constrainedMemory = typeof (process as any).constrainedMemory === 'function'
+    ? Number((process as any).constrainedMemory())
+    : 0;
+  const limitBytes = cgroupLimit ?? (Number.isFinite(constrainedMemory) && constrainedMemory > 0 ? constrainedMemory : null);
+  const usedBytes = cgroupCurrent ?? memory.rss;
+  const utilizationPercent = limitBytes && limitBytes > 0
+    ? Math.round((usedBytes / limitBytes) * 1000) / 10
+    : null;
+  const details: MemoryHealthDetails = {
+    source: cgroupCurrent === null ? 'process_rss' : 'cgroup',
+    usedBytes,
+    limitBytes,
+    utilizationPercent,
+    rssBytes: memory.rss,
+    heapUsedBytes: memory.heapUsed,
+    heapTotalBytes: memory.heapTotal,
+    externalBytes: memory.external,
+  };
+
+  if (utilizationPercent !== null && utilizationPercent >= 90) {
+    return {
+      status: 'warn',
+      message: `High constrained-memory usage: ${formatMemoryMiB(usedBytes)} / ${formatMemoryMiB(limitBytes!)} (${utilizationPercent}%).`,
+      details,
+    };
+  }
+
+  if (utilizationPercent === null) {
+    return {
+      status: 'warn',
+      message: `Memory limit unavailable; process RSS is ${formatMemoryMiB(memory.rss)}. Capacity cannot be certified from this instance.`,
+      details,
+    };
+  }
+
+  return {
+    status: 'pass',
+    message: `Constrained-memory usage: ${formatMemoryMiB(usedBytes)} / ${formatMemoryMiB(limitBytes!)} (${utilizationPercent}%).`,
+    details,
+  };
+}
+
 export interface HealthCheckResult {
   status: 'healthy' | 'degraded' | 'unhealthy';
   timestamp: string;
@@ -236,6 +313,7 @@ export interface HealthCheckResult {
     status: 'pass' | 'warn' | 'fail';
     message?: string;
     responseTime?: number;
+    details?: Record<string, string | number | null>;
   }>;
 }
 
@@ -285,15 +363,13 @@ export async function performHealthCheck(): Promise<HealthCheckResult> {
     overallStatus = overallStatus === 'healthy' ? 'degraded' : overallStatus;
   }
   
-  // Memory usage check
-  const memUsage = process.memoryUsage();
-  const memUsedMB = Math.round(memUsage.heapUsed / 1024 / 1024);
-  const memTotalMB = Math.round(memUsage.heapTotal / 1024 / 1024);
-  if (memUsedMB / memTotalMB > 0.9) {
-    checks.memory = { status: 'warn', message: `High memory usage: ${memUsedMB}MB / ${memTotalMB}MB` };
+  // Heap total is a V8 allocation watermark, not a process or container memory limit.
+  // Certification therefore uses cgroup/constrained-memory usage when available and
+  // exposes the raw process values for operational analysis.
+  const memoryCheck = getMemoryHealthCheck();
+  checks.memory = memoryCheck;
+  if (memoryCheck.status === 'warn') {
     overallStatus = overallStatus === 'healthy' ? 'degraded' : overallStatus;
-  } else {
-    checks.memory = { status: 'pass', message: `${memUsedMB}MB / ${memTotalMB}MB` };
   }
   
   return {

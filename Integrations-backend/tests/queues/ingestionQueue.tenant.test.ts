@@ -1,15 +1,19 @@
 // @ts-nocheck
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 const addMock = jest.fn();
 const pingMock = jest.fn().mockResolvedValue('PONG');
+let queueModule: typeof import('../../src/queues/ingestionQueue') | null = null;
 
 jest.mock('bullmq', () => ({
   Queue: jest.fn().mockImplementation(() => ({
     add: addMock,
     client: Promise.resolve({ ping: pingMock }),
+    close: jest.fn().mockResolvedValue(undefined),
   })),
-  QueueEvents: jest.fn().mockImplementation(() => ({})),
+  QueueEvents: jest.fn().mockImplementation(() => ({
+    close: jest.fn().mockResolvedValue(undefined),
+  })),
 }));
 
 describe('Agent2 queue tenant scoping', () => {
@@ -20,8 +24,13 @@ describe('Agent2 queue tenant scoping', () => {
     addMock.mockResolvedValue({ id: 'job-1' });
   });
 
+  afterEach(async () => {
+    await queueModule?.closeQueue();
+    queueModule = null;
+  });
+
   it('adds tenant_id into payload and tenant-safe dedupe key', async () => {
-    const queueModule = await import('../../src/queues/ingestionQueue');
+    queueModule = await import('../../src/queues/ingestionQueue');
 
     const jobId = await queueModule.addSyncJob('user-1', 'seller-1', {
       tenantId: 'tenant-a',

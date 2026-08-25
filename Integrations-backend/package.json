@@ -25,6 +25,7 @@
     "db:migrate:neon": "ts-node scripts/run-neon-migrations.ts",
     "db:migrate:generate": "ts-node scripts/run-migrations-supabase.ts",
     "db:migrate:single": "psql -d $DATABASE_URL -f migrations/005_add_dispute_system.sql",
+    "audit:certification-preflight": "ts-node scripts/run-audit-certification-preflight.ts",
     "db:seed": "ts-node scripts/seed.ts",
     "seed:acme-demo": "ts-node scripts/seed-acme-operations-demo.ts",
     "worker:detection": "ts-node src/services/enhancedDetectionService.ts",

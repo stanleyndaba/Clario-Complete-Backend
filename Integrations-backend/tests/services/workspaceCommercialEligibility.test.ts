@@ -222,10 +222,10 @@ describe('Workspace Billing action availability', () => {
     });
   });
 
-  test('allows resume only for a provider-confirmed non-renewing subscription with paid time remaining', () => {
+  test('does not promise same-subscription resume for a provider-confirmed non-renewing subscription', () => {
     expect(deriveWorkspaceBillingActions(workspaceSubscription({ status: 'non_renewing' }))).toEqual({
       cancel: false,
-      resume: true,
+      resume: false,
       manage: true,
     });
   });

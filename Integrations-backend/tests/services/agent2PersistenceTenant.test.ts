@@ -105,7 +105,7 @@ describe('Agent2 tenant-safe persistence', () => {
     expect(insertedRows[0].tenant_id).toBe('tenant-a');
   });
 
-  it('uses tenant-aware upsert key for settlements idempotency', async () => {
+  it('persists settlements with tenant, store, and canonical provider identity', async () => {
     const { SettlementsService } = await import('../../src/services/settlementsService');
     const service = new SettlementsService();
 
@@ -122,12 +122,20 @@ describe('Agent2 tenant-safe persistence', () => {
           fee_breakdown: {},
         },
       ],
-      undefined,
+      'store-a',
       'tenant-a'
     );
 
     expect(upsertMock).toHaveBeenCalledTimes(1);
-    const [, options] = upsertMock.mock.calls[0];
-    expect(options.onConflict).toContain('tenant_id');
+    const [persistedRows, options] = upsertMock.mock.calls[0];
+    expect(persistedRows).toHaveLength(1);
+    expect(persistedRows[0]).toMatchObject({
+      tenant_id: 'tenant-a',
+      store_id: 'store-a',
+      user_id: 'user-1',
+      settlement_id: 'SET-1',
+      transaction_type: 'fee',
+    });
+    expect(options.onConflict).toBe('tenant_id,user_id,store_id,settlement_id,transaction_type');
   });
 });

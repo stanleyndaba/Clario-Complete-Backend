@@ -565,14 +565,14 @@ export class SettlementsService {
         updated_at: new Date().toISOString()
       }));
 
-      // Check for existing settlements (using composite key: settlement_id + transaction_type)
-      const settlementKeys = settlementsToInsert.map(s => `${s.settlement_id}_${s.transaction_type}`);
-
-      // Insert with conflict handling
+            // A provider settlement identity is canonical only inside a tenant, user, and store scope.
+      // The migration-backed conflict target prevents a provider event for one store
+      // from overwriting or deduplicating evidence belonging to another store.
       const { error: insertError } = await supabase
         .from('settlements')
         .upsert(settlementsToInsert, {
-          onConflict: 'tenant_id,user_id,settlement_id,transaction_type',
+          onConflict: 'tenant_id,user_id,store_id,settlement_id,transaction_type',
+
           ignoreDuplicates: false
         });
 
