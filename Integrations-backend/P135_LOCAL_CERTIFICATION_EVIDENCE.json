@@ -1,0 +1,257 @@
+{
+  "verdict": "NOT_CERTIFIED",
+  "p134Status": "NOT_RUN",
+  "blockers": [
+    "P110: No independent end-to-end no-provider execution proof.",
+    "P114: No explicit stale-evidence policy or adversarial test.",
+    "P115: Replay behavior is not independently tested.",
+    "P118: Dedicated adversarial separation test is absent.",
+    "P119: transferLedgerShadowEligibility.ts is absent.",
+    "P120: No semantic-evidence module or explicit non-flow test exists.",
+    "P121: Named catalog execution boundary and test are absent.",
+    "P122: No dedicated fallback/configuration escape test exists.",
+    "P123: No concurrency test exists.",
+    "P124: No source-run provenance adversarial or replay test exists.",
+    "P125: No fixture-origin policy is implemented.",
+    "P126: No complete P110–P135 local safety suite yet exists.",
+    "P127: The registry defines dependencies, but no failed-dependency propagation test exists.",
+    "P128: No configuration adversarial test exists.",
+    "P129: Existing unit case is not an independent adversarial gate.",
+    "P130: Stale/replay adversarial coverage is absent.",
+    "P132: No end-to-end adversarial separation suite exists.",
+    "P133: No P133 adversarial test suite exists.",
+    "P134: P110–P133 are not all passing and P134 has not run.",
+    "P135: Registry machinery is implemented locally but has not completed a passing P134/P135 execution."
+  ],
+  "safetyAssertions": {
+    "transferActivation": "OFF",
+    "providerAccess": "NONE",
+    "economicOutput": "NONE",
+    "productionMutation": "NONE"
+  },
+  "registryHash": "fde403019202342033ab274c1192d32d2a0bb0154379263b26d53536c433dcdf",
+  "gates": [
+    {
+      "id": "P110",
+      "title": "Preserved-source observation only",
+      "testStatus": "PARTIAL",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "No independent end-to-end no-provider execution proof."
+      ]
+    },
+    {
+      "id": "P111",
+      "title": "Exact provider taxonomy",
+      "testStatus": "PASS",
+      "verdict": "PASS",
+      "blockers": []
+    },
+    {
+      "id": "P112",
+      "title": "Scope isolation",
+      "testStatus": "PASS",
+      "verdict": "PASS",
+      "blockers": []
+    },
+    {
+      "id": "P113",
+      "title": "Ambiguity and unpaired containment",
+      "testStatus": "PASS",
+      "verdict": "PASS",
+      "blockers": []
+    },
+    {
+      "id": "P114",
+      "title": "Incomplete history and source failure containment",
+      "testStatus": "PARTIAL",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "No explicit stale-evidence policy or adversarial test."
+      ]
+    },
+    {
+      "id": "P115",
+      "title": "Replay and source-fingerprint integrity",
+      "testStatus": "PARTIAL",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "Replay behavior is not independently tested."
+      ]
+    },
+    {
+      "id": "P116",
+      "title": "Observation schema and feature flag remain OFF",
+      "testStatus": "PASS",
+      "verdict": "PASS",
+      "blockers": []
+    },
+    {
+      "id": "P117",
+      "title": "Controlled migration apply guard",
+      "testStatus": "PASS",
+      "verdict": "PASS",
+      "blockers": []
+    },
+    {
+      "id": "P118",
+      "title": "Legacy activation-path separation",
+      "testStatus": "PARTIAL",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "Dedicated adversarial separation test is absent."
+      ]
+    },
+    {
+      "id": "P119",
+      "title": "Fail-closed shadow eligibility",
+      "testStatus": "NOT_IMPLEMENTED",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "transferLedgerShadowEligibility.ts is absent."
+      ]
+    },
+    {
+      "id": "P120",
+      "title": "Semantic evidence cannot become economic evidence",
+      "testStatus": "PARTIAL",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "No semantic-evidence module or explicit non-flow test exists."
+      ]
+    },
+    {
+      "id": "P121",
+      "title": "Catalog and activation execution remain unavailable",
+      "testStatus": "PARTIAL",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "Named catalog execution boundary and test are absent."
+      ]
+    },
+    {
+      "id": "P122",
+      "title": "Failed dependencies and OFF configuration fail closed",
+      "testStatus": "NOT_IMPLEMENTED",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "No dedicated fallback/configuration escape test exists."
+      ]
+    },
+    {
+      "id": "P123",
+      "title": "Concurrent observation safety",
+      "testStatus": "PARTIAL",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "No concurrency test exists."
+      ]
+    },
+    {
+      "id": "P124",
+      "title": "Source-run provenance is audit complete",
+      "testStatus": "PARTIAL",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "No source-run provenance adversarial or replay test exists."
+      ]
+    },
+    {
+      "id": "P125",
+      "title": "Fixture evidence is never provider or economic evidence",
+      "testStatus": "NOT_IMPLEMENTED",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "No fixture-origin policy is implemented."
+      ]
+    },
+    {
+      "id": "P126",
+      "title": "Deterministic local safety suite",
+      "testStatus": "PARTIAL",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "No complete P110–P135 local safety suite yet exists."
+      ]
+    },
+    {
+      "id": "P127",
+      "title": "Dependency graph blocks unsafe promotion",
+      "testStatus": "NOT_IMPLEMENTED",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "The registry defines dependencies, but no failed-dependency propagation test exists."
+      ]
+    },
+    {
+      "id": "P128",
+      "title": "Configuration cannot bypass containment",
+      "testStatus": "NOT_IMPLEMENTED",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "No configuration adversarial test exists."
+      ]
+    },
+    {
+      "id": "P129",
+      "title": "Ambiguous-evidence adversarial resistance",
+      "testStatus": "PARTIAL",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "Existing unit case is not an independent adversarial gate."
+      ]
+    },
+    {
+      "id": "P130",
+      "title": "Stale and replay-evidence adversarial resistance",
+      "testStatus": "NOT_IMPLEMENTED",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "Stale/replay adversarial coverage is absent."
+      ]
+    },
+    {
+      "id": "P131",
+      "title": "Cross-boundary adversarial resistance",
+      "testStatus": "PASS",
+      "verdict": "PASS",
+      "blockers": []
+    },
+    {
+      "id": "P132",
+      "title": "Semantic-to-economic and audit-to-activation resistance",
+      "testStatus": "NOT_IMPLEMENTED",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "No end-to-end adversarial separation suite exists."
+      ]
+    },
+    {
+      "id": "P133",
+      "title": "Concurrency, retry, fallback, and configuration escape resistance",
+      "testStatus": "NOT_IMPLEMENTED",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "No P133 adversarial test suite exists."
+      ]
+    },
+    {
+      "id": "P134",
+      "title": "Full local safety regression",
+      "testStatus": "NOT_RUN",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "P110–P133 are not all passing and P134 has not run."
+      ]
+    },
+    {
+      "id": "P135",
+      "title": "Independent deterministic certification registry",
+      "testStatus": "PARTIAL",
+      "verdict": "BLOCKED",
+      "blockers": [
+        "Registry machinery is implemented locally but has not completed a passing P134/P135 execution."
+      ]
+    }
+  ]
+}

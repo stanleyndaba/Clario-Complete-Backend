@@ -67,6 +67,7 @@ const ledgerRow = (overrides: Record<string, any> = {}): Row => ({
   tenant_id: 'tenant-a',
   user_id: 'user-1',
   store_id: 'store-1',
+  marketplace_id: 'ATVPDKIKX0DER',
   sync_id: 'ledger-sync-1',
   source: 'sp_api',
   fnsku: 'FNSKU-1',
@@ -204,11 +205,12 @@ describe('Transfer Auditor P1 zero-claim Ledger observation rail', () => {
     }));
   });
 
-  it('keeps tenant, store, and parent sync scopes isolated and never touches claim paths', async () => {
+  it('keeps tenant, store, marketplace, and parent sync scopes isolated and never touches claim paths', async () => {
     ledgerRows = [
       ledgerRow(),
       ledgerRow({ tenant_id: 'tenant-b', provider_row_fingerprint: 'other-tenant' }),
       ledgerRow({ store_id: 'store-2', provider_row_fingerprint: 'other-store' }),
+      ledgerRow({ marketplace_id: 'A1F83G8C2ARO7P', provider_row_fingerprint: 'other-marketplace' }),
       ledgerRow({ sync_id: 'ledger-sync-2', provider_row_fingerprint: 'other-sync' }),
     ];
     const result = await new TransferLedgerObservationService(makeDb() as any).observe(input());

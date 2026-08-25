@@ -167,6 +167,7 @@ export class TransferLedgerObservationService {
         .eq('tenant_id', input.tenantId)
         .eq('user_id', input.userId)
         .eq('store_id', input.storeId)
+        .eq('marketplace_id', input.marketplaceId)
         .eq('sync_id', input.ledgerSyncId)
         .eq('source', 'sp_api');
       if (error) throw new Error(error.message || 'Ledger observation query failed.');
