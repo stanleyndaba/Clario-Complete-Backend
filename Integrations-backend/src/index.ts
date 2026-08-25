@@ -38,6 +38,7 @@ import dropboxRoutes from './routes/dropboxRoutes';
 import stripeRoutes from './routes/stripeRoutes';
 import quickbooksRoutes from './routes/quickbooksRoutes';
 import xeroRoutes from './routes/xeroRoutes';
+import certificationRuntimeRoutes from './routes/certificationRuntimeRoutes';
 import syncRoutes from './routes/syncRoutes';
 import integrationRoutes from './routes/integrationRoutes';
 import sseRoutes from './routes/sseRoutes';
@@ -381,6 +382,10 @@ app.use('/api/v1/integrations/gdrive', googleDriveRoutes);
 app.use('/api/v1/integrations/dropbox', dropboxRoutes);
 app.use('/api/v1/integrations/quickbooks', quickbooksRoutes);
 app.use('/api/v1/integrations/xero', xeroRoutes);
+if (process.env.CERTIFICATION_RUNTIME === 'true') {
+  app.use('/api/internal/certification', certificationRuntimeRoutes);
+  logger.warn('Certification-only internal routes enabled for isolated runtime');
+}
 app.use('/api/v1/accounting', accountingIntelligenceRoutes);
 logger.info('OAuth routes registered: Gmail, Outlook, Google Drive, Dropbox, QuickBooks, Xero');
 logger.info('Accounting intelligence routes registered at /api/v1/accounting');
@@ -532,6 +537,7 @@ app.use(errorHandler);
 
 const PORT = config.PORT || 3001;
 const runtimeRole = String(process.env.RUNTIME_ROLE || 'monolith').trim().toLowerCase();
+const isCertificationRuntime = process.env.CERTIFICATION_RUNTIME === 'true';
 
 function shouldRunRecoveriesWorker(): boolean {
   if (process.env.ENABLE_RECOVERIES_WORKER === 'false') {
@@ -591,6 +597,21 @@ function startBackgroundJobs(): void {
         nodeEnv: process.env.NODE_ENV,
         reason: 'ENABLE_BACKGROUND_JOBS not set to true outside production'
       });
+      return;
+    }
+
+    if (isCertificationRuntime) {
+      if (process.env.ENABLE_ONBOARDING_WORKER !== 'true') {
+        logger.error('Certification runtime refused to start its worker because ENABLE_ONBOARDING_WORKER=true is required');
+        return;
+      }
+      import('./workers/onboardingWorker').then((module) => {
+        module.startOnboardingWorker();
+        logger.info('Certification runtime onboarding worker initialized (BullMQ only)');
+      }).catch((error: any) => {
+        logger.error('Certification runtime failed to start onboarding worker', { error: error.message });
+      });
+      logger.info('Certification runtime skipped all unrelated background workers and scheduled jobs');
       return;
     }
 
