@@ -27,6 +27,7 @@ import { createCertificationSidecarRouter } from './certification/certificationS
 import { getCertificationSidecarRuntime } from './certification/certificationSidecarRuntime';
 import { warnIfAgent7UnpaidFilingOverrideEnabledOnBoot } from './services/agent7UnpaidFilingOverride';
 import { validateCredentialKeyConfiguration } from './utils/tokenManager';
+import { isAllBackgroundAndRecoveryPaused } from './utils/runtimePauseGate';
 
 // Import middleware
 import { userIdMiddleware } from './middleware/userIdMiddleware';
@@ -938,6 +939,13 @@ async function startServer(): Promise<void> {
           }));
       });
       logger.warn('Certification sidecar mode suppressed all ordinary background startup and recovery routines');
+      return;
+    }
+
+    if (isAllBackgroundAndRecoveryPaused()) {
+      logger.warn('All ordinary background startup and recovery routines suppressed', {
+        reason: 'PAUSE_ALL_BACKGROUND_AND_RECOVERY=true'
+      });
       return;
     }
 
