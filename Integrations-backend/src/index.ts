@@ -21,6 +21,7 @@ import { supabaseAdmin } from './database/supabaseClient';
 import { securityHeadersMiddleware, enforceHttpsMiddleware, validateTlsMiddleware } from './security/securityHeaders';
 import { validateRedirectMiddleware } from './security/validateRedirect';
 import { validateEnvironmentOrFail } from './security/envValidation';
+import { buildConfiguredCorsOrigins, isCertificationRuntime } from './security/corsOrigins';
 import { warnIfAgent7UnpaidFilingOverrideEnabledOnBoot } from './services/agent7UnpaidFilingOverride';
 import { validateCredentialKeyConfiguration } from './utils/tokenManager';
 
@@ -161,19 +162,7 @@ app.use(helmet({
   contentSecurityPolicy: false, // We handle CSP in securityHeadersMiddleware
   hsts: false, // We handle HSTS in securityHeadersMiddleware
 }));
-const configuredCorsOrigins = new Set(
-  [
-    process.env.FRONTEND_URL,
-    process.env.PUBLIC_FRONTEND_URL,
-    ...(process.env.ALLOWED_FRONTEND_ORIGINS || process.env.CORS_ALLOW_ORIGINS || '').split(','),
-    // Stable production domains remain explicit until deployment configuration
-    // supplies the canonical origin list.
-    'https://margin-finance.com',
-    'https://www.margin-finance.com'
-  ]
-    .map((value) => String(value || '').trim().replace(/\/$/, ''))
-    .filter(Boolean)
-);
+const configuredCorsOrigins = buildConfiguredCorsOrigins();
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -537,7 +526,7 @@ app.use(errorHandler);
 
 const PORT = config.PORT || 3001;
 const runtimeRole = String(process.env.RUNTIME_ROLE || 'monolith').trim().toLowerCase();
-const isCertificationRuntime = process.env.CERTIFICATION_RUNTIME === 'true';
+const certificationRuntimeEnabled = isCertificationRuntime();
 
 function shouldRunRecoveriesWorker(): boolean {
   if (process.env.ENABLE_RECOVERIES_WORKER === 'false') {
@@ -600,7 +589,7 @@ function startBackgroundJobs(): void {
       return;
     }
 
-    if (isCertificationRuntime) {
+    if (certificationRuntimeEnabled) {
       if (process.env.ENABLE_ONBOARDING_WORKER !== 'true') {
         logger.error('Certification runtime refused to start its worker because ENABLE_ONBOARDING_WORKER=true is required');
         return;
