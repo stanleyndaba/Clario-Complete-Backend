@@ -723,6 +723,8 @@ function startBackgroundJobs(): void {
       logger.info('Scheduled evidence ingestion disabled (ENABLE_SCHEDULED_INGESTION=false)');
     }
 
+    const detectionProcessorEnabled = process.env.ENABLE_DETECTION_PROCESSOR !== 'false';
+
     const startDetectionProcessor = async () => {
       try {
         try {
@@ -763,12 +765,16 @@ function startBackgroundJobs(): void {
         logger.error('Failed to start detection job processor', { error: error?.message || error });
       }
     };
-    startDetectionProcessor();
+    if (detectionProcessorEnabled) {
+      startDetectionProcessor();
+    } else {
+      logger.info('Detection job processor disabled (ENABLE_DETECTION_PROCESSOR=false)');
+    }
 
     logger.info('Background jobs started', {
       runtime_role: runtimeRole,
       deadline_monitoring: 'started',
-      detection_processor: 'started',
+      detection_processor: detectionProcessorEnabled ? 'started' : 'disabled',
       evidence_ingestion_worker: process.env.ENABLE_EVIDENCE_INGESTION_WORKER !== 'false' ? 'started' : 'disabled',
       document_parsing_worker: process.env.ENABLE_DOCUMENT_PARSING_WORKER !== 'false' ? 'started' : 'disabled',
       evidence_matching_worker: process.env.ENABLE_EVIDENCE_MATCHING_WORKER !== 'false' ? 'started' : 'disabled',
