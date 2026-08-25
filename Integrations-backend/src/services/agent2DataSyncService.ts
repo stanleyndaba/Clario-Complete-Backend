@@ -45,6 +45,7 @@ import {
   TRANSFER_LEDGER_OBSERVATION_FLAG,
   transferLedgerObservationService,
 } from './transferLedgerObservationService';
+import { evaluateTransferLedgerShadowEligibility } from './transferLedgerShadowEligibility';
 
 const INBOUND_V0_PRIMARY_FLAG = 'connected_inbound_v0_primary';
 
@@ -940,11 +941,9 @@ export class Agent2DataSyncService {
       // It has no Amazon acquisition path, never writes inventory_transfers, and cannot invoke a detector.
       try {
         const transferObservationFlag = await featureFlagService.evaluate(TRANSFER_LEDGER_OBSERVATION_FLAG, userId);
-        const transferObservationMode = String(
-          transferObservationFlag.payload?.mode || (transferObservationFlag.enabled ? 'INVALID' : 'OFF')
-        ).trim().toUpperCase();
+        const transferShadowEligibility = evaluateTransferLedgerShadowEligibility(transferObservationFlag);
 
-        if (transferObservationFlag.enabled && transferObservationMode === 'SHADOW') {
+        if (transferShadowEligibility.eligible) {
           const marketplaceId = await this.resolveTransferObservationMarketplaceId(resolvedTenantId, resolvedStoreId);
           const observationResult = await transferLedgerObservationService.observe({
             userId,
@@ -978,12 +977,14 @@ export class Agent2DataSyncService {
             claimCapable: observationResult.claimCapable,
           });
         } else {
-          logger.info('ℹ️ [AGENT 2] Transfer Ledger observation rail disabled or non-SHADOW', {
+          logger.info('ℹ️ [AGENT 2] Transfer Ledger observation rail disabled or ineligible', {
             userId,
             syncId: detectionSyncId,
-            reason: transferObservationFlag.reason,
-            mode: transferObservationMode,
+            reason: transferShadowEligibility.reason,
+            mode: transferShadowEligibility.mode,
             enabled: transferObservationFlag.enabled,
+            claimCapable: transferShadowEligibility.claimCapable,
+            observationVersion: transferShadowEligibility.observationVersion,
           });
         }
       } catch (transferObservationError: any) {
