@@ -26,6 +26,7 @@ export interface InitialSyncJobData {
     companyName?: string;
     marketplaces?: string[];
     provider?: 'quickbooks' | 'xero';
+    accountingTrigger?: 'oauth_initial' | 'manual' | 'scheduled' | 'reconnect' | 'retry';
     triggeredAt: string;
     jobType: 'initial-sync' | 'manual-sync' | 'accounting-sync';
 }
@@ -240,7 +241,8 @@ export async function addSyncJob(
 export async function addAccountingSyncJob(
     userId: string,
     tenantId: string,
-    provider: 'quickbooks' | 'xero'
+    provider: 'quickbooks' | 'xero',
+    trigger: 'oauth_initial' | 'manual' | 'scheduled' | 'reconnect' | 'retry' = 'manual'
 ): Promise<string | null> {
     try {
         const queue = getQueue();
@@ -254,13 +256,14 @@ export async function addAccountingSyncJob(
             tenantId,
             sellerId: userId,
             provider,
+            accountingTrigger: trigger,
             triggeredAt: new Date().toISOString(),
             jobType: 'accounting-sync'
         }, {
-            // OAuth state is single-use, while reconnect must remain able to start
-            // a new provider read. Timestamped IDs therefore prevent stale completed
-            // jobs from suppressing a later verified reconnect.
-            jobId: `accounting-sync-${tenantId}-${userId}-${provider}-${Date.now()}`
+            // A five-minute idempotency window collapses repeated clicks without
+            // preventing a later scheduled/reconnect read. The worker's durable
+            // tenant/provider sync-run lock remains the final concurrency barrier.
+            jobId: `accounting-sync-${tenantId}-${provider}-${trigger}-${Math.floor(Date.now() / 300000)}`
         });
 
         logger.info('[QUEUE] Accounting read enqueued', {

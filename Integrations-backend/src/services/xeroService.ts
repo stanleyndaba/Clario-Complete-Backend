@@ -199,12 +199,10 @@ export async function readXeroAccpayBills(userId: string, tenantId: string): Pro
   return bills.map(normalizeXeroBill);
 }
 
-export async function syncXeroFinancialEvidence(userId: string, tenantId: string): Promise<{
-  provider: 'xero';
-  recordCount: number;
-  status: 'verified' | 'no_data';
-  readAt: string;
-}> {
+export async function syncXeroFinancialEvidence(
+  userId: string,
+  tenantId: string
+): Promise<{ provider: 'xero' } & Awaited<ReturnType<typeof persistAccountingRead>>> {
   let sourceId: string | undefined;
   try {
     const source = await resolveAccountingSource(userId, tenantId, 'xero');

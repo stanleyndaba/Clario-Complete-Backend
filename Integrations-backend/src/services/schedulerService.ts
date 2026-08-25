@@ -60,6 +60,7 @@ class SchedulerService {
             const job = cron.schedule(cronExpression, async () => {
                 logger.info(`[SCHEDULER] Running daily ingestion job (${config.label})`);
                 await this.runScheduledIngestion(config.schedule);
+                await this.runScheduledAccountingSync(config.schedule);
             }, {
                 scheduled: true,
                 timezone: 'UTC'
@@ -127,6 +128,46 @@ class SchedulerService {
                 error: error?.message || String(error),
                 scheduleType
             });
+        }
+    }
+
+    /**
+     * Enqueue one daily canonical accounting refresh for every connected
+     * tenant/provider source. The queue and sync-run service enforce final
+     * idempotency and concurrent-run protection; this scheduler is only a producer.
+     */
+    private async runScheduledAccountingSync(scheduleType: string): Promise<void> {
+        try {
+            const { data: sources, error } = await supabase
+                .from('evidence_sources')
+                .select('tenant_id, user_id, provider, metadata, status')
+                .eq('status', 'connected')
+                .in('provider', ['quickbooks', 'xero']);
+            if (error) {
+                logger.error('[SCHEDULER] Unable to load accounting sources', { error: error.message, scheduleType });
+                return;
+            }
+
+            const { addAccountingSyncJob } = await import('../queues/ingestionQueue');
+            let queued = 0;
+            for (const source of sources || []) {
+                const tenantId = typeof source.tenant_id === 'string' ? source.tenant_id : '';
+                const userId = typeof source.user_id === 'string' ? source.user_id : '';
+                const provider = source.provider === 'quickbooks' || source.provider === 'xero' ? source.provider : null;
+                const metadata = (source.metadata || {}) as Record<string, unknown>;
+                const sourceSchedule = metadata.accounting_schedule || 'daily_0200';
+                const autoSync = metadata.accounting_auto_sync !== false;
+                if (!tenantId || !userId || !provider || !autoSync || (scheduleType !== 'all' && sourceSchedule !== scheduleType)) continue;
+                if (provider === 'xero' && typeof metadata.xero_tenant_id !== 'string') {
+                    logger.warn('[SCHEDULER] Xero source skipped because organisation selection is required', { tenantId, provider });
+                    continue;
+                }
+                const jobId = await addAccountingSyncJob(userId, tenantId, provider, 'scheduled');
+                if (jobId) queued += 1;
+            }
+            logger.info('[SCHEDULER] Scheduled accounting sync enqueue pass completed', { scheduleType, queued });
+        } catch (error: any) {
+            logger.error('[SCHEDULER] Scheduled accounting sync enqueue pass failed', { scheduleType, error: error?.message || String(error) });
         }
     }
 

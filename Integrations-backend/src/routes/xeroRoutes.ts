@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticateToken } from '../middleware/authMiddleware';
-import { connectEvidenceSource, handleEvidenceSourceCallback } from '../controllers/evidenceSourcesController';
+import { connectEvidenceSource, handleEvidenceSourceCallback, listXeroOrganisations, selectXeroOrganisation } from '../controllers/evidenceSourcesController';
 import { disconnectAccountingIntegration, requestAccountingSync } from '../controllers/accountingIntegrationController';
 
 const router = Router();
@@ -12,6 +12,9 @@ router.get('/callback', handleEvidenceSourceCallback);
 // membership of the explicitly supplied workspace before every operation.
 router.post('/sync', requestAccountingSync);
 router.post('/disconnect', disconnectAccountingIntegration);
+// A multi-organisation Xero consent is not synced until the seller selects one.
+router.get('/organisations', authenticateToken, listXeroOrganisations);
+router.post('/organisations/select', authenticateToken, selectXeroOrganisation);
 
 // OAuth initiation
 router.get('/auth', (req, res, next) => {

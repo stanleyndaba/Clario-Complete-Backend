@@ -183,12 +183,10 @@ export async function readQuickBooksFinancialRecords(userId: string, tenantId: s
   ];
 }
 
-export async function syncQuickBooksFinancialEvidence(userId: string, tenantId: string): Promise<{
-  provider: 'quickbooks';
-  recordCount: number;
-  status: 'verified' | 'no_data';
-  readAt: string;
-}> {
+export async function syncQuickBooksFinancialEvidence(
+  userId: string,
+  tenantId: string
+): Promise<{ provider: 'quickbooks' } & Awaited<ReturnType<typeof persistAccountingRead>>> {
   let sourceId: string | undefined;
   try {
     const source = await resolveAccountingSource(userId, tenantId, 'quickbooks');

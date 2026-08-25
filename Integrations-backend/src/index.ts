@@ -60,6 +60,7 @@ import workflowRoutes from './routes/workflowRoutes';
 import evidenceRoutes from './routes/evidenceRoutes';
 import documentsRoutes from './routes/documentsRoutes';
 import evidenceSourcesRoutes from './routes/evidenceSourcesRoutes';
+import accountingIntelligenceRoutes from './routes/accountingIntelligenceRoutes';
 import healthRoutes from './routes/healthRoutes';
 import notificationRoutes from './notifications/routes/notification_routes';
 import recoveryRoutes from './routes/recoveryRoutes';
@@ -159,68 +160,32 @@ app.use(helmet({
   contentSecurityPolicy: false, // We handle CSP in securityHeadersMiddleware
   hsts: false, // We handle HSTS in securityHeadersMiddleware
 }));
+const configuredCorsOrigins = new Set(
+  [
+    process.env.FRONTEND_URL,
+    process.env.PUBLIC_FRONTEND_URL,
+    ...(process.env.ALLOWED_FRONTEND_ORIGINS || process.env.CORS_ALLOW_ORIGINS || '').split(','),
+    // Stable production domains remain explicit until deployment configuration
+    // supplies the canonical origin list.
+    'https://margin-finance.com',
+    'https://www.margin-finance.com'
+  ]
+    .map((value) => String(value || '').trim().replace(/\/$/, ''))
+    .filter(Boolean)
+);
+
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, Postman, etc.)
-    if (!origin) {
-      logger.debug('CORS: Allowing request with no origin', { origin: 'null' });
+    // Non-browser service calls do not use browser credentials. Browser origins
+    // must be exact configured origins; wildcard deployment domains are unsafe.
+    if (!origin) return callback(null, true);
+    const normalizedOrigin = origin.replace(/\/$/, '');
+    const isLocalDevelopment = process.env.NODE_ENV !== 'production' && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(normalizedOrigin);
+    if (isLocalDevelopment || configuredCorsOrigins.has(normalizedOrigin)) {
       return callback(null, true);
     }
-
-    const allowedOrigins = [
-      'https://opside-complete-frontend-4poy2f2lh-mvelo-ndabas-projects.vercel.app',
-      'https://opside-complete-frontend-kqvxrzg4s-mvelo-ndabas-projects.vercel.app',
-      'https://opside-complete-frontend-nwcors9h1-mvelo-ndabas-projects.vercel.app',
-      'https://opside-complete-frontend-6t3yn3p2y-mvelo-ndabas-projects.vercel.app', // New frontend deployment
-      'https://clario-refunds-frontend.onrender.com',
-      'https://opside-complete-frontend.onrender.com',
-      'http://localhost:8080',
-      'http://localhost:5173',
-      'http://localhost:4173',
-      'http://localhost:3000',
-      'http://127.0.0.1:8080',
-      'http://127.0.0.1:5173',
-      'http://127.0.0.1:4173',
-      'http://127.0.0.1:3000',
-      'https://margin-finance.com',
-      'https://www.margin-finance.com'
-    ];
-
-    const isLocalDevOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
-    if (isLocalDevOrigin) {
-      logger.debug('CORS: Allowing local development origin', { origin });
-      return callback(null, true);
-    }
-
-    // Allow all Vercel preview deployments and onrender.com domains (pattern matching)
-    // This handles changing frontend domains automatically
-    // Check for vercel.app, onrender.com, or vercel.com domains
-    const isVercelApp = origin.includes('vercel.app') || origin.includes('vercel.com');
-    const isOnRender = origin.includes('onrender.com');
-    const isMarginFinance = origin.includes('margin-finance.com');
-
-    if (isVercelApp || isOnRender || isMarginFinance) {
-      logger.info('CORS: Allowing dynamic domain', {
-        origin,
-        type: isVercelApp ? 'vercel' : isOnRender ? 'onrender' : 'margin-finance',
-        matched: true
-      });
-      return callback(null, true);
-    }
-
-    // Check exact match
-    if (allowedOrigins.includes(origin)) {
-      logger.debug('CORS: Allowing exact match', { origin });
-      return callback(null, true);
-    }
-
-    // Log rejected origin for debugging
-    logger.warn('CORS: Rejecting origin', {
-      origin,
-      allowedPatterns: ['vercel.app', 'onrender.com', 'vercel.com'],
-      allowedOrigins: allowedOrigins.length
-    });
-    callback(new Error(`CORS: Origin ${origin} is not allowed`));
+    logger.warn('CORS: rejecting unconfigured browser origin', { origin: normalizedOrigin, configuredOriginCount: configuredCorsOrigins.size });
+    return callback(new Error('CORS: origin is not allowed'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -416,7 +381,9 @@ app.use('/api/v1/integrations/gdrive', googleDriveRoutes);
 app.use('/api/v1/integrations/dropbox', dropboxRoutes);
 app.use('/api/v1/integrations/quickbooks', quickbooksRoutes);
 app.use('/api/v1/integrations/xero', xeroRoutes);
+app.use('/api/v1/accounting', accountingIntelligenceRoutes);
 logger.info('OAuth routes registered: Gmail, Outlook, Google Drive, Dropbox, QuickBooks, Xero');
+logger.info('Accounting intelligence routes registered at /api/v1/accounting');
 app.use('/api/v1/integrations/stripe', stripeRoutes);
 // Evidence sources routes (must be registered before generic integration routes)
 app.use('/api/v1/integrations', evidenceSourcesRoutes);

@@ -15,6 +15,7 @@
 
 import { supabaseAdmin } from '../../database/supabaseClient';
 import logger from '../../utils/logger';
+import { accountingIntelligenceService } from '../accountingIntelligenceService';
 
 // ============================================================================
 // Types
@@ -50,7 +51,7 @@ export interface ClaimValuation {
 export interface ItemCostData {
     sku: string;
     asin?: string;
-    cost_source: 'invoice' | 'catalog' | 'historical' | 'estimated';
+    cost_source: 'accounting' | 'invoice' | 'catalog' | 'historical' | 'estimated';
     unit_cost: number;
     currency: string;
     cost_date: string;
@@ -127,7 +128,8 @@ export async function resolveItemCost(
     sellerId: string,
     sku: string,
     asin?: string,
-    eventDate?: string
+    eventDate?: string,
+    tenantId?: string
 ): Promise<ItemCostData> {
     let costData: ItemCostData = {
         sku,
@@ -140,7 +142,31 @@ export async function resolveItemCost(
     };
 
     try {
+        // Method 0: Canonical accounting cost. It is considered only when the
+        // caller supplies an explicit tenant boundary and the mapping is seller
+        // confirmed / authoritative. No tenant is inferred from sellerId.
+        if (tenantId && sku) {
+            const accountingCost = await accountingIntelligenceService.getEffectiveProductCost(
+                tenantId,
+                sku,
+                new Date(eventDate || new Date().toISOString())
+            );
+            const candidateCost = Number((accountingCost as any)?.cogs_value);
+            if ((accountingCost as any)?.is_authoritative === true && Number.isFinite(candidateCost) && candidateCost >= 0) {
+                costData = {
+                    sku,
+                    asin: ((accountingCost as any)?.asin as string | undefined) || asin,
+                    cost_source: 'accounting',
+                    unit_cost: candidateCost,
+                    currency: String((accountingCost as any)?.cost_currency || 'USD'),
+                    cost_date: String((accountingCost as any)?.effective_date_start || eventDate || new Date().toISOString()),
+                    confidence: 0.98
+                };
+            }
+        }
+
         // Method 1: Try to find from parsed invoices
+        if (costData.cost_source === 'estimated') {
         const { data: invoices } = await supabaseAdmin
             .from('evidence_documents')
             .select('parsed_metadata, extracted')
@@ -167,6 +193,7 @@ export async function resolveItemCost(
                     break;
                 }
             }
+        }
         }
 
         // Method 2: Try product catalog
@@ -532,6 +559,8 @@ export async function calculateClaimValue(
         event_type: string;
         original_amount?: number;
         original_currency?: string;
+        /** Required to consult tenant-scoped accounting cost truth; never inferred. */
+        tenant_id?: string;
         charged_fee?: number;
         expected_fee?: number;
         category?: string;
@@ -546,7 +575,8 @@ export async function calculateClaimValue(
         sellerId,
         claimData.sku || '',
         claimData.asin,
-        claimData.event_date
+        claimData.event_date,
+        claimData.tenant_id
     );
     notes.push(`Cost source: ${costData.cost_source} ($${costData.unit_cost.toFixed(2)})`);
 

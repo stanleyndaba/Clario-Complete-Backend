@@ -113,6 +113,37 @@ function getProviderRedirectUri(provider: string, req: Request): string {
   return `${resolveBackendCallbackBase(req)}/api/v1/integrations/${provider}/callback`;
 }
 
+function allowedFrontendOrigins(): string[] {
+  return [
+    process.env.FRONTEND_URL,
+    process.env.PUBLIC_FRONTEND_URL,
+    ...(process.env.ALLOWED_FRONTEND_ORIGINS || process.env.CORS_ALLOW_ORIGINS || '').split(',')
+  ]
+    .map((value) => String(value || '').trim().replace(/\/$/, ''))
+    .filter((value, index, all) => Boolean(value) && all.indexOf(value) === index);
+}
+
+function validateFrontendOrigin(candidate: string | undefined): string {
+  const configured = allowedFrontendOrigins();
+  const fallback = configured[0] || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3000');
+  if (!candidate) {
+    if (!fallback) throw new Error('OAUTH_FRONTEND_ORIGIN_NOT_CONFIGURED');
+    return fallback;
+  }
+
+  let origin: string;
+  try {
+    const parsed = new URL(candidate);
+    origin = `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    throw new Error('OAUTH_FRONTEND_ORIGIN_INVALID');
+  }
+
+  if (configured.includes(origin)) return origin;
+  if (process.env.NODE_ENV !== 'production' && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) return origin;
+  throw new Error('OAUTH_FRONTEND_ORIGIN_NOT_ALLOWED');
+}
+
 /**
  * Connect evidence source - Generate OAuth URL
  * POST /api/v1/integrations/{provider}/connect
@@ -156,18 +187,7 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
     const defaultRedirectUri = getProviderRedirectUri(provider, req);
     const callbackRedirectUri = defaultRedirectUri;
 
-    let normalizedFrontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    if (frontendUrl) {
-      try {
-        const parsed = new URL(frontendUrl);
-        normalizedFrontendUrl = `${parsed.protocol}//${parsed.host}`;
-      } catch {
-        logger.warn('Invalid frontend_url provided for evidence source OAuth, falling back to FRONTEND_URL', {
-          provider,
-          frontendUrl
-        });
-      }
-    }
+    const normalizedFrontendUrl = validateFrontendOrigin(frontendUrl);
 
     // Generate state for CSRF protection
     const state = crypto.randomBytes(32).toString('hex');
@@ -178,7 +198,11 @@ export const connectEvidenceSource = async (req: Request, res: Response) => {
       tenantSlug,
       undefined,
       storeId,
-      defaultRedirectUri
+      defaultRedirectUri,
+      undefined,
+      undefined,
+      undefined,
+      provider
     );
 
     // Build OAuth URL based on provider
@@ -311,21 +335,20 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
       return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/success?status=error&provider=${encodeURIComponent(provider)}&error=missing_code_or_state`);
     }
 
-    // Verify state
-    const stateData = await oauthStateStore.get(state as string);
-    if (!stateData || !stateData.userId) {
+    // Consume the state atomically before token exchange. A callback may never
+    // reuse state, switch providers, or fall back to request-controlled context.
+    const stateData = await oauthStateStore.consume(state as string);
+    if (!stateData || !stateData.userId || stateData.provider !== provider) {
       return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/success?status=error&provider=${encodeURIComponent(provider)}&error=invalid_state`);
     }
 
     const userId = stateData.userId;
     const dbUserId = convertUserIdToUuid(userId);
-    const frontendUrl = stateData.frontendUrl || process.env.FRONTEND_URL || 'http://localhost:3000';
+    const frontendUrl = validateFrontendOrigin(stateData.frontendUrl);
     const tenantSlug = stateData.tenantSlug;
     const storeId = stateData.storeId;
     const tenantSuccessPath = tenantSlug ? `/app/${tenantSlug}/auth/success` : '/auth/success';
     const adminClient = supabaseAdmin || supabase;
-
-    await oauthStateStore.delete(state as string);
 
     // Resolve tenantId if we have a slug
     let tenantId: string | undefined = undefined;
@@ -352,6 +375,21 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
         tenantSlug
       });
       return res.redirect(`${frontendUrl}${tenantSuccessPath}?status=error&provider=${encodeURIComponent(provider)}&error=tenant_resolution_failed&tenant_slug=${encodeURIComponent(tenantSlug)}`);
+    }
+
+    if (tenantId) {
+      const { data: membership, error: membershipError } = await adminClient
+        .from('tenant_memberships')
+        .select('id')
+        .eq('tenant_id', tenantId)
+        .eq('user_id', dbUserId)
+        .eq('is_active', true)
+        .is('deleted_at', null)
+        .maybeSingle();
+      if (membershipError || !membership) {
+        logger.warn('OAuth callback rejected because workspace membership is no longer active', { provider, tenantId, userId });
+        return res.redirect(`${frontendUrl}${tenantSuccessPath}?status=error&provider=${encodeURIComponent(provider)}&error=tenant_access_revoked${tenantSlug ? `&tenant_slug=${encodeURIComponent(tenantSlug)}` : ''}`);
+      }
     }
 
     // Get OAuth configuration
@@ -525,6 +563,7 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
       // Get user account info (email, etc.)
       let accountEmail: string | undefined;
       let xeroTenantId: string | undefined;
+      let xeroOrganisationOptions: Array<{ tenantId: string; tenantName: string | null }> = [];
       let qboRealmId: string | undefined;
 
       if (provider === 'quickbooks') {
@@ -579,31 +618,28 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
           });
           accountEmail = profileResponse.data.email;
         } else if (provider === 'xero') {
-          // Xero tenant context must be resolved before any Accounting API request.
+          // A seller may authorize several Xero organisations. Do not silently
+          // bind the first response; persist choices and require explicit choice
+          // unless the provider returned exactly one accessible organisation.
           const connectionsResponse = await axios.get('https://api.xero.com/connections', {
             headers: { 'Authorization': `Bearer ${access_token}` }
           });
-          const xeroConnection = Array.isArray(connectionsResponse.data)
-            ? connectionsResponse.data[0]
-            : undefined;
-
-          if (!xeroConnection?.tenantId) {
+          xeroOrganisationOptions = (Array.isArray(connectionsResponse.data) ? connectionsResponse.data : [])
+            .filter((connection: any) => typeof connection?.tenantId === 'string' && connection.tenantId.trim())
+            .map((connection: any) => ({
+              tenantId: String(connection.tenantId),
+              tenantName: typeof connection.tenantName === 'string' && connection.tenantName.trim()
+                ? connection.tenantName.trim()
+                : null
+            }));
+          if (!xeroOrganisationOptions.length) {
             throw new Error('Xero did not return an accessible organisation connection.');
           }
-
-          xeroTenantId = xeroConnection.tenantId;
-          accountEmail = xeroConnection.tenantName;
-
-          const organisationResponse = await axios.get('https://api.xero.com/api.xro/2.0/Organisation', {
-            headers: {
-              'Authorization': `Bearer ${access_token}`,
-              'xero-tenant-id': xeroTenantId,
-              'Accept': 'application/json'
-            }
-          });
-          const organisationName = organisationResponse.data?.Organisations?.[0]?.Name;
-          if (typeof organisationName === 'string' && organisationName.trim()) {
-            accountEmail = organisationName;
+          if (xeroOrganisationOptions.length === 1) {
+            xeroTenantId = xeroOrganisationOptions[0].tenantId;
+            accountEmail = xeroOrganisationOptions[0].tenantName || undefined;
+          } else {
+            accountEmail = 'Xero organisation selection required';
           }
         }
       } catch (profileError) {
@@ -641,7 +677,8 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
             ? { web_access_point }
             : {}),
           ...(qboRealmId ? { realm_id: qboRealmId } : {}),
-          ...(xeroTenantId ? { xero_tenant_id: xeroTenantId } : {})
+          ...(xeroTenantId ? { xero_tenant_id: xeroTenantId } : {}),
+          ...(provider === 'xero' ? { xero_organisations: xeroOrganisationOptions } : {})
         };
 
         if (existingSource) {
@@ -664,7 +701,12 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
                   }
                 : {}),
               tenant_id: tenantId || null,
-              store_id: storeId || null
+              store_id: storeId || null,
+              ...(provider === 'xero' ? {
+                accounting_organisation_id: xeroTenantId || null,
+                accounting_organisation_name: xeroTenantId ? (xeroOrganisationOptions.find((item) => item.tenantId === xeroTenantId)?.tenantName || null) : null,
+                accounting_organisation_selected_at: xeroTenantId ? new Date().toISOString() : null
+              } : {})
             })
             .eq('id', existingSource.id);
         } else {
@@ -691,7 +733,12 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
                   }
                 : {}),
               tenant_id: tenantId || null,
-              store_id: storeId || null
+              store_id: storeId || null,
+              ...(provider === 'xero' ? {
+                accounting_organisation_id: xeroTenantId || null,
+                accounting_organisation_name: xeroTenantId ? (xeroOrganisationOptions.find((item) => item.tenantId === xeroTenantId)?.tenantName || null) : null,
+                accounting_organisation_selected_at: xeroTenantId ? new Date().toISOString() : null
+              } : {})
             });
         }
       } catch (dbError: any) {
@@ -705,9 +752,9 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
         }
       }
 
-      if ((provider === 'quickbooks' || provider === 'xero') && tenantId) {
+      if ((provider === 'quickbooks' || (provider === 'xero' && xeroTenantId)) && tenantId) {
         const { addAccountingSyncJob } = await import('../queues/ingestionQueue');
-        const jobId = await addAccountingSyncJob(userId, tenantId, provider);
+        const jobId = await addAccountingSyncJob(userId, tenantId, provider as 'quickbooks' | 'xero', 'oauth_initial');
 
         if (!jobId) {
           const schedulingError = 'Margin could not schedule the first financial evidence verification. Reconnect or contact support before relying on this source.';
@@ -735,7 +782,8 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
         accountEmail
       });
 
-      const redirectUrl = `${frontendUrl}${tenantSuccessPath}?status=ok&provider=${encodeURIComponent(provider)}&${provider}_connected=true&email=${encodeURIComponent(accountEmail || '')}${tenantSlug ? `&tenant_slug=${encodeURIComponent(tenantSlug)}` : ''}`;
+      const xeroSelectionRequired = provider === 'xero' && xeroOrganisationOptions.length > 1 && !xeroTenantId;
+      const redirectUrl = `${frontendUrl}${tenantSuccessPath}?status=ok&provider=${encodeURIComponent(provider)}&${provider}_connected=true&email=${encodeURIComponent(accountEmail || '')}${xeroSelectionRequired ? '&xero_organisation_selection_required=true' : ''}${tenantSlug ? `&tenant_slug=${encodeURIComponent(tenantSlug)}` : ''}`;
 
       logger.info('Redirecting to frontend after evidence source OAuth success', {
         userId,
@@ -761,6 +809,93 @@ export const handleEvidenceSourceCallback = async (req: Request, res: Response) 
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     return res.redirect(`${frontendUrl}/auth/success?status=error&provider=${encodeURIComponent(req.params.provider)}&error=callback_error`);
   }
+};
+
+export const listXeroOrganisations = async (req: Request, res: Response) => {
+  const userId = (req as any).userId || (req as any).user?.id;
+  const tenantId = (req as any).tenant?.tenantId || (req as any).tenantId;
+  if (!userId || !tenantId) return res.status(403).json({ ok: false, error: 'Active workspace identity is required.' });
+  const dbUserId = convertUserIdToUuid(userId);
+  const adminClient = supabaseAdmin || supabase;
+  const { data: source, error } = await adminClient
+    .from('evidence_sources')
+    .select('id, account_email, accounting_organisation_id, accounting_organisation_name, accounting_organisation_selected_at, metadata')
+    .eq('tenant_id', tenantId)
+    .eq('user_id', dbUserId)
+    .eq('provider', 'xero')
+    .maybeSingle();
+  if (error || !source) return res.status(404).json({ ok: false, error: 'Connected Xero source not found.' });
+
+  const rawOptions = Array.isArray(source.metadata?.xero_organisations) ? source.metadata.xero_organisations : [];
+  const organisations = rawOptions
+    .filter((item: any) => typeof item?.tenantId === 'string' && item.tenantId.trim())
+    .map((item: any) => ({ tenantId: item.tenantId, tenantName: typeof item.tenantName === 'string' ? item.tenantName : null }));
+  return res.json({
+    ok: true,
+    data: {
+      sourceId: source.id,
+      selectedOrganisationId: source.accounting_organisation_id || null,
+      selectedOrganisationName: source.accounting_organisation_name || null,
+      selectedAt: source.accounting_organisation_selected_at || null,
+      organisations
+    }
+  });
+};
+
+export const selectXeroOrganisation = async (req: Request, res: Response) => {
+  const userId = (req as any).userId || (req as any).user?.id;
+  const tenantId = (req as any).tenant?.tenantId || (req as any).tenantId;
+  const organisationId = String((req.body as any)?.organisationId || '').trim();
+  if (!userId || !tenantId) return res.status(403).json({ ok: false, error: 'Active workspace identity is required.' });
+  if (!organisationId) return res.status(400).json({ ok: false, error: 'organisationId is required.' });
+
+  const dbUserId = convertUserIdToUuid(userId);
+  const adminClient = supabaseAdmin || supabase;
+  const { data: source, error } = await adminClient
+    .from('evidence_sources')
+    .select('id, metadata')
+    .eq('tenant_id', tenantId)
+    .eq('user_id', dbUserId)
+    .eq('provider', 'xero')
+    .maybeSingle();
+  if (error || !source) return res.status(404).json({ ok: false, error: 'Connected Xero source not found.' });
+
+  const choices = Array.isArray(source.metadata?.xero_organisations) ? source.metadata.xero_organisations : [];
+  const choice = choices.find((item: any) => item?.tenantId === organisationId);
+  if (!choice) return res.status(400).json({ ok: false, error: 'The selected Xero organisation is not part of this authorised connection.' });
+
+  const now = new Date().toISOString();
+  const metadata = { ...(source.metadata || {}), xero_tenant_id: organisationId, xero_organisation_selected_at: now };
+  const organisationName = typeof choice.tenantName === 'string' ? choice.tenantName : null;
+  const { error: updateError } = await adminClient
+    .from('evidence_sources')
+    .update({
+      metadata,
+      account_email: organisationName || null,
+      accounting_organisation_id: organisationId,
+      accounting_organisation_name: organisationName,
+      accounting_organisation_selected_at: now,
+      accounting_read_status: 'pending',
+      accounting_last_error: null,
+      updated_at: now
+    })
+    .eq('id', source.id)
+    .eq('tenant_id', tenantId)
+    .eq('user_id', dbUserId)
+    .eq('provider', 'xero');
+  if (updateError) return res.status(500).json({ ok: false, error: 'Unable to persist the selected Xero organisation.' });
+
+  const { addAccountingSyncJob } = await import('../queues/ingestionQueue');
+  const jobId = await addAccountingSyncJob(userId, tenantId, 'xero', 'manual');
+  if (!jobId) {
+    await adminClient.from('evidence_sources')
+      .update({ accounting_read_status: 'failed', accounting_last_error: 'Margin could not schedule Xero financial evidence verification.', updated_at: new Date().toISOString() })
+      .eq('id', source.id)
+      .eq('tenant_id', tenantId);
+    return res.status(503).json({ ok: false, error: 'The organisation was selected, but verification could not be scheduled.' });
+  }
+
+  return res.status(202).json({ ok: true, data: { organisationId, organisationName, syncJobId: jobId } });
 };
 
 function resolveBackendCallbackBase(req: Request): string {

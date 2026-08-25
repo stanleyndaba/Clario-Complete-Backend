@@ -55,6 +55,7 @@ function getConnection(): { host: string; port: number; password?: string; tls?:
 async function processSyncJob(job: Job<InitialSyncJobData>): Promise<void> {
     const { userId, tenantId, sellerId, storeId, companyName, jobType } = job.data;
     const startTime = Date.now();
+    let accountingRunId: string | null = null;
 
     logger.info(`🏭 [WORKER] Processing ${jobType} job`, {
         jobId: job.id,
@@ -71,12 +72,28 @@ async function processSyncJob(job: Job<InitialSyncJobData>): Promise<void> {
                 throw new Error('Accounting sync job is missing a supported provider.');
             }
 
+            const [{ resolveAccountingSource }, { accountingSyncRunService }] = await Promise.all([
+                import('../services/accountingEvidenceService'),
+                import('../services/accountingSyncRunService')
+            ]);
+            const source = await resolveAccountingSource(userId, tenantId, job.data.provider);
+            const run = await accountingSyncRunService.createOrGetActive({
+                tenantId,
+                userId,
+                provider: job.data.provider,
+                sourceId: source.id,
+                trigger: job.data.accountingTrigger || 'manual',
+                queueJobId: job.id || undefined
+            });
+            accountingRunId = run.runId;
+            await accountingSyncRunService.markRunning(run.runId, tenantId, job.id || undefined);
+
             try {
                 const sseHub = (await import('../utils/sseHub')).default;
                 sseHub.sendEvent(userId, 'message', {
                     type: 'accounting_sync',
                     status: 'in_progress',
-                    data: { provider: job.data.provider, message: 'Verifying financial evidence access...' },
+                    data: { provider: job.data.provider, syncRunId: accountingRunId, message: 'Verifying financial evidence access...' },
                     timestamp: new Date().toISOString()
                 });
             } catch { /* SSE delivery is non-critical. */ }
@@ -85,6 +102,17 @@ async function processSyncJob(job: Job<InitialSyncJobData>): Promise<void> {
                 ? await (await import('../services/quickbooksService')).syncQuickBooksFinancialEvidence(userId, tenantId)
                 : await (await import('../services/xeroService')).syncXeroFinancialEvidence(userId, tenantId);
 
+            await accountingSyncRunService.markCompleted({
+                runId: accountingRunId,
+                tenantId,
+                sourceId: source.id,
+                status: result.status,
+                recordsDiscovered: result.recordCount,
+                recordsInserted: result.recordsInserted || 0,
+                recordsUpdated: result.recordsUpdated || 0,
+                checkpoint: result.checkpoint || null
+            });
+
             try {
                 const sseHub = (await import('../utils/sseHub')).default;
                 sseHub.sendEvent(userId, 'message', {
@@ -92,7 +120,9 @@ async function processSyncJob(job: Job<InitialSyncJobData>): Promise<void> {
                     status: 'completed',
                     data: {
                         provider: result.provider,
+                        syncRunId: accountingRunId,
                         recordCount: result.recordCount,
+                        evidenceCount: result.evidenceCount,
                         readStatus: result.status,
                         message: result.status === 'no_data'
                             ? 'Financial evidence access was verified. No eligible accounting records were returned.'
@@ -105,6 +135,7 @@ async function processSyncJob(job: Job<InitialSyncJobData>): Promise<void> {
             await job.updateProgress(100);
             logger.info('[WORKER] Accounting read completed', {
                 jobId: job.id,
+                accountingRunId,
                 userId,
                 tenantId,
                 provider: result.provider,
@@ -159,6 +190,20 @@ async function processSyncJob(job: Job<InitialSyncJobData>): Promise<void> {
         await job.updateProgress(100);
 
     } catch (error: any) {
+        if (jobType === 'accounting-sync' && accountingRunId) {
+            try {
+                const { accountingSyncRunService } = await import('../services/accountingSyncRunService');
+                await accountingSyncRunService.markFailed({
+                    runId: accountingRunId,
+                    tenantId,
+                    reconnectRequired: error?.kind === 'auth',
+                    errorCode: error?.kind === 'auth' ? 'ACCOUNTING_RECONNECT_REQUIRED' : 'ACCOUNTING_SYNC_FAILED',
+                    errorMessage: error?.message || 'Accounting sync failed.'
+                });
+            } catch (runError: any) {
+                logger.error('[WORKER] Unable to mark accounting sync run failed', { accountingRunId, error: runError?.message || String(runError) });
+            }
+        }
         logger.error(`❌ [WORKER] Sync failed`, {
             jobId: job.id,
             userId,

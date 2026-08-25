@@ -1,4 +1,5 @@
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
+import { accountingIntelligenceService } from './accountingIntelligenceService';
 
 export type AccountingProvider = 'quickbooks' | 'xero';
 export type AccountingRecordType = 'bill' | 'purchase' | 'accpay';
@@ -56,6 +57,14 @@ function sanitizeErrorMessage(error: unknown): string {
     .slice(0, 500);
 }
 
+function latestProviderCheckpoint(records: CanonicalAccountingRecord[]): string | null {
+  const timestamps = records
+    .map((record) => record.providerUpdatedAt)
+    .filter((value): value is string => Boolean(value && !Number.isNaN(new Date(value).getTime())))
+    .sort();
+  return timestamps.length ? timestamps[timestamps.length - 1] : null;
+}
+
 export async function resolveAccountingSource(
   userId: string,
   tenantId: string,
@@ -71,16 +80,9 @@ export async function resolveAccountingSource(
     .eq('provider', provider)
     .maybeSingle();
 
-  if (error) {
-    throw new AccountingProviderError('Margin could not resolve the accounting connection for this workspace.', 'provider');
-  }
-  if (!data || !isAccountingProvider(data.provider)) {
-    throw new AccountingProviderError('No accounting connection exists for this workspace.', 'not_connected');
-  }
-  if (data.status !== 'connected') {
-    throw new AccountingProviderError('The accounting connection is disconnected and must be reconnected.', 'not_connected');
-  }
-
+  if (error) throw new AccountingProviderError('Margin could not resolve the accounting connection for this workspace.', 'provider');
+  if (!data || !isAccountingProvider(data.provider)) throw new AccountingProviderError('No accounting connection exists for this workspace.', 'not_connected');
+  if (data.status !== 'connected') throw new AccountingProviderError('The accounting connection is disconnected and must be reconnected.', 'not_connected');
   return data as AccountingSource;
 }
 
@@ -90,10 +92,32 @@ export async function persistAccountingRead(input: {
   sourceId: string;
   provider: AccountingProvider;
   records: CanonicalAccountingRecord[];
-}): Promise<{ recordCount: number; status: 'verified' | 'no_data'; readAt: string }> {
+}): Promise<{
+  recordCount: number;
+  status: 'verified' | 'no_data';
+  readAt: string;
+  /** Additive diagnostics; populated by current persistence, optional for legacy provider-service callers. */
+  recordsInserted?: number;
+  recordsUpdated?: number;
+  evidenceCount?: number;
+  checkpoint?: string | null;
+}> {
   const adminClient = supabaseAdmin || supabase;
   const dbUserId = convertUserIdToUuid(input.userId);
   const readAt = new Date().toISOString();
+  const providerRecordIds = input.records.map((record) => record.providerRecordId);
+
+  let existingRecordIds = new Set<string>();
+  if (providerRecordIds.length) {
+    const { data: existing, error: existingError } = await adminClient
+      .from('accounting_records')
+      .select('provider_record_id')
+      .eq('tenant_id', input.tenantId)
+      .eq('provider', input.provider)
+      .in('provider_record_id', providerRecordIds);
+    if (existingError) throw new AccountingProviderError('Margin could not determine whether provider records were new or updated.', 'provider');
+    existingRecordIds = new Set((existing || []).map((row: any) => String(row.provider_record_id)));
+  }
 
   if (input.records.length > 0) {
     const rows = input.records.map((record) => ({
@@ -121,10 +145,7 @@ export async function persistAccountingRead(input: {
     const { error } = await adminClient
       .from('accounting_records')
       .upsert(rows, { onConflict: 'tenant_id,provider,provider_record_id' });
-
-    if (error) {
-      throw new AccountingProviderError('Margin could not store the provider-read accounting evidence.', 'provider');
-    }
+    if (error) throw new AccountingProviderError('Margin could not store the provider-read accounting evidence.', 'provider');
   }
 
   const status: 'verified' | 'no_data' = input.records.length > 0 ? 'verified' : 'no_data';
@@ -141,12 +162,29 @@ export async function persistAccountingRead(input: {
     .eq('tenant_id', input.tenantId)
     .eq('user_id', dbUserId)
     .eq('provider', input.provider);
+  if (sourceError) throw new AccountingProviderError('Margin stored accounting evidence but could not record the connection health.', 'provider');
 
-  if (sourceError) {
-    throw new AccountingProviderError('Margin stored accounting evidence but could not record the connection health.', 'provider');
+  // This materialization is idempotent. It exposes only interpreted/redacted
+  // evidence fields to future services while leaving raw provider payload server-side.
+  let evidenceCount = 0;
+  try {
+    evidenceCount = await accountingIntelligenceService.materializeEvidenceForProvider(input.tenantId, input.provider);
+  } catch (error) {
+    // A provider read has already persisted canonically. Do not fake success for
+    // evidence interpretation; surface a controlled service failure for retry.
+    throw new AccountingProviderError('Margin stored accounting records but could not materialize accounting evidence.', 'provider');
   }
 
-  return { recordCount: input.records.length, status, readAt };
+  const recordsUpdated = input.records.filter((record) => existingRecordIds.has(record.providerRecordId)).length;
+  return {
+    recordCount: input.records.length,
+    status,
+    readAt,
+    recordsInserted: input.records.length - recordsUpdated,
+    recordsUpdated,
+    evidenceCount,
+    checkpoint: latestProviderCheckpoint(input.records)
+  };
 }
 
 export async function recordAccountingReadFailure(input: {
@@ -173,11 +211,7 @@ export async function recordAccountingReadFailure(input: {
     .eq('tenant_id', input.tenantId)
     .eq('user_id', dbUserId)
     .eq('provider', input.provider);
-
-  if (input.sourceId) {
-    query = query.eq('id', input.sourceId);
-  }
-
+  if (input.sourceId) query = query.eq('id', input.sourceId);
   await query;
 }
 

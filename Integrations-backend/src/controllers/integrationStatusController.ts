@@ -50,6 +50,9 @@ interface ProviderStatus {
   accounting_last_read_at?: string;
   accounting_record_count?: number;
   accounting_record_types?: Array<'bill' | 'purchase' | 'accpay'>;
+  accounting_organisation_id?: string;
+  accounting_organisation_name?: string;
+  accounting_organisation_selected_at?: string;
 }
 
 const DEFAULT_FILTERS: EvidenceFilters = {
@@ -415,6 +418,9 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       accounting_last_read_at?: string | null;
       accounting_last_error?: string | null;
       accounting_record_count?: number | null;
+      accounting_organisation_id?: string | null;
+      accounting_organisation_name?: string | null;
+      accounting_organisation_selected_at?: string | null;
     }> = [];
 
     try {
@@ -457,7 +463,7 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
 
       const { data: evidenceSourceRows, error: sourcesError } = await adminClient
         .from('evidence_sources')
-        .select('id, provider, status, last_ingested_at, account_email, permissions, seller_id, display_name, metadata, accounting_read_status, accounting_last_read_at, accounting_last_error, accounting_record_count')
+        .select('id, provider, status, last_ingested_at, account_email, permissions, seller_id, display_name, metadata, accounting_read_status, accounting_last_read_at, accounting_last_error, accounting_record_count, accounting_organisation_id, accounting_organisation_name, accounting_organisation_selected_at')
         .eq('tenant_id', tenant.id)
         .or(buildEvidenceUserFilter(userId));
 
@@ -569,7 +575,10 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
                     accounting_read_status: accountingReadStatus,
                     accounting_last_read_at: source.accounting_last_read_at || undefined,
                     accounting_record_count: accountingStats.count,
-                    accounting_record_types: Array.from(accountingStats.recordTypes)
+                    accounting_record_types: Array.from(accountingStats.recordTypes),
+                    accounting_organisation_id: source.accounting_organisation_id || undefined,
+                    accounting_organisation_name: source.accounting_organisation_name || undefined,
+                    accounting_organisation_selected_at: source.accounting_organisation_selected_at || undefined
                   }
                 : {})
             };
