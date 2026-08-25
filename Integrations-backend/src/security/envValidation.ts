@@ -15,48 +15,77 @@ export interface EnvValidationRule {
 }
 
 /**
- * Required environment variables for production
- * Note: AMAZON* and DATABASE_URL are only required in production
+ * Required environment variables for production.
+ *
+ * The isolated QuickBooks certification runtime may omit only Amazon credentials,
+ * and only when both explicit certification switches are set. It remains a
+ * production-mode process, so database, JWT, and credential-encryption checks
+ * still fail closed. This must never relax normal production validation.
  */
-const isProduction = process.env.NODE_ENV === 'production';
+const CERTIFICATION_RUNTIME_FLAG = 'CERTIFICATION_RUNTIME';
+const CERTIFICATION_AMAZON_OMISSION_FLAG = 'CERTIFICATION_ALLOW_AMAZON_OMISSION';
 
-const REQUIRED_ENV_VARS: EnvValidationRule[] = [
-  {
-    name: 'AMAZON_CLIENT_ID',
-    required: isProduction, // Only required in production
-    validator: (value) => value.startsWith('amzn1.') || value.length > 0,
-    errorMessage: 'AMAZON_CLIENT_ID must be a valid Amazon client ID',
-    sensitive: false,
-  },
-  {
-    name: 'AMAZON_CLIENT_SECRET',
-    required: isProduction, // Only required in production
-    validator: (value) => value.startsWith('amzn1.') || value.length > 0,
-    errorMessage: 'AMAZON_CLIENT_SECRET must be a valid Amazon client secret',
-    sensitive: true,
-  },
-  {
-    name: 'AMAZON_SPAPI_REFRESH_TOKEN',
-    required: isProduction, // Only required in production
-    validator: (value) => value.startsWith('Atzr|') || value.length > 0,
-    errorMessage: 'AMAZON_SPAPI_REFRESH_TOKEN must be a valid refresh token',
-    sensitive: true,
-  },
-  {
-    name: 'JWT_SECRET',
-    required: isProduction, // Only required in production
-    validator: (value) => value.length >= 32,
-    errorMessage: 'JWT_SECRET must be at least 32 characters',
-    sensitive: true,
-  },
-  {
-    name: 'DATABASE_URL',
-    required: isProduction, // Only required in production
-    validator: (value) => value.startsWith('postgresql://') || value.startsWith('postgres://'),
-    errorMessage: 'DATABASE_URL must be a valid PostgreSQL connection string',
-    sensitive: true,
-  },
-];
+function certificationValidationErrors(isProduction: boolean): string[] {
+  const certificationRuntime = process.env[CERTIFICATION_RUNTIME_FLAG] === 'true';
+  const amazonOmissionAllowed = process.env[CERTIFICATION_AMAZON_OMISSION_FLAG] === 'true';
+
+  if (!certificationRuntime && !amazonOmissionAllowed) return [];
+  if (!certificationRuntime) {
+    return [`${CERTIFICATION_AMAZON_OMISSION_FLAG} may be enabled only with ${CERTIFICATION_RUNTIME_FLAG}=true`];
+  }
+  if (!amazonOmissionAllowed) {
+    return [`${CERTIFICATION_RUNTIME_FLAG}=true requires ${CERTIFICATION_AMAZON_OMISSION_FLAG}=true`];
+  }
+  if (!isProduction) {
+    return [`${CERTIFICATION_RUNTIME_FLAG}=true requires NODE_ENV=production`];
+  }
+
+  return [];
+}
+
+function buildRequiredEnvVars(isProduction: boolean): EnvValidationRule[] {
+  const certificationRuntime = process.env[CERTIFICATION_RUNTIME_FLAG] === 'true';
+  const amazonOmissionAllowed = process.env[CERTIFICATION_AMAZON_OMISSION_FLAG] === 'true';
+  const omitAmazonRequirements = isProduction && certificationRuntime && amazonOmissionAllowed;
+
+  return [
+    {
+      name: 'AMAZON_CLIENT_ID',
+      required: isProduction && !omitAmazonRequirements,
+      validator: (value) => value.startsWith('amzn1.') || value.length > 0,
+      errorMessage: 'AMAZON_CLIENT_ID must be a valid Amazon client ID',
+      sensitive: false,
+    },
+    {
+      name: 'AMAZON_CLIENT_SECRET',
+      required: isProduction && !omitAmazonRequirements,
+      validator: (value) => value.startsWith('amzn1.') || value.length > 0,
+      errorMessage: 'AMAZON_CLIENT_SECRET must be a valid Amazon client secret',
+      sensitive: true,
+    },
+    {
+      name: 'AMAZON_SPAPI_REFRESH_TOKEN',
+      required: isProduction && !omitAmazonRequirements,
+      validator: (value) => value.startsWith('Atzr|') || value.length > 0,
+      errorMessage: 'AMAZON_SPAPI_REFRESH_TOKEN must be a valid refresh token',
+      sensitive: true,
+    },
+    {
+      name: 'JWT_SECRET',
+      required: isProduction,
+      validator: (value) => value.length >= 32,
+      errorMessage: 'JWT_SECRET must be at least 32 characters',
+      sensitive: true,
+    },
+    {
+      name: 'DATABASE_URL',
+      required: isProduction,
+      validator: (value) => value.startsWith('postgresql://') || value.startsWith('postgres://'),
+      errorMessage: 'DATABASE_URL must be a valid PostgreSQL connection string',
+      sensitive: true,
+    },
+  ];
+}
 
 /**
  * Optional but recommended environment variables
@@ -108,11 +137,11 @@ export interface ValidationResult {
 export function validateEnvironment(
   isProduction: boolean = process.env.NODE_ENV === 'production'
 ): ValidationResult {
-  const errors: string[] = [];
+  const errors: string[] = certificationValidationErrors(isProduction);
   const warnings: string[] = [];
 
   // Validate required variables
-  for (const rule of REQUIRED_ENV_VARS) {
+  for (const rule of buildRequiredEnvVars(isProduction)) {
     const value = process.env[rule.name];
 
     if (!value || value.trim() === '') {
