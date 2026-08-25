@@ -35,16 +35,34 @@ class OAuthStateStore {
     return data;
   }
 
-  async set(state: string, data: OAuthStateData): Promise<void> {
-    const value = { ...data, timestamp: Date.now() };
-    if (this.productionRequiresDurableState && !isRedisAvailable()) {
-      throw new Error('OAUTH_DURABLE_STATE_REQUIRED');
+  /**
+   * Production callback state must be durable, but a cold or recently recovered
+   * process may not have initialized the shared Redis client yet. Attempt the
+   * configured connection once before refusing OAuth; never fall back to memory.
+   */
+  private async resolveStateClient(): Promise<Awaited<ReturnType<typeof getRedisClient>> | null> {
+    if (!this.productionRequiresDurableState) {
+      return isRedisAvailable() ? getRedisClient() : null;
     }
 
     try {
-      if (isRedisAvailable()) {
-        const client = await getRedisClient();
-        await client.set(`oauth_state:${state}`, JSON.stringify(value), { EX: Math.floor(this.ttlMs / 1000) });
+      const client = await getRedisClient();
+      if (!client || !client.isReady) {
+        throw new Error('Redis client is not ready for durable OAuth state.');
+      }
+      return client;
+    } catch {
+      throw new Error('OAUTH_DURABLE_STATE_REQUIRED');
+    }
+  }
+
+  async set(state: string, data: OAuthStateData): Promise<void> {
+    const value = { ...data, timestamp: Date.now() };
+    const stateClient = await this.resolveStateClient();
+
+    try {
+      if (stateClient) {
+        await stateClient.set(`oauth_state:${state}`, JSON.stringify(value), { EX: Math.floor(this.ttlMs / 1000) });
       } else {
         this.states.set(state, value);
         const timer = setTimeout(() => this.states.delete(state), this.ttlMs);

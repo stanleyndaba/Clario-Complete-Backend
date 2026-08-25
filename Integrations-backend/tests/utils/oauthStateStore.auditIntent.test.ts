@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import oauthStateStore from '../../src/utils/oauthStateStore';
 import { getRedisClient, isRedisAvailable } from '../../src/utils/redisClient';
 
@@ -18,19 +18,31 @@ jest.mock('../../src/utils/logger', () => ({
 }));
 
 describe('oauthStateStore audit context', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  const durableValues = new Map<string, string>();
   const redis: any = {
+    isReady: true,
     set: jest.fn(),
     get: jest.fn(),
     del: jest.fn(),
   };
 
   beforeEach(() => {
+    process.env.NODE_ENV = originalNodeEnv;
     jest.clearAllMocks();
+    durableValues.clear();
     (isRedisAvailable as any).mockReturnValue(true);
     (getRedisClient as any).mockResolvedValue(redis);
-    redis.set.mockResolvedValue('OK');
-    redis.get.mockResolvedValue(null);
-    redis.del.mockResolvedValue(1);
+    redis.set.mockImplementation(async (key: string, value: string) => {
+      durableValues.set(key, value);
+      return 'OK';
+    });
+    redis.get.mockImplementation(async (key: string) => durableValues.get(key) || null);
+    redis.del.mockImplementation(async (key: string) => Number(durableValues.delete(key)));
+  });
+
+  afterEach(() => {
+    process.env.NODE_ENV = originalNodeEnv;
   });
 
   it('persists OAuth context needed to resume the exact audit route', async () => {
@@ -79,6 +91,39 @@ describe('oauthStateStore audit context', () => {
     const replayed = await oauthStateStore.get('state-replay-1');
 
     expect(replayed).toBeNull();
+  });
+
+  it('attempts the configured durable Redis connection before rejecting production OAuth state after a cold or recovered process', async () => {
+    process.env.NODE_ENV = 'production';
+    (isRedisAvailable as any).mockReturnValue(false);
+    (getRedisClient as any).mockResolvedValue(redis);
+
+    await oauthStateStore.setState('state-production-recoverable', 'user-1', 'https://margin-finance.com', 'tenant-one', 'ATVPDKIKX0DER');
+
+    expect(getRedisClient).toHaveBeenCalled();
+    expect(redis.set).toHaveBeenCalledWith(
+      'oauth_state:state-production-recoverable',
+      expect.any(String),
+      { EX: 600 },
+    );
+  });
+
+  it('fails closed with OAUTH_DURABLE_STATE_REQUIRED when production Redis cannot be connected', async () => {
+    process.env.NODE_ENV = 'production';
+    (isRedisAvailable as any).mockReturnValue(false);
+    (getRedisClient as any).mockRejectedValue(new Error('Redis unavailable'));
+
+    await expect(oauthStateStore.setState('state-production-unavailable', 'user-1')).rejects.toThrow('OAUTH_DURABLE_STATE_REQUIRED');
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it('fails closed with OAUTH_DURABLE_STATE_REQUIRED when the production Redis client is not ready', async () => {
+    process.env.NODE_ENV = 'production';
+    (isRedisAvailable as any).mockReturnValue(false);
+    (getRedisClient as any).mockResolvedValue({ isReady: false });
+
+    await expect(oauthStateStore.setState('state-production-not-ready', 'user-1')).rejects.toThrow('OAUTH_DURABLE_STATE_REQUIRED');
+    expect(redis.set).not.toHaveBeenCalled();
   });
 
   it('rejects stale OAuth state recovered from Redis and removes it', async () => {
