@@ -22,6 +22,9 @@ import { securityHeadersMiddleware, enforceHttpsMiddleware, validateTlsMiddlewar
 import { validateRedirectMiddleware } from './security/validateRedirect';
 import { validateEnvironmentOrFail } from './security/envValidation';
 import { buildConfiguredCorsOrigins, isCertificationRuntime } from './security/corsOrigins';
+import { CertificationSidecarConfig, isCertificationSidecarEnabled, loadCertificationSidecarConfig } from './certification/certificationSidecarConfig';
+import { createCertificationSidecarRouter } from './certification/certificationSidecarRoutes';
+import { getCertificationSidecarRuntime } from './certification/certificationSidecarRuntime';
 import { warnIfAgent7UnpaidFilingOverrideEnabledOnBoot } from './services/agent7UnpaidFilingOverride';
 import { validateCredentialKeyConfiguration } from './utils/tokenManager';
 
@@ -134,8 +137,10 @@ app.use(requestMetricsMiddleware);
 websocketService.initialize(server);
 
 // Validate environment variables at startup (fail fast if missing)
+let certificationSidecarConfig: CertificationSidecarConfig;
 try {
   validateEnvironmentOrFail(process.env.NODE_ENV === 'production');
+  certificationSidecarConfig = loadCertificationSidecarConfig();
   warnIfAgent7UnpaidFilingOverrideEnabledOnBoot();
 } catch (error: any) {
   logger.error('Environment validation failed - server will not start', {
@@ -143,6 +148,7 @@ try {
   });
   process.exit(1);
 }
+const certificationSidecarEnabled = isCertificationSidecarEnabled();
 
 // Security middleware - enforce HTTPS first
 if (process.env.NODE_ENV === 'production') {
@@ -200,6 +206,14 @@ app.use(cors({
   exposedHeaders: ['X-User-Id', 'X-Request-Id', 'X-Tenant-Id', 'X-Tenant-Slug', 'X-Store-Id'],
   maxAge: 86400 // 24 hours
 }));
+
+// This tightly bounded route is mounted before the process-global rate limiter.
+// It is enabled only by the explicit sidecar profile and owns separate Redis/DB
+// dependencies; ordinary API routes retain their production middleware and clients.
+if (certificationSidecarEnabled) {
+  app.use('/api/internal/certification-sidecar', express.json({ limit: '128kb' }), createCertificationSidecarRouter(certificationSidecarConfig!));
+  logger.warn('Production-adjacent certification sidecar routes mounted', { path: '/api/internal/certification-sidecar' });
+}
 
 // Import rate limiters
 import { generalRateLimiter, authRateLimiter } from './security/rateLimiter';
@@ -913,6 +927,19 @@ async function startServer(): Promise<void> {
       proxy: '/ (proxyRoutes)',
       routeCount: 'See logs above for details'
     });
+
+    if (certificationSidecarEnabled) {
+      setImmediate(() => {
+        getCertificationSidecarRuntime(certificationSidecarConfig!)
+          .start()
+          .then(() => logger.info('Production-adjacent certification sidecar started with dedicated dependencies'))
+          .catch((error: any) => logger.error('Certification sidecar failed to start; ordinary production workers remain disabled', {
+            error: error?.message || String(error)
+          }));
+      });
+      logger.warn('Certification sidecar mode suppressed all ordinary background startup and recovery routines');
+      return;
+    }
 
     setImmediate(startAgent10NotificationSchemaCheck);
     setImmediate(startProductUpdateBroadcastRecovery);
