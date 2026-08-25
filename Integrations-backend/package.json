@@ -23,6 +23,7 @@
     "audit:fix": "npm audit fix",
     "db:migrate": "ts-node scripts/run-migrations.ts",
     "db:migrate:neon": "ts-node scripts/run-neon-migrations.ts",
+    "db:migrate:transfer-reconciliation-133": "ts-node scripts/apply-transfer-ledger-reconciliation-133.ts",
     "db:migrate:generate": "ts-node scripts/run-migrations-supabase.ts",
     "db:migrate:single": "psql -d $DATABASE_URL -f migrations/005_add_dispute_system.sql",
     "audit:certification-preflight": "ts-node scripts/run-audit-certification-preflight.ts",

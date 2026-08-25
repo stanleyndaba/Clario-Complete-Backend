@@ -4,15 +4,27 @@ import path from 'path';
 
 dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 
-const REQUIRED_MIGRATIONS = [
+export const REQUIRED_NON_TRANSFER_MIGRATIONS = [
   '127_create_inbound_receiving_rail.sql',
   '128_add_inbound_v0_feature_flag.sql',
-  '129_transfer_ledger_observation_rail.sql',
   '129_add_support_request_delivery_truth.sql',
   '132_harden_sp_api_settlement_store_identity.sql',
 ] as const;
 
-const REQUIRED_TABLES = [
+// A reconciliation records the real deployment action under a new immutable
+// filename. Either recorded path is admissible evidence, but neither alone is
+// sufficient: all concrete Transfer schema and flag checks remain mandatory.
+export const TRANSFER_MIGRATION_EVIDENCE_ANY_OF = [
+  '129_transfer_ledger_observation_rail.sql',
+  '133_reconcile_transfer_ledger_observation_rail.sql',
+] as const;
+
+const MIGRATION_QUERY_FILENAMES = [
+  ...REQUIRED_NON_TRANSFER_MIGRATIONS,
+  ...TRANSFER_MIGRATION_EVIDENCE_ANY_OF,
+] as const;
+
+export const REQUIRED_TABLES = [
   'feature_flags',
   'settlements',
   'inbound_source_runs',
@@ -24,7 +36,7 @@ const REQUIRED_TABLES = [
   'transfer_ledger_observations',
 ] as const;
 
-const REQUIRED_INDEXES = [
+export const REQUIRED_INDEXES = [
   'inbound_source_runs_scope_provider_sync_idx',
   'inbound_source_runs_scope_status_idx',
   'inbound_shipments_provider_scope_unique',
@@ -41,23 +53,23 @@ const REQUIRED_INDEXES = [
   'transfer_ledger_observations_source_run_idx',
 ] as const;
 
-const REQUIRED_CONSTRAINTS = [
+export const REQUIRED_CONSTRAINTS = [
   'settlements_tenant_user_store_settlement_type_unique',
 ] as const;
 
-const REQUIRED_FLAGS = [
+export const REQUIRED_FLAGS = [
   'connected_inbound_v0_primary',
   'connected_transfer_ledger_observation',
 ] as const;
 
-type AuditFlagRow = {
+export type AuditFlagRow = {
   flag_name: string;
   is_enabled: boolean;
   rollout_percentage: number;
   payload: Record<string, unknown> | null;
 };
 
-type ConstraintRow = {
+export type ConstraintRow = {
   table_name: string;
   conname: string;
   definition: string;
@@ -65,12 +77,20 @@ type ConstraintRow = {
 
 type PreflightStatus = 'PASS' | 'FAIL';
 
+export type PreflightInput = {
+  migrationRows: string[];
+  tableRows: string[];
+  indexRows: string[];
+  flags: AuditFlagRow[];
+  constraints: ConstraintRow[];
+};
+
 function missing(expected: readonly string[], observed: Iterable<string>): string[] {
   const actual = new Set(observed);
   return expected.filter((name) => !actual.has(name));
 }
 
-function flagSafety(flag: AuditFlagRow | undefined): {
+export function flagSafety(flag: AuditFlagRow | undefined): {
   present: boolean;
   safe: boolean;
   issue: string | null;
@@ -104,6 +124,64 @@ function flagSafety(flag: AuditFlagRow | undefined): {
   };
 }
 
+export function evaluateAuditCertificationPreflight(input: PreflightInput) {
+  const flagsByName = new Map(input.flags.map((row) => [row.flag_name, row]));
+  const flagChecks = REQUIRED_FLAGS.map((name) => ({
+    flagName: name,
+    ...flagSafety(flagsByName.get(name)),
+    actual: flagsByName.get(name) || null,
+  }));
+
+  const missingNonTransferMigrations = missing(REQUIRED_NON_TRANSFER_MIGRATIONS, input.migrationRows);
+  const transferMigrationEvidence = TRANSFER_MIGRATION_EVIDENCE_ANY_OF
+    .filter((filename) => input.migrationRows.includes(filename));
+  const missingMigrationEvidence = transferMigrationEvidence.length > 0
+    ? []
+    : [`one of: ${TRANSFER_MIGRATION_EVIDENCE_ANY_OF.join(', ')}`];
+  const missingTables = missing(REQUIRED_TABLES, input.tableRows);
+  const missingIndexes = missing(REQUIRED_INDEXES, input.indexRows);
+  const missingConstraints = missing(REQUIRED_CONSTRAINTS, input.constraints.map((row) => row.conname));
+  const unsafeFlags = flagChecks.filter((check) => !check.safe);
+
+  const status: PreflightStatus = (
+    missingNonTransferMigrations.length === 0
+    && missingMigrationEvidence.length === 0
+    && missingTables.length === 0
+    && missingIndexes.length === 0
+    && missingConstraints.length === 0
+    && unsafeFlags.length === 0
+  ) ? 'PASS' : 'FAIL';
+
+  return {
+    preflight: 'margin_audit_certification_foundation',
+    mode: 'READ_ONLY' as const,
+    status,
+    checks: {
+      migrations: {
+        requiredNonTransfer: REQUIRED_NON_TRANSFER_MIGRATIONS,
+        transferEvidenceAnyOf: TRANSFER_MIGRATION_EVIDENCE_ANY_OF,
+        applied: input.migrationRows,
+        transferEvidencePresent: transferMigrationEvidence,
+        missingNonTransfer: missingNonTransferMigrations,
+        missingTransferEvidence: missingMigrationEvidence,
+        missing: [...missingNonTransferMigrations, ...missingMigrationEvidence],
+      },
+      schema: {
+        requiredTables: REQUIRED_TABLES,
+        presentTables: input.tableRows,
+        missingTables,
+        requiredIndexes: REQUIRED_INDEXES,
+        presentIndexes: input.indexRows,
+        missingIndexes,
+        requiredConstraints: REQUIRED_CONSTRAINTS,
+        missingConstraints,
+        relevantConstraints: input.constraints,
+      },
+      flags: flagChecks,
+    },
+  };
+}
+
 async function run(): Promise<void> {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
@@ -128,7 +206,7 @@ async function run(): Promise<void> {
         FROM schema_migrations
         WHERE filename = ANY($1::text[])
         ORDER BY filename
-      `, [REQUIRED_MIGRATIONS]),
+      `, [MIGRATION_QUERY_FILENAMES]),
       client.query<{ table_name: string }>(`
         SELECT table_name
         FROM information_schema.tables
@@ -170,58 +248,17 @@ async function run(): Promise<void> {
       ]]),
     ]);
 
-    const migrationRows = migrations.rows.map((row) => row.filename);
-    const tableRows = tables.rows.map((row) => row.table_name);
-    const indexRows = indexes.rows.map((row) => row.indexname);
-    const flagsByName = new Map(flags.rows.map((row) => [row.flag_name, row]));
-    const flagChecks = REQUIRED_FLAGS.map((name) => ({
-      flagName: name,
-      ...flagSafety(flagsByName.get(name)),
-      actual: flagsByName.get(name) || null,
-    }));
-
-    const missingMigrations = missing(REQUIRED_MIGRATIONS, migrationRows);
-    const missingTables = missing(REQUIRED_TABLES, tableRows);
-    const missingIndexes = missing(REQUIRED_INDEXES, indexRows);
-    const missingConstraints = missing(REQUIRED_CONSTRAINTS, constraints.rows.map((row) => row.conname));
-    const unsafeFlags = flagChecks.filter((check) => !check.safe);
-
-    const status: PreflightStatus = (
-      missingMigrations.length === 0
-      && missingTables.length === 0
-      && missingIndexes.length === 0
-      && missingConstraints.length === 0
-      && unsafeFlags.length === 0
-    ) ? 'PASS' : 'FAIL';
-
-    const output = {
-      preflight: 'margin_audit_certification_foundation',
-      mode: 'READ_ONLY',
-      status,
-      checks: {
-        migrations: {
-          required: REQUIRED_MIGRATIONS,
-          applied: migrationRows,
-          missing: missingMigrations,
-        },
-        schema: {
-          requiredTables: REQUIRED_TABLES,
-          presentTables: tableRows,
-          missingTables,
-          requiredIndexes: REQUIRED_INDEXES,
-          presentIndexes: indexes.rows,
-          missingIndexes,
-          requiredConstraints: REQUIRED_CONSTRAINTS,
-          missingConstraints,
-          relevantConstraints: constraints.rows,
-        },
-        flags: flagChecks,
-      },
-    };
+    const output = evaluateAuditCertificationPreflight({
+      migrationRows: migrations.rows.map((row) => row.filename),
+      tableRows: tables.rows.map((row) => row.table_name),
+      indexRows: indexes.rows.map((row) => row.indexname),
+      flags: flags.rows,
+      constraints: constraints.rows,
+    });
 
     console.log(JSON.stringify(output, null, 2));
 
-    if (status === 'FAIL') {
+    if (output.status === 'FAIL') {
       process.exitCode = 2;
     }
   } finally {
@@ -232,7 +269,9 @@ async function run(): Promise<void> {
   }
 }
 
-run().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+if (require.main === module) {
+  run().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}

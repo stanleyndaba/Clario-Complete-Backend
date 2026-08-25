@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "identity": "complete filename",
+  "purpose": "These historical duplicate numeric prefixes are intentionally supported by the canonical migration runner. Any new duplicate prefix must be explicitly added here with the exact complete filenames, reviewed, and tested before it can run.",
+  "legacyUnnumberedMigrationFiles": [
+    "add_pending_jobs_table.sql",
+    "create_financial_impact_table.sql",
+    "fix_tokens_provider_constraint.sql"
+  ],
+  "duplicatePrefixes": {
+    "003": [
+      "003_add_refund_engine_cases.sql",
+      "003_add_stripe_accounts.sql"
+    ],
+    "006": [
+      "006_add_deadline_tracking.sql",
+      "006_add_prediction_fields.sql"
+    ],
+    "011": [
+      "011_evidence_engine_views.sql",
+      "011_evidence_ingestion_worker.sql"
+    ],
+    "015": [
+      "015_recoveries_worker.sql",
+      "015_refund_filing_worker.sql"
+    ],
+    "016": [
+      "016_billing_worker.sql",
+      "016_ensure_parser_jobs_user_id.sql"
+    ],
+    "017": [
+      "017_ensure_parser_jobs_columns.sql",
+      "017_notifications_worker.sql"
+    ],
+    "045": [
+      "045_add_soft_delete_columns.sql",
+      "045_expand_filing_status_enum.sql"
+    ],
+    "059": [
+      "059_automation_tracking.sql",
+      "059_create_feature_flags.sql"
+    ],
+    "064": [
+      "064_add_amazon_case_id_to_detection_results.sql",
+      "064_fix_financial_events_for_csv.sql"
+    ],
+    "088": [
+      "088_agent4_agent8_autonomy_rails.sql",
+      "088_agent7_truth_repair.sql"
+    ],
+    "129": [
+      "129_add_support_request_delivery_truth.sql",
+      "129_transfer_ledger_observation_rail.sql"
+    ],
+    "132": [
+      "132_accounting_intelligence_rail.sql",
+      "132_harden_sp_api_settlement_store_identity.sql"
+    ]
+  }
+}

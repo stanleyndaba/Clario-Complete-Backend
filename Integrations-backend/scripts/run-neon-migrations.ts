@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import { Client } from 'pg';
 import { readdirSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
 import path from 'path';
 
 const rootDir = path.resolve(__dirname, '..');
@@ -8,6 +9,20 @@ dotenv.config({ path: path.join(rootDir, '.env') });
 
 const migrationsDir = path.join(rootDir, 'migrations');
 const migrationsTable = 'schema_migrations';
+const migrationCompatibilityCatalogPath = path.join(migrationsDir, 'migration-prefix-compatibility.json');
+const migrationFilenamePattern = /^(\d+)_[A-Za-z0-9][A-Za-z0-9_-]*\.sql$/;
+const excludedSqlBundles = new Set(['combined_migration.sql']);
+const supersededMigrationEvidence: Record<string, string> = {
+  // The original Transfer migration was never deployed. A recorded forward-only
+  // reconciliation is the truthful ledger evidence and must prevent a later
+  // runner invocation from applying or recording the historical file.
+  '129_transfer_ledger_observation_rail.sql': '133_reconcile_transfer_ledger_observation_rail.sql',
+};
+
+type MigrationPrefixCompatibilityCatalog = {
+  legacyUnnumberedMigrationFiles: string[];
+  duplicatePrefixes: Record<string, string[]>;
+};
 
 function getConnectionString(): string | undefined {
   if (process.env.DATABASE_URL) {
@@ -28,11 +43,77 @@ function getConnectionString(): string | undefined {
   return `postgresql://${encodedRole}:${encodedPassword}@${host}/${database}?sslmode=require`;
 }
 
-function getMigrationFiles(): string[] {
-  return readdirSync(migrationsDir)
+function sameNames(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((name, index) => name === right[index]);
+}
+
+export function validateMigrationCatalog(files: string[]): void {
+  if (!existsSync(migrationCompatibilityCatalogPath)) {
+    throw new Error('Missing migrations/migration-prefix-compatibility.json compatibility catalog.');
+  }
+
+  const catalog = JSON.parse(
+    readFileSync(migrationCompatibilityCatalogPath, 'utf8')
+  ) as MigrationPrefixCompatibilityCatalog;
+  const unnumberedFiles = files.filter((file) => !migrationFilenamePattern.test(file)).sort();
+  const documentedUnnumberedFiles = [...(catalog.legacyUnnumberedMigrationFiles || [])].sort();
+  if (!sameNames(unnumberedFiles, documentedUnnumberedFiles)) {
+    throw new Error(
+      `Undocumented or stale nonnumeric migration filenames. Actual: ${unnumberedFiles.join(', ') || '(none)'}. Documented: ${documentedUnnumberedFiles.join(', ') || '(none)'}.`
+    );
+  }
+
+  const groups = new Map<string, string[]>();
+  for (const file of files) {
+    const prefix = file.match(migrationFilenamePattern)?.[1];
+    if (!prefix) continue;
+    groups.set(prefix, [...(groups.get(prefix) || []), file]);
+  }
+
+  const duplicateGroups = [...groups.entries()].filter(([, names]) => names.length > 1);
+  const errors: string[] = [];
+
+  for (const [prefix, names] of duplicateGroups) {
+    const actual = [...names].sort();
+    const documented = [...(catalog.duplicatePrefixes[prefix] || [])].sort();
+    if (!sameNames(actual, documented)) {
+      errors.push(
+        `Duplicate prefix ${prefix} must exactly match its compatibility catalog entry. Actual: ${actual.join(', ')}. Documented: ${documented.join(', ') || '(none)'}.`
+      );
+    }
+  }
+
+  for (const [prefix, documentedNames] of Object.entries(catalog.duplicatePrefixes)) {
+    const actual = [...(groups.get(prefix) || [])].sort();
+    const documented = [...documentedNames].sort();
+    if (!sameNames(actual, documented)) {
+      errors.push(
+        `Compatibility catalog prefix ${prefix} is stale or incomplete. Actual: ${actual.join(', ') || '(none)'}. Documented: ${documented.join(', ')}.`
+      );
+    }
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`Migration catalog validation failed:\n${errors.join('\n')}`);
+  }
+}
+
+export function getMigrationFiles(directory = migrationsDir): string[] {
+  const files = readdirSync(directory)
     .filter((file) => file.endsWith('.sql'))
-    .filter((file) => file !== 'combined_migration.sql')
+    .filter((file) => !excludedSqlBundles.has(file))
     .sort((a, b) => a.localeCompare(b));
+  validateMigrationCatalog(files);
+  return files;
+}
+
+export function supersedingMigrationFor(file: string, applied: ReadonlySet<string>): string | null {
+  const successor = supersededMigrationEvidence[file];
+  return successor && applied.has(successor) ? successor : null;
+}
+
+export function getPendingMigrationFiles(files: readonly string[], applied: ReadonlySet<string>): string[] {
+  return files.filter((file) => !applied.has(file) && !supersedingMigrationFor(file, applied));
 }
 
 function neonCompatibleSql(sql: string): string {
@@ -142,9 +223,11 @@ async function run(): Promise<void> {
 
     console.log(`Found ${files.length} migration files. ${applied.size} already recorded.`);
 
+    const pending = new Set(getPendingMigrationFiles(files, applied));
     for (const file of files) {
-      if (applied.has(file)) {
-        console.log(`skip ${file}`);
+      if (!pending.has(file)) {
+        const supersededBy = supersedingMigrationFor(file, applied);
+        console.log(supersededBy ? `skip ${file} (superseded by ${supersededBy})` : `skip ${file}`);
         continue;
       }
 
@@ -185,15 +268,17 @@ async function run(): Promise<void> {
   }
 }
 
-run().catch((error: any) => {
-  const details = {
-    name: error?.name,
-    message: error?.message,
-    code: error?.code,
-    errno: error?.errno,
-    syscall: error?.syscall,
-    hostname: error?.hostname,
-  };
-  console.error('Neon migration runner failed:', JSON.stringify(details, null, 2));
-  process.exit(1);
-});
+if (require.main === module) {
+  run().catch((error: any) => {
+    const details = {
+      name: error?.name,
+      message: error?.message,
+      code: error?.code,
+      errno: error?.errno,
+      syscall: error?.syscall,
+      hostname: error?.hostname,
+    };
+    console.error('Neon migration runner failed:', JSON.stringify(details, null, 2));
+    process.exit(1);
+  });
+}
